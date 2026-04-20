@@ -7,7 +7,7 @@ use serde_json::json;
 
 pub async fn list_collections(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
     let pool = s.inner().pool.clone();
-    let list = pool.with_reader(|c| list_inner(c)).await?;
+    let list = pool.with_reader(list_inner).await?;
     Ok(json!({ "collections": list }))
 }
 
