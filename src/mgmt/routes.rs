@@ -126,6 +126,17 @@ impl MgmtState {
             .route("/admin/api/tenants", post(create_tenant_json))
             .route("/admin/api/tenants/{id}", axum::routing::delete(soft_delete_tenant))
             .route("/admin/tenants/{id}/delete", post(soft_delete_tenant_form))
+            .route("/admin/tenants/{id}", get(super::tokens::detail_page))
+            .route("/admin/api/tenants/{id}/tokens", post(super::tokens::issue_token_json))
+            .route(
+                "/admin/api/tenants/{id}/tokens/{token_id}",
+                axum::routing::delete(super::tokens::revoke_token),
+            )
+            .route("/admin/tenants/{id}/tokens/new", post(super::tokens::issue_token_form))
+            .route(
+                "/admin/tenants/{id}/tokens/{token_id}/revoke",
+                post(super::tokens::revoke_token_form),
+            )
             .layer(axum::middleware::from_fn_with_state(session, admin_session_layer))
             .with_state(tenants_state);
         public.merge(protected)
