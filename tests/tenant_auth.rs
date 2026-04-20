@@ -1,11 +1,11 @@
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use axum::routing::get;
 use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use axum::routing::get;
 use drust::auth::bearer::{generate_token, hash_token};
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
-use drust::tenant::router::{bearer_auth_layer, TenantAuthState, TenantRef};
+use drust::tenant::router::{TenantAuthState, TenantRef, bearer_auth_layer};
 use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::sync::Mutex;
@@ -15,11 +15,8 @@ async fn app() -> (Router, String, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let data = dir.path().to_path_buf();
     let conn = open_meta(&data.join("meta.sqlite")).unwrap();
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES ('blog', 'b')",
-        [],
-    )
-    .unwrap();
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('blog', 'b')", [])
+        .unwrap();
     let tok = generate_token();
     let hash = hash_token(&tok);
     conn.execute(
@@ -33,18 +30,19 @@ async fn app() -> (Router, String, tempfile::TempDir) {
     };
     // Need to seed tenant data file
     let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();
-    let app = Router::new()
-        .route(
-            "/t/{tenant}/echo",
-            get(|ext: axum::Extension<TenantRef>| async move {
-                format!("tenant={}", ext.tenant_id)
-            }),
-        )
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            bearer_auth_layer,
-        ))
-        .with_state(state);
+    let app =
+        Router::new()
+            .route(
+                "/t/{tenant}/echo",
+                get(|ext: axum::Extension<TenantRef>| async move {
+                    format!("tenant={}", ext.tenant_id)
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                bearer_auth_layer,
+            ))
+            .with_state(state);
     (app, tok, dir)
 }
 

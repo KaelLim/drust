@@ -5,7 +5,8 @@ use tempfile::tempdir;
 fn seed(name: &str) -> tempfile::TempDir {
     let d = tempdir().unwrap();
     let conn = open_write(d.path(), name).unwrap();
-    conn.execute_batch("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT);").unwrap();
+    conn.execute_batch("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT);")
+        .unwrap();
     d
 }
 
@@ -43,7 +44,10 @@ fn insert_denied_at_authorizer() {
     let d = seed("t");
     let conn = open_read(d.path(), "t").unwrap();
     attach_readonly_authorizer(&conn);
-    assert!(conn.prepare("INSERT INTO posts (title) VALUES ('x')").is_err());
+    assert!(
+        conn.prepare("INSERT INTO posts (title) VALUES ('x')")
+            .is_err()
+    );
 }
 
 #[test]
@@ -52,7 +56,9 @@ fn pragma_whitelisted() {
     let conn = open_read(d.path(), "t").unwrap();
     attach_readonly_authorizer(&conn);
     // Whitelisted pragmas should still work; we probe via a SELECT-style query
-    let mut stmt = conn.prepare("SELECT * FROM pragma_table_info('posts')").unwrap();
+    let mut stmt = conn
+        .prepare("SELECT * FROM pragma_table_info('posts')")
+        .unwrap();
     let _ = stmt.query_map([], |_| Ok(())).unwrap().count();
 }
 

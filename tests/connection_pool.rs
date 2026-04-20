@@ -11,7 +11,9 @@ async fn writer_serializes_writes() {
     let _ = open_write(&data, "t1").unwrap();
     let pool = Arc::new(TenantPool::new(data.clone(), "t1", 2).unwrap());
 
-    pool.with_writer(|c| c.execute_batch("CREATE TABLE m (id INTEGER PRIMARY KEY)")).await.unwrap();
+    pool.with_writer(|c| c.execute_batch("CREATE TABLE m (id INTEGER PRIMARY KEY)"))
+        .await
+        .unwrap();
 
     // Two concurrent writes should both succeed without BUSY.
     let p1 = pool.clone();
@@ -58,7 +60,8 @@ async fn readers_concurrent() {
     for _ in 0..10 {
         let p = pool.clone();
         handles.push(tokio::spawn(async move {
-            let n: i64 = p.with_reader(|c| c.query_row("SELECT id FROM m", [], |r| r.get(0)))
+            let n: i64 = p
+                .with_reader(|c| c.query_row("SELECT id FROM m", [], |r| r.get(0)))
                 .await
                 .unwrap();
             assert_eq!(n, 1);

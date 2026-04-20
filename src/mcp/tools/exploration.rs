@@ -2,7 +2,9 @@ use crate::mcp::server::DrustMcp;
 use crate::query::authorizer::attach_readonly_authorizer;
 use crate::query::executor::execute_read_query;
 use crate::query::filter::build_count_sql;
-use crate::storage::schema::{describe_collection as describe_inner, list_collections as list_inner};
+use crate::storage::schema::{
+    describe_collection as describe_inner, list_collections as list_inner,
+};
 use serde_json::json;
 
 pub async fn list_collections(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
@@ -23,11 +25,7 @@ pub async fn describe_collection(s: &DrustMcp, name: &str) -> anyhow::Result<ser
     }
 }
 
-pub async fn sample_rows(
-    s: &DrustMcp,
-    name: &str,
-    n: usize,
-) -> anyhow::Result<serde_json::Value> {
+pub async fn sample_rows(s: &DrustMcp, name: &str, n: usize) -> anyhow::Result<serde_json::Value> {
     let pool = s.inner().pool.clone();
     let sql = format!(
         "SELECT * FROM \"{}\" ORDER BY id LIMIT {}",
@@ -37,8 +35,7 @@ pub async fn sample_rows(
     let out = pool
         .with_reader(move |c| {
             attach_readonly_authorizer(c);
-            execute_read_query(c, &sql, 500, 16_384)
-                .map_err(|_| rusqlite::Error::InvalidQuery)
+            execute_read_query(c, &sql, 500, 16_384).map_err(|_| rusqlite::Error::InvalidQuery)
         })
         .await?;
     Ok(serde_json::to_value(out)?)

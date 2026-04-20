@@ -71,7 +71,12 @@ pub async fn issue_token_json(
         .unwrap_or_default();
     (
         StatusCode::CREATED,
-        Json(IssueResp { id, token: plaintext, label: body.label, created_at: created }),
+        Json(IssueResp {
+            id,
+            token: plaintext,
+            label: body.label,
+            created_at: created,
+        }),
     )
         .into_response()
 }
@@ -110,10 +115,16 @@ pub async fn issue_token_form(
     if !status.is_success() {
         return resp;
     }
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let tok = v["token"].as_str().unwrap_or("");
-    let url = format!("/admin/tenants/{}?new_token={}", tenant_id, urlencoding::encode(tok));
+    let url = format!(
+        "/admin/tenants/{}?new_token={}",
+        tenant_id,
+        urlencoding::encode(tok)
+    );
     Redirect::to(&url).into_response()
 }
 

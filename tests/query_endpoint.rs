@@ -1,6 +1,6 @@
 mod helpers;
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use helpers::{grab_pool, spin_up_tenant};
 use tower::ServiceExt;
 
@@ -33,7 +33,9 @@ async fn ok_path() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let b = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let b = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(v["rows"].as_array().unwrap().len(), 3);
 }

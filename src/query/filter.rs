@@ -1,5 +1,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortDir { Asc, Desc }
+pub enum SortDir {
+    Asc,
+    Desc,
+}
 
 #[derive(Debug, Clone)]
 pub struct ListParams {
@@ -36,7 +39,10 @@ fn q(id: &str) -> String {
 
 pub fn build_list_sql(collection: &str, p: &ListParams) -> String {
     let table = q(collection);
-    let dir = match p.sort_dir { SortDir::Asc => "ASC", SortDir::Desc => "DESC" };
+    let dir = match p.sort_dir {
+        SortDir::Asc => "ASC",
+        SortDir::Desc => "DESC",
+    };
     let per_page = p.per_page.clamp(1, 500) as u64;
     let page = p.page.max(1) as u64;
     let offset = (page - 1) * per_page;

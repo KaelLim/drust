@@ -1,7 +1,7 @@
 use crate::auth::bearer::{hash_token, token_hint};
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
 use axum::extract::{Path, State};
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rusqlite::Connection;
@@ -33,7 +33,13 @@ pub async fn bearer_auth_layer(
     };
     let bearer = match extract_bearer(&req) {
         Some(t) => t,
-        None => return json_error(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", "missing bearer"),
+        None => {
+            return json_error(
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHENTICATED",
+                "missing bearer",
+            );
+        }
     };
     let hash = hash_token(&bearer);
     // Verify: (token active) AND (tenant active)
@@ -53,12 +59,20 @@ pub async fn bearer_auth_layer(
         None => return json_error(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", "invalid token"),
     };
     if bound_tenant != tenant_id {
-        return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", "tenant not accessible");
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "TENANT_NOT_FOUND",
+            "tenant not accessible",
+        );
     }
     let pool = match state.registry.get_or_open(&tenant_id) {
         Ok(p) => p,
         Err(_) => {
-            return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", "tenant data missing")
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "TENANT_NOT_FOUND",
+                "tenant data missing",
+            );
         }
     };
     req.extensions_mut().insert(TenantRef {

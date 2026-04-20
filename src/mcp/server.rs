@@ -45,10 +45,18 @@ pub struct McpRegistry {
 
 impl McpRegistry {
     pub fn new(tenants: Arc<TenantRegistry>) -> Self {
-        Self { tenants, bus: EventBus::new(), services: DashMap::new() }
+        Self {
+            tenants,
+            bus: EventBus::new(),
+            services: DashMap::new(),
+        }
     }
     pub fn with_bus(tenants: Arc<TenantRegistry>, bus: EventBus) -> Self {
-        Self { tenants, bus, services: DashMap::new() }
+        Self {
+            tenants,
+            bus,
+            services: DashMap::new(),
+        }
     }
     pub async fn get_or_create(&self, tenant_id: &str) -> anyhow::Result<DrustMcp> {
         if let Some(s) = self.services.get(tenant_id) {

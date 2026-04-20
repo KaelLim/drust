@@ -1,5 +1,5 @@
 use drust::query::authorizer::attach_readonly_authorizer;
-use drust::query::executor::{execute_read_query, ExecError};
+use drust::query::executor::{ExecError, execute_read_query};
 use drust::storage::tenant_db::{open_read, open_write};
 use tempfile::tempdir;
 
@@ -19,7 +19,8 @@ fn returns_rows_and_column_names() {
     let d = seed();
     let conn = open_read(d.path(), "t").unwrap();
     attach_readonly_authorizer(&conn);
-    let out = execute_read_query(&conn, "SELECT id, title FROM posts ORDER BY id", 10, 5_000).unwrap();
+    let out =
+        execute_read_query(&conn, "SELECT id, title FROM posts ORDER BY id", 10, 5_000).unwrap();
     assert_eq!(out.column_names, vec!["id", "title"]);
     assert_eq!(out.rows.len(), 3);
     assert!(!out.truncated);

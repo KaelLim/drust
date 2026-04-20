@@ -5,7 +5,10 @@ use tempfile::tempdir;
 fn tenant_dir_layout() {
     let root = std::path::Path::new("/var/lib/drust");
     let d = tenant_dir(root, "blog-demo");
-    assert_eq!(d.as_path(), std::path::Path::new("/var/lib/drust/tenants/blog-demo"));
+    assert_eq!(
+        d.as_path(),
+        std::path::Path::new("/var/lib/drust/tenants/blog-demo")
+    );
 }
 
 #[test]
@@ -29,11 +32,11 @@ fn readonly_rejects_write() {
     let tenant = "blog";
     let _ = open_write(dir.path(), tenant).unwrap();
     let r = open_read(dir.path(), tenant).unwrap();
-    let err = r
-        .execute("CREATE TABLE x (id INTEGER)", [])
-        .unwrap_err();
-    assert!(format!("{err}").to_lowercase().contains("readonly") ||
-            format!("{err}").to_lowercase().contains("read only"));
+    let err = r.execute("CREATE TABLE x (id INTEGER)", []).unwrap_err();
+    assert!(
+        format!("{err}").to_lowercase().contains("readonly")
+            || format!("{err}").to_lowercase().contains("read only")
+    );
 }
 
 #[test]

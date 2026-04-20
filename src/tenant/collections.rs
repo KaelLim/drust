@@ -19,7 +19,9 @@ pub async fn describe_handler(
     Path((_tenant, coll)): Path<(String, String)>,
 ) -> Response {
     let pool = t.pool.clone();
-    let out = pool.with_reader(move |c| describe_collection(c, &coll)).await;
+    let out = pool
+        .with_reader(move |c| describe_collection(c, &coll))
+        .await;
     match out {
         Ok(Some(schema)) => Json(serde_json::to_value(schema).unwrap()).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "collection not found").into_response(),

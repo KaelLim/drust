@@ -5,12 +5,21 @@ use tempfile::tempdir;
 async fn writes_jsonl_and_rolls_by_date() {
     let dir = tempdir().unwrap();
     let log = AuditLog::new(dir.path().to_path_buf());
-    log.append(AuditEntry::success("t1", "drust_abc", "insert_record", 12).with_collection("posts"))
-        .await
-        .unwrap();
-    log.append(AuditEntry::failure("t1", "drust_abc", "query", 5001, "QUERY_TIMEOUT", "timed out"))
-        .await
-        .unwrap();
+    log.append(
+        AuditEntry::success("t1", "drust_abc", "insert_record", 12).with_collection("posts"),
+    )
+    .await
+    .unwrap();
+    log.append(AuditEntry::failure(
+        "t1",
+        "drust_abc",
+        "query",
+        5001,
+        "QUERY_TIMEOUT",
+        "timed out",
+    ))
+    .await
+    .unwrap();
     let files: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(Result::ok)

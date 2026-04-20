@@ -23,14 +23,19 @@ fn seed() -> (tempfile::TempDir, rusqlite::Connection) {
 fn list_returns_user_tables_only() {
     let (_d, conn) = seed();
     let cols = list_collections(&conn).unwrap();
-    assert_eq!(cols.iter().map(|c| &c.name).collect::<Vec<_>>(), vec!["posts"]);
+    assert_eq!(
+        cols.iter().map(|c| &c.name).collect::<Vec<_>>(),
+        vec!["posts"]
+    );
     assert_eq!(cols[0].row_count, 3);
 }
 
 #[test]
 fn describe_returns_fields_and_indexes() {
     let (_d, conn) = seed();
-    let s = describe_collection(&conn, "posts").unwrap().expect("exists");
+    let s = describe_collection(&conn, "posts")
+        .unwrap()
+        .expect("exists");
     let names: Vec<_> = s.fields.iter().map(|f| f.name.clone()).collect();
     assert_eq!(names, vec!["id", "title", "views", "created_at"]);
     let title = s.fields.iter().find(|f| f.name == "title").unwrap();

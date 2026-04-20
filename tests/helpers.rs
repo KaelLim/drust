@@ -5,7 +5,7 @@ use drust::auth::bearer::{generate_token, hash_token};
 use drust::storage::meta::open_meta;
 use drust::storage::pool::{SharedTenantPool, TenantRegistry};
 use drust::tenant::router::TenantAuthState;
-use drust::tenant::{build_tenant_router, events::EventBus, TenantStack};
+use drust::tenant::{TenantStack, build_tenant_router, events::EventBus};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -29,7 +29,10 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         meta: Arc::new(Mutex::new(conn)),
         registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
     };
-    let stack = TenantStack { auth: state, bus: EventBus::new() };
+    let stack = TenantStack {
+        auth: state,
+        bus: EventBus::new(),
+    };
     let app = build_tenant_router(stack);
     (app, tok, dir)
 }

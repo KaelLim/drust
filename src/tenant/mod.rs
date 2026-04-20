@@ -5,8 +5,8 @@ pub mod records;
 pub mod router;
 pub mod sse;
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 use events::EventBus;
 use router::TenantAuthState;
 

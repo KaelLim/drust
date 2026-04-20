@@ -1,4 +1,4 @@
-use rusqlite::{types::ValueRef, Connection};
+use rusqlite::{Connection, types::ValueRef};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
@@ -62,7 +62,10 @@ pub fn execute_read_query(
     max_sql_bytes: usize,
 ) -> Result<QueryResult, ExecError> {
     if sql.len() > max_sql_bytes {
-        return Err(ExecError::TooLarge { bytes: sql.len(), limit: max_sql_bytes });
+        return Err(ExecError::TooLarge {
+            bytes: sql.len(),
+            limit: max_sql_bytes,
+        });
     }
     let hash = sql_hash(sql);
     let mut stmt = conn.prepare(sql).map_err(classify)?;
@@ -131,4 +134,6 @@ impl InterruptGuard {
 }
 
 #[allow(dead_code)]
-fn _unused_timing() -> Instant { Instant::now() }
+fn _unused_timing() -> Instant {
+    Instant::now()
+}

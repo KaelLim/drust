@@ -1,5 +1,5 @@
-use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::Connection;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
 /// Attach the read-only authorizer. Every SQL action is inspected; anything
 /// outside the whitelist is denied. Paired with `SQLITE_OPEN_READONLY` at
@@ -17,8 +17,9 @@ pub fn attach_readonly_authorizer(conn: &Connection) {
             }
             AuthAction::Function { .. } => Authorization::Allow,
             AuthAction::Pragma { pragma_name, .. } => match pragma_name {
-                "table_info" | "index_list" | "index_info" | "foreign_key_list"
-                | "table_xinfo" => Authorization::Allow,
+                "table_info" | "index_list" | "index_info" | "foreign_key_list" | "table_xinfo" => {
+                    Authorization::Allow
+                }
                 _ => Authorization::Ignore,
             },
             AuthAction::Recursive => Authorization::Allow,
