@@ -16,7 +16,7 @@ UMask=0077
 
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=read-only
 ReadWritePaths=/var/lib/drust /var/log/drust
 PrivateTmp=yes
 ProtectKernelModules=yes

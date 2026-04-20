@@ -39,7 +39,7 @@ pub async fn admin_session_layer(
             let mut r = Response::new(axum::body::Body::empty());
             *r.status_mut() = StatusCode::SEE_OTHER;
             r.headers_mut()
-                .insert(header::LOCATION, "/login".parse().unwrap());
+                .insert(header::LOCATION, "/drust/login".parse().unwrap());
             r
         }
     }
@@ -60,14 +60,14 @@ fn extract_cookie<B>(req: &Request<B>, name: &str) -> Option<String> {
 
 pub fn build_session_cookie(token: &str, ttl_secs: u64) -> String {
     format!(
-        "{}={}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={}",
+        "{}={}; Path=/drust; HttpOnly; Secure; SameSite=Strict; Max-Age={}",
         SESSION_COOKIE, token, ttl_secs
     )
 }
 
 pub fn clear_session_cookie() -> String {
     format!(
-        "{}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
+        "{}=; Path=/drust; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
         SESSION_COOKIE
     )
 }

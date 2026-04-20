@@ -6,12 +6,12 @@ table{width:100%;border-collapse:collapse;margin-top:1rem;}
 th,td{padding:.4rem .6rem;border-bottom:1px solid #ddd;text-align:left;}
 form{display:inline-block;}
 </style></head><body>
-<p><a href="/admin/tenants">← all tenants</a></p>
+<p><a href="/drust/admin/tenants">← all tenants</a></p>
 <h1>Tenant: {{ tenant_id }}</h1>
 <p>{{ tenant_name }} · created {{ created_at }}</p>
 
 <h2>Tokens</h2>
-<form method="post" action="/admin/tenants/{{ tenant_id }}/tokens/new">
+<form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/new">
   <input name="label" placeholder="label (optional)">
   <button>Issue new token</button>
 </form>
@@ -31,7 +31,7 @@ form{display:inline-block;}
   <td>{{ t.revoked_at }}</td>
   <td>
     {% if t.revoked_at == "-" %}
-    <form method="post" action="/admin/tenants/{{ tenant_id }}/tokens/{{ t.id }}/revoke">
+    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ t.id }}/revoke">
       <button>Revoke</button>
     </form>
     {% endif %}

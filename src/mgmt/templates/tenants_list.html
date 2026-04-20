@@ -9,7 +9,7 @@ input{padding:.3rem;}
 button{padding:.35rem .8rem;}
 </style></head><body>
 <h1>Tenants</h1>
-<form method="post" action="/admin/tenants/new">
+<form method="post" action="/drust/admin/tenants/new">
   <input name="id" placeholder="slug e.g. blog-demo" required>
   <input name="name" placeholder="display name" required>
   <button>Create</button>
@@ -19,12 +19,12 @@ button{padding:.35rem .8rem;}
   <tbody>
   {% for t in tenants %}
     <tr>
-      <td><a href="/admin/tenants/{{ t.id }}">{{ t.id }}</a></td>
+      <td><a href="/drust/admin/tenants/{{ t.id }}">{{ t.id }}</a></td>
       <td>{{ t.name }}</td>
       <td>{{ t.created_at }}</td>
       <td>{{ t.db_size_kb }} KB</td>
       <td>
-        <form method="post" action="/admin/tenants/{{ t.id }}/delete" onsubmit="return confirm('Delete?');">
+        <form method="post" action="/drust/admin/tenants/{{ t.id }}/delete" onsubmit="return confirm('Delete?');">
           <button>Delete</button>
         </form>
       </td>
