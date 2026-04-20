@@ -1,35 +1,124 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Drust — Tenants</title>
-<style>
-body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;}
-table{width:100%;border-collapse:collapse;margin-top:1rem;}
-th,td{padding:.4rem .6rem;border-bottom:1px solid #ddd;text-align:left;}
-form{margin-top:1rem;}
-input{padding:.3rem;}
-button{padding:.35rem .8rem;}
-</style></head><body>
-<h1>Tenants</h1>
-<form method="post" action="/drust/admin/tenants/new">
-  <input name="id" placeholder="slug e.g. blog-demo" required>
-  <input name="name" placeholder="display name" required>
-  <button>Create</button>
-</form>
-<table>
-  <thead><tr><th>id</th><th>name</th><th>created</th><th>db size</th><th></th></tr></thead>
-  <tbody>
-  {% for t in tenants %}
-    <tr>
-      <td><a href="/drust/admin/tenants/{{ t.id }}">{{ t.id }}</a></td>
-      <td>{{ t.name }}</td>
-      <td>{{ t.created_at }}</td>
-      <td>{{ t.db_size_kb }} KB</td>
-      <td>
-        <form method="post" action="/drust/admin/tenants/{{ t.id }}/delete" onsubmit="return confirm('Delete?');">
-          <button>Delete</button>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust admin — tenants</title>
+{% include "_styles.html" %}
+</head>
+<body>
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/tenants</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <header class="topbar">
+      <div class="prompt">
+        <span class="dollar">$</span>
+        <span class="user">admin</span>
+        <span class="at">@</span>
+        <span class="host">drust</span>
+        <span class="colon">:</span>
+        <span class="path">~/tenants</span>
+        <span class="caret"></span>
+      </div>
+      <div class="topbar-right">
+        <span class="who">v0.1.0</span>
+        <span class="sep">│</span>
+        <form method="post" action="/drust/logout" style="display:inline;">
+          <button type="submit">logout ↵</button>
         </form>
-      </td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-</body></html>
+      </div>
+    </header>
+
+    <main class="page">
+      <nav class="crumbs">
+        <span class="here">drust</span>
+        <span class="sep">/</span>
+        <span class="here">tenants</span>
+      </nav>
+
+      <div class="pagehead">
+        <div>
+          <h1>Tenants</h1>
+          <div class="meta"><b>{{ tenants.len() }}</b> tenants</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <div class="card-head">
+          <span>+ create tenant</span>
+          <span style="color:var(--muted);font-weight:400;">新增租戶</span>
+        </div>
+        <div class="card-body">
+          <form method="post" action="/drust/admin/tenants/new" class="form-inline">
+            <div class="field">
+              <label>slug <span class="hint">a-z 0-9 - only</span></label>
+              <div class="input-prefix">
+                <span class="prefix">/</span>
+                <input class="input" name="id" placeholder="event-registration" required>
+              </div>
+            </div>
+            <div class="field">
+              <label>display name</label>
+              <input class="input" name="name" placeholder="Event Registration" style="width:280px;" required>
+            </div>
+            <button class="btn btn-primary" type="submit">Create <span class="kbd">↵</span></button>
+            <span style="font-family:var(--mono);font-size:11.5px;color:var(--muted);">
+              a new SQLite database will be provisioned.
+            </span>
+          </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span>tenants <span class="count">· {{ tenants.len() }} rows</span></span>
+          <div class="card-head-actions">
+            <span style="font-family:var(--mono);font-size:11.5px;color:var(--muted);">sort: id ↑</span>
+          </div>
+        </div>
+        {% if tenants.is_empty() %}
+        <div class="empty">
+          <div class="ascii">┌──────────────┐
+│   no rows    │
+└──────────────┘</div>
+          <h3>No tenants yet</h3>
+          <p>Create one with the form above.</p>
+        </div>
+        {% else %}
+        <table class="data">
+          <thead>
+            <tr>
+              <th style="width:240px;">id</th>
+              <th>name</th>
+              <th style="width:200px;">created</th>
+              <th class="num" style="width:130px;">db size</th>
+              <th class="actions" style="width:120px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in tenants %}
+            <tr>
+              <td class="mono-cell"><a class="cell-link" href="/drust/admin/tenants/{{ t.id }}">{{ t.id }}</a></td>
+              <td>{{ t.name }}</td>
+              <td class="muted-cell">{{ t.created_at }}</td>
+              <td class="num">{{ t.db_size_kb }} KB</td>
+              <td class="actions">
+                <form method="post" action="/drust/admin/tenants/{{ t.id }}/delete" onsubmit="return confirm('Delete tenant {{ t.id }}?');" style="display:inline;">
+                  <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>
