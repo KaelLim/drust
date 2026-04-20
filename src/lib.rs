@@ -5,3 +5,4 @@ pub mod mgmt;
 pub mod query;
 pub mod safety;
 pub mod storage;
+pub mod tenant;
