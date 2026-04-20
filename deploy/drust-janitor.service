@@ -1,0 +1,9 @@
+[Unit]
+Description=Drust tenant trash janitor
+
+[Service]
+Type=oneshot
+User=drust
+Group=drust
+ExecStart=/home/kaelsohappy1/tool/drust/deploy/drust-janitor.sh
+Environment=DRUST_DATA_DIR=/var/lib/drust
