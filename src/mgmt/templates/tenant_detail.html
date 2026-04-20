@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Drust — {{ tenant_id }}</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;}
+table{width:100%;border-collapse:collapse;margin-top:1rem;}
+th,td{padding:.4rem .6rem;border-bottom:1px solid #ddd;text-align:left;}
+form{display:inline-block;}
+</style></head><body>
+<p><a href="/admin/tenants">← all tenants</a></p>
+<h1>Tenant: {{ tenant_id }}</h1>
+<p>{{ tenant_name }} · created {{ created_at }}</p>
+
+<h2>Tokens</h2>
+<form method="post" action="/admin/tenants/{{ tenant_id }}/tokens/new">
+  <input name="label" placeholder="label (optional)">
+  <button>Issue new token</button>
+</form>
+{% if let Some(tok) = new_token %}
+<p style="padding:.5rem;background:#ffd;border:1px solid #ba0;">
+  One-time token (save now, never shown again): <code>{{ tok }}</code>
+</p>
+{% endif %}
+<table>
+<thead><tr><th>id</th><th>label</th><th>created</th><th>revoked</th><th></th></tr></thead>
+<tbody>
+{% for t in tokens %}
+<tr>
+  <td>{{ t.id }}</td>
+  <td>{{ t.label }}</td>
+  <td>{{ t.created_at }}</td>
+  <td>{{ t.revoked_at }}</td>
+  <td>
+    {% if t.revoked_at == "-" %}
+    <form method="post" action="/admin/tenants/{{ tenant_id }}/tokens/{{ t.id }}/revoke">
+      <button>Revoke</button>
+    </form>
+    {% endif %}
+  </td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</body></html>
