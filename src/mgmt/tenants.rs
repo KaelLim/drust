@@ -50,7 +50,16 @@ pub struct CreateTenantForm {
 #[derive(Debug, Serialize)]
 pub struct CreatedResp {
     pub tenant: TenantInfo,
+    /// Both initial keys, shown once only.
+    pub initial_tokens: InitialTokens,
+    /// Back-compat field: equals `initial_tokens.service`.
     pub initial_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InitialTokens {
+    pub anon: String,
+    pub service: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -143,11 +152,18 @@ fn make_tenant_inner(
             "quota_rows": quota_rows,
         }))?,
     )?;
-    let token = generate_token();
-    let hash = hash_token(&token);
+    // Issue both an anon and a service key on creation. Shown once.
+    let service_token = generate_token();
+    let anon_token = generate_token();
     conn.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, label) VALUES (?1, ?2, 'initial')",
-        rusqlite::params![id, hash],
+        "INSERT INTO tokens (tenant_id, token_hash, label, role) \
+         VALUES (?1, ?2, 'initial-service', 'service')",
+        rusqlite::params![id, hash_token(&service_token)],
+    )?;
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, label, role) \
+         VALUES (?1, ?2, 'initial-anon', 'anon')",
+        rusqlite::params![id, hash_token(&anon_token)],
     )?;
     Ok(CreatedResp {
         tenant: TenantInfo {
@@ -157,7 +173,11 @@ fn make_tenant_inner(
             quota_db_mb: quota_mb,
             quota_rows,
         },
-        initial_token: token,
+        initial_tokens: InitialTokens {
+            anon: anon_token,
+            service: service_token.clone(),
+        },
+        initial_token: service_token,
     })
 }
 

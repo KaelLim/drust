@@ -13,6 +13,7 @@ pub enum ErrorCode {
     RateLimited,
     TenantNotFound,
     Unauthenticated,
+    WriteDenied,
     Internal,
 }
 

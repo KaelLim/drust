@@ -7,15 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Admin UI minimum text size raised to 18px for readability; layout reflowed proportionally
-- Removed remaining Chinese strings — UI is now English-only
-- Replaced emoji glyphs (📊, ⚠) with inline SVG icons (Lucide), bundled offline
-- Topbar/auth-foot version string now sourced from `Cargo.toml` at compile time
-
 ### Added
+- **`anon` / `service` role split on bearer tokens** (Supabase-style).
+  `service` is the full-power credential (current behaviour, unchanged).
+  `anon` is read-only: list / get / filter / subscribe / `POST /query` work,
+  but `POST/PATCH/DELETE` on records return `403 WRITE_DENIED`. No RLS —
+  per-row policy is deliberately out of scope for v1.1a.
+- `POST /admin/api/tenants/{id}/tokens` accepts an optional `role` body
+  field (`"anon"` | `"service"`, defaults to `"service"` for back-compat).
+  Response includes the `role` in the payload.
+- `POST /admin/api/tenants` now returns an `initial_tokens` object with
+  both an `anon` and a `service` key on creation. The legacy
+  `initial_token` field is preserved and continues to be the `service` key.
 - `CHANGELOG.md` (this file)
 - `_icons.html` template partial with reusable SVG sprite block
+- New integration test `tests/token_roles.rs` (7 tests)
+
+### Changed
+- Admin UI minimum text size raised to 18px for readability; layout
+  reflowed proportionally
+- Removed remaining Chinese strings — UI is now English-only
+- Replaced emoji glyphs (📊, ⚠) with inline SVG icons (Lucide), bundled
+  offline
+- Topbar/auth-foot version string now sourced from `Cargo.toml` at compile
+  time
+- `meta.sqlite` migration: `tokens.role TEXT NOT NULL DEFAULT 'service'`
+  column added idempotently at startup. Existing tokens gain the default
+  `'service'` role — no manual migration required.
+- New `ErrorCode::WriteDenied` variant (serialises as `WRITE_DENIED`)
 
 ## [0.1.0] - 2026-04-20
 
