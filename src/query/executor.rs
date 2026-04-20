@@ -67,6 +67,17 @@ pub fn execute_read_query(
             limit: max_sql_bytes,
         });
     }
+    crate::query::authorizer::attach_readonly_authorizer(conn);
+    let result = execute_read_query_inner(conn, sql, row_cap);
+    crate::query::authorizer::detach_authorizer(conn);
+    result
+}
+
+fn execute_read_query_inner(
+    conn: &Connection,
+    sql: &str,
+    row_cap: usize,
+) -> Result<QueryResult, ExecError> {
     let hash = sql_hash(sql);
     let mut stmt = conn.prepare(sql).map_err(classify)?;
     let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
