@@ -13,15 +13,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `anon` is read-only: list / get / filter / subscribe / `POST /query` work,
   but `POST/PATCH/DELETE` on records return `403 WRITE_DENIED`. No RLS —
   per-row policy is deliberately out of scope for v1.1a.
-- `POST /admin/api/tenants/{id}/tokens` accepts an optional `role` body
-  field (`"anon"` | `"service"`, defaults to `"service"` for back-compat).
-  Response includes the `role` in the payload.
-- `POST /admin/api/tenants` now returns an `initial_tokens` object with
-  both an `anon` and a `service` key on creation. The legacy
+- **2-slot fixed-key model with reroll** (v1.1b). Each tenant has exactly
+  one anon slot and one service slot. Tokens cannot be issued ad-hoc; they
+  can only be **rerolled**, which atomically revokes the current active
+  token(s) of that role and issues a new one. Old plaintext stops working
+  immediately.
+- `POST /drust/admin/api/tenants/{id}/tokens/{role}/reroll` — new endpoint.
+  `{role}` is `anon` or `service`. On success: 201 with
+  `{role, token, id, created_at, revoked_legacy_count}`. Token shown once.
+- `POST /drust/admin/api/tenants` still returns an `initial_tokens` object
+  with both an `anon` and a `service` key on creation. The legacy
   `initial_token` field is preserved and continues to be the `service` key.
 - `CHANGELOG.md` (this file)
 - `_icons.html` template partial with reusable SVG sprite block
-- New integration test `tests/token_roles.rs` (7 tests)
+- Integration tests: `tests/token_roles.rs` (7 tests),
+  rewritten `tests/tokens_api.rs` (4 reroll tests)
+
+### Changed
+- Tenant detail page redesigned around a **2-card API-keys layout** — one
+  card per role (anon / service), each with last-rotated timestamp +
+  `↻ Reroll` action. Replaces the prior N-row tokens table + issue form +
+  per-token revoke buttons.
+- If a tenant has more than one active token of a given role (possible
+  only for tenants created before v1.1a), the card shows a
+  `{n} legacy key(s) still active` warning and a reroll cleans them all.
+
+### Removed
+- `POST /drust/admin/api/tenants/{id}/tokens` (arbitrary issuance) — the
+  2-slot model forbids extra tokens; use reroll instead.
+- `DELETE /drust/admin/api/tenants/{id}/tokens/{token_id}` (individual
+  revoke) — reroll supersedes this for normal ops.
+- `POST /drust/admin/tenants/{id}/tokens/new` form route and
+  `.../tokens/{id}/revoke` form route and their HTML form markup.
 
 ### Changed
 - Admin UI minimum text size raised to 18px for readability; layout

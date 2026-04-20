@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{Form, Json};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Template)]
 #[template(path = "tenant_detail.html")]
@@ -13,56 +14,57 @@ struct DetailPage {
     tenant_id: String,
     tenant_name: String,
     created_at: String,
-    tokens: Vec<TokenRow>,
+    anon: Option<TokenSlotInfo>,
+    service: Option<TokenSlotInfo>,
     new_token: Option<String>,
+    new_token_role: Option<String>,
     version: &'static str,
 }
 
-struct TokenRow {
-    id: i64,
-    label: String,
-    created_at: String,
-    revoked_at: String,
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct IssueBody {
-    #[serde(default)]
-    pub label: Option<String>,
-    #[serde(default)]
-    pub role: Option<String>,
+pub struct TokenSlotInfo {
+    pub id: i64,
+    pub created_at: String,
+    /// Count of OTHER currently-active tokens with the same role (>0 means
+    /// this tenant was created before the 2-slot model; a reroll will clean
+    /// them up).
+    pub legacy_siblings: i64,
 }
 
 #[derive(Debug, Serialize)]
-pub struct IssueResp {
-    pub id: i64,
-    pub token: String,
-    pub label: Option<String>,
+pub struct RerollResp {
     pub role: String,
+    pub token: String,
+    pub id: i64,
     pub created_at: String,
+    pub revoked_legacy_count: usize,
 }
 
-pub async fn issue_token_json(
+fn validate_role(s: &str) -> Option<&'static str> {
+    match s {
+        "anon" => Some("anon"),
+        "service" => Some("service"),
+        _ => None,
+    }
+}
+
+pub async fn reroll_token_json(
     State(state): State<TenantsState>,
-    Path(tenant_id): Path<String>,
-    Json(body): Json<IssueBody>,
+    Path((tenant_id, role)): Path<(String, String)>,
 ) -> Response {
-    // Role defaults to "service" (backward-compatible with v0.1.0 callers).
-    let role = match body.role.as_deref() {
-        None | Some("") | Some("service") => "service",
-        Some("anon") => "anon",
-        Some(other) => {
+    let role_str = match validate_role(&role) {
+        Some(r) => r,
+        None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
+                Json(json!({
                     "error_code": "TYPE_MISMATCH",
-                    "message": format!("invalid role '{other}'; expected 'anon' or 'service'")
+                    "message": "role must be 'anon' or 'service'"
                 })),
             )
                 .into_response();
         }
     };
-    let conn = state.session.meta.lock().await;
+    let mut conn = state.session.meta.lock().await;
     let exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
@@ -73,14 +75,27 @@ pub async fn issue_token_json(
     if exists == 0 {
         return (StatusCode::NOT_FOUND, "no such tenant").into_response();
     }
+
+    let tx = match conn.transaction() {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let revoked = tx
+        .execute(
+            "UPDATE tokens SET revoked_at = datetime('now') \
+             WHERE tenant_id = ?1 AND role = ?2 AND revoked_at IS NULL",
+            rusqlite::params![tenant_id, role_str],
+        )
+        .unwrap_or(0);
     let plaintext = generate_token();
-    let hash = hash_token(&plaintext);
-    conn.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, label, role) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![tenant_id, hash, body.label, role],
+    tx.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, label, role) VALUES (?1, ?2, 'rotated', ?3)",
+        rusqlite::params![tenant_id, hash_token(&plaintext), role_str],
     )
     .unwrap();
-    let id = conn.last_insert_rowid();
+    let id = tx.last_insert_rowid();
+    tx.commit().unwrap();
+
     let created: String = conn
         .query_row(
             "SELECT created_at FROM tokens WHERE id = ?1",
@@ -90,52 +105,31 @@ pub async fn issue_token_json(
         .unwrap_or_default();
     (
         StatusCode::CREATED,
-        Json(IssueResp {
-            id,
+        Json(RerollResp {
+            role: role_str.to_string(),
             token: plaintext,
-            label: body.label,
-            role: role.to_string(),
+            id,
             created_at: created,
+            revoked_legacy_count: revoked,
         }),
     )
         .into_response()
 }
 
-pub async fn revoke_token(
-    State(state): State<TenantsState>,
-    Path((tenant_id, token_id)): Path<(String, i64)>,
-) -> Response {
-    let conn = state.session.meta.lock().await;
-    let n = conn
-        .execute(
-            "UPDATE tokens SET revoked_at = datetime('now') WHERE id = ?1 AND tenant_id = ?2 AND revoked_at IS NULL",
-            rusqlite::params![token_id, tenant_id],
-        )
-        .unwrap_or(0);
-    if n == 0 {
-        (StatusCode::NOT_FOUND, "no active token with that id").into_response()
-    } else {
-        StatusCode::NO_CONTENT.into_response()
-    }
-}
+#[derive(Debug, Deserialize)]
+pub struct RerollForm {}
 
-pub async fn issue_token_form(
+pub async fn reroll_token_form(
     State(state): State<TenantsState>,
-    Path(tenant_id): Path<String>,
-    Form(form): Form<IssueBody>,
+    Path((tenant_id, role)): Path<(String, String)>,
+    Form(_): Form<RerollForm>,
 ) -> Response {
-    let resp = issue_token_json(
+    let resp = reroll_token_json(
         State(state.clone()),
-        Path(tenant_id.clone()),
-        Json(IssueBody {
-            label: form.label,
-            role: form.role,
-        }),
+        Path((tenant_id.clone(), role.clone())),
     )
     .await;
-    // Extract the JSON token for display, then redirect to detail page with it in the query string.
-    let status = resp.status();
-    if !status.is_success() {
+    if !resp.status().is_success() {
         return resp;
     }
     let body = axum::body::to_bytes(resp.into_body(), 65_536)
@@ -144,25 +138,46 @@ pub async fn issue_token_form(
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let tok = v["token"].as_str().unwrap_or("");
     let url = format!(
-        "/drust/admin/tenants/{}?new_token={}",
+        "/drust/admin/tenants/{}?new_token={}&new_token_role={}",
         tenant_id,
-        urlencoding::encode(tok)
+        urlencoding::encode(tok),
+        role,
     );
     Redirect::to(&url).into_response()
-}
-
-pub async fn revoke_token_form(
-    State(state): State<TenantsState>,
-    Path((tenant_id, token_id)): Path<(String, i64)>,
-) -> Response {
-    let _ = revoke_token(State(state), Path((tenant_id.clone(), token_id))).await;
-    Redirect::to(&format!("/drust/admin/tenants/{tenant_id}")).into_response()
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DetailQs {
     #[serde(default)]
     pub new_token: Option<String>,
+    #[serde(default)]
+    pub new_token_role: Option<String>,
+}
+
+fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option<TokenSlotInfo> {
+    let row: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, created_at FROM tokens \
+             WHERE tenant_id = ?1 AND role = ?2 AND revoked_at IS NULL \
+             ORDER BY created_at DESC LIMIT 1",
+            rusqlite::params![tenant_id, role],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let (id, created_at) = row?;
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tokens \
+             WHERE tenant_id = ?1 AND role = ?2 AND revoked_at IS NULL",
+            rusqlite::params![tenant_id, role],
+            |r| r.get(0),
+        )
+        .unwrap_or(1);
+    Some(TokenSlotInfo {
+        id,
+        created_at,
+        legacy_siblings: (total - 1).max(0),
+    })
 }
 
 pub async fn detail_page(
@@ -182,31 +197,17 @@ pub async fn detail_page(
         Some(m) => m,
         None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
     };
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, COALESCE(label, '-'), created_at, COALESCE(revoked_at, '-')
-             FROM tokens WHERE tenant_id = ?1 ORDER BY id DESC",
-        )
-        .unwrap();
-    let tokens: Vec<TokenRow> = stmt
-        .query_map(rusqlite::params![tenant_id], |r| {
-            Ok(TokenRow {
-                id: r.get(0)?,
-                label: r.get(1)?,
-                created_at: r.get(2)?,
-                revoked_at: r.get(3)?,
-            })
-        })
-        .unwrap()
-        .filter_map(Result::ok)
-        .collect();
+    let anon = read_slot(&conn, &tenant_id, "anon");
+    let service = read_slot(&conn, &tenant_id, "service");
     Html(
         DetailPage {
             tenant_id: tenant_id.clone(),
             tenant_name: name,
             created_at: created,
-            tokens,
+            anon,
+            service,
             new_token: qs.new_token,
+            new_token_role: qs.new_token_role,
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()

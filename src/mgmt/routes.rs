@@ -148,20 +148,12 @@ impl MgmtState {
             .route("/admin/tenants/{id}/delete", post(soft_delete_tenant_form))
             .route("/admin/tenants/{id}", get(super::tokens::detail_page))
             .route(
-                "/admin/api/tenants/{id}/tokens",
-                post(super::tokens::issue_token_json),
+                "/admin/api/tenants/{id}/tokens/{role}/reroll",
+                post(super::tokens::reroll_token_json),
             )
             .route(
-                "/admin/api/tenants/{id}/tokens/{token_id}",
-                axum::routing::delete(super::tokens::revoke_token),
-            )
-            .route(
-                "/admin/tenants/{id}/tokens/new",
-                post(super::tokens::issue_token_form),
-            )
-            .route(
-                "/admin/tenants/{id}/tokens/{token_id}/revoke",
-                post(super::tokens::revoke_token_form),
+                "/admin/tenants/{id}/tokens/{role}/reroll",
+                post(super::tokens::reroll_token_form),
             )
             .route(
                 "/admin/tenants/{id}/collections",
