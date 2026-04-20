@@ -1,26 +1,59 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Drust — Login</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 24rem; margin: 4rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.2rem; }
-    label { display: block; margin: 0.75rem 0 0.25rem; }
-    input { width: 100%; padding: 0.4rem; box-sizing: border-box; }
-    button { margin-top: 1rem; padding: 0.5rem 1rem; }
-    .err { color: #b00; margin-top: 0.75rem; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust — sign in</title>
+{% include "_styles.html" %}
 </head>
-<body>
-  <h1>Drust — Sign in</h1>
-  {% if let Some(err) = error %}
-  <p class="err">{{ err }}</p>
-  {% endif %}
-  <form method="post" action="/drust/login">
-    <label>Username <input name="username" required autofocus></label>
-    <label>Password <input name="password" type="password" required></label>
-    <button type="submit">Sign in</button>
-  </form>
+<body style="padding:0;">
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-head">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span class="title">drust — sign in</span>
+    </div>
+    <div class="auth-body">
+      <div class="brand">
+        <span class="logo">drust</span>
+        <span class="tag">multi-tenant sqlite baas</span>
+      </div>
+      <h1>Sign in to continue</h1>
+      <div class="sub">internal tool · 慈濟基金會</div>
+
+      {% if let Some(err) = error %}
+      <div style="margin-bottom:14px;">
+        <div class="alert error">
+          <div class="icon">✕</div>
+          <div class="msg">{{ err }}</div>
+          <span></span>
+        </div>
+      </div>
+      {% endif %}
+
+      <form method="post" action="/drust/login">
+        <div class="field">
+          <label>username</label>
+          <div class="input-prefix">
+            <span class="prefix">@</span>
+            <input class="input" name="username" placeholder="admin" required autofocus autocomplete="off">
+          </div>
+        </div>
+        <div class="field">
+          <label>password</label>
+          <input class="input" type="password" name="password" placeholder="••••••••••••" required autocomplete="off">
+        </div>
+        <div class="submit-row">
+          <span class="hint">press <span class="kbd-key">↵</span> to sign in</span>
+          <button class="btn btn-primary" type="submit">Sign in →</button>
+        </div>
+      </form>
+    </div>
+    <div class="auth-foot">
+      <span>drust v0.1.0</span>
+      <span>forgot password? ask admin</span>
+    </div>
+  </div>
+</div>
 </body>
 </html>
