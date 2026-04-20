@@ -1,6 +1,6 @@
 use crate::query::authorizer::attach_readonly_authorizer;
 use crate::query::executor::execute_read_query;
-use crate::query::filter::{build_count_sql, build_list_sql, parse_sort, ListParams, SortDir};
+use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{collection_exists, describe_collection};
 use crate::tenant::events::{Event, EventBus};
 use crate::tenant::router::TenantRef;
@@ -87,7 +87,11 @@ pub async fn list_handler(
         .await
         .unwrap_or(false);
     if !exists {
-        return json_error(StatusCode::NOT_FOUND, "UNKNOWN_COLLECTION", "no such collection");
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "UNKNOWN_COLLECTION",
+            "no such collection",
+        );
     }
     let (sort_field, sort_dir) = match qs.sort.as_deref() {
         Some(s) => parse_sort(s),
@@ -106,14 +110,19 @@ pub async fn list_handler(
         let sql = list_sql.clone();
         pool.with_reader(move |c| {
             attach_readonly_authorizer(c);
-            execute_read_query(c, &sql, 500, 32_768)
-                .map_err(|_e| rusqlite::Error::InvalidQuery)
+            execute_read_query(c, &sql, 500, 32_768).map_err(|_e| rusqlite::Error::InvalidQuery)
         })
         .await
     };
     let records = match records_res {
         Ok(qr) => qr,
-        Err(_) => return json_error(StatusCode::BAD_REQUEST, "QUERY_FORBIDDEN", "filter rejected"),
+        Err(_) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "QUERY_FORBIDDEN",
+                "filter rejected",
+            );
+        }
     };
     let total = {
         let sql = count_sql.clone();
@@ -191,7 +200,13 @@ pub async fn create_handler(
 ) -> Response {
     let data = match body.data.as_object() {
         Some(o) => o.clone(),
-        None => return json_error(StatusCode::BAD_REQUEST, "TYPE_MISMATCH", "data must be object"),
+        None => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "TYPE_MISMATCH",
+                "data must be object",
+            );
+        }
     };
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
@@ -237,15 +252,20 @@ pub async fn create_handler(
                 "SELECT * FROM \"{}\" WHERE id = ?1",
                 coll_clone.replace('"', "\"\"")
             ))?;
-            let cols_out: Vec<String> =
-                stmt.column_names().iter().map(|s| s.to_string()).collect();
+            let cols_out: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
             let rec = record_as_json(&mut stmt, &cols_out, id)?;
             Ok((id, rec))
         })
         .await;
     match res {
         Ok((id, rec)) => {
-            bus.publish(&tenant_id, &coll, Event::Created { record: rec.clone() });
+            bus.publish(
+                &tenant_id,
+                &coll,
+                Event::Created {
+                    record: rec.clone(),
+                },
+            );
             let mut r = Json(json!({ "id": id, "record": rec })).into_response();
             *r.status_mut() = StatusCode::CREATED;
             r
@@ -273,7 +293,13 @@ pub async fn update_handler(
 ) -> Response {
     let data = match body.data.as_object() {
         Some(o) => o.clone(),
-        None => return json_error(StatusCode::BAD_REQUEST, "TYPE_MISMATCH", "data must be object"),
+        None => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "TYPE_MISMATCH",
+                "data must be object",
+            );
+        }
     };
     if data.is_empty() {
         return json_error(
@@ -321,15 +347,20 @@ pub async fn update_handler(
                 "SELECT * FROM \"{}\" WHERE id = ?1",
                 coll_clone.replace('"', "\"\"")
             ))?;
-            let cols_out: Vec<String> =
-                stmt.column_names().iter().map(|s| s.to_string()).collect();
+            let cols_out: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
             let rec = record_as_json(&mut stmt, &cols_out, id)?;
             Ok(rec)
         })
         .await;
     match res {
         Ok(rec) => {
-            bus.publish(&tenant_id, &coll, Event::Updated { record: rec.clone() });
+            bus.publish(
+                &tenant_id,
+                &coll,
+                Event::Updated {
+                    record: rec.clone(),
+                },
+            );
             Json(json!({ "record": rec })).into_response()
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => {

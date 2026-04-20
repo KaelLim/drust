@@ -27,7 +27,10 @@ fn read_record(
     coll: &str,
     id: i64,
 ) -> rusqlite::Result<serde_json::Value> {
-    let sql = format!("SELECT * FROM \"{}\" WHERE id = ?1", coll.replace('"', "\"\""));
+    let sql = format!(
+        "SELECT * FROM \"{}\" WHERE id = ?1",
+        coll.replace('"', "\"\"")
+    );
     let mut stmt = c.prepare(&sql)?;
     let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     stmt.query_row(rusqlite::params![id], |r| {
@@ -73,10 +76,12 @@ pub async fn insert_record(
                 }
             }
             let cols: Vec<&str> = data_map.keys().map(|k| k.as_str()).collect();
-            let placeholders: Vec<String> =
-                (1..=cols.len()).map(|i| format!("?{i}")).collect();
+            let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
             let sql = if cols.is_empty() {
-                format!("INSERT INTO \"{}\" DEFAULT VALUES", coll.replace('"', "\"\""))
+                format!(
+                    "INSERT INTO \"{}\" DEFAULT VALUES",
+                    coll.replace('"', "\"\"")
+                )
             } else {
                 format!(
                     "INSERT INTO \"{}\" ({}) VALUES ({})",
@@ -97,7 +102,13 @@ pub async fn insert_record(
             Ok((id, rec))
         })
         .await?;
-    bus.publish(&tenant, collection, Event::Created { record: record.clone() });
+    bus.publish(
+        &tenant,
+        collection,
+        Event::Created {
+            record: record.clone(),
+        },
+    );
     Ok(json!({ "id": id, "record": record }))
 }
 
@@ -131,9 +142,7 @@ pub async fn update_record(
             let set_exprs: Vec<String> = data_map
                 .keys()
                 .enumerate()
-                .map(|(i, k)| {
-                    format!("\"{}\" = ?{}", k.replace('"', "\"\""), i + 1)
-                })
+                .map(|(i, k)| format!("\"{}\" = ?{}", k.replace('"', "\"\""), i + 1))
                 .collect();
             let sql = format!(
                 "UPDATE \"{}\" SET {}, updated_at = datetime('now') WHERE id = ?{}",
@@ -152,7 +161,13 @@ pub async fn update_record(
             read_record(c, &coll, id)
         })
         .await?;
-    bus.publish(&tenant, collection, Event::Updated { record: record.clone() });
+    bus.publish(
+        &tenant,
+        collection,
+        Event::Updated {
+            record: record.clone(),
+        },
+    );
     Ok(json!({ "record": record }))
 }
 
@@ -167,8 +182,10 @@ pub async fn delete_record(
     let bus = s.inner().bus.clone();
     let n = pool
         .with_writer(move |c| {
-            let sql =
-                format!("DELETE FROM \"{}\" WHERE id = ?1", coll.replace('"', "\"\""));
+            let sql = format!(
+                "DELETE FROM \"{}\" WHERE id = ?1",
+                coll.replace('"', "\"\"")
+            );
             c.execute(&sql, rusqlite::params![id])
         })
         .await?;

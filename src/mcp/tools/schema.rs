@@ -55,7 +55,11 @@ fn column_expr(f: &FieldSpec) -> anyhow::Result<String> {
         let lit = match d {
             serde_json::Value::Null => "NULL".into(),
             serde_json::Value::Bool(b) => {
-                if *b { "1".into() } else { "0".into() }
+                if *b {
+                    "1".into()
+                } else {
+                    "0".into()
+                }
             }
             serde_json::Value::Number(n) => n.to_string(),
             serde_json::Value::String(x) => format!("'{}'", x.replace('\'', "''")),

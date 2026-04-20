@@ -34,6 +34,9 @@ fn all_codes_round_trip() {
     ] {
         let e = ToolError::new(code, "x");
         let s = serde_json::to_string(&e).unwrap();
-        assert!(s.contains(&format!("\"{}\"", serde_json::to_string(&code).unwrap().trim_matches('"'))));
+        assert!(s.contains(&format!(
+            "\"{}\"",
+            serde_json::to_string(&code).unwrap().trim_matches('"')
+        )));
     }
 }

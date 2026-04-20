@@ -1,6 +1,8 @@
 mod helpers;
 use drust::mcp::server::McpRegistry;
-use drust::mcp::tools::exploration::{count_rows, describe_collection, list_collections, sample_rows};
+use drust::mcp::tools::exploration::{
+    count_rows, describe_collection, list_collections, sample_rows,
+};
 use drust::storage::pool::TenantRegistry;
 use helpers::seed_tenant_fs;
 use std::sync::Arc;
@@ -43,7 +45,13 @@ async fn describe() {
     let s = svc(&d).await;
     let v = describe_collection(&s, "posts").await.unwrap();
     assert_eq!(v["name"], "posts");
-    assert!(v["fields"].as_array().unwrap().iter().any(|f| f["name"] == "title"));
+    assert!(
+        v["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["name"] == "title")
+    );
 }
 
 #[tokio::test]

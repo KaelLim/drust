@@ -72,7 +72,9 @@ pub fn valid_slug(s: &str) -> bool {
     if !is_lead(first) || !is_lead(last) {
         return false;
     }
-    bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
 pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
@@ -81,13 +83,26 @@ pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
         .prepare("SELECT id, name, created_at FROM tenants WHERE deleted_at IS NULL ORDER BY id")
         .unwrap();
     let rows: Vec<TenantRow> = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
         .unwrap()
         .filter_map(Result::ok)
         .map(|(id, name, created_at)| {
             let db_path = tenant_dir(&state.data_dir, &id).join("data.sqlite");
-            let db_size_kb = std::fs::metadata(&db_path).map(|m| m.len() / 1024).unwrap_or(0);
-            TenantRow { id, name, created_at, db_size_kb }
+            let db_size_kb = std::fs::metadata(&db_path)
+                .map(|m| m.len() / 1024)
+                .unwrap_or(0);
+            TenantRow {
+                id,
+                name,
+                created_at,
+                db_size_kb,
+            }
         })
         .collect();
     Html(TenantsListPage { tenants: rows }.render().unwrap()).into_response()
@@ -162,7 +177,14 @@ pub async fn create_tenant_form(
     Form(form): Form<CreateTenantForm>,
 ) -> Response {
     let mut conn = state.session.meta.lock().await;
-    match make_tenant_inner(&mut conn, &state.data_dir, &form.id, &form.name, 500, 1_000_000) {
+    match make_tenant_inner(
+        &mut conn,
+        &state.data_dir,
+        &form.id,
+        &form.name,
+        500,
+        1_000_000,
+    ) {
         Ok(_) => Redirect::to("/admin/tenants").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }

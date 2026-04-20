@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use drust::auth::session::create_session;
 use drust::mgmt::routes::MgmtState;
 use drust::storage::meta::{bootstrap_admin, open_meta};
@@ -33,7 +33,9 @@ async fn create_tenant_returns_initial_token() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["tenant"]["id"], "blog");
     assert!(v["initial_token"].as_str().unwrap().starts_with("drust_"));

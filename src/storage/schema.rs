@@ -51,12 +51,18 @@ pub fn list_collections(conn: &Connection) -> rusqlite::Result<Vec<Collection>> 
     let mut out = Vec::with_capacity(names.len());
     for name in names {
         let count = row_count(conn, &name)?;
-        out.push(Collection { name, row_count: count });
+        out.push(Collection {
+            name,
+            row_count: count,
+        });
     }
     Ok(out)
 }
 
-pub fn describe_collection(conn: &Connection, name: &str) -> rusqlite::Result<Option<CollectionSchema>> {
+pub fn describe_collection(
+    conn: &Connection,
+    name: &str,
+) -> rusqlite::Result<Option<CollectionSchema>> {
     let exists: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
         rusqlite::params![name],
@@ -67,7 +73,10 @@ pub fn describe_collection(conn: &Connection, name: &str) -> rusqlite::Result<Op
     }
 
     let fields = conn
-        .prepare(&format!("PRAGMA table_info(\"{}\")", name.replace('"', "\"\"")))?
+        .prepare(&format!(
+            "PRAGMA table_info(\"{}\")",
+            name.replace('"', "\"\"")
+        ))?
         .query_map([], |r| {
             let nullable_int: i64 = r.get(3)?;
             let pk_int: i64 = r.get(5)?;
@@ -83,7 +92,10 @@ pub fn describe_collection(conn: &Connection, name: &str) -> rusqlite::Result<Op
 
     let mut indices = Vec::new();
     let idx_rows: Vec<(String, bool)> = conn
-        .prepare(&format!("PRAGMA index_list(\"{}\")", name.replace('"', "\"\"")))?
+        .prepare(&format!(
+            "PRAGMA index_list(\"{}\")",
+            name.replace('"', "\"\"")
+        ))?
         .query_map([], |r| {
             let unique_int: i64 = r.get(2)?;
             Ok((r.get::<_, String>(1)?, unique_int == 1))
@@ -94,14 +106,26 @@ pub fn describe_collection(conn: &Connection, name: &str) -> rusqlite::Result<Op
             continue;
         }
         let fields: Vec<String> = conn
-            .prepare(&format!("PRAGMA index_info(\"{}\")", iname.replace('"', "\"\"")))?
+            .prepare(&format!(
+                "PRAGMA index_info(\"{}\")",
+                iname.replace('"', "\"\"")
+            ))?
             .query_map([], |r| r.get::<_, String>(2))?
             .collect::<Result<Vec<_>, _>>()?;
-        indices.push(IndexInfo { name: iname, fields, unique });
+        indices.push(IndexInfo {
+            name: iname,
+            fields,
+            unique,
+        });
     }
 
     let rc = row_count(conn, name)?;
-    Ok(Some(CollectionSchema { name: name.to_string(), fields, indices, row_count: rc }))
+    Ok(Some(CollectionSchema {
+        name: name.to_string(),
+        fields,
+        indices,
+        row_count: rc,
+    }))
 }
 
 pub fn collection_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {

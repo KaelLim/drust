@@ -33,5 +33,8 @@ async fn explain_returns_plan_string() {
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;
     let v = explain(&s, "SELECT id FROM k", false).await.unwrap();
-    assert!(v["plan"].as_str().unwrap().contains("SCAN") || v["plan"].as_str().unwrap().contains("USING"));
+    assert!(
+        v["plan"].as_str().unwrap().contains("SCAN")
+            || v["plan"].as_str().unwrap().contains("USING")
+    );
 }

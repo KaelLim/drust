@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use drust::auth::session::create_session;
 use drust::mgmt::routes::MgmtState;
 use drust::storage::meta::{bootstrap_admin, open_meta};
@@ -15,12 +15,12 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
     let tok = create_session(&mut conn, 1, 3600).unwrap();
     // Pre-create a tenant to issue tokens against.
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES ('blog', 'b')",
-        [],
-    )
-    .unwrap();
-    let state = MgmtState { meta: Arc::new(Mutex::new(conn)), session_ttl_days: 7 };
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('blog', 'b')", [])
+        .unwrap();
+    let state = MgmtState {
+        meta: Arc::new(Mutex::new(conn)),
+        session_ttl_days: 7,
+    };
     (state.with_data_dir(data.clone()), tok, dir)
 }
 
@@ -36,7 +36,9 @@ async fn issue_token_returns_plaintext_once() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(v["token"].as_str().unwrap().starts_with("drust_"));
     assert_eq!(v["label"], "prod");

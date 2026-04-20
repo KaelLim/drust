@@ -1,8 +1,8 @@
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use axum::routing::get;
 use axum::Router;
-use drust::auth::middleware::{admin_session_layer, AdminSessionState};
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use axum::routing::get;
+use drust::auth::middleware::{AdminSessionState, admin_session_layer};
 use drust::auth::session::create_session;
 use drust::storage::meta::{bootstrap_admin, open_meta};
 use std::sync::Arc;
@@ -15,10 +15,15 @@ async fn test_app() -> (Router, String) {
     let mut conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
     let token = create_session(&mut conn, 1, 3600).unwrap();
-    let state = AdminSessionState { meta: Arc::new(Mutex::new(conn)) };
+    let state = AdminSessionState {
+        meta: Arc::new(Mutex::new(conn)),
+    };
     let app = Router::new()
         .route("/protected", get(|| async { "ok" }))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), admin_session_layer))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            admin_session_layer,
+        ))
         .with_state(state);
     // Leak dir handle to keep it alive
     std::mem::forget(dir);
@@ -29,7 +34,12 @@ async fn test_app() -> (Router, String) {
 async fn redirects_without_cookie() {
     let (app, _t) = test_app().await;
     let resp = app
-        .oneshot(Request::builder().uri("/protected").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/protected")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);

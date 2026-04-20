@@ -1,4 +1,4 @@
-use drust::query::filter::{build_list_sql, ListParams, SortDir};
+use drust::query::filter::{ListParams, SortDir, build_list_sql};
 
 #[test]
 fn default_no_filter() {
@@ -24,21 +24,33 @@ fn with_filter() {
 
 #[test]
 fn with_sort_asc() {
-    let p = ListParams { sort_field: "views".into(), sort_dir: SortDir::Asc, ..ListParams::default() };
+    let p = ListParams {
+        sort_field: "views".into(),
+        sort_dir: SortDir::Asc,
+        ..ListParams::default()
+    };
     let sql = build_list_sql("posts", &p);
     assert!(sql.contains("ORDER BY \"views\" ASC"));
 }
 
 #[test]
 fn page_offset() {
-    let p = ListParams { page: 3, per_page: 10, ..ListParams::default() };
+    let p = ListParams {
+        page: 3,
+        per_page: 10,
+        ..ListParams::default()
+    };
     let sql = build_list_sql("posts", &p);
     assert!(sql.ends_with("LIMIT 10 OFFSET 20"));
 }
 
 #[test]
 fn per_page_caps_at_500() {
-    let p = ListParams { page: 1, per_page: 10_000, ..ListParams::default() };
+    let p = ListParams {
+        page: 1,
+        per_page: 10_000,
+        ..ListParams::default()
+    };
     let sql = build_list_sql("posts", &p);
     assert!(sql.contains("LIMIT 500"));
 }

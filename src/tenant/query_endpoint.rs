@@ -1,5 +1,5 @@
 use crate::query::authorizer::attach_readonly_authorizer;
-use crate::query::executor::{execute_read_query, ExecError};
+use crate::query::executor::{ExecError, execute_read_query};
 use crate::tenant::router::TenantRef;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
