@@ -17,6 +17,7 @@ use serde::Deserialize;
 struct CollectionsPage {
     tenant_id: String,
     collections: Vec<Collection>,
+    version: &'static str,
 }
 
 #[derive(Template)]
@@ -37,6 +38,7 @@ struct RowsPage {
     sort_options: Vec<SortOption>,
     per_page_options: Vec<PerPageOption>,
     error: Option<String>,
+    version: &'static str,
 }
 
 struct SortOption {
@@ -94,6 +96,7 @@ pub async fn collections_page(
         CollectionsPage {
             tenant_id,
             collections,
+            version: env!("CARGO_PKG_VERSION"),
         }
         .render()
         .unwrap(),
@@ -298,6 +301,7 @@ pub async fn collection_rows_page(
             sort_options,
             per_page_options,
             error,
+            version: env!("CARGO_PKG_VERSION"),
         }
         .render()
         .unwrap(),

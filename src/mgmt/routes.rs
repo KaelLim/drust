@@ -22,6 +22,7 @@ pub struct MgmtState {
 #[template(path = "login.html")]
 struct LoginPage {
     error: Option<String>,
+    version: &'static str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,7 +32,14 @@ struct LoginForm {
 }
 
 async fn login_page() -> Html<String> {
-    Html(LoginPage { error: None }.render().unwrap())
+    Html(
+        LoginPage {
+            error: None,
+            version: env!("CARGO_PKG_VERSION"),
+        }
+        .render()
+        .unwrap(),
+    )
 }
 
 async fn login_submit(State(state): State<MgmtState>, Form(form): Form<LoginForm>) -> Response {
@@ -86,6 +94,7 @@ async fn root_redirect() -> Redirect {
 fn unauthorized(msg: &str) -> Response {
     let body = LoginPage {
         error: Some(msg.to_string()),
+        version: env!("CARGO_PKG_VERSION"),
     }
     .render()
     .unwrap();

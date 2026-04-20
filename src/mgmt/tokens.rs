@@ -15,6 +15,7 @@ struct DetailPage {
     created_at: String,
     tokens: Vec<TokenRow>,
     new_token: Option<String>,
+    version: &'static str,
 }
 
 struct TokenRow {
@@ -184,6 +185,7 @@ pub async fn detail_page(
             created_at: created,
             tokens,
             new_token: qs.new_token,
+            version: env!("CARGO_PKG_VERSION"),
         }
         .render()
         .unwrap(),

@@ -21,6 +21,7 @@ pub struct TenantsState {
 #[template(path = "tenants_list.html")]
 struct TenantsListPage {
     tenants: Vec<TenantRow>,
+    version: &'static str,
 }
 
 struct TenantRow {
@@ -105,7 +106,15 @@ pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
             }
         })
         .collect();
-    Html(TenantsListPage { tenants: rows }.render().unwrap()).into_response()
+    Html(
+        TenantsListPage {
+            tenants: rows,
+            version: env!("CARGO_PKG_VERSION"),
+        }
+        .render()
+        .unwrap(),
+    )
+    .into_response()
 }
 
 fn make_tenant_inner(
