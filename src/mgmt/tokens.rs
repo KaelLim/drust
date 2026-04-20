@@ -121,7 +121,7 @@ pub async fn issue_token_form(
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let tok = v["token"].as_str().unwrap_or("");
     let url = format!(
-        "/admin/tenants/{}?new_token={}",
+        "/drust/admin/tenants/{}?new_token={}",
         tenant_id,
         urlencoding::encode(tok)
     );
@@ -133,7 +133,7 @@ pub async fn revoke_token_form(
     Path((tenant_id, token_id)): Path<(String, i64)>,
 ) -> Response {
     let _ = revoke_token(State(state), Path((tenant_id.clone(), token_id))).await;
-    Redirect::to(&format!("/admin/tenants/{tenant_id}")).into_response()
+    Redirect::to(&format!("/drust/admin/tenants/{tenant_id}")).into_response()
 }
 
 #[derive(Debug, Deserialize)]

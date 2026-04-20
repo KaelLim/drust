@@ -57,7 +57,7 @@ async fn login_submit(State(state): State<MgmtState>, Form(form): Form<LoginForm
     };
     drop(conn);
     let cookie = build_session_cookie(&token, state.session_ttl_days * 86_400);
-    let mut resp = Redirect::to("/admin/tenants").into_response();
+    let mut resp = Redirect::to("/drust/admin/tenants").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
     resp
@@ -73,14 +73,14 @@ async fn logout_submit(State(state): State<MgmtState>, headers: axum::http::Head
         let mut conn = state.meta.lock().await;
         let _ = revoke_session(&mut conn, &tok);
     }
-    let mut resp = Redirect::to("/login").into_response();
+    let mut resp = Redirect::to("/drust/login").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, clear_session_cookie().parse().unwrap());
     resp
 }
 
 async fn root_redirect() -> Redirect {
-    Redirect::to("/admin/tenants")
+    Redirect::to("/drust/admin/tenants")
 }
 
 fn unauthorized(msg: &str) -> Response {

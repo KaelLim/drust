@@ -185,7 +185,7 @@ pub async fn create_tenant_form(
         500,
         1_000_000,
     ) {
-        Ok(_) => Redirect::to("/admin/tenants").into_response(),
+        Ok(_) => Redirect::to("/drust/admin/tenants").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
@@ -221,5 +221,5 @@ pub async fn soft_delete_tenant_form(
     Path(id): Path<String>,
 ) -> Response {
     let _ = soft_delete_tenant(State(state), Path(id)).await;
-    Redirect::to("/admin/tenants").into_response()
+    Redirect::to("/drust/admin/tenants").into_response()
 }
