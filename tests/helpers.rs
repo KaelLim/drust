@@ -38,3 +38,15 @@ pub async fn grab_pool(tenant: &str, dir: &tempfile::TempDir) -> SharedTenantPoo
     let reg = TenantRegistry::new(dir.path().to_path_buf(), 2);
     reg.get_or_open(tenant).unwrap()
 }
+
+pub fn seed_tenant_fs(dir: &tempfile::TempDir, tenant: &str) {
+    use drust::storage::meta::open_meta;
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+}
