@@ -9,10 +9,46 @@ a{color:#36c;text-decoration:none;} a:hover{text-decoration:underline;}
 .meta{color:#888;font-size:.9rem;}
 .rows td{white-space:nowrap;max-width:20rem;overflow:hidden;text-overflow:ellipsis;}
 .null{color:#bbb;font-style:italic;}
+.toolbar{background:#fafafa;border:1px solid #e6e6e6;padding:.6rem .8rem;border-radius:.25rem;margin-top:1rem;}
+.toolbar label{margin-right:1rem;font-size:.85rem;color:#555;}
+.toolbar input[type=text]{width:24rem;padding:.25rem .4rem;}
+.toolbar select,.toolbar button{padding:.25rem .5rem;}
+.err{color:#b00;background:#fee;border:1px solid #fbb;padding:.4rem .6rem;margin:.5rem 0;border-radius:.25rem;font-size:.9rem;}
+.pager{margin:.75rem 0;font-size:.9rem;}
+.pager a{padding:.2rem .5rem;border:1px solid #ddd;border-radius:.2rem;margin:0 .15rem;}
+.pager span{padding:.2rem .5rem;color:#888;}
 </style></head><body>
 <p><a href="/drust/admin/tenants/{{ tenant_id }}/collections">← all collections</a></p>
 <h1>{{ tenant_id }} / {{ coll_name }}</h1>
-<p class="meta">{{ total_rows }} total rows · showing {{ shown_rows }}</p>
+
+<form method="get" class="toolbar">
+  <label>Filter (SQL WHERE)
+    <input type="text" name="filter" value="{{ filter_val }}" placeholder="e.g. views&gt;10 AND published=1">
+  </label>
+  <label>Sort
+    <select name="sort">
+      <option value="">— default (id desc) —</option>
+      {% for opt in sort_options %}
+      <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Per page
+    <select name="per_page">
+      {% for opt in per_page_options %}
+      <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Apply</button>
+  <a href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}" style="margin-left:.5rem;">Reset</a>
+</form>
+
+{% if let Some(err) = error %}
+<p class="err">{{ err }}</p>
+{% endif %}
+
+<p class="meta">{{ total_rows }} total rows · page {{ page }} / {{ total_pages }}</p>
 
 <h2>Schema</h2>
 <table>
@@ -30,9 +66,15 @@ a{color:#36c;text-decoration:none;} a:hover{text-decoration:underline;}
   </tbody>
 </table>
 
-<h2>Records (latest 100 by id desc)</h2>
+<h2>Records</h2>
+<div class="pager">
+  {% if let Some(url) = prev_url %}<a href="{{ url }}">← prev</a>{% else %}<span>← prev</span>{% endif %}
+  <span>page {{ page }} / {{ total_pages }}</span>
+  {% if let Some(url) = next_url %}<a href="{{ url }}">next →</a>{% else %}<span>next →</span>{% endif %}
+</div>
+
 {% if rows.is_empty() %}
-<p class="meta">（沒有資料）</p>
+<p class="meta">（沒有資料{% if !filter_val.is_empty() %} — 可能是 filter 沒對應到任何 row{% endif %}）</p>
 {% else %}
 <table class="rows">
   <thead><tr>{% for col in column_names %}<th>{{ col }}</th>{% endfor %}</tr></thead>
@@ -47,4 +89,10 @@ a{color:#36c;text-decoration:none;} a:hover{text-decoration:underline;}
   </tbody>
 </table>
 {% endif %}
+
+<div class="pager">
+  {% if let Some(url) = prev_url %}<a href="{{ url }}">← prev</a>{% else %}<span>← prev</span>{% endif %}
+  <span>page {{ page }} / {{ total_pages }}</span>
+  {% if let Some(url) = next_url %}<a href="{{ url }}">next →</a>{% else %}<span>next →</span>{% endif %}
+</div>
 </body></html>
