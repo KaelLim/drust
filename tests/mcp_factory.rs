@@ -1,4 +1,4 @@
-use drust::mcp::server::{DrustMcp, McpRegistry};
+use drust::mcp::server::McpRegistry;
 use drust::storage::pool::TenantRegistry;
 use drust::storage::tenant_db::open_write;
 use std::sync::Arc;
