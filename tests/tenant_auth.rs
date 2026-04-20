@@ -14,7 +14,7 @@ use tower::ServiceExt;
 async fn app() -> (Router, String, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let data = dir.path().to_path_buf();
-    let mut conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
     conn.execute(
         "INSERT INTO tenants (id, name) VALUES ('blog', 'b')",
         [],
