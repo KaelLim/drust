@@ -1,10 +1,16 @@
 use crate::mgmt::tenants::TenantsState;
-use crate::storage::schema::{Collection, CollectionSchema, Field, describe_collection, list_collections};
+use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
+use crate::query::executor::execute_read_query;
+use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
+use crate::storage::schema::{
+    Collection, CollectionSchema, Field, describe_collection, list_collections,
+};
 use crate::storage::tenant_db::open_read;
 use askama::Template;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
+use serde::Deserialize;
 
 #[derive(Template)]
 #[template(path = "collections.html")]
@@ -22,7 +28,38 @@ struct RowsPage {
     column_names: Vec<String>,
     rows: Vec<Vec<String>>,
     total_rows: i64,
-    shown_rows: usize,
+    page: u32,
+    per_page: u32,
+    total_pages: u32,
+    prev_url: Option<String>,
+    next_url: Option<String>,
+    filter_val: String,
+    sort_options: Vec<SortOption>,
+    per_page_options: Vec<PerPageOption>,
+    error: Option<String>,
+}
+
+struct SortOption {
+    value: String,
+    label: String,
+    selected: bool,
+}
+
+struct PerPageOption {
+    value: u32,
+    selected: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct BrowseQs {
+    #[serde(default)]
+    pub filter: Option<String>,
+    #[serde(default)]
+    pub sort: Option<String>,
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub per_page: Option<u32>,
 }
 
 fn tenant_active(conn: &rusqlite::Connection, tenant_id: &str) -> bool {
@@ -53,7 +90,15 @@ pub async fn collections_page(
         Ok(v) => v,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    Html(CollectionsPage { tenant_id, collections }.render().unwrap()).into_response()
+    Html(
+        CollectionsPage {
+            tenant_id,
+            collections,
+        }
+        .render()
+        .unwrap(),
+    )
+    .into_response()
 }
 
 fn value_to_display(v: rusqlite::types::ValueRef<'_>) -> String {
@@ -66,9 +111,31 @@ fn value_to_display(v: rusqlite::types::ValueRef<'_>) -> String {
     }
 }
 
+fn build_page_url(
+    tenant: &str,
+    coll: &str,
+    page: u32,
+    per_page: u32,
+    filter: &str,
+    sort: &str,
+) -> String {
+    let mut parts: Vec<String> = vec![format!("page={page}"), format!("per_page={per_page}")];
+    if !filter.is_empty() {
+        parts.push(format!("filter={}", urlencoding::encode(filter)));
+    }
+    if !sort.is_empty() {
+        parts.push(format!("sort={}", urlencoding::encode(sort)));
+    }
+    format!(
+        "/drust/admin/tenants/{tenant}/collections/{coll}?{}",
+        parts.join("&")
+    )
+}
+
 pub async fn collection_rows_page(
     State(state): State<TenantsState>,
     Path((tenant_id, coll_name)): Path<(String, String)>,
+    Query(qs): Query<BrowseQs>,
 ) -> Response {
     let meta = state.session.meta.lock().await;
     if !tenant_active(&meta, &tenant_id) {
@@ -87,25 +154,132 @@ pub async fn collection_rows_page(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    let quoted = format!("\"{}\"", coll_name.replace('"', "\"\""));
-    let sql = format!("SELECT * FROM {quoted} ORDER BY id DESC LIMIT 100");
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-    let col_count = column_names.len();
+    let filter_val = qs.filter.clone().unwrap_or_default();
+    let sort_val = qs.sort.clone().unwrap_or_default();
+    let per_page = qs.per_page.unwrap_or(20).clamp(1, 500);
+    let page = qs.page.unwrap_or(1).max(1);
 
-    let rows: Vec<Vec<String>> = match stmt.query_map([], |r| {
-        let mut out = Vec::with_capacity(col_count);
-        for i in 0..col_count {
-            out.push(value_to_display(r.get_ref(i)?));
-        }
-        Ok(out)
-    }) {
-        Ok(iter) => iter.filter_map(Result::ok).collect(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    let (sort_field, sort_dir) = if sort_val.is_empty() {
+        ("id".to_string(), SortDir::Desc)
+    } else {
+        parse_sort(&sort_val)
     };
+    let params = ListParams {
+        filter: if filter_val.is_empty() {
+            None
+        } else {
+            Some(filter_val.clone())
+        },
+        sort_field,
+        sort_dir,
+        page,
+        per_page,
+    };
+
+    let list_sql = build_list_sql(&coll_name, &params);
+    let count_sql = build_count_sql(
+        &coll_name,
+        if filter_val.is_empty() {
+            None
+        } else {
+            Some(filter_val.as_str())
+        },
+    );
+
+    let mut error: Option<String> = None;
+
+    let rows_result = execute_read_query(&conn, &list_sql, per_page as usize, 32_768);
+    let (column_names, rows): (Vec<String>, Vec<Vec<String>>) = match rows_result {
+        Ok(qr) => {
+            let cols = qr.column_names.clone();
+            let stringified: Vec<Vec<String>> = qr
+                .rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|v| match v {
+                            serde_json::Value::Null => "NULL".to_string(),
+                            serde_json::Value::String(s) => s,
+                            other => other.to_string(),
+                        })
+                        .collect()
+                })
+                .collect();
+            (cols, stringified)
+        }
+        Err(e) => {
+            error = Some(format!(
+                "filter/sort 解析失敗：{}（常見原因：欄位名打錯、引號沒配、SQL 片段被 authorizer 擋）",
+                e
+            ));
+            (
+                schema.fields.iter().map(|f| f.name.clone()).collect(),
+                vec![],
+            )
+        }
+    };
+
+    // Count uses raw query_row with scoped authorizer
+    let total: i64 = {
+        attach_readonly_authorizer(&conn);
+        let r = conn
+            .query_row(&count_sql, [], |r| r.get::<_, i64>(0))
+            .unwrap_or(schema.row_count);
+        detach_authorizer(&conn);
+        r
+    };
+
+    let total_pages = if total == 0 {
+        1
+    } else {
+        ((total as u64 + per_page as u64 - 1) / per_page as u64) as u32
+    };
+    let prev_url = if page > 1 {
+        Some(build_page_url(
+            &tenant_id,
+            &coll_name,
+            page - 1,
+            per_page,
+            &filter_val,
+            &sort_val,
+        ))
+    } else {
+        None
+    };
+    let next_url = if page < total_pages {
+        Some(build_page_url(
+            &tenant_id,
+            &coll_name,
+            page + 1,
+            per_page,
+            &filter_val,
+            &sort_val,
+        ))
+    } else {
+        None
+    };
+
+    let mut sort_options: Vec<SortOption> = Vec::with_capacity(schema.fields.len() * 2);
+    for f in &schema.fields {
+        let desc_value = format!("-{}", f.name);
+        sort_options.push(SortOption {
+            value: f.name.clone(),
+            label: format!("{} ↑", f.name),
+            selected: sort_val == f.name,
+        });
+        sort_options.push(SortOption {
+            value: desc_value.clone(),
+            label: format!("{} ↓", f.name),
+            selected: sort_val == desc_value,
+        });
+    }
+    let per_page_options: Vec<PerPageOption> = [20u32, 50, 100, 200, 500]
+        .into_iter()
+        .map(|v| PerPageOption {
+            value: v,
+            selected: v == per_page,
+        })
+        .collect();
 
     Html(
         RowsPage {
@@ -113,9 +287,17 @@ pub async fn collection_rows_page(
             coll_name,
             fields: schema.fields,
             column_names,
-            rows: rows.clone(),
-            total_rows: schema.row_count,
-            shown_rows: rows.len(),
+            rows,
+            total_rows: total,
+            page,
+            per_page,
+            total_pages,
+            prev_url,
+            next_url,
+            filter_val,
+            sort_options,
+            per_page_options,
+            error,
         }
         .render()
         .unwrap(),
