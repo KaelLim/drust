@@ -69,7 +69,26 @@ pub fn open_meta(path: &Path) -> anyhow::Result<Connection> {
     )?;
     apply_pragmas(&conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
+    apply_migrations(&conn)?;
     Ok(conn)
+}
+
+/// Idempotent per-column migrations. Each migration tolerates the "duplicate
+/// column" error so repeated startups on the same DB are safe.
+fn apply_migrations(conn: &Connection) -> anyhow::Result<()> {
+    // v1.1a: tokens.role (anon | service)
+    if let Err(e) = conn.execute(
+        "ALTER TABLE tokens \
+         ADD COLUMN role TEXT NOT NULL DEFAULT 'service' \
+         CHECK (role IN ('anon','service'))",
+        [],
+    ) {
+        let msg = e.to_string();
+        if !msg.contains("duplicate column") {
+            return Err(e.into());
+        }
+    }
+    Ok(())
 }
 
 pub fn bootstrap_admin(

@@ -3,7 +3,7 @@ use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{collection_exists, describe_collection};
 use crate::tenant::events::{Event, EventBus};
-use crate::tenant::router::TenantRef;
+use crate::tenant::router::{TenantRef, require_service};
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -199,6 +199,9 @@ pub async fn create_handler(
     Json(body): Json<DataBody>,
     bus: EventBus,
 ) -> Response {
+    if let Err(resp) = require_service(&t) {
+        return resp;
+    }
     let data = match body.data.as_object() {
         Some(o) => o.clone(),
         None => {
@@ -292,6 +295,9 @@ pub async fn update_handler(
     Json(body): Json<DataBody>,
     bus: EventBus,
 ) -> Response {
+    if let Err(resp) = require_service(&t) {
+        return resp;
+    }
     let data = match body.data.as_object() {
         Some(o) => o.clone(),
         None => {
@@ -383,6 +389,9 @@ pub async fn delete_handler(
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
     bus: EventBus,
 ) -> Response {
+    if let Err(resp) = require_service(&t) {
+        return resp;
+    }
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();

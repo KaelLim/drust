@@ -29,6 +29,8 @@ struct TokenRow {
 pub struct IssueBody {
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -36,6 +38,7 @@ pub struct IssueResp {
     pub id: i64,
     pub token: String,
     pub label: Option<String>,
+    pub role: String,
     pub created_at: String,
 }
 
@@ -44,6 +47,21 @@ pub async fn issue_token_json(
     Path(tenant_id): Path<String>,
     Json(body): Json<IssueBody>,
 ) -> Response {
+    // Role defaults to "service" (backward-compatible with v0.1.0 callers).
+    let role = match body.role.as_deref() {
+        None | Some("") | Some("service") => "service",
+        Some("anon") => "anon",
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error_code": "TYPE_MISMATCH",
+                    "message": format!("invalid role '{other}'; expected 'anon' or 'service'")
+                })),
+            )
+                .into_response();
+        }
+    };
     let conn = state.session.meta.lock().await;
     let exists: i64 = conn
         .query_row(
@@ -58,8 +76,8 @@ pub async fn issue_token_json(
     let plaintext = generate_token();
     let hash = hash_token(&plaintext);
     conn.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, label) VALUES (?1, ?2, ?3)",
-        rusqlite::params![tenant_id, hash, body.label],
+        "INSERT INTO tokens (tenant_id, token_hash, label, role) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![tenant_id, hash, body.label, role],
     )
     .unwrap();
     let id = conn.last_insert_rowid();
@@ -76,6 +94,7 @@ pub async fn issue_token_json(
             id,
             token: plaintext,
             label: body.label,
+            role: role.to_string(),
             created_at: created,
         }),
     )
@@ -108,7 +127,10 @@ pub async fn issue_token_form(
     let resp = issue_token_json(
         State(state.clone()),
         Path(tenant_id.clone()),
-        Json(IssueBody { label: form.label }),
+        Json(IssueBody {
+            label: form.label,
+            role: form.role,
+        }),
     )
     .await;
     // Extract the JSON token for display, then redirect to detail page with it in the query string.

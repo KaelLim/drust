@@ -14,11 +14,34 @@ pub struct TenantAuthState {
     pub registry: Arc<TenantRegistry>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenRole {
+    Anon,
+    Service,
+}
+
+impl TokenRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anon => "anon",
+            Self::Service => "service",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "anon" => Some(Self::Anon),
+            "service" => Some(Self::Service),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TenantRef {
     pub tenant_id: String,
     pub token_hint: String,
     pub pool: SharedTenantPool,
+    pub role: TokenRole,
 }
 
 pub async fn bearer_auth_layer(
@@ -42,20 +65,20 @@ pub async fn bearer_auth_layer(
         }
     };
     let hash = hash_token(&bearer);
-    // Verify: (token active) AND (tenant active)
+    // Verify: (token active) AND (tenant active). Fetch role alongside.
     let conn = state.meta.lock().await;
-    let ok: Option<String> = conn
+    let ok: Option<(String, String)> = conn
         .query_row(
-            "SELECT t.tenant_id FROM tokens t
+            "SELECT t.tenant_id, t.role FROM tokens t
              JOIN tenants n ON n.id = t.tenant_id
              WHERE t.token_hash = ?1 AND t.revoked_at IS NULL AND n.deleted_at IS NULL",
             rusqlite::params![hash],
-            |r| r.get(0),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
         .ok();
     drop(conn);
-    let bound_tenant = match ok {
-        Some(t) => t,
+    let (bound_tenant, role_str) = match ok {
+        Some(row) => row,
         None => return json_error(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", "invalid token"),
     };
     if bound_tenant != tenant_id {
@@ -65,6 +88,16 @@ pub async fn bearer_auth_layer(
             "tenant not accessible",
         );
     }
+    let role = match TokenRole::parse(&role_str) {
+        Some(r) => r,
+        None => {
+            return json_error(
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHENTICATED",
+                "token has invalid role",
+            );
+        }
+    };
     let pool = match state.registry.get_or_open(&tenant_id) {
         Ok(p) => p,
         Err(_) => {
@@ -79,8 +112,24 @@ pub async fn bearer_auth_layer(
         tenant_id: tenant_id.clone(),
         token_hint: token_hint(&bearer),
         pool,
+        role,
     });
     next.run(req).await
+}
+
+/// Guard used by write-path handlers. Returns `Err(response)` if the
+/// current bearer is an anon key, ready to short-circuit the handler.
+pub fn require_service(t: &TenantRef) -> Result<(), Response> {
+    if t.role == TokenRole::Anon {
+        let body = axum::Json(serde_json::json!({
+            "error_code": "WRITE_DENIED",
+            "message": "anon key cannot write; use a service key"
+        }));
+        let mut r = body.into_response();
+        *r.status_mut() = StatusCode::FORBIDDEN;
+        return Err(r);
+    }
+    Ok(())
 }
 
 fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
