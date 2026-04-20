@@ -37,7 +37,7 @@ fn q(id: &str) -> String {
 pub fn build_list_sql(collection: &str, p: &ListParams) -> String {
     let table = q(collection);
     let dir = match p.sort_dir { SortDir::Asc => "ASC", SortDir::Desc => "DESC" };
-    let per_page = p.per_page.min(500).max(1) as u64;
+    let per_page = p.per_page.clamp(1, 500) as u64;
     let page = p.page.max(1) as u64;
     let offset = (page - 1) * per_page;
     let mut out = format!("SELECT * FROM {table}");

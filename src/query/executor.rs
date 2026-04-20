@@ -80,10 +80,10 @@ pub fn execute_read_query(
             break;
         }
         let mut row = Vec::with_capacity(col_count);
-        for i in 0..col_count {
+        for (i, col_type) in types.iter_mut().enumerate() {
             let v = r.get_ref(i).map_err(classify)?;
-            if types[i] == "null" {
-                types[i] = type_name(v);
+            if col_type == "null" {
+                *col_type = type_name(v);
             }
             row.push(value_to_json(v));
         }
