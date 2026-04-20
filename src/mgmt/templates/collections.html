@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Drust — {{ tenant_id }} / collections</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;}
+table{width:100%;border-collapse:collapse;margin-top:1rem;}
+th,td{padding:.4rem .6rem;border-bottom:1px solid #ddd;text-align:left;}
+a{color:#36c;text-decoration:none;} a:hover{text-decoration:underline;}
+.meta{color:#888;}
+</style></head><body>
+<p><a href="/drust/admin/tenants/{{ tenant_id }}">← tenant detail</a></p>
+<h1>{{ tenant_id }} — Collections</h1>
+<p class="meta">{{ collections.len() }} collection(s)</p>
+<table>
+  <thead><tr><th>name</th><th>row count</th></tr></thead>
+  <tbody>
+  {% for c in collections %}
+    <tr>
+      <td><a href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}">{{ c.name }}</a></td>
+      <td>{{ c.row_count }}</td>
+    </tr>
+  {% endfor %}
+  {% if collections.is_empty() %}
+    <tr><td colspan="2" class="meta">（還沒有任何 collection — 這個 tenant 的 data.sqlite 是空的）</td></tr>
+  {% endif %}
+  </tbody>
+</table>
+</body></html>

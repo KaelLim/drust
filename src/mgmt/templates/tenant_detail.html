@@ -8,7 +8,7 @@ form{display:inline-block;}
 </style></head><body>
 <p><a href="/drust/admin/tenants">← all tenants</a></p>
 <h1>Tenant: {{ tenant_id }}</h1>
-<p>{{ tenant_name }} · created {{ created_at }}</p>
+<p>{{ tenant_name }} · created {{ created_at }} · <a href="/drust/admin/tenants/{{ tenant_id }}/collections">📊 browse data →</a></p>
 
 <h2>Tokens</h2>
 <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/new">
