@@ -40,7 +40,14 @@ impl AuditEntry {
             error_message: None,
         }
     }
-    pub fn failure(tenant: &str, token_hint: &str, op: &str, duration_ms: u64, code: &str, msg: &str) -> Self {
+    pub fn failure(
+        tenant: &str,
+        token_hint: &str,
+        op: &str,
+        duration_ms: u64,
+        code: &str,
+        msg: &str,
+    ) -> Self {
         Self {
             ts: Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
             tenant: tenant.to_string(),
@@ -55,9 +62,18 @@ impl AuditEntry {
             error_message: Some(msg.to_string()),
         }
     }
-    pub fn with_collection(mut self, c: &str) -> Self { self.collection = Some(c.to_string()); self }
-    pub fn with_sql_hash(mut self, h: &str) -> Self { self.sql_hash = Some(h.to_string()); self }
-    pub fn with_record_id(mut self, id: i64) -> Self { self.record_id = Some(id); self }
+    pub fn with_collection(mut self, c: &str) -> Self {
+        self.collection = Some(c.to_string());
+        self
+    }
+    pub fn with_sql_hash(mut self, h: &str) -> Self {
+        self.sql_hash = Some(h.to_string());
+        self
+    }
+    pub fn with_record_id(mut self, id: i64) -> Self {
+        self.record_id = Some(id);
+        self
+    }
 }
 
 pub struct AuditLog {
@@ -67,7 +83,10 @@ pub struct AuditLog {
 
 impl AuditLog {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, write_lock: Mutex::new(()) }
+        Self {
+            dir,
+            write_lock: Mutex::new(()),
+        }
     }
 
     fn file_path_for_today(&self) -> PathBuf {

@@ -42,7 +42,9 @@ where
 {
     match opt(name) {
         None => Ok(default),
-        Some(s) => s.parse::<T>().map_err(|e| ConfigError::Invalid(name, e.to_string())),
+        Some(s) => s
+            .parse::<T>()
+            .map_err(|e| ConfigError::Invalid(name, e.to_string())),
     }
 }
 
@@ -51,13 +53,18 @@ impl Config {
         let bind: SocketAddr = opt("DRUST_BIND")
             .unwrap_or_else(|| "127.0.0.1:47826".to_string())
             .parse()
-            .map_err(|e: std::net::AddrParseError| ConfigError::Invalid("DRUST_BIND", e.to_string()))?;
+            .map_err(|e: std::net::AddrParseError| {
+                ConfigError::Invalid("DRUST_BIND", e.to_string())
+            })?;
 
         let url_prefix = opt("DRUST_URL_PREFIX").unwrap_or_else(|| "/drust".to_string());
         let data_dir: PathBuf = req("DRUST_DATA_DIR")?.into();
         let log_dir: PathBuf = req("DRUST_LOG_DIR")?.into();
 
-        let init_admin = match (opt("DRUST_INIT_ADMIN_USERNAME"), opt("DRUST_INIT_ADMIN_PASSWORD")) {
+        let init_admin = match (
+            opt("DRUST_INIT_ADMIN_USERNAME"),
+            opt("DRUST_INIT_ADMIN_PASSWORD"),
+        ) {
             (Some(u), Some(p)) if !u.is_empty() && !p.is_empty() => Some((u, p)),
             _ => None,
         };

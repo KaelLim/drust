@@ -1,0 +1,7 @@
+# Drust — multi-tenant SQLite BaaS
+handle_path /drust/* {
+    reverse_proxy 127.0.0.1:47826 {
+        header_up Host "127.0.0.1:47826"       # rmcp DNS-rebinding guard (MCP sub-route needs this)
+        header_up X-Real-IP {remote_host}
+    }
+}
