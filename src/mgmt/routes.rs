@@ -154,6 +154,14 @@ impl MgmtState {
                 "/admin/tenants/{id}/tokens/{token_id}/revoke",
                 post(super::tokens::revoke_token_form),
             )
+            .route(
+                "/admin/tenants/{id}/collections",
+                get(super::browse::collections_page),
+            )
+            .route(
+                "/admin/tenants/{id}/collections/{coll}",
+                get(super::browse::collection_rows_page),
+            )
             .layer(axum::middleware::from_fn_with_state(
                 session,
                 admin_session_layer,

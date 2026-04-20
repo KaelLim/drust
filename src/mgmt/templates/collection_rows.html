@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Drust — {{ tenant_id }} / {{ coll_name }}</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:80rem;margin:2rem auto;padding:0 1rem;}
+table{width:100%;border-collapse:collapse;margin-top:.5rem;}
+th,td{padding:.35rem .5rem;border-bottom:1px solid #eee;text-align:left;vertical-align:top;font-size:.9rem;}
+th{background:#f6f6f6;font-weight:600;}
+a{color:#36c;text-decoration:none;} a:hover{text-decoration:underline;}
+.meta{color:#888;font-size:.9rem;}
+.rows td{white-space:nowrap;max-width:20rem;overflow:hidden;text-overflow:ellipsis;}
+.null{color:#bbb;font-style:italic;}
+</style></head><body>
+<p><a href="/drust/admin/tenants/{{ tenant_id }}/collections">← all collections</a></p>
+<h1>{{ tenant_id }} / {{ coll_name }}</h1>
+<p class="meta">{{ total_rows }} total rows · showing {{ shown_rows }}</p>
+
+<h2>Schema</h2>
+<table>
+  <thead><tr><th>field</th><th>type</th><th>nullable</th><th>pk</th><th>default</th></tr></thead>
+  <tbody>
+  {% for f in fields %}
+    <tr>
+      <td>{{ f.name }}</td>
+      <td>{{ f.sql_type }}</td>
+      <td>{% if f.nullable %}✓{% else %}—{% endif %}</td>
+      <td>{% if f.pk %}🔑{% else %}—{% endif %}</td>
+      <td>{% if let Some(d) = f.default_value %}{{ d }}{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Records (latest 100 by id desc)</h2>
+{% if rows.is_empty() %}
+<p class="meta">（沒有資料）</p>
+{% else %}
+<table class="rows">
+  <thead><tr>{% for col in column_names %}<th>{{ col }}</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+    {% for cell in row %}
+      <td title="{{ cell }}">{% if cell == "NULL" %}<span class="null">NULL</span>{% else %}{{ cell }}{% endif %}</td>
+    {% endfor %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+</body></html>
