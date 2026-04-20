@@ -3,7 +3,11 @@ use chrono::{Duration, Utc};
 use rand::RngCore;
 use rusqlite::Connection;
 
-pub fn create_session(conn: &mut Connection, admin_id: i64, ttl_seconds: i64) -> anyhow::Result<String> {
+pub fn create_session(
+    conn: &mut Connection,
+    admin_id: i64,
+    ttl_seconds: i64,
+) -> anyhow::Result<String> {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
@@ -34,11 +38,17 @@ pub fn validate_session(conn: &Connection, token: &str) -> anyhow::Result<Option
 
 pub fn purge_expired(conn: &mut Connection) -> anyhow::Result<usize> {
     let now = Utc::now().to_rfc3339();
-    let n = conn.execute("DELETE FROM sessions WHERE expires_at <= ?1", rusqlite::params![now])?;
+    let n = conn.execute(
+        "DELETE FROM sessions WHERE expires_at <= ?1",
+        rusqlite::params![now],
+    )?;
     Ok(n)
 }
 
 pub fn revoke_session(conn: &mut Connection, token: &str) -> anyhow::Result<()> {
-    conn.execute("DELETE FROM sessions WHERE token = ?1", rusqlite::params![token])?;
+    conn.execute(
+        "DELETE FROM sessions WHERE token = ?1",
+        rusqlite::params![token],
+    )?;
     Ok(())
 }

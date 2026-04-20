@@ -72,7 +72,11 @@ pub struct TenantRegistry {
 
 impl TenantRegistry {
     pub fn new(data_root: PathBuf, read_pool_size: usize) -> Self {
-        Self { data_root, read_pool_size, pools: dashmap::DashMap::new() }
+        Self {
+            data_root,
+            read_pool_size,
+            pools: dashmap::DashMap::new(),
+        }
     }
 
     pub fn get_or_open(&self, tenant_id: &str) -> anyhow::Result<SharedTenantPool> {

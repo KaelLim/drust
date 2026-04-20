@@ -1,6 +1,6 @@
 use crate::auth::session::validate_session;
 use axum::extract::State;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rusqlite::Connection;
@@ -38,7 +38,8 @@ pub async fn admin_session_layer(
         None => {
             let mut r = Response::new(axum::body::Body::empty());
             *r.status_mut() = StatusCode::SEE_OTHER;
-            r.headers_mut().insert(header::LOCATION, "/login".parse().unwrap());
+            r.headers_mut()
+                .insert(header::LOCATION, "/login".parse().unwrap());
             r
         }
     }
@@ -48,10 +49,10 @@ fn extract_cookie<B>(req: &Request<B>, name: &str) -> Option<String> {
     let raw = req.headers().get(header::COOKIE)?.to_str().ok()?;
     for part in raw.split(';') {
         let part = part.trim();
-        if let Some((k, v)) = part.split_once('=') {
-            if k == name {
-                return Some(v.to_string());
-            }
+        if let Some((k, v)) = part.split_once('=')
+            && k == name
+        {
+            return Some(v.to_string());
         }
     }
     None
@@ -65,7 +66,10 @@ pub fn build_session_cookie(token: &str, ttl_secs: u64) -> String {
 }
 
 pub fn clear_session_cookie() -> String {
-    format!("{}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0", SESSION_COOKIE)
+    format!(
+        "{}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
+        SESSION_COOKIE
+    )
 }
 
 impl IntoResponse for AdminId {

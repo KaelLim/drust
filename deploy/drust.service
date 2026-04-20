@@ -1,0 +1,31 @@
+[Unit]
+Description=Drust multi-tenant SQLite BaaS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=drust
+Group=drust
+WorkingDirectory=/home/kaelsohappy1/tool/drust
+EnvironmentFile=/home/kaelsohappy1/tool/drust/.env
+ExecStart=/home/kaelsohappy1/tool/drust/target/release/drust
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/drust /var/log/drust
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target
