@@ -104,3 +104,30 @@ pub fn build_mgmt_router(state: MgmtState) -> Router {
         .route("/logout", post(logout_submit))
         .with_state(state)
 }
+
+impl MgmtState {
+    pub fn with_data_dir(self, data_dir: std::path::PathBuf) -> Router {
+        use crate::auth::middleware::{admin_session_layer, AdminSessionState};
+        use crate::mgmt::tenants::{
+            create_tenant_form, create_tenant_json, list_page_axum, soft_delete_tenant,
+            soft_delete_tenant_form, TenantsState,
+        };
+
+        let session = AdminSessionState { meta: self.meta.clone() };
+        let tenants_state = TenantsState { session: session.clone(), data_dir };
+        let public = Router::new()
+            .route("/", get(root_redirect))
+            .route("/login", get(login_page).post(login_submit))
+            .route("/logout", post(logout_submit))
+            .with_state(self);
+        let protected = Router::new()
+            .route("/admin/tenants", get(list_page_axum))
+            .route("/admin/tenants/new", post(create_tenant_form))
+            .route("/admin/api/tenants", post(create_tenant_json))
+            .route("/admin/api/tenants/{id}", axum::routing::delete(soft_delete_tenant))
+            .route("/admin/tenants/{id}/delete", post(soft_delete_tenant_form))
+            .layer(axum::middleware::from_fn_with_state(session, admin_session_layer))
+            .with_state(tenants_state);
+        public.merge(protected)
+    }
+}

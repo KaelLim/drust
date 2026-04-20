@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Drust — Tenants</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem;}
+table{width:100%;border-collapse:collapse;margin-top:1rem;}
+th,td{padding:.4rem .6rem;border-bottom:1px solid #ddd;text-align:left;}
+form{margin-top:1rem;}
+input{padding:.3rem;}
+button{padding:.35rem .8rem;}
+</style></head><body>
+<h1>Tenants</h1>
+<form method="post" action="/admin/tenants/new">
+  <input name="id" placeholder="slug e.g. blog-demo" required>
+  <input name="name" placeholder="display name" required>
+  <button>Create</button>
+</form>
+<table>
+  <thead><tr><th>id</th><th>name</th><th>created</th><th>db size</th><th></th></tr></thead>
+  <tbody>
+  {% for t in tenants %}
+    <tr>
+      <td><a href="/admin/tenants/{{ t.id }}">{{ t.id }}</a></td>
+      <td>{{ t.name }}</td>
+      <td>{{ t.created_at }}</td>
+      <td>{{ t.db_size_kb }} KB</td>
+      <td>
+        <form method="post" action="/admin/tenants/{{ t.id }}/delete" onsubmit="return confirm('Delete?');">
+          <button>Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</body></html>
