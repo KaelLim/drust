@@ -7,6 +7,7 @@
 {% include "_styles.html" %}
 </head>
 <body>
+{% include "_icons.html" %}
 <div class="macwin">
   <div class="macwin-title">
     <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
@@ -25,7 +26,7 @@
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
-        <span class="who">v0.1.0</span>
+        <span class="who">v{{ version }}</span>
         <span class="sep">│</span>
         <form method="post" action="/drust/logout" style="display:inline;">
           <button type="submit">logout ↵</button>
@@ -46,18 +47,17 @@
           <div class="meta">
             <b>{{ tenant_name }}</b> · created {{ created_at }}
             <span style="margin:0 10px;">·</span>
-            <a href="/drust/admin/tenants/{{ tenant_id }}/collections">📊 browse data →</a>
+            <a href="/drust/admin/tenants/{{ tenant_id }}/collections"><svg class="icon" aria-hidden="true"><use href="#i-db"/></svg> browse data →</a>
           </div>
         </div>
       </div>
 
       {% if let Some(tok) = new_token %}
       <div class="token-banner" id="token-banner">
-        <div class="tb-icon">⚠</div>
+        <div class="tb-icon"><svg class="icon" style="width:1.6em;height:1.6em;" aria-hidden="true"><use href="#i-warn"/></svg></div>
         <div class="tb-body">
           <div class="tb-head">
             one-time token — shown once
-            <span class="cn">／此權杖僅顯示一次</span>
           </div>
           <p>
             Copy this token now and store it somewhere safe. For security, Drust will never display it again.
@@ -65,7 +65,7 @@
           </p>
           <div class="tb-row">
             <code id="banner-token">{{ tok }}</code>
-            <button class="copy" type="button" onclick="navigator.clipboard.writeText(document.getElementById('banner-token').textContent).then(()=>{this.innerHTML='✓ copied'});" title="複製到剪貼簿">⧉ copy</button>
+            <button class="copy" type="button" onclick="navigator.clipboard.writeText(document.getElementById('banner-token').textContent).then(()=>{this.innerHTML='✓ copied'});" title="copy to clipboard">⧉ copy</button>
           </div>
         </div>
         <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('token-banner').style.display='none'" title="I've copied it" style="align-self:start;">✕</button>
@@ -75,7 +75,6 @@
       <div class="card" style="margin-bottom:20px;">
         <div class="card-head">
           <span>+ issue token</span>
-          <span style="color:var(--muted);font-weight:400;">發新權杖</span>
         </div>
         <div class="card-body">
           <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/new" class="form-inline">

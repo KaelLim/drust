@@ -7,6 +7,7 @@
 {% include "_styles.html" %}
 </head>
 <body style="padding:0;">
+{% include "_icons.html" %}
 <div class="auth-wrap">
   <div class="auth-card">
     <div class="auth-head">
@@ -19,7 +20,7 @@
         <span class="tag">multi-tenant sqlite baas</span>
       </div>
       <h1>Sign in to continue</h1>
-      <div class="sub">internal tool · 慈濟基金會</div>
+      <div class="sub">internal tool · Tzu Chi Foundation</div>
 
       {% if let Some(err) = error %}
       <div style="margin-bottom:14px;">
@@ -50,7 +51,7 @@
       </form>
     </div>
     <div class="auth-foot">
-      <span>drust v0.1.0</span>
+      <span>drust v{{ version }}</span>
       <span>forgot password? ask admin</span>
     </div>
   </div>
