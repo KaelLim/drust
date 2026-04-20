@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 fn seed() -> (tempfile::TempDir, rusqlite::Connection) {
     let d = tempdir().unwrap();
-    let mut conn = open_write(d.path(), "t1").unwrap();
+    let conn = open_write(d.path(), "t1").unwrap();
     conn.execute_batch(
         "CREATE TABLE posts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

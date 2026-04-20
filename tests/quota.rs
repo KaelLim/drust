@@ -13,7 +13,7 @@ fn file_size_under_limit_ok() {
 #[test]
 fn file_size_over_limit_err() {
     let dir = tempdir().unwrap();
-    let mut conn = open_write(dir.path(), "t1").unwrap();
+    let conn = open_write(dir.path(), "t1").unwrap();
     conn.execute_batch("CREATE TABLE blob (v BLOB)").unwrap();
     // Insert some bytes to make the DB > 0.
     conn.execute(
@@ -30,7 +30,7 @@ fn file_size_over_limit_err() {
 #[test]
 fn row_count_ok() {
     let dir = tempdir().unwrap();
-    let mut conn = open_write(dir.path(), "t1").unwrap();
+    let conn = open_write(dir.path(), "t1").unwrap();
     conn.execute_batch(
         "CREATE TABLE a (id INTEGER); INSERT INTO a VALUES (1); INSERT INTO a VALUES (2);",
     )
@@ -41,7 +41,7 @@ fn row_count_ok() {
 #[test]
 fn row_count_over_limit_err() {
     let dir = tempdir().unwrap();
-    let mut conn = open_write(dir.path(), "t1").unwrap();
+    let conn = open_write(dir.path(), "t1").unwrap();
     conn.execute_batch(
         "CREATE TABLE a (id INTEGER); INSERT INTO a VALUES (1); INSERT INTO a VALUES (2);",
     )
