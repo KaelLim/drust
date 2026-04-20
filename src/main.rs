@@ -1,10 +1,5 @@
 use axum::{routing::get, Router};
-use std::net::SocketAddr;
-
-const BIND_ADDR: SocketAddr = SocketAddr::new(
-    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-    47826,
-);
+use drust::config::Config;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -15,10 +10,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let app = Router::new().route("/health", get(|| async { "ok" }));
+    let cfg = Config::from_env()?;
+    tracing::info!(addr = %cfg.bind, data = %cfg.data_dir.display(), "drust booting");
 
-    let listener = tokio::net::TcpListener::bind(BIND_ADDR).await?;
-    tracing::info!(addr = %BIND_ADDR, "drust listening");
+    let app = Router::new().route("/health", get(|| async { "ok" }));
+    let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
