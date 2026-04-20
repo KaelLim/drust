@@ -1,4 +1,3 @@
-use crate::query::authorizer::attach_readonly_authorizer;
 use crate::query::executor::{ExecError, execute_read_query};
 use crate::tenant::router::TenantRef;
 use axum::http::StatusCode;
@@ -22,7 +21,6 @@ pub async fn query_handler(
     let sql = body.sql.clone();
     let out = pool
         .with_reader(move |c| {
-            attach_readonly_authorizer(c);
             execute_read_query(c, &sql, ROW_CAP, MAX_SQL).map_err(|e| {
                 let tag = match &e {
                     ExecError::TooLarge { .. } => "too_large",

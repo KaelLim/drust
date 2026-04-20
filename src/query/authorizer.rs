@@ -1,6 +1,16 @@
 use rusqlite::Connection;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
+/// Replace the connection's authorizer with a permissive allow-all callback.
+/// Called after user-SQL execution so the connection can safely be returned
+/// to the pool without leaking the restrictive authorizer to subsequent
+/// internal requests (schema introspection, counts, etc.).
+pub fn detach_authorizer(conn: &Connection) {
+    conn.authorizer(Some(|_ctx: AuthContext<'_>| -> Authorization {
+        Authorization::Allow
+    }));
+}
+
 /// Attach the read-only authorizer. Every SQL action is inspected; anything
 /// outside the whitelist is denied. Paired with `SQLITE_OPEN_READONLY` at
 /// connection-open time for defense in depth.

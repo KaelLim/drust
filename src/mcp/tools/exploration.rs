@@ -1,5 +1,5 @@
 use crate::mcp::server::DrustMcp;
-use crate::query::authorizer::attach_readonly_authorizer;
+use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::execute_read_query;
 use crate::query::filter::build_count_sql;
 use crate::storage::schema::{
@@ -34,7 +34,6 @@ pub async fn sample_rows(s: &DrustMcp, name: &str, n: usize) -> anyhow::Result<s
     );
     let out = pool
         .with_reader(move |c| {
-            attach_readonly_authorizer(c);
             execute_read_query(c, &sql, 500, 16_384).map_err(|_| rusqlite::Error::InvalidQuery)
         })
         .await?;
@@ -51,7 +50,9 @@ pub async fn count_rows(
     let n: i64 = pool
         .with_reader(move |c| {
             attach_readonly_authorizer(c);
-            c.query_row(&sql, [], |r| r.get(0))
+            let r = c.query_row(&sql, [], |r| r.get(0));
+            detach_authorizer(c);
+            r
         })
         .await?;
     Ok(json!({ "count": n }))

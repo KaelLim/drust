@@ -1,4 +1,4 @@
-use crate::query::authorizer::attach_readonly_authorizer;
+use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{collection_exists, describe_collection};
@@ -109,7 +109,6 @@ pub async fn list_handler(
     let records_res = {
         let sql = list_sql.clone();
         pool.with_reader(move |c| {
-            attach_readonly_authorizer(c);
             execute_read_query(c, &sql, 500, 32_768).map_err(|_e| rusqlite::Error::InvalidQuery)
         })
         .await
@@ -128,7 +127,9 @@ pub async fn list_handler(
         let sql = count_sql.clone();
         pool.with_reader(move |c| {
             attach_readonly_authorizer(c);
-            c.query_row(&sql, [], |r| r.get::<_, i64>(0))
+            let r = c.query_row(&sql, [], |r| r.get::<_, i64>(0));
+            detach_authorizer(c);
+            r
         })
         .await
         .unwrap_or(0)
