@@ -57,11 +57,11 @@
         <div class="tb-icon"><svg class="icon" style="width:1.6em;height:1.6em;" aria-hidden="true"><use href="#i-warn"/></svg></div>
         <div class="tb-body">
           <div class="tb-head">
-            one-time token — shown once
+            new {% if let Some(r) = new_token_role %}{{ r }}{% endif %} key — shown once
           </div>
           <p>
-            Copy this token now and store it somewhere safe. For security, Drust will never display it again.
-            Revoke it from the list below if it leaks.
+            Copy this token now and store it somewhere safe. Drust will never
+            display it again. The previous key (if any) has been revoked.
           </p>
           <div class="tb-row">
             <code id="banner-token">{{ tok }}</code>
@@ -72,76 +72,72 @@
       </div>
       {% endif %}
 
-      <div class="card" style="margin-bottom:20px;">
-        <div class="card-head">
-          <span>+ issue token</span>
-        </div>
-        <div class="card-body">
-          <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/new" class="form-inline">
-            <div class="field">
-              <label>label <span class="hint">what is this token for?</span></label>
-              <input class="input" name="label" placeholder="ci pipeline" style="width:340px;">
-            </div>
-            <button class="btn btn-primary" type="submit">Issue <span class="kbd">↵</span></button>
-            <span style="font-family:var(--mono);font-size:11.5px;color:var(--muted);">
-              the secret is shown <b style="color:var(--warn);">once</b> — copy it immediately.
-            </span>
-          </form>
-        </div>
-      </div>
-
       <div class="card">
         <div class="card-head">
-          <span>tokens <span class="count">· {{ tokens.len() }} total</span></span>
+          <span>API keys</span>
+          <span class="card-head-actions">2 fixed slots per tenant — anon (read-only) and service (full access)</span>
         </div>
-        {% if tokens.is_empty() %}
-        <div class="empty">
-          <div class="ascii">┌──────────────┐
-│  no tokens   │
-└──────────────┘</div>
-          <h3>No tokens issued yet</h3>
-          <p>Issue one above. Tokens authenticate REST/MCP clients on behalf of this tenant.</p>
+        <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:22px;">
+
+          {# ANON SLOT #}
+          <div style="border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;background:var(--bg-2);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+              <span class="chip"><i class="dot"></i>anon</span>
+              <span class="meta" style="font-family:var(--mono);font-size:16px;color:var(--muted);">read · list · subscribe · SELECT</span>
+            </div>
+            {% if let Some(info) = anon %}
+            <div style="font-family:var(--mono);font-size:18px;color:var(--text-soft);margin:14px 0;">
+              Key rotated on <b style="color:var(--text);">{{ info.created_at }}</b>
+              {% if info.legacy_siblings > 0 %}
+              <div style="margin-top:10px;">
+                <span class="chip warn"><i class="dot"></i>{{ info.legacy_siblings }} legacy key(s) still active</span>
+                <div style="font-size:16px;color:var(--muted);margin-top:6px;">A reroll will revoke them all.</div>
+              </div>
+              {% endif %}
+            </div>
+            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/anon/reroll" onsubmit="return confirm('Reroll anon key? The current key will be invalidated immediately.');">
+              <button class="btn btn-danger" type="submit">↻ Reroll anon key</button>
+            </form>
+            {% else %}
+            <div style="font-family:var(--mono);font-size:18px;color:var(--muted);margin:14px 0;">
+              No anon key yet.
+            </div>
+            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/anon/reroll">
+              <button class="btn btn-primary" type="submit">Generate anon key</button>
+            </form>
+            {% endif %}
+          </div>
+
+          {# SERVICE SLOT #}
+          <div style="border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;background:var(--bg-2);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+              <span class="chip ok"><i class="dot"></i>service</span>
+              <span class="meta" style="font-family:var(--mono);font-size:16px;color:var(--muted);">full · create · update · delete · schema</span>
+            </div>
+            {% if let Some(info) = service %}
+            <div style="font-family:var(--mono);font-size:18px;color:var(--text-soft);margin:14px 0;">
+              Key rotated on <b style="color:var(--text);">{{ info.created_at }}</b>
+              {% if info.legacy_siblings > 0 %}
+              <div style="margin-top:10px;">
+                <span class="chip warn"><i class="dot"></i>{{ info.legacy_siblings }} legacy key(s) still active</span>
+                <div style="font-size:16px;color:var(--muted);margin-top:6px;">A reroll will revoke them all.</div>
+              </div>
+              {% endif %}
+            </div>
+            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/service/reroll" onsubmit="return confirm('Reroll service key? The current key will be invalidated immediately.');">
+              <button class="btn btn-danger" type="submit">↻ Reroll service key</button>
+            </form>
+            {% else %}
+            <div style="font-family:var(--mono);font-size:18px;color:var(--muted);margin:14px 0;">
+              No service key yet.
+            </div>
+            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/service/reroll">
+              <button class="btn btn-primary" type="submit">Generate service key</button>
+            </form>
+            {% endif %}
+          </div>
+
         </div>
-        {% else %}
-        <table class="data">
-          <thead>
-            <tr>
-              <th style="width:80px;" class="num">id</th>
-              <th>label</th>
-              <th style="width:200px;">created</th>
-              <th style="width:200px;">revoked</th>
-              <th style="width:110px;">status</th>
-              <th class="actions" style="width:110px;"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for t in tokens %}
-            <tr>
-              <td class="num mono-cell">{{ t.id }}</td>
-              <td>{{ t.label }}</td>
-              <td class="muted-cell">{{ t.created_at }}</td>
-              <td class="muted-cell">{{ t.revoked_at }}</td>
-              <td>
-                {% if t.revoked_at == "-" %}
-                <span class="chip ok"><i class="dot"></i>active</span>
-                {% else %}
-                <span class="chip danger"><i class="dot"></i>revoked</span>
-                {% endif %}
-              </td>
-              <td class="actions">
-                {% if t.revoked_at == "-" %}
-                <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ t.id }}/revoke" onsubmit="return confirm('Revoke token #{{ t.id }}?');" style="display:inline;">
-                  <button class="btn btn-sm btn-danger" type="submit">Revoke</button>
-                </form>
-                {% else %}
-                <span style="color:var(--muted-2);">—</span>
-                {% endif %}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        {% endif %}
       </div>
     </main>
   </div>
