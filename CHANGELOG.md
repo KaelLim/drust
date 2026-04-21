@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **"Copy MCP config" button on the tenant-detail page.** Next to the
+  service-key card (anon cards don't get the button — MCP is
+  service-only anyway), a `{ }` icon emits a ready-to-paste
+  `mcpServers` JSON snippet into the clipboard. The URL uses
+  `window.location.origin`, so the copied config matches whatever
+  public hostname the admin reached the page on — no backend-side
+  URL template is needed. Shape:
+  ```json
+  { "mcpServers": { "drust-<tenant-id>": {
+    "type": "http",
+    "url": "https://<host>/drust/t/<tenant-id>/mcp",
+    "headers": { "Authorization": "Bearer drust_..." }
+  } } }
+  ```
+- A short explanatory line under the service key card points AI-client
+  users at this flow. `_icons.html` gains `#i-braces` (Lucide "braces").
 - **rmcp Streamable HTTP transport wired up at `/t/:tenant/mcp`.** Each
   tenant is now a self-contained MCP server exposing all 11 drust
   tools (list_collections / describe_collection / sample_rows /

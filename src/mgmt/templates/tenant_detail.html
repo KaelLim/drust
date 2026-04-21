@@ -10,10 +10,19 @@
     <code class="key" id="key-{{ role }}" data-plain="{{ pt }}" data-revealed="0">••••••••••••••••••••••••••••••••</code>
     <button class="key-act" type="button" onclick="toggleKey('key-{{ role }}', this)" title="show / hide" aria-label="show or hide key"><svg class="icon"><use href="#i-eye"/></svg></button>
     <button class="key-act" type="button" onclick="copyKey('key-{{ role }}', this)" title="copy to clipboard" aria-label="copy key"><svg class="icon"><use href="#i-copy"/></svg></button>
+    {% if role == "service" %}
+    <button class="key-act" type="button" onclick="copyMcpConfig('{{ tenant_id }}', 'key-{{ role }}', this)" title="copy MCP server config as JSON" aria-label="copy MCP server config"><svg class="icon"><use href="#i-braces"/></svg></button>
+    {% endif %}
     <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" onsubmit="return confirm('Reroll {{ role }} key? The current key will be invalidated immediately.');" style="margin:0;">
       <button class="key-act key-act-danger" type="submit" title="reroll {{ role }} key" aria-label="reroll {{ role }} key"><svg class="icon"><use href="#i-refresh"/></svg></button>
     </form>
   </div>
+  {% if role == "service" %}
+  <div style="font-family:var(--mono);font-size:15px;color:var(--muted);margin:8px 0 0;padding-left:2px;">
+    <svg class="icon" style="width:0.9em;height:0.9em;vertical-align:-2px;margin-right:6px;"><use href="#i-braces"/></svg>
+    Use this key as an MCP server in Claude Code / Cursor — the <code style="font-size:13px;">{ }</code> button copies a ready-to-paste <code style="font-size:13px;">mcpServers</code> block.
+  </div>
+  {% endif %}
   {% else %}
   <div class="key-row">
     <code class="key muted">key not stored — created before v1.1c</code>
@@ -154,6 +163,29 @@
       btn.classList.add('is-ok');
       setTimeout(function () {
         _setIcon(btn, 'i-copy');
+        btn.classList.remove('is-ok');
+      }, 1500);
+    });
+  }
+  function copyMcpConfig(tenantId, keyElementId, btn) {
+    var el = document.getElementById(keyElementId);
+    var token = el.getAttribute('data-plain');
+    // window.location.origin already includes the scheme + host + port the
+    // admin reached this page on, so the copied config lines up with the
+    // front-proxy URL in use — no backend templating required.
+    var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
+    var cfg = {};
+    cfg.mcpServers = {};
+    cfg.mcpServers['drust-' + tenantId] = {
+      type: 'http',
+      url: url,
+      headers: { Authorization: 'Bearer ' + token }
+    };
+    navigator.clipboard.writeText(JSON.stringify(cfg, null, 2)).then(function () {
+      _setIcon(btn, 'i-check');
+      btn.classList.add('is-ok');
+      setTimeout(function () {
+        _setIcon(btn, 'i-braces');
         btn.classList.remove('is-ok');
       }, 1500);
     });
