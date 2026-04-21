@@ -566,3 +566,18 @@ async fn drop_collection_rejects_unknown() {
         "expected unknown-collection rejection, got: {err}"
     );
 }
+
+#[tokio::test]
+async fn drop_collection_rejects_system_prefix() {
+    // The guard fires on the `_system_` prefix check before any existence
+    // lookup, so the table does not need to exist in the tenant DB for
+    // this test — the refusal error surfaces immediately.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let err = drop_collection(&s, "_system_public_files").await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("protected") && msg.contains("_system_"),
+        "expected _system_ protection error, got: {msg}"
+    );
+}

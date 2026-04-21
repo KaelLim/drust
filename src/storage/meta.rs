@@ -42,6 +42,24 @@ CREATE TABLE IF NOT EXISTS tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_hash_active ON tokens(token_hash) WHERE revoked_at IS NULL;
 
+-- System collection: metadata for host-level public bucket objects.
+-- Protected from `drop_collection` by the `_system_` prefix convention
+-- enforced in src/mcp/tools/schema.rs.
+CREATE TABLE IF NOT EXISTS "_system_public_files" (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  key                 TEXT    NOT NULL UNIQUE,
+  original_name       TEXT    NOT NULL,
+  content_type        TEXT,
+  size_bytes          INTEGER NOT NULL,
+  content_disposition TEXT,
+  uploaded_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  uploader            TEXT    NOT NULL,
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_public_files_uploaded_at
+  ON "_system_public_files"(uploaded_at DESC);
+
 COMMIT;
 "#;
 
