@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-04-21
+
+### Added
+- **LiveChonk pixel-cat mascot** — vanilla-JS port of the design-bundle
+  `mascot.jsx`. 16×16 pixel silhouette with mouse-tracking eyes, natural
+  blinking, and occasional ear twitch. Shipped as `_mascot.html` partial;
+  auto-wires any `<canvas class="pix" data-chonk=... data-size=...>`.
+  Present at 18 px in the topbar of every admin page, 48 px on the login
+  card, 96 px on empty states (tenants / collections / 0-records),
+  and 56 px on the filter-parse-error alert.
+- **Left-side collection sidebar** on the collection-detail page
+  (`_collection_sidebar.html`). Lists every collection for the active
+  tenant; current one highlighted with a 2 px accent border. Sidebar
+  scroll is independent of main-content scroll.
+
+### Changed
+- All admin pages now render inside a viewport-fixed `.macwin` shell;
+  internal scroll is container-scoped (the `body` no longer scrolls).
+- `/admin/tenants/{id}/collections` 302-redirects to the first
+  collection when the tenant has any; empty tenants land on a dedicated
+  empty-state page. The old "here's a table of all collections" view
+  is gone.
+- Collection-detail breadcrumb simplified from
+  `drust / {tenant} / collections / {coll}` to `drust / {tenant}` —
+  the collection name lives in the page title and sidebar active state.
+- Login page now renders inside the `.macwin` frame (previously used
+  a bare `.auth-wrap`), matching every other admin page.
+
 ## [1.1.1] - 2026-04-21
 
 ### Added
@@ -260,7 +288,8 @@ Initial production release.
   functions are exercised in-process by integration tests but are not yet
   reachable over HTTP
 
-[Unreleased]: https://example.invalid/drust/compare/v1.1.1...HEAD
+[Unreleased]: https://example.invalid/drust/compare/v1.2.0...HEAD
+[1.2.0]: https://example.invalid/drust/compare/v1.1.1...v1.2.0
 [1.1.1]: https://example.invalid/drust/compare/v1.1.0...v1.1.1
 [1.1.0]: https://example.invalid/drust/compare/v0.1.0...v1.1.0
 [0.1.0]: https://example.invalid/drust/releases/tag/v0.1.0
