@@ -19,6 +19,22 @@ fn default_true() -> bool {
     true
 }
 
+/// Allowlist of SQL expressions that may appear as a field default.
+///
+/// Entries are matched with exact string equality after trimming. We do
+/// NOT parse or authorize arbitrary SQL here — the allowlist is the
+/// entire security surface. Every entry is a zero-argument scalar with
+/// no side effects and no column references, so it is safe both in
+/// `CREATE TABLE` and in `ALTER TABLE ADD COLUMN`.
+pub const SQL_DEFAULT_ALLOWLIST: &[&str] = &[
+    "datetime('now')",
+    "date('now')",
+    "time('now')",
+    "CURRENT_TIMESTAMP",
+    "CURRENT_DATE",
+    "CURRENT_TIME",
+];
+
 fn type_to_sqlite(t: &str) -> anyhow::Result<&'static str> {
     Ok(match t {
         "text" | "datetime" | "json" => "TEXT",
@@ -63,7 +79,24 @@ fn column_expr(f: &FieldSpec) -> anyhow::Result<String> {
             }
             serde_json::Value::Number(n) => n.to_string(),
             serde_json::Value::String(x) => format!("'{}'", x.replace('\'', "''")),
-            _ => anyhow::bail!("default must be literal"),
+            // `{"sql": "datetime('now')"}` — allowlisted SQL expression.
+            // Parenthesised to satisfy SQLite's ALTER TABLE rule that
+            // non-constant defaults be wrapped.
+            serde_json::Value::Object(o) if o.len() == 1 && o.contains_key("sql") => {
+                let expr = o["sql"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("default.sql must be a string"))?
+                    .trim();
+                if !SQL_DEFAULT_ALLOWLIST.contains(&expr) {
+                    anyhow::bail!(
+                        "SQL default expression not in allowlist: {expr:?}. \
+                         Allowed: {:?}",
+                        SQL_DEFAULT_ALLOWLIST
+                    );
+                }
+                format!("({expr})")
+            }
+            _ => anyhow::bail!("default must be a literal or {{\"sql\": \"<allowlisted>\"}}"),
         };
         s.push_str(&format!(" DEFAULT {lit}"));
     }
