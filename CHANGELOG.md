@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-04-21
+
+### Changed
+- **Copy MCP config button now emits a `claude mcp add-json` command**
+  instead of a `mcpServers` JSON block. The previous format required
+  the admin to hand-edit a config file; the CLI form is one paste into
+  a terminal. Shape:
+  ```
+  claude mcp add-json drust-<tenant-id> '{"type":"http","url":"https://<host>/drust/t/<tenant-id>/mcp","headers":{"Authorization":"Bearer drust_..."}}'
+  ```
+  Caption under the service-key card updated to match.
+
 ## [1.2.0] - 2026-04-21
 
 ### Added
@@ -288,7 +300,8 @@ Initial production release.
   functions are exercised in-process by integration tests but are not yet
   reachable over HTTP
 
-[Unreleased]: https://example.invalid/drust/compare/v1.2.0...HEAD
+[Unreleased]: https://example.invalid/drust/compare/v1.2.1...HEAD
+[1.2.1]: https://example.invalid/drust/compare/v1.2.0...v1.2.1
 [1.2.0]: https://example.invalid/drust/compare/v1.1.1...v1.2.0
 [1.1.1]: https://example.invalid/drust/compare/v1.1.0...v1.1.1
 [1.1.0]: https://example.invalid/drust/compare/v0.1.0...v1.1.0
