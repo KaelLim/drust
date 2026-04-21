@@ -71,11 +71,33 @@ pub async fn list_page(State(state): State<PublicFilesState>) -> Response {
 
 pub async fn upload_submit(
     State(state): State<PublicFilesState>,
+    headers: axum::http::HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
     };
+
+    // Pre-check Content-Length so an oversized upload surfaces as 413 with a
+    // clean message — otherwise DefaultBodyLimit kicks in mid-stream and the
+    // multipart parser reports an opaque 400 "incomplete stream".
+    if let Some(cl) = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        if cl as usize > state.max_upload_bytes {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "upload exceeds {} MB limit ({} bytes provided)",
+                    state.max_upload_bytes / (1024 * 1024),
+                    cl
+                ),
+            )
+                .into_response();
+        }
+    }
 
     let field = match multipart.next_field().await {
         Ok(Some(f)) => f,
