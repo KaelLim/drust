@@ -16,6 +16,9 @@ async fn app() -> axum::Router {
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
         session_ttl_days: 7,
+        garage: None,
+        public_base_url: "http://localhost:8793".to_string(),
+        max_upload_bytes: 52_428_800,
     };
     build_mgmt_router(state)
 }

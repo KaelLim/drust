@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust admin — public files</title>
+<meta name="description" content="drust admin — host-level public file store backed by Garage S3. Admin-only upload, anonymous read.">
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+</head>
+<body>
+{% include "_icons.html" %}
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/system/public-files</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <header class="topbar">
+      <div class="prompt">
+        <span class="dollar">$</span>
+        <span class="user">admin</span>
+        <span class="at">@</span>
+        <span class="host">drust</span>
+        <span class="colon">:</span>
+        <span class="path">~/system/public-files</span>
+        <span class="caret"></span>
+      </div>
+      <div class="topbar-right">
+        <span class="who">v{{ version }}</span>
+        <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
+        <form method="post" action="/drust/logout" style="display:inline;">
+          <button type="submit">logout ↵</button>
+        </form>
+      </div>
+    </header>
+
+    <main class="main"><div class="page">
+      <nav class="crumbs">
+        <a href="/drust/admin/tenants">drust</a>
+        <span class="sep">/</span>
+        <span class="here">public files</span>
+      </nav>
+
+      <div class="pagehead">
+        <div>
+          <h1>Public files</h1>
+          <div class="meta">
+            {% if storage_available %}
+            <b>{{ files.len() }}</b> files · <b>{{ total_bytes_human }}</b> total · anonymous read at <code>/public/&lt;key&gt;</code>
+            {% else %}
+            <span class="chip warn"><i class="dot"></i>storage not configured</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      {% if storage_available %}
+      <div class="card">
+        <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin-only · world-readable after upload</span></div>
+        <div class="card-body">
+          <form method="post" action="/drust/admin/public-files/upload" enctype="multipart/form-data" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+            <input type="file" name="file" required style="flex:1 1 280px;min-width:0;">
+            <button type="submit" class="btn btn-primary">Upload</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:24px;">
+        <div class="card-head"><span>Files</span><span class="card-head-actions"><a href="/drust/admin/public-files/reconcile" class="btn btn-sm btn-ghost">reconcile →</a></span></div>
+        <div class="records-scroll">
+          {% if files.is_empty() %}
+          <div class="empty" style="padding:56px 24px;">
+            <div style="margin-bottom:18px;display:grid;place-items:center;">
+              <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
+            </div>
+            <h3>No public files yet</h3>
+            <p>Upload the first one with the form above.</p>
+          </div>
+          {% else %}
+          <table class="data">
+            <thead><tr><th>original name</th><th>type</th><th>size</th><th>uploaded</th><th style="width:1%;">actions</th></tr></thead>
+            <tbody>
+              {% for f in files %}
+              <tr>
+                <td><a href="{{ f.public_url }}" target="_blank" rel="noopener" title="{{ f.key }}">{{ f.original_name }}</a></td>
+                <td class="type">{{ f.content_type }}</td>
+                <td>{{ f.size_human }}</td>
+                <td>{{ f.uploaded_at }}</td>
+                <td style="white-space:nowrap;">
+                  <button type="button" class="btn btn-sm btn-ghost" onclick="navigator.clipboard.writeText('{{ f.public_url }}')">copy URL</button>
+                  <form method="post" action="/drust/admin/public-files/{{ f.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ f.original_name }}? This is world-visible; check nothing links to it.');">
+                    <button type="submit" class="btn btn-sm btn-ghost" style="color:var(--danger);">delete</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% endif %}
+        </div>
+      </div>
+      {% else %}
+      <div class="card">
+        <div class="card-body">
+          <div class="empty" style="padding:72px 24px;">
+            <div style="margin-bottom:22px;display:grid;place-items:center;">
+              <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
+            </div>
+            <h3>Storage not configured</h3>
+            <p>Set <code>GARAGE_S3_ENDPOINT</code> (and the full key set) in drust's <code>.env</code> and restart. See <code>docs/superpowers/specs/2026-04-21-garage-object-store-integration.md</code>.</p>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+    </div></main>
+  </div>
+</div>
+{% include "_mascot.html" %}
+</body>
+</html>
