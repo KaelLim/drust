@@ -26,6 +26,7 @@ async fn create_insert_update_delete_roundtrip() {
             nullable: false,
             unique: false,
             default_value: None,
+            foreign_key: None,
         }],
     )
     .await
@@ -55,6 +56,7 @@ async fn add_field_adds_column() {
             nullable: false,
             unique: false,
             default_value: None,
+            foreign_key: None,
         }],
     )
     .await
@@ -68,6 +70,7 @@ async fn add_field_adds_column() {
             nullable: true,
             unique: false,
             default_value: Some(serde_json::json!(0)),
+            foreign_key: None,
         },
     )
     .await
@@ -92,6 +95,7 @@ async fn sql_default_datetime_now_is_applied() {
                 nullable: false,
                 unique: false,
                 default_value: None,
+                foreign_key: None,
             },
             FieldSpec {
                 name: "scheduled_at".into(),
@@ -99,6 +103,7 @@ async fn sql_default_datetime_now_is_applied() {
                 nullable: false,
                 unique: false,
                 default_value: Some(serde_json::json!({"sql": "datetime('now')"})),
+                foreign_key: None,
             },
         ],
     )
@@ -132,6 +137,7 @@ async fn sql_default_allowlist_covers_all_entries() {
             nullable: false,
             unique: false,
             default_value: None,
+            foreign_key: None,
         }],
     )
     .await
@@ -149,11 +155,185 @@ async fn sql_default_allowlist_covers_all_entries() {
                 nullable: true,
                 unique: false,
                 default_value: Some(serde_json::json!({"sql": expr})),
+                foreign_key: None,
             },
         )
         .await
         .unwrap_or_else(|e| panic!("allowlist entry {expr:?} rejected: {e}"));
     }
+}
+
+#[tokio::test]
+async fn foreign_key_field_is_reported_in_describe() {
+    use drust::mcp::tools::exploration::describe_collection as describe_mcp;
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "authors",
+        &[FieldSpec {
+            name: "name".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+        }],
+    )
+    .await
+    .unwrap();
+    create_collection(
+        &s,
+        "posts",
+        &[
+            FieldSpec {
+                name: "title".into(),
+                sql_type: "text".into(),
+                nullable: false,
+                unique: false,
+                default_value: None,
+                foreign_key: None,
+            },
+            FieldSpec {
+                name: "author_id".into(),
+                sql_type: "integer".into(),
+                nullable: false,
+                unique: false,
+                default_value: None,
+                foreign_key: Some("authors".into()),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    let schema = describe_mcp(&s, "posts").await.unwrap();
+    let author_id = schema["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "author_id")
+        .unwrap();
+    assert_eq!(author_id["foreign_key"], "authors");
+}
+
+#[tokio::test]
+async fn foreign_key_rejected_when_target_missing() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let err = create_collection(
+        &s,
+        "orphans",
+        &[FieldSpec {
+            name: "parent_id".into(),
+            sql_type: "integer".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: Some("nonexistent".into()),
+        }],
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("unknown collection"),
+        "expected pre-DDL FK validation, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn foreign_key_constraint_is_enforced_on_insert() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "authors",
+        &[FieldSpec {
+            name: "name".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+        }],
+    )
+    .await
+    .unwrap();
+    create_collection(
+        &s,
+        "posts",
+        &[FieldSpec {
+            name: "author_id".into(),
+            sql_type: "integer".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: Some("authors".into()),
+        }],
+    )
+    .await
+    .unwrap();
+    // Inserting a post referencing a nonexistent author must fail.
+    let err = insert_record(&s, "posts", serde_json::json!({"author_id": 999}))
+        .await
+        .unwrap_err();
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("foreign key") || msg.contains("constraint"),
+        "expected FK-constraint error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn foreign_key_restrict_blocks_parent_delete_while_children_exist() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "authors",
+        &[FieldSpec {
+            name: "name".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+        }],
+    )
+    .await
+    .unwrap();
+    create_collection(
+        &s,
+        "posts",
+        &[FieldSpec {
+            name: "author_id".into(),
+            sql_type: "integer".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: Some("authors".into()),
+        }],
+    )
+    .await
+    .unwrap();
+    let author = insert_record(&s, "authors", serde_json::json!({"name": "A"}))
+        .await
+        .unwrap();
+    let author_id = author["record"]["id"].as_i64().unwrap();
+    insert_record(
+        &s,
+        "posts",
+        serde_json::json!({"author_id": author_id}),
+    )
+    .await
+    .unwrap();
+    // RESTRICT means deleting the author while posts reference them must
+    // fail, preserving referential integrity.
+    let err = delete_record(&s, "authors", author_id).await.unwrap_err();
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("foreign key") || msg.contains("constraint"),
+        "expected ON DELETE RESTRICT error, got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -169,6 +349,7 @@ async fn sql_default_rejects_non_allowlisted() {
             nullable: true,
             unique: false,
             default_value: Some(serde_json::json!({"sql": "(SELECT password FROM admins)"})),
+            foreign_key: None,
         }],
     )
     .await

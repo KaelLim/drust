@@ -1,5 +1,5 @@
 use crate::mcp::server::DrustMcp;
-use crate::storage::schema::describe_collection;
+use crate::storage::schema::{collection_exists, describe_collection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -13,6 +13,11 @@ pub struct FieldSpec {
     pub unique: bool,
     #[serde(default)]
     pub default_value: Option<serde_json::Value>,
+    /// Name of another collection whose `id` this field references.
+    /// Emits `REFERENCES "<target>"("id") ON DELETE RESTRICT`. The
+    /// target must already exist at DDL time.
+    #[serde(default)]
+    pub foreign_key: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -100,6 +105,13 @@ fn column_expr(f: &FieldSpec) -> anyhow::Result<String> {
         };
         s.push_str(&format!(" DEFAULT {lit}"));
     }
+    if let Some(fk) = &f.foreign_key {
+        identifier(fk)?;
+        s.push_str(&format!(
+            " REFERENCES \"{}\"(\"id\") ON DELETE RESTRICT",
+            fk.replace('"', "\"\"")
+        ));
+    }
     Ok(s)
 }
 
@@ -109,6 +121,34 @@ pub async fn create_collection(
     fields: &[FieldSpec],
 ) -> anyhow::Result<serde_json::Value> {
     identifier(name)?;
+    // Validate all foreign-key targets exist before running the DDL —
+    // SQLite's own error for a missing FK table is cryptic.
+    let fk_targets: Vec<String> = fields
+        .iter()
+        .filter_map(|f| f.foreign_key.clone())
+        .collect();
+    if !fk_targets.is_empty() {
+        let pool = s.inner().pool.clone();
+        let targets = fk_targets.clone();
+        let own_name = name.to_string();
+        pool.with_reader(move |c| {
+            for t in &targets {
+                // Self-reference is permitted — the collection exists
+                // after CREATE.
+                if t == &own_name {
+                    continue;
+                }
+                if !collection_exists(c, t)? {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("foreign_key references unknown collection(s): {fk_targets:?}")
+        })?;
+    }
     let mut col_exprs = vec!["id INTEGER PRIMARY KEY AUTOINCREMENT".to_string()];
     for f in fields {
         col_exprs.push(column_expr(f)?);
@@ -144,6 +184,16 @@ pub async fn add_field(
     field: FieldSpec,
 ) -> anyhow::Result<serde_json::Value> {
     identifier(collection)?;
+    if let Some(fk) = &field.foreign_key {
+        let pool = s.inner().pool.clone();
+        let fk_target = fk.clone();
+        let exists = pool
+            .with_reader(move |c| collection_exists(c, &fk_target))
+            .await?;
+        if !exists {
+            anyhow::bail!("foreign_key references unknown collection: {fk:?}");
+        }
+    }
     let col = column_expr(&field)?;
     let sql = format!(
         "ALTER TABLE \"{}\" ADD COLUMN {}",
