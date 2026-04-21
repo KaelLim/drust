@@ -80,13 +80,18 @@
       <div class="topbar-right">
         <span class="who">v{{ version }}</span>
         <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
         <form method="post" action="/drust/logout" style="display:inline;">
           <button type="submit">logout ↵</button>
         </form>
       </div>
     </header>
 
-    <main class="page">
+    <main class="main"><div class="page">
       <nav class="crumbs">
         <a href="/drust/admin/tenants">← all tenants</a>
         <span class="sep">/</span>
@@ -114,9 +119,10 @@
           {% call api_key_card("service", "chip ok", "full · create · update · delete · schema", service, tenant_id) %}
         </div>
       </div>
-    </main>
+    </div></main>
   </div>
 </div>
+{% include "_mascot.html" %}
 <style>
   .key-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:6px 0 4px; }
   .key { font-family:var(--mono); font-size:18px; padding:10px 14px; background:var(--bg-1); border:1px solid var(--line); border-radius:6px; color:var(--text); user-select:all; word-break:break-all; flex:1 1 auto; min-width:0; }
