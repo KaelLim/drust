@@ -22,14 +22,28 @@ pub struct ObjectSummary {
     pub last_modified: chrono::DateTime<chrono::Utc>,
 }
 
-fn escape_filename(name: &str) -> String {
+/// ASCII-safe fallback for the plain `filename="..."` token in
+/// `Content-Disposition`. Non-ASCII characters are replaced with `_` so
+/// the resulting string is guaranteed to fit in an HTTP header; the
+/// real original name is preserved in `filename*=UTF-8''...` and in
+/// `x-amz-meta-original-name` (both percent-encoded).
+fn ascii_fallback_filename(name: &str) -> String {
     name.chars()
         .map(|c| match c {
-            '\\' | '"' => format!("\\{}", c),
-            c if c.is_control() => "_".to_string(),
-            c => c.to_string(),
+            '\\' | '"' => '_',
+            c if c.is_ascii() && !c.is_control() => c,
+            _ => '_',
         })
         .collect()
+}
+
+/// Build `Content-Disposition: inline; filename="<ascii>"; filename*=UTF-8''<utf8>`.
+/// Per RFC 6266 §4.3 the `filename*=UTF-8''...` token is preferred by
+/// modern clients; the plain `filename=` is kept for legacy readers.
+fn content_disposition(original_name: &str) -> String {
+    let ascii = ascii_fallback_filename(original_name);
+    let encoded = urlencoding::encode(original_name);
+    format!("inline; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
 impl GarageClient {
@@ -90,14 +104,16 @@ impl GarageClient {
         if let Some(ct) = content_type {
             attrs.insert(Attribute::ContentType, AttributeValue::from(ct.to_string()));
         }
-        let disposition = format!("inline; filename=\"{}\"", escape_filename(original_name));
         attrs.insert(
             Attribute::ContentDisposition,
-            AttributeValue::from(disposition),
+            AttributeValue::from(content_disposition(original_name)),
         );
+        // S3 user-metadata header values must be US-ASCII. Percent-encode
+        // so non-ASCII filenames round-trip losslessly — readers can
+        // `urldecode` on retrieval.
         attrs.insert(
             Attribute::Metadata("original-name".into()),
-            AttributeValue::from(original_name.to_string()),
+            AttributeValue::from(urlencoding::encode(original_name).into_owned()),
         );
         attrs.insert(
             Attribute::Metadata("uploaded-at".into()),
@@ -214,15 +230,42 @@ mod tests {
     }
 
     #[test]
-    fn escape_filename_handles_quotes_and_backslashes() {
-        assert_eq!(
-            escape_filename("a\"b\\c.txt"),
-            "a\\\"b\\\\c.txt"
-        );
+    fn ascii_fallback_replaces_non_ascii() {
+        assert_eq!(ascii_fallback_filename("發票.pdf"), "__.pdf");
+        assert_eq!(ascii_fallback_filename("a\"b.txt"), "a_b.txt");
+        assert_eq!(ascii_fallback_filename("a\nb.txt"), "a_b.txt");
+        assert_eq!(ascii_fallback_filename("normal.pdf"), "normal.pdf");
     }
 
     #[test]
-    fn escape_filename_replaces_control_chars() {
-        assert_eq!(escape_filename("a\nb.txt"), "a_b.txt");
+    fn content_disposition_includes_utf8_star() {
+        let cd = content_disposition("發票2026.pdf");
+        assert!(cd.starts_with("inline; filename=\"__2026.pdf\""));
+        assert!(cd.contains("filename*=UTF-8''"));
+        assert!(cd.contains("%E7%99%BC%E7%A5%A8")); // 發票 encoded
+    }
+
+    #[test]
+    fn content_disposition_ascii_only_is_still_valid() {
+        let cd = content_disposition("hello.txt");
+        assert!(cd.contains("filename=\"hello.txt\""));
+        assert!(cd.contains("filename*=UTF-8''hello.txt"));
+    }
+
+    #[tokio::test]
+    async fn put_object_with_non_ascii_filename_succeeds() {
+        let (store, client) = client();
+        client
+            .put_object(
+                "abc.pdf",
+                bytes::Bytes::from_static(b"%PDF-1.4"),
+                Some("application/pdf"),
+                "發票2026.pdf",
+            )
+            .await
+            .unwrap();
+        let path = StorePath::from("abc.pdf");
+        let got = store.get(&path).await.unwrap();
+        assert_eq!(got.bytes().await.unwrap().as_ref(), b"%PDF-1.4");
     }
 }
