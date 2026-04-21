@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-04-21
+
+### Changed
+- **Tenant detail: MCP setup now lives in its own card**, separate from
+  the API keys card. The old `{ }` button + caption on the service-key
+  row are gone; in their place, a new **"MCP server"** card directly
+  below the keys shows:
+  - The full `claude mcp add-json drust-<tenant> '{…}'` command, with
+    the bearer token masked (first 16 chars shown) for visual confirmation.
+  - A copy button that writes the unmasked command to the clipboard.
+  - A footer hint mentioning the `drust-<tenant>` server name and the
+    matching `claude mcp remove` teardown command.
+- Legacy tenants (service key created before v1.1c, plaintext not stored)
+  see a dedicated "reroll to enable" hint in the MCP card instead of a
+  broken copy button.
+
 ## [1.2.1] - 2026-04-21
 
 ### Changed
@@ -300,7 +316,8 @@ Initial production release.
   functions are exercised in-process by integration tests but are not yet
   reachable over HTTP
 
-[Unreleased]: https://example.invalid/drust/compare/v1.2.1...HEAD
+[Unreleased]: https://example.invalid/drust/compare/v1.2.2...HEAD
+[1.2.2]: https://example.invalid/drust/compare/v1.2.1...v1.2.2
 [1.2.1]: https://example.invalid/drust/compare/v1.2.0...v1.2.1
 [1.2.0]: https://example.invalid/drust/compare/v1.1.1...v1.2.0
 [1.1.1]: https://example.invalid/drust/compare/v1.1.0...v1.1.1
