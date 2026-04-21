@@ -28,13 +28,18 @@
       <div class="topbar-right">
         <span class="who">v{{ version }}</span>
         <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
         <form method="post" action="/drust/logout" style="display:inline;">
           <button type="submit">logout ↵</button>
         </form>
       </div>
     </header>
 
-    <main class="page">
+    <main class="main"><div class="page">
       <nav class="crumbs">
         <span class="here">drust</span>
         <span class="sep">/</span>
@@ -81,10 +86,10 @@
           </div>
         </div>
         {% if tenants.is_empty() %}
-        <div class="empty">
-          <div class="ascii">┌──────────────┐
-│   no rows    │
-└──────────────┘</div>
+        <div class="empty" style="padding:56px 24px 40px;">
+          <div style="margin-bottom:18px;display:grid;place-items:center;">
+            <canvas class="pix" data-chonk="working" data-size="96"></canvas>
+          </div>
           <h3>No tenants yet</h3>
           <p>Create one with the form above.</p>
         </div>
@@ -117,8 +122,9 @@
         </table>
         {% endif %}
       </div>
-    </main>
+    </div></main>
   </div>
 </div>
+{% include "_mascot.html" %}
 </body>
 </html>
