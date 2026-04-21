@@ -4,8 +4,10 @@ use drust::mcp::server::McpRegistry;
 use drust::mgmt::routes::MgmtState;
 use drust::storage::meta::{bootstrap_admin, open_meta};
 use drust::storage::pool::TenantRegistry;
+use drust::safety::rate_limit::RateLimiter;
 use drust::tenant::{TenantStack, build_tenant_router, events::EventBus, router::TenantAuthState};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 #[tokio::main]
@@ -47,10 +49,15 @@ async fn main() -> anyhow::Result<()> {
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
+    let limiter = Arc::new(RateLimiter::new(
+        cfg.rate_limit_per_token,
+        Duration::from_secs(cfg.rate_limit_window_secs),
+    ));
     let tenant_stack = TenantStack {
         auth: TenantAuthState {
             meta: meta.clone(),
             registry: tenants.clone(),
+            limiter,
         },
         bus: bus.clone(),
     };

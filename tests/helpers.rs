@@ -2,11 +2,13 @@
 
 use axum::Router;
 use drust::auth::bearer::{generate_token, hash_token};
+use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::{SharedTenantPool, TenantRegistry};
 use drust::tenant::router::TenantAuthState;
 use drust::tenant::{TenantStack, build_tenant_router, events::EventBus};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir) {
@@ -28,6 +30,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
+        limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
     };
     let stack = TenantStack {
         auth: state,
