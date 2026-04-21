@@ -7,9 +7,14 @@
 use crate::auth::middleware::AdminSessionState;
 use crate::storage::garage::GarageClient;
 use askama::Template;
-use axum::extract::{Form, Multipart, Path, Query, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
+// axum_extra::extract::Form uses `serde_html_form` under the hood which
+// handles repeated form fields (e.g. multiple checkboxes with the same
+// name) as `Vec<T>`. The stock axum `Form` uses `serde_urlencoded`,
+// which only keeps the last value and errors out for Vec-typed fields.
+use axum_extra::extract::Form;
 use rusqlite::Connection;
 use serde::Deserialize;
 use std::collections::HashSet;

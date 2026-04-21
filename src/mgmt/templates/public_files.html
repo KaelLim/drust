@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — public files</title>
-<meta name="description" content="drust admin — host-level public file store backed by Garage S3. Admin-only upload, anonymous read.">
+<title>drust admin — public bucket</title>
+<meta name="description" content="drust admin — the host-level public bucket backed by Garage S3. Admin-only upload, world-readable.">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -13,7 +13,7 @@
 <div class="macwin">
   <div class="macwin-title">
     <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">admin@drust <span class="muted">— ~/system/public-files</span></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/system/public-bucket</span></span>
     <span></span>
   </div>
   <div class="macwin-body">
@@ -24,7 +24,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/system/public-files</span>
+        <span class="path">~/system/public-bucket</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -45,12 +45,12 @@
       <nav class="crumbs">
         <a href="/drust/admin/tenants">drust</a>
         <span class="sep">/</span>
-        <span class="here">public files</span>
+        <span class="here">public bucket</span>
       </nav>
 
       <div class="pagehead">
         <div>
-          <h1>Public files</h1>
+          <h1>Public bucket</h1>
           <div class="meta">
             {% if storage_available %}
             <b>{{ total_files }}</b> files · <b>{{ total_bytes_human }}</b> total · anonymous read at <code>/public/&lt;key&gt;</code>
@@ -63,7 +63,7 @@
 
       {% if storage_available %}
       <div class="card">
-        <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin-only · world-readable after upload</span></div>
+        <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin-only · world-readable</span></div>
         <div class="card-body">
           <form method="post" action="/drust/admin/public-files/upload" enctype="multipart/form-data" id="upload-form">
             <div class="dropzone" id="dropzone">
@@ -73,7 +73,7 @@
                   <span class="dz-text">drag &amp; drop a file here</span>
                   <span class="dz-or">or</span>
                   <label class="filepick-btn" for="upload-file" id="upload-btn">
-                    <span class="filepick-btn-label">pick file…</span>
+                    <span class="filepick-btn-label">browse…</span>
                   </label>
                 </div>
                 <div class="dropzone-name" id="upload-name" data-empty="1">— no file chosen —</div>
@@ -82,7 +82,7 @@
                      data-max-mb="{{ max_upload_mb }}">
             </div>
             <div class="upload-row">
-              <span class="upload-hint muted" id="upload-hint">choose a file to enable upload · max {{ max_upload_mb }} MB · UUID key generated, original name kept in metadata</span>
+              <span class="upload-hint" id="upload-hint"></span>
               <button type="submit" class="btn btn-primary" id="upload-submit" disabled>Upload <span class="kbd">↵</span></button>
             </div>
           </form>
@@ -101,7 +101,7 @@
           </span>
         </div>
 
-        <div class="records-scroll">
+        <div class="pub-scroll">
           {% if files.is_empty() %}
           <div class="empty" style="padding:56px 24px;">
             <div style="margin-bottom:18px;display:grid;place-items:center;">
@@ -112,23 +112,32 @@
           </div>
           {% else %}
           <table class="data pub-files">
+            <colgroup>
+              <col class="col-name">
+              <col class="col-type">
+              <col class="col-size">
+              <col class="col-time">
+              <col class="col-actions">
+            </colgroup>
             <thead>
               <tr>
                 <th>original name</th>
-                <th style="width:160px;">type</th>
-                <th style="width:90px;">size</th>
-                <th style="width:180px;">uploaded</th>
-                <th style="width:1%;white-space:nowrap;">actions</th>
+                <th>type</th>
+                <th>size</th>
+                <th>uploaded</th>
+                <th>actions</th>
               </tr>
             </thead>
             <tbody>
               {% for f in files %}
               <tr>
-                <td class="trunc name-cell" title="{{ f.original_name }} ({{ f.key }})"><a href="{{ f.public_url }}" target="_blank" rel="noopener">{{ f.original_name }}</a></td>
-                <td class="type trunc" title="{{ f.content_type }}">{{ f.content_type }}</td>
-                <td>{{ f.size_human }}</td>
-                <td class="mono-cell">{{ f.uploaded_at }}</td>
-                <td style="white-space:nowrap;">
+                <td class="cell-name" title="{{ f.original_name }} ({{ f.key }})">
+                  <div class="trunc-inner"><a href="{{ f.public_url }}" target="_blank" rel="noopener">{{ f.original_name }}</a></div>
+                </td>
+                <td class="cell-type type" title="{{ f.content_type }}"><div class="trunc-inner">{{ f.content_type }}</div></td>
+                <td class="cell-size">{{ f.size_human }}</td>
+                <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
+                <td class="cell-actions">
                   <button type="button" class="btn btn-sm btn-ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">copy URL</button>
                   <form method="post" action="/drust/admin/public-files/{{ f.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ f.original_name }}? This is world-visible; check nothing links to it.');">
                     <button type="submit" class="btn btn-sm btn-ghost" style="color:var(--danger);">delete</button>
@@ -148,9 +157,9 @@
           </div>
           <div class="pager-group">
             {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
-            <form method="get" style="display:inline-flex;gap:6px;align-items:center;margin:0;">
-              <span style="color:var(--muted);font-family:var(--mono);font-size:16px;">per page</span>
-              <select class="select" name="per_page" onchange="this.form.submit()" style="height:32px;padding:0 8px;font-size:16px;">
+            <form method="get" class="pager-form">
+              <span class="pager-label">per page</span>
+              <select name="per_page" onchange="this.form.submit()" class="pager-select" aria-label="rows per page">
                 {% for opt in per_page_options %}
                 <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
                 {% endfor %}
@@ -180,15 +189,60 @@
 {% include "_mascot.html" %}
 
 <style>
-  /* Fix card width: table overflows via scroll, never stretches the card. */
-  .card { max-width: 100%; }
-  .records-scroll { overflow-x: auto; }
-  table.pub-files { width: 100%; table-layout: fixed; }
-  table.pub-files td.name-cell { max-width: 0; }  /* forces table-layout:fixed truncation */
-  table.pub-files td.name-cell a { color: var(--text); text-decoration: none; }
-  table.pub-files td.name-cell a:hover { color: var(--accent); text-decoration: underline; }
+  /* Card boundary: the card never stretches past its container; a wide
+     table scrolls horizontally inside .pub-scroll. Actions column is
+     sticky to the right so it stays visible while the name scrolls. */
+  .pub-scroll {
+    overflow-x: auto;
+    position: relative;
+  }
+  table.pub-files {
+    width: 100%;
+    min-width: 720px;       /* readable floor; narrower viewports scroll */
+    border-collapse: collapse;
+  }
+  table.pub-files colgroup .col-name    { width: auto; }
+  table.pub-files colgroup .col-type    { width: 140px; }
+  table.pub-files colgroup .col-size    { width: 90px; }
+  table.pub-files colgroup .col-time    { width: 180px; }
+  table.pub-files colgroup .col-actions { width: 1px; }
 
-  /* Upload drop zone */
+  /* Name + type truncate inside a wrapper div (reliable across browsers). */
+  .trunc-inner {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  table.pub-files td.cell-name a {
+    color: var(--text);
+    text-decoration: none;
+  }
+  table.pub-files td.cell-name a:hover {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+
+  /* Size column never wraps; the column is wide enough for e.g. "999.9 KB". */
+  table.pub-files td.cell-size { white-space: nowrap; }
+  table.pub-files td.cell-time { white-space: nowrap; }
+
+  /* Sticky actions — stays visible even if horizontal scroll happens. */
+  table.pub-files td.cell-actions,
+  table.pub-files th:last-child {
+    position: sticky;
+    right: 0;
+    white-space: nowrap;
+    background: var(--surface);
+    box-shadow: -8px 0 10px -6px rgba(0, 0, 0, 0.45);
+    z-index: 1;
+  }
+  table.pub-files th:last-child {
+    background: var(--bg-2);
+  }
+
+  /* Upload drop zone (unchanged visual language, trimmed copy). */
   .dropzone {
     position: relative;
     border: 1.5px dashed var(--line);
@@ -254,17 +308,46 @@
   }
 
   .upload-row {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; justify-content: flex-end;
     gap: 14px; flex-wrap: wrap;
     margin-top: 14px;
+    min-height: 32px;
   }
   .upload-hint {
     font-family: var(--mono);
     font-size: 15px;
+    color: var(--muted);
     flex: 1 1 auto;
   }
   .upload-hint.ready { color: var(--accent); }
   .upload-hint.error { color: var(--danger); }
+
+  /* Pager select — smaller than the default .select and with a caret
+     that stays inside the box at 30px height. */
+  .pager-form { display: inline-flex; gap: 6px; align-items: center; margin: 0; }
+  .pager-label { color: var(--muted); font-family: var(--mono); font-size: 16px; }
+  .pager-select {
+    height: 30px;
+    padding: 0 26px 0 10px;
+    font: 400 15px/1 var(--mono);
+    color: var(--text);
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 13px,
+      calc(100% - 9px) 13px;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
+  .pager-select:hover { border-color: var(--muted-2); }
+  .pager-select:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 </style>
 
 <script>
@@ -292,8 +375,8 @@
         nameEl.setAttribute('data-empty', '1');
         nameEl.removeAttribute('data-state');
         btn.disabled = true;
-        hint.className = 'upload-hint muted';
-        hint.textContent = 'choose a file to enable upload · max ' + (MAX_BYTES / 1024 / 1024) + ' MB · UUID key generated, original name kept in metadata';
+        hint.className = 'upload-hint';
+        hint.textContent = '';
         return;
       }
       nameEl.removeAttribute('data-empty');
@@ -302,7 +385,7 @@
         nameEl.textContent = f.name + '  (' + humanBytes(f.size) + ' — exceeds ' + (MAX_BYTES / 1024 / 1024) + ' MB limit)';
         btn.disabled = true;
         hint.className = 'upload-hint error';
-        hint.textContent = 'pick a smaller file, or ask the operator to raise GARAGE_MAX_UPLOAD_SIZE';
+        hint.textContent = 'pick a smaller file (limit ' + (MAX_BYTES / 1024 / 1024) + ' MB)';
         return;
       }
       nameEl.removeAttribute('data-state');
@@ -326,7 +409,7 @@
       }
     });
 
-    // Drag-and-drop. Dropping sets the input's FileList via DataTransfer.
+    // Drag-and-drop.
     ['dragenter', 'dragover'].forEach(function (ev) {
       dropzone.addEventListener(ev, function (e) {
         e.preventDefault();
@@ -338,7 +421,6 @@
       dropzone.addEventListener(ev, function (e) {
         e.preventDefault();
         e.stopPropagation();
-        // Only un-highlight when truly leaving the zone (not inner child).
         if (ev === 'dragleave' && dropzone.contains(e.relatedTarget)) return;
         dropzone.classList.remove('is-dragover');
       });
@@ -353,21 +435,20 @@
       }
     });
 
-    // Click anywhere on the zone (that isn't the label) → open picker.
+    // Click anywhere on the zone (that isn't the label or input) → open picker.
     dropzone.addEventListener('click', function (e) {
-      if (e.target === dropzone || e.target.classList.contains('dropzone-inner') || e.target.classList.contains('dropzone-prompt') || e.target.classList.contains('dz-arrow') || e.target.classList.contains('dz-text') || e.target.classList.contains('dz-or') || e.target.classList.contains('dropzone-name')) {
-        inp.click();
-      }
+      if (e.target.closest('.filepick-btn')) return;
+      inp.click();
     });
 
     // Copy URL buttons
-    document.querySelectorAll('[data-copy-url]').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        var url = btn.getAttribute('data-copy-url');
+    document.querySelectorAll('[data-copy-url]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var url = b.getAttribute('data-copy-url');
         navigator.clipboard.writeText(url).then(function () {
-          var orig = btn.textContent;
-          btn.textContent = 'copied ✓';
-          setTimeout(function () { btn.textContent = orig; }, 1500);
+          var orig = b.textContent;
+          b.textContent = 'copied ✓';
+          setTimeout(function () { b.textContent = orig; }, 1500);
         });
       });
     });
