@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_id }} / collections</title>
+<title>drust admin — {{ tenant_id }} / collections (empty)</title>
 {% include "_styles.html" %}
 </head>
 <body>
@@ -28,13 +28,18 @@
       <div class="topbar-right">
         <span class="who">v{{ version }}</span>
         <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
         <form method="post" action="/drust/logout" style="display:inline;">
           <button type="submit">logout ↵</button>
         </form>
       </div>
     </header>
 
-    <main class="page">
+    <main class="main"><div class="page">
       <nav class="crumbs">
         <a href="/drust/admin/tenants">drust</a>
         <span class="sep">/</span>
@@ -46,49 +51,26 @@
       <div class="pagehead">
         <div>
           <h1><span style="font-family:var(--mono);font-weight:500;">{{ tenant_id }}</span> — Collections</h1>
-          <div class="meta">{{ collections.len() }} collection(s) · auto-discovered from sqlite_master</div>
+          <div class="meta">no collections yet · auto-discovered from sqlite_master</div>
         </div>
       </div>
 
       <div class="card">
-        <div class="card-head">
-          <span>collections <span class="count">· auto-discovered</span></span>
-          <div class="card-head-actions">
-            <span style="font-family:var(--mono);font-size:11.5px;color:var(--muted);">click a row to browse data</span>
+        <div class="empty" style="padding:72px 24px 56px;">
+          <div style="margin-bottom:22px;display:grid;place-items:center;">
+            <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
           </div>
-        </div>
-        {% if collections.is_empty() %}
-        <div class="empty">
-          <div class="ascii">┌──────────────────────────┐
-│  no collections yet      │
-│  database is empty       │
-└──────────────────────────┘</div>
           <h3>This database has no tables</h3>
           <p>Once your client writes its first record, collections will appear here automatically.</p>
+          <p style="color:var(--muted);margin-top:14px;">
+            Write via the REST <code style="background:var(--bg-2);padding:1px 6px;border:1px solid var(--line);border-radius:3px;">/v1/records</code> endpoint
+            or via the per-tenant MCP server (service key required).
+          </p>
         </div>
-        {% else %}
-        <table class="data">
-          <thead>
-            <tr>
-              <th style="width:380px;">collection</th>
-              <th class="num" style="width:160px;">rows</th>
-              <th class="actions" style="width:120px;"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for c in collections %}
-            <tr>
-              <td><a class="cell-link" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}" style="font-family:var(--mono);">▸ {{ c.name }}</a></td>
-              <td class="num">{{ c.row_count }}</td>
-              <td class="actions"><a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}">browse →</a></td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        {% endif %}
       </div>
-    </main>
+    </div></main>
   </div>
 </div>
+{% include "_mascot.html" %}
 </body>
 </html>

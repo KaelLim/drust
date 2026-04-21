@@ -9,14 +9,13 @@ use crate::storage::tenant_db::open_read;
 use askama::Template;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
 
 #[derive(Template)]
 #[template(path = "collections.html")]
 struct CollectionsPage {
     tenant_id: String,
-    collections: Vec<Collection>,
     version: &'static str,
 }
 
@@ -94,10 +93,18 @@ pub async fn collections_page(
         Ok(v) => v,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
+
+    if let Some(first) = collections.first() {
+        let to = format!(
+            "/drust/admin/tenants/{}/collections/{}",
+            tenant_id, first.name
+        );
+        return Redirect::to(&to).into_response();
+    }
+
     Html(
         CollectionsPage {
             tenant_id,
-            collections,
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()
