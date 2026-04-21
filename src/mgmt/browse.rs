@@ -25,6 +25,8 @@ struct CollectionsPage {
 struct RowsPage {
     tenant_id: String,
     coll_name: String,
+    active_coll: String,
+    collections: Vec<Collection>,
     fields: Vec<Field>,
     column_names: Vec<String>,
     rows: Vec<Vec<String>>,
@@ -154,6 +156,11 @@ pub async fn collection_rows_page(
     let schema: CollectionSchema = match describe_collection(&conn, &coll_name) {
         Ok(Some(s)) => s,
         Ok(None) => return (StatusCode::NOT_FOUND, "collection not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let collections = match list_collections(&conn) {
+        Ok(v) => v,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
@@ -287,7 +294,9 @@ pub async fn collection_rows_page(
     Html(
         RowsPage {
             tenant_id,
+            active_coll: coll_name.clone(),
             coll_name,
+            collections,
             fields: schema.fields,
             column_names,
             rows,
