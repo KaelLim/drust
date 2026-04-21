@@ -10,19 +10,10 @@
     <code class="key" id="key-{{ role }}" data-plain="{{ pt }}" data-revealed="0">••••••••••••••••••••••••••••••••</code>
     <button class="key-act" type="button" onclick="toggleKey('key-{{ role }}', this)" title="show / hide" aria-label="show or hide key"><svg class="icon"><use href="#i-eye"/></svg></button>
     <button class="key-act" type="button" onclick="copyKey('key-{{ role }}', this)" title="copy to clipboard" aria-label="copy key"><svg class="icon"><use href="#i-copy"/></svg></button>
-    {% if role == "service" %}
-    <button class="key-act" type="button" onclick="copyMcpConfig('{{ tenant_id }}', 'key-{{ role }}', this)" title="copy `claude mcp add-json` command" aria-label="copy claude mcp add-json command"><svg class="icon"><use href="#i-braces"/></svg></button>
-    {% endif %}
     <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" onsubmit="return confirm('Reroll {{ role }} key? The current key will be invalidated immediately.');" style="margin:0;">
       <button class="key-act key-act-danger" type="submit" title="reroll {{ role }} key" aria-label="reroll {{ role }} key"><svg class="icon"><use href="#i-refresh"/></svg></button>
     </form>
   </div>
-  {% if role == "service" %}
-  <div style="font-family:var(--mono);font-size:15px;color:var(--muted);margin:8px 0 0;padding-left:2px;">
-    <svg class="icon" style="width:0.9em;height:0.9em;vertical-align:-2px;margin-right:6px;"><use href="#i-braces"/></svg>
-    Use this key as an MCP server for Claude Code — the <code style="font-size:13px;">{ }</code> button copies a ready-to-run <code style="font-size:13px;">claude mcp add-json</code> command.
-  </div>
-  {% endif %}
   {% else %}
   <div class="key-row">
     <code class="key muted">key not stored — created before v1.1c</code>
@@ -119,6 +110,37 @@
           {% call api_key_card("service", "chip ok", "full · create · update · delete · schema", service, tenant_id) %}
         </div>
       </div>
+
+      <div class="card" style="margin-top:24px;">
+        <div class="card-head">
+          <span><svg class="icon" style="width:0.95em;height:0.95em;vertical-align:-2px;margin-right:6px;"><use href="#i-braces"/></svg>MCP server</span>
+          <span class="card-head-actions">service-key-only · streamable http · claude code</span>
+        </div>
+        <div class="card-body">
+          {% if let Some(svc) = service %}
+            {% if let Some(_pt) = svc.plaintext %}
+          <div style="font-family:var(--mono);font-size:16px;color:var(--text-soft);margin:0 0 12px;">
+            Register this tenant as an MCP server for Claude Code — copy and run once in your terminal:
+          </div>
+          <div class="key-row">
+            <code class="key" id="mcp-cmd-preview" data-tenant="{{ tenant_id }}" style="font-size:16px;">loading…</code>
+            <button class="key-act" type="button" onclick="copyMcpCommand(this)" title="copy `claude mcp add-json` command" aria-label="copy claude mcp add-json command"><svg class="icon"><use href="#i-copy"/></svg></button>
+          </div>
+          <div style="font-family:var(--mono);font-size:15px;color:var(--muted);margin-top:14px;">
+            After success, Claude Code exposes all 11 drust tools under server name <code style="font-size:13px;">drust-{{ tenant_id }}</code>. To remove later: <code style="font-size:13px;">claude mcp remove drust-{{ tenant_id }}</code>.
+          </div>
+            {% else %}
+          <div style="font-family:var(--mono);font-size:16px;color:var(--muted);">
+            Legacy service key — plaintext not stored, so the one-click command can't be generated. Reroll the service key above to enable MCP setup.
+          </div>
+            {% endif %}
+          {% else %}
+          <div style="font-family:var(--mono);font-size:16px;color:var(--muted);">
+            No service key yet. Generate one in the card above to enable MCP access.
+          </div>
+          {% endif %}
+        </div>
+      </div>
     </div></main>
   </div>
 </div>
@@ -173,28 +195,51 @@
       }, 1500);
     });
   }
-  function copyMcpConfig(tenantId, keyElementId, btn) {
-    var el = document.getElementById(keyElementId);
-    var token = el.getAttribute('data-plain');
+  // Compose the `claude mcp add-json` command for the current tenant.
+  // maskToken=true → replaces the bearer token with a dotted preview;
+  // false → real token (used by the copy action).
+  function _buildMcpCommand(tenantId, maskToken) {
+    var keyEl = document.getElementById('key-service');
+    if (!keyEl) return null;
+    var token = keyEl.getAttribute('data-plain');
+    if (!token) return null;
     var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
-    // Emit the Claude Code CLI form:
-    //   claude mcp add-json drust-<tenant> '<server-config-json>'
-    // The inner JSON is the bare server config (no mcpServers wrapper,
-    // no name key) — that's what `claude mcp add-json` expects as argv[2].
+    var bearer = maskToken
+      ? token.slice(0, 16) + '••••••••••••••••'
+      : token;
     var serverCfg = {
       type: 'http',
       url: url,
-      headers: { Authorization: 'Bearer ' + token }
+      headers: { Authorization: 'Bearer ' + bearer }
     };
-    var cmd = "claude mcp add-json drust-" + tenantId + " '" + JSON.stringify(serverCfg) + "'";
+    return "claude mcp add-json drust-" + tenantId + " '" + JSON.stringify(serverCfg) + "'";
+  }
+  function initMcpCard() {
+    var preview = document.getElementById('mcp-cmd-preview');
+    if (!preview) return;
+    var tenantId = preview.getAttribute('data-tenant');
+    var masked = _buildMcpCommand(tenantId, true);
+    if (masked) preview.textContent = masked;
+  }
+  function copyMcpCommand(btn) {
+    var preview = document.getElementById('mcp-cmd-preview');
+    if (!preview) return;
+    var tenantId = preview.getAttribute('data-tenant');
+    var cmd = _buildMcpCommand(tenantId, false);
+    if (!cmd) return;
     navigator.clipboard.writeText(cmd).then(function () {
       _setIcon(btn, 'i-check');
       btn.classList.add('is-ok');
       setTimeout(function () {
-        _setIcon(btn, 'i-braces');
+        _setIcon(btn, 'i-copy');
         btn.classList.remove('is-ok');
       }, 1500);
     });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initMcpCard);
+  } else {
+    initMcpCard();
   }
 </script>
 </body>
