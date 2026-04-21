@@ -130,11 +130,17 @@ pub async fn upload_submit(
         .unwrap_or("bin");
     let key = format!("{}.{}", uuid::Uuid::new_v4(), ext);
 
-    let sniffed_ct = explicit_ct.or_else(|| {
-        mime_guess::from_path(&original_name)
-            .first_raw()
-            .map(|s| s.to_string())
-    });
+    // Browsers send `application/octet-stream` for any type they don't
+    // recognise (notably `.md`, `.toml`, `.rs`, …). Treat that as "no
+    // useful guess" and fall back to mime_guess from the filename
+    // extension. Only honour an explicit non-octet-stream Content-Type.
+    let sniffed_ct = explicit_ct
+        .filter(|ct| ct != "application/octet-stream")
+        .or_else(|| {
+            mime_guess::from_path(&original_name)
+                .first_raw()
+                .map(|s| s.to_string())
+        });
     let disposition = format!(
         "inline; filename=\"{}\"",
         original_name.replace('\\', "\\\\").replace('"', "\\\"")
@@ -165,13 +171,21 @@ pub async fn upload_submit(
         .put_object(&key, body, sniffed_ct.as_deref(), &original_name)
         .await
     {
-        tracing::error!(error = %e, key = %key, "garage put failed — rolling back metadata row");
+        // Log the full error chain (context + source) so we can see the
+        // underlying object_store message, not just the outer `context`.
+        tracing::error!(
+            key = %key,
+            original_name = %original_name,
+            content_type = ?sniffed_ct,
+            error = format!("{e:#}"),
+            "garage put failed — rolling back metadata row"
+        );
         let conn = state.meta.lock().await;
         let _ = conn.execute(
             "DELETE FROM _system_public_files WHERE key = ?1",
             rusqlite::params![&key],
         );
-        return internal(format!("garage put: {e}"));
+        return internal(format!("garage put: {e:#}"));
     }
 
     Redirect::to("/drust/admin/public-files").into_response()
