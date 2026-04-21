@@ -1,3 +1,4 @@
+pub mod garage;
 pub mod meta;
 pub mod pool;
 pub mod quota;
