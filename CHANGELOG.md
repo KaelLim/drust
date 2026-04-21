@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-04-21
+
 ### Added
 - **"Copy MCP config" button on the tenant-detail page.** Next to the
   service-key card (anon cards don't get the button — MCP is
@@ -258,6 +260,7 @@ Initial production release.
   functions are exercised in-process by integration tests but are not yet
   reachable over HTTP
 
-[Unreleased]: https://example.invalid/drust/compare/v1.1.0...HEAD
+[Unreleased]: https://example.invalid/drust/compare/v1.1.1...HEAD
+[1.1.1]: https://example.invalid/drust/compare/v1.1.0...v1.1.1
 [1.1.0]: https://example.invalid/drust/compare/v0.1.0...v1.1.0
 [0.1.0]: https://example.invalid/drust/releases/tag/v0.1.0
