@@ -6,6 +6,7 @@ port: 47826
 path: /drust
 status: production
 updated: 2026-04-21
+version: 1.4.0
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -34,6 +35,18 @@ curl -s http://127.0.0.1:47826/health   # → ok
 - SSE broadcast channels per `(tenant, collection)` fan events from record CRUD.
 - Soft-delete moves `tenants/<id>/` into `_trash/<id>-<ts>/`; `drust-janitor.timer` deletes after 7d.
 - Daily `drust-backup.timer` runs `VACUUM INTO` snapshots → `backups/drust-YYYY-MM-DD-HHMMSS.tar.zst` (30d retention).
+
+## Storage integration (Garage client, v1.4.0+)
+
+Optional. Activated by setting `GARAGE_S3_ENDPOINT` + friends in `.env`. When enabled, drust gains `/drust/admin/public-files` (list / upload / delete / reconcile) backed by a `_system_public_files` metadata collection in `meta.sqlite`.
+
+- **Garage is an independent service** (see `tool/garage/CLAUDE.md`). drust speaks plain S3 to it via `object_store::aws::AmazonS3`. drust boots with Garage unreachable — the storage tab shows "not configured" / admin operations return 503, but the rest of drust (tenants, MCP, REST, auth) is unaffected.
+- **Reads bypass drust.** Anonymous GETs hit Caddy `/public/*` which reverse-proxies to Garage `s3_web` (`127.0.0.1:47831`) with `Host: public.web.local` to select the bucket. drust is only in the *write* path.
+- **SQLite-first upload / S3-first delete.** Upload inserts the metadata row, puts to Garage, and compensates by deleting the row on S3 failure. Delete calls Garage first (idempotent on NotFound), then clears the row. Orphans from partial failures are surfaced by the `reconcile` page.
+- **`_system_*` collections are drop-protected.** `storage::schema::is_protected_collection()` is consulted by the `drop_collection` MCP tool. Future Y-scope tenant lifecycle hooks will reuse this.
+
+> [!IMPORTANT]
+> Garage's `s3_web` endpoint routes by **Host header** (`<bucket>.web.local`). The Caddy `reverse_proxy` for `/public/*` MUST carry `header_up Host "public.web.local"` or every request returns `NoSuchBucket`. Same family of gotcha as the MCP `header_up Host "127.0.0.1:47826"` below.
 
 ## Invariants
 
