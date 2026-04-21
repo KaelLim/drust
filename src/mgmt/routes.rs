@@ -16,6 +16,9 @@ use tokio::sync::Mutex;
 pub struct MgmtState {
     pub meta: Arc<Mutex<Connection>>,
     pub session_ttl_days: u64,
+    pub garage: Option<Arc<crate::storage::garage::GarageClient>>,
+    pub public_base_url: String,
+    pub max_upload_bytes: usize,
 }
 
 #[derive(Template)]
@@ -120,10 +123,15 @@ pub fn build_mgmt_router(state: MgmtState) -> Router {
 impl MgmtState {
     pub fn with_data_dir(self, data_dir: std::path::PathBuf) -> Router {
         use crate::auth::middleware::{AdminSessionState, admin_session_layer};
+        use crate::mgmt::public_files::{
+            PublicFilesState, delete_submit, list_page as public_files_list_page,
+            reconcile_apply, reconcile_page, upload_submit,
+        };
         use crate::mgmt::tenants::{
             TenantsState, create_tenant_form, create_tenant_json, list_page_axum,
             soft_delete_tenant, soft_delete_tenant_form,
         };
+        use axum::extract::DefaultBodyLimit;
 
         let session = AdminSessionState {
             meta: self.meta.clone(),
@@ -132,12 +140,22 @@ impl MgmtState {
             session: session.clone(),
             data_dir,
         };
+        let public_files_state = PublicFilesState {
+            session: session.clone(),
+            meta: self.meta.clone(),
+            garage: self.garage.clone(),
+            base_url: self.public_base_url.clone(),
+            max_upload_bytes: self.max_upload_bytes,
+        };
+
         let public = Router::new()
             .route("/", get(root_redirect))
             .route("/login", get(login_page).post(login_submit))
             .route("/logout", post(logout_submit))
-            .with_state(self);
-        let protected = Router::new()
+            .with_state(self.clone());
+
+        // Tenant admin sub-router (existing behaviour).
+        let tenants_router = Router::new()
             .route("/admin/tenants", get(list_page_axum))
             .route("/admin/tenants/new", post(create_tenant_form))
             .route("/admin/api/tenants", post(create_tenant_json))
@@ -163,11 +181,31 @@ impl MgmtState {
                 "/admin/tenants/{id}/collections/{coll}",
                 get(super::browse::collection_rows_page),
             )
+            .with_state(tenants_state);
+
+        // Public-files sub-router (new in v1.4.0). Upload route carries its
+        // own DefaultBodyLimit so multipart payloads larger than the cap
+        // return 413 without consuming memory.
+        let public_files_router = Router::new()
+            .route("/admin/public-files", get(public_files_list_page))
+            .route(
+                "/admin/public-files/upload",
+                post(upload_submit).layer(DefaultBodyLimit::max(self.max_upload_bytes)),
+            )
+            .route("/admin/public-files/{id}/delete", post(delete_submit))
+            .route(
+                "/admin/public-files/reconcile",
+                get(reconcile_page).post(reconcile_apply),
+            )
+            .with_state(public_files_state);
+
+        let protected = tenants_router
+            .merge(public_files_router)
             .layer(axum::middleware::from_fn_with_state(
                 session,
                 admin_session_layer,
-            ))
-            .with_state(tenants_state);
+            ));
+
         public.merge(protected)
     }
 }

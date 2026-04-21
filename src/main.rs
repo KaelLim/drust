@@ -43,9 +43,41 @@ async fn main() -> anyhow::Result<()> {
     let mcp_reg = Arc::new(McpRegistry::with_bus(tenants.clone(), bus.clone()));
     let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 
+    let garage = match &cfg.storage {
+        Some(sc) => match drust::storage::garage::GarageClient::new(sc) {
+            Ok(client) => match client.ping().await {
+                Ok(()) => {
+                    tracing::info!(bucket = %sc.public_bucket, "Garage reachable");
+                    Some(Arc::new(client))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Garage ping failed — storage features degraded");
+                    Some(Arc::new(client))
+                }
+            },
+            Err(e) => {
+                tracing::error!(error = %e, "failed to construct Garage client — storage disabled");
+                None
+            }
+        },
+        None => {
+            tracing::info!("GARAGE_S3_ENDPOINT unset; storage module disabled");
+            None
+        }
+    };
+
+    let max_upload_bytes = cfg
+        .storage
+        .as_ref()
+        .map(|s| s.max_upload_bytes)
+        .unwrap_or(52_428_800);
+
     let mgmt_state = MgmtState {
         meta: meta.clone(),
         session_ttl_days: cfg.session_ttl_days,
+        garage,
+        public_base_url: cfg.public_base_url.clone(),
+        max_upload_bytes,
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 

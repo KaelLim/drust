@@ -1,4 +1,5 @@
 use drust::config::Config;
+use serial_test::serial;
 use std::path::PathBuf;
 
 fn clear_env() {
@@ -6,6 +7,7 @@ fn clear_env() {
         for key in [
             "DRUST_BIND",
             "DRUST_URL_PREFIX",
+            "DRUST_PUBLIC_BASE_URL",
             "DRUST_DATA_DIR",
             "DRUST_LOG_DIR",
             "DRUST_INIT_ADMIN_USERNAME",
@@ -19,6 +21,13 @@ fn clear_env() {
             "DRUST_RATE_LIMIT_ANON_WINDOW_SECS",
             "DRUST_TENANT_READ_POOL_SIZE",
             "DRUST_SESSION_TTL_DAYS",
+            "GARAGE_S3_ENDPOINT",
+            "GARAGE_ADMIN_ENDPOINT",
+            "GARAGE_S3_ACCESS_KEY",
+            "GARAGE_S3_SECRET_KEY",
+            "GARAGE_ADMIN_TOKEN",
+            "GARAGE_PUBLIC_BUCKET",
+            "GARAGE_MAX_UPLOAD_SIZE",
         ] {
             std::env::remove_var(key);
         }
@@ -26,6 +35,7 @@ fn clear_env() {
 }
 
 #[test]
+#[serial]
 fn loads_with_all_defaults() {
     clear_env();
     unsafe {
@@ -50,6 +60,7 @@ fn loads_with_all_defaults() {
 }
 
 #[test]
+#[serial]
 fn picks_up_init_admin_pair() {
     clear_env();
     unsafe {
@@ -65,6 +76,7 @@ fn picks_up_init_admin_pair() {
 }
 
 #[test]
+#[serial]
 fn rejects_missing_data_dir() {
     clear_env();
     unsafe {
