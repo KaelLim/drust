@@ -7,7 +7,7 @@
 use crate::auth::middleware::AdminSessionState;
 use crate::storage::garage::GarageClient;
 use askama::Template;
-use axum::extract::{Form, Multipart, Path, State};
+use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use rusqlite::Connection;
@@ -15,6 +15,9 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+const DEFAULT_PER_PAGE: u32 = 25;
+const PER_PAGE_OPTIONS: &[u32] = &[10, 25, 50, 100];
 
 #[derive(Clone)]
 pub struct PublicFilesState {
@@ -42,8 +45,28 @@ struct PublicFilesPage {
     version: &'static str,
     storage_available: bool,
     files: Vec<PublicFileRow>,
+    total_files: i64,
     total_bytes_human: String,
     max_upload_mb: u64,
+    page: u32,
+    per_page: u32,
+    total_pages: u32,
+    prev_url: Option<String>,
+    next_url: Option<String>,
+    per_page_options: Vec<PerPageOption>,
+}
+
+struct PerPageOption {
+    value: u32,
+    selected: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ListQs {
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub per_page: Option<u32>,
 }
 
 #[derive(Template)]
@@ -54,17 +77,57 @@ struct ReconcilePage {
     dangling_rows: Vec<(i64, String, String)>, // (id, key, original_name)
 }
 
-pub async fn list_page(State(state): State<PublicFilesState>) -> Response {
-    let (files, total_bytes) = match load_files(&state).await {
+pub async fn list_page(
+    State(state): State<PublicFilesState>,
+    Query(qs): Query<ListQs>,
+) -> Response {
+    let per_page = qs
+        .per_page
+        .filter(|n| PER_PAGE_OPTIONS.contains(n))
+        .unwrap_or(DEFAULT_PER_PAGE);
+    let page_num = qs.page.unwrap_or(1).max(1);
+
+    let (files, total_files, total_bytes) = match load_files(&state, page_num, per_page).await {
         Ok(v) => v,
         Err(e) => return internal(format!("load: {e}")),
     };
+    let total_pages = if total_files == 0 {
+        1
+    } else {
+        ((total_files as f64) / (per_page as f64)).ceil() as u32
+    };
+
+    let pager_url = |p: u32| -> String {
+        if per_page == DEFAULT_PER_PAGE {
+            format!("/drust/admin/public-files?page={p}")
+        } else {
+            format!("/drust/admin/public-files?page={p}&per_page={per_page}")
+        }
+    };
+    let prev_url = (page_num > 1).then(|| pager_url(page_num - 1));
+    let next_url = (page_num < total_pages).then(|| pager_url(page_num + 1));
+
+    let per_page_options: Vec<PerPageOption> = PER_PAGE_OPTIONS
+        .iter()
+        .map(|&v| PerPageOption {
+            value: v,
+            selected: v == per_page,
+        })
+        .collect();
+
     let page = PublicFilesPage {
         version: env!("CARGO_PKG_VERSION"),
         storage_available: state.garage.is_some(),
         files,
+        total_files,
         total_bytes_human: humanize_bytes(total_bytes),
         max_upload_mb: (state.max_upload_bytes / (1024 * 1024)) as u64,
+        page: page_num,
+        per_page,
+        total_pages,
+        prev_url,
+        next_url,
+        per_page_options,
     };
     Html(page.render().unwrap()).into_response()
 }
@@ -316,15 +379,36 @@ pub async fn reconcile_apply(
     Redirect::to("/drust/admin/public-files").into_response()
 }
 
-async fn load_files(state: &PublicFilesState) -> anyhow::Result<(Vec<PublicFileRow>, u64)> {
+async fn load_files(
+    state: &PublicFilesState,
+    page: u32,
+    per_page: u32,
+) -> anyhow::Result<(Vec<PublicFileRow>, i64, u64)> {
     let conn = state.meta.lock().await;
+
+    // Totals across ALL rows (not just the current page).
+    let total_files: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM _system_public_files",
+        [],
+        |r| r.get(0),
+    )?;
+    let total_bytes: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_public_files",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    let offset = (page.saturating_sub(1) as i64) * (per_page as i64);
     let mut stmt = conn.prepare(
         "SELECT id, key, original_name, COALESCE(content_type,''), size_bytes, uploaded_at
          FROM _system_public_files
-         ORDER BY uploaded_at DESC",
+         ORDER BY uploaded_at DESC, id DESC
+         LIMIT ?1 OFFSET ?2",
     )?;
     let rows = stmt
-        .query_map([], |r| {
+        .query_map(rusqlite::params![per_page as i64, offset], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -336,12 +420,10 @@ async fn load_files(state: &PublicFilesState) -> anyhow::Result<(Vec<PublicFileR
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let base = state.base_url.trim_end_matches('/');
-    let mut total: u64 = 0;
     let files = rows
         .into_iter()
-        .map(|(id, key, original_name, content_type, size_bytes, uploaded_at)| {
-            total += size_bytes.max(0) as u64;
-            PublicFileRow {
+        .map(
+            |(id, key, original_name, content_type, size_bytes, uploaded_at)| PublicFileRow {
                 id,
                 public_url: format!("{base}/public/{key}"),
                 key,
@@ -349,10 +431,10 @@ async fn load_files(state: &PublicFilesState) -> anyhow::Result<(Vec<PublicFileR
                 content_type,
                 size_human: humanize_bytes(size_bytes.max(0) as u64),
                 uploaded_at,
-            }
-        })
+            },
+        )
         .collect();
-    Ok((files, total))
+    Ok((files, total_files, total_bytes.max(0) as u64))
 }
 
 fn humanize_bytes(n: u64) -> String {
@@ -367,6 +449,10 @@ fn humanize_bytes(n: u64) -> String {
         format!("{:.2} GB", n as f64 / (K * K * K) as f64)
     }
 }
+
+// (Previous `parse_size_human` summed displayed strings back into bytes —
+// removed in favour of SQL SUM at query time, which is both exact and
+// cheaper.)
 
 fn internal(msg: String) -> Response {
     let mut r = msg.into_response();
