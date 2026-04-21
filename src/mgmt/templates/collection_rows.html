@@ -28,160 +28,167 @@
       <div class="topbar-right">
         <span class="who">v{{ version }}</span>
         <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
         <form method="post" action="/drust/logout" style="display:inline;">
           <button type="submit">logout ↵</button>
         </form>
       </div>
     </header>
 
-    <main class="page page-wide">
-      <nav class="crumbs">
-        <a href="/drust/admin/tenants">drust</a>
-        <span class="sep">/</span>
-        <a href="/drust/admin/tenants/{{ tenant_id }}">{{ tenant_id }}</a>
-        <span class="sep">/</span>
-        <a href="/drust/admin/tenants/{{ tenant_id }}/collections">collections</a>
-        <span class="sep">/</span>
-        <span class="here">{{ coll_name }}</span>
-      </nav>
+    <div class="shell">
+      {% include "_collection_sidebar.html" %}
 
-      <div class="pagehead">
-        <div>
-          <h1><span style="font-family:var(--mono);font-weight:500;">{{ tenant_id }}</span> / <span style="font-family:var(--mono);font-weight:500;color:var(--accent);">{{ coll_name }}</span></h1>
-          <div class="meta">
-            <b>{{ total_rows }}</b> records · <b>{{ fields.len() }}</b> fields
-          </div>
-        </div>
-      </div>
+      <main class="main"><div class="page page-wide">
+        <nav class="crumbs">
+          <a href="/drust/admin/tenants">drust</a>
+          <span class="sep">/</span>
+          <a href="/drust/admin/tenants/{{ tenant_id }}">{{ tenant_id }}</a>
+        </nav>
 
-      <div class="card">
-        <form method="get" class="toolbar">
-          <div class="field">
-            <label>filter · sql where fragment</label>
-            <div class="input-prefix">
-              <span class="prefix">WHERE</span>
-              <input class="input" type="text" name="filter" value="{{ filter_val }}" placeholder="e.g. created_at &gt; '2026-01-01'">
+        <div class="pagehead">
+          <div>
+            <h1><span style="font-family:var(--mono);font-weight:500;">{{ tenant_id }}</span> / <span style="font-family:var(--mono);font-weight:500;color:var(--accent);">{{ coll_name }}</span></h1>
+            <div class="meta">
+              <b>{{ total_rows }}</b> records · <b>{{ fields.len() }}</b> fields
             </div>
           </div>
-          <div class="field">
-            <label>sort</label>
-            <select class="select" name="sort">
-              <option value="">— default (id desc) —</option>
-              {% for opt in sort_options %}
-              <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.label }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="field">
-            <label>per page</label>
-            <select class="select" name="per_page">
-              {% for opt in per_page_options %}
-              <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="actions">
-            <button class="btn btn-primary" type="submit">Apply</button>
-            <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset</a>
-          </div>
-        </form>
-
-        {% if let Some(err) = error %}
-        <div style="padding:12px 16px;border-bottom:1px solid var(--line);">
-          <div class="alert error">
-            <div class="icon">✕</div>
-            <div class="msg">{{ err }}</div>
-            <span></span>
-          </div>
         </div>
-        {% endif %}
 
-        <div class="meta-row">
-          <span><b>{{ total_rows }}</b> records</span>
-          <span style="color:var(--line);">│</span>
-          <span>page <b>{{ page }}</b> / {{ total_pages }}</span>
-          {% if !filter_val.is_empty() %}
-          <span style="color:var(--line);">│</span>
-          <span>filter <b>{{ filter_val }}</b></span>
+        <div class="card">
+          <form method="get" class="toolbar">
+            <div class="field">
+              <label>filter · sql where fragment</label>
+              <div class="input-prefix">
+                <span class="prefix">WHERE</span>
+                <input class="input" type="text" name="filter" value="{{ filter_val }}" placeholder="e.g. created_at &gt; '2026-01-01'">
+              </div>
+            </div>
+            <div class="field">
+              <label>sort</label>
+              <select class="select" name="sort">
+                <option value="">— default (id desc) —</option>
+                {% for opt in sort_options %}
+                <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field">
+              <label>per page</label>
+              <select class="select" name="per_page">
+                {% for opt in per_page_options %}
+                <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="actions">
+              <button class="btn btn-primary" type="submit">Apply</button>
+              <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset</a>
+            </div>
+          </form>
+
+          {% if let Some(err) = error %}
+          <div style="padding:12px 16px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;">
+            <canvas class="pix" data-chonk="error" data-size="56"></canvas>
+            <div class="alert error">
+              <div class="icon">✕</div>
+              <div class="msg">{{ err }}</div>
+              <span></span>
+            </div>
+          </div>
           {% endif %}
-          <span class="spacer"></span>
-        </div>
 
-        <div style="padding:14px 16px 0;border-bottom:1px solid var(--line);">
-          <h3 style="font-family:var(--mono);font-size:11.5px;color:var(--muted);text-transform:lowercase;letter-spacing:0.03em;margin:0 0 8px;">
-            schema
-          </h3>
-          <div style="border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-bottom:14px;">
-            <table class="data schema-grid">
+          <div class="meta-row">
+            <span><b>{{ total_rows }}</b> records</span>
+            <span style="color:var(--line);">│</span>
+            <span>page <b>{{ page }}</b> / {{ total_pages }}</span>
+            {% if !filter_val.is_empty() %}
+            <span style="color:var(--line);">│</span>
+            <span>filter <b>{{ filter_val }}</b></span>
+            {% endif %}
+            <span class="spacer"></span>
+          </div>
+
+          <div style="padding:14px 16px 0;border-bottom:1px solid var(--line);">
+            <h3 style="font-family:var(--mono);font-size:11.5px;color:var(--muted);text-transform:lowercase;letter-spacing:0.03em;margin:0 0 8px;">
+              schema
+            </h3>
+            <div style="border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-bottom:14px;">
+              <table class="data schema-grid">
+                <thead>
+                  <tr>
+                    <th style="width:200px;">field</th>
+                    <th style="width:140px;">type</th>
+                    <th style="width:100px;">nullable</th>
+                    <th style="width:80px;">pk</th>
+                    <th>default</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for f in fields %}
+                  <tr>
+                    <td>{{ f.name }}</td>
+                    <td class="type">{{ f.sql_type }}</td>
+                    <td class="{% if !f.nullable %}muted-cell{% endif %}">{% if f.nullable %}yes{% else %}no{% endif %}</td>
+                    <td>{% if f.pk %}<span class="chip ok"><i class="dot"></i>pk</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
+                    <td class="{% if let Some(d) = f.default_value %}mono-cell{% else %}null{% endif %}">{% if let Some(d) = f.default_value %}{{ d }}{% else %}NULL{% endif %}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="records-scroll">
+            {% if rows.is_empty() %}
+            <div class="empty" style="padding:56px 24px 40px;">
+              <div style="margin-bottom:18px;display:grid;place-items:center;">
+                <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
+              </div>
+              <h3>0 records</h3>
+              <p>{% if !filter_val.is_empty() %}Your filter returned no rows. Try loosening the predicate or reset.{% else %}This collection is empty.{% endif %}</p>
+              {% if !filter_val.is_empty() %}
+              <div class="suggest"><a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset filter</a></div>
+              {% endif %}
+            </div>
+            {% else %}
+            <table class="data">
               <thead>
-                <tr>
-                  <th style="width:200px;">field</th>
-                  <th style="width:140px;">type</th>
-                  <th style="width:100px;">nullable</th>
-                  <th style="width:80px;">pk</th>
-                  <th>default</th>
-                </tr>
+                <tr>{% for col in column_names %}<th>{{ col }}</th>{% endfor %}</tr>
               </thead>
               <tbody>
-                {% for f in fields %}
+                {% for row in rows %}
                 <tr>
-                  <td>{{ f.name }}</td>
-                  <td class="type">{{ f.sql_type }}</td>
-                  <td class="{% if !f.nullable %}muted-cell{% endif %}">{% if f.nullable %}yes{% else %}no{% endif %}</td>
-                  <td>{% if f.pk %}<span class="chip ok"><i class="dot"></i>pk</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
-                  <td class="{% if let Some(d) = f.default_value %}mono-cell{% else %}null{% endif %}">{% if let Some(d) = f.default_value %}{{ d }}{% else %}NULL{% endif %}</td>
+                  {% for cell in row %}
+                  <td class="{% if cell == "NULL" %}null{% endif %} trunc" title="{{ cell }}">{% if cell == "NULL" %}NULL{% else %}{{ cell }}{% endif %}</td>
+                  {% endfor %}
                 </tr>
                 {% endfor %}
               </tbody>
             </table>
-          </div>
-        </div>
-
-        <div class="records-scroll">
-          {% if rows.is_empty() %}
-          <div class="empty">
-            <div class="ascii">┌─────────────────────────────────┐
-│   ◦ no records match filter     │
-└─────────────────────────────────┘</div>
-            <h3>0 records</h3>
-            <p>{% if !filter_val.is_empty() %}Your filter returned no rows. Try loosening the predicate or reset.{% else %}This collection is empty.{% endif %}</p>
-            {% if !filter_val.is_empty() %}
-            <div class="suggest"><a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset filter</a></div>
             {% endif %}
           </div>
-          {% else %}
-          <table class="data">
-            <thead>
-              <tr>{% for col in column_names %}<th>{{ col }}</th>{% endfor %}</tr>
-            </thead>
-            <tbody>
-              {% for row in rows %}
-              <tr>
-                {% for cell in row %}
-                <td class="{% if cell == "NULL" %}null{% endif %} trunc" title="{{ cell }}">{% if cell == "NULL" %}NULL{% else %}{{ cell }}{% endif %}</td>
-                {% endfor %}
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+
+          {% if !rows.is_empty() %}
+          <div class="pager">
+            <div class="page-of">
+              page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_rows }}</b> total
+            </div>
+            <div class="pager-group">
+              {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
+              <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
+              {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+            </div>
+          </div>
           {% endif %}
         </div>
-
-        {% if !rows.is_empty() %}
-        <div class="pager">
-          <div class="page-of">
-            page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_rows }}</b> total
-          </div>
-          <div class="pager-group">
-            {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
-            <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
-            {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
-          </div>
-        </div>
-        {% endif %}
-      </div>
-    </main>
+      </div></main>
+    </div>
   </div>
 </div>
+{% include "_mascot.html" %}
 </body>
 </html>
