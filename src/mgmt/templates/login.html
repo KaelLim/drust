@@ -6,55 +6,68 @@
 <title>drust — sign in</title>
 {% include "_styles.html" %}
 </head>
-<body style="padding:0;">
+<body>
 {% include "_icons.html" %}
-<div class="auth-wrap">
-  <div class="auth-card">
-    <div class="auth-head">
-      <span class="dots"><i></i><i></i><i></i></span>
-      <span class="title">drust — sign in</span>
-    </div>
-    <div class="auth-body">
-      <div class="brand">
-        <span class="logo">drust</span>
-        <span class="tag">multi-tenant sqlite baas</span>
-      </div>
-      <h1>Sign in to continue</h1>
-      <div class="sub">internal tool · Tzu Chi Foundation</div>
-
-      {% if let Some(err) = error %}
-      <div style="margin-bottom:14px;">
-        <div class="alert error">
-          <div class="icon">✕</div>
-          <div class="msg">{{ err }}</div>
-          <span></span>
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">drust <span class="muted">— sign in</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <div class="auth-shell">
+      <div class="auth-card">
+        <div class="auth-head">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="title">drust — sign in</span>
         </div>
-      </div>
-      {% endif %}
-
-      <form method="post" action="/drust/login">
-        <div class="field">
-          <label>username</label>
-          <div class="input-prefix">
-            <span class="prefix">@</span>
-            <input class="input" name="username" placeholder="admin" required autofocus autocomplete="off">
+        <div class="auth-body">
+          <div class="brand" style="display:flex;align-items:center;gap:14px;margin-bottom:6px;">
+            <canvas class="pix" data-chonk="awake" data-size="48"></canvas>
+            <div>
+              <span class="logo">drust</span>
+              <span class="tag">multi-tenant sqlite baas</span>
+            </div>
           </div>
+          <h1>Sign in to continue</h1>
+          <div class="sub">internal tool · Tzu Chi Foundation</div>
+
+          {% if let Some(err) = error %}
+          <div style="margin-bottom:14px;">
+            <div class="alert error">
+              <div class="icon">✕</div>
+              <div class="msg">{{ err }}</div>
+              <span></span>
+            </div>
+          </div>
+          {% endif %}
+
+          <form method="post" action="/drust/login">
+            <div class="field">
+              <label>username</label>
+              <div class="input-prefix">
+                <span class="prefix">@</span>
+                <input class="input" name="username" placeholder="admin" required autofocus autocomplete="off">
+              </div>
+            </div>
+            <div class="field">
+              <label>password</label>
+              <input class="input" type="password" name="password" placeholder="••••••••••••" required autocomplete="off">
+            </div>
+            <div class="submit-row">
+              <span class="hint">press <span class="kbd-key">↵</span> to sign in</span>
+              <button class="btn btn-primary" type="submit">Sign in →</button>
+            </div>
+          </form>
         </div>
-        <div class="field">
-          <label>password</label>
-          <input class="input" type="password" name="password" placeholder="••••••••••••" required autocomplete="off">
+        <div class="auth-foot">
+          <span>drust v{{ version }}</span>
+          <span>forgot password? ask admin</span>
         </div>
-        <div class="submit-row">
-          <span class="hint">press <span class="kbd-key">↵</span> to sign in</span>
-          <button class="btn btn-primary" type="submit">Sign in →</button>
-        </div>
-      </form>
-    </div>
-    <div class="auth-foot">
-      <span>drust v{{ version }}</span>
-      <span>forgot password? ask admin</span>
+      </div>
     </div>
   </div>
 </div>
+{% include "_mascot.html" %}
 </body>
 </html>
