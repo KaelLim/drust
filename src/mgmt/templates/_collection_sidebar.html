@@ -1,0 +1,17 @@
+<!-- _collection_sidebar.html — left-side collection nav for the detail page.
+     Parent scope must provide: tenant_id: String, collections: Vec<Collection>, active_coll: String. -->
+<aside class="sidebar">
+  <div class="sidebar-head">
+    <span>collections</span>
+    <span class="count">{{ collections.len() }}</span>
+  </div>
+  <nav class="sidebar-list">
+    {% for c in collections %}
+    <a class="col-item{% if c.name == active_coll %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}">
+      <span class="arrow">▸</span>
+      <span>{{ c.name }}</span>
+    </a>
+    {% endfor %}
+  </nav>
+</aside>
