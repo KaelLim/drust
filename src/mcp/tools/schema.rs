@@ -3,7 +3,7 @@ use crate::storage::schema::{collection_exists, describe_collection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FieldSpec {
     pub name: String,
     pub sql_type: String, // text|integer|real|boolean|datetime|json
