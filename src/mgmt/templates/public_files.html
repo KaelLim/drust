@@ -65,12 +65,127 @@
       <div class="card">
         <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin-only · world-readable after upload</span></div>
         <div class="card-body">
-          <form method="post" action="/drust/admin/public-files/upload" enctype="multipart/form-data" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-            <input type="file" name="file" required style="flex:1 1 280px;min-width:0;">
-            <button type="submit" class="btn btn-primary">Upload</button>
+          <form method="post" action="/drust/admin/public-files/upload" enctype="multipart/form-data" id="upload-form" class="filepick-row">
+            <div class="input-prefix filepick-group">
+              <span class="prefix">file</span>
+              <label class="filepick-btn" for="upload-file" id="upload-btn">
+                <span class="filepick-btn-label">pick file…</span>
+              </label>
+              <span class="filepick-name" id="upload-name" data-empty="1">— no file chosen —</span>
+              <input type="file" name="file" id="upload-file" required class="filepick-input"
+                     data-max-bytes="{{ max_upload_mb }}">
+            </div>
+            <button type="submit" class="btn btn-primary" id="upload-submit" disabled>Upload <span class="kbd">↵</span></button>
           </form>
+          <div class="filepick-hint" id="upload-hint">
+            <span class="muted">choose a file to enable upload · max {{ max_upload_mb }} MB · UUID key generated, original name kept in metadata</span>
+          </div>
         </div>
       </div>
+
+      <style>
+        .filepick-row { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap; }
+        .filepick-group { flex:1 1 360px; min-width:0; }
+        .filepick-btn {
+          display:inline-flex; align-items:center; gap:8px;
+          padding: 0 14px;
+          font: 500 18px/1 var(--mono);
+          color: var(--text-soft);
+          background: var(--bg-1);
+          border-right: 1px solid var(--line);
+          cursor: pointer;
+          user-select: none;
+          transition: color .1s, background .1s;
+        }
+        .filepick-btn:hover { color: var(--text); background: var(--bg-2); }
+        .filepick-btn:focus-within { color: var(--text); }
+        .filepick-btn-label::before { content: "["; color: var(--muted); margin-right: 4px; }
+        .filepick-btn-label::after  { content: "]"; color: var(--muted); margin-left: 4px; }
+        .filepick-name {
+          flex: 1 1 auto; min-width: 0;
+          display:inline-flex; align-items:center;
+          padding: 0 14px;
+          font: 400 18px/1 var(--mono);
+          color: var(--text);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .filepick-name[data-empty="1"] { color: var(--muted-2); font-style: italic; }
+        .filepick-name[data-state="error"] { color: var(--danger); }
+        .filepick-name[data-state="error"] .filepick-warn { color: var(--danger); margin-left: 8px; }
+        .filepick-input {
+          position: absolute;
+          width: 1px; height: 1px;
+          opacity: 0;
+          pointer-events: none;
+        }
+        .filepick-hint {
+          font-family: var(--mono);
+          font-size: 15px;
+          color: var(--muted);
+          margin-top: 10px;
+          padding-left: 2px;
+        }
+        .filepick-hint .filepick-ready { color: var(--accent); }
+      </style>
+
+      <script>
+        (function () {
+          var MAX_BYTES = {{ max_upload_mb }} * 1024 * 1024;
+          var inp = document.getElementById('upload-file');
+          var nameEl = document.getElementById('upload-name');
+          var btn = document.getElementById('upload-submit');
+          var hint = document.getElementById('upload-hint');
+          var label = document.getElementById('upload-btn');
+
+          function humanBytes(n) {
+            var K = 1024;
+            if (n < K) return n + ' B';
+            if (n < K*K) return (n/K).toFixed(1) + ' KB';
+            if (n < K*K*K) return (n/K/K).toFixed(1) + ' MB';
+            return (n/K/K/K).toFixed(2) + ' GB';
+          }
+
+          inp.addEventListener('change', function () {
+            var f = inp.files && inp.files[0];
+            if (!f) {
+              nameEl.textContent = '— no file chosen —';
+              nameEl.setAttribute('data-empty', '1');
+              nameEl.removeAttribute('data-state');
+              btn.disabled = true;
+              hint.innerHTML = '<span class="muted">choose a file to enable upload · max ' + (MAX_BYTES/1024/1024) + ' MB · UUID key generated, original name kept in metadata</span>';
+              return;
+            }
+            nameEl.removeAttribute('data-empty');
+            if (f.size > MAX_BYTES) {
+              nameEl.setAttribute('data-state', 'error');
+              nameEl.innerHTML = escapeText(f.name) + ' <span class="filepick-warn">(' + humanBytes(f.size) + ' — exceeds ' + (MAX_BYTES/1024/1024) + ' MB limit)</span>';
+              btn.disabled = true;
+              hint.innerHTML = '<span style="color:var(--danger);">pick a smaller file, or ask the operator to raise GARAGE_MAX_UPLOAD_SIZE</span>';
+              return;
+            }
+            nameEl.removeAttribute('data-state');
+            nameEl.textContent = f.name + '  ·  ' + humanBytes(f.size);
+            btn.disabled = false;
+            hint.innerHTML = '<span class="filepick-ready">ready · press Upload ↵</span>';
+          });
+
+          // Keyboard: Enter/Space on the label opens the file picker.
+          label.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              inp.click();
+            }
+          });
+          label.setAttribute('tabindex', '0');
+          label.setAttribute('role', 'button');
+
+          function escapeText(s) {
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+          }
+        })();
+      </script>
 
       <div class="card" style="margin-top:24px;">
         <div class="card-head"><span>Files</span><span class="card-head-actions"><a href="/drust/admin/public-files/reconcile" class="btn btn-sm btn-ghost">reconcile →</a></span></div>
