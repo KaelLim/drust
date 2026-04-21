@@ -4,7 +4,7 @@
 //!
 //! We keep it deliberately minimal: the goal is to prove the wiring is
 //! real (rmcp handler → axum route → bearer auth → per-tenant service)
-//! rather than to re-test every tool. The underlying 11 tools are
+//! rather than to re-test every tool. The underlying 13 tools are
 //! covered by the in-process tests in `mcp_write_schema.rs`,
 //! `mcp_read.rs`, `mcp_exploration.rs`.
 
@@ -114,7 +114,7 @@ async fn parse_mcp_body(resp: axum::response::Response) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn initialize_then_tools_list_returns_all_11_tools() {
+async fn initialize_then_tools_list_returns_all_13_tools() {
     let (app, service_tok, _anon, _dir) = mcp_stack("mcp1").await;
 
     // Step 1: MCP initialize handshake — this is required before any
@@ -169,7 +169,7 @@ async fn initialize_then_tools_list_returns_all_11_tools() {
     // 202 Accepted for notification (no response body).
     assert!(ack.status() == StatusCode::ACCEPTED || ack.status() == StatusCode::OK);
 
-    // Step 3: tools/list — must return exactly 11 named tools.
+    // Step 3: tools/list — must return exactly 13 named tools.
     let tl_req = Request::builder()
         .method(Method::POST)
         .uri("/t/mcp1/mcp")
@@ -199,8 +199,8 @@ async fn initialize_then_tools_list_returns_all_11_tools() {
         .collect();
     assert_eq!(
         names.len(),
-        11,
-        "expected 11 tools, got {}: {names:?}",
+        13,
+        "expected 13 tools, got {}: {names:?}",
         names.len()
     );
     for expected in [
@@ -212,6 +212,8 @@ async fn initialize_then_tools_list_returns_all_11_tools() {
         "explain",
         "create_collection",
         "add_field",
+        "drop_field",
+        "drop_collection",
         "insert_record",
         "update_record",
         "delete_record",

@@ -1,4 +1,4 @@
-//! rmcp Streamable HTTP handler that exposes the 11 drust tools.
+//! rmcp Streamable HTTP handler that exposes the 13 drust tools.
 //!
 //! This file is a thin adapter layer: each `#[tool]` method delegates
 //! to the existing `pub async fn` in `src/mcp/tools/*` and converts
@@ -61,6 +61,17 @@ pub struct CreateCollectionArgs {
 pub struct AddFieldArgs {
     pub collection: String,
     pub field: schema_tools::FieldSpec,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DropFieldArgs {
+    pub collection: String,
+    pub field: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DropCollectionArgs {
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -210,6 +221,36 @@ impl DrustMcpService {
         }
     }
 
+    #[tool(description = "Drop a field (column) from a collection via \
+        `ALTER TABLE … DROP COLUMN`. Cannot drop the system columns `id`, \
+        `created_at`, `updated_at` (drust maintains them automatically). \
+        SQLite will also reject the drop if the column is part of an \
+        index, UNIQUE, foreign key, CHECK, trigger, or view — fix those \
+        first. Irreversible.")]
+    async fn drop_field(
+        &self,
+        Parameters(DropFieldArgs { collection, field }): Parameters<DropFieldArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match schema_tools::drop_field(&self.state, &collection, &field).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Drop an entire collection (DROP TABLE plus its \
+        `_updated_at` trigger). Irreversible — all rows are destroyed. \
+        Rejected if any other collection still has a `foreign_key` column \
+        pointing at this one; drop those columns first.")]
+    async fn drop_collection(
+        &self,
+        Parameters(DropCollectionArgs { name }): Parameters<DropCollectionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match schema_tools::drop_collection(&self.state, &name).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
     #[tool(description = "Insert one record into a collection. `data` is a JSON object whose keys \
         must be known fields of the collection (unknown fields are rejected). \
         Returns the inserted row including the auto-generated id and timestamps.")]
@@ -259,11 +300,12 @@ impl ServerHandler for DrustMcpService {
             },
             instructions: Some(
                 "drust is a multi-tenant SQLite BaaS. This MCP server exposes one tenant's \
-                 database via 11 tools. Start with `list_collections` to discover data, \
+                 database via 13 tools. Start with `list_collections` to discover data, \
                  `describe_collection` / `sample_rows` / `count_rows` to explore it, \
-                 `query` + `explain` for ad-hoc SQL (read-only), and \
-                 `insert_record` / `update_record` / `delete_record` / \
-                 `create_collection` / `add_field` for writes."
+                 `query` + `explain` for ad-hoc SQL (read-only), \
+                 `insert_record` / `update_record` / `delete_record` for row writes, and \
+                 `create_collection` / `add_field` / `drop_field` / `drop_collection` for \
+                 schema changes. Schema drops are irreversible."
                     .into(),
             ),
             ..Default::default()

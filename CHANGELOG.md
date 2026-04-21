@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-04-21
+
+### Added
+- **Two new schema MCP tools — `drop_field` and `drop_collection`** —
+  rounding out the schema-mutation surface (previous tools only grew
+  schemas). Both are service-key-only (MCP is service-only by design)
+  and both are irreversible.
+  - `drop_field(collection, field)` → `ALTER TABLE … DROP COLUMN`.
+    Rejects the three drust-maintained system columns (`id`,
+    `created_at`, `updated_at`) up-front; SQLite itself rejects drops
+    that would break a UNIQUE, index, FK, CHECK, trigger, or view.
+  - `drop_collection(name)` → `DROP TABLE` plus the matching
+    `_updated_at` trigger. Rejects the drop when any **other**
+    collection still has a `foreign_key` column pointing at this one
+    (caller must `drop_field` those columns first) — stops the
+    destructive op from silently orphaning references.
+  - Tool count on the per-tenant MCP server: **11 → 13**.
+- `storage::schema::find_fk_referrers` helper that scans every user
+  table's `PRAGMA foreign_key_list` for columns referencing a given
+  target; used by `drop_collection` and available for future reuse.
+
+### Changed
+- Admin UI MCP card caption + `tenant_detail.html` now say "all 13
+  drust tools" to match the new count.
+
 ## [1.2.2] - 2026-04-21
 
 ### Changed
@@ -316,7 +341,8 @@ Initial production release.
   functions are exercised in-process by integration tests but are not yet
   reachable over HTTP
 
-[Unreleased]: https://example.invalid/drust/compare/v1.2.2...HEAD
+[Unreleased]: https://example.invalid/drust/compare/v1.3.0...HEAD
+[1.3.0]: https://example.invalid/drust/compare/v1.2.2...v1.3.0
 [1.2.2]: https://example.invalid/drust/compare/v1.2.1...v1.2.2
 [1.2.1]: https://example.invalid/drust/compare/v1.2.0...v1.2.1
 [1.2.0]: https://example.invalid/drust/compare/v1.1.1...v1.2.0

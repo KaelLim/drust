@@ -157,3 +157,33 @@ pub fn collection_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool
     )?;
     Ok(c > 0)
 }
+
+/// Find every other user-table that has a foreign-key column pointing at
+/// `target`. Returns `(referring_table, referring_field)` pairs. Used by
+/// `drop_collection` to reject drops that would orphan an FK.
+pub fn find_fk_referrers(
+    conn: &Connection,
+    target: &str,
+) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for t in user_tables(conn)? {
+        if t == target {
+            continue;
+        }
+        let mut stmt = conn.prepare(&format!(
+            "PRAGMA foreign_key_list(\"{}\")",
+            t.replace('"', "\"\"")
+        ))?;
+        let rows = stmt.query_map([], |r| {
+            // columns: id, seq, table, from, to, on_update, on_delete, match
+            Ok((r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+        })?;
+        for row in rows {
+            let (ref_table, from_col) = row?;
+            if ref_table == target {
+                out.push((t.clone(), from_col));
+            }
+        }
+    }
+    Ok(out)
+}
