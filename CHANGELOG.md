@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`set_admin_password` CLI** (`src/bin/set_admin_password.rs`) —
+  rotates an admin's `password_hash` in `meta.sqlite` via drust's own
+  argon2id hasher. Username from argv, password from stdin (so it does
+  not appear in `ps`/argv). Fills a gap: `bootstrap_admin` only seeds
+  when `admins` is empty, and there was no other change-password path.
+  Run as the `drust` user:
+  ```bash
+  sudo -u drust bash -c \
+    'read -s P && DRUST_DATA_DIR=/var/lib/drust \
+      ./target/release/set_admin_password admin <<< "$P"'
+  ```
+
 ## [1.1.0] - 2026-04-21
 
 ### Added
