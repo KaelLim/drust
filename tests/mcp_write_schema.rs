@@ -77,3 +77,104 @@ async fn add_field_adds_column() {
         .unwrap();
     assert_eq!(ins["record"]["views"], 5);
 }
+
+#[tokio::test]
+async fn sql_default_datetime_now_is_applied() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "events",
+        &[
+            FieldSpec {
+                name: "label".into(),
+                sql_type: "text".into(),
+                nullable: false,
+                unique: false,
+                default_value: None,
+            },
+            FieldSpec {
+                name: "scheduled_at".into(),
+                sql_type: "datetime".into(),
+                nullable: false,
+                unique: false,
+                default_value: Some(serde_json::json!({"sql": "datetime('now')"})),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    // Insert without scheduled_at — the default should kick in and give
+    // us a timestamp string.
+    let ins = insert_record(&s, "events", serde_json::json!({"label": "launch"}))
+        .await
+        .unwrap();
+    let stamp = ins["record"]["scheduled_at"].as_str().unwrap();
+    // YYYY-MM-DD HH:MM:SS (19 chars) is SQLite's datetime('now') shape.
+    assert_eq!(stamp.len(), 19, "expected SQLite datetime format, got {stamp:?}");
+    assert_eq!(&stamp[4..5], "-");
+    assert_eq!(&stamp[10..11], " ");
+}
+
+#[tokio::test]
+async fn sql_default_allowlist_covers_all_entries() {
+    // Every entry in SQL_DEFAULT_ALLOWLIST must actually be accepted by
+    // SQLite — otherwise the allowlist is lying. We try each one in a
+    // fresh column and expect no error.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "t",
+        &[FieldSpec {
+            name: "label".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+        }],
+    )
+    .await
+    .unwrap();
+    for (i, expr) in drust::mcp::tools::schema::SQL_DEFAULT_ALLOWLIST
+        .iter()
+        .enumerate()
+    {
+        add_field(
+            &s,
+            "t",
+            FieldSpec {
+                name: format!("f{i}"),
+                sql_type: "datetime".into(),
+                nullable: true,
+                unique: false,
+                default_value: Some(serde_json::json!({"sql": expr})),
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("allowlist entry {expr:?} rejected: {e}"));
+    }
+}
+
+#[tokio::test]
+async fn sql_default_rejects_non_allowlisted() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let err = create_collection(
+        &s,
+        "bad",
+        &[FieldSpec {
+            name: "evil".into(),
+            sql_type: "text".into(),
+            nullable: true,
+            unique: false,
+            default_value: Some(serde_json::json!({"sql": "(SELECT password FROM admins)"})),
+        }],
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("not in allowlist"),
+        "expected allowlist rejection, got: {err}"
+    );
+}

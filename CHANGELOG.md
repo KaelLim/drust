@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Field `default_value` may now be an allowlisted SQL expression.**
+  Previously `default_value` was restricted to JSON scalars (null, bool,
+  number, string — rendered as a quoted literal). It now also accepts
+  `{"sql": "<expression>"}` where `<expression>` is exact-matched
+  against `SQL_DEFAULT_ALLOWLIST` in `src/mcp/tools/schema.rs`. The
+  initial allowlist: `datetime('now')`, `date('now')`, `time('now')`,
+  `CURRENT_TIMESTAMP`, `CURRENT_DATE`, `CURRENT_TIME`. Non-allowlisted
+  SQL is rejected with a clear error. Closes the v1 limitation spec
+  §schema noted as "deferred to v1.1 because they require
+  authorizer-aware validation" — in practice a tight allowlist is both
+  safer and simpler than parsing.
 - **Audit log is now written on every tenant-data-plane request.**
   Each request produces one JSONL entry in
   `/var/log/drust/audit-YYYY-MM-DD.jsonl` (path from `DRUST_LOG_DIR`)
