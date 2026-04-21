@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-04-21
+
+### Added
+- **Favicon** — 16×16 LiveChonk (happy pose) as inline SVG, served via
+  `data:image/svg+xml` URI from the new `_favicon.html` partial. Same
+  pixel geometry as the canvas mascot elsewhere in the UI — black
+  silhouette, green `^^` eyes, pink nose. Crisp at any size thanks to
+  `shape-rendering="crispEdges"`.
+- **Per-page `<meta name="description">`** on all five admin templates
+  (login, tenants list, tenant detail, collections empty, collection
+  rows). Descriptions are short (≤160 chars) and include dynamic
+  fields where relevant (tenant id, collection name, row/field counts).
+- **`<meta name="theme-color" content="#1a2327">`** on every page, so
+  mobile browsers colour their chrome to match the terminal pane.
+
+### Changed
+- Each template's `<head>` now `{% include %}`s `_favicon.html` in
+  addition to `_styles.html`; it's the canonical place for browser
+  metadata that's independent of the visible body.
+
 ## [1.3.0] - 2026-04-21
 
 ### Added
@@ -341,7 +361,8 @@ Initial production release.
   functions are exercised in-process by integration tests but are not yet
   reachable over HTTP
 
-[Unreleased]: https://example.invalid/drust/compare/v1.3.0...HEAD
+[Unreleased]: https://example.invalid/drust/compare/v1.3.1...HEAD
+[1.3.1]: https://example.invalid/drust/compare/v1.3.0...v1.3.1
 [1.3.0]: https://example.invalid/drust/compare/v1.2.2...v1.3.0
 [1.2.2]: https://example.invalid/drust/compare/v1.2.1...v1.2.2
 [1.2.1]: https://example.invalid/drust/compare/v1.2.0...v1.2.1
