@@ -35,15 +35,18 @@ async fn app_with_limiter(
     .unwrap();
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
 
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
-        registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
+        registry: tenants.clone(),
         limiter: Arc::new(RateLimiter::new(budget, window)),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
     };
     let app = build_tenant_router(TenantStack {
         auth: state,
-        bus: EventBus::new(),
+        bus: bus.clone(),
+        mcp: helpers::test_mcp_http(tenants, bus),
     });
     (app, tok, dir)
 }

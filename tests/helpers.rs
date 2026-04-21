@@ -2,6 +2,8 @@
 
 use axum::Router;
 use drust::auth::bearer::{generate_token, hash_token};
+use drust::mcp::http_registry::McpHttpRegistry;
+use drust::mcp::server::McpRegistry;
 use drust::safety::audit::AuditLog;
 use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::open_meta;
@@ -11,6 +13,12 @@ use drust::tenant::{TenantStack, build_tenant_router, events::EventBus};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+pub fn test_mcp_http(tenants: Arc<TenantRegistry>, bus: EventBus) -> Arc<McpHttpRegistry> {
+    Arc::new(McpHttpRegistry::new(Arc::new(McpRegistry::with_bus(
+        tenants, bus,
+    ))))
+}
 
 pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -28,15 +36,18 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
     )
     .unwrap();
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
-        registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
+        registry: tenants.clone(),
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
     };
     let stack = TenantStack {
         auth: state,
-        bus: EventBus::new(),
+        bus: bus.clone(),
+        mcp: test_mcp_http(tenants, bus),
     };
     let app = build_tenant_router(stack);
     (app, tok, dir)

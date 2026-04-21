@@ -8,7 +8,7 @@ use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::{TenantStack, build_tenant_router, events::EventBus, router::TenantAuthState};
-use helpers::grab_pool;
+use helpers::{grab_pool, test_mcp_http};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -55,15 +55,18 @@ async fn tenant_with_two_tokens(
     .await
     .unwrap();
 
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
-        registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
+        registry: tenants.clone(),
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
     };
     let stack = TenantStack {
         auth: state,
-        bus: EventBus::new(),
+        bus: bus.clone(),
+        mcp: test_mcp_http(tenants, bus),
     };
     let app = build_tenant_router(stack);
     (app, anon_tok, service_tok, dir)

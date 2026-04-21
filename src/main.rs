@@ -1,5 +1,6 @@
 use axum::{Router, routing::get};
 use drust::config::Config;
+use drust::mcp::http_registry::McpHttpRegistry;
 use drust::mcp::server::McpRegistry;
 use drust::mgmt::routes::MgmtState;
 use drust::storage::meta::{bootstrap_admin, open_meta};
@@ -39,10 +40,8 @@ async fn main() -> anyhow::Result<()> {
         cfg.tenant_read_pool_size,
     ));
     let bus = EventBus::new();
-    // MCP registry provides per-tenant DrustMcp instances.
-    // rmcp HTTP wiring (StreamableHttpService per tenant at /t/:tenant/mcp) is deferred to a
-    // follow-up task — the 11 MCP tool fns are exercised via in-process integration tests today.
-    let _mcp_reg = Arc::new(McpRegistry::with_bus(tenants.clone(), bus.clone()));
+    let mcp_reg = Arc::new(McpRegistry::with_bus(tenants.clone(), bus.clone()));
+    let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 
     let mgmt_state = MgmtState {
         meta: meta.clone(),
@@ -63,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
             audit,
         },
         bus: bus.clone(),
+        mcp: mcp_http,
     };
     let tenant_router = build_tenant_router(tenant_stack);
 

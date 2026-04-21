@@ -1,24 +1,29 @@
 pub mod collections;
 pub mod events;
+pub mod mcp_dispatch;
 pub mod query_endpoint;
 pub mod records;
 pub mod router;
 pub mod sse;
 
+use crate::mcp::http_registry::McpHttpRegistry;
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use events::EventBus;
 use router::TenantAuthState;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct TenantStack {
     pub auth: TenantAuthState,
     pub bus: EventBus,
+    pub mcp: Arc<McpHttpRegistry>,
 }
 
 pub fn build_tenant_router(state: TenantStack) -> Router {
     let auth_state = state.auth.clone();
     let bus = state.bus.clone();
+    let mcp = state.mcp.clone();
 
     Router::new()
         .route("/t/{tenant}/collections", get(collections::list_handler))
@@ -53,6 +58,13 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             }),
         )
         .route("/t/{tenant}/query", post(query_endpoint::query_handler))
+        .route(
+            "/t/{tenant}/mcp",
+            any({
+                let mcp = mcp.clone();
+                move |ext, path, req| mcp_dispatch::dispatch(mcp.clone(), ext, path, req)
+            }),
+        )
         .layer(axum::middleware::from_fn_with_state(
             auth_state.clone(),
             router::bearer_auth_layer,

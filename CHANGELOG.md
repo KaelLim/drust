@@ -8,6 +8,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **rmcp Streamable HTTP transport wired up at `/t/:tenant/mcp`.** Each
+  tenant is now a self-contained MCP server exposing all 11 drust
+  tools (list_collections / describe_collection / sample_rows /
+  count_rows / query / explain / insert_record / update_record /
+  delete_record / create_collection / add_field). Closes the v0.1.0
+  Known issue "rmcp HTTP endpoint at `/t/:tenant/mcp` is deferred".
+  MCP sessions are bound to one tenant via a per-tenant
+  `StreamableHttpService` in `src/mcp/http_registry.rs`
+  (`DashMap<TenantId, Arc<StreamableHttpService<DrustMcpService>>>`);
+  the factory closure captures the tenant's `DrustMcp` state per
+  session. `rmcp::transport::streamable_http_server::LocalSessionManager`
+  handles session IDs in-memory.
+- **MCP is service-key-only.** Anon keys calling `/t/:tenant/mcp`
+  get `403 WRITE_DENIED`. Rationale: MCP clients are AI agents
+  needing full CRUD; anon keys are for read-only REST consumers,
+  and a per-tool role gate inside the rmcp handler would be brittle.
+  Read-only MCP can be added later if demand materialises.
+- `src/mcp/handler.rs` — `DrustMcpService` with `#[tool_router]` +
+  11 `#[tool]` methods that thin-wrap the existing
+  `src/mcp/tools/*` async functions, adapting
+  `anyhow::Result<Value>` into `Result<CallToolResult, McpError>`.
+- `src/tenant/mcp_dispatch.rs` — axum handler that runs after
+  `bearer_auth_layer` (so auth + rate-limit + audit automatically
+  cover `/mcp` traffic), extracts the tenant, looks up the service,
+  and delegates via `tower::ServiceExt::oneshot`.
+- Four integration tests in `tests/mcp_protocol.rs`: full
+  initialize → tools/list handshake asserting all 11 tool names are
+  registered; `tools/call list_collections` roundtrip verifying the
+  real underlying function is invoked; anon-bearer rejection;
+  missing-bearer rejection.
+- `FieldSpec` gained a `schemars::JsonSchema` derive so it can appear
+  in MCP tool input schemas (`create_collection.fields`, `add_field.field`).
+
+### Changed
+- `Cargo.toml`: add `schemars = "1"` and `tower = { version = "0.5",
+  features = ["util"] }` (the latter for `ServiceExt::oneshot` in
+  the dispatch handler). rmcp features unchanged — `transport-worker`
+  is still required (rmcp's server streamable-HTTP module depends
+  on it internally despite the name).
+- `TenantStack` gains an `mcp: Arc<McpHttpRegistry>` field; four test
+  helpers updated to construct one via `helpers::test_mcp_http`.
+
 - **Schema fields may now declare a foreign key to another collection.**
   `FieldSpec` gains an optional `foreign_key: String` naming the target
   collection; all collections' `id` is the implicit referenced column.
