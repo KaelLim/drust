@@ -156,14 +156,14 @@ fn make_tenant_inner(
     let service_token = generate_token();
     let anon_token = generate_token();
     conn.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, label, role) \
-         VALUES (?1, ?2, 'initial-service', 'service')",
-        rusqlite::params![id, hash_token(&service_token)],
+        "INSERT INTO tokens (tenant_id, token_hash, plaintext, label, role) \
+         VALUES (?1, ?2, ?3, 'initial-service', 'service')",
+        rusqlite::params![id, hash_token(&service_token), service_token],
     )?;
     conn.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, label, role) \
-         VALUES (?1, ?2, 'initial-anon', 'anon')",
-        rusqlite::params![id, hash_token(&anon_token)],
+        "INSERT INTO tokens (tenant_id, token_hash, plaintext, label, role) \
+         VALUES (?1, ?2, ?3, 'initial-anon', 'anon')",
+        rusqlite::params![id, hash_token(&anon_token), anon_token],
     )?;
     Ok(CreatedResp {
         tenant: TenantInfo {

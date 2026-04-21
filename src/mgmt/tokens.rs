@@ -1,7 +1,7 @@
 use crate::auth::bearer::{generate_token, hash_token};
 use crate::mgmt::tenants::TenantsState;
 use askama::Template;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{Form, Json};
@@ -16,14 +16,15 @@ struct DetailPage {
     created_at: String,
     anon: Option<TokenSlotInfo>,
     service: Option<TokenSlotInfo>,
-    new_token: Option<String>,
-    new_token_role: Option<String>,
     version: &'static str,
 }
 
 pub struct TokenSlotInfo {
     pub id: i64,
     pub created_at: String,
+    /// Plaintext key. `None` for tokens created before v1.1c (only the hash
+    /// was stored back then); reroll to recover.
+    pub plaintext: Option<String>,
     /// Count of OTHER currently-active tokens with the same role (>0 means
     /// this tenant was created before the 2-slot model; a reroll will clean
     /// them up).
@@ -89,8 +90,9 @@ pub async fn reroll_token_json(
         .unwrap_or(0);
     let plaintext = generate_token();
     tx.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, label, role) VALUES (?1, ?2, 'rotated', ?3)",
-        rusqlite::params![tenant_id, hash_token(&plaintext), role_str],
+        "INSERT INTO tokens (tenant_id, token_hash, plaintext, label, role) \
+         VALUES (?1, ?2, ?3, 'rotated', ?4)",
+        rusqlite::params![tenant_id, hash_token(&plaintext), plaintext, role_str],
     )
     .unwrap();
     let id = tx.last_insert_rowid();
@@ -124,47 +126,24 @@ pub async fn reroll_token_form(
     Path((tenant_id, role)): Path<(String, String)>,
     Form(_): Form<RerollForm>,
 ) -> Response {
-    let resp = reroll_token_json(
-        State(state.clone()),
-        Path((tenant_id.clone(), role.clone())),
-    )
-    .await;
+    let resp = reroll_token_json(State(state), Path((tenant_id.clone(), role))).await;
     if !resp.status().is_success() {
         return resp;
     }
-    let body = axum::body::to_bytes(resp.into_body(), 65_536)
-        .await
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let tok = v["token"].as_str().unwrap_or("");
-    let url = format!(
-        "/drust/admin/tenants/{}?new_token={}&new_token_role={}",
-        tenant_id,
-        urlencoding::encode(tok),
-        role,
-    );
-    Redirect::to(&url).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DetailQs {
-    #[serde(default)]
-    pub new_token: Option<String>,
-    #[serde(default)]
-    pub new_token_role: Option<String>,
+    Redirect::to(&format!("/drust/admin/tenants/{}", tenant_id)).into_response()
 }
 
 fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option<TokenSlotInfo> {
-    let row: Option<(i64, String)> = conn
+    let row: Option<(i64, String, Option<String>)> = conn
         .query_row(
-            "SELECT id, created_at FROM tokens \
+            "SELECT id, created_at, plaintext FROM tokens \
              WHERE tenant_id = ?1 AND role = ?2 AND revoked_at IS NULL \
              ORDER BY created_at DESC LIMIT 1",
             rusqlite::params![tenant_id, role],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok();
-    let (id, created_at) = row?;
+    let (id, created_at, plaintext) = row?;
     let total: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM tokens \
@@ -176,6 +155,7 @@ fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option
     Some(TokenSlotInfo {
         id,
         created_at,
+        plaintext,
         legacy_siblings: (total - 1).max(0),
     })
 }
@@ -183,7 +163,6 @@ fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option
 pub async fn detail_page(
     State(state): State<TenantsState>,
     Path(tenant_id): Path<String>,
-    Query(qs): Query<DetailQs>,
 ) -> Response {
     let conn = state.session.meta.lock().await;
     let meta: Option<(String, String)> = conn
@@ -206,8 +185,6 @@ pub async fn detail_page(
             created_at: created,
             anon,
             service,
-            new_token: qs.new_token,
-            new_token_role: qs.new_token_role,
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()

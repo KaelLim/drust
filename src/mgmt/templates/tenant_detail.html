@@ -1,3 +1,46 @@
+{% macro api_key_card(role, chip_class, scopes, info, tenant_id) %}
+<div style="border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;background:var(--bg-2);">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+    <span class="{{ chip_class }}"><i class="dot"></i>{{ role }}</span>
+    <span class="meta" style="font-family:var(--mono);font-size:16px;color:var(--muted);">{{ scopes }}</span>
+  </div>
+  {% if let Some(info) = info %}
+  {% if let Some(pt) = info.plaintext %}
+  <div class="key-row">
+    <code class="key" id="key-{{ role }}" data-plain="{{ pt }}" data-revealed="0">••••••••••••••••••••••••••••••••</code>
+    <button class="key-act" type="button" onclick="toggleKey('key-{{ role }}', this)" title="show / hide" aria-label="show or hide key"><svg class="icon"><use href="#i-eye"/></svg></button>
+    <button class="key-act" type="button" onclick="copyKey('key-{{ role }}', this)" title="copy to clipboard" aria-label="copy key"><svg class="icon"><use href="#i-copy"/></svg></button>
+    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" onsubmit="return confirm('Reroll {{ role }} key? The current key will be invalidated immediately.');" style="margin:0;">
+      <button class="key-act key-act-danger" type="submit" title="reroll {{ role }} key" aria-label="reroll {{ role }} key"><svg class="icon"><use href="#i-refresh"/></svg></button>
+    </form>
+  </div>
+  {% else %}
+  <div class="key-row">
+    <code class="key muted">key not stored — created before v1.1c</code>
+    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" onsubmit="return confirm('Reroll {{ role }} key? The current key will be invalidated immediately.');" style="margin:0;">
+      <button class="key-act key-act-danger" type="submit" title="reroll to generate a new key" aria-label="reroll {{ role }} key"><svg class="icon"><use href="#i-refresh"/></svg></button>
+    </form>
+  </div>
+  {% endif %}
+  <div style="font-family:var(--mono);font-size:16px;color:var(--text-soft);margin:14px 0 0;">
+    Last rotated <b style="color:var(--text);">{{ info.created_at }}</b>
+    {% if info.legacy_siblings > 0 %}
+    <div style="margin-top:10px;">
+      <span class="chip warn"><i class="dot"></i>{{ info.legacy_siblings }} legacy key(s) still active</span>
+      <div style="font-size:16px;color:var(--muted);margin-top:6px;">A reroll will revoke them all.</div>
+    </div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="key-row">
+    <code class="key muted">no {{ role }} key yet</code>
+    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" style="margin:0;">
+      <button class="key-act" type="submit" title="generate {{ role }} key" aria-label="generate {{ role }} key"><svg class="icon"><use href="#i-refresh"/></svg></button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -52,95 +95,69 @@
         </div>
       </div>
 
-      {% if let Some(tok) = new_token %}
-      <div class="token-banner" id="token-banner">
-        <div class="tb-icon"><svg class="icon" style="width:1.6em;height:1.6em;" aria-hidden="true"><use href="#i-warn"/></svg></div>
-        <div class="tb-body">
-          <div class="tb-head">
-            new {% if let Some(r) = new_token_role %}{{ r }}{% endif %} key — shown once
-          </div>
-          <p>
-            Copy this token now and store it somewhere safe. Drust will never
-            display it again. The previous key (if any) has been revoked.
-          </p>
-          <div class="tb-row">
-            <code id="banner-token">{{ tok }}</code>
-            <button class="copy" type="button" onclick="navigator.clipboard.writeText(document.getElementById('banner-token').textContent).then(()=>{this.innerHTML='✓ copied'});" title="copy to clipboard">⧉ copy</button>
-          </div>
-        </div>
-        <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('token-banner').style.display='none'" title="I've copied it" style="align-self:start;">✕</button>
-      </div>
-      {% endif %}
-
       <div class="card">
         <div class="card-head">
           <span>API keys</span>
           <span class="card-head-actions">2 fixed slots per tenant — anon (read-only) and service (full access)</span>
         </div>
-        <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:22px;">
-
-          {# ANON SLOT #}
-          <div style="border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;background:var(--bg-2);">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-              <span class="chip"><i class="dot"></i>anon</span>
-              <span class="meta" style="font-family:var(--mono);font-size:16px;color:var(--muted);">read · list · subscribe · SELECT</span>
-            </div>
-            {% if let Some(info) = anon %}
-            <div style="font-family:var(--mono);font-size:18px;color:var(--text-soft);margin:14px 0;">
-              Key rotated on <b style="color:var(--text);">{{ info.created_at }}</b>
-              {% if info.legacy_siblings > 0 %}
-              <div style="margin-top:10px;">
-                <span class="chip warn"><i class="dot"></i>{{ info.legacy_siblings }} legacy key(s) still active</span>
-                <div style="font-size:16px;color:var(--muted);margin-top:6px;">A reroll will revoke them all.</div>
-              </div>
-              {% endif %}
-            </div>
-            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/anon/reroll" onsubmit="return confirm('Reroll anon key? The current key will be invalidated immediately.');">
-              <button class="btn btn-danger" type="submit">↻ Reroll anon key</button>
-            </form>
-            {% else %}
-            <div style="font-family:var(--mono);font-size:18px;color:var(--muted);margin:14px 0;">
-              No anon key yet.
-            </div>
-            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/anon/reroll">
-              <button class="btn btn-primary" type="submit">Generate anon key</button>
-            </form>
-            {% endif %}
-          </div>
-
-          {# SERVICE SLOT #}
-          <div style="border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;background:var(--bg-2);">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-              <span class="chip ok"><i class="dot"></i>service</span>
-              <span class="meta" style="font-family:var(--mono);font-size:16px;color:var(--muted);">full · create · update · delete · schema</span>
-            </div>
-            {% if let Some(info) = service %}
-            <div style="font-family:var(--mono);font-size:18px;color:var(--text-soft);margin:14px 0;">
-              Key rotated on <b style="color:var(--text);">{{ info.created_at }}</b>
-              {% if info.legacy_siblings > 0 %}
-              <div style="margin-top:10px;">
-                <span class="chip warn"><i class="dot"></i>{{ info.legacy_siblings }} legacy key(s) still active</span>
-                <div style="font-size:16px;color:var(--muted);margin-top:6px;">A reroll will revoke them all.</div>
-              </div>
-              {% endif %}
-            </div>
-            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/service/reroll" onsubmit="return confirm('Reroll service key? The current key will be invalidated immediately.');">
-              <button class="btn btn-danger" type="submit">↻ Reroll service key</button>
-            </form>
-            {% else %}
-            <div style="font-family:var(--mono);font-size:18px;color:var(--muted);margin:14px 0;">
-              No service key yet.
-            </div>
-            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/service/reroll">
-              <button class="btn btn-primary" type="submit">Generate service key</button>
-            </form>
-            {% endif %}
-          </div>
-
+        <div class="card-body" style="display:grid;grid-template-columns:1fr;gap:22px;">
+          {% call api_key_card("anon", "chip", "read · list · subscribe · SELECT", anon, tenant_id) %}
+          {% call api_key_card("service", "chip ok", "full · create · update · delete · schema", service, tenant_id) %}
         </div>
       </div>
     </main>
   </div>
 </div>
+<style>
+  .key-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:6px 0 4px; }
+  .key { font-family:var(--mono); font-size:18px; padding:10px 14px; background:var(--bg-1); border:1px solid var(--line); border-radius:6px; color:var(--text); user-select:all; word-break:break-all; flex:1 1 auto; min-width:0; }
+  .key.muted { color:var(--muted); font-style:italic; }
+  .key-act {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:42px; height:42px; padding:0;
+    background:var(--bg-1); color:var(--text-soft);
+    border:1px solid var(--line); border-radius:6px;
+    cursor:pointer; flex-shrink:0;
+    transition:color .12s, border-color .12s, background .12s;
+  }
+  .key-act:hover { color:var(--text); border-color:var(--muted-2); background:var(--bg-2); }
+  .key-act:focus-visible { outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent); }
+  .key-act .icon { width:1.25em; height:1.25em; }
+  .key-act-danger { color:var(--danger); border-color:var(--danger-line); }
+  .key-act-danger:hover { color:oklch(0.95 0.05 27); border-color:var(--danger); background:var(--danger-soft); }
+  .key-act.is-ok { color:var(--ok, #6ee7b7); border-color:var(--ok, #6ee7b7); }
+</style>
+<script>
+  function _setIcon(btn, id) {
+    var u = btn.querySelector('use');
+    if (u) u.setAttribute('href', '#' + id);
+  }
+  function toggleKey(id, btn) {
+    var el = document.getElementById(id);
+    var revealed = el.getAttribute('data-revealed') === '1';
+    if (revealed) {
+      el.textContent = '••••••••••••••••••••••••••••••••';
+      el.setAttribute('data-revealed', '0');
+      _setIcon(btn, 'i-eye');
+      btn.title = 'show';
+    } else {
+      el.textContent = el.getAttribute('data-plain');
+      el.setAttribute('data-revealed', '1');
+      _setIcon(btn, 'i-eye-off');
+      btn.title = 'hide';
+    }
+  }
+  function copyKey(id, btn) {
+    var el = document.getElementById(id);
+    navigator.clipboard.writeText(el.getAttribute('data-plain')).then(function () {
+      _setIcon(btn, 'i-check');
+      btn.classList.add('is-ok');
+      setTimeout(function () {
+        _setIcon(btn, 'i-copy');
+        btn.classList.remove('is-ok');
+      }, 1500);
+    });
+  }
+</script>
 </body>
 </html>

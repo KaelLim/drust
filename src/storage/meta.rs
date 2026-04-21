@@ -88,6 +88,15 @@ fn apply_migrations(conn: &Connection) -> anyhow::Result<()> {
             return Err(e.into());
         }
     }
+    // v1.1c: tokens.plaintext — store the raw key alongside the hash so the
+    // admin UI can display + copy it later. Tokens created before this
+    // migration have plaintext = NULL and can only be recovered by rerolling.
+    if let Err(e) = conn.execute("ALTER TABLE tokens ADD COLUMN plaintext TEXT", []) {
+        let msg = e.to_string();
+        if !msg.contains("duplicate column") {
+            return Err(e.into());
+        }
+    }
     Ok(())
 }
 
