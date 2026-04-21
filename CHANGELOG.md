@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-04-21
+
+### Added
+
+- **Garage (S3-compatible) integration** (X+ scope per
+  `docs/superpowers/specs/2026-04-21-garage-object-store-integration.md`).
+  Optional, activated by setting `GARAGE_S3_ENDPOINT` in `.env`; drust
+  without those env vars behaves exactly as before.
+- **Admin UI at `/drust/admin/public-files`** — list + upload +
+  delete + reconcile for the host-level public bucket. Anonymous reads
+  are served by Caddy reverse-proxying `/public/*` straight to Garage's
+  `s3_web` endpoint; drust is not in the read path.
+- **System collection `_system_public_files`** in `meta.sqlite`
+  (metadata for public bucket objects: key, original name, MIME, size,
+  uploader, timestamps). Created idempotently on every boot.
+- **`_system_*` prefix drop-protection** — a generic
+  `is_protected_collection()` helper enforced by the `drop_collection`
+  MCP tool. System collections cannot be dropped via the API.
+- **Tenant list nav link** — the tenants page now has a `system /
+  public files →` link for discoverability.
+- **New env vars**: `GARAGE_S3_ENDPOINT`, `GARAGE_ADMIN_ENDPOINT`,
+  `GARAGE_S3_ACCESS_KEY`, `GARAGE_S3_SECRET_KEY`, `GARAGE_ADMIN_TOKEN`,
+  `GARAGE_PUBLIC_BUCKET` (default `public`), `GARAGE_MAX_UPLOAD_SIZE`
+  (default 52428800 = 50 MB), `DRUST_PUBLIC_BASE_URL` (default
+  `http://localhost:8793`).
+- **New crate deps**: `object_store = "0.11"` (aws feature),
+  `mime_guess = "2"`, `bytes = "1"`; `axum` gains the `multipart`
+  feature.
+
+### Architecture
+
+- Garage and drust are two **independent** services communicating via
+  the S3 protocol. drust is a Garage client; neither depends on the
+  other for basic functionality. If Garage is unreachable, drust
+  gracefully degrades (upload/delete return 503; the list page still
+  renders from SQLite metadata). All other drust features —
+  tenants, MCP, REST, auth — are unaffected.
+
+### Notes
+
+- Per-tenant bucket support is explicitly deferred to a future Y spec.
+  This release only manages a single `public` bucket.
+- The Garage service itself lives at `tool/garage/` (not versioned in
+  this repo — see its `CLAUDE.md` for the service-level invariants).
+
 ## [1.3.1] - 2026-04-21
 
 ### Added
