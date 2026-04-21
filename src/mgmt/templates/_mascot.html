@@ -1,0 +1,162 @@
+<!-- _mascot.html — vanilla-JS LiveChonk.
+     Include on any page that wants the mascot. Then place one or more
+     `<canvas class="pix" data-chonk="<mood>" data-size="<px>"></canvas>`
+     elements; this script wires them automatically.
+     Supported moods: awake (default, tracks mouse) | happy | sleep | error | curious | working. -->
+<script>
+(function () {
+  const PAL = { '.': null, 'B': '#0a0a0a', 'E': '#7FE87F', 'P': '#FFA3C7', 'Z': '#7dd3d8', 'R': '#d94a4a', 'S': '#fff7a3' };
+  const BASE = [
+    '................','................','................',
+    '.B............B.','.BB..........BB.','.BBB........BBB.',
+    '.BBBBBBBBBBBBBB.','BBBBBBBBBBBBBBBB','BBBBBBBBBBBBBBBB',
+    'BBBBBBBBBBBBBBBB','BBBBBBBBBBBBBBBB','BBBBBBBBBBBBBBBB',
+    'BBBBBBBBBBBBBBBB','.BBBBBBBBBBBBBB.','..BBBBBBBBBBBB..',
+    '................',
+  ];
+  function build(pose) {
+    const g = BASE.map(r => r.split(''));
+    const set = (x, y, c) => { if (g[y]) g[y][x] = c; };
+    const nose = () => { set(7,11,'P'); set(8,11,'P'); };
+    const happy = (c) => { c = c || 'E'; set(4,9,c); set(5,8,c); set(10,8,c); set(11,9,c); };
+    const open = (c) => { c = c || 'E'; set(4,8,c); set(5,8,c); set(4,9,c); set(5,9,c); set(10,8,c); set(11,8,c); set(10,9,c); set(11,9,c); };
+    switch (pose) {
+      case 'open': open(); nose(); break;
+      case 'halfblink': set(4,9,'E'); set(5,9,'E'); set(10,9,'E'); set(11,9,'E'); nose(); break;
+      case 'blink': nose(); break;
+      case 'sleep':
+        nose();
+        set(14,2,'Z'); set(15,2,'Z'); set(15,1,'Z'); set(13,4,'Z');
+        break;
+      case 'oops':
+        set(4,8,'R'); set(5,8,'R'); set(4,9,'R'); set(5,9,'R');
+        set(10,8,'R'); set(11,8,'R'); set(10,9,'R'); set(11,9,'R');
+        nose();
+        break;
+      case 'curious':
+        open();
+        set(10,8,'B'); set(11,8,'E'); set(10,9,'B'); set(11,9,'E');
+        nose();
+        break;
+      case 'working':
+        happy(); nose();
+        set(14,3,'Z'); set(15,3,'Z');
+        break;
+      case 'plain':
+      case 'happy':
+      default:
+        happy(); nose(); break;
+    }
+    return g;
+  }
+  function paint(canvas, grid, scale) {
+    const W = grid[0].length, H = grid.length;
+    canvas.width = W * scale; canvas.height = H * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const c = PAL[grid[y][x]];
+      if (!c) continue;
+      ctx.fillStyle = c;
+      ctx.fillRect(x*scale, y*scale, scale, scale);
+    }
+  }
+  const MOUSE = { x: 0, y: 0, active: false };
+  if (typeof window !== 'undefined' && !window.__chonkMouseInit) {
+    window.__chonkMouseInit = true;
+    window.addEventListener('mousemove', function (e) {
+      MOUSE.x = e.clientX; MOUSE.y = e.clientY; MOUSE.active = true;
+    }, { passive: true });
+    window.addEventListener('blur', function () { MOUSE.active = false; });
+  }
+  function mountLive(canvas, mood, size) {
+    const scale = Math.max(1, Math.floor(size / 16));
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const staticPose = mood === 'sleep' ? 'sleep'
+                     : mood === 'error' ? 'oops'
+                     : mood === 'happy' ? 'plain'
+                     : mood === 'working' ? 'working'
+                     : mood === 'curious' ? 'curious'
+                     : 'open';
+    if (reduced) {
+      paint(canvas, build(staticPose), scale);
+      return;
+    }
+    const st = {
+      ex: 0, ey: 0, tex: 0, tey: 0,
+      blinkStart: 0,
+      nextBlinkAt: performance.now() + 1800 + Math.random()*2200,
+      earEnd: 0,
+      nextEarAt: performance.now() + 3000 + Math.random()*8000,
+    };
+    function tick() {
+      const t = performance.now();
+      if (mood === 'awake' && MOUSE.active) {
+        const r = canvas.getBoundingClientRect();
+        const dx = MOUSE.x - (r.left + r.width/2);
+        const dy = MOUSE.y - (r.top + r.height/2);
+        st.tex = Math.max(-1, Math.min(1, dx/260));
+        st.tey = Math.max(-1, Math.min(1, dy/220));
+      } else {
+        st.tex *= 0.9; st.tey *= 0.9;
+      }
+      if ((mood === 'awake' || mood === 'happy') && t >= st.nextBlinkAt && t - st.blinkStart > 250) {
+        st.blinkStart = t;
+        st.nextBlinkAt = t + 1800 + Math.random()*2400;
+      }
+      if (t >= st.nextEarAt && t > st.earEnd) {
+        st.earEnd = t + 180;
+        st.nextEarAt = t + 6000 + Math.random()*10000;
+      }
+      let pose = staticPose;
+      const bt = t - st.blinkStart;
+      const inBlink = st.blinkStart > 0 && bt >= 0 && bt < 180;
+      if (inBlink && (mood === 'awake' || mood === 'happy')) {
+        pose = (bt < 50 || bt >= 130) ? 'halfblink' : 'blink';
+      }
+      const grid = build(pose);
+      if (mood === 'awake' && !inBlink) {
+        st.ex += (st.tex - st.ex) * 0.25;
+        st.ey += (st.tey - st.ey) * 0.25;
+        const ox = Math.round(st.ex), oy = Math.round(st.ey);
+        const eye = function (cx, cy) {
+          for (let dy = -1; dy <= 2; dy++) for (let dx = -1; dx <= 2; dx++) {
+            if (grid[cy+dy]) grid[cy+dy][cx+dx] = 'B';
+          }
+          for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+            const gx = cx+dx+ox, gy = cy+dy+oy;
+            if (grid[gy] && grid[gy][gx] != null) grid[gy][gx] = 'E';
+          }
+        };
+        eye(4, 8); eye(10, 8);
+      }
+      if (t < st.earEnd) {
+        grid[3][1] = '.'; grid[4][1] = '.'; grid[4][2] = '.';
+        grid[5][1] = '.'; grid[5][2] = '.'; grid[5][3] = '.';
+        grid[2][1] = 'B'; grid[3][1] = 'B'; grid[3][2] = 'B';
+        grid[4][1] = 'B'; grid[4][2] = 'B'; grid[4][3] = 'B';
+        grid[5][1] = 'B'; grid[5][2] = 'B'; grid[5][3] = 'B';
+      }
+      paint(canvas, grid, scale);
+    }
+    tick();
+    setInterval(tick, 60);
+  }
+  function wire() {
+    document.querySelectorAll('canvas.pix[data-chonk]').forEach(function (c) {
+      if (c.__chonkMounted) return;
+      c.__chonkMounted = true;
+      const mood = c.getAttribute('data-chonk') || 'awake';
+      const size = parseInt(c.getAttribute('data-size') || '18', 10);
+      c.style.width = size + 'px';
+      c.style.height = size + 'px';
+      mountLive(c, mood, size);
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
