@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-21
+
 ### Added
+- **Reveal / copy / reroll API keys inline on the tenant detail page**
+  (v1.1c). Tokens are now stored both as a SHA-256 hash (auth path —
+  unchanged) and as plaintext (display path — admin UI only). Each key
+  card shows the masked key with an eye toggle, a copy-to-clipboard
+  button, and a reroll button. Replaces the prior post-reroll
+  query-string banner.
+- **`tokens.plaintext TEXT` column** (idempotent migration at startup).
+  Tokens created before v1.1c have `NULL` here; their card shows
+  `key not stored — created before v1.1c` and offers reroll to
+  regenerate a stored key.
+- **`api_key_card` askama macro** in `tenant_detail.html` —
+  `{% macro api_key_card(role, chip_class, scopes, info, tenant_id) %}`,
+  called once per role. Replaces ~90 lines of near-duplicate anon /
+  service markup with a single component used twice.
 - **`anon` / `service` role split on bearer tokens** (Supabase-style).
   `service` is the full-power credential (current behaviour, unchanged).
   `anon` is read-only: list / get / filter / subscribe / `POST /query` work,
@@ -110,5 +126,6 @@ Initial production release.
   functions are exercised in-process by integration tests but are not yet
   reachable over HTTP
 
-[Unreleased]: https://example.invalid/drust/compare/v0.1.0...HEAD
+[Unreleased]: https://example.invalid/drust/compare/v1.1.0...HEAD
+[1.1.0]: https://example.invalid/drust/compare/v0.1.0...v1.1.0
 [0.1.0]: https://example.invalid/drust/releases/tag/v0.1.0
