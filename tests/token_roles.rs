@@ -3,11 +3,13 @@ mod helpers;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use drust::auth::bearer::{generate_token, hash_token};
+use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::{TenantStack, build_tenant_router, events::EventBus, router::TenantAuthState};
 use helpers::grab_pool;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
@@ -55,6 +57,7 @@ async fn tenant_with_two_tokens(
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
+        limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
     };
     let stack = TenantStack {
         auth: state,

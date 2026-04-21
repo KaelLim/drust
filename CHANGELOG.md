@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Per-token rate limit is now enforced on the tenant data plane.**
+  The `RateLimiter` in `src/safety/rate_limit.rs` previously had passing
+  unit tests but was never wired into the HTTP stack; it is now checked
+  inline at the top of `bearer_auth_layer`, keyed on the bearer's
+  SHA-256 hash. Exceeded requests respond `429 Too Many Requests` with
+  `error_code: "RATE_LIMITED"` and a `Retry-After` header. The check
+  runs *before* the meta.sqlite token lookup, so an attacker hammering
+  with invalid bearers is also bounded.
+- `tests/rate_limit_middleware.rs` — three integration tests:
+  budgeted burst denial, independent buckets per token, bounding
+  unauthenticated request floods.
+
+### Changed
+- `TenantAuthState` gains a `limiter: Arc<RateLimiter>` field. All four
+  construction sites (main.rs + three test helpers) updated. Runtime
+  budget / window read from `DRUST_RATE_LIMIT_PER_TOKEN` (default 60) /
+  `DRUST_RATE_LIMIT_WINDOW_SECS` (default 10s), which were already
+  being parsed by `Config` but had no effect.
+
 - **`set_admin_password` CLI** (`src/bin/set_admin_password.rs`) —
   rotates an admin's `password_hash` in `meta.sqlite` via drust's own
   argon2id hasher. Username from argv, password from stdin (so it does

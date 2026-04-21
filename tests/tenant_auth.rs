@@ -3,10 +3,12 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use axum::routing::get;
 use drust::auth::bearer::{generate_token, hash_token};
+use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::router::{TenantAuthState, TenantRef, bearer_auth_layer};
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::tempdir;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
@@ -27,6 +29,7 @@ async fn app() -> (Router, String, tempfile::TempDir) {
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
+        limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
     };
     // Need to seed tenant data file
     let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();

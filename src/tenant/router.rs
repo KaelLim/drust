@@ -1,4 +1,5 @@
 use crate::auth::bearer::{hash_token, token_hint};
+use crate::safety::rate_limit::RateLimiter;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
 use axum::extract::{Path, State};
 use axum::http::{Request, StatusCode, header};
@@ -12,6 +13,7 @@ use tokio::sync::Mutex;
 pub struct TenantAuthState {
     pub meta: Arc<Mutex<Connection>>,
     pub registry: Arc<TenantRegistry>,
+    pub limiter: Arc<RateLimiter>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +67,23 @@ pub async fn bearer_auth_layer(
         }
     };
     let hash = hash_token(&bearer);
+    // Per-token rate limit. Keyed on the SHA-256 hash so rerolled tokens
+    // get their own bucket. Runs before the DB lookup so an abusive
+    // client cannot keep us churning on meta.sqlite.
+    if let Err(e) = state.limiter.try_acquire(&hash) {
+        let secs = e.0.as_secs().max(1);
+        let body = serde_json::json!({
+            "error_code": "RATE_LIMITED",
+            "message": format!("rate limit exceeded; retry after {secs}s"),
+        });
+        let mut r = axum::Json(body).into_response();
+        *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+        r.headers_mut().insert(
+            header::RETRY_AFTER,
+            axum::http::HeaderValue::from_str(&secs.to_string()).unwrap(),
+        );
+        return r;
+    }
     // Verify: (token active) AND (tenant active). Fetch role alongside.
     let conn = state.meta.lock().await;
     let ok: Option<(String, String)> = conn
