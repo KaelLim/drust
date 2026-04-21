@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Audit log is now written on every tenant-data-plane request.**
+  Each request produces one JSONL entry in
+  `/var/log/drust/audit-YYYY-MM-DD.jsonl` (path from `DRUST_LOG_DIR`)
+  with: `ts`, `tenant`, `token_hint`, `op` (e.g. `"GET /records/posts"`
+  with the `/t/{tenant}` prefix stripped), `duration_ms`, `status`
+  (`ok` / `error`), and on error an `error_code` of the form
+  `HTTP_{status}`. The append is dispatched via `tokio::spawn` so it
+  does not block the response. Was flagged as a Known issue in the
+  v0.1.0 CHANGELOG.
+- `tests/audit_middleware.rs` — three integration tests: success
+  entries, error entries for missing bearer, and `/t/{tenant}` prefix
+  stripping in `op`.
 - **Per-token rate limit is now enforced on the tenant data plane.**
   The `RateLimiter` in `src/safety/rate_limit.rs` previously had passing
   unit tests but was never wired into the HTTP stack; it is now checked
@@ -21,11 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unauthenticated request floods.
 
 ### Changed
-- `TenantAuthState` gains a `limiter: Arc<RateLimiter>` field. All four
-  construction sites (main.rs + three test helpers) updated. Runtime
-  budget / window read from `DRUST_RATE_LIMIT_PER_TOKEN` (default 60) /
-  `DRUST_RATE_LIMIT_WINDOW_SECS` (default 10s), which were already
-  being parsed by `Config` but had no effect.
+- `TenantAuthState` gains a `limiter: Arc<RateLimiter>` field and an
+  `audit: Arc<AuditLog>` field. All construction sites (main.rs +
+  four test setups) updated. Runtime rate-limit budget / window read
+  from `DRUST_RATE_LIMIT_PER_TOKEN` (default 60) /
+  `DRUST_RATE_LIMIT_WINDOW_SECS` (default 10s); audit log directory
+  from `DRUST_LOG_DIR` — both were already being parsed by `Config`
+  but had no effect.
 
 - **`set_admin_password` CLI** (`src/bin/set_admin_password.rs`) —
   rotates an admin's `password_hash` in `meta.sqlite` via drust's own

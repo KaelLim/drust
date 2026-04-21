@@ -4,6 +4,7 @@ use drust::mcp::server::McpRegistry;
 use drust::mgmt::routes::MgmtState;
 use drust::storage::meta::{bootstrap_admin, open_meta};
 use drust::storage::pool::TenantRegistry;
+use drust::safety::audit::AuditLog;
 use drust::safety::rate_limit::RateLimiter;
 use drust::tenant::{TenantStack, build_tenant_router, events::EventBus, router::TenantAuthState};
 use std::sync::Arc;
@@ -53,11 +54,13 @@ async fn main() -> anyhow::Result<()> {
         cfg.rate_limit_per_token,
         Duration::from_secs(cfg.rate_limit_window_secs),
     ));
+    let audit = Arc::new(AuditLog::new(cfg.log_dir.clone()));
     let tenant_stack = TenantStack {
         auth: TenantAuthState {
             meta: meta.clone(),
             registry: tenants.clone(),
             limiter,
+            audit,
         },
         bus: bus.clone(),
     };

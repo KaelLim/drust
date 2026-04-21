@@ -1,4 +1,5 @@
 use crate::auth::bearer::{hash_token, token_hint};
+use crate::safety::audit::{AuditEntry, AuditLog};
 use crate::safety::rate_limit::RateLimiter;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
 use axum::extract::{Path, State};
@@ -7,6 +8,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rusqlite::Connection;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -14,6 +16,7 @@ pub struct TenantAuthState {
     pub meta: Arc<Mutex<Connection>>,
     pub registry: Arc<TenantRegistry>,
     pub limiter: Arc<RateLimiter>,
+    pub audit: Arc<AuditLog>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +55,16 @@ pub async fn bearer_auth_layer(
     mut req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
+    let start = Instant::now();
+    let method_for_audit = req.method().clone();
+    let path_for_audit = req.uri().path().to_string();
+    let tenant_for_audit = params.get("tenant").cloned().unwrap_or_default();
+    let hint_for_audit = extract_bearer(&req)
+        .map(|b| token_hint(&b))
+        .unwrap_or_else(|| "-".to_string());
+    let audit_sink = state.audit.clone();
+
+    let resp = async move {
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
         None => return (StatusCode::BAD_REQUEST, "missing tenant in path").into_response(),
@@ -134,6 +147,32 @@ pub async fn bearer_auth_layer(
         role,
     });
     next.run(req).await
+    }.await;
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let op_path = path_for_audit
+        .strip_prefix(&format!("/t/{tenant_for_audit}"))
+        .unwrap_or(&path_for_audit);
+    let op = format!("{method_for_audit} {op_path}");
+    let status = resp.status();
+    let entry = if status.is_success() || status.is_redirection() {
+        AuditEntry::success(&tenant_for_audit, &hint_for_audit, &op, duration_ms)
+    } else {
+        AuditEntry::failure(
+            &tenant_for_audit,
+            &hint_for_audit,
+            &op,
+            duration_ms,
+            &format!("HTTP_{}", status.as_u16()),
+            "",
+        )
+    };
+    tokio::spawn(async move {
+        if let Err(e) = audit_sink.append(entry).await {
+            tracing::warn!(error = %e, "audit append failed");
+        }
+    });
+    resp
 }
 
 /// Guard used by write-path handlers. Returns `Err(response)` if the

@@ -3,6 +3,7 @@ mod helpers;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use drust::auth::bearer::{generate_token, hash_token};
+use drust::safety::audit::AuditLog;
 use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
@@ -38,6 +39,7 @@ async fn app_with_limiter(
         meta: Arc::new(Mutex::new(conn)),
         registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
         limiter: Arc::new(RateLimiter::new(budget, window)),
+        audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
     };
     let app = build_tenant_router(TenantStack {
         auth: state,
