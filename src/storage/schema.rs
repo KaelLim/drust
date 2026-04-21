@@ -1,6 +1,32 @@
 use rusqlite::Connection;
 use serde::Serialize;
 
+/// System-managed collections are drop-protected. Any name starting with
+/// `_system_` (note the trailing underscore) is refused by schema-mutating
+/// tools. `_system` alone is not protected — the prefix is strict.
+pub fn is_protected_collection(name: &str) -> bool {
+    name.starts_with("_system_")
+}
+
+#[cfg(test)]
+mod protection_tests {
+    use super::*;
+
+    #[test]
+    fn system_prefix_is_protected() {
+        assert!(is_protected_collection("_system_public_files"));
+        assert!(is_protected_collection("_system_anything_else"));
+    }
+
+    #[test]
+    fn normal_names_are_unprotected() {
+        assert!(!is_protected_collection("users"));
+        assert!(!is_protected_collection("_system")); // exact, not prefix
+        assert!(!is_protected_collection("system_logs"));
+        assert!(!is_protected_collection("__private"));
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Collection {
     pub name: String,

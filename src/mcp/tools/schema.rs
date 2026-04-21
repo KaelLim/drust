@@ -1,5 +1,7 @@
 use crate::mcp::server::DrustMcp;
-use crate::storage::schema::{collection_exists, describe_collection, find_fk_referrers};
+use crate::storage::schema::{
+    collection_exists, describe_collection, find_fk_referrers, is_protected_collection,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -294,6 +296,11 @@ pub async fn drop_collection(
     name: &str,
 ) -> anyhow::Result<serde_json::Value> {
     identifier(name)?;
+    if is_protected_collection(name) {
+        anyhow::bail!(
+            "refusing to drop system collection {name:?} (protected by _system_ prefix)"
+        );
+    }
     let pool = s.inner().pool.clone();
     let name_check = name.to_string();
     let referrers: Vec<(String, String)> = pool
