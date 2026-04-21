@@ -1,7 +1,14 @@
 use crate::mcp::server::DrustMcp;
-use crate::storage::schema::{collection_exists, describe_collection};
+use crate::storage::schema::{collection_exists, describe_collection, find_fk_referrers};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+/// Columns drust maintains automatically; users cannot drop them.
+/// `id` is PRIMARY KEY (SQLite would reject the drop anyway); `created_at`
+/// and `updated_at` are referenced by the `<name>_updated_at` trigger
+/// installed in `create_collection`, so dropping them would leave broken
+/// triggers behind. Block all three in one place for a clean error.
+pub const SYSTEM_COLUMNS: &[&str] = &["id", "created_at", "updated_at"];
 
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FieldSpec {
@@ -209,4 +216,112 @@ pub async fn add_field(
         .await?
         .ok_or_else(|| anyhow::anyhow!("collection missing after alter"))?;
     Ok(json!({ "collection": collection, "fields": schema.fields }))
+}
+
+/// Drop a user-defined column via `ALTER TABLE … DROP COLUMN`.
+///
+/// Rejects the drop up-front when:
+///   * the column is one of the drust-maintained SYSTEM_COLUMNS
+///     (`id` / `created_at` / `updated_at`);
+///   * the collection does not exist;
+///   * the column does not exist on that collection.
+///
+/// SQLite itself will reject the statement in the pool writer if the
+/// column is part of a UNIQUE, an index, a CHECK, a foreign key, a
+/// trigger body, or a view — that error is propagated verbatim so the
+/// caller sees why the drop is unsafe.
+pub async fn drop_field(
+    s: &DrustMcp,
+    collection: &str,
+    field: &str,
+) -> anyhow::Result<serde_json::Value> {
+    identifier(collection)?;
+    identifier(field)?;
+    if SYSTEM_COLUMNS.contains(&field) {
+        anyhow::bail!(
+            "cannot drop system column {field:?} — drust maintains `id`, `created_at`, and `updated_at` automatically and the _updated_at trigger depends on them"
+        );
+    }
+    let pool = s.inner().pool.clone();
+    let pool2 = pool.clone();
+    let coll = collection.to_string();
+    let coll_check = collection.to_string();
+    let fld_check = field.to_string();
+    // Verify collection + field exist before submitting the DDL so the
+    // caller gets a clean error instead of sqlite's "no such column".
+    pool.with_reader(move |c| {
+        if !collection_exists(c, &coll_check)? {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let has_col: i64 = c.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            rusqlite::params![&coll_check, &fld_check],
+            |r| r.get(0),
+        )?;
+        if has_col == 0 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("unknown collection or field: {collection}.{field}"))?;
+
+    let sql = format!(
+        "ALTER TABLE \"{}\" DROP COLUMN \"{}\"",
+        collection.replace('"', "\"\""),
+        field.replace('"', "\"\"")
+    );
+    pool.with_writer(move |c| c.execute(&sql, [])).await?;
+    let schema = pool2
+        .with_reader(move |c| describe_collection(c, &coll))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("collection missing after alter"))?;
+    Ok(json!({
+        "collection": collection,
+        "dropped_field": field,
+        "fields": schema.fields,
+    }))
+}
+
+/// Drop an entire collection (table + its `<name>_updated_at` trigger).
+///
+/// Rejects the drop when another collection still has a foreign-key
+/// column pointing at this one — the caller must `drop_field` those
+/// columns first, otherwise the remaining FKs would dangle and break
+/// future joins / writes against the referrers.
+pub async fn drop_collection(
+    s: &DrustMcp,
+    name: &str,
+) -> anyhow::Result<serde_json::Value> {
+    identifier(name)?;
+    let pool = s.inner().pool.clone();
+    let name_check = name.to_string();
+    let referrers: Vec<(String, String)> = pool
+        .with_reader(move |c| {
+            if !collection_exists(c, &name_check)? {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            find_fk_referrers(c, &name_check)
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("unknown collection: {name}"))?;
+    if !referrers.is_empty() {
+        let list = referrers
+            .iter()
+            .map(|(t, f)| format!("{t}.{f}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "cannot drop collection {name:?}: foreign-key references from {list}. Drop those columns first."
+        );
+    }
+    let table = name.to_string();
+    // The trigger name matches what create_collection installs.
+    let ddl = format!(
+        "DROP TRIGGER IF EXISTS \"{trig}\"; DROP TABLE \"{tbl}\";",
+        trig = format!("{}_updated_at", table).replace('"', "\"\""),
+        tbl = table.replace('"', "\"\""),
+    );
+    pool.with_writer(move |c| c.execute_batch(&ddl)).await?;
+    Ok(json!({ "ok": true, "dropped_collection": name }))
 }

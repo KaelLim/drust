@@ -1,6 +1,8 @@
 mod helpers;
 use drust::mcp::server::McpRegistry;
-use drust::mcp::tools::schema::{FieldSpec, add_field, create_collection};
+use drust::mcp::tools::schema::{
+    FieldSpec, add_field, create_collection, drop_collection, drop_field,
+};
 use drust::mcp::tools::write::{delete_record, insert_record, update_record};
 use drust::storage::pool::TenantRegistry;
 use std::sync::Arc;
@@ -357,5 +359,210 @@ async fn sql_default_rejects_non_allowlisted() {
     assert!(
         err.to_string().contains("not in allowlist"),
         "expected allowlist rejection, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn drop_field_removes_column() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "posts",
+        &[
+            FieldSpec {
+                name: "title".into(),
+                sql_type: "text".into(),
+                nullable: false,
+                unique: false,
+                default_value: None,
+                foreign_key: None,
+            },
+            FieldSpec {
+                name: "draft".into(),
+                sql_type: "boolean".into(),
+                nullable: true,
+                unique: false,
+                default_value: Some(serde_json::json!(1)),
+                foreign_key: None,
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    // row with `draft` set — drop still allowed (column-level drop is
+    // independent of row contents).
+    insert_record(&s, "posts", serde_json::json!({"title":"a","draft":0}))
+        .await
+        .unwrap();
+    let v = drop_field(&s, "posts", "draft").await.unwrap();
+    assert_eq!(v["dropped_field"], "draft");
+    let field_names: Vec<String> = v["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(!field_names.contains(&"draft".to_string()));
+    assert!(field_names.contains(&"title".to_string()));
+    // existing rows survive with remaining columns intact
+    let row = insert_record(&s, "posts", serde_json::json!({"title":"b"}))
+        .await
+        .unwrap();
+    assert_eq!(row["record"]["title"], "b");
+}
+
+#[tokio::test]
+async fn drop_field_rejects_system_columns() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "posts",
+        &[FieldSpec {
+            name: "title".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+        }],
+    )
+    .await
+    .unwrap();
+    for bad in &["id", "created_at", "updated_at"] {
+        let err = drop_field(&s, "posts", bad).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("system column") && msg.contains(bad),
+            "expected system-column rejection for {bad}, got: {msg}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn drop_field_rejects_unknown() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "posts",
+        &[FieldSpec {
+            name: "title".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+        }],
+    )
+    .await
+    .unwrap();
+    let err = drop_field(&s, "posts", "nope").await.unwrap_err();
+    assert!(
+        err.to_string().contains("unknown collection or field"),
+        "expected unknown-field rejection, got: {err}"
+    );
+    let err2 = drop_field(&s, "ghosts", "title").await.unwrap_err();
+    assert!(
+        err2.to_string().contains("unknown collection or field"),
+        "expected unknown-collection rejection, got: {err2}"
+    );
+}
+
+#[tokio::test]
+async fn drop_collection_removes_table_and_trigger() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "posts",
+        &[FieldSpec {
+            name: "title".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+        }],
+    )
+    .await
+    .unwrap();
+    insert_record(&s, "posts", serde_json::json!({"title":"a"}))
+        .await
+        .unwrap();
+    let v = drop_collection(&s, "posts").await.unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dropped_collection"], "posts");
+    // The collection no longer exists — a subsequent insert_record must
+    // surface an error rather than silently succeed. The exact error
+    // depends on which layer (authorizer / write path) catches the
+    // missing table first; we only care that it's not a success.
+    let _err = insert_record(&s, "posts", serde_json::json!({"title":"b"}))
+        .await
+        .unwrap_err();
+    // list_collections should no longer include the dropped table.
+    let cols = drust::mcp::tools::exploration::list_collections(&s).await.unwrap();
+    let names: Vec<String> = cols["collections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(!names.contains(&"posts".to_string()), "expected posts gone, got {names:?}");
+}
+
+#[tokio::test]
+async fn drop_collection_rejects_when_fk_referrers_exist() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "authors",
+        &[FieldSpec {
+            name: "name".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+        }],
+    )
+    .await
+    .unwrap();
+    create_collection(
+        &s,
+        "posts",
+        &[FieldSpec {
+            name: "author_id".into(),
+            sql_type: "integer".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: Some("authors".into()),
+        }],
+    )
+    .await
+    .unwrap();
+    let err = drop_collection(&s, "authors").await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("foreign-key references") && msg.contains("posts.author_id"),
+        "expected FK-referrer rejection listing posts.author_id, got: {msg}"
+    );
+    // After we drop the referring column, the parent drop succeeds.
+    drop_field(&s, "posts", "author_id").await.unwrap();
+    let ok = drop_collection(&s, "authors").await.unwrap();
+    assert_eq!(ok["ok"], true);
+}
+
+#[tokio::test]
+async fn drop_collection_rejects_unknown() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let err = drop_collection(&s, "ghosts").await.unwrap_err();
+    assert!(
+        err.to_string().contains("unknown collection"),
+        "expected unknown-collection rejection, got: {err}"
     );
 }
