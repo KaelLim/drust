@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Schema fields may now declare a foreign key to another collection.**
+  `FieldSpec` gains an optional `foreign_key: String` naming the target
+  collection; all collections' `id` is the implicit referenced column.
+  Emits inline `REFERENCES "<target>"("id") ON DELETE RESTRICT`. The
+  target must already exist at DDL time (pre-checked with a clear error
+  rather than SQLite's cryptic "no such table"); self-references inside
+  a `create_collection` call are permitted because the table exists by
+  the time the FK is resolved. Closes the v1 limitation "`foreign_key`
+  also deferred to v1.1" from the design spec's schema section.
+- `describe_collection` now reports each field's `foreign_key` target
+  (sourced from `PRAGMA foreign_key_list`), exposed in MCP and REST
+  schema responses. Omitted when null so existing consumers do not
+  see a new key on non-FK fields.
+- Four new integration tests in `tests/mcp_write_schema.rs`: describe
+  surfaces FK target, missing target rejected pre-DDL, FK enforced
+  on insert of orphan child, `ON DELETE RESTRICT` blocks parent
+  delete while children reference it.
 - **Field `default_value` may now be an allowlisted SQL expression.**
   Previously `default_value` was restricted to JSON scalars (null, bool,
   number, string — rendered as a quoted literal). It now also accepts

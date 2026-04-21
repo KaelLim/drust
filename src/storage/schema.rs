@@ -14,6 +14,10 @@ pub struct Field {
     pub nullable: bool,
     pub pk: bool,
     pub default_value: Option<String>,
+    /// Name of the referenced collection if this field is a foreign key;
+    /// `None` otherwise. Sourced from `PRAGMA foreign_key_list`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreign_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,6 +76,20 @@ pub fn describe_collection(
         return Ok(None);
     }
 
+    // Map of field_name -> referenced_table, pulled from
+    // foreign_key_list before we build the Field structs so each field
+    // can carry its FK target.
+    let fk_map: std::collections::HashMap<String, String> = conn
+        .prepare(&format!(
+            "PRAGMA foreign_key_list(\"{}\")",
+            name.replace('"', "\"\"")
+        ))?
+        .query_map([], |r| {
+            // columns: id, seq, table, from, to, on_update, on_delete, match
+            Ok((r.get::<_, String>(3)?, r.get::<_, String>(2)?))
+        })?
+        .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+
     let fields = conn
         .prepare(&format!(
             "PRAGMA table_info(\"{}\")",
@@ -80,12 +98,15 @@ pub fn describe_collection(
         .query_map([], |r| {
             let nullable_int: i64 = r.get(3)?;
             let pk_int: i64 = r.get(5)?;
+            let field_name: String = r.get(1)?;
+            let fk = fk_map.get(&field_name).cloned();
             Ok(Field {
-                name: r.get::<_, String>(1)?,
+                name: field_name,
                 sql_type: r.get::<_, String>(2)?,
                 nullable: nullable_int == 0,
                 pk: pk_int > 0,
                 default_value: r.get::<_, Option<String>>(4)?,
+                foreign_key: fk,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
