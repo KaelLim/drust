@@ -124,3 +124,60 @@ async fn tenant_soft_delete_queues_pending_when_garage_fails() {
     };
     assert_eq!(pending, 1, "pending revoke row inserted");
 }
+
+#[tokio::test]
+async fn tenant_restore_regrants_and_reenables_website() {
+    let h = setup_soft_delete().await;
+    h.mock.seed_bucket("tenant-back-pub", "bkt-back-pub");
+    h.mock.seed_bucket("tenant-back-prv", "bkt-back-prv");
+    // Pre-populate a stale pending-revoke row so the test can assert it's cleared.
+    h.meta.lock().await.execute(
+        "INSERT INTO _trash_pending_revokes (tenant_id, detected_at) VALUES ('back', datetime('now'))",
+        []
+    ).unwrap();
+    h.mock.clear_requests();
+
+    drust::mgmt::tenants::restore_storage_for_tenant(&h.garage, &h.meta, "GKkey", "back")
+        .await
+        .unwrap();
+
+    let reqs = h.mock.requests();
+    assert_eq!(
+        reqs.iter().filter(|r| r.path == "/v1/bucket/allow").count(),
+        2,
+        "two bucket_allow calls"
+    );
+    assert!(
+        reqs.iter()
+            .any(|r| r.path.ends_with("/website") && r.body.contains("\"enabled\":true")),
+        "website re-enabled on pub"
+    );
+
+    let pending: i64 = h
+        .meta
+        .lock()
+        .await
+        .query_row(
+            "SELECT COUNT(*) FROM _trash_pending_revokes WHERE tenant_id='back'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0, "pending row cleared on restore");
+}
+
+#[tokio::test]
+async fn tenant_restore_errors_when_garage_unreachable() {
+    let h = setup_soft_delete().await;
+    h.mock.seed_bucket("tenant-err-pub", "bkt-err-pub");
+    // Force the very first call (lookup_bucket pub) to fail.
+    h.mock
+        .fail_next_with(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+
+    let res =
+        drust::mgmt::tenants::restore_storage_for_tenant(&h.garage, &h.meta, "GKkey", "err").await;
+    assert!(
+        res.is_err(),
+        "restore must propagate Garage failure (not silently queue like soft-delete)"
+    );
+}
