@@ -560,4 +560,45 @@
 
   /* mascot canvas */
   canvas.pix { image-rendering: pixelated; display: block; }
+
+  /* Y: files page */
+  .disk-banner {
+    padding: 10px 14px;
+    background: var(--bg-2, #f4f4f4);
+    border-radius: 6px;
+    margin-bottom: 18px;
+    font-family: var(--mono, monospace);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .disk-banner.low { background: var(--danger-soft, #fee); color: var(--danger, #c22); }
+  .disk-banner .warn { margin-left: auto; color: var(--danger, #c22); font-weight: bold; }
+
+  .vis-tabs { display: flex; gap: 8px; margin: 12px 16px; }
+  .vis-tab {
+    padding: 6px 12px;
+    border: 1px solid var(--border, var(--line, #ccc));
+    border-radius: 4px;
+    text-decoration: none;
+    font-size: 13px;
+    color: inherit;
+  }
+  .vis-tab.active {
+    background: var(--accent, #333);
+    color: var(--accent-fg, #fff);
+    border-color: var(--accent, #333);
+  }
+
+  .upload-fields { display: flex; flex-direction: column; gap: 12px; margin: 12px 0; }
+  .upload-fields fieldset {
+    border: 1px solid var(--border, var(--line, #ccc));
+    padding: 8px 14px;
+    border-radius: 4px;
+  }
+  .upload-fields fieldset legend { padding: 0 6px; font-size: 12px; }
+  .upload-fields fieldset label { margin-right: 12px; font-size: 13px; }
+  .upload-fields .cache-cell input { width: 100%; padding: 6px; }
+  .upload-fields .meta-cell textarea { width: 100%; font-family: var(--mono, monospace); padding: 6px; }
 </style>
