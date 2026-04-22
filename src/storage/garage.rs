@@ -284,6 +284,69 @@ impl GarageClient {
             website_enabled: false,
         }))
     }
+
+    pub async fn set_website(&self, bucket_id: &str, enabled: bool) -> anyhow::Result<()> {
+        let resp = self
+            .admin
+            .post(self.admin_url(&format!("/v1/bucket/{bucket_id}/website")))
+            .bearer_auth(&self.admin_token)
+            .json(&serde_json::json!({ "enabled": enabled }))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("garage set_website({bucket_id}, {enabled}) -> {status}: {body}");
+        }
+        Ok(())
+    }
+
+    pub async fn bucket_allow(
+        &self,
+        bucket_id: &str,
+        access_key_id: &str,
+        read: bool,
+        write: bool,
+        owner: bool,
+    ) -> anyhow::Result<()> {
+        let resp = self
+            .admin
+            .post(self.admin_url("/v1/bucket/allow"))
+            .bearer_auth(&self.admin_token)
+            .json(&serde_json::json!({
+                "bucketId": bucket_id,
+                "accessKeyId": access_key_id,
+                "permissions": { "read": read, "write": write, "owner": owner }
+            }))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("garage bucket_allow({bucket_id}, {access_key_id}) -> {status}: {body}");
+        }
+        Ok(())
+    }
+
+    pub async fn bucket_deny(&self, bucket_id: &str, access_key_id: &str) -> anyhow::Result<()> {
+        let resp = self
+            .admin
+            .post(self.admin_url("/v1/bucket/deny"))
+            .bearer_auth(&self.admin_token)
+            .json(&serde_json::json!({
+                "bucketId": bucket_id,
+                "accessKeyId": access_key_id,
+                "permissions": { "read": true, "write": true, "owner": true }
+            }))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("garage bucket_deny({bucket_id}, {access_key_id}) -> {status}: {body}");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
