@@ -18,13 +18,9 @@ pub struct GarageClient {
     admin: reqwest::Client,
     admin_endpoint: String,
     admin_token: String,
-    #[allow(dead_code)]
     s3_endpoint: String,
-    #[allow(dead_code)]
     access_key_id: String,
-    #[allow(dead_code)]
     secret_access_key: String,
-    #[allow(dead_code)]
     region: String,
 }
 
@@ -346,6 +342,170 @@ impl GarageClient {
             anyhow::bail!("garage bucket_deny({bucket_id}, {access_key_id}) -> {status}: {body}");
         }
         Ok(())
+    }
+
+    /// Test-only: point the signing machinery at a given endpoint+creds.
+    /// Production code uses `new()` which wires these from StorageConfig.
+    pub fn configure_s3_signing(
+        &mut self,
+        endpoint: &str,
+        access_key: &str,
+        secret_key: &str,
+        region: &str,
+    ) {
+        self.s3_endpoint = endpoint.to_string();
+        self.access_key_id = access_key.to_string();
+        self.secret_access_key = secret_key.to_string();
+        self.region = region.to_string();
+    }
+
+    fn build_s3_for_bucket(&self, bucket: &str) -> anyhow::Result<object_store::aws::AmazonS3> {
+        let s3 = object_store::aws::AmazonS3Builder::new()
+            .with_endpoint(&self.s3_endpoint)
+            .with_allow_http(true)
+            .with_region(&self.region)
+            .with_bucket_name(bucket)
+            .with_access_key_id(&self.access_key_id)
+            .with_secret_access_key(&self.secret_access_key)
+            .with_virtual_hosted_style_request(false)
+            .build()?;
+        Ok(s3)
+    }
+
+    /// Produce a pre-signed S3 v4 GET URL.
+    /// If `force_download_name` is Some, injects `response-content-disposition`
+    /// with attachment + filename* so the browser downloads.
+    pub async fn signed_get_url(
+        &self,
+        bucket: &str,
+        key: &str,
+        expires_in: std::time::Duration,
+        force_download_name: Option<&str>,
+    ) -> anyhow::Result<String> {
+        use object_store::signer::Signer;
+        let s3 = self.build_s3_for_bucket(bucket)?;
+        let method = reqwest::Method::GET;
+        let path = StorePath::from(key);
+        let mut url = s3.signed_url(method, &path, expires_in).await?;
+        if let Some(name) = force_download_name {
+            let ascii = ascii_fallback_filename(name);
+            let pct = urlencoding::encode(name);
+            let disp = format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{pct}");
+            let disp_enc = urlencoding::encode(&disp);
+            let existing = url.query().unwrap_or("").to_owned();
+            let sep = if existing.is_empty() { "" } else { "&" };
+            url.set_query(Some(&format!(
+                "{existing}{sep}response-content-disposition={disp_enc}",
+            )));
+        }
+        Ok(url.into())
+    }
+
+    /// Cross-bucket PUT.
+    pub async fn put_object_in(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: bytes::Bytes,
+        content_type: Option<&str>,
+        disposition_mode: &str,
+        original_name: &str,
+        cache_control: Option<&str>,
+        meta_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        use object_store::{Attribute, AttributeValue, Attributes, ObjectStore, PutOptions};
+        let s3 = self.build_s3_for_bucket(bucket)?;
+        let path = StorePath::from(key);
+
+        let ascii = ascii_fallback_filename(original_name);
+        let pct = urlencoding::encode(original_name);
+        let cd = format!("{disposition_mode}; filename=\"{ascii}\"; filename*=UTF-8''{pct}");
+
+        let mut attrs = Attributes::new();
+        if let Some(ct) = content_type {
+            attrs.insert(Attribute::ContentType, AttributeValue::from(ct.to_string()));
+        }
+        attrs.insert(Attribute::ContentDisposition, AttributeValue::from(cd));
+        if let Some(cc) = cache_control {
+            attrs.insert(
+                Attribute::CacheControl,
+                AttributeValue::from(cc.to_string()),
+            );
+        }
+        attrs.insert(
+            Attribute::Metadata("original-name".into()),
+            AttributeValue::from(urlencoding::encode(original_name).into_owned()),
+        );
+        attrs.insert(
+            Attribute::Metadata("uploaded-at".into()),
+            AttributeValue::from(chrono::Utc::now().to_rfc3339()),
+        );
+        if let Some(json) = meta_json {
+            let v: serde_json::Value = serde_json::from_str(json)
+                .map_err(|e| anyhow::anyhow!("meta_json not valid JSON: {e}"))?;
+            if let Some(map) = v.as_object() {
+                for (k, val) in map {
+                    if !k
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    {
+                        anyhow::bail!("meta key must be ASCII alnum/-/_: {k}");
+                    }
+                    let s = val.as_str().unwrap_or(&val.to_string()).to_string();
+                    attrs.insert(
+                        Attribute::Metadata(k.clone().into()),
+                        AttributeValue::from(urlencoding::encode(&s).into_owned()),
+                    );
+                }
+            }
+        }
+
+        let opts = PutOptions {
+            attributes: attrs,
+            ..Default::default()
+        };
+        s3.put_opts(&path, body.into(), opts).await?;
+        Ok(())
+    }
+
+    /// Cross-bucket DELETE. Idempotent: missing key is `Ok`.
+    pub async fn delete_object_in(&self, bucket: &str, key: &str) -> anyhow::Result<()> {
+        use object_store::ObjectStore;
+        let s3 = self.build_s3_for_bucket(bucket)?;
+        let path = StorePath::from(key);
+        match s3.delete(&path).await {
+            Ok(()) => Ok(()),
+            Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Cross-bucket GET — returns all bytes.
+    pub async fn get_object_bytes_in(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> anyhow::Result<bytes::Bytes> {
+        use object_store::ObjectStore;
+        let s3 = self.build_s3_for_bucket(bucket)?;
+        let path = StorePath::from(key);
+        let result = s3.get(&path).await?;
+        Ok(result.bytes().await?)
+    }
+
+    /// Cross-bucket GET — streams chunks for proxying to response bodies.
+    pub async fn get_object_stream_in(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> anyhow::Result<impl futures::Stream<Item = anyhow::Result<bytes::Bytes>>> {
+        use object_store::ObjectStore;
+        let s3 = self.build_s3_for_bucket(bucket)?;
+        let path = StorePath::from(key);
+        let result = s3.get(&path).await?;
+        Ok(futures::StreamExt::map(result.into_stream(), |r| {
+            r.map_err(anyhow::Error::from)
+        }))
     }
 }
 
