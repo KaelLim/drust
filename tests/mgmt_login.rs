@@ -19,6 +19,7 @@ async fn app() -> axum::Router {
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
         max_upload_bytes: 52_428_800,
+        garage_client_key_id: String::new(),
     };
     build_mgmt_router(state)
 }

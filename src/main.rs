@@ -72,12 +72,19 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.max_upload_bytes)
         .unwrap_or(52_428_800);
 
+    let garage_client_key_id = cfg
+        .storage
+        .as_ref()
+        .map(|s| s.access_key.clone())
+        .unwrap_or_default();
+
     let mgmt_state = MgmtState {
         meta: meta.clone(),
         session_ttl_days: cfg.session_ttl_days,
         garage,
         public_base_url: cfg.public_base_url.clone(),
         max_upload_bytes,
+        garage_client_key_id,
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
