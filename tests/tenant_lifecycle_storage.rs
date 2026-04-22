@@ -181,3 +181,59 @@ async fn tenant_restore_errors_when_garage_unreachable() {
         "restore must propagate Garage failure (not silently queue like soft-delete)"
     );
 }
+
+#[tokio::test]
+async fn tenant_hard_delete_deletes_both_buckets() {
+    let h = setup_soft_delete().await;
+    h.mock.seed_bucket("tenant-gone-pub", "bkt-gone-pub");
+    h.mock.seed_bucket("tenant-gone-prv", "bkt-gone-prv");
+    h.mock.clear_requests();
+
+    drust::mgmt::tenants::hard_delete_storage_for_tenant(&h.garage, &h.meta, "gone")
+        .await
+        .unwrap();
+
+    let reqs = h.mock.requests();
+    // 2 lookups (one per bucket) + 2 deletes
+    assert_eq!(
+        reqs.iter()
+            .filter(|r| r.method == "DELETE" && r.path == "/v1/bucket")
+            .count(),
+        2,
+        "two DELETE /v1/bucket calls"
+    );
+
+    let orphans: i64 = h
+        .meta
+        .lock()
+        .await
+        .query_row("SELECT COUNT(*) FROM _orphan_buckets", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(orphans, 0, "no orphans on happy path");
+}
+
+#[tokio::test]
+async fn tenant_hard_delete_records_orphans_on_garage_failure() {
+    let h = setup_soft_delete().await;
+    h.mock.seed_bucket("tenant-orphan-pub", "bkt-o-pub");
+    h.mock.seed_bucket("tenant-orphan-prv", "bkt-o-prv");
+    h.mock.clear_requests();
+    // Force the FIRST call (lookup pub) to fail. The lookup-failure branch
+    // records an orphan and continues with prv.
+    h.mock
+        .fail_next_with(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+
+    let res =
+        drust::mgmt::tenants::hard_delete_storage_for_tenant(&h.garage, &h.meta, "orphan").await;
+    // Function returns Ok even when Garage fails — caller (janitor) still
+    // proceeds with local rm -rf.
+    assert!(res.is_ok());
+
+    let orphans: i64 = h
+        .meta
+        .lock()
+        .await
+        .query_row("SELECT COUNT(*) FROM _orphan_buckets", [], |r| r.get(0))
+        .unwrap();
+    assert!(orphans >= 1, "at least one orphan recorded");
+}
