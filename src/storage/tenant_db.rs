@@ -1,6 +1,35 @@
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 
+const RESERVED_TENANT_IDS: &[&str] = &["admin", "system", "root", "public"];
+
+#[derive(Debug, thiserror::Error)]
+pub enum TenantIdError {
+    #[error("tenant id must be 1–52 characters, got {0}")]
+    BadLength(usize),
+    #[error("tenant id must match [a-z0-9-]+")]
+    BadChars,
+    #[error("tenant id '{0}' is reserved")]
+    Reserved(String),
+}
+
+pub fn validate_tenant_id(id: &str) -> Result<(), TenantIdError> {
+    let len = id.len();
+    if !(1..=52).contains(&len) {
+        return Err(TenantIdError::BadLength(len));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(TenantIdError::BadChars);
+    }
+    if RESERVED_TENANT_IDS.contains(&id) {
+        return Err(TenantIdError::Reserved(id.to_string()));
+    }
+    Ok(())
+}
+
 pub fn tenant_dir(data_root: &Path, tenant_id: &str) -> PathBuf {
     data_root.join("tenants").join(tenant_id)
 }
