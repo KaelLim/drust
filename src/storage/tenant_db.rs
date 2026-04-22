@@ -23,6 +23,36 @@ fn apply_common_pragmas(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+const SCHEMA_SQL: &str = r#"
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS "_system_files" (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  key                 TEXT    NOT NULL UNIQUE,
+  original_name       TEXT    NOT NULL,
+  content_type        TEXT,
+  size_bytes          INTEGER NOT NULL,
+  content_disposition TEXT,
+  visibility          TEXT    NOT NULL DEFAULT 'public',
+  cache_control       TEXT,
+  meta_json           TEXT,
+  uploaded_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  uploader            TEXT    NOT NULL,
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_system_files_uploaded_at
+  ON "_system_files"(uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_files_visibility
+  ON "_system_files"(visibility);
+
+COMMIT;
+"#;
+
+fn apply_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(SCHEMA_SQL)
+}
+
 pub fn open_write(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection> {
     let dir = tenant_dir(data_root, tenant_id);
     std::fs::create_dir_all(&dir)?;
@@ -32,6 +62,7 @@ pub fn open_write(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connectio
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
     )?;
     apply_common_pragmas(&conn)?;
+    apply_schema(&conn)?;
     Ok(conn)
 }
 
