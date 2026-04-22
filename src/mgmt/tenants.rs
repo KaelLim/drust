@@ -1,6 +1,6 @@
 use crate::auth::bearer::{generate_token, hash_token};
 use crate::auth::middleware::AdminSessionState;
-use crate::storage::tenant_db::{open_write, tenant_dir};
+use crate::storage::tenant_db::{open_write, tenant_dir, validate_tenant_id};
 use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -134,8 +134,8 @@ fn make_tenant_inner(
     quota_mb: i64,
     quota_rows: i64,
 ) -> anyhow::Result<CreatedResp> {
-    if !valid_slug(id) {
-        anyhow::bail!("invalid slug");
+    if let Err(e) = validate_tenant_id(id) {
+        anyhow::bail!("invalid tenant id: {e}");
     }
     conn.execute(
         "INSERT INTO tenants (id, name, quota_db_mb, quota_rows) VALUES (?1, ?2, ?3, ?4)",
@@ -192,7 +192,7 @@ pub async fn create_tenant_json(
         Ok(resp) => (StatusCode::CREATED, Json(resp)).into_response(),
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("invalid slug") || msg.contains("UNIQUE") {
+            if msg.contains("invalid tenant id") || msg.contains("UNIQUE") {
                 (StatusCode::BAD_REQUEST, msg).into_response()
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
