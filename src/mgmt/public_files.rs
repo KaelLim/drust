@@ -696,6 +696,92 @@ fn internal(msg: String) -> Response {
     r
 }
 
+#[derive(serde::Deserialize, Default)]
+pub struct AdminSignRequest {
+    pub expires_in: Option<u64>,
+    pub download: Option<bool>,
+}
+
+#[derive(serde::Serialize)]
+pub struct AdminSignResponse {
+    pub url: String,
+    pub expires_at: Option<String>,
+}
+
+/// POST /drust/admin/files/<key>/sign
+pub async fn admin_sign_url(
+    State(state): State<PublicFilesState>,
+    Path(key): Path<String>,
+    axum::Json(req): axum::Json<AdminSignRequest>,
+) -> Result<axum::Json<AdminSignResponse>, (StatusCode, String)> {
+    let expires_in = req.expires_in.unwrap_or(3600);
+    if expires_in == 0 || expires_in > 604_800 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "expires_in must be 1–604800 seconds (7 days)".into(),
+        ));
+    }
+
+    let conn = state.meta.lock().await;
+    let row = conn
+        .query_row(
+            "SELECT * FROM _system_files WHERE key = ?1",
+            rusqlite::params![key],
+            crate::storage::files::map_file_row,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => (StatusCode::NOT_FOUND, "not found".into()),
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
+    drop(conn);
+
+    if row.visibility == "public" {
+        let url = crate::storage::files::build_public_url(
+            &state.base_url,
+            &crate::storage::files::Owner::Admin,
+            crate::storage::files::Visibility::Public,
+            &row.key,
+        );
+        return Ok(axum::Json(AdminSignResponse {
+            url,
+            expires_at: None,
+        }));
+    }
+
+    let garage = state.garage.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage not configured".into(),
+        )
+    })?;
+
+    let bucket = crate::storage::files::bucket_for_upload(
+        &crate::storage::files::Owner::Admin,
+        crate::storage::files::Visibility::Private,
+    );
+    let download_name = if req.download.unwrap_or(false) {
+        Some(row.original_name.as_str())
+    } else {
+        None
+    };
+    let url = garage
+        .signed_get_url(
+            &bucket,
+            &row.key,
+            std::time::Duration::from_secs(expires_in),
+            download_name,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sign: {e}")))?;
+
+    let expires_at =
+        (chrono::Utc::now() + chrono::Duration::seconds(expires_in as i64)).to_rfc3339();
+    Ok(axum::Json(AdminSignResponse {
+        url,
+        expires_at: Some(expires_at),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

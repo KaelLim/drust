@@ -83,6 +83,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 "/t/{tenant}/files/{key}/bytes",
                 get(crate::mgmt::tenant_files::stream_bytes),
             )
+            .route(
+                "/t/{tenant}/files/{key}/sign",
+                post(crate::mgmt::tenant_files::sign_url),
+            )
             .layer(axum::middleware::from_fn_with_state(
                 auth_state,
                 router::bearer_auth_layer,
