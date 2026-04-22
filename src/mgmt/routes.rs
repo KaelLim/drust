@@ -171,6 +171,7 @@ impl MgmtState {
             base_url: self.public_base_url.clone(),
             max_upload_bytes: self.max_upload_bytes,
             disk_min_free_pct: self.disk_min_free_pct,
+            garage_client_key_id: self.garage_client_key_id.clone(),
         };
 
         let public = Router::new()
