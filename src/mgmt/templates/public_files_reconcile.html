@@ -30,13 +30,13 @@
     <main class="main"><div class="page">
       <nav class="crumbs">
         <a href="/drust/admin/tenants">drust</a><span class="sep">/</span>
-        <a href="/drust/admin/public-files">public files</a><span class="sep">/</span>
+        <a href="/drust/admin/files">public files</a><span class="sep">/</span>
         <span class="here">reconcile</span>
       </nav>
 
       <div class="pagehead"><div><h1>Reconcile</h1><div class="meta">Compare Garage bucket contents to drust's metadata. Select what to clean up, then apply.</div></div></div>
 
-      <form method="post" action="/drust/admin/public-files/reconcile">
+      <form method="post" action="/drust/admin/files/reconcile">
         <div class="card">
           <div class="card-head"><span>Orphan objects</span><span class="card-head-actions">in Garage, not tracked by drust — delete from Garage</span></div>
           <div class="records-scroll">
@@ -69,7 +69,7 @@
 
         <div style="margin-top:24px;display:flex;gap:12px;">
           <button type="submit" class="btn btn-primary">Apply selected</button>
-          <a href="/drust/admin/public-files" class="btn btn-ghost">cancel</a>
+          <a href="/drust/admin/files" class="btn btn-ghost">cancel</a>
         </div>
       </form>
     </div></main>
