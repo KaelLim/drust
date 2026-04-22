@@ -15,11 +15,8 @@ pub struct GarageClient {
     store: Arc<dyn ObjectStore>,
     bucket: String,
     // Admin API HTTP client — scaffolded in Task 5, used from Task 6 onwards.
-    #[allow(dead_code)]
     admin: reqwest::Client,
-    #[allow(dead_code)]
     admin_endpoint: String,
-    #[allow(dead_code)]
     admin_token: String,
     #[allow(dead_code)]
     s3_endpoint: String,
@@ -29,6 +26,13 @@ pub struct GarageClient {
     secret_access_key: String,
     #[allow(dead_code)]
     region: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BucketInfo {
+    pub id: String,
+    pub name: String,
+    pub website_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +213,76 @@ impl GarageClient {
             });
         }
         Ok(out)
+    }
+
+    fn admin_url(&self, path: &str) -> String {
+        format!("{}{}", self.admin_endpoint.trim_end_matches('/'), path)
+    }
+
+    pub async fn create_bucket(&self, name: &str) -> anyhow::Result<String> {
+        let resp = self
+            .admin
+            .post(self.admin_url("/v1/bucket"))
+            .bearer_auth(&self.admin_token)
+            .json(&serde_json::json!({ "globalAlias": name }))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("garage create_bucket({name}) -> {status}: {body}");
+        }
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| anyhow::anyhow!("create_bucket parse: {e} body={body}"))?;
+        let id = v
+            .get("id")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow::anyhow!("create_bucket missing id in {body}"))?;
+        Ok(id.to_string())
+    }
+
+    pub async fn delete_bucket(&self, bucket_id: &str) -> anyhow::Result<()> {
+        let resp = self
+            .admin
+            .delete(self.admin_url("/v1/bucket"))
+            .query(&[("id", bucket_id)])
+            .bearer_auth(&self.admin_token)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() && status.as_u16() != 404 {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("garage delete_bucket({bucket_id}) -> {status}: {body}");
+        }
+        Ok(())
+    }
+
+    pub async fn lookup_bucket(&self, name: &str) -> anyhow::Result<Option<BucketInfo>> {
+        let resp = self
+            .admin
+            .get(self.admin_url("/v1/bucket"))
+            .query(&[("globalAlias", name)])
+            .bearer_auth(&self.admin_token)
+            .send()
+            .await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("garage lookup_bucket({name}) -> {status}: {body}");
+        }
+        let v: serde_json::Value = serde_json::from_str(&body)?;
+        let id = v
+            .get("id")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow::anyhow!("lookup_bucket missing id"))?;
+        Ok(Some(BucketInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            website_enabled: false,
+        }))
     }
 }
 
