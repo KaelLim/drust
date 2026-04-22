@@ -46,6 +46,7 @@ async fn app_with_audit(
         auth: state,
         bus: bus.clone(),
         mcp: helpers::test_mcp_http(tenants, bus),
+        files: None,
     });
     (app, tok, dir, audit_dir)
 }

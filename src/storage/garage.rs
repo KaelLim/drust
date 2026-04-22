@@ -43,7 +43,7 @@ pub struct ObjectSummary {
 /// the resulting string is guaranteed to fit in an HTTP header; the
 /// real original name is preserved in `filename*=UTF-8''...` and in
 /// `x-amz-meta-original-name` (both percent-encoded).
-fn ascii_fallback_filename(name: &str) -> String {
+pub fn ascii_fallback_filename(name: &str) -> String {
     name.chars()
         .map(|c| match c {
             '\\' | '"' => '_',
@@ -498,7 +498,7 @@ impl GarageClient {
         &self,
         bucket: &str,
         key: &str,
-    ) -> anyhow::Result<impl futures::Stream<Item = anyhow::Result<bytes::Bytes>>> {
+    ) -> anyhow::Result<impl futures::Stream<Item = anyhow::Result<bytes::Bytes>> + use<>> {
         use object_store::ObjectStore;
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);

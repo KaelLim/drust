@@ -7,6 +7,7 @@ pub mod router;
 pub mod sse;
 
 use crate::mcp::http_registry::McpHttpRegistry;
+use crate::mgmt::tenant_files::TenantFilesState;
 use axum::Router;
 use axum::routing::{any, get, post};
 use events::EventBus;
@@ -18,6 +19,7 @@ pub struct TenantStack {
     pub auth: TenantAuthState,
     pub bus: EventBus,
     pub mcp: Arc<McpHttpRegistry>,
+    pub files: Option<TenantFilesState>,
 }
 
 pub fn build_tenant_router(state: TenantStack) -> Router {
@@ -25,7 +27,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     let bus = state.bus.clone();
     let mcp = state.mcp.clone();
 
-    Router::new()
+    let core = Router::new()
         .route("/t/{tenant}/collections", get(collections::list_handler))
         .route(
             "/t/{tenant}/collections/{coll}",
@@ -69,5 +71,26 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             auth_state.clone(),
             router::bearer_auth_layer,
         ))
-        .with_state(auth_state)
+        .with_state(auth_state.clone());
+
+    // File-bytes proxy routes — only wired when Garage storage is configured.
+    // These also sit behind bearer_auth_layer (applied here on the sub-router
+    // so TenantAuthState is available to the middleware while TenantFilesState
+    // is available to the handler).
+    let files_router = if let Some(files_state) = state.files {
+        Router::new()
+            .route(
+                "/t/{tenant}/files/{key}/bytes",
+                get(crate::mgmt::tenant_files::stream_bytes),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                auth_state,
+                router::bearer_auth_layer,
+            ))
+            .with_state(files_state)
+    } else {
+        Router::new()
+    };
+
+    core.merge(files_router)
 }

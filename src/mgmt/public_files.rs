@@ -632,6 +632,64 @@ fn humanize_bytes(n: u64) -> String {
 // removed in favour of SQL SUM at query time, which is both exact and
 // cheaper.)
 
+/// GET /drust/admin/files/<key>/bytes
+/// Admin-only: streams the raw bytes for any file stored in the admin buckets
+/// (both public and private). Requires an active admin session.
+pub async fn admin_stream_bytes(
+    State(state): State<PublicFilesState>,
+    Path(key): Path<String>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    let garage = state.garage.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage not configured".into(),
+        )
+    })?;
+
+    let conn = state.meta.lock().await;
+    let row = conn
+        .query_row(
+            "SELECT * FROM _system_files WHERE key = ?1",
+            rusqlite::params![key],
+            crate::storage::files::map_file_row,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => (StatusCode::NOT_FOUND, "not found".into()),
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
+    drop(conn);
+
+    let visibility = if row.visibility == "public" {
+        crate::storage::files::Visibility::Public
+    } else {
+        crate::storage::files::Visibility::Private
+    };
+    let bucket =
+        crate::storage::files::bucket_for_upload(&crate::storage::files::Owner::Admin, visibility);
+
+    let stream = garage
+        .get_object_stream_in(&bucket, &key)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("get: {e}")))?;
+
+    let ct = row
+        .content_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+    let disp_mode = row.content_disposition.as_deref().unwrap_or("inline");
+    let ascii = crate::storage::garage::ascii_fallback_filename(&row.original_name);
+    let pct = urlencoding::encode(&row.original_name);
+    let cd = format!("{disp_mode}; filename=\"{ascii}\"; filename*=UTF-8''{pct}");
+    let cc = row.cache_control.as_deref().unwrap_or("private, no-store");
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(axum::http::header::CONTENT_TYPE, ct.parse().unwrap());
+    headers.insert(axum::http::header::CONTENT_DISPOSITION, cd.parse().unwrap());
+    headers.insert(axum::http::header::CACHE_CONTROL, cc.parse().unwrap());
+
+    Ok((headers, axum::body::Body::from_stream(stream)).into_response())
+}
+
 fn internal(msg: String) -> Response {
     let mut r = msg.into_response();
     *r.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;

@@ -61,6 +61,7 @@ async fn mcp_stack(tenant: &str) -> (axum::Router, String, String, tempfile::Tem
         auth: state,
         bus: bus.clone(),
         mcp: helpers::test_mcp_http(tenants, bus),
+        files: None,
     });
     (app, service_tok, anon_tok, dir)
 }
