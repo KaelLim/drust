@@ -109,6 +109,29 @@ struct ReconcilePage {
     dangling_rows: Vec<(i64, String, String)>, // (id, key, original_name)
 }
 
+/// Build a `DiskView` for the Garage data volume. If `/var/lib/garage` is
+/// unavailable, returns neutral placeholder values (free_pct = 100 so no
+/// warning banner appears).
+pub fn build_disk_view() -> DiskView {
+    match crate::storage::disk::disk_stats(std::path::Path::new("/var/lib/garage")) {
+        Ok(stats) => {
+            let gb = |b: u64| format!("{:.1}", b as f64 / 1_073_741_824.0);
+            DiskView {
+                used_gb: gb(stats.used_bytes),
+                total_gb: gb(stats.total_bytes),
+                free_pct: stats.free_pct,
+                free_pct_display: format!("{:.1}", stats.free_pct),
+            }
+        }
+        Err(_) => DiskView {
+            used_gb: "?".into(),
+            total_gb: "?".into(),
+            free_pct: 100.0,
+            free_pct_display: "?".into(),
+        },
+    }
+}
+
 pub async fn list_page(
     State(state): State<PublicFilesState>,
     Query(qs): Query<ListQs>,
@@ -161,23 +184,7 @@ pub async fn list_page(
         .collect();
 
     // Build disk view. If /var/lib/garage is unavailable, show neutral placeholders.
-    let disk = match crate::storage::disk::disk_stats(std::path::Path::new("/var/lib/garage")) {
-        Ok(stats) => {
-            let gb = |b: u64| format!("{:.1}", b as f64 / 1_073_741_824.0);
-            DiskView {
-                used_gb: gb(stats.used_bytes),
-                total_gb: gb(stats.total_bytes),
-                free_pct: stats.free_pct,
-                free_pct_display: format!("{:.1}", stats.free_pct),
-            }
-        }
-        Err(_) => DiskView {
-            used_gb: "?".into(),
-            total_gb: "?".into(),
-            free_pct: 100.0,
-            free_pct_display: "?".into(),
-        },
-    };
+    let disk = build_disk_view();
 
     let page = FilesPage {
         version: env!("CARGO_PKG_VERSION"),

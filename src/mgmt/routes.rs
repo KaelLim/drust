@@ -151,7 +151,7 @@ impl MgmtState {
         };
         use crate::mgmt::tenants::{
             TenantsState, create_tenant_form, create_tenant_json, list_page_axum,
-            soft_delete_tenant, soft_delete_tenant_form,
+            soft_delete_tenant, soft_delete_tenant_form, tenant_files_admin_page,
         };
         use axum::extract::DefaultBodyLimit;
 
@@ -207,6 +207,7 @@ impl MgmtState {
                 "/admin/tenants/{id}/tokens/{role}/reroll",
                 post(super::tokens::reroll_token_form),
             )
+            .route("/admin/tenants/{id}/files", get(tenant_files_admin_page))
             .route(
                 "/admin/tenants/{id}/collections",
                 get(super::browse::collections_page),
