@@ -146,7 +146,7 @@ impl MgmtState {
     pub fn with_data_dir(self, data_dir: std::path::PathBuf) -> Router {
         use crate::auth::middleware::{AdminSessionState, admin_session_layer};
         use crate::mgmt::public_files::{
-            PublicFilesState, admin_stream_bytes, delete_submit,
+            PublicFilesState, admin_sign_url, admin_stream_bytes, delete_submit,
             list_page as public_files_list_page, reconcile_apply, reconcile_page, upload_submit,
         };
         use crate::mgmt::tenants::{
@@ -233,6 +233,7 @@ impl MgmtState {
                 get(reconcile_page).post(reconcile_apply),
             )
             .route("/admin/files/{key}/bytes", get(admin_stream_bytes))
+            .route("/admin/files/{key}/sign", post(admin_sign_url))
             .with_state(public_files_state);
 
         let protected =
