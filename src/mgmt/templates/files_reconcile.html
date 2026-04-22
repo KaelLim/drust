@@ -72,6 +72,42 @@
           <a href="/drust/admin/files" class="btn btn-ghost">cancel</a>
         </div>
       </form>
+
+      <div class="card" style="margin-top:24px;">
+        <div class="card-head"><span>Pending revokes ({{ pending_revokes.len() }})</span><span class="card-head-actions">Garage revoke failed during soft-delete — retry to deny bucket access</span></div>
+        {% if pending_revokes.is_empty() %}
+        <div class="empty" style="padding:32px;"><h3>None</h3></div>
+        {% else %}
+        <form method="post" action="/drust/admin/files/reconcile">
+          <div class="records-scroll">
+            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>tenant</th><th>detected</th><th>last error</th></tr></thead><tbody>
+              {% for r in pending_revokes %}
+              <tr><td><input type="checkbox" name="retry_pending_revokes" value="{{ r.tenant_id }}"></td><td>{{ r.tenant_id }}</td><td>{{ r.detected_at }}</td><td class="muted">{{ r.last_error.as_deref().unwrap_or("") }}</td></tr>
+              {% endfor %}
+            </tbody></table>
+          </div>
+          <div style="padding:12px 16px;"><button type="submit" class="btn btn-primary">Retry selected</button></div>
+        </form>
+        {% endif %}
+      </div>
+
+      <div class="card" style="margin-top:24px;">
+        <div class="card-head"><span>Orphan buckets ({{ orphan_buckets.len() }})</span><span class="card-head-actions">Garage bucket delete failed during hard-delete — retry to remove</span></div>
+        {% if orphan_buckets.is_empty() %}
+        <div class="empty" style="padding:32px;"><h3>None</h3></div>
+        {% else %}
+        <form method="post" action="/drust/admin/files/reconcile">
+          <div class="records-scroll">
+            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>bucket</th><th>detected</th><th>reason</th></tr></thead><tbody>
+              {% for b in orphan_buckets %}
+              <tr><td><input type="checkbox" name="retry_orphan_buckets" value="{{ b.bucket_name }}"></td><td>{{ b.bucket_name }}</td><td>{{ b.detected_at }}</td><td class="muted">{{ b.reason }}</td></tr>
+              {% endfor %}
+            </tbody></table>
+          </div>
+          <div style="padding:12px 16px;"><button type="submit" class="btn btn-primary">Delete selected</button></div>
+        </form>
+        {% endif %}
+      </div>
     </div></main>
   </div>
 </div>

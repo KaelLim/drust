@@ -36,6 +36,9 @@ pub struct PublicFilesState {
     pub max_upload_bytes: usize,
     /// Minimum free-disk percentage before uploads are refused (507).
     pub disk_min_free_pct: u8,
+    /// Garage S3 access-key-id for the drust-client key. Used by reconcile
+    /// retry to deny bucket access when re-running a failed soft-delete.
+    pub garage_client_key_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -101,12 +104,26 @@ pub struct ListQs {
     pub vis: Option<String>,
 }
 
+pub struct PendingRevokeRow {
+    pub tenant_id: String,
+    pub detected_at: String,
+    pub last_error: Option<String>,
+}
+
+pub struct OrphanBucketRow {
+    pub bucket_name: String,
+    pub detected_at: String,
+    pub reason: String,
+}
+
 #[derive(Template)]
-#[template(path = "public_files_reconcile.html")]
+#[template(path = "files_reconcile.html")]
 struct ReconcilePage {
     version: &'static str,
     orphan_objects: Vec<(String, String)>, // (key, size_human)
     dangling_rows: Vec<(i64, String, String)>, // (id, key, original_name)
+    pending_revokes: Vec<PendingRevokeRow>,
+    orphan_buckets: Vec<OrphanBucketRow>,
 }
 
 /// Build a `DiskView` for the Garage data volume. If `/var/lib/garage` is
@@ -579,11 +596,53 @@ pub async fn reconcile_page(State(state): State<PublicFilesState>) -> Response {
         .filter(|(_, k, _)| !garage_keys.contains(k))
         .collect();
 
+    let pending_revokes: Vec<PendingRevokeRow> = {
+        let conn = state.meta.lock().await;
+        let mut stmt = match conn.prepare(
+            "SELECT tenant_id, detected_at, last_error FROM _trash_pending_revokes ORDER BY detected_at",
+        ) {
+            Ok(s) => s,
+            Err(e) => return internal(format!("db prepare pending: {e}")),
+        };
+        match stmt.query_map([], |r| {
+            Ok(PendingRevokeRow {
+                tenant_id: r.get(0)?,
+                detected_at: r.get(1)?,
+                last_error: r.get::<_, Option<String>>(2)?,
+            })
+        }) {
+            Ok(it) => it.filter_map(|r| r.ok()).collect(),
+            Err(e) => return internal(format!("db query pending: {e}")),
+        }
+    };
+
+    let orphan_buckets: Vec<OrphanBucketRow> = {
+        let conn = state.meta.lock().await;
+        let mut stmt = match conn.prepare(
+            "SELECT bucket_name, detected_at, reason FROM _orphan_buckets ORDER BY detected_at",
+        ) {
+            Ok(s) => s,
+            Err(e) => return internal(format!("db prepare orphans: {e}")),
+        };
+        match stmt.query_map([], |r| {
+            Ok(OrphanBucketRow {
+                bucket_name: r.get(0)?,
+                detected_at: r.get(1)?,
+                reason: r.get(2)?,
+            })
+        }) {
+            Ok(it) => it.filter_map(|r| r.ok()).collect(),
+            Err(e) => return internal(format!("db query orphans: {e}")),
+        }
+    };
+
     Html(
         ReconcilePage {
             version: env!("CARGO_PKG_VERSION"),
             orphan_objects,
             dangling_rows,
+            pending_revokes,
+            orphan_buckets,
         }
         .render()
         .unwrap(),
@@ -597,6 +656,52 @@ pub struct ReconcileForm {
     pub delete_orphan_keys: Vec<String>,
     #[serde(default)]
     pub delete_dangling_ids: Vec<i64>,
+    #[serde(default)]
+    pub retry_pending_revokes: Vec<String>,
+    #[serde(default)]
+    pub retry_orphan_buckets: Vec<String>,
+}
+
+async fn retry_one_pending_revoke(
+    garage: &GarageClient,
+    meta: &Arc<Mutex<Connection>>,
+    drust_client_key_id: &str,
+    tenant_id: &str,
+) -> anyhow::Result<()> {
+    let pub_name = format!("tenant-{tenant_id}-pub");
+    let prv_name = format!("tenant-{tenant_id}-prv");
+
+    if let Some(info) = garage.lookup_bucket(&pub_name).await? {
+        garage.bucket_deny(&info.id, drust_client_key_id).await?;
+        garage.set_website(&info.id, false).await?;
+    }
+    if let Some(info) = garage.lookup_bucket(&prv_name).await? {
+        garage.bucket_deny(&info.id, drust_client_key_id).await?;
+    }
+    // Success: clear the pending-revoke row.
+    meta.lock().await.execute(
+        "DELETE FROM _trash_pending_revokes WHERE tenant_id = ?1",
+        rusqlite::params![tenant_id],
+    )?;
+    Ok(())
+}
+
+async fn retry_one_orphan_bucket(
+    garage: &GarageClient,
+    meta: &Arc<Mutex<Connection>>,
+    bucket_name: &str,
+) -> anyhow::Result<()> {
+    match garage.lookup_bucket(bucket_name).await? {
+        Some(info) => {
+            garage.delete_bucket(&info.id).await?;
+        }
+        None => {} // already gone — clear the row anyway
+    }
+    meta.lock().await.execute(
+        "DELETE FROM _orphan_buckets WHERE bucket_name = ?1",
+        rusqlite::params![bucket_name],
+    )?;
+    Ok(())
 }
 
 pub async fn reconcile_apply(
@@ -619,6 +724,23 @@ pub async fn reconcile_apply(
                 "DELETE FROM _system_files WHERE id = ?1",
                 rusqlite::params![id],
             );
+        }
+    }
+    for tenant_id in form.retry_pending_revokes {
+        if let Err(e) = retry_one_pending_revoke(
+            &garage,
+            &state.meta,
+            &state.garage_client_key_id,
+            &tenant_id,
+        )
+        .await
+        {
+            tracing::warn!(tenant_id = %tenant_id, error = %e, "reconcile: pending revoke retry failed");
+        }
+    }
+    for bucket_name in form.retry_orphan_buckets {
+        if let Err(e) = retry_one_orphan_bucket(&garage, &state.meta, &bucket_name).await {
+            tracing::warn!(bucket_name = %bucket_name, error = %e, "reconcile: orphan bucket retry failed");
         }
     }
     Redirect::to("/drust/admin/files").into_response()

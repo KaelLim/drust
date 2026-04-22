@@ -242,6 +242,7 @@ async fn upload_submit_returns_503_when_garage_none() {
         base_url: "http://localhost".to_string(),
         max_upload_bytes: 1_048_576,
         disk_min_free_pct: 20,
+        garage_client_key_id: String::new(),
     };
 
     // Build a trivial multipart request.
