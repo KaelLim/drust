@@ -5,6 +5,9 @@
 //! `Caddy → Garage s3_web` directly. This module only handles management.
 
 use crate::auth::middleware::AdminSessionState;
+use crate::storage::files::{
+    Disposition, Owner, Visibility, bucket_for_upload, default_cache_control,
+};
 use crate::storage::garage::GarageClient;
 use askama::Template;
 use axum::extract::{Multipart, Path, Query, State};
@@ -31,6 +34,8 @@ pub struct PublicFilesState {
     pub garage: Option<Arc<GarageClient>>,
     pub base_url: String,
     pub max_upload_bytes: usize,
+    /// Minimum free-disk percentage before uploads are refused (507).
+    pub disk_min_free_pct: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -137,14 +142,170 @@ pub async fn list_page(
     Html(page.render().unwrap()).into_response()
 }
 
+/// Parsed, validated fields extracted from the upload multipart form.
+/// Used by `upload_submit` and directly testable via `parse_upload_fields`.
+#[derive(Debug)]
+pub struct UploadFields {
+    pub original_name: String,
+    pub explicit_ct: Option<String>,
+    pub body: bytes::Bytes,
+    pub visibility: Visibility,
+    pub disposition: Disposition,
+    pub cache_control_override: Option<String>,
+    pub meta_json: Option<String>,
+}
+
+/// Parse and validate the multipart fields from an admin upload form.
+///
+/// Returns `Ok(UploadFields)` on success or `Err(reason)` for user-visible
+/// 400 errors. Kept pure (no I/O) so it can be tested without spinning up
+/// an axum router or a Garage mock.
+pub async fn parse_upload_fields(mut multipart: Multipart) -> Result<UploadFields, String> {
+    let mut file_name: Option<String> = None;
+    let mut file_ct: Option<String> = None;
+    let mut file_body: Option<bytes::Bytes> = None;
+    let mut visibility_str: Option<String> = None;
+    let mut disposition_str: Option<String> = None;
+    let mut cache_control: Option<String> = None;
+    let mut meta_json: Option<String> = None;
+
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.to_lowercase().contains("large") {
+                    // surface as caller-distinguishable string; upload_submit maps this to 413
+                    return Err(format!("__413__{msg}"));
+                }
+                return Err(format!("multipart: {e}"));
+            }
+        };
+
+        let field_name = field.name().unwrap_or("").to_string();
+        match field_name.as_str() {
+            "file" => {
+                file_name = field.file_name().map(|s| s.to_string());
+                file_ct = field.content_type().map(|s| s.to_string());
+                let b = match field.bytes().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if msg.to_lowercase().contains("large") {
+                            return Err(format!("__413__{msg}"));
+                        }
+                        return Err(format!("read body: {e}"));
+                    }
+                };
+                file_body = Some(b);
+            }
+            "visibility" => {
+                visibility_str = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| format!("visibility field: {e}"))?,
+                );
+            }
+            "disposition" => {
+                disposition_str = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| format!("disposition field: {e}"))?,
+                );
+            }
+            "cache_control" => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|e| format!("cache_control field: {e}"))?;
+                if !v.is_empty() {
+                    cache_control = Some(v);
+                }
+            }
+            "meta" => {
+                let v = field.text().await.map_err(|e| format!("meta field: {e}"))?;
+                if !v.is_empty() {
+                    // Validate: must be a JSON object, not array/scalar.
+                    let parsed: serde_json::Value = serde_json::from_str(&v)
+                        .map_err(|e| format!("meta is not valid JSON: {e}"))?;
+                    if !parsed.is_object() {
+                        return Err("meta must be a JSON object (got array or scalar)".to_string());
+                    }
+                    meta_json = Some(v);
+                }
+            }
+            _ => {
+                // Drain unknown fields silently.
+                let _ = field.bytes().await;
+            }
+        }
+    }
+
+    let body = file_body.ok_or("missing file field")?;
+    let original_name = file_name.unwrap_or_else(|| "unnamed".to_string());
+
+    let visibility = match visibility_str.as_deref().unwrap_or("public") {
+        "public" => Visibility::Public,
+        "private" => Visibility::Private,
+        other => {
+            return Err(format!(
+                "invalid visibility: {other:?}; must be public or private"
+            ));
+        }
+    };
+
+    let disposition = match disposition_str.as_deref().unwrap_or("inline") {
+        "inline" => Disposition::Inline,
+        "attachment" => Disposition::Attachment,
+        other => {
+            return Err(format!(
+                "invalid disposition: {other:?}; must be inline or attachment"
+            ));
+        }
+    };
+
+    Ok(UploadFields {
+        original_name,
+        explicit_ct: file_ct,
+        body,
+        visibility,
+        disposition,
+        cache_control_override: cache_control,
+        meta_json,
+    })
+}
+
 pub async fn upload_submit(
     State(state): State<PublicFilesState>,
     headers: axum::http::HeaderMap,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Response {
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
     };
+
+    // Step 1: disk check BEFORE reading the body.
+    // Best-effort: if /var/lib/garage doesn't exist or isn't readable, skip.
+    match crate::storage::disk::disk_stats(std::path::Path::new("/var/lib/garage")) {
+        Ok(stats) => {
+            if (stats.free_pct as u8) < state.disk_min_free_pct {
+                return (
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    format!(
+                        "disk too full: {:.1}% free, minimum {}% required",
+                        stats.free_pct, state.disk_min_free_pct
+                    ),
+                )
+                    .into_response();
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "disk_stats for /var/lib/garage failed — skipping disk check");
+        }
+    }
 
     // Pre-check Content-Length so an oversized upload surfaces as 413 with a
     // clean message — otherwise DefaultBodyLimit kicks in mid-stream and the
@@ -167,41 +328,28 @@ pub async fn upload_submit(
         }
     }
 
-    let field = match multipart.next_field().await {
-        Ok(Some(f)) => f,
-        Ok(None) => return (StatusCode::BAD_REQUEST, "missing file field").into_response(),
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("multipart: {e}")).into_response(),
-    };
-    let original_name = field
-        .file_name()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "unnamed".to_string());
-    let explicit_ct = field.content_type().map(|s| s.to_string());
-    let body = match field.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            // `axum::extract::Multipart::bytes` surfaces DefaultBodyLimit
-            // overflow as a 413. Other errors (e.g. connection reset) land
-            // here — treat as bad request.
-            let msg = e.to_string();
-            if msg.to_lowercase().contains("large") {
-                return (StatusCode::PAYLOAD_TOO_LARGE, msg).into_response();
-            }
-            return (StatusCode::BAD_REQUEST, format!("read body: {e}")).into_response();
+    // Step 2: parse + validate multipart fields.
+    let fields = match parse_upload_fields(multipart).await {
+        Ok(f) => f,
+        Err(e) if e.starts_with("__413__") => {
+            return (StatusCode::PAYLOAD_TOO_LARGE, e[7..].to_string()).into_response();
         }
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
+
+    let UploadFields {
+        original_name,
+        explicit_ct,
+        body,
+        visibility,
+        disposition,
+        cache_control_override,
+        meta_json,
+    } = fields;
+
     let size = body.len() as i64;
 
-    let ext = std::path::Path::new(&original_name)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("bin");
-    let key = format!("{}.{}", uuid::Uuid::new_v4(), ext);
-
-    // Browsers send `application/octet-stream` for any type they don't
-    // recognise (notably `.md`, `.toml`, `.rs`, …). Treat that as "no
-    // useful guess" and fall back to mime_guess from the filename
-    // extension. Only honour an explicit non-octet-stream Content-Type.
+    // Step 3: resolve content-type.
     let sniffed_ct = explicit_ct
         .filter(|ct| ct != "application/octet-stream")
         .or_else(|| {
@@ -209,25 +357,48 @@ pub async fn upload_submit(
                 .first_raw()
                 .map(|s| s.to_string())
         });
-    let disposition = format!(
-        "inline; filename=\"{}\"",
-        original_name.replace('\\', "\\\\").replace('"', "\\\"")
-    );
 
-    // SQLite-first: insert metadata, then push to Garage. If the Garage put
-    // fails we compensate by deleting the row so we don't leave a ghost.
+    // Step 4: build cache_control.
+    let cache_control = cache_control_override
+        .as_deref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| default_cache_control(visibility, disposition).to_string());
+
+    // Step 5: resolve disposition mode string and bucket.
+    let disp_mode = match disposition {
+        Disposition::Inline => "inline",
+        Disposition::Attachment => "attachment",
+    };
+    let vis_str = match visibility {
+        Visibility::Public => "public",
+        Visibility::Private => "private",
+    };
+    let bucket = bucket_for_upload(&Owner::Admin, visibility);
+
+    // Step 6: generate key.
+    let ext = std::path::Path::new(&original_name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bin");
+    let key = format!("{}.{}", uuid::Uuid::new_v4(), ext);
+
+    // Step 7: SQLite-first insert. Push to Garage next. Compensate on failure.
     {
         let conn = state.meta.lock().await;
         if let Err(e) = conn.execute(
             "INSERT INTO _system_files
-             (key, original_name, content_type, size_bytes, content_disposition, uploader)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (key, original_name, content_type, size_bytes, content_disposition,
+              visibility, cache_control, meta_json, uploader)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 &key,
                 &original_name,
                 &sniffed_ct,
                 size,
-                &disposition,
+                disp_mode,
+                vis_str,
+                &cache_control,
+                &meta_json,
                 "admin",
             ],
         ) {
@@ -235,25 +406,34 @@ pub async fn upload_submit(
         }
     }
 
+    // Step 8: PUT to Garage. On failure, compensating DELETE.
     if let Err(e) = garage
-        .put_object(&key, body, sniffed_ct.as_deref(), &original_name)
+        .put_object_in(
+            &bucket,
+            &key,
+            body,
+            sniffed_ct.as_deref(),
+            disp_mode,
+            &original_name,
+            Some(&cache_control),
+            meta_json.as_deref(),
+        )
         .await
     {
-        // Log the full error chain (context + source) so we can see the
-        // underlying object_store message, not just the outer `context`.
         tracing::error!(
             key = %key,
+            bucket = %bucket,
             original_name = %original_name,
             content_type = ?sniffed_ct,
             error = format!("{e:#}"),
-            "garage put failed — rolling back metadata row"
+            "garage put_object_in failed — rolling back metadata row"
         );
         let conn = state.meta.lock().await;
         let _ = conn.execute(
             "DELETE FROM _system_files WHERE key = ?1",
             rusqlite::params![&key],
         );
-        return internal(format!("garage put: {e:#}"));
+        return (StatusCode::BAD_GATEWAY, format!("garage put: {e:#}")).into_response();
     }
 
     Redirect::to("/drust/admin/public-files").into_response()

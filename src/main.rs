@@ -78,6 +78,12 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.access_key.clone())
         .unwrap_or_default();
 
+    let disk_min_free_pct = cfg
+        .storage
+        .as_ref()
+        .map(|s| s.disk_min_free_pct)
+        .unwrap_or(20);
+
     let mgmt_state = MgmtState {
         meta: meta.clone(),
         session_ttl_days: cfg.session_ttl_days,
@@ -85,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         public_base_url: cfg.public_base_url.clone(),
         max_upload_bytes,
         garage_client_key_id,
+        disk_min_free_pct,
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
