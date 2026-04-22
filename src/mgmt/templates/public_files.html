@@ -65,7 +65,7 @@
       <div class="card">
         <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin-only · world-readable</span></div>
         <div class="card-body">
-          <form method="post" action="/drust/admin/public-files/upload" enctype="multipart/form-data" id="upload-form">
+          <form method="post" action="/drust/admin/files/upload" enctype="multipart/form-data" id="upload-form">
             <div class="dropzone" id="dropzone">
               <div class="dropzone-inner">
                 <div class="dropzone-prompt">
@@ -93,7 +93,7 @@
         <div class="card-head">
           <span>Files</span>
           <span class="card-head-actions">
-            <a href="/drust/admin/public-files/reconcile" class="btn btn-sm btn-ghost"
+            <a href="/drust/admin/files/reconcile" class="btn btn-sm btn-ghost"
                title="Compare Garage bucket contents with drust's metadata — find orphan objects (in Garage, not tracked) and dangling rows (tracked but missing). Usually empty; run after network glitches or manual S3 edits.">
               <svg class="icon" aria-hidden="true" style="width:0.9em;height:0.9em;vertical-align:-2px;margin-right:4px;"><use href="#i-refresh"/></svg>
               sync audit ⋯
@@ -108,7 +108,7 @@
               <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
             </div>
             <h3>{% if total_files == 0 %}No public files yet{% else %}Nothing on this page{% endif %}</h3>
-            <p>{% if total_files == 0 %}Upload the first one with the form above.{% else %}Try page 1 or <a href="/drust/admin/public-files">reset</a>.{% endif %}</p>
+            <p>{% if total_files == 0 %}Upload the first one with the form above.{% else %}Try page 1 or <a href="/drust/admin/files">reset</a>.{% endif %}</p>
           </div>
           {% else %}
           <table class="data pub-files">
@@ -139,7 +139,7 @@
                 <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
                 <td class="cell-actions">
                   <button type="button" class="btn btn-sm btn-ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">copy URL</button>
-                  <form method="post" action="/drust/admin/public-files/{{ f.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ f.original_name }}? This is world-visible; check nothing links to it.');">
+                  <form method="post" action="/drust/admin/files/{{ f.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ f.original_name }}? This is world-visible; check nothing links to it.');">
                     <button type="submit" class="btn btn-sm btn-ghost" style="color:var(--danger);">delete</button>
                   </form>
                 </td>

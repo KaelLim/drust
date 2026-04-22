@@ -109,9 +109,9 @@ pub async fn list_page(
 
     let pager_url = |p: u32| -> String {
         if per_page == DEFAULT_PER_PAGE {
-            format!("/drust/admin/public-files?page={p}")
+            format!("/drust/admin/files?page={p}")
         } else {
-            format!("/drust/admin/public-files?page={p}&per_page={per_page}")
+            format!("/drust/admin/files?page={p}&per_page={per_page}")
         }
     };
     let prev_url = (page_num > 1).then(|| pager_url(page_num - 1));
@@ -436,7 +436,7 @@ pub async fn upload_submit(
         return (StatusCode::BAD_GATEWAY, format!("garage put: {e:#}")).into_response();
     }
 
-    Redirect::to("/drust/admin/public-files").into_response()
+    Redirect::to("/drust/admin/files").into_response()
 }
 
 pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path<i64>) -> Response {
@@ -455,7 +455,7 @@ pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path
     };
     let Some(key) = key else {
         // Already gone — idempotent.
-        return Redirect::to("/drust/admin/public-files").into_response();
+        return Redirect::to("/drust/admin/files").into_response();
     };
 
     if let Err(e) = garage.delete_object(&key).await {
@@ -470,7 +470,7 @@ pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path
             return internal(format!("db delete: {e}"));
         }
     }
-    Redirect::to("/drust/admin/public-files").into_response()
+    Redirect::to("/drust/admin/files").into_response()
 }
 
 pub async fn reconcile_page(State(state): State<PublicFilesState>) -> Response {
@@ -557,7 +557,7 @@ pub async fn reconcile_apply(
             );
         }
     }
-    Redirect::to("/drust/admin/public-files").into_response()
+    Redirect::to("/drust/admin/files").into_response()
 }
 
 async fn load_files(

@@ -118,6 +118,22 @@ fn internal(msg: String) -> Response {
     r
 }
 
+async fn legacy_files_redirect() -> Response {
+    let mut resp = "".into_response();
+    *resp.status_mut() = StatusCode::MOVED_PERMANENTLY;
+    resp.headers_mut()
+        .insert(header::LOCATION, "/admin/files".parse().unwrap());
+    resp
+}
+
+async fn legacy_reconcile_redirect() -> Response {
+    let mut resp = "".into_response();
+    *resp.status_mut() = StatusCode::MOVED_PERMANENTLY;
+    resp.headers_mut()
+        .insert(header::LOCATION, "/admin/files/reconcile".parse().unwrap());
+    resp
+}
+
 pub fn build_mgmt_router(state: MgmtState) -> Router {
     Router::new()
         .route("/", get(root_redirect))
@@ -163,6 +179,15 @@ impl MgmtState {
             .route("/logout", post(logout_submit))
             .with_state(self.clone());
 
+        // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require
+        // authentication since they're just static redirects.
+        let legacy_redirects = Router::new()
+            .route("/admin/public-files", get(legacy_files_redirect))
+            .route(
+                "/admin/public-files/reconcile",
+                get(legacy_reconcile_redirect),
+            );
+
         // Tenant admin sub-router (existing behaviour).
         let tenants_router = Router::new()
             .route("/admin/tenants", get(list_page_axum))
@@ -196,14 +221,15 @@ impl MgmtState {
         // own DefaultBodyLimit so multipart payloads larger than the cap
         // return 413 without consuming memory.
         let public_files_router = Router::new()
-            .route("/admin/public-files", get(public_files_list_page))
+            // Renamed routes (new in Y):
+            .route("/admin/files", get(public_files_list_page))
             .route(
-                "/admin/public-files/upload",
+                "/admin/files/upload",
                 post(upload_submit).layer(DefaultBodyLimit::max(self.max_upload_bytes)),
             )
-            .route("/admin/public-files/{id}/delete", post(delete_submit))
+            .route("/admin/files/{id}/delete", post(delete_submit))
             .route(
-                "/admin/public-files/reconcile",
+                "/admin/files/reconcile",
                 get(reconcile_page).post(reconcile_apply),
             )
             .with_state(public_files_state);
@@ -216,6 +242,6 @@ impl MgmtState {
                     admin_session_layer,
                 ));
 
-        public.merge(protected)
+        public.merge(legacy_redirects).merge(protected)
     }
 }
