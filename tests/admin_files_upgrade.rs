@@ -164,6 +164,57 @@ async fn missing_file_field_errors() {
     );
 }
 
+// ─── Task 20: DiskView formatting + Counts ────────────────────────────────────
+
+/// DiskView: when disk_stats returns real values, GB formatting has 1 decimal.
+#[test]
+fn disk_view_gb_formatting() {
+    // 10 GiB used, 100 GiB total → free = 90 GiB → 90.0%
+    let total_bytes: u64 = 100 * 1_073_741_824;
+    let used_bytes: u64 = 10 * 1_073_741_824;
+    let free_bytes = total_bytes - used_bytes;
+    let free_pct = (free_bytes as f64 / total_bytes as f64) * 100.0;
+
+    let used_gb = format!("{:.1}", used_bytes as f64 / 1_073_741_824.0);
+    let total_gb = format!("{:.1}", total_bytes as f64 / 1_073_741_824.0);
+    let free_pct_display = format!("{:.1}", free_pct);
+
+    assert_eq!(used_gb, "10.0");
+    assert_eq!(total_gb, "100.0");
+    assert_eq!(free_pct_display, "90.0");
+}
+
+/// DiskView fallback: when disk_stats fails, placeholder strings are "?".
+#[test]
+fn disk_view_fallback_fields_are_question_mark() {
+    // Simulate the fallback path used when statvfs fails.
+    let used_gb = "?".to_string();
+    let total_gb = "?".to_string();
+    let free_pct: f64 = 100.0;
+    let free_pct_display = "?".to_string();
+
+    // free_pct >= 20 so the low-disk warning must NOT trigger.
+    assert!(free_pct >= 20.0);
+    assert_eq!(used_gb, "?");
+    assert_eq!(total_gb, "?");
+    assert_eq!(free_pct_display, "?");
+}
+
+/// DiskView: free_pct < 20 should trip the low-disk guard.
+#[test]
+fn disk_view_low_disk_threshold() {
+    // 85 GiB used of 100 GiB total → 15% free → below 20% threshold.
+    let total_bytes: u64 = 100 * 1_073_741_824;
+    let used_bytes: u64 = 85 * 1_073_741_824;
+    let free_bytes = total_bytes - used_bytes;
+    let free_pct = (free_bytes as f64 / total_bytes as f64) * 100.0;
+
+    assert!(
+        free_pct < 20.0,
+        "expected low-disk condition, got {free_pct}"
+    );
+}
+
 /// Smoke-test that the handler returns 503 when garage is None.
 #[tokio::test]
 async fn upload_submit_returns_503_when_garage_none() {

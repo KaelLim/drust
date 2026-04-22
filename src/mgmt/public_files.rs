@@ -47,11 +47,28 @@ pub struct PublicFileRow {
     pub size_human: String,
     pub uploaded_at: String,
     pub public_url: String,
+    /// "public" or "private"
+    pub visibility: String,
+}
+
+/// File counts broken down by visibility.
+pub struct Counts {
+    pub total: i64,
+    pub public: i64,
+    pub private: i64,
+}
+
+/// Disk usage view for the banner.
+pub struct DiskView {
+    pub used_gb: String,
+    pub total_gb: String,
+    pub free_pct: f64,
+    pub free_pct_display: String,
 }
 
 #[derive(Template)]
-#[template(path = "public_files.html")]
-struct PublicFilesPage {
+#[template(path = "files.html")]
+struct FilesPage {
     version: &'static str,
     storage_available: bool,
     files: Vec<PublicFileRow>,
@@ -64,6 +81,9 @@ struct PublicFilesPage {
     prev_url: Option<String>,
     next_url: Option<String>,
     per_page_options: Vec<PerPageOption>,
+    filter: String,
+    counts: Counts,
+    disk: DiskView,
 }
 
 struct PerPageOption {
@@ -77,6 +97,8 @@ pub struct ListQs {
     pub page: Option<u32>,
     #[serde(default)]
     pub per_page: Option<u32>,
+    #[serde(default)]
+    pub vis: Option<String>,
 }
 
 #[derive(Template)]
@@ -97,10 +119,18 @@ pub async fn list_page(
         .unwrap_or(DEFAULT_PER_PAGE);
     let page_num = qs.page.unwrap_or(1).max(1);
 
-    let (files, total_files, total_bytes) = match load_files(&state, page_num, per_page).await {
-        Ok(v) => v,
-        Err(e) => return internal(format!("load: {e}")),
+    // Normalize the vis filter: only "public" or "private" are valid; everything else is "all".
+    let filter = match qs.vis.as_deref() {
+        Some("public") => "public".to_string(),
+        Some("private") => "private".to_string(),
+        _ => "all".to_string(),
     };
+
+    let (files, total_files, total_bytes, counts) =
+        match load_files(&state, page_num, per_page, &filter).await {
+            Ok(v) => v,
+            Err(e) => return internal(format!("load: {e}")),
+        };
     let total_pages = if total_files == 0 {
         1
     } else {
@@ -108,10 +138,15 @@ pub async fn list_page(
     };
 
     let pager_url = |p: u32| -> String {
-        if per_page == DEFAULT_PER_PAGE {
-            format!("/drust/admin/files?page={p}")
+        let vis_part = if filter != "all" {
+            format!("&vis={}", filter)
         } else {
-            format!("/drust/admin/files?page={p}&per_page={per_page}")
+            String::new()
+        };
+        if per_page == DEFAULT_PER_PAGE {
+            format!("/drust/admin/files?page={p}{vis_part}")
+        } else {
+            format!("/drust/admin/files?page={p}&per_page={per_page}{vis_part}")
         }
     };
     let prev_url = (page_num > 1).then(|| pager_url(page_num - 1));
@@ -125,7 +160,26 @@ pub async fn list_page(
         })
         .collect();
 
-    let page = PublicFilesPage {
+    // Build disk view. If /var/lib/garage is unavailable, show neutral placeholders.
+    let disk = match crate::storage::disk::disk_stats(std::path::Path::new("/var/lib/garage")) {
+        Ok(stats) => {
+            let gb = |b: u64| format!("{:.1}", b as f64 / 1_073_741_824.0);
+            DiskView {
+                used_gb: gb(stats.used_bytes),
+                total_gb: gb(stats.total_bytes),
+                free_pct: stats.free_pct,
+                free_pct_display: format!("{:.1}", stats.free_pct),
+            }
+        }
+        Err(_) => DiskView {
+            used_gb: "?".into(),
+            total_gb: "?".into(),
+            free_pct: 100.0,
+            free_pct_display: "?".into(),
+        },
+    };
+
+    let page = FilesPage {
         version: env!("CARGO_PKG_VERSION"),
         storage_available: state.garage.is_some(),
         files,
@@ -138,6 +192,9 @@ pub async fn list_page(
         prev_url,
         next_url,
         per_page_options,
+        filter,
+        counts,
+        disk,
     };
     Html(page.render().unwrap()).into_response()
 }
@@ -564,27 +621,87 @@ async fn load_files(
     state: &PublicFilesState,
     page: u32,
     per_page: u32,
-) -> anyhow::Result<(Vec<PublicFileRow>, i64, u64)> {
+    filter: &str,
+) -> anyhow::Result<(Vec<PublicFileRow>, i64, u64, Counts)> {
     let conn = state.meta.lock().await;
 
-    // Totals across ALL rows (not just the current page).
-    let total_files: i64 =
+    // Counts broken down by visibility (always over the full table, not just the current filter).
+    let count_total: i64 =
         conn.query_row("SELECT COUNT(*) FROM _system_files", [], |r| r.get(0))?;
-    let total_bytes: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_files",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
+    let count_public: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM _system_files WHERE visibility = 'public'",
+        [],
+        |r| r.get(0),
+    )?;
+    let count_private: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM _system_files WHERE visibility = 'private'",
+        [],
+        |r| r.get(0),
+    )?;
+    let counts = Counts {
+        total: count_total,
+        public: count_public,
+        private: count_private,
+    };
+
+    // total_files for the current filter (used for pager).
+    let total_files: i64 = match filter {
+        "public" => count_public,
+        "private" => count_private,
+        _ => count_total,
+    };
+
+    let total_bytes: i64 = match filter {
+        "public" => conn
+            .query_row(
+                "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_files WHERE visibility = 'public'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0),
+        "private" => conn
+            .query_row(
+                "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_files WHERE visibility = 'private'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0),
+        _ => conn
+            .query_row(
+                "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_files",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0),
+    };
 
     let offset = (page.saturating_sub(1) as i64) * (per_page as i64);
-    let mut stmt = conn.prepare(
-        "SELECT id, key, original_name, COALESCE(content_type,''), size_bytes, uploaded_at
-         FROM _system_files
-         ORDER BY uploaded_at DESC, id DESC
-         LIMIT ?1 OFFSET ?2",
-    )?;
+
+    // Build the query string depending on the visibility filter.
+    let sql = match filter {
+        "public" => {
+            "SELECT id, key, original_name, COALESCE(content_type,''), size_bytes, uploaded_at, visibility
+             FROM _system_files
+             WHERE visibility = 'public'
+             ORDER BY uploaded_at DESC, id DESC
+             LIMIT ?1 OFFSET ?2"
+        }
+        "private" => {
+            "SELECT id, key, original_name, COALESCE(content_type,''), size_bytes, uploaded_at, visibility
+             FROM _system_files
+             WHERE visibility = 'private'
+             ORDER BY uploaded_at DESC, id DESC
+             LIMIT ?1 OFFSET ?2"
+        }
+        _ => {
+            "SELECT id, key, original_name, COALESCE(content_type,''), size_bytes, uploaded_at, visibility
+             FROM _system_files
+             ORDER BY uploaded_at DESC, id DESC
+             LIMIT ?1 OFFSET ?2"
+        }
+    };
+
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt
         .query_map(rusqlite::params![per_page as i64, offset], |r| {
             Ok((
@@ -594,6 +711,7 @@ async fn load_files(
                 r.get::<_, String>(3)?,
                 r.get::<_, i64>(4)?,
                 r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -601,18 +719,21 @@ async fn load_files(
     let files = rows
         .into_iter()
         .map(
-            |(id, key, original_name, content_type, size_bytes, uploaded_at)| PublicFileRow {
-                id,
-                public_url: format!("{base}/public/{key}"),
-                key,
-                original_name,
-                content_type,
-                size_human: humanize_bytes(size_bytes.max(0) as u64),
-                uploaded_at,
+            |(id, key, original_name, content_type, size_bytes, uploaded_at, visibility)| {
+                PublicFileRow {
+                    id,
+                    public_url: format!("{base}/public/{key}"),
+                    key,
+                    original_name,
+                    content_type,
+                    size_human: humanize_bytes(size_bytes.max(0) as u64),
+                    uploaded_at,
+                    visibility,
+                }
             },
         )
         .collect();
-    Ok((files, total_files, total_bytes.max(0) as u64))
+    Ok((files, total_files, total_bytes.max(0) as u64, counts))
 }
 
 fn humanize_bytes(n: u64) -> String {

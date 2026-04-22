@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — public bucket</title>
-<meta name="description" content="drust admin — the host-level public bucket backed by Garage S3. Admin-only upload, world-readable.">
+<title>drust admin — files</title>
+<meta name="description" content="drust admin — host-level file storage. Upload, browse, and manage public and private files backed by Garage S3.">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -13,7 +13,7 @@
 <div class="macwin">
   <div class="macwin-title">
     <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">admin@drust <span class="muted">— ~/system/public-bucket</span></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/system/files</span></span>
     <span></span>
   </div>
   <div class="macwin-body">
@@ -24,7 +24,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/system/public-bucket</span>
+        <span class="path">~/system/files</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -43,14 +43,14 @@
 
     <main class="main"><div class="page">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">drust</a>
+        <a href="/drust/admin/tenants">admin</a>
         <span class="sep">/</span>
-        <span class="here">public bucket</span>
+        <span class="here">files</span>
       </nav>
 
       <div class="pagehead">
         <div>
-          <h1>Public bucket</h1>
+          <h1>Files</h1>
           <div class="meta">
             {% if storage_available %}
             <b>{{ total_files }}</b> files · <b>{{ total_bytes_human }}</b> total · anonymous read at <code>/public/&lt;key&gt;</code>
@@ -61,9 +61,14 @@
         </div>
       </div>
 
+      <div class="disk-banner{% if disk.free_pct < 20.0 %} low{% endif %}">
+        <span>Disk: <b>{{ disk.used_gb }}</b> GB used / {{ disk.total_gb }} GB total ({{ disk.free_pct_display }}% free)</span>
+        {% if disk.free_pct < 20.0 %}<span class="warn">⚠ uploads paused (&lt; 20% free)</span>{% endif %}
+      </div>
+
       {% if storage_available %}
       <div class="card">
-        <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin-only · world-readable</span></div>
+        <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin-only</span></div>
         <div class="card-body">
           <form method="post" action="/drust/admin/files/upload" enctype="multipart/form-data" id="upload-form">
             <div class="dropzone" id="dropzone">
@@ -81,6 +86,28 @@
               <input type="file" name="file" id="upload-file" required class="filepick-input"
                      data-max-mb="{{ max_upload_mb }}">
             </div>
+
+            <div class="upload-fields">
+              <fieldset>
+                <legend>Visibility</legend>
+                <label><input type="radio" name="visibility" value="public" checked> public</label>
+                <label><input type="radio" name="visibility" value="private"> private</label>
+              </fieldset>
+              <fieldset>
+                <legend>Disposition</legend>
+                <label><input type="radio" name="disposition" value="inline" checked> inline (preview)</label>
+                <label><input type="radio" name="disposition" value="attachment"> attachment (download)</label>
+              </fieldset>
+              <label class="cache-cell">
+                <span>Cache-Control (optional)</span>
+                <input type="text" name="cache_control" placeholder="e.g. public, max-age=3600">
+              </label>
+              <details class="meta-cell">
+                <summary>Advanced: custom metadata (JSON)</summary>
+                <textarea name="meta" rows="4" placeholder='{"alt":"photo description"}'></textarea>
+              </details>
+            </div>
+
             <div class="upload-row">
               <span class="upload-hint" id="upload-hint"></span>
               <button type="submit" class="btn btn-primary" id="upload-submit" disabled>Upload <span class="kbd">↵</span></button>
@@ -101,19 +128,26 @@
           </span>
         </div>
 
+        <div class="vis-tabs">
+          <a href="?vis=all" class="vis-tab{% if filter == "all" %} active{% endif %}">All ({{ counts.total }})</a>
+          <a href="?vis=public" class="vis-tab{% if filter == "public" %} active{% endif %}">Public ({{ counts.public }})</a>
+          <a href="?vis=private" class="vis-tab{% if filter == "private" %} active{% endif %}">Private ({{ counts.private }})</a>
+        </div>
+
         <div class="pub-scroll">
           {% if files.is_empty() %}
           <div class="empty" style="padding:56px 24px;">
             <div style="margin-bottom:18px;display:grid;place-items:center;">
               <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
             </div>
-            <h3>{% if total_files == 0 %}No public files yet{% else %}Nothing on this page{% endif %}</h3>
-            <p>{% if total_files == 0 %}Upload the first one with the form above.{% else %}Try page 1 or <a href="/drust/admin/files">reset</a>.{% endif %}</p>
+            <h3>{% if counts.total == 0 %}No files yet{% else %}Nothing on this page{% endif %}</h3>
+            <p>{% if counts.total == 0 %}Upload the first one with the form above.{% else %}Try page 1 or <a href="/drust/admin/files">reset</a>.{% endif %}</p>
           </div>
           {% else %}
           <table class="data pub-files">
             <colgroup>
               <col class="col-name">
+              <col class="col-vis">
               <col class="col-type">
               <col class="col-size">
               <col class="col-time">
@@ -122,6 +156,7 @@
             <thead>
               <tr>
                 <th>original name</th>
+                <th>visibility</th>
                 <th>type</th>
                 <th>size</th>
                 <th>uploaded</th>
@@ -134,12 +169,16 @@
                 <td class="cell-name" title="{{ f.original_name }} ({{ f.key }})">
                   <div class="trunc-inner"><a href="{{ f.public_url }}" target="_blank" rel="noopener">{{ f.original_name }}</a></div>
                 </td>
+                <td class="cell-vis"><span class="chip chip-vis-{{ f.visibility }}">{{ f.visibility }}</span></td>
                 <td class="cell-type type" title="{{ f.content_type }}"><div class="trunc-inner">{{ f.content_type }}</div></td>
                 <td class="cell-size">{{ f.size_human }}</td>
                 <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
                 <td class="cell-actions">
                   <button type="button" class="btn btn-sm btn-ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">copy URL</button>
-                  <form method="post" action="/drust/admin/files/{{ f.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ f.original_name }}? This is world-visible; check nothing links to it.');">
+                  {% if f.visibility == "private" %}
+                  <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">Sign URL</button>
+                  {% endif %}
+                  <form method="post" action="/drust/admin/files/{{ f.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ f.original_name }}?');">
                     <button type="submit" class="btn btn-sm btn-ghost" style="color:var(--danger);">delete</button>
                   </form>
                 </td>
@@ -158,6 +197,7 @@
           <div class="pager-group">
             {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
             <form method="get" class="pager-form">
+              <input type="hidden" name="vis" value="{{ filter }}">
               <span class="pager-label">per page</span>
               <select name="per_page" onchange="this.form.submit()" class="pager-select" aria-label="rows per page">
                 {% for opt in per_page_options %}
@@ -198,10 +238,11 @@
   }
   table.pub-files {
     width: 100%;
-    min-width: 720px;       /* readable floor; narrower viewports scroll */
+    min-width: 800px;       /* readable floor; narrower viewports scroll */
     border-collapse: collapse;
   }
   table.pub-files colgroup .col-name    { width: auto; }
+  table.pub-files colgroup .col-vis     { width: 90px; }
   table.pub-files colgroup .col-type    { width: 140px; }
   table.pub-files colgroup .col-size    { width: 90px; }
   table.pub-files colgroup .col-time    { width: 180px; }
@@ -223,6 +264,10 @@
     color: var(--accent);
     text-decoration: underline;
   }
+
+  /* Visibility chips */
+  .chip-vis-public  { background: var(--ok-soft, #1a2e1a); color: var(--ok, #80c880); border: 1px solid var(--ok-line, #446044); }
+  .chip-vis-private { background: var(--warn-soft, #2e2a14); color: var(--warn, #d4b84a); border: 1px solid var(--warn-line, #5a4e1a); }
 
   /* Size column never wraps; the column is wide enough for e.g. "999.9 KB". */
   table.pub-files td.cell-size { white-space: nowrap; }
@@ -453,6 +498,25 @@
       });
     });
   })();
+
+  // Sign URL buttons (private files only)
+  document.querySelectorAll('[data-sign-key]').forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var key = btn.dataset.signKey;
+      var ttl = prompt("TTL in seconds (1–604800):", "3600");
+      if (!ttl) return;
+      var expires_in = parseInt(ttl, 10);
+      if (!Number.isFinite(expires_in)) return;
+      var resp = await fetch('/drust/admin/files/' + encodeURIComponent(key) + '/sign', {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({expires_in: expires_in}),
+      });
+      if (!resp.ok) { alert('sign failed: ' + resp.status); return; }
+      var j = await resp.json();
+      prompt("Signed URL (copy now):", j.url);
+    });
+  });
 </script>
 </body>
 </html>
