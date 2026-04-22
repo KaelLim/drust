@@ -20,7 +20,9 @@ fn opens_fresh_db_with_schema() {
     assert_eq!(
         tables,
         [
-            "_system_public_files",
+            "_orphan_buckets",
+            "_system_files",
+            "_trash_pending_revokes",
             "admins",
             "sessions",
             "tenants",
@@ -30,15 +32,21 @@ fn opens_fresh_db_with_schema() {
 }
 
 #[test]
-fn system_public_files_schema_shape() {
+fn system_files_schema_shape() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("meta.sqlite");
     let conn = open_meta(&path).unwrap();
 
     let cols: Vec<(String, String, i64)> = conn
-        .prepare("PRAGMA table_info(\"_system_public_files\")")
+        .prepare("PRAGMA table_info(\"_system_files\")")
         .unwrap()
-        .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)))
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
         .unwrap()
         .map(Result::unwrap)
         .collect();
@@ -48,12 +56,15 @@ fn system_public_files_schema_shape() {
     assert!(names.contains(&"original_name"));
     assert!(names.contains(&"size_bytes"));
     assert!(names.contains(&"uploader"));
+    assert!(names.contains(&"visibility"));
+    assert!(names.contains(&"cache_control"));
+    assert!(names.contains(&"meta_json"));
 
     // Index exists
     let idx_cnt: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master
-             WHERE type='index' AND name='idx_public_files_uploaded_at'",
+             WHERE type='index' AND name='idx_system_files_uploaded_at'",
             [],
             |r| r.get(0),
         )

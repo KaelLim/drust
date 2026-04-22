@@ -1,5 +1,5 @@
 use crate::auth::admin::hash_password;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::path::Path;
 
 const SCHEMA_SQL: &str = r#"
@@ -42,23 +42,41 @@ CREATE TABLE IF NOT EXISTS tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_hash_active ON tokens(token_hash) WHERE revoked_at IS NULL;
 
--- System collection: metadata for host-level public bucket objects.
--- Protected from `drop_collection` by the `_system_` prefix convention
--- enforced in src/mcp/tools/schema.rs.
-CREATE TABLE IF NOT EXISTS "_system_public_files" (
+-- System collection: file metadata (admin-owned in meta.sqlite, tenant-owned
+-- in each tenants/<id>/data.sqlite). Protected from `drop_collection` by
+-- the `_system_` prefix rule in src/mcp/tools/schema.rs.
+CREATE TABLE IF NOT EXISTS "_system_files" (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   key                 TEXT    NOT NULL UNIQUE,
   original_name       TEXT    NOT NULL,
   content_type        TEXT,
   size_bytes          INTEGER NOT NULL,
   content_disposition TEXT,
+  visibility          TEXT    NOT NULL DEFAULT 'public',
+  cache_control       TEXT,
+  meta_json           TEXT,
   uploaded_at         TEXT    NOT NULL DEFAULT (datetime('now')),
   uploader            TEXT    NOT NULL,
   created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
   updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_public_files_uploaded_at
-  ON "_system_public_files"(uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_files_uploaded_at
+  ON "_system_files"(uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_files_visibility
+  ON "_system_files"(visibility);
+
+CREATE TABLE IF NOT EXISTS "_trash_pending_revokes" (
+  tenant_id       TEXT PRIMARY KEY,
+  detected_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  last_attempt_at TEXT,
+  last_error      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS "_orphan_buckets" (
+  bucket_name     TEXT PRIMARY KEY,
+  detected_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  reason          TEXT NOT NULL
+);
 
 COMMIT;
 "#;
@@ -86,9 +104,54 @@ pub fn open_meta(path: &Path) -> anyhow::Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
     )?;
     apply_pragmas(&conn)?;
+    // Structural renames must happen BEFORE SCHEMA_SQL so that
+    // `CREATE TABLE IF NOT EXISTS "_system_files"` is a no-op on upgraded DBs.
+    pre_schema_migrations(&conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
     apply_migrations(&conn)?;
     Ok(conn)
+}
+
+/// Migrations that must run BEFORE SCHEMA_SQL. These rename or drop tables
+/// so that the `CREATE TABLE IF NOT EXISTS` stanzas in SCHEMA_SQL are safe.
+fn pre_schema_migrations(conn: &Connection) -> anyhow::Result<()> {
+    // v1.5.0-Y: rename _system_public_files → _system_files and add Y columns.
+    // Runs only when the X-era table exists; CREATE TABLE IF NOT EXISTS in
+    // SCHEMA_SQL covers fresh installs.
+    let has_old: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_system_public_files'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .is_some();
+
+    if has_old {
+        conn.execute_batch(r#"
+            BEGIN;
+            ALTER TABLE "_system_public_files" RENAME TO "_system_files";
+            ALTER TABLE "_system_files" ADD COLUMN visibility    TEXT NOT NULL DEFAULT 'public';
+            ALTER TABLE "_system_files" ADD COLUMN cache_control TEXT;
+            ALTER TABLE "_system_files" ADD COLUMN meta_json     TEXT;
+            UPDATE "_system_files"
+              SET content_disposition = CASE
+                  WHEN content_disposition LIKE 'attachment%' THEN 'attachment'
+                  ELSE 'inline'
+              END;
+            DROP INDEX IF EXISTS idx_public_files_uploaded_at;
+            CREATE INDEX IF NOT EXISTS idx_system_files_uploaded_at
+              ON "_system_files"(uploaded_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_system_files_visibility
+              ON "_system_files"(visibility);
+            COMMIT;
+        "#)?;
+        tracing::info!("meta migration: renamed _system_public_files to _system_files");
+    }
+
+    Ok(())
 }
 
 /// Idempotent per-column migrations. Each migration tolerates the "duplicate
@@ -115,6 +178,7 @@ fn apply_migrations(conn: &Connection) -> anyhow::Result<()> {
             return Err(e.into());
         }
     }
+
     Ok(())
 }
 
