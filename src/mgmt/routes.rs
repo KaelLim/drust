@@ -22,6 +22,9 @@ pub struct MgmtState {
     /// Garage S3 access-key-id for the drust-client key, used when granting
     /// per-tenant bucket access. Empty when garage is `None`.
     pub garage_client_key_id: String,
+    /// Minimum free-disk percentage before uploads are refused (507).
+    /// Sourced from `DRUST_DISK_MIN_FREE_PCT`; default 20.
+    pub disk_min_free_pct: u8,
 }
 
 #[derive(Template)]
@@ -151,6 +154,7 @@ impl MgmtState {
             garage: self.garage.clone(),
             base_url: self.public_base_url.clone(),
             max_upload_bytes: self.max_upload_bytes,
+            disk_min_free_pct: self.disk_min_free_pct,
         };
 
         let public = Router::new()
