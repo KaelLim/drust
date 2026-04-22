@@ -78,7 +78,7 @@ pub struct ListQs {
 #[template(path = "public_files_reconcile.html")]
 struct ReconcilePage {
     version: &'static str,
-    orphan_objects: Vec<(String, String)>,  // (key, size_human)
+    orphan_objects: Vec<(String, String)>, // (key, size_human)
     dangling_rows: Vec<(i64, String, String)>, // (id, key, original_name)
 }
 
@@ -219,7 +219,7 @@ pub async fn upload_submit(
     {
         let conn = state.meta.lock().await;
         if let Err(e) = conn.execute(
-            "INSERT INTO _system_public_files
+            "INSERT INTO _system_files
              (key, original_name, content_type, size_bytes, content_disposition, uploader)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
@@ -250,7 +250,7 @@ pub async fn upload_submit(
         );
         let conn = state.meta.lock().await;
         let _ = conn.execute(
-            "DELETE FROM _system_public_files WHERE key = ?1",
+            "DELETE FROM _system_files WHERE key = ?1",
             rusqlite::params![&key],
         );
         return internal(format!("garage put: {e:#}"));
@@ -259,10 +259,7 @@ pub async fn upload_submit(
     Redirect::to("/drust/admin/public-files").into_response()
 }
 
-pub async fn delete_submit(
-    State(state): State<PublicFilesState>,
-    Path(id): Path<i64>,
-) -> Response {
+pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path<i64>) -> Response {
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
     };
@@ -270,7 +267,7 @@ pub async fn delete_submit(
     let key: Option<String> = {
         let conn = state.meta.lock().await;
         conn.query_row(
-            "SELECT key FROM _system_public_files WHERE id = ?1",
+            "SELECT key FROM _system_files WHERE id = ?1",
             rusqlite::params![id],
             |r| r.get::<_, String>(0),
         )
@@ -287,7 +284,7 @@ pub async fn delete_submit(
     {
         let conn = state.meta.lock().await;
         if let Err(e) = conn.execute(
-            "DELETE FROM _system_public_files WHERE id = ?1",
+            "DELETE FROM _system_files WHERE id = ?1",
             rusqlite::params![id],
         ) {
             return internal(format!("db delete: {e}"));
@@ -309,9 +306,9 @@ pub async fn reconcile_page(State(state): State<PublicFilesState>) -> Response {
 
     let db_rows: Vec<(i64, String, String)> = {
         let conn = state.meta.lock().await;
-        let mut stmt = match conn.prepare(
-            "SELECT id, key, original_name FROM _system_public_files ORDER BY id",
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT id, key, original_name FROM _system_files ORDER BY id")
+        {
             Ok(s) => s,
             Err(e) => return internal(format!("db prepare: {e}")),
         };
@@ -376,7 +373,7 @@ pub async fn reconcile_apply(
         let conn = state.meta.lock().await;
         for id in form.delete_dangling_ids {
             let _ = conn.execute(
-                "DELETE FROM _system_public_files WHERE id = ?1",
+                "DELETE FROM _system_files WHERE id = ?1",
                 rusqlite::params![id],
             );
         }
@@ -392,14 +389,13 @@ async fn load_files(
     let conn = state.meta.lock().await;
 
     // Totals across ALL rows (not just the current page).
-    let total_files: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM _system_public_files",
-        [],
-        |r| r.get(0),
-    )?;
+    let total_files: i64 =
+        conn.query_row("SELECT COUNT(*) FROM _system_files", [], |r| {
+            r.get(0)
+        })?;
     let total_bytes: i64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_public_files",
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_files",
             [],
             |r| r.get(0),
         )
@@ -408,7 +404,7 @@ async fn load_files(
     let offset = (page.saturating_sub(1) as i64) * (per_page as i64);
     let mut stmt = conn.prepare(
         "SELECT id, key, original_name, COALESCE(content_type,''), size_bytes, uploaded_at
-         FROM _system_public_files
+         FROM _system_files
          ORDER BY uploaded_at DESC, id DESC
          LIMIT ?1 OFFSET ?2",
     )?;
