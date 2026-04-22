@@ -3,6 +3,7 @@ use drust::config::Config;
 use drust::mcp::http_registry::McpHttpRegistry;
 use drust::mcp::server::McpRegistry;
 use drust::mgmt::routes::MgmtState;
+use drust::mgmt::tenant_files::TenantFilesState;
 use drust::safety::audit::AuditLog;
 use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::{bootstrap_admin, open_meta};
@@ -87,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
     let mgmt_state = MgmtState {
         meta: meta.clone(),
         session_ttl_days: cfg.session_ttl_days,
-        garage,
+        garage: garage.clone(),
         public_base_url: cfg.public_base_url.clone(),
         max_upload_bytes,
         garage_client_key_id,
@@ -100,6 +101,14 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_secs(cfg.rate_limit_window_secs),
     ));
     let audit = Arc::new(AuditLog::new(cfg.log_dir.clone()));
+    let tenant_files_state = garage.as_ref().map(|g| TenantFilesState {
+        garage: Some(g.clone()),
+        data_root: cfg.data_dir.clone(),
+        disk_min_free_pct,
+        max_upload_bytes,
+        public_base_url: cfg.public_base_url.clone(),
+    });
+
     let tenant_stack = TenantStack {
         auth: TenantAuthState {
             meta: meta.clone(),
@@ -109,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
         },
         bus: bus.clone(),
         mcp: mcp_http,
+        files: tenant_files_state,
     };
     let tenant_router = build_tenant_router(tenant_stack);
 

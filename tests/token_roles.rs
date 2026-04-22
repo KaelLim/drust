@@ -65,6 +65,7 @@ async fn tenant_with_two_tokens(tenant: &str) -> (axum::Router, String, String, 
         auth: state,
         bus: bus.clone(),
         mcp: test_mcp_http(tenants, bus),
+        files: None,
     };
     let app = build_tenant_router(stack);
     (app, anon_tok, service_tok, dir)

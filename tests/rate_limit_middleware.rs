@@ -47,6 +47,7 @@ async fn app_with_limiter(
         auth: state,
         bus: bus.clone(),
         mcp: helpers::test_mcp_http(tenants, bus),
+        files: None,
     });
     (app, tok, dir)
 }
