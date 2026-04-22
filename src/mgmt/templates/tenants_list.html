@@ -59,6 +59,11 @@
         </div>
       </div>
 
+      <div class="disk-banner{% if disk.free_pct < 20.0 %} low{% endif %}">
+        <span>Disk: <b>{{ disk.used_gb }}</b> GB used / {{ disk.total_gb }} GB total ({{ disk.free_pct_display }}% free)</span>
+        {% if disk.free_pct < 20.0 %}<span class="warn">⚠ uploads paused (&lt; 20% free)</span>{% endif %}
+      </div>
+
       <div class="card" style="margin-bottom:20px;">
         <div class="card-head">
           <span>+ create tenant</span>
@@ -106,7 +111,8 @@
               <th style="width:240px;">id</th>
               <th>name</th>
               <th style="width:200px;">created</th>
-              <th class="num" style="width:130px;">db size</th>
+              <th class="num" style="width:110px;">db size</th>
+              <th class="num" style="width:110px;">files</th>
               <th class="actions" style="width:120px;"></th>
             </tr>
           </thead>
@@ -117,6 +123,7 @@
               <td>{{ t.name }}</td>
               <td class="muted-cell">{{ t.created_at }}</td>
               <td class="num">{{ t.db_size_kb }} KB</td>
+              <td class="num"><a href="/drust/admin/tenants/{{ t.id }}/files" style="color:inherit;">{{ t.files_display }}</a></td>
               <td class="actions">
                 <form method="post" action="/drust/admin/tenants/{{ t.id }}/delete" onsubmit="return confirm('Delete tenant {{ t.id }}?');" style="display:inline;">
                   <button class="btn btn-sm btn-danger" type="submit">Delete</button>

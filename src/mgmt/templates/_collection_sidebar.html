@@ -6,6 +6,12 @@
     <span class="count">{{ collections.len() }}</span>
   </div>
   <nav class="sidebar-list">
+    <a class="col-item{% if active_coll == "_system_files" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/files"
+       title="_system_files (file storage)">
+      <span class="arrow" style="opacity:.7;">🔒</span>
+      <span>_system_files</span>
+    </a>
     {% for c in collections %}
     <a class="col-item{% if c.name == active_coll %} on{% endif %}"
        href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}">

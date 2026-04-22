@@ -1,7 +1,7 @@
 use crate::auth::bearer::{generate_token, hash_token};
 use crate::auth::middleware::AdminSessionState;
 use crate::storage::garage::GarageClient;
-use crate::storage::tenant_db::{open_write, tenant_dir, validate_tenant_id};
+use crate::storage::tenant_db::{open_read, open_write, tenant_dir, validate_tenant_id};
 use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -26,6 +26,7 @@ pub struct TenantsState {
 struct TenantsListPage {
     tenants: Vec<TenantRow>,
     version: &'static str,
+    disk: crate::mgmt::public_files::DiskView,
 }
 
 struct TenantRow {
@@ -33,6 +34,8 @@ struct TenantRow {
     name: String,
     created_at: String,
     db_size_kb: u64,
+    /// Formatted string like "1.3 MB" or "0.0 MB".
+    files_display: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,18 +170,37 @@ pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
             let db_size_kb = std::fs::metadata(&db_path)
                 .map(|m| m.len() / 1024)
                 .unwrap_or(0);
+            // Compute files usage from the tenant's _system_files table.
+            // Gracefully degrades to 0 MB if the tenant predates Task 4 (no
+            // _system_files table) or the DB doesn't exist yet.
+            let files_mb = crate::storage::tenant_db::open_read(&state.data_dir, &id)
+                .ok()
+                .and_then(|conn| {
+                    conn.query_row(
+                        "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_files",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .ok()
+                })
+                .map(|bytes| bytes as f64 / 1_048_576.0)
+                .unwrap_or(0.0);
+            let files_display = format!("{:.1} MB", files_mb);
             TenantRow {
                 id,
                 name,
                 created_at,
                 db_size_kb,
+                files_display,
             }
         })
         .collect();
+    let disk = crate::mgmt::public_files::build_disk_view();
     Html(
         TenantsListPage {
             tenants: rows,
             version: env!("CARGO_PKG_VERSION"),
+            disk,
         }
         .render()
         .unwrap(),
@@ -529,4 +551,132 @@ pub async fn soft_delete_tenant_form(
 ) -> Response {
     let _ = soft_delete_tenant(State(state), Path(id)).await;
     Redirect::to("/drust/admin/tenants").into_response()
+}
+
+// ─── Admin tenant-files subpage (Task 21) ────────────────────────────────────
+
+/// A single file row for the admin tenant-files view.
+struct AdminTenantFileRow {
+    key: String,
+    original_name: String,
+    size_bytes: i64,
+    visibility: String,
+    uploaded_at: String,
+}
+
+#[derive(Template)]
+#[template(path = "tenant_files_admin.html")]
+struct TenantFilesAdminPage {
+    version: &'static str,
+    tenant_id: String,
+    tenant_name: String,
+    files: Vec<AdminTenantFileRow>,
+    total_files: usize,
+    used_mb_display: String,
+}
+
+/// GET /admin/tenants/{id}/files
+/// Renders a read-only list of files in the tenant's _system_files table.
+/// Sign URL button is deferred — see commit message.
+pub async fn tenant_files_admin_page(
+    State(state): State<TenantsState>,
+    Path(tenant_id): Path<String>,
+) -> Response {
+    // Resolve tenant name (and validate existence) from meta.sqlite.
+    let tenant_name: Option<String> = {
+        let conn = state.session.meta.lock().await;
+        conn.query_row(
+            "SELECT name FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tenant_id],
+            |r| r.get(0),
+        )
+        .ok()
+    };
+    let tenant_name = match tenant_name {
+        Some(n) => n,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("no such tenant: {tenant_id}"),
+            )
+                .into_response();
+        }
+    };
+
+    // Open the tenant's data.sqlite read-only.
+    let conn = match open_read(&state.data_dir, &tenant_id) {
+        Ok(c) => c,
+        Err(_) => {
+            // Tenant exists in meta but has no data.sqlite (e.g. freshly created).
+            // Return an empty list page.
+            return Html(
+                TenantFilesAdminPage {
+                    version: env!("CARGO_PKG_VERSION"),
+                    tenant_id: tenant_id.clone(),
+                    tenant_name,
+                    files: vec![],
+                    total_files: 0,
+                    used_mb_display: "0.0 MB".into(),
+                }
+                .render()
+                .unwrap(),
+            )
+            .into_response();
+        }
+    };
+
+    // Query _system_files. Table may not exist if Garage was disabled at creation time.
+    let mut stmt = match conn.prepare(
+        "SELECT key, original_name, size_bytes, visibility, uploaded_at \
+         FROM _system_files ORDER BY uploaded_at DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => {
+            // Table doesn't exist — treat as empty.
+            return Html(
+                TenantFilesAdminPage {
+                    version: env!("CARGO_PKG_VERSION"),
+                    tenant_id: tenant_id.clone(),
+                    tenant_name,
+                    files: vec![],
+                    total_files: 0,
+                    used_mb_display: "0.0 MB".into(),
+                }
+                .render()
+                .unwrap(),
+            )
+            .into_response();
+        }
+    };
+
+    let files: Vec<AdminTenantFileRow> = match stmt.query_map([], |r| {
+        Ok(AdminTenantFileRow {
+            key: r.get(0)?,
+            original_name: r.get(1)?,
+            size_bytes: r.get(2)?,
+            visibility: r.get(3)?,
+            uploaded_at: r.get(4)?,
+        })
+    }) {
+        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Err(_) => vec![],
+    };
+
+    let total_files = files.len();
+    let total_bytes: i64 = files.iter().map(|f| f.size_bytes).sum();
+    let used_mb_display = format!("{:.1} MB", total_bytes as f64 / 1_048_576.0);
+
+    Html(
+        TenantFilesAdminPage {
+            version: env!("CARGO_PKG_VERSION"),
+            tenant_id,
+            tenant_name,
+            files,
+            total_files,
+            used_mb_display,
+        }
+        .render()
+        .unwrap(),
+    )
+    .into_response()
 }
