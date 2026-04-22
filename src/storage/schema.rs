@@ -80,6 +80,9 @@ pub fn list_collections(conn: &Connection) -> rusqlite::Result<Vec<Collection>> 
     let names = user_tables(conn)?;
     let mut out = Vec::with_capacity(names.len());
     for name in names {
+        if is_protected_collection(&name) {
+            continue;
+        }
         let count = row_count(conn, &name)?;
         out.push(Collection {
             name,
