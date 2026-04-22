@@ -80,6 +80,15 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     let files_router = if let Some(files_state) = state.files {
         Router::new()
             .route(
+                "/t/{tenant}/files",
+                post(crate::mgmt::tenant_files::upload).get(crate::mgmt::tenant_files::list),
+            )
+            .route(
+                "/t/{tenant}/files/{key}",
+                get(crate::mgmt::tenant_files::get_one)
+                    .delete(crate::mgmt::tenant_files::delete_one),
+            )
+            .route(
                 "/t/{tenant}/files/{key}/bytes",
                 get(crate::mgmt::tenant_files::stream_bytes),
             )
