@@ -404,6 +404,40 @@ pub async fn soft_delete_storage_for_tenant(
     Ok(()) // Always succeed locally — caller still moves SQLite to _trash.
 }
 
+/// Re-grant drust-client access to a previously-soft-deleted tenant's buckets.
+/// Re-enables the pub bucket's website. Unlike soft_delete, restore REQUIRES
+/// Garage to be reachable — propagates the error so the caller can revert
+/// any local restore work (move dir back to _trash). Also clears the tenant's
+/// row in _trash_pending_revokes if present.
+pub async fn restore_storage_for_tenant(
+    garage: &GarageClient,
+    meta: &Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    drust_client_key_id: &str,
+    tenant_id: &str,
+) -> anyhow::Result<()> {
+    let pub_name = format!("tenant-{tenant_id}-pub");
+    let prv_name = format!("tenant-{tenant_id}-prv");
+
+    if let Some(info) = garage.lookup_bucket(&pub_name).await? {
+        garage
+            .bucket_allow(&info.id, drust_client_key_id, true, true, true)
+            .await?;
+        garage.set_website(&info.id, true).await?;
+    }
+    if let Some(info) = garage.lookup_bucket(&prv_name).await? {
+        garage
+            .bucket_allow(&info.id, drust_client_key_id, true, true, true)
+            .await?;
+    }
+
+    let conn = meta.lock().await;
+    conn.execute(
+        "DELETE FROM _trash_pending_revokes WHERE tenant_id = ?1",
+        rusqlite::params![tenant_id],
+    )?;
+    Ok(())
+}
+
 pub async fn soft_delete_tenant(
     State(state): State<TenantsState>,
     Path(id): Path<String>,
