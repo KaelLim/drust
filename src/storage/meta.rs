@@ -130,7 +130,8 @@ fn pre_schema_migrations(conn: &Connection) -> anyhow::Result<()> {
         .is_some();
 
     if has_old {
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             BEGIN;
             ALTER TABLE "_system_public_files" RENAME TO "_system_files";
             ALTER TABLE "_system_files" ADD COLUMN visibility    TEXT NOT NULL DEFAULT 'public';
@@ -140,14 +141,16 @@ fn pre_schema_migrations(conn: &Connection) -> anyhow::Result<()> {
               SET content_disposition = CASE
                   WHEN content_disposition LIKE 'attachment%' THEN 'attachment'
                   ELSE 'inline'
-              END;
+              END
+              WHERE content_disposition IS NOT NULL;
             DROP INDEX IF EXISTS idx_public_files_uploaded_at;
             CREATE INDEX IF NOT EXISTS idx_system_files_uploaded_at
               ON "_system_files"(uploaded_at DESC);
             CREATE INDEX IF NOT EXISTS idx_system_files_visibility
               ON "_system_files"(visibility);
             COMMIT;
-        "#)?;
+        "#,
+        )?;
         tracing::info!("meta migration: renamed _system_public_files to _system_files");
     }
 
