@@ -14,9 +14,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
-async fn tenant_with_two_tokens(
-    tenant: &str,
-) -> (axum::Router, String, String, tempfile::TempDir) {
+async fn tenant_with_two_tokens(tenant: &str) -> (axum::Router, String, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
     let conn = open_meta(&data.join("meta.sqlite")).unwrap();
@@ -86,7 +84,9 @@ async fn anon_token_can_list_records() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["records"].as_array().unwrap().len(), 2);
 }
@@ -107,7 +107,9 @@ async fn anon_token_cannot_create_record() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["error_code"], "WRITE_DENIED");
 }
@@ -128,7 +130,9 @@ async fn anon_token_cannot_update_record() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["error_code"], "WRITE_DENIED");
 }
@@ -148,7 +152,9 @@ async fn anon_token_cannot_delete_record() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["error_code"], "WRITE_DENIED");
 }
@@ -199,12 +205,10 @@ async fn migration_preserves_existing_tokens_as_service() {
 
     let conn = open_meta(&path).unwrap();
     // Force-drop role column to simulate pre-migration state.
-    conn.execute("ALTER TABLE tokens DROP COLUMN role", []).unwrap();
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES ('legacy', 'L')",
-        [],
-    )
-    .unwrap();
+    conn.execute("ALTER TABLE tokens DROP COLUMN role", [])
+        .unwrap();
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('legacy', 'L')", [])
+        .unwrap();
     let legacy_tok = generate_token();
     conn.execute(
         "INSERT INTO tokens (tenant_id, token_hash, label) VALUES ('legacy', ?1, 'old')",
@@ -216,11 +220,9 @@ async fn migration_preserves_existing_tokens_as_service() {
     // Reopen — migration should add role='service' default.
     let conn2 = open_meta(&path).unwrap();
     let role: String = conn2
-        .query_row(
-            "SELECT role FROM tokens WHERE label = 'old'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT role FROM tokens WHERE label = 'old'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(role, "service");
 }

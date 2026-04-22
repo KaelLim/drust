@@ -65,89 +65,92 @@ pub async fn bearer_auth_layer(
     let audit_sink = state.audit.clone();
 
     let resp = async move {
-    let tenant_id = match params.get("tenant") {
-        Some(t) => t.clone(),
-        None => return (StatusCode::BAD_REQUEST, "missing tenant in path").into_response(),
-    };
-    let bearer = match extract_bearer(&req) {
-        Some(t) => t,
-        None => {
-            return json_error(
-                StatusCode::UNAUTHORIZED,
-                "UNAUTHENTICATED",
-                "missing bearer",
+        let tenant_id = match params.get("tenant") {
+            Some(t) => t.clone(),
+            None => return (StatusCode::BAD_REQUEST, "missing tenant in path").into_response(),
+        };
+        let bearer = match extract_bearer(&req) {
+            Some(t) => t,
+            None => {
+                return json_error(
+                    StatusCode::UNAUTHORIZED,
+                    "UNAUTHENTICATED",
+                    "missing bearer",
+                );
+            }
+        };
+        let hash = hash_token(&bearer);
+        // Per-token rate limit. Keyed on the SHA-256 hash so rerolled tokens
+        // get their own bucket. Runs before the DB lookup so an abusive
+        // client cannot keep us churning on meta.sqlite.
+        if let Err(e) = state.limiter.try_acquire(&hash) {
+            let secs = e.0.as_secs().max(1);
+            let body = serde_json::json!({
+                "error_code": "RATE_LIMITED",
+                "message": format!("rate limit exceeded; retry after {secs}s"),
+            });
+            let mut r = axum::Json(body).into_response();
+            *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+            r.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_str(&secs.to_string()).unwrap(),
             );
+            return r;
         }
-    };
-    let hash = hash_token(&bearer);
-    // Per-token rate limit. Keyed on the SHA-256 hash so rerolled tokens
-    // get their own bucket. Runs before the DB lookup so an abusive
-    // client cannot keep us churning on meta.sqlite.
-    if let Err(e) = state.limiter.try_acquire(&hash) {
-        let secs = e.0.as_secs().max(1);
-        let body = serde_json::json!({
-            "error_code": "RATE_LIMITED",
-            "message": format!("rate limit exceeded; retry after {secs}s"),
-        });
-        let mut r = axum::Json(body).into_response();
-        *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-        r.headers_mut().insert(
-            header::RETRY_AFTER,
-            axum::http::HeaderValue::from_str(&secs.to_string()).unwrap(),
-        );
-        return r;
-    }
-    // Verify: (token active) AND (tenant active). Fetch role alongside.
-    let conn = state.meta.lock().await;
-    let ok: Option<(String, String)> = conn
-        .query_row(
-            "SELECT t.tenant_id, t.role FROM tokens t
+        // Verify: (token active) AND (tenant active). Fetch role alongside.
+        let conn = state.meta.lock().await;
+        let ok: Option<(String, String)> = conn
+            .query_row(
+                "SELECT t.tenant_id, t.role FROM tokens t
              JOIN tenants n ON n.id = t.tenant_id
              WHERE t.token_hash = ?1 AND t.revoked_at IS NULL AND n.deleted_at IS NULL",
-            rusqlite::params![hash],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .ok();
-    drop(conn);
-    let (bound_tenant, role_str) = match ok {
-        Some(row) => row,
-        None => return json_error(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", "invalid token"),
-    };
-    if bound_tenant != tenant_id {
-        return json_error(
-            StatusCode::NOT_FOUND,
-            "TENANT_NOT_FOUND",
-            "tenant not accessible",
-        );
-    }
-    let role = match TokenRole::parse(&role_str) {
-        Some(r) => r,
-        None => {
-            return json_error(
-                StatusCode::UNAUTHORIZED,
-                "UNAUTHENTICATED",
-                "token has invalid role",
-            );
-        }
-    };
-    let pool = match state.registry.get_or_open(&tenant_id) {
-        Ok(p) => p,
-        Err(_) => {
+                rusqlite::params![hash],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .ok();
+        drop(conn);
+        let (bound_tenant, role_str) = match ok {
+            Some(row) => row,
+            None => {
+                return json_error(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", "invalid token");
+            }
+        };
+        if bound_tenant != tenant_id {
             return json_error(
                 StatusCode::NOT_FOUND,
                 "TENANT_NOT_FOUND",
-                "tenant data missing",
+                "tenant not accessible",
             );
         }
-    };
-    req.extensions_mut().insert(TenantRef {
-        tenant_id: tenant_id.clone(),
-        token_hint: token_hint(&bearer),
-        pool,
-        role,
-    });
-    next.run(req).await
-    }.await;
+        let role = match TokenRole::parse(&role_str) {
+            Some(r) => r,
+            None => {
+                return json_error(
+                    StatusCode::UNAUTHORIZED,
+                    "UNAUTHENTICATED",
+                    "token has invalid role",
+                );
+            }
+        };
+        let pool = match state.registry.get_or_open(&tenant_id) {
+            Ok(p) => p,
+            Err(_) => {
+                return json_error(
+                    StatusCode::NOT_FOUND,
+                    "TENANT_NOT_FOUND",
+                    "tenant data missing",
+                );
+            }
+        };
+        req.extensions_mut().insert(TenantRef {
+            tenant_id: tenant_id.clone(),
+            token_hint: token_hint(&bearer),
+            pool,
+            role,
+        });
+        next.run(req).await
+    }
+    .await;
 
     let duration_ms = start.elapsed().as_millis() as u64;
     let op_path = path_for_audit

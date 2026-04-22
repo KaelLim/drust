@@ -124,8 +124,8 @@ impl MgmtState {
     pub fn with_data_dir(self, data_dir: std::path::PathBuf) -> Router {
         use crate::auth::middleware::{AdminSessionState, admin_session_layer};
         use crate::mgmt::public_files::{
-            PublicFilesState, delete_submit, list_page as public_files_list_page,
-            reconcile_apply, reconcile_page, upload_submit,
+            PublicFilesState, delete_submit, list_page as public_files_list_page, reconcile_apply,
+            reconcile_page, upload_submit,
         };
         use crate::mgmt::tenants::{
             TenantsState, create_tenant_form, create_tenant_json, list_page_axum,
@@ -199,12 +199,13 @@ impl MgmtState {
             )
             .with_state(public_files_state);
 
-        let protected = tenants_router
-            .merge(public_files_router)
-            .layer(axum::middleware::from_fn_with_state(
-                session,
-                admin_session_layer,
-            ));
+        let protected =
+            tenants_router
+                .merge(public_files_router)
+                .layer(axum::middleware::from_fn_with_state(
+                    session,
+                    admin_session_layer,
+                ));
 
         public.merge(protected)
     }

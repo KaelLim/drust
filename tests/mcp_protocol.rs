@@ -257,7 +257,9 @@ async fn missing_bearer_is_rejected_with_401() {
         .uri("/t/mcp3/mcp")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))
+        .body(Body::from(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+        ))
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);

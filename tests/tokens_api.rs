@@ -14,11 +14,8 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
     let mut conn = open_meta(&data.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
     let tok = create_session(&mut conn, 1, 3600).unwrap();
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES ('blog', 'b')",
-        [],
-    )
-    .unwrap();
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('blog', 'b')", [])
+        .unwrap();
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
         session_ttl_days: 7,

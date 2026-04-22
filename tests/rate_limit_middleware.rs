@@ -62,11 +62,23 @@ fn get_collections(tenant: &str, bearer: &str) -> Request<Body> {
 #[tokio::test]
 async fn third_request_is_rate_limited_with_budget_two() {
     let (app, tok, _d) = app_with_limiter("rl", 2, Duration::from_secs(10)).await;
-    let r1 = app.clone().oneshot(get_collections("rl", &tok)).await.unwrap();
+    let r1 = app
+        .clone()
+        .oneshot(get_collections("rl", &tok))
+        .await
+        .unwrap();
     assert_eq!(r1.status(), StatusCode::OK);
-    let r2 = app.clone().oneshot(get_collections("rl", &tok)).await.unwrap();
+    let r2 = app
+        .clone()
+        .oneshot(get_collections("rl", &tok))
+        .await
+        .unwrap();
     assert_eq!(r2.status(), StatusCode::OK);
-    let r3 = app.clone().oneshot(get_collections("rl", &tok)).await.unwrap();
+    let r3 = app
+        .clone()
+        .oneshot(get_collections("rl", &tok))
+        .await
+        .unwrap();
     assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
     assert!(r3.headers().contains_key(header::RETRY_AFTER));
     let body = axum::body::to_bytes(r3.into_body(), 4096).await.unwrap();
@@ -92,11 +104,23 @@ async fn independent_tokens_have_independent_buckets() {
     // Each token should get its own bucket — budget 1 means each is allowed
     // one request. A's second request is denied, but B's first still goes
     // through.
-    let r_a1 = app.clone().oneshot(get_collections("rl2", &tok_a)).await.unwrap();
+    let r_a1 = app
+        .clone()
+        .oneshot(get_collections("rl2", &tok_a))
+        .await
+        .unwrap();
     assert_eq!(r_a1.status(), StatusCode::OK);
-    let r_a2 = app.clone().oneshot(get_collections("rl2", &tok_a)).await.unwrap();
+    let r_a2 = app
+        .clone()
+        .oneshot(get_collections("rl2", &tok_a))
+        .await
+        .unwrap();
     assert_eq!(r_a2.status(), StatusCode::TOO_MANY_REQUESTS);
-    let r_b1 = app.clone().oneshot(get_collections("rl2", &tok_b)).await.unwrap();
+    let r_b1 = app
+        .clone()
+        .oneshot(get_collections("rl2", &tok_b))
+        .await
+        .unwrap();
     assert_eq!(r_b1.status(), StatusCode::OK);
 }
 
@@ -106,8 +130,16 @@ async fn rate_limit_runs_before_auth_lookup_for_bad_tokens_too() {
     // an attacker could burn meta.sqlite with unbounded lookups.
     let (app, _valid, _d) = app_with_limiter("rl3", 1, Duration::from_secs(10)).await;
     let bogus = "definitely-not-a-real-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let r1 = app.clone().oneshot(get_collections("rl3", bogus)).await.unwrap();
+    let r1 = app
+        .clone()
+        .oneshot(get_collections("rl3", bogus))
+        .await
+        .unwrap();
     assert_eq!(r1.status(), StatusCode::UNAUTHORIZED);
-    let r2 = app.clone().oneshot(get_collections("rl3", bogus)).await.unwrap();
+    let r2 = app
+        .clone()
+        .oneshot(get_collections("rl3", bogus))
+        .await
+        .unwrap();
     assert_eq!(r2.status(), StatusCode::TOO_MANY_REQUESTS);
 }

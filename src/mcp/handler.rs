@@ -102,8 +102,8 @@ pub struct DrustMcpService {
 }
 
 fn json_content(v: Value) -> Result<CallToolResult, McpError> {
-    let text = serde_json::to_string(&v)
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    let text =
+        serde_json::to_string(&v).map_err(|e| McpError::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![Content::text(text)]))
 }
 
@@ -141,8 +141,10 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Return up to N rows from the named collection, ordered by id ascending. \
-        N is clamped to 500. Use this to peek at a collection's data shape.")]
+    #[tool(
+        description = "Return up to N rows from the named collection, ordered by id ascending. \
+        N is clamped to 500. Use this to peek at a collection's data shape."
+    )]
     async fn sample_rows(
         &self,
         Parameters(SampleRowsArgs { name, n }): Parameters<SampleRowsArgs>,
@@ -154,9 +156,11 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Return COUNT(*) for a collection, with an optional SQL WHERE fragment \
+    #[tool(
+        description = "Return COUNT(*) for a collection, with an optional SQL WHERE fragment \
         (e.g. \"status = 'published' AND created_at > '2026-01-01'\"). \
-        The WHERE clause passes through the read-only SQL authorizer — no writes, no joins, no DDL.")]
+        The WHERE clause passes through the read-only SQL authorizer — no writes, no joins, no DDL."
+    )]
     async fn count_rows(
         &self,
         Parameters(CountRowsArgs { name, where_clause }): Parameters<CountRowsArgs>,
@@ -167,9 +171,11 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Run a read-only SELECT against this tenant's database. \
+    #[tool(
+        description = "Run a read-only SELECT against this tenant's database. \
         The SQL is validated by a strict authorizer: no INSERT/UPDATE/DELETE/DDL, \
-        no ATTACH, no sqlite_master reads. Limits: 16 KB SQL, 10,000 rows, 5 second timeout.")]
+        no ATTACH, no sqlite_master reads. Limits: 16 KB SQL, 10,000 rows, 5 second timeout."
+    )]
     async fn query(
         &self,
         Parameters(QueryArgs { sql }): Parameters<QueryArgs>,
@@ -180,9 +186,11 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Return `EXPLAIN QUERY PLAN` output for a read-only SQL statement. \
+    #[tool(
+        description = "Return `EXPLAIN QUERY PLAN` output for a read-only SQL statement. \
         Use this to diagnose slow queries before running them. `analyze` is accepted for \
-        forward-compatibility but currently ignored.")]
+        forward-compatibility but currently ignored."
+    )]
     async fn explain(
         &self,
         Parameters(ExplainArgs { sql, analyze }): Parameters<ExplainArgs>,
@@ -209,8 +217,10 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Add a new field (column) to an existing collection via ALTER TABLE. \
-        `field` has the same shape as entries in `create_collection.fields`.")]
+    #[tool(
+        description = "Add a new field (column) to an existing collection via ALTER TABLE. \
+        `field` has the same shape as entries in `create_collection.fields`."
+    )]
     async fn add_field(
         &self,
         Parameters(AddFieldArgs { collection, field }): Parameters<AddFieldArgs>,
@@ -251,9 +261,11 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Insert one record into a collection. `data` is a JSON object whose keys \
+    #[tool(
+        description = "Insert one record into a collection. `data` is a JSON object whose keys \
         must be known fields of the collection (unknown fields are rejected). \
-        Returns the inserted row including the auto-generated id and timestamps.")]
+        Returns the inserted row including the auto-generated id and timestamps."
+    )]
     async fn insert_record(
         &self,
         Parameters(InsertRecordArgs { collection, data }): Parameters<InsertRecordArgs>,
@@ -264,11 +276,17 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Partially update one record. `data` is a JSON object of fields to set; \
-        omitted fields are left unchanged. `updated_at` is bumped automatically.")]
+    #[tool(
+        description = "Partially update one record. `data` is a JSON object of fields to set; \
+        omitted fields are left unchanged. `updated_at` is bumped automatically."
+    )]
     async fn update_record(
         &self,
-        Parameters(UpdateRecordArgs { collection, id, data }): Parameters<UpdateRecordArgs>,
+        Parameters(UpdateRecordArgs {
+            collection,
+            id,
+            data,
+        }): Parameters<UpdateRecordArgs>,
     ) -> Result<CallToolResult, McpError> {
         match write_tools::update_record(&self.state, &collection, id, data).await {
             Ok(v) => json_content(v),
@@ -276,8 +294,10 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Delete one record by id. A foreign-key constraint from another \
-        collection (ON DELETE RESTRICT) will block the delete if any children reference this row.")]
+    #[tool(
+        description = "Delete one record by id. A foreign-key constraint from another \
+        collection (ON DELETE RESTRICT) will block the delete if any children reference this row."
+    )]
     async fn delete_record(
         &self,
         Parameters(DeleteRecordArgs { collection, id }): Parameters<DeleteRecordArgs>,
