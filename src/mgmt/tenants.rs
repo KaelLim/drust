@@ -88,11 +88,11 @@ pub async fn provision_storage_for_tenant(
     let prv_name = format!("tenant-{tenant_id}-prv");
 
     // Track whether we created each bucket (for targeted rollback).
-    let pub_existed = garage.lookup_bucket(&pub_name).await?.is_some();
-    let pub_id = if pub_existed {
-        garage.lookup_bucket(&pub_name).await?.unwrap().id
-    } else {
-        garage.create_bucket(&pub_name).await?
+    let pub_lookup = garage.lookup_bucket(&pub_name).await?;
+    let pub_existed = pub_lookup.is_some();
+    let pub_id = match pub_lookup {
+        Some(info) => info.id,
+        None => garage.create_bucket(&pub_name).await?,
     };
 
     let result: anyhow::Result<String> = async {
@@ -101,11 +101,10 @@ pub async fn provision_storage_for_tenant(
             .bucket_allow(&pub_id, drust_client_key_id, true, true, true)
             .await?;
 
-        let prv_existed = garage.lookup_bucket(&prv_name).await?.is_some();
-        let prv_id = if prv_existed {
-            garage.lookup_bucket(&prv_name).await?.unwrap().id
-        } else {
-            garage.create_bucket(&prv_name).await?
+        let prv_lookup = garage.lookup_bucket(&prv_name).await?;
+        let prv_id = match prv_lookup {
+            Some(info) => info.id,
+            None => garage.create_bucket(&prv_name).await?,
         };
         garage
             .bucket_allow(&prv_id, drust_client_key_id, true, true, true)
@@ -246,12 +245,19 @@ fn make_tenant_inner(
 /// the tenant row, and the on-disk directory. Used when Garage provisioning
 /// fails after local state has already been written.
 fn rollback_local_tenant(conn: &mut rusqlite::Connection, data_dir: &std::path::Path, id: &str) {
-    let _ = conn.execute(
+    if let Err(e) = conn.execute(
         "DELETE FROM tokens WHERE tenant_id = ?1",
         rusqlite::params![id],
-    );
-    let _ = conn.execute("DELETE FROM tenants WHERE id = ?1", rusqlite::params![id]);
-    let _ = std::fs::remove_dir_all(tenant_dir(data_dir, id));
+    ) {
+        tracing::warn!(tenant_id = %id, error = %e, "rollback: failed to delete token rows");
+    }
+    if let Err(e) = conn.execute("DELETE FROM tenants WHERE id = ?1", rusqlite::params![id]) {
+        tracing::warn!(tenant_id = %id, error = %e, "rollback: failed to delete tenant row");
+    }
+    let dir = tenant_dir(data_dir, id);
+    if let Err(e) = std::fs::remove_dir_all(&dir) {
+        tracing::warn!(tenant_id = %id, path = %dir.display(), error = %e, "rollback: failed to remove tenant dir");
+    }
 }
 
 pub async fn create_tenant_json(
