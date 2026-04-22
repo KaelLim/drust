@@ -306,12 +306,11 @@ pub async fn reconcile_page(State(state): State<PublicFilesState>) -> Response {
 
     let db_rows: Vec<(i64, String, String)> = {
         let conn = state.meta.lock().await;
-        let mut stmt = match conn
-            .prepare("SELECT id, key, original_name FROM _system_files ORDER BY id")
-        {
-            Ok(s) => s,
-            Err(e) => return internal(format!("db prepare: {e}")),
-        };
+        let mut stmt =
+            match conn.prepare("SELECT id, key, original_name FROM _system_files ORDER BY id") {
+                Ok(s) => s,
+                Err(e) => return internal(format!("db prepare: {e}")),
+            };
         match stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -390,9 +389,7 @@ async fn load_files(
 
     // Totals across ALL rows (not just the current page).
     let total_files: i64 =
-        conn.query_row("SELECT COUNT(*) FROM _system_files", [], |r| {
-            r.get(0)
-        })?;
+        conn.query_row("SELECT COUNT(*) FROM _system_files", [], |r| r.get(0))?;
     let total_bytes: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_files",

@@ -291,15 +291,10 @@ pub async fn drop_field(
 /// column pointing at this one — the caller must `drop_field` those
 /// columns first, otherwise the remaining FKs would dangle and break
 /// future joins / writes against the referrers.
-pub async fn drop_collection(
-    s: &DrustMcp,
-    name: &str,
-) -> anyhow::Result<serde_json::Value> {
+pub async fn drop_collection(s: &DrustMcp, name: &str) -> anyhow::Result<serde_json::Value> {
     identifier(name)?;
     if is_protected_collection(name) {
-        anyhow::bail!(
-            "refusing to drop system collection {name:?} (protected by _system_ prefix)"
-        );
+        anyhow::bail!("refusing to drop system collection {name:?} (protected by _system_ prefix)");
     }
     let pool = s.inner().pool.clone();
     let name_check = name.to_string();

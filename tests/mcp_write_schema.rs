@@ -118,7 +118,11 @@ async fn sql_default_datetime_now_is_applied() {
         .unwrap();
     let stamp = ins["record"]["scheduled_at"].as_str().unwrap();
     // YYYY-MM-DD HH:MM:SS (19 chars) is SQLite's datetime('now') shape.
-    assert_eq!(stamp.len(), 19, "expected SQLite datetime format, got {stamp:?}");
+    assert_eq!(
+        stamp.len(),
+        19,
+        "expected SQLite datetime format, got {stamp:?}"
+    );
     assert_eq!(&stamp[4..5], "-");
     assert_eq!(&stamp[10..11], " ");
 }
@@ -321,13 +325,9 @@ async fn foreign_key_restrict_blocks_parent_delete_while_children_exist() {
         .await
         .unwrap();
     let author_id = author["record"]["id"].as_i64().unwrap();
-    insert_record(
-        &s,
-        "posts",
-        serde_json::json!({"author_id": author_id}),
-    )
-    .await
-    .unwrap();
+    insert_record(&s, "posts", serde_json::json!({"author_id": author_id}))
+        .await
+        .unwrap();
     // RESTRICT means deleting the author while posts reference them must
     // fail, preserving referential integrity.
     let err = delete_record(&s, "authors", author_id).await.unwrap_err();
@@ -502,14 +502,19 @@ async fn drop_collection_removes_table_and_trigger() {
         .await
         .unwrap_err();
     // list_collections should no longer include the dropped table.
-    let cols = drust::mcp::tools::exploration::list_collections(&s).await.unwrap();
+    let cols = drust::mcp::tools::exploration::list_collections(&s)
+        .await
+        .unwrap();
     let names: Vec<String> = cols["collections"]
         .as_array()
         .unwrap()
         .iter()
         .map(|c| c["name"].as_str().unwrap().to_string())
         .collect();
-    assert!(!names.contains(&"posts".to_string()), "expected posts gone, got {names:?}");
+    assert!(
+        !names.contains(&"posts".to_string()),
+        "expected posts gone, got {names:?}"
+    );
 }
 
 #[tokio::test]
@@ -574,7 +579,9 @@ async fn drop_collection_rejects_system_prefix() {
     // this test — the refusal error surfaces immediately.
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;
-    let err = drop_collection(&s, "_system_public_files").await.unwrap_err();
+    let err = drop_collection(&s, "_system_public_files")
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("protected") && msg.contains("_system_"),
