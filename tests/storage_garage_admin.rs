@@ -70,3 +70,49 @@ async fn delete_bucket_sends_id_query() {
     assert_eq!(last.path, "/v1/bucket");
     assert!(last.query.contains("id=bkt-123"));
 }
+
+#[tokio::test]
+async fn set_website_enabled_posts_true() {
+    let srv = MockAdminServer::start().await;
+    let c = GarageClient::from_mock_admin(&srv.base_url(), "t");
+    c.set_website("bkt-7", true).await.unwrap();
+    let last = srv.requests().last().unwrap().clone();
+    assert_eq!(last.path, "/v1/bucket/bkt-7/website");
+    assert!(last.body.contains("\"enabled\":true"));
+}
+
+#[tokio::test]
+async fn set_website_disabled_posts_false() {
+    let srv = MockAdminServer::start().await;
+    let c = GarageClient::from_mock_admin(&srv.base_url(), "t");
+    c.set_website("bkt-7", false).await.unwrap();
+    let last = srv.requests().last().unwrap().clone();
+    assert!(last.body.contains("\"enabled\":false"));
+}
+
+#[tokio::test]
+async fn bucket_allow_includes_permissions_block() {
+    let srv = MockAdminServer::start().await;
+    let c = GarageClient::from_mock_admin(&srv.base_url(), "t");
+    c.bucket_allow("bkt-1", "GKkey", true, true, true)
+        .await
+        .unwrap();
+    let last = srv.requests().last().unwrap().clone();
+    assert_eq!(last.path, "/v1/bucket/allow");
+    assert!(last.body.contains("bkt-1"));
+    assert!(last.body.contains("GKkey"));
+    assert!(last.body.contains("\"read\":true"));
+    assert!(last.body.contains("\"write\":true"));
+    assert!(last.body.contains("\"owner\":true"));
+}
+
+#[tokio::test]
+async fn bucket_deny_posts_key_and_bucket() {
+    let srv = MockAdminServer::start().await;
+    let c = GarageClient::from_mock_admin(&srv.base_url(), "t");
+    c.bucket_deny("bkt-1", "GKkey").await.unwrap();
+    let last = srv.requests().last().unwrap().clone();
+    assert_eq!(last.path, "/v1/bucket/deny");
+    assert!(last.body.contains("bkt-1"));
+    assert!(last.body.contains("GKkey"));
+}
