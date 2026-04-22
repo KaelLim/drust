@@ -359,28 +359,89 @@ pub async fn create_tenant_form(
     }
 }
 
+/// Revoke drust-client access to a tenant's buckets. Disables the pub bucket's
+/// website. Best-effort — on Garage failure, records the tenant in
+/// `_trash_pending_revokes` so the reconcile page can retry, and returns Ok
+/// so the caller can still complete the local soft-delete (SQLite move to _trash).
+///
+/// `meta` must NOT be held across the await in the caller; this function
+/// acquires the lock only on the error path (sync INSERT), so the lock is never
+/// held across an await point.
+pub async fn soft_delete_storage_for_tenant(
+    garage: &GarageClient,
+    meta: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    drust_client_key_id: &str,
+    tenant_id: &str,
+) -> anyhow::Result<()> {
+    let pub_name = format!("tenant-{tenant_id}-pub");
+    let prv_name = format!("tenant-{tenant_id}-prv");
+
+    // All Garage calls happen here — no lock held.
+    let result: anyhow::Result<()> = async {
+        if let Some(info) = garage.lookup_bucket(&pub_name).await? {
+            garage.bucket_deny(&info.id, drust_client_key_id).await?;
+            garage.set_website(&info.id, false).await?;
+        }
+        if let Some(info) = garage.lookup_bucket(&prv_name).await? {
+            garage.bucket_deny(&info.id, drust_client_key_id).await?;
+        }
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = &result {
+        tracing::warn!(tenant = tenant_id, error = %e,
+            "soft-delete Garage revoke failed — queueing for retry");
+        // Acquire lock only here — sync work only, no await while held.
+        let conn = meta.lock().await;
+        conn.execute(
+            "INSERT OR REPLACE INTO _trash_pending_revokes \
+             (tenant_id, detected_at, last_attempt_at, last_error) \
+             VALUES (?1, datetime('now'), datetime('now'), ?2)",
+            rusqlite::params![tenant_id, e.to_string()],
+        )?;
+    }
+    Ok(()) // Always succeed locally — caller still moves SQLite to _trash.
+}
+
 pub async fn soft_delete_tenant(
     State(state): State<TenantsState>,
     Path(id): Path<String>,
 ) -> Response {
-    let conn = state.session.meta.lock().await;
-    let affected = conn
-        .execute(
-            "UPDATE tenants SET deleted_at = datetime('now') WHERE id = ?1 AND deleted_at IS NULL",
-            rusqlite::params![id],
+    // Phase 1: synchronous SQLite + fs work — hold lock only over sync ops.
+    {
+        let conn = state.session.meta.lock().await;
+        let affected = conn
+            .execute(
+                "UPDATE tenants SET deleted_at = datetime('now') WHERE id = ?1 AND deleted_at IS NULL",
+                rusqlite::params![id],
+            )
+            .unwrap_or(0);
+        if affected == 0 {
+            return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+        }
+        let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let src = tenant_dir(&state.data_dir, &id);
+        let dst = state.data_dir.join("_trash").join(format!("{id}-{ts}"));
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if src.exists() {
+            let _ = std::fs::rename(&src, &dst);
+        }
+        // conn (MutexGuard) dropped here — safe to await below.
+    }
+
+    // Phase 2: Garage revoke (async). Lock is re-acquired inside
+    // soft_delete_storage_for_tenant only on the error path (sync INSERT).
+    if let Some(ref garage) = state.garage {
+        let _ = soft_delete_storage_for_tenant(
+            garage.as_ref(),
+            &state.session.meta,
+            &state.garage_client_key_id,
+            &id,
         )
-        .unwrap_or(0);
-    if affected == 0 {
-        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
-    }
-    let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let src = tenant_dir(&state.data_dir, &id);
-    let dst = state.data_dir.join("_trash").join(format!("{id}-{ts}"));
-    if let Some(parent) = dst.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if src.exists() {
-        let _ = std::fs::rename(&src, &dst);
+        .await;
     }
     StatusCode::NO_CONTENT.into_response()
 }
