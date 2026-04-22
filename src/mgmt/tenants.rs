@@ -438,6 +438,49 @@ pub async fn restore_storage_for_tenant(
     Ok(())
 }
 
+/// Delete both tenant buckets via Garage admin API. On any per-bucket failure
+/// (lookup or delete), record the bucket name in `_orphan_buckets` and
+/// continue — caller (janitor) always proceeds with local filesystem cleanup,
+/// so SQLite truth is the source even when Garage is misbehaving.
+///
+/// Returns `Ok(())` even on Garage errors — those are recorded and surfaced
+/// later via the reconcile page (task 22).
+pub async fn hard_delete_storage_for_tenant(
+    garage: &GarageClient,
+    meta: &Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    tenant_id: &str,
+) -> anyhow::Result<()> {
+    for suffix in ["pub", "prv"] {
+        let name = format!("tenant-{tenant_id}-{suffix}");
+        match garage.lookup_bucket(&name).await {
+            Ok(Some(info)) => {
+                if let Err(e) = garage.delete_bucket(&info.id).await {
+                    tracing::warn!(bucket = %name, error = %e,
+                        "hard-delete: bucket delete failed; recording orphan");
+                    let conn = meta.lock().await;
+                    let _ = conn.execute(
+                        "INSERT OR IGNORE INTO _orphan_buckets (bucket_name, detected_at, reason) \
+                         VALUES (?1, datetime('now'), 'tenant_hard_delete')",
+                        rusqlite::params![name],
+                    );
+                }
+            }
+            Ok(None) => { /* already gone — idempotent success */ }
+            Err(e) => {
+                tracing::warn!(bucket = %name, error = %e,
+                    "hard-delete: lookup failed; recording orphan");
+                let conn = meta.lock().await;
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO _orphan_buckets (bucket_name, detected_at, reason) \
+                     VALUES (?1, datetime('now'), 'tenant_hard_delete')",
+                    rusqlite::params![name],
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn soft_delete_tenant(
     State(state): State<TenantsState>,
     Path(id): Path<String>,
