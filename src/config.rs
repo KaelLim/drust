@@ -39,6 +39,7 @@ pub struct StorageConfig {
     pub admin_token: String,
     pub public_bucket: String,
     pub max_upload_bytes: usize,
+    pub disk_min_free_pct: u8,
 }
 
 impl StorageConfig {
@@ -47,6 +48,13 @@ impl StorageConfig {
         let Some(endpoint) = opt("GARAGE_S3_ENDPOINT") else {
             return Ok(None);
         };
+        let disk_min_free_pct: u8 = parse_num("DRUST_DISK_MIN_FREE_PCT", 20)?;
+        if !(1..=99).contains(&disk_min_free_pct) {
+            return Err(ConfigError::Invalid(
+                "DRUST_DISK_MIN_FREE_PCT",
+                "must be between 1 and 99".into(),
+            ));
+        }
         Ok(Some(Self {
             endpoint,
             admin_endpoint: req("GARAGE_ADMIN_ENDPOINT")?,
@@ -55,6 +63,7 @@ impl StorageConfig {
             admin_token: req("GARAGE_ADMIN_TOKEN")?,
             public_bucket: opt("GARAGE_PUBLIC_BUCKET").unwrap_or_else(|| "public".to_string()),
             max_upload_bytes: parse_num("GARAGE_MAX_UPLOAD_SIZE", 52_428_800)?,
+            disk_min_free_pct,
         }))
     }
 }
@@ -177,6 +186,7 @@ mod tests {
         let cfg = StorageConfig::from_env().unwrap().unwrap();
         assert_eq!(cfg.public_bucket, "public");
         assert_eq!(cfg.max_upload_bytes, 52_428_800);
+        assert_eq!(cfg.disk_min_free_pct, 20);
         clear_storage_env();
     }
 }

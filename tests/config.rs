@@ -21,6 +21,7 @@ fn clear_env() {
             "DRUST_RATE_LIMIT_ANON_WINDOW_SECS",
             "DRUST_TENANT_READ_POOL_SIZE",
             "DRUST_SESSION_TTL_DAYS",
+            "DRUST_DISK_MIN_FREE_PCT",
             "GARAGE_S3_ENDPOINT",
             "GARAGE_ADMIN_ENDPOINT",
             "GARAGE_S3_ACCESS_KEY",
@@ -83,4 +84,37 @@ fn rejects_missing_data_dir() {
         std::env::set_var("DRUST_LOG_DIR", "/tmp/drust-log");
     }
     assert!(Config::from_env().is_err());
+}
+
+#[test]
+#[serial]
+fn storage_config_loads_disk_min_free_pct_default() {
+    clear_env();
+    unsafe {
+        std::env::set_var("GARAGE_S3_ENDPOINT", "http://127.0.0.1:47830");
+        std::env::set_var("GARAGE_ADMIN_ENDPOINT", "http://127.0.0.1:47832");
+        std::env::set_var("GARAGE_S3_ACCESS_KEY", "key");
+        std::env::set_var("GARAGE_S3_SECRET_KEY", "secret");
+        std::env::set_var("GARAGE_ADMIN_TOKEN", "admin");
+    }
+
+    let cfg = drust::config::StorageConfig::from_env().unwrap().unwrap();
+    assert_eq!(cfg.disk_min_free_pct, 20);
+}
+
+#[test]
+#[serial]
+fn storage_config_loads_disk_min_free_pct_override() {
+    clear_env();
+    unsafe {
+        std::env::set_var("GARAGE_S3_ENDPOINT", "http://127.0.0.1:47830");
+        std::env::set_var("GARAGE_ADMIN_ENDPOINT", "http://127.0.0.1:47832");
+        std::env::set_var("GARAGE_S3_ACCESS_KEY", "key");
+        std::env::set_var("GARAGE_S3_SECRET_KEY", "secret");
+        std::env::set_var("GARAGE_ADMIN_TOKEN", "admin");
+        std::env::set_var("DRUST_DISK_MIN_FREE_PCT", "35");
+    }
+
+    let cfg = drust::config::StorageConfig::from_env().unwrap().unwrap();
+    assert_eq!(cfg.disk_min_free_pct, 35);
 }
