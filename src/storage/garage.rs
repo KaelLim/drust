@@ -11,8 +11,24 @@ use object_store::path::Path as StorePath;
 use std::sync::Arc;
 
 pub struct GarageClient {
+    // S3 object store backend
     store: Arc<dyn ObjectStore>,
     bucket: String,
+    // Admin API HTTP client — scaffolded in Task 5, used from Task 6 onwards.
+    #[allow(dead_code)]
+    admin: reqwest::Client,
+    #[allow(dead_code)]
+    admin_endpoint: String,
+    #[allow(dead_code)]
+    admin_token: String,
+    #[allow(dead_code)]
+    s3_endpoint: String,
+    #[allow(dead_code)]
+    access_key_id: String,
+    #[allow(dead_code)]
+    secret_access_key: String,
+    #[allow(dead_code)]
+    region: String,
 }
 
 #[derive(Debug, Clone)]
@@ -58,17 +74,53 @@ impl GarageClient {
             .with_virtual_hosted_style_request(false)
             .build()
             .context("failed to build S3 client for Garage")?;
+        let admin = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .context("failed to build admin HTTP client")?;
         Ok(Self {
             store: Arc::new(store),
             bucket: cfg.public_bucket.clone(),
+            admin,
+            admin_endpoint: cfg.admin_endpoint.clone(),
+            admin_token: cfg.admin_token.clone(),
+            s3_endpoint: cfg.endpoint.clone(),
+            access_key_id: cfg.access_key.clone(),
+            secret_access_key: cfg.secret_key.clone(),
+            region: "garage".into(),
         })
     }
 
     /// Construct from an arbitrary backend (for tests or alternate impls).
+    /// Admin fields are intentionally empty — only object-store methods work.
     pub fn from_store(store: Arc<dyn ObjectStore>, bucket: &str) -> Self {
         Self {
             store,
             bucket: bucket.to_string(),
+            admin: reqwest::Client::new(),
+            admin_endpoint: String::new(),
+            admin_token: String::new(),
+            s3_endpoint: String::new(),
+            access_key_id: String::new(),
+            secret_access_key: String::new(),
+            region: "garage".into(),
+        }
+    }
+
+    /// Construct pointing at a mock admin server (for integration tests).
+    /// Uses in-memory object store; only admin API methods work end-to-end.
+    pub fn from_mock_admin(base: &str, token: &str) -> Self {
+        use object_store::memory::InMemory;
+        Self {
+            store: Arc::new(InMemory::new()),
+            bucket: "mock".into(),
+            admin: reqwest::Client::new(),
+            admin_endpoint: base.to_string(),
+            admin_token: token.to_string(),
+            s3_endpoint: String::new(),
+            access_key_id: String::new(),
+            secret_access_key: String::new(),
+            region: "garage".into(),
         }
     }
 
