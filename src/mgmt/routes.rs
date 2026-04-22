@@ -19,6 +19,9 @@ pub struct MgmtState {
     pub garage: Option<Arc<crate::storage::garage::GarageClient>>,
     pub public_base_url: String,
     pub max_upload_bytes: usize,
+    /// Garage S3 access-key-id for the drust-client key, used when granting
+    /// per-tenant bucket access. Empty when garage is `None`.
+    pub garage_client_key_id: String,
 }
 
 #[derive(Template)]
@@ -139,6 +142,8 @@ impl MgmtState {
         let tenants_state = TenantsState {
             session: session.clone(),
             data_dir,
+            garage: self.garage.clone(),
+            garage_client_key_id: self.garage_client_key_id.clone(),
         };
         let public_files_state = PublicFilesState {
             session: session.clone(),

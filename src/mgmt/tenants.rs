@@ -1,5 +1,6 @@
 use crate::auth::bearer::{generate_token, hash_token};
 use crate::auth::middleware::AdminSessionState;
+use crate::storage::garage::GarageClient;
 use crate::storage::tenant_db::{open_write, tenant_dir, validate_tenant_id};
 use askama::Template;
 use axum::extract::{Path, State};
@@ -10,11 +11,14 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct TenantsState {
     pub session: AdminSessionState,
     pub data_dir: PathBuf,
+    pub garage: Option<Arc<GarageClient>>,
+    pub garage_client_key_id: String,
 }
 
 #[derive(Template)]
@@ -69,6 +73,63 @@ pub struct TenantInfo {
     pub created_at: String,
     pub quota_db_mb: i64,
     pub quota_rows: i64,
+}
+
+/// Create both tenant buckets and grant drust-client access.
+/// Idempotent-ish: if a bucket with that name already exists, treat as reuse.
+/// On any mid-sequence failure, attempts to compensate by deleting buckets
+/// this call created (not pre-existing ones).
+pub async fn provision_storage_for_tenant(
+    garage: &GarageClient,
+    drust_client_key_id: &str,
+    tenant_id: &str,
+) -> anyhow::Result<(String, String)> {
+    let pub_name = format!("tenant-{tenant_id}-pub");
+    let prv_name = format!("tenant-{tenant_id}-prv");
+
+    // Track whether we created each bucket (for targeted rollback).
+    let pub_existed = garage.lookup_bucket(&pub_name).await?.is_some();
+    let pub_id = if pub_existed {
+        garage.lookup_bucket(&pub_name).await?.unwrap().id
+    } else {
+        garage.create_bucket(&pub_name).await?
+    };
+
+    let result: anyhow::Result<String> = async {
+        garage.set_website(&pub_id, true).await?;
+        garage
+            .bucket_allow(&pub_id, drust_client_key_id, true, true, true)
+            .await?;
+
+        let prv_existed = garage.lookup_bucket(&prv_name).await?.is_some();
+        let prv_id = if prv_existed {
+            garage.lookup_bucket(&prv_name).await?.unwrap().id
+        } else {
+            garage.create_bucket(&prv_name).await?
+        };
+        garage
+            .bucket_allow(&prv_id, drust_client_key_id, true, true, true)
+            .await?;
+        Ok(prv_id)
+    }
+    .await;
+
+    match result {
+        Ok(prv_id) => Ok((pub_id, prv_id)),
+        Err(e) => {
+            // Roll back only what THIS call created.
+            if !pub_existed {
+                let _ = garage.delete_bucket(&pub_id).await;
+            }
+            // Also clean up prv if we got as far as creating it. `delete_bucket`
+            // is idempotent (404 ok), so the lookup-then-delete heuristic is
+            // safe even under pathological concurrent creation.
+            if let Ok(Some(info)) = garage.lookup_bucket(&prv_name).await {
+                let _ = garage.delete_bucket(&info.id).await;
+            }
+            Err(e.context(format!("provisioning tenant-{tenant_id} buckets")))
+        }
+    }
 }
 
 pub fn valid_slug(s: &str) -> bool {
@@ -181,24 +242,65 @@ fn make_tenant_inner(
     })
 }
 
+/// Roll back everything `make_tenant_inner` did for `id`: delete token rows,
+/// the tenant row, and the on-disk directory. Used when Garage provisioning
+/// fails after local state has already been written.
+fn rollback_local_tenant(conn: &mut rusqlite::Connection, data_dir: &std::path::Path, id: &str) {
+    let _ = conn.execute(
+        "DELETE FROM tokens WHERE tenant_id = ?1",
+        rusqlite::params![id],
+    );
+    let _ = conn.execute("DELETE FROM tenants WHERE id = ?1", rusqlite::params![id]);
+    let _ = std::fs::remove_dir_all(tenant_dir(data_dir, id));
+}
+
 pub async fn create_tenant_json(
     State(state): State<TenantsState>,
     Json(form): Json<CreateTenantJson>,
 ) -> Response {
-    let mut conn = state.session.meta.lock().await;
     let mb = form.quota_db_mb.unwrap_or(500);
     let rows = form.quota_rows.unwrap_or(1_000_000);
-    match make_tenant_inner(&mut conn, &state.data_dir, &form.id, &form.name, mb, rows) {
-        Ok(resp) => (StatusCode::CREATED, Json(resp)).into_response(),
+
+    let mut conn = state.session.meta.lock().await;
+    let resp = match make_tenant_inner(&mut conn, &state.data_dir, &form.id, &form.name, mb, rows) {
+        Ok(resp) => resp,
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("invalid tenant id") || msg.contains("UNIQUE") {
+            return if msg.contains("invalid tenant id") || msg.contains("UNIQUE") {
                 (StatusCode::BAD_REQUEST, msg).into_response()
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
-            }
+            };
+        }
+    };
+    drop(conn);
+
+    if let Some(ref garage) = state.garage {
+        if garage.ping().await.is_err() {
+            let mut conn = state.session.meta.lock().await;
+            rollback_local_tenant(&mut conn, &state.data_dir, &form.id);
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Garage unreachable — tenant not created",
+            )
+                .into_response();
+        }
+        if let Err(e) =
+            provision_storage_for_tenant(garage.as_ref(), &state.garage_client_key_id, &form.id)
+                .await
+        {
+            let mut conn = state.session.meta.lock().await;
+            rollback_local_tenant(&mut conn, &state.data_dir, &form.id);
+            tracing::error!(tenant_id = %form.id, error = %e, "storage provisioning failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("storage provisioning failed: {e}"),
+            )
+                .into_response();
         }
     }
+
+    (StatusCode::CREATED, Json(resp)).into_response()
 }
 
 pub async fn create_tenant_form(
@@ -206,15 +308,47 @@ pub async fn create_tenant_form(
     Form(form): Form<CreateTenantForm>,
 ) -> Response {
     let mut conn = state.session.meta.lock().await;
-    match make_tenant_inner(
+    let created = make_tenant_inner(
         &mut conn,
         &state.data_dir,
         &form.id,
         &form.name,
         500,
         1_000_000,
-    ) {
-        Ok(_) => Redirect::to("/drust/admin/tenants").into_response(),
+    );
+    drop(conn);
+
+    match created {
+        Ok(_) => {
+            if let Some(ref garage) = state.garage {
+                if garage.ping().await.is_err() {
+                    let mut conn = state.session.meta.lock().await;
+                    rollback_local_tenant(&mut conn, &state.data_dir, &form.id);
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Garage unreachable — tenant not created",
+                    )
+                        .into_response();
+                }
+                if let Err(e) = provision_storage_for_tenant(
+                    garage.as_ref(),
+                    &state.garage_client_key_id,
+                    &form.id,
+                )
+                .await
+                {
+                    let mut conn = state.session.meta.lock().await;
+                    rollback_local_tenant(&mut conn, &state.data_dir, &form.id);
+                    tracing::error!(tenant_id = %form.id, error = %e, "storage provisioning failed");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("storage provisioning failed: {e}"),
+                    )
+                        .into_response();
+                }
+            }
+            Redirect::to("/drust/admin/tenants").into_response()
+        }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
