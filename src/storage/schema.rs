@@ -197,6 +197,26 @@ pub fn list_collections(conn: &Connection) -> rusqlite::Result<Vec<Collection>> 
     Ok(out)
 }
 
+/// Read the anon_caps for a single collection from
+/// `_system_collection_meta`. Missing rows yield `default_anon_caps()`
+/// (i.e. legacy collections pre-dating the feature behave the same as
+/// status quo).
+fn read_anon_caps(
+    conn: &Connection,
+    coll: &str,
+) -> rusqlite::Result<BTreeSet<DmlVerb>> {
+    let row: Option<String> = conn
+        .query_row(
+            "SELECT anon_caps_json FROM _system_collection_meta WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    Ok(row
+        .map(|j| parse_anon_caps_json(&j))
+        .unwrap_or_else(default_anon_caps))
+}
+
 pub fn describe_collection(
     conn: &Connection,
     name: &str,
@@ -275,12 +295,13 @@ pub fn describe_collection(
     }
 
     let rc = row_count(conn, name)?;
+    let anon_caps = read_anon_caps(conn, name)?;
     Ok(Some(CollectionSchema {
         name: name.to_string(),
         fields,
         indices,
         row_count: rc,
-        anon_caps: default_anon_caps(),  // populated for real in Task 4
+        anon_caps,
     }))
 }
 
@@ -321,4 +342,101 @@ pub fn find_fk_referrers(
         }
     }
     Ok(out)
+}
+
+/// Insert / replace the anon_caps row for a collection. Caller must
+/// hold the writer mutex. Used by create_collection (default caps)
+/// and the admin UI's anon-caps editor.
+pub fn write_anon_caps(
+    conn: &Connection,
+    coll: &str,
+    caps: &BTreeSet<DmlVerb>,
+) -> rusqlite::Result<()> {
+    let json = anon_caps_to_json(caps);
+    conn.execute(
+        "INSERT INTO _system_collection_meta (collection_name, anon_caps_json, updated_at)
+              VALUES (?1, ?2, datetime('now'))
+         ON CONFLICT(collection_name) DO UPDATE SET
+              anon_caps_json = excluded.anon_caps_json,
+              updated_at     = excluded.updated_at",
+        rusqlite::params![coll, json],
+    )?;
+    Ok(())
+}
+
+/// Drop the metadata row for a collection. Called from drop_collection.
+/// Idempotent — missing row is fine.
+pub fn delete_collection_meta(
+    conn: &Connection,
+    coll: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM _system_collection_meta WHERE collection_name = ?1",
+        rusqlite::params![coll],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod meta_io_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn fresh() -> (TempDir, Connection) {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("t.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _system_collection_meta (
+                collection_name TEXT PRIMARY KEY,
+                anon_caps_json  TEXT NOT NULL,
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        ).unwrap();
+        (tmp, conn)
+    }
+
+    #[test]
+    fn read_returns_default_when_no_row() {
+        let (_t, conn) = fresh();
+        let caps = read_anon_caps(&conn, "posts").unwrap();
+        assert_eq!(caps, default_anon_caps());
+    }
+
+    #[test]
+    fn write_then_read_roundtrips() {
+        let (_t, conn) = fresh();
+        let mut caps = BTreeSet::new();
+        caps.insert(DmlVerb::Select);
+        caps.insert(DmlVerb::Insert);
+        write_anon_caps(&conn, "posts", &caps).unwrap();
+        let got = read_anon_caps(&conn, "posts").unwrap();
+        assert_eq!(got, caps);
+    }
+
+    #[test]
+    fn write_overwrites_existing() {
+        let (_t, conn) = fresh();
+        let only_select: BTreeSet<DmlVerb> = [DmlVerb::Select].into_iter().collect();
+        let crud: BTreeSet<DmlVerb> = [DmlVerb::Select, DmlVerb::Insert,
+                                       DmlVerb::Update, DmlVerb::Delete].into_iter().collect();
+        write_anon_caps(&conn, "posts", &only_select).unwrap();
+        write_anon_caps(&conn, "posts", &crud).unwrap();
+        assert_eq!(read_anon_caps(&conn, "posts").unwrap(), crud);
+    }
+
+    #[test]
+    fn delete_removes_row() {
+        let (_t, conn) = fresh();
+        let caps: BTreeSet<DmlVerb> = [DmlVerb::Select, DmlVerb::Insert].into_iter().collect();
+        write_anon_caps(&conn, "posts", &caps).unwrap();
+        delete_collection_meta(&conn, "posts").unwrap();
+        assert_eq!(read_anon_caps(&conn, "posts").unwrap(), default_anon_caps());
+    }
+
+    #[test]
+    fn delete_missing_row_is_noop() {
+        let (_t, conn) = fresh();
+        delete_collection_meta(&conn, "nonexistent").unwrap();
+    }
 }
