@@ -440,3 +440,67 @@ mod meta_io_tests {
         delete_collection_meta(&conn, "nonexistent").unwrap();
     }
 }
+
+/// Returns true if the caller's role is permitted to perform `verb` on
+/// the given collection. Service is unrestricted; anon is checked
+/// against the cached anon_caps. Missing schema (or cache miss + DB
+/// error) yields `false` — fail closed.
+pub fn has_dml_cap(
+    role: crate::tenant::router::TokenRole,
+    verb: DmlVerb,
+    schema: &CollectionSchema,
+) -> bool {
+    if matches!(role, crate::tenant::router::TokenRole::Service) {
+        return true;
+    }
+    schema.anon_caps.contains(&verb)
+}
+
+#[cfg(test)]
+mod cap_gate_tests {
+    use super::*;
+    use crate::tenant::router::TokenRole;
+
+    fn schema_with(caps: &[DmlVerb]) -> CollectionSchema {
+        CollectionSchema {
+            name: "x".into(),
+            fields: vec![],
+            indices: vec![],
+            row_count: 0,
+            anon_caps: caps.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn service_is_unrestricted() {
+        let s = schema_with(&[]);
+        for verb in [DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
+            assert!(has_dml_cap(TokenRole::Service, verb, &s));
+        }
+    }
+
+    #[test]
+    fn anon_default_select_only() {
+        let s = schema_with(&[DmlVerb::Select]);
+        assert!(has_dml_cap(TokenRole::Anon, DmlVerb::Select, &s));
+        assert!(!has_dml_cap(TokenRole::Anon, DmlVerb::Insert, &s));
+        assert!(!has_dml_cap(TokenRole::Anon, DmlVerb::Update, &s));
+        assert!(!has_dml_cap(TokenRole::Anon, DmlVerb::Delete, &s));
+    }
+
+    #[test]
+    fn anon_locked_collection_denies_all() {
+        let s = schema_with(&[]);
+        for verb in [DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
+            assert!(!has_dml_cap(TokenRole::Anon, verb, &s));
+        }
+    }
+
+    #[test]
+    fn anon_full_crud_collection() {
+        let s = schema_with(&[DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete]);
+        for verb in [DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
+            assert!(has_dml_cap(TokenRole::Anon, verb, &s));
+        }
+    }
+}
