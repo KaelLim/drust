@@ -60,8 +60,17 @@ pub fn default_anon_caps() -> BTreeSet<DmlVerb> {
     s
 }
 
-/// Parse a JSON array of lowercase verb strings into a `BTreeSet`. Unknown
-/// values are silently skipped — caller may want to validate stricter.
+/// Parse a JSON array of lowercase verb strings into a `BTreeSet`.
+///
+/// **Behaviour:** decode is all-or-nothing — any unknown verb (e.g.
+/// `["select","yolo"]`) collapses the entire result to an empty set.
+/// This is a defensive default for stored JSON read out of the
+/// `_system_collection_meta` table.
+///
+/// For input received from a user (admin form, MCP tool), validate
+/// strictly first by deserialising into `Vec<DmlVerb>` directly and
+/// surfacing the serde error before encoding back via
+/// `anon_caps_to_json`.
 pub fn parse_anon_caps_json(raw: &str) -> BTreeSet<DmlVerb> {
     serde_json::from_str::<Vec<DmlVerb>>(raw)
         .unwrap_or_default()
@@ -109,7 +118,7 @@ mod anon_caps_tests {
     }
 
     #[test]
-    fn unknown_verb_is_skipped() {
+    fn unknown_verb_collapses_decode_to_empty() {
         let parsed = parse_anon_caps_json(r#"["select","yolo","delete"]"#);
         // serde drops the whole vec on the unknown variant unless we use
         // a tolerant decoder. For now we accept "all-or-nothing" decode.
