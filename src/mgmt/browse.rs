@@ -5,7 +5,7 @@ use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql,
 use crate::storage::schema::{
     Collection, CollectionSchema, Field, describe_collection, list_collections,
 };
-use crate::storage::tenant_db::open_read;
+use crate::storage::tenant_db::{open_read, open_write};
 use askama::Template;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -46,6 +46,9 @@ struct RowsPage {
     /// Pre-built href for the Schema tab — strips data-only params (filter,
     /// sort, per_page, page) since they're meaningless in schema view.
     tab_schema_url: String,
+    /// Pairs of `(verb, currently_enabled)` for the four DML verbs in
+    /// canonical order. Drives the checkbox row in the Schema tab editor.
+    anon_cap_choices: Vec<(&'static str, bool)>,
     version: &'static str,
 }
 
@@ -313,6 +316,23 @@ pub async fn collection_rows_page(
         tenant_id, coll_name
     );
 
+    // Materialise the four DML verbs with their current on/off state so
+    // the template can iterate without knowing about `BTreeSet<DmlVerb>`.
+    let current_caps = schema.anon_caps.clone();
+    let anon_cap_choices: Vec<(&'static str, bool)> = ["select", "insert", "update", "delete"]
+        .iter()
+        .map(|v| {
+            let verb = match *v {
+                "select" => crate::storage::schema::DmlVerb::Select,
+                "insert" => crate::storage::schema::DmlVerb::Insert,
+                "update" => crate::storage::schema::DmlVerb::Update,
+                "delete" => crate::storage::schema::DmlVerb::Delete,
+                _ => unreachable!(),
+            };
+            (*v, current_caps.contains(&verb))
+        })
+        .collect();
+
     Html(
         RowsPage {
             tenant_id,
@@ -334,10 +354,78 @@ pub async fn collection_rows_page(
             active_tab,
             tab_data_url,
             tab_schema_url,
+            anon_cap_choices,
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()
         .unwrap(),
     )
+    .into_response()
+}
+
+/// Form payload for the anon_caps editor on the Schema tab. Empty
+/// `caps` means "lock the collection" (anon role gets nothing).
+#[derive(serde::Deserialize)]
+pub struct AnonCapsForm {
+    #[serde(default)]
+    pub caps: Vec<String>,
+}
+
+/// POST `/admin/tenants/{tenant}/collections/{coll}/anon-caps`.
+///
+/// Writes the new capability set to `_system_collection_meta` and
+/// invalidates the in-process schema cache for the collection so the
+/// next REST/MCP request re-reads from SQLite. Unknown verb strings in
+/// the form are silently dropped — the UI only ever submits the four
+/// canonical names.
+pub async fn update_anon_caps(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name)): Path<(String, String)>,
+    axum::Form(form): axum::Form<AnonCapsForm>,
+) -> Response {
+    use crate::storage::schema::{DmlVerb, write_anon_caps};
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    let mut caps = std::collections::BTreeSet::new();
+    for v in form.caps {
+        match v.as_str() {
+            "select" => {
+                caps.insert(DmlVerb::Select);
+            }
+            "insert" => {
+                caps.insert(DmlVerb::Insert);
+            }
+            "update" => {
+                caps.insert(DmlVerb::Update);
+            }
+            "delete" => {
+                caps.insert(DmlVerb::Delete);
+            }
+            _ => {}
+        }
+    }
+    let writer = match open_write(&state.data_dir, &tenant_id) {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if let Err(e) = write_anon_caps(&writer, &coll_name, &caps) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    drop(writer);
+
+    // Invalidate the per-tenant schema cache for this collection so the
+    // next REST/MCP request through the tenant router sees the new gate
+    // immediately, not after the next DDL or process restart.
+    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+        pool.schema_cache.invalidate(&coll_name);
+    }
+
+    Redirect::to(&format!(
+        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
+    ))
     .into_response()
 }

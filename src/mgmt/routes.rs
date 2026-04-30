@@ -28,6 +28,11 @@ pub struct MgmtState {
     /// 32-byte HMAC secret for drust-minted signed URLs. Generated at boot;
     /// signed URLs do not survive a restart.
     pub url_sign_secret: Arc<[u8; 32]>,
+    /// Per-tenant pool registry. Admin handlers need this to invalidate
+    /// the schema cache after writes (e.g. anon_caps mutation) so the
+    /// next REST/MCP request through the tenant router sees the change
+    /// without waiting for natural cache turnover.
+    pub tenants: Arc<crate::storage::pool::TenantRegistry>,
 }
 
 #[derive(Template)]
@@ -173,6 +178,7 @@ impl MgmtState {
             max_upload_bytes: self.max_upload_bytes,
             disk_min_free_pct: self.disk_min_free_pct,
             public_base_url: self.public_base_url.clone(),
+            tenants: self.tenants.clone(),
         };
         let public_files_state = PublicFilesState {
             session: session.clone(),
@@ -277,6 +283,10 @@ impl MgmtState {
             .route(
                 "/admin/tenants/{id}/collections/{coll}",
                 get(super::browse::collection_rows_page),
+            )
+            .route(
+                "/admin/tenants/{id}/collections/{coll}/anon-caps",
+                post(super::browse::update_anon_caps),
             )
             .with_state(tenants_state);
 

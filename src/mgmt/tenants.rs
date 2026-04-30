@@ -23,6 +23,11 @@ pub struct TenantsState {
     pub max_upload_bytes: usize,
     pub disk_min_free_pct: u8,
     pub public_base_url: String,
+    /// Shared per-tenant pool registry. Admin handlers that mutate
+    /// schema-cached state (e.g. the anon_caps editor) reach in here
+    /// to invalidate the cache so REST/MCP requests pick up the change
+    /// on the very next call.
+    pub tenants: Arc<crate::storage::pool::TenantRegistry>,
 }
 
 #[derive(Template)]
