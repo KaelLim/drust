@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 /// In-process per-tenant schema cache. Each tenant gets one of these,
-/// stored on `TenantStack`. Lookups are amortised RwLock reads;
+/// stored on `TenantPool` (the per-tenant connection-pool struct in
+/// `crate::storage::pool`). Lookups are amortised RwLock reads;
 /// invalidations are write-locks but DDL is rare.
 ///
 /// The cache speaks the same `CollectionSchema` type as

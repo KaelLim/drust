@@ -1,3 +1,4 @@
+use crate::storage::schema_cache::SchemaCache;
 use crate::storage::tenant_db::{open_read, open_write};
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -10,6 +11,10 @@ pub struct TenantPool {
     writer: Mutex<Connection>,
     readers: Vec<Mutex<Connection>>,
     reader_sema: Semaphore,
+    /// Per-tenant in-process schema cache. Populated lazily by handlers
+    /// that look up collection metadata; invalidated by DDL paths and
+    /// the anon_caps admin endpoint.
+    pub schema_cache: SchemaCache,
 }
 
 impl TenantPool {
@@ -25,6 +30,7 @@ impl TenantPool {
             writer: Mutex::new(writer),
             readers,
             reader_sema: Semaphore::new(read_pool_size),
+            schema_cache: SchemaCache::new(),
         })
     }
 
