@@ -65,14 +65,13 @@
           <div class="card-head">
             <span>anon access · per-collection capability allowlist</span>
           </div>
-          <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/anon-caps" style="padding:16px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;">
+          <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/anon-caps" style="padding:16px;display:flex;flex-wrap:wrap;gap:22px;align-items:center;">
             {% for verb in anon_cap_choices %}
-            <label style="display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:14px;">
+            <label class="check">
               <input type="checkbox" name="caps" value="{{ verb.0 }}"{% if verb.1 %} checked{% endif %}>
-              {{ verb.0 }}
+              <span>{{ verb.0 }}</span>
             </label>
             {% endfor %}
-            <span style="color:var(--muted);font-size:13px;">default: select-only · uncheck all to lock the collection privately</span>
             <button class="btn btn-primary btn-sm" type="submit" style="margin-left:auto;">apply</button>
           </form>
         </div>
