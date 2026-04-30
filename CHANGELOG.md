@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-04-30
+
+### Added
+
+- **Per-collection DML capability allowlist** — every collection's
+  schema metadata gains an `anon_caps` field, a subset of
+  `{select, insert, update, delete}`. Default `["select"]` (preserves
+  the v1.5.x "anon = read-only" status quo); opt-in widening per
+  collection lets anon callers run INSERT / UPDATE / DELETE without a
+  backend wrapper. Service is unrestricted regardless. Persisted in a
+  new per-tenant `_system_collection_meta` table (one row per
+  collection); per-tenant `SchemaCache` (`src/storage/schema_cache.rs`)
+  keeps the hot-path lookup hash-map fast. DDL paths
+  (`create_collection` / `drop_collection` / `add_field` /
+  `drop_field`) invalidate the cache and manage the meta row.
+- **Stored RPCs (Supabase-style named SQL functions)** — new
+  `_system_rpc` table per tenant + `src/rpc/` module
+  (`params.rs` / `registry.rs` / `prepare.rs` / `handler.rs`).
+  REST `POST /drust/t/<id>/rpc/<name>` (anon allowed per-RPC via the
+  `anon_callable` flag); MCP tools `create_rpc`, `update_rpc`,
+  `delete_rpc`, `list_rpc`, `call_rpc` (service-only at the
+  MCP-dispatch layer regardless of `anon_callable` — that flag
+  governs only the REST path). Counters (`anon_calls` /
+  `service_calls` / `last_called_at`) bumped through the writer
+  mutex regardless of caller role. SQL bodies validated at create /
+  update time via `prepare()` under the read-only authorizer
+  (rejects non-SELECT actions, `ATTACH`, `sqlite_master`, unknown
+  tables).
+- **Admin UI `_rpc` virtual sidebar entry** (⚡ icon, slotted between
+  `_api_keys` and `_system_files`) — list / create / edit / delete
+  workflow with prepare-time SQL validation. "Allow anon callers"
+  checkbox carries a confirm modal.
+- **Admin UI anon_caps editor on the Schema tab** — four checkboxes
+  (select / insert / update / delete) POSTing to
+  `/admin/tenants/<id>/collections/<coll>/anon-caps`; explicit empty
+  array locks the collection privately.
+- **`execute_read_query_with_named`** in `src/query/executor.rs` —
+  query executor variant that binds rusqlite `:name` placeholders
+  from a `BTreeMap<String, BoundValue>`, used by the RPC handler.
+
+### Changed
+
+- **Authorizer `Read` arm extended to deny any `_system_*` table**
+  (was: only `sqlite_*`). Closes the SQL-layer hide for
+  `_system_rpc` and `_system_collection_meta`. Both anon and service
+  affected — these tables only ever yield to structured handlers.
+- **REST DML write handlers** (`POST` / `PATCH` / `DELETE` on
+  `/records/<coll>`) — role gate switched from `require_service`
+  (always 403 anon, code `WRITE_DENIED`) to `require_dml_cap`
+  (consults per-collection `anon_caps`). For legacy collections
+  with no meta row, `default_anon_caps() = ["select"]` preserves the
+  old behaviour — anon writes still 403 — but the error code is now
+  `ANON_DENIED` with a per-verb / per-collection message.
+- **MCP tool count: 16 → 21**. `instructions` field bumped
+  accordingly.
+
+### Security
+
+- The "anon = read-only" guarantee is replaced with "anon = subset of
+  DML defined per-collection in `anon_caps`, default `["select"]`".
+  The default preserves existing-tenant behaviour. Application-layer
+  identity / one-vote-per-user enforcement remains the consumer's
+  responsibility — drust deliberately does not implement RLS.
+- `_system_rpc` and `_system_collection_meta` are drop-protected via
+  the existing `is_protected_collection()` `_system_` prefix rule and
+  authorizer-hidden at the SQL layer for both anon and service. Access
+  is only via structured REST/MCP handlers.
+
 ## [Unreleased]
 
 ### Added — CORS support on tenant routes (browser-direct fetch finally works)

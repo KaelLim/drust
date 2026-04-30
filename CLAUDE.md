@@ -5,8 +5,8 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-04-25
-version: 1.5.0
+updated: 2026-04-30
+version: 1.6.0
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -30,8 +30,10 @@ curl -s http://127.0.0.1:47826/health   # → ok
 - `meta.sqlite` (management plane): admins, sessions, tenants, hashed bearer tokens. Admin password rotation: `src/bin/set_admin_password.rs` CLI, reads the new password from stdin and hashes via argon2id.
 - `tenants/<id>/data.sqlite` (data plane): one SQLite per tenant.
 - Reads route through `SQLITE_OPEN_READONLY` connections with `sqlite3_set_authorizer` whitelist (see `src/query/authorizer.rs`). Cross-tenant `ATTACH` is denied.
+- **Per-collection DML capability** (v1.6.0+): every collection's schema metadata declares `anon_caps`, a subset of `{select, insert, update, delete}`. Default `[select]` (status quo). Service is unrestricted. The check fires at REST handler entry against a per-tenant `SchemaCache` (`src/storage/schema_cache.rs`); cache invalidation lives in the DDL paths and the admin UI's anon_caps endpoint. Persisted in the per-tenant `_system_collection_meta` table (one row per collection).
+- **Stored RPCs** (v1.6.0+): tenant-local `_system_rpc` table holds named SELECT functions, callable via REST `POST /drust/t/<id>/rpc/<name>` and the MCP `call_rpc` tool. Service-only authoring; per-RPC `anon_callable` flag gates the REST anon path (MCP is service-only unconditionally). Counters (`anon_calls`, `service_calls`, `last_called_at`) bumped through the writer mutex regardless of caller. SQL is validated at create time via `prepare()` under the read-only authorizer.
 - Writes go through structured REST/MCP tools against a serialized writer mutex; schema enforcement at tool layer. `FieldSpec` supports allowlisted SQL defaults (`{"sql": "datetime('now')"}`) and foreign keys (`foreign_key: "<target>"` emits `ON DELETE RESTRICT`).
-- **Per-tenant rmcp Streamable HTTP MCP endpoint at `/t/<tenant>/mcp`** serving all 13 tools. One `StreamableHttpService<DrustMcpService>` per tenant, cached in `src/mcp/http_registry.rs`. MCP is **service-key-only** — anon bearers get `403 WRITE_DENIED`. Enforced in `src/tenant/mcp_dispatch.rs` before the dispatch; the route still runs through `bearer_auth_layer` so auth + rate-limit + audit all cover it.
+- **Per-tenant rmcp Streamable HTTP MCP endpoint at `/t/<tenant>/mcp`** serving all 21 tools. One `StreamableHttpService<DrustMcpService>` per tenant, cached in `src/mcp/http_registry.rs`. MCP is **service-key-only** — anon bearers get `403 WRITE_DENIED`. Enforced in `src/tenant/mcp_dispatch.rs` before the dispatch; the route still runs through `bearer_auth_layer` so auth + rate-limit + audit all cover it.
 - Admin UI is **two pages** (v1.5.1+): `/admin/tenants` (search-able list) and `/admin/tenants/{id}/<datatable>` (2-pane shell). The old stand-alone `/admin/tenants/{id}` detail page is gone — `GET /admin/tenants/{id}` 302-redirects to `/admin/tenants/{id}/_api_keys`. Three sidebar entries are virtual / always-shown: `🔑 _api_keys` (anon · service · MCP setup, rendered by `tenant_api_keys.html`), `🔒 _system_files` (storage, rendered by `tenant_files_admin.html`), then the real collections from `sqlite_master`. The MCP `claude mcp add-json` command lives inside `_api_keys` and copies via `window.location.origin` — no backend URL template needed.
 - Admin UI (v1.2.0+): every page renders inside a viewport-fixed `.macwin` with container-scoped scroll. The 2-pane shell uses `grid-template-columns: var(--sidebar-w) minmax(0, 1fr)` so the right track can shrink below content min-content (long URLs, wide tables) instead of pushing cards past the sidebar boundary. `/admin/tenants/{id}/collections` 302-redirects to the first collection; empty tenants see a dedicated empty-state page. Breadcrumbs were removed from every admin page in v1.5.1 — the topbar `path` (`~/tenants/{id}/...`) carries clickable anchors per segment. The **LiveChonk** pixel-cat mascot (`_mascot.html`) is wired to any `<canvas class="pix" data-chonk=... data-size=...>` — 18 px in the topbar, 48 px on login, 96 px on empty states, 56 px on errors.
 - **Rate-limit + audit middleware are wired** into `bearer_auth_layer` (v0.1.0 Known issues closed in v1.1.1). Each tenant request produces one `audit-YYYY-MM-DD.jsonl` entry in `$DRUST_LOG_DIR`; denials get `error_code: HTTP_<status>`.
