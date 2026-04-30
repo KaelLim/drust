@@ -113,6 +113,87 @@ fn execute_read_query_inner(
     })
 }
 
+/// Same as [`execute_read_query`] but binds `:name`-style placeholders from a
+/// name → [`crate::rpc::params::BoundValue`] map. Used by the RPC handler so
+/// stored RPC SQL can use named params.
+///
+/// Returns the same [`QueryResult`] envelope; the read-only authorizer is
+/// attached for the duration of the call.
+pub fn execute_read_query_with_named(
+    conn: &Connection,
+    sql: &str,
+    binds: &std::collections::BTreeMap<String, crate::rpc::params::BoundValue>,
+    row_cap: usize,
+    max_sql_bytes: usize,
+) -> Result<QueryResult, ExecError> {
+    if sql.len() > max_sql_bytes {
+        return Err(ExecError::TooLarge {
+            bytes: sql.len(),
+            limit: max_sql_bytes,
+        });
+    }
+    crate::query::authorizer::attach_readonly_authorizer(conn);
+    let result = execute_read_query_with_named_inner(conn, sql, binds, row_cap);
+    crate::query::authorizer::detach_authorizer(conn);
+    result
+}
+
+fn execute_read_query_with_named_inner(
+    conn: &Connection,
+    sql: &str,
+    binds: &std::collections::BTreeMap<String, crate::rpc::params::BoundValue>,
+    row_cap: usize,
+) -> Result<QueryResult, ExecError> {
+    let hash = sql_hash(sql);
+    let mut stmt = conn.prepare(sql).map_err(classify)?;
+    let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let col_count = column_names.len();
+
+    // rusqlite's named-binding API expects param names to include the
+    // leading ':' prefix. Materialise to owned `Value`s first so we can
+    // hand out borrowed `&dyn ToSql` refs in a parallel vector.
+    let bound: Vec<(String, rusqlite::types::Value)> = binds
+        .iter()
+        .map(|(k, v)| (format!(":{k}"), v.to_sql()))
+        .collect();
+    let refs: Vec<(&str, &dyn rusqlite::ToSql)> = bound
+        .iter()
+        .map(|(k, v)| (k.as_str(), v as &dyn rusqlite::ToSql))
+        .collect();
+
+    let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut types: Vec<String> = vec!["null".into(); col_count];
+
+    let mut rows_iter = stmt.query(refs.as_slice()).map_err(classify)?;
+    let mut truncated = false;
+    // TODO: factor row-collection helper — duplicate of execute_read_query_inner
+    // body below. Kept inline to dodge borrow-checker headaches around the
+    // borrowed `Rows<'_>` owning a borrow of `stmt`.
+    while let Some(r) = rows_iter.next().map_err(classify)? {
+        if rows.len() >= row_cap {
+            truncated = true;
+            break;
+        }
+        let mut row = Vec::with_capacity(col_count);
+        for (i, col_type) in types.iter_mut().enumerate() {
+            let v = r.get_ref(i).map_err(classify)?;
+            if col_type == "null" {
+                *col_type = type_name(v);
+            }
+            row.push(value_to_json(v));
+        }
+        rows.push(row);
+    }
+
+    Ok(QueryResult {
+        column_names,
+        column_types: types,
+        rows,
+        truncated,
+        sql_hash: hash,
+    })
+}
+
 fn classify(err: rusqlite::Error) -> ExecError {
     let msg = err.to_string().to_lowercase();
     // drust's authorizer surfaces its own "prohibited" phrasing (see
@@ -157,4 +238,50 @@ impl InterruptGuard {
 #[allow(dead_code)]
 fn _unused_timing() -> Instant {
     Instant::now()
+}
+
+#[cfg(test)]
+mod named_tests {
+    use super::*;
+    use crate::storage::tenant_db::open_write;
+    use std::collections::BTreeMap;
+    use tempfile::TempDir;
+
+    #[test]
+    fn named_params_filter_correctly() {
+        let tmp = TempDir::new().unwrap();
+        let _conn = open_write(tmp.path(), "namedtest").unwrap();
+        conn_setup_data(&_conn);
+
+        // Open a separate read connection on the same DB. Path:
+        // <tmp>/tenants/namedtest/data.sqlite (matches open_write layout).
+        let read = rusqlite::Connection::open_with_flags(
+            tmp.path()
+                .join("tenants")
+                .join("namedtest")
+                .join("data.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+
+        let mut binds = BTreeMap::new();
+        binds.insert("min".into(), crate::rpc::params::BoundValue::Int(2));
+        let qr = execute_read_query_with_named(
+            &read,
+            "SELECT id, body FROM posts WHERE n >= :min ORDER BY n",
+            &binds,
+            100,
+            32_768,
+        )
+        .unwrap();
+        assert_eq!(qr.rows.len(), 2);
+    }
+
+    fn conn_setup_data(conn: &rusqlite::Connection) {
+        conn.execute_batch(
+            "CREATE TABLE posts (id INTEGER PRIMARY KEY, body TEXT, n INTEGER);
+             INSERT INTO posts (body, n) VALUES ('a', 1), ('b', 2), ('c', 3);",
+        )
+        .unwrap();
+    }
 }
