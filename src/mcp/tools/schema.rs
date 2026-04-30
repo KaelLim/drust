@@ -54,7 +54,10 @@ fn type_to_sqlite(t: &str) -> anyhow::Result<&'static str> {
         "text" | "datetime" | "json" => "TEXT",
         "integer" | "boolean" => "INTEGER",
         "real" => "REAL",
-        other => anyhow::bail!("unsupported type: {other}"),
+        other => anyhow::bail!(
+            "unsupported sql_type: '{other}' \
+             (allowed: text, integer, real, boolean, datetime, json — all lowercase)"
+        ),
     })
 }
 

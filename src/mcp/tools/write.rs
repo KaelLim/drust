@@ -4,6 +4,14 @@ use crate::tenant::events::Event;
 use rusqlite::types::Value;
 use serde_json::json;
 
+/// Build a `rusqlite::Error` whose Display renders the given human-readable
+/// message. Using `rusqlite::Error::InvalidQuery` (the obvious-looking variant)
+/// is wrong — its Display is hard-coded to `"Query is not read-only"`, which
+/// bubbles up as a confusing error from the writer path.
+fn invalid_input(msg: String) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(msg))
+}
+
 fn json_to_sql_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Null,
@@ -67,12 +75,21 @@ pub async fn insert_record(
     let bus = s.inner().bus.clone();
     let (id, record) = pool
         .with_writer(move |c| -> rusqlite::Result<(i64, serde_json::Value)> {
-            let schema = describe_collection(c, &coll)?.ok_or(rusqlite::Error::InvalidQuery)?;
+            let schema = describe_collection(c, &coll)?.ok_or_else(|| {
+                invalid_input(format!("unknown collection: '{}'", coll))
+            })?;
             let allowed: std::collections::HashSet<&str> =
                 schema.fields.iter().map(|f| f.name.as_str()).collect();
             for k in data_map.keys() {
                 if !allowed.contains(k.as_str()) {
-                    return Err(rusqlite::Error::InvalidQuery);
+                    let mut names: Vec<&str> = allowed.iter().copied().collect();
+                    names.sort();
+                    return Err(invalid_input(format!(
+                        "unknown field '{}' for collection '{}' (allowed: {})",
+                        k,
+                        coll,
+                        names.join(", ")
+                    )));
                 }
             }
             let cols: Vec<&str> = data_map.keys().map(|k| k.as_str()).collect();
@@ -131,12 +148,21 @@ pub async fn update_record(
     let bus = s.inner().bus.clone();
     let record = pool
         .with_writer(move |c| -> rusqlite::Result<serde_json::Value> {
-            let schema = describe_collection(c, &coll)?.ok_or(rusqlite::Error::InvalidQuery)?;
+            let schema = describe_collection(c, &coll)?.ok_or_else(|| {
+                invalid_input(format!("unknown collection: '{}'", coll))
+            })?;
             let allowed: std::collections::HashSet<&str> =
                 schema.fields.iter().map(|f| f.name.as_str()).collect();
             for k in data_map.keys() {
                 if !allowed.contains(k.as_str()) {
-                    return Err(rusqlite::Error::InvalidQuery);
+                    let mut names: Vec<&str> = allowed.iter().copied().collect();
+                    names.sort();
+                    return Err(invalid_input(format!(
+                        "unknown field '{}' for collection '{}' (allowed: {})",
+                        k,
+                        coll,
+                        names.join(", ")
+                    )));
                 }
             }
             let set_exprs: Vec<String> = data_map

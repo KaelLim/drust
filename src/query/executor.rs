@@ -115,7 +115,17 @@ fn execute_read_query_inner(
 
 fn classify(err: rusqlite::Error) -> ExecError {
     let msg = err.to_string().to_lowercase();
-    if msg.contains("authoriz") || msg.contains("not authorized") {
+    // drust's authorizer surfaces its own "prohibited" phrasing (see
+    // `src/query/authorizer.rs`); rusqlite's authorizer-reject uses "not
+    // authorized". Accept both plus any message that references the
+    // sqlite_master family (those are always authorizer hits).
+    if msg.contains("authoriz")
+        || msg.contains("not authorized")
+        || msg.contains("prohibited")
+        || msg.contains("sqlite_master")
+        || msg.contains("sqlite_temp_master")
+        || msg.contains("sqlite_schema")
+    {
         return ExecError::Forbidden(err.to_string());
     }
     ExecError::Sql(err.to_string())
