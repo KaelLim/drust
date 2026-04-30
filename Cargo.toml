@@ -12,7 +12,7 @@ path = "src/main.rs"
 tokio              = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "fs", "process"] }
 axum               = { version = "0.8", features = ["macros", "multipart"] }
 tower-http         = { version = "0.6", features = ["trace", "cors", "set-header"] }
-rmcp               = { version = "0.4", features = ["server", "transport-streamable-http-server", "transport-worker"] }
+rmcp               = { version = "1.5", features = ["server", "transport-streamable-http-server", "transport-worker"] }
 schemars           = "1"
 tower              = { version = "0.5", features = ["util"] }
 rusqlite           = { version = "0.32", features = ["bundled", "hooks"] }
@@ -23,6 +23,7 @@ askama_axum        = "0.4"
 argon2             = "0.5"
 subtle             = "2"
 sha2               = "0.10"
+hmac               = "0.12"
 base64             = "0.22"
 rand               = "0.8"
 uuid               = { version = "1", features = ["v4", "fast-rng"] }

@@ -8,33 +8,36 @@
 //! already cover them continue to work.
 
 use crate::mcp::server::DrustMcp;
-use crate::mcp::tools::{exploration, read, schema as schema_tools, write as write_tools};
+use crate::mcp::tools::{
+    exploration, files as file_tools, read, schema as schema_tools, write as write_tools,
+};
 use rmcp::{
     ErrorData as McpError, ServerHandler,
-    handler::server::{router::tool::ToolRouter, tool::Parameters},
-    model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
+    handler::server::wrapper::Parameters,
+    model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 
 // --- Parameter types ---------------------------------------------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DescribeCollectionArgs {
-    pub name: String,
+    pub collection: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SampleRowsArgs {
-    pub name: String,
+    pub collection: String,
     #[serde(default)]
-    pub n: Option<usize>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CountRowsArgs {
-    pub name: String,
+    pub collection: String,
     #[serde(default)]
     pub where_clause: Option<String>,
 }
@@ -71,20 +74,22 @@ pub struct DropFieldArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DropCollectionArgs {
-    pub name: String,
+    pub collection: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct InsertRecordArgs {
     pub collection: String,
-    pub data: Value,
+    /// JSON object mapping field name → value for the new row.
+    pub data: HashMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct UpdateRecordArgs {
     pub collection: String,
     pub id: i64,
-    pub data: Value,
+    /// JSON object of fields to set. Omitted fields are left unchanged.
+    pub data: HashMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -98,7 +103,6 @@ pub struct DeleteRecordArgs {
 #[derive(Clone)]
 pub struct DrustMcpService {
     state: DrustMcp,
-    tool_router: ToolRouter<DrustMcpService>,
 }
 
 fn json_content(v: Value) -> Result<CallToolResult, McpError> {
@@ -114,10 +118,7 @@ fn bail_mcp<T>(e: anyhow::Error) -> Result<T, McpError> {
 #[tool_router]
 impl DrustMcpService {
     pub fn new(state: DrustMcp) -> Self {
-        Self {
-            state,
-            tool_router: Self::tool_router(),
-        }
+        Self { state }
     }
 
     #[tool(description = "List all collections in this tenant's database, with their row counts.")]
@@ -133,24 +134,24 @@ impl DrustMcpService {
         Returns {\"error_code\": \"UNKNOWN_COLLECTION\"} if the collection does not exist.")]
     async fn describe_collection(
         &self,
-        Parameters(DescribeCollectionArgs { name }): Parameters<DescribeCollectionArgs>,
+        Parameters(DescribeCollectionArgs { collection }): Parameters<DescribeCollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match exploration::describe_collection(&self.state, &name).await {
+        match exploration::describe_collection(&self.state, &collection).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
     }
 
     #[tool(
-        description = "Return up to N rows from the named collection, ordered by id ascending. \
-        N is clamped to 500. Use this to peek at a collection's data shape."
+        description = "Return up to `limit` rows from a collection, ordered by id ascending. \
+        `limit` defaults to 20 and is clamped to 500. Use this to peek at a collection's data shape."
     )]
     async fn sample_rows(
         &self,
-        Parameters(SampleRowsArgs { name, n }): Parameters<SampleRowsArgs>,
+        Parameters(SampleRowsArgs { collection, limit }): Parameters<SampleRowsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let n = n.unwrap_or(20);
-        match exploration::sample_rows(&self.state, &name, n).await {
+        let n = limit.unwrap_or(20);
+        match exploration::sample_rows(&self.state, &collection, n).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -163,9 +164,9 @@ impl DrustMcpService {
     )]
     async fn count_rows(
         &self,
-        Parameters(CountRowsArgs { name, where_clause }): Parameters<CountRowsArgs>,
+        Parameters(CountRowsArgs { collection, where_clause }): Parameters<CountRowsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match exploration::count_rows(&self.state, &name, where_clause.as_deref()).await {
+        match exploration::count_rows(&self.state, &collection, where_clause.as_deref()).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -205,6 +206,7 @@ impl DrustMcpService {
         Every collection implicitly gets: id INTEGER PRIMARY KEY AUTOINCREMENT, \
         created_at, updated_at (both auto-maintained). \
         Each field in `fields` is {name, sql_type, nullable?, unique?, default_value?, foreign_key?}. \
+        `sql_type` must be lowercase and one of: `text`, `integer`, `real`, `boolean`, `datetime`, `json`. \
         `default_value` accepts JSON scalars or {\"sql\": \"datetime('now')\"} (allowlisted expressions). \
         `foreign_key` names another collection; emits ON DELETE RESTRICT.")]
     async fn create_collection(
@@ -219,7 +221,8 @@ impl DrustMcpService {
 
     #[tool(
         description = "Add a new field (column) to an existing collection via ALTER TABLE. \
-        `field` has the same shape as entries in `create_collection.fields`."
+        `field` has the same shape as entries in `create_collection.fields` \
+        (sql_type must be lowercase: text, integer, real, boolean, datetime, json)."
     )]
     async fn add_field(
         &self,
@@ -253,9 +256,9 @@ impl DrustMcpService {
         pointing at this one; drop those columns first.")]
     async fn drop_collection(
         &self,
-        Parameters(DropCollectionArgs { name }): Parameters<DropCollectionArgs>,
+        Parameters(DropCollectionArgs { collection }): Parameters<DropCollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match schema_tools::drop_collection(&self.state, &name).await {
+        match schema_tools::drop_collection(&self.state, &collection).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -270,6 +273,7 @@ impl DrustMcpService {
         &self,
         Parameters(InsertRecordArgs { collection, data }): Parameters<InsertRecordArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let data = Value::Object(data.into_iter().collect());
         match write_tools::insert_record(&self.state, &collection, data).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
@@ -288,6 +292,7 @@ impl DrustMcpService {
             data,
         }): Parameters<UpdateRecordArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let data = Value::Object(data.into_iter().collect());
         match write_tools::update_record(&self.state, &collection, id, data).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
@@ -307,28 +312,81 @@ impl DrustMcpService {
             Err(e) => bail_mcp(e),
         }
     }
+
+    #[tool(description = "List files stored by this tenant in Garage. \
+        Optional `visibility` filter (\"public\" | \"private\"); anything else returns all. \
+        Paginate with `limit` (1–500, default 50) and `offset`. \
+        Returns {files, total_count} where each file has id, original_name, size_bytes, \
+        content_type, visibility, content_disposition, uploaded_at.")]
+    async fn list_files(
+        &self,
+        Parameters(args): Parameters<file_tools::ListFilesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match file_tools::list_files(&self.state, args).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Delete a file by its id (the UUID key). \
+        Removes the S3 object from the tenant's bucket first (idempotent on 404) \
+        then deletes the metadata row. Returns {\"ok\": true} on success or \
+        {\"error_code\": \"NOT_FOUND\" | \"STORAGE_UNAVAILABLE\"}.")]
+    async fn delete_file(
+        &self,
+        Parameters(args): Parameters<file_tools::DeleteFileArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match file_tools::delete_file(&self.state, args).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Get a URL to download a file by its id. \
+        Public files → stable public URL (expires_at is null). \
+        Private files → pre-signed URL with TTL (1..=604800s, default 3600); \
+        pass `download: true` to inject Content-Disposition=attachment so \
+        browsers download instead of previewing.")]
+    async fn get_file_url(
+        &self,
+        Parameters(args): Parameters<file_tools::GetFileUrlArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match file_tools::get_file_url(&self.state, args).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
 }
 
 #[tool_handler]
 impl ServerHandler for DrustMcpService {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: rmcp::model::Implementation {
-                name: "drust".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-            },
-            instructions: Some(
-                "drust is a multi-tenant SQLite BaaS. This MCP server exposes one tenant's \
-                 database via 13 tools. Start with `list_collections` to discover data, \
-                 `describe_collection` / `sample_rows` / `count_rows` to explore it, \
-                 `query` + `explain` for ad-hoc SQL (read-only), \
-                 `insert_record` / `update_record` / `delete_record` for row writes, and \
-                 `create_collection` / `add_field` / `drop_field` / `drop_collection` for \
-                 schema changes. Schema drops are irreversible."
-                    .into(),
-            ),
-            ..Default::default()
-        }
+        let tenant_id = self.state.tenant_id();
+        let base = self.state.public_base_url();
+        let instructions = format!(
+            "drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.\n\n\
+             16 tools: `list_collections`, `describe_collection`, `sample_rows`, \
+             `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
+             `delete_record`, `create_collection`, `add_field`, `drop_field`, \
+             `drop_collection`, `list_files`, `delete_file`, `get_file_url`.\n\n\
+             Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
+             tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
+             endpoint instead:\n\n  \
+             POST {base}/drust/t/{tenant_id}/files\n  \
+             Header: Authorization: Bearer $DRUST_TOKEN\n  \
+             Body: multipart/form-data with fields:\n    \
+             - file        (required — the bytes)\n    \
+             - visibility  (required — 'public' or 'private')\n    \
+             - disposition (optional — 'inline' or 'attachment', default inline)\n    \
+             - cache_control (optional — default 'public, max-age=86400' for public / \
+             'private, no-store' for private)\n    \
+             - meta        (optional — JSON object for custom metadata)\n\n\
+             After upload, use `list_files` to discover, `get_file_url` to produce a \
+             public or pre-signed URL (pass download=true for attachment), and \
+             `delete_file` to remove. Schema drops and delete_file are irreversible."
+        );
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("drust", env!("CARGO_PKG_VERSION")))
+            .with_instructions(instructions)
     }
 }
