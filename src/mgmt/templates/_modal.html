@@ -1,0 +1,128 @@
+<div class="modal-overlay" id="drust-modal" hidden role="dialog" aria-modal="true" aria-labelledby="drust-modal-title">
+  <div class="modal" id="drust-modal-box">
+    <h2 class="modal-title" id="drust-modal-title"></h2>
+    <div class="modal-body" id="drust-modal-body"></div>
+    <input type="text" class="modal-input" id="drust-modal-input" hidden>
+    <div class="modal-actions" id="drust-modal-actions"></div>
+  </div>
+</div>
+<script>
+  // Shared UI modal — replaces native alert() / confirm() / prompt().
+  // Usage:
+  //   drustUI.alert({title, body, codeBlock?})
+  //   drustUI.confirm({title, body, okText?, danger?}) -> Promise<bool>
+  //   drustUI.prompt({title, body, placeholder?, default?, okText?}) -> Promise<string|null>
+  (function () {
+    var overlay = document.getElementById('drust-modal');
+    var box = document.getElementById('drust-modal-box');
+    var titleEl = document.getElementById('drust-modal-title');
+    var bodyEl = document.getElementById('drust-modal-body');
+    var inputEl = document.getElementById('drust-modal-input');
+    var actionsEl = document.getElementById('drust-modal-actions');
+    var closeCb = null;
+
+    function close(value) {
+      overlay.hidden = true;
+      box.classList.remove('modal-variant-danger');
+      inputEl.hidden = true;
+      inputEl.value = '';
+      actionsEl.innerHTML = '';
+      bodyEl.innerHTML = '';
+      var cb = closeCb;
+      closeCb = null;
+      if (cb) cb(value);
+    }
+    function btn(label, variant, onClick) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn ' + (variant || 'btn-ghost');
+      b.textContent = label;
+      b.addEventListener('click', onClick);
+      return b;
+    }
+    function setBody(body, codeBlock) {
+      if (body) bodyEl.textContent = body;
+      if (codeBlock) {
+        var wrap = document.createElement('div');
+        wrap.className = 'modal-code-wrap';
+        var code = document.createElement('code');
+        code.textContent = codeBlock;
+        var copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'modal-code-copy';
+        copyBtn.setAttribute('aria-label', 'Copy to clipboard');
+        copyBtn.title = 'Copy to clipboard';
+        copyBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>';
+        copyBtn.addEventListener('click', function () {
+          navigator.clipboard.writeText(codeBlock).then(function () {
+            copyBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>';
+            copyBtn.classList.add('is-ok');
+            setTimeout(function () {
+              copyBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>';
+              copyBtn.classList.remove('is-ok');
+            }, 1500);
+          });
+        });
+        wrap.appendChild(code);
+        wrap.appendChild(copyBtn);
+        bodyEl.appendChild(wrap);
+      }
+    }
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) close(null);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (overlay.hidden) return;
+      if (e.key === 'Escape') { e.preventDefault(); close(null); }
+    });
+
+    window.drustUI = {
+      alert: function (opts) {
+        opts = opts || {};
+        titleEl.textContent = opts.title || 'Notice';
+        setBody(opts.body, opts.codeBlock);
+        inputEl.hidden = true;
+        actionsEl.innerHTML = '';
+        actionsEl.appendChild(btn('OK', 'btn-primary', function () { close(true); }));
+        overlay.hidden = false;
+        if (opts.danger) box.classList.add('modal-variant-danger');
+        setTimeout(function () { actionsEl.querySelector('button').focus(); }, 20);
+      },
+      confirm: function (opts) {
+        opts = opts || {};
+        return new Promise(function (resolve) {
+          closeCb = resolve;
+          titleEl.textContent = opts.title || 'Confirm';
+          setBody(opts.body);
+          inputEl.hidden = true;
+          actionsEl.innerHTML = '';
+          actionsEl.appendChild(btn('Cancel', 'btn-ghost', function () { close(false); }));
+          var okVariant = opts.danger ? 'btn-danger' : 'btn-primary';
+          actionsEl.appendChild(btn(opts.okText || 'OK', okVariant, function () { close(true); }));
+          if (opts.danger) box.classList.add('modal-variant-danger');
+          overlay.hidden = false;
+          setTimeout(function () { actionsEl.lastChild.focus(); }, 20);
+        });
+      },
+      prompt: function (opts) {
+        opts = opts || {};
+        return new Promise(function (resolve) {
+          closeCb = resolve;
+          titleEl.textContent = opts.title || 'Input';
+          setBody(opts.body);
+          inputEl.hidden = false;
+          inputEl.value = opts.default || '';
+          inputEl.placeholder = opts.placeholder || '';
+          actionsEl.innerHTML = '';
+          actionsEl.appendChild(btn('Cancel', 'btn-ghost', function () { close(null); }));
+          actionsEl.appendChild(btn(opts.okText || 'OK', 'btn-primary', function () { close(inputEl.value); }));
+          inputEl.addEventListener('keydown', function handler(e) {
+            if (e.key === 'Enter') { e.preventDefault(); inputEl.removeEventListener('keydown', handler); close(inputEl.value); }
+          });
+          overlay.hidden = false;
+          setTimeout(function () { inputEl.focus(); inputEl.select(); }, 20);
+        });
+      }
+    };
+  })();
+</script>

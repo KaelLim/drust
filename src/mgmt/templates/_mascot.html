@@ -2,10 +2,56 @@
      Include on any page that wants the mascot. Then place one or more
      `<canvas class="pix" data-chonk="<mood>" data-size="<px>"></canvas>`
      elements; this script wires them automatically.
-     Supported moods: awake (default, tracks mouse) | happy | sleep | error | curious | working. -->
+     Supported moods: awake (default, tracks mouse) | happy | sleep | error | curious | working.
+
+     Extras exposed on `window`:
+       chonkReact(mood, durationMs)  — briefly override every mounted canvas's pose
+                                       and trigger a CSS hop. Default duration 900ms.
+                                       Moods: 'happy' | 'working' | 'oops' | 'curious'.
+     Passive animations (in awake/happy): blink, ear twitch, body sway, stretch. -->
+<style>
+  /* The react animations apply on top of the canvas's static transform.
+     Keep durations short — the mascot should feel alive, not manic. */
+  canvas.pix { display:inline-block; transform-origin: 50% 90%; }
+  canvas.pix.chonk-hop    { animation: chonk-hop 560ms cubic-bezier(.3,.8,.4,1); }
+  canvas.pix.chonk-sway   { animation: chonk-sway 1300ms ease-in-out; }
+  canvas.pix.chonk-stretch{ animation: chonk-stretch 760ms ease-in-out; }
+  canvas.pix.chonk-shake  { animation: chonk-shake 480ms cubic-bezier(.36,.07,.19,.97); }
+  @keyframes chonk-hop {
+    0%   { transform: translateY(0)    scale(1);          }
+    28%  { transform: translateY(-7px) scale(1.08, .94);  }
+    58%  { transform: translateY(0)    scale(.96, 1.06);  }
+    78%  { transform: translateY(-2px) scale(1.02, .98);  }
+    100% { transform: translateY(0)    scale(1);          }
+  }
+  @keyframes chonk-sway {
+    0%,100% { transform: rotate(0deg); }
+    20%     { transform: rotate(-5deg); }
+    50%     { transform: rotate(5deg); }
+    80%     { transform: rotate(-2deg); }
+  }
+  @keyframes chonk-stretch {
+    0%,100% { transform: scale(1); }
+    40%     { transform: scale(1.09, .9); }
+    70%     { transform: scale(.95, 1.07); }
+  }
+  @keyframes chonk-shake {
+    0%,100% { transform: translateX(0); }
+    20%     { transform: translateX(-3px) rotate(-3deg); }
+    40%     { transform: translateX(3px)  rotate(3deg); }
+    60%     { transform: translateX(-2px) rotate(-2deg); }
+    80%     { transform: translateX(2px)  rotate(2deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    canvas.pix.chonk-hop,
+    canvas.pix.chonk-sway,
+    canvas.pix.chonk-stretch,
+    canvas.pix.chonk-shake { animation: none; }
+  }
+</style>
 <script>
 (function () {
-  const PAL = { '.': null, 'B': '#0a0a0a', 'E': '#7FE87F', 'P': '#FFA3C7', 'Z': '#7dd3d8', 'R': '#d94a4a', 'S': '#fff7a3' };
+  const PAL = { '.': null, 'B': '#0a0a0a', 'E': '#7FE87F', 'P': '#FFA3C7', 'Z': '#7dd3d8', 'R': '#d94a4a', 'S': '#fff7a3', 'H': '#FFA3C7' };
   const BASE = [
     '................','................','................',
     '.B............B.','.BB..........BB.','.BBB........BBB.',
@@ -42,6 +88,18 @@
         happy(); nose();
         set(14,3,'Z'); set(15,3,'Z');
         break;
+      case 'yawn':
+        set(4,9,'E'); set(5,9,'E'); set(10,9,'E'); set(11,9,'E');
+        set(7,10,'B'); set(8,10,'B');
+        set(7,11,'B'); set(8,11,'B');
+        set(15,1,'Z'); set(14,2,'Z');
+        break;
+      case 'love':
+        set(4,8,'H'); set(5,8,'H'); set(4,9,'H'); set(5,9,'H');
+        set(10,8,'H'); set(11,8,'H'); set(10,9,'H'); set(11,9,'H');
+        nose();
+        set(15,1,'H'); set(14,2,'H');
+        break;
       case 'plain':
       case 'happy':
       default:
@@ -69,6 +127,27 @@
     }, { passive: true });
     window.addEventListener('blur', function () { MOUSE.active = false; });
   }
+
+  // Registry of mounted mascots so window.chonkReact can hit every one.
+  const MASCOTS = [];
+
+  function flashClass(el, cls, ms) {
+    el.classList.remove(cls);
+    // force reflow so re-adding the class restarts the animation
+    void el.offsetWidth;
+    el.classList.add(cls);
+    setTimeout(function () { el.classList.remove(cls); }, ms);
+  }
+
+  function reactPoseFor(mood) {
+    if (mood === 'oops' || mood === 'error') return 'oops';
+    if (mood === 'working')                  return 'working';
+    if (mood === 'curious')                  return 'curious';
+    if (mood === 'love')                     return 'love';
+    if (mood === 'yawn')                     return 'yawn';
+    return 'open'; // happy / default
+  }
+
   function mountLive(canvas, mood, size) {
     const scale = Math.max(1, Math.floor(size / 16));
     const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -80,18 +159,35 @@
                      : 'open';
     if (reduced) {
       paint(canvas, build(staticPose), scale);
+      MASCOTS.push({
+        canvas: canvas,
+        react: function () { /* no-op under reduced motion */ }
+      });
       return;
     }
+    const now = performance.now();
     const st = {
       ex: 0, ey: 0, tex: 0, tey: 0,
       blinkStart: 0,
-      nextBlinkAt: performance.now() + 1800 + Math.random()*2200,
+      nextBlinkAt: now + 1800 + Math.random()*2200,
       earEnd: 0,
-      nextEarAt: performance.now() + 3000 + Math.random()*8000,
+      nextEarAt: now + 3000 + Math.random()*8000,
+      nextSwayAt: now + 8000 + Math.random()*7000,
+      nextStretchAt: now + 14000 + Math.random()*12000,
+      reactUntil: 0,
+      reactMood: null,
     };
+    function schedulePassive(which) {
+      const t = performance.now();
+      if (which === 'sway') st.nextSwayAt = t + 9000 + Math.random()*9000;
+      else if (which === 'stretch') st.nextStretchAt = t + 16000 + Math.random()*14000;
+    }
     function tick() {
       const t = performance.now();
-      if (mood === 'awake' && MOUSE.active) {
+      const isReacting = st.reactUntil > t;
+
+      // Mouse tracking only in plain awake mode and when not reacting
+      if (mood === 'awake' && MOUSE.active && !isReacting) {
         const r = canvas.getBoundingClientRect();
         const dx = MOUSE.x - (r.left + r.width/2);
         const dy = MOUSE.y - (r.top + r.height/2);
@@ -100,36 +196,66 @@
       } else {
         st.tex *= 0.9; st.tey *= 0.9;
       }
+
+      // Blink schedule (awake / happy)
       if ((mood === 'awake' || mood === 'happy') && t >= st.nextBlinkAt && t - st.blinkStart > 250) {
         st.blinkStart = t;
         st.nextBlinkAt = t + 1800 + Math.random()*2400;
       }
+      // Ear twitch
       if (t >= st.nextEarAt && t > st.earEnd) {
         st.earEnd = t + 180;
         st.nextEarAt = t + 6000 + Math.random()*10000;
       }
-      let pose = staticPose;
-      const bt = t - st.blinkStart;
-      const inBlink = st.blinkStart > 0 && bt >= 0 && bt < 180;
-      if (inBlink && (mood === 'awake' || mood === 'happy')) {
-        pose = (bt < 50 || bt >= 130) ? 'halfblink' : 'blink';
+      // Passive body sway (awake / happy)
+      if (!isReacting && (mood === 'awake' || mood === 'happy') && t >= st.nextSwayAt) {
+        flashClass(canvas, 'chonk-sway', 1300);
+        schedulePassive('sway');
+      }
+      // Passive stretch (awake / happy) — pose + CSS
+      if (!isReacting && (mood === 'awake' || mood === 'happy') && t >= st.nextStretchAt) {
+        st.reactUntil = t + 480;
+        st.reactMood = 'yawn';
+        flashClass(canvas, 'chonk-stretch', 760);
+        schedulePassive('stretch');
+      }
+
+      // Pose resolution — react override beats everything
+      let pose;
+      if (isReacting) {
+        pose = reactPoseFor(st.reactMood);
+      } else {
+        pose = staticPose;
+        const bt = t - st.blinkStart;
+        const inBlink = st.blinkStart > 0 && bt >= 0 && bt < 180;
+        if (inBlink && (mood === 'awake' || mood === 'happy')) {
+          pose = (bt < 50 || bt >= 130) ? 'halfblink' : 'blink';
+        }
       }
       const grid = build(pose);
-      if (mood === 'awake' && !inBlink) {
-        st.ex += (st.tex - st.ex) * 0.25;
-        st.ey += (st.tey - st.ey) * 0.25;
-        const ox = Math.round(st.ex), oy = Math.round(st.ey);
-        const eye = function (cx, cy) {
-          for (let dy = -1; dy <= 2; dy++) for (let dx = -1; dx <= 2; dx++) {
-            if (grid[cy+dy]) grid[cy+dy][cx+dx] = 'B';
-          }
-          for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
-            const gx = cx+dx+ox, gy = cy+dy+oy;
-            if (grid[gy] && grid[gy][gx] != null) grid[gy][gx] = 'E';
-          }
-        };
-        eye(4, 8); eye(10, 8);
+
+      // Mouse eye offset only applies in awake mode, not while reacting/blinking
+      if (mood === 'awake' && !isReacting) {
+        const bt2 = t - st.blinkStart;
+        const inBlink = st.blinkStart > 0 && bt2 >= 0 && bt2 < 180;
+        if (!inBlink) {
+          st.ex += (st.tex - st.ex) * 0.25;
+          st.ey += (st.tey - st.ey) * 0.25;
+          const ox = Math.round(st.ex), oy = Math.round(st.ey);
+          const eye = function (cx, cy) {
+            for (let dy = -1; dy <= 2; dy++) for (let dx = -1; dx <= 2; dx++) {
+              if (grid[cy+dy]) grid[cy+dy][cx+dx] = 'B';
+            }
+            for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+              const gx = cx+dx+ox, gy = cy+dy+oy;
+              if (grid[gy] && grid[gy][gx] != null) grid[gy][gx] = 'E';
+            }
+          };
+          eye(4, 8); eye(10, 8);
+        }
       }
+
+      // Ear twitch overlay (left ear raises)
       if (t < st.earEnd) {
         grid[3][1] = '.'; grid[4][1] = '.'; grid[4][2] = '.';
         grid[5][1] = '.'; grid[5][2] = '.'; grid[5][3] = '.';
@@ -141,7 +267,22 @@
     }
     tick();
     setInterval(tick, 60);
+
+    // Each mounted mascot gets a react function. window.chonkReact fans out to all.
+    function react(reactMood, durationMs) {
+      const t = performance.now();
+      const dur = Math.max(300, Math.min(4000, durationMs || 900));
+      st.reactUntil = t + dur;
+      st.reactMood = reactMood || 'happy';
+      if (reactMood === 'oops' || reactMood === 'error') {
+        flashClass(canvas, 'chonk-shake', 480);
+      } else {
+        flashClass(canvas, 'chonk-hop', 560);
+      }
+    }
+    MASCOTS.push({ canvas: canvas, react: react });
   }
+
   function wire() {
     document.querySelectorAll('canvas.pix[data-chonk]').forEach(function (c) {
       if (c.__chonkMounted) return;
@@ -153,6 +294,12 @@
       mountLive(c, mood, size);
     });
   }
+
+  // Public API.
+  window.chonkReact = function (mood, durationMs) {
+    MASCOTS.forEach(function (m) { try { m.react(mood, durationMs); } catch (_) {} });
+  };
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', wire);
   } else {

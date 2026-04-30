@@ -24,7 +24,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/tenants/{{ tenant_id }}/collections</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_id }}</a>/collections</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -42,17 +42,9 @@
     </header>
 
     <main class="main"><div class="page">
-      <nav class="crumbs">
-        <a href="/drust/admin/tenants">drust</a>
-        <span class="sep">/</span>
-        <a href="/drust/admin/tenants/{{ tenant_id }}">{{ tenant_id }}</a>
-        <span class="sep">/</span>
-        <span class="here">collections</span>
-      </nav>
-
       <div class="pagehead">
         <div>
-          <h1><span style="font-family:var(--mono);font-weight:500;">{{ tenant_id }}</span> — Collections</h1>
+          <h1>Collections</h1>
           <div class="meta">no collections yet · auto-discovered from sqlite_master</div>
         </div>
       </div>

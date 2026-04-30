@@ -14,7 +14,7 @@ use serde::Serialize;
 use std::sync::Arc;
 
 use crate::storage::{
-    files::{FileRow, Owner, Visibility, bucket_for_upload, build_public_url, map_file_row},
+    files::{FileRow, Owner, Visibility, build_public_url, map_file_row},
     garage::GarageClient,
 };
 
@@ -37,6 +37,8 @@ pub struct TenantFilesState {
     pub disk_min_free_pct: u8,
     pub max_upload_bytes: usize,
     pub public_base_url: String,
+    /// HMAC secret for mint-and-verify of drust-served signed URLs.
+    pub url_sign_secret: Arc<[u8; 32]>,
 }
 
 /// GET /drust/t/<tenant>/files/<key>/bytes
@@ -73,10 +75,11 @@ pub async fn stream_bytes(
     } else {
         Visibility::Private
     };
-    let bucket = bucket_for_upload(&Owner::Tenant(tenant_id.clone()), visibility);
+    let bucket = crate::storage::files::bucket_for(visibility);
+    let object_key = crate::storage::files::compose_key(&Owner::Tenant(tenant_id.clone()), &key);
 
     let stream = garage
-        .get_object_stream_in(&bucket, &key)
+        .get_object_stream_in(bucket, &object_key)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("get: {e}")))?;
 
@@ -139,32 +142,31 @@ pub async fn sign_url(
         }));
     }
 
-    let garage = state.garage.clone().ok_or_else(|| {
+    // Private: mint a drust-HMAC-signed URL pointing at our public origin.
+    let _ = state.garage.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            "storage not configured".into(),
+            "storage not configured".to_string(),
         )
     })?;
-
-    let bucket = crate::storage::files::bucket_for_upload(
-        &crate::storage::files::Owner::Tenant(tenant_id),
-        crate::storage::files::Visibility::Private,
+    let download = req.download.unwrap_or(false);
+    let expires_ts = chrono::Utc::now().timestamp() + expires_in as i64;
+    let owner = crate::storage::signed_url::Owner::Tenant(tenant_id);
+    let token = crate::storage::signed_url::mint(
+        &*state.url_sign_secret,
+        &owner,
+        &row.key,
+        expires_ts,
+        download,
     );
-    let download_name = if req.download.unwrap_or(false) {
-        Some(row.original_name.as_str())
-    } else {
-        None
-    };
-    let url = garage
-        .signed_get_url(
-            &bucket,
-            &row.key,
-            std::time::Duration::from_secs(expires_in),
-            download_name,
-        )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sign: {e}")))?;
-
+    let url = crate::storage::signed_url::build_url(
+        &state.public_base_url,
+        &owner,
+        &row.key,
+        expires_ts,
+        download,
+        &token,
+    );
     let expires_at =
         (chrono::Utc::now() + chrono::Duration::seconds(expires_in as i64)).to_rfc3339();
     Ok(axum::Json(SignResponse {
@@ -232,18 +234,17 @@ pub async fn upload(
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
+        && cl as usize > state.max_upload_bytes
     {
-        if cl as usize > state.max_upload_bytes {
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!(
-                    "upload exceeds {} MB limit ({} bytes provided)",
-                    state.max_upload_bytes / (1024 * 1024),
-                    cl
-                ),
-            )
-                .into_response();
-        }
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "upload exceeds {} MB limit ({} bytes provided)",
+                state.max_upload_bytes / (1024 * 1024),
+                cl
+            ),
+        )
+            .into_response();
     }
 
     // Parse multipart — reuse Task 15's helper.
@@ -290,14 +291,16 @@ pub async fn upload(
         Visibility::Public => "public",
         Visibility::Private => "private",
     };
-    let bucket = bucket_for_upload(&Owner::Tenant(tenant_id.clone()), visibility);
+    let bucket = crate::storage::files::bucket_for(visibility);
 
-    // Generate UUID key.
+    // DB stores the bare key (`<uuid>.<ext>`); Garage uses `<tenant>/<key>`
+    // so a single bucket holds everyone.
     let ext = std::path::Path::new(&original_name)
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("bin");
     let key = format!("{}.{}", uuid::Uuid::new_v4(), ext);
+    let object_key = crate::storage::files::compose_key(&Owner::Tenant(tenant_id.clone()), &key);
 
     // SQLite-first INSERT into tenant DB.
     {
@@ -337,8 +340,8 @@ pub async fn upload(
     // PUT to Garage — compensate on failure.
     if let Err(e) = garage
         .put_object_in(
-            &bucket,
-            &key,
+            bucket,
+            &object_key,
             body,
             sniffed_ct.as_deref(),
             disp_mode,
@@ -349,7 +352,7 @@ pub async fn upload(
         .await
     {
         tracing::error!(
-            key = %key,
+            object_key = %object_key,
             bucket = %bucket,
             error = format!("{e:#}"),
             "garage put_object_in failed — rolling back metadata row"
@@ -484,12 +487,14 @@ pub async fn delete_one(
         } else {
             Visibility::Private
         };
-        let bucket = bucket_for_upload(&Owner::Tenant(tenant_id.clone()), visibility);
-        (vis, bucket)
+        let bucket = crate::storage::files::bucket_for(visibility);
+        (vis, bucket.to_string())
     };
 
+    // Garage object key is the tenant-prefixed form.
+    let object_key = crate::storage::files::compose_key(&Owner::Tenant(tenant_id.clone()), &key);
     // Delete from Garage — idempotent per Task 8.
-    if let Err(e) = garage.delete_object_in(&bucket, &key).await {
+    if let Err(e) = garage.delete_object_in(&bucket, &object_key).await {
         tracing::error!(
             key = %key,
             bucket = %bucket,

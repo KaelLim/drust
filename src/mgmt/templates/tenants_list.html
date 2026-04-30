@@ -42,12 +42,6 @@
     </header>
 
     <main class="main"><div class="page">
-      <nav class="crumbs">
-        <span class="here">drust</span>
-        <span class="sep">/</span>
-        <span class="here">tenants</span>
-      </nav>
-
       <div class="pagehead">
         <div>
           <h1>Tenants</h1>
@@ -71,29 +65,26 @@
         <div class="card-body">
           <form method="post" action="/drust/admin/tenants/new" class="form-inline">
             <div class="field">
-              <label>slug <span class="hint">a-z 0-9 - only</span></label>
-              <div class="input-prefix">
-                <span class="prefix">/</span>
-                <input class="input" name="id" placeholder="event-registration" required>
-              </div>
-            </div>
-            <div class="field">
               <label>display name</label>
-              <input class="input" name="name" placeholder="Event Registration" style="width:280px;" required>
+              <input class="input" name="name" placeholder="Event Registration" style="width:320px;" required autofocus>
             </div>
             <button class="btn btn-primary" type="submit">Create <span class="kbd">↵</span></button>
-            <span style="font-family:var(--mono);font-size:11.5px;color:var(--muted);">
-              a new SQLite database will be provisioned.
-            </span>
           </form>
         </div>
       </div>
 
       <div class="card">
         <div class="card-head">
-          <span>tenants <span class="count">· {{ tenants.len() }} rows</span></span>
-          <div class="card-head-actions">
-            <span style="font-family:var(--mono);font-size:11.5px;color:var(--muted);">sort: id ↑</span>
+          <span>tenants <span class="count" id="tenants-count">· {{ tenants.len() }} rows</span></span>
+          <div class="card-head-actions" style="flex:1;display:flex;justify-content:flex-end;">
+            <input
+              type="search"
+              class="input"
+              id="tenants-search"
+              placeholder="search name or id…  ( / to focus )"
+              autocomplete="off"
+              spellcheck="false"
+              style="max-width:320px;height:32px;font-size:13px;">
           </div>
         </div>
         {% if tenants.is_empty() %}
@@ -108,7 +99,6 @@
         <table class="data">
           <thead>
             <tr>
-              <th style="width:240px;">id</th>
               <th>name</th>
               <th style="width:200px;">created</th>
               <th class="num" style="width:110px;">db size</th>
@@ -116,28 +106,115 @@
               <th class="actions" style="width:120px;"></th>
             </tr>
           </thead>
-          <tbody>
+          <tbody id="tenants-tbody">
             {% for t in tenants %}
-            <tr>
-              <td class="mono-cell"><a class="cell-link" href="/drust/admin/tenants/{{ t.id }}">{{ t.id }}</a></td>
-              <td>{{ t.name }}</td>
+            <tr class="tenant-row" data-name="{{ t.name }}" data-id="{{ t.id }}">
+              <td>
+                <a class="cell-link" href="/drust/admin/tenants/{{ t.id }}">{{ t.name }}</a>
+                <div class="mono-cell" style="font-size:12px;color:var(--muted);margin-top:2px;" title="{{ t.id }}">
+                  <span>#{{ t.id_short }}</span>
+                  <button type="button" class="btn btn-sm btn-ghost" style="padding:0 4px;height:auto;font-size:11px;" data-copy-id="{{ t.id }}" title="copy full id">copy id</button>
+                </div>
+              </td>
               <td class="muted-cell">{{ t.created_at }}</td>
               <td class="num">{{ t.db_size_kb }} KB</td>
               <td class="num"><a href="/drust/admin/tenants/{{ t.id }}/files" style="color:inherit;">{{ t.files_display }}</a></td>
               <td class="actions">
-                <form method="post" action="/drust/admin/tenants/{{ t.id }}/delete" onsubmit="return confirm('Delete tenant {{ t.id }}?');" style="display:inline;">
+                <form method="post" action="/drust/admin/tenants/{{ t.id }}/delete" class="tenant-delete-form" style="display:inline;" data-name="{{ t.name }}">
                   <button class="btn btn-sm btn-danger" type="submit">Delete</button>
                 </form>
               </td>
             </tr>
             {% endfor %}
+            <tr id="tenants-empty-row" hidden>
+              <td colspan="5" class="muted-cell" style="text-align:center;padding:32px 16px;font-family:var(--mono);">
+                no matches for <code id="tenants-empty-q" style="color:var(--text);"></code>
+              </td>
+            </tr>
           </tbody>
         </table>
+        <script>
+          document.querySelectorAll('[data-copy-id]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              navigator.clipboard.writeText(b.getAttribute('data-copy-id')).then(function () {
+                var orig = b.textContent;
+                b.textContent = 'copied ✓';
+                if (window.chonkReact) window.chonkReact('happy');
+                setTimeout(function () { b.textContent = orig; }, 1200);
+              });
+            });
+          });
+          document.querySelectorAll('form.tenant-delete-form').forEach(function (f) {
+            f.addEventListener('submit', async function (e) {
+              e.preventDefault();
+              var name = f.getAttribute('data-name') || 'this tenant';
+              var ok = await drustUI.confirm({title: 'Delete tenant', body: 'Delete "' + name + '"? This removes its database, tokens, and any stored files.', okText: 'Delete', danger: true});
+              if (ok) f.submit();
+            });
+          });
+          (function () {
+            var input = document.getElementById('tenants-search');
+            var rows = Array.prototype.slice.call(document.querySelectorAll('tr.tenant-row'));
+            var emptyRow = document.getElementById('tenants-empty-row');
+            var emptyQ = document.getElementById('tenants-empty-q');
+            var countEl = document.getElementById('tenants-count');
+            var totalRows = rows.length;
+            if (!input || !rows.length) return;
+
+            function applyFilter() {
+              var q = input.value.trim().toLowerCase();
+              var visible = 0;
+              rows.forEach(function (tr) {
+                if (!q) {
+                  tr.hidden = false;
+                  visible++;
+                  return;
+                }
+                var name = (tr.getAttribute('data-name') || '').toLowerCase();
+                var id = (tr.getAttribute('data-id') || '').toLowerCase();
+                var hit = name.indexOf(q) !== -1 || id.indexOf(q) !== -1;
+                tr.hidden = !hit;
+                if (hit) visible++;
+              });
+              if (visible === 0 && q) {
+                emptyRow.hidden = false;
+                emptyQ.textContent = q;
+              } else {
+                emptyRow.hidden = true;
+              }
+              if (countEl) {
+                countEl.textContent = q
+                  ? '· ' + visible + ' / ' + totalRows + ' rows'
+                  : '· ' + totalRows + ' rows';
+              }
+            }
+            input.addEventListener('input', applyFilter);
+            input.addEventListener('keydown', function (e) {
+              if (e.key === 'Escape') {
+                input.value = '';
+                applyFilter();
+                input.blur();
+              }
+            });
+            // `/` focuses the search box from anywhere on the page (skip when
+            // the user is already typing into another input).
+            document.addEventListener('keydown', function (e) {
+              if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+              var t = e.target;
+              var tag = t && t.tagName;
+              if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+              e.preventDefault();
+              input.focus();
+              input.select();
+            });
+          })();
+        </script>
         {% endif %}
       </div>
     </div></main>
   </div>
 </div>
 {% include "_mascot.html" %}
+{% include "_modal.html" %}
 </body>
 </html>

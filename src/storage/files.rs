@@ -22,13 +22,32 @@ pub enum Disposition {
     Attachment,
 }
 
-pub fn bucket_for_upload(owner: &Owner, visibility: Visibility) -> String {
-    match (owner, visibility) {
-        (Owner::Admin, Visibility::Public) => "public".to_string(),
-        (Owner::Admin, Visibility::Private) => "admin-private".to_string(),
-        (Owner::Tenant(id), Visibility::Public) => format!("tenant-{id}-pub"),
-        (Owner::Tenant(id), Visibility::Private) => format!("tenant-{id}-prv"),
+/// Bucket for the given visibility. Only two buckets exist host-wide:
+/// `public` (website=on, anonymous read via Caddy) and `private` (drust-
+/// proxied). Tenant vs admin ownership is encoded in the key prefix,
+/// not the bucket.
+pub fn bucket_for(visibility: Visibility) -> &'static str {
+    match visibility {
+        Visibility::Public => "public",
+        Visibility::Private => "private",
     }
+}
+
+/// Build the object key for a new upload. Admin uploads land at the
+/// bucket root (`<file-id>`); tenant uploads are prefixed with the
+/// tenant id so one bucket can host every tenant safely.
+pub fn compose_key(owner: &Owner, file_id: &str) -> String {
+    match owner {
+        Owner::Admin => file_id.to_string(),
+        Owner::Tenant(id) => format!("{id}/{file_id}"),
+    }
+}
+
+/// Backward-compat shim: some call sites ask for just the bucket based
+/// on (owner, vis); admin and tenant now share buckets so we ignore
+/// `owner` and route by visibility alone.
+pub fn bucket_for_upload(_owner: &Owner, visibility: Visibility) -> String {
+    bucket_for(visibility).to_string()
 }
 
 pub fn build_public_url(
@@ -38,10 +57,14 @@ pub fn build_public_url(
     key: &str,
 ) -> String {
     let base = base_url.trim_end_matches('/');
+    // DB stores the bare object id (`<uuid>.<ext>`). Tenant objects live
+    // under `<tenant>/<uuid>` inside the shared bucket, so public URLs
+    // interleave the tenant id. Private URLs go through drust's own
+    // bytes/signed endpoints and keep the bare key for the /{key} route.
     match (owner, visibility) {
         (Owner::Admin, Visibility::Public) => format!("{base}/public/{key}"),
+        (Owner::Tenant(id), Visibility::Public) => format!("{base}/public/{id}/{key}"),
         (Owner::Admin, Visibility::Private) => format!("{base}/drust/admin/files/{key}/bytes"),
-        (Owner::Tenant(id), Visibility::Public) => format!("{base}/t-public/{id}/{key}"),
         (Owner::Tenant(id), Visibility::Private) => {
             format!("{base}/drust/t/{id}/files/{key}/bytes")
         }
@@ -50,7 +73,7 @@ pub fn build_public_url(
 
 pub fn default_cache_control(visibility: Visibility, _disposition: Disposition) -> &'static str {
     match visibility {
-        Visibility::Public => "public, max-age=3600",
+        Visibility::Public => "public, max-age=86400",
         Visibility::Private => "private, no-store",
     }
 }

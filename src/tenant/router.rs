@@ -180,6 +180,7 @@ pub async fn bearer_auth_layer(
 
 /// Guard used by write-path handlers. Returns `Err(response)` if the
 /// current bearer is an anon key, ready to short-circuit the handler.
+#[allow(clippy::result_large_err)]
 pub fn require_service(t: &TenantRef) -> Result<(), Response> {
     if t.role == TokenRole::Anon {
         let body = axum::Json(serde_json::json!({
