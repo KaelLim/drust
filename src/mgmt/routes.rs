@@ -242,6 +242,14 @@ impl MgmtState {
                 get(super::tokens::api_keys_page),
             )
             .route(
+                "/admin/tenants/{id}/_rpc",
+                get(super::rpc_admin::rpc_index),
+            )
+            .route(
+                "/admin/tenants/{id}/_rpc/{name}/delete",
+                post(super::rpc_admin::rpc_delete),
+            )
+            .route(
                 "/admin/api/tenants/{id}/tokens/{role}/reroll",
                 post(super::tokens::reroll_token_json),
             )
