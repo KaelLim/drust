@@ -123,6 +123,24 @@ pub struct UpdateRpcParams {
     pub anon_callable: Option<bool>,
 }
 
+#[derive(Debug, Clone, schemars::JsonSchema, Deserialize)]
+pub struct NameOnly {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, schemars::JsonSchema, Deserialize)]
+pub struct EmptyParams {}
+
+#[derive(Debug, Clone, schemars::JsonSchema, Deserialize)]
+pub struct CallRpcParams {
+    pub name: String,
+    /// Optional named-param body. Same shape as the REST POST body —
+    /// keys must match the RPC's declared params, values are scalars
+    /// (text / integer / real / boolean / null).
+    #[serde(default)]
+    pub body: Option<HashMap<String, Value>>,
+}
+
 // --- Handler -----------------------------------------------------------
 
 #[derive(Clone)]
@@ -486,6 +504,137 @@ impl DrustMcpService {
             p.name
         ))]))
     }
+
+    #[tool(description = "Delete an RPC by name. Errors if no RPC with that name exists.")]
+    async fn delete_rpc(
+        &self,
+        Parameters(p): Parameters<NameOnly>,
+    ) -> Result<CallToolResult, McpError> {
+        let pool = self.state.inner().pool.clone();
+        let name = p.name.clone();
+        pool.with_writer(move |c| {
+            crate::rpc::registry::delete(c, &name).map_err(|e| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(e.to_string()),
+                )
+            })
+        })
+        .await
+        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "rpc '{}' deleted",
+            p.name
+        ))]))
+    }
+
+    #[tool(description = "List every stored RPC for this tenant, including \
+        the SQL body, params, anon_callable flag, call counters, and last-called \
+        timestamp.")]
+    async fn list_rpc(
+        &self,
+        Parameters(_): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let pool = self.state.inner().pool.clone();
+        let rows = pool
+            .with_reader(move |c| {
+                crate::rpc::registry::list(c).map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(1),
+                        Some(e.to_string()),
+                    )
+                })
+            })
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let json = serde_json::to_string_pretty(&rows)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(description = "Invoke a stored RPC by name with named params. \
+        Returns the same envelope as the query tool: {column_names, rows, \
+        row_count, truncated}. MCP is service-only, so anon_callable is not \
+        consulted on this surface — a service-key holder may call any RPC.")]
+    async fn call_rpc(
+        &self,
+        Parameters(p): Parameters<CallRpcParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let pool = self.state.inner().pool.clone();
+        let name = p.name.clone();
+        // HashMap → serde_json::Map for params::validate_and_bind.
+        let body_map: serde_json::Map<String, Value> =
+            p.body.unwrap_or_default().into_iter().collect();
+
+        let lookup_name = name.clone();
+        let bind_body = body_map.clone();
+        let outcome = pool
+            .with_reader(move |c| {
+                let rpc = match crate::rpc::registry::lookup(c, &lookup_name).map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(1),
+                        Some(e.to_string()),
+                    )
+                })? {
+                    Some(r) => r,
+                    None => return Ok(Err(format!("no such rpc: {lookup_name}"))),
+                };
+                let bound = match crate::rpc::params::validate_and_bind(&rpc.params, &bind_body) {
+                    Ok(b) => b,
+                    Err(e) => return Ok(Err(e.to_string())),
+                };
+                let qr = match crate::query::executor::execute_read_query_with_named(
+                    c,
+                    &rpc.sql,
+                    &bound,
+                    1_000,
+                    1_048_576,
+                ) {
+                    Ok(qr) => qr,
+                    Err(e) => return Ok(Err(e.to_string())),
+                };
+                Ok(Ok(qr))
+            })
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let qr = match outcome {
+            Ok(qr) => qr,
+            Err(msg) => return Err(McpError::invalid_params(msg, None)),
+        };
+
+        // Fire-and-forget counter bump on the writer mutex. MCP is
+        // service-only, so the role is hardcoded.
+        let pool_clone = pool.clone();
+        let bump_name = name.clone();
+        tokio::spawn(async move {
+            let res = pool_clone
+                .with_writer(move |c| {
+                    crate::rpc::registry::increment(
+                        c,
+                        &bump_name,
+                        crate::tenant::router::TokenRole::Service,
+                    )
+                })
+                .await;
+            if let Err(e) = res {
+                tracing::warn!(error = %e, "rpc counter bump failed (mcp call_rpc)");
+            }
+        });
+
+        let row_count = qr.rows.len();
+        let envelope = serde_json::json!({
+            "column_names": qr.column_names,
+            "rows": qr.rows,
+            "row_count": row_count,
+            "truncated": qr.truncated,
+        });
+        let body_str = serde_json::to_string(&envelope)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(body_str)]))
+    }
 }
 
 #[tool_handler]
@@ -495,11 +644,11 @@ impl ServerHandler for DrustMcpService {
         let base = self.state.public_base_url();
         let instructions = format!(
             "drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.\n\n\
-             18 tools: `list_collections`, `describe_collection`, `sample_rows`, \
+             21 tools: `list_collections`, `describe_collection`, `sample_rows`, \
              `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
              `drop_collection`, `list_files`, `delete_file`, `get_file_url`, \
-             `create_rpc`, `update_rpc`.\n\n\
+             `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, `call_rpc`.\n\n\
              Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
              tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
              endpoint instead:\n\n  \
