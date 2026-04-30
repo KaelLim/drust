@@ -159,6 +159,11 @@ pub struct CollectionSchema {
     pub fields: Vec<Field>,
     pub indices: Vec<IndexInfo>,
     pub row_count: i64,
+    /// Per-collection DML allowlist for the anon role. Service is
+    /// always unrestricted regardless of this set. Default is
+    /// `[Select]` for backwards compatibility with collections that
+    /// pre-date the capability feature.
+    pub anon_caps: BTreeSet<DmlVerb>,
 }
 
 fn user_tables(conn: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -275,6 +280,7 @@ pub fn describe_collection(
         fields,
         indices,
         row_count: rc,
+        anon_caps: default_anon_caps(),  // populated for real in Task 4
     }))
 }
 
