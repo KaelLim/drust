@@ -1,9 +1,11 @@
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
-use crate::storage::schema::{collection_exists, describe_collection};
+use crate::storage::schema::{
+    CollectionSchema, DmlVerb, collection_exists, describe_collection, has_dml_cap,
+};
 use crate::tenant::events::{Event, EventBus};
-use crate::tenant::router::{TenantRef, require_service};
+use crate::tenant::router::TenantRef;
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -28,6 +30,52 @@ fn json_error(status: StatusCode, code: &str, msg: &str) -> Response {
     let mut r = Json(json!({ "error_code": code, "message": msg })).into_response();
     *r.status_mut() = status;
     r
+}
+
+/// Resolve the cached schema for `coll`, then gate the caller's role
+/// against `verb`. Returns the schema on success so the handler can
+/// reuse it for field-name validation. Returns a 403 (anon lacks cap)
+/// or 404 (collection not found) `Response` on failure.
+async fn require_dml_cap(
+    tenant: &TenantRef,
+    coll: &str,
+    verb: DmlVerb,
+) -> Result<CollectionSchema, Response> {
+    let pool = tenant.pool.clone();
+    let cache = pool.schema_cache.clone();
+    let coll_owned = coll.to_string();
+    let load_res = pool
+        .with_reader(move |c| cache.ensure_loaded(c, &coll_owned))
+        .await;
+    let schema = match load_res {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return Err(json_error(
+                StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+                &format!("no such collection: {coll}"),
+            ));
+        }
+        Err(e) => {
+            return Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            ));
+        }
+    };
+    if !has_dml_cap(tenant.role, verb, &schema) {
+        return Err(json_error(
+            StatusCode::FORBIDDEN,
+            "ANON_DENIED",
+            &format!(
+                "anon role lacks '{}' on collection '{}'",
+                verb.as_str(),
+                coll
+            ),
+        ));
+    }
+    Ok(schema)
 }
 
 fn json_to_sql_value(v: &serde_json::Value) -> Value {
@@ -80,6 +128,9 @@ pub async fn list_handler(
     Path((_tenant, coll)): Path<(String, String)>,
     Query(qs): Query<ListQs>,
 ) -> Response {
+    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Select).await {
+        return r;
+    }
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let exists = pool
@@ -199,8 +250,8 @@ pub async fn create_handler(
     Json(body): Json<DataBody>,
     bus: EventBus,
 ) -> Response {
-    if let Err(resp) = require_service(&t) {
-        return resp;
+    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Insert).await {
+        return r;
     }
     let data = match body.data.as_object() {
         Some(o) => o.clone(),
@@ -295,8 +346,8 @@ pub async fn update_handler(
     Json(body): Json<DataBody>,
     bus: EventBus,
 ) -> Response {
-    if let Err(resp) = require_service(&t) {
-        return resp;
+    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Update).await {
+        return r;
     }
     let data = match body.data.as_object() {
         Some(o) => o.clone(),
@@ -389,8 +440,8 @@ pub async fn delete_handler(
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
     bus: EventBus,
 ) -> Response {
-    if let Err(resp) = require_service(&t) {
-        return resp;
+    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Delete).await {
+        return r;
     }
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
