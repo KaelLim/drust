@@ -111,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         garage_client_key_id,
         disk_min_free_pct,
         url_sign_secret: url_sign_secret.clone(),
+        tenants: tenants.clone(),
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
