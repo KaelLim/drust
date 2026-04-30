@@ -272,6 +272,44 @@
   .input-prefix > .input { border: 0; border-radius: 0; box-shadow: none; flex: 1; }
   .input-prefix > .input:focus { box-shadow: none; }
 
+  /* Custom checkbox — design-tokens-aligned. Wrap an <input type="checkbox">
+     and a label string in <label class="check">. */
+  .check {
+    display: inline-flex; align-items: center; gap: 10px;
+    font: 500 14px/1 var(--mono);
+    color: var(--text);
+    cursor: pointer; user-select: none;
+  }
+  .check input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none;
+    width: 18px; height: 18px;
+    margin: 0; flex: 0 0 auto;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    display: inline-grid; place-content: center;
+    cursor: pointer;
+    transition: border-color .1s, background .1s, box-shadow .1s;
+  }
+  .check input[type="checkbox"]::before {
+    content: "";
+    width: 10px; height: 10px;
+    transform: scale(0);
+    transition: transform .1s ease-out;
+    background: oklch(0.14 0.02 var(--accent-h));
+    clip-path: polygon(14% 44%, 0 60%, 40% 100%, 100% 24%, 88% 13%, 38% 71%);
+  }
+  .check input[type="checkbox"]:hover { border-color: var(--accent-line); }
+  .check input[type="checkbox"]:checked {
+    background: var(--accent); border-color: var(--accent);
+  }
+  .check input[type="checkbox"]:checked::before { transform: scale(1); }
+  .check input[type="checkbox"]:focus-visible {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px oklch(var(--accent-l) var(--accent-c) var(--accent-h) / 0.25);
+  }
+  .check:hover input[type="checkbox"]:not(:checked) { border-color: var(--accent-line); }
+
   .select {
     appearance: none;
     background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
