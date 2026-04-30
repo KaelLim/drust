@@ -4,6 +4,7 @@ pub mod error;
 pub mod mcp;
 pub mod mgmt;
 pub mod query;
+pub mod rpc;
 pub mod safety;
 pub mod storage;
 pub mod tenant;
