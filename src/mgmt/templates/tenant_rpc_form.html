@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust admin — {{ tenant_id }} / _rpc / {% if editing %}{{ existing_name }}{% else %}new{% endif %}</title>
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+</head>
+<body>
+{% include "_icons.html" %}
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_id }}/_rpc/{% if editing %}{{ existing_name }}{% else %}new{% endif %}</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <header class="topbar">
+      <div class="prompt">
+        <span class="dollar">$</span>
+        <span class="user">admin</span><span class="at">@</span><span class="host">drust</span><span class="colon">:</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_id }}</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_rpc">_rpc</a>/{% if editing %}{{ existing_name }}{% else %}new{% endif %}</span>
+        <span class="caret"></span>
+      </div>
+      <div class="topbar-right">
+        <span class="who">v{{ version }}</span>
+        <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
+        <form method="post" action="/drust/logout" style="display:inline;">
+          <button type="submit">logout ↵</button>
+        </form>
+      </div>
+    </header>
+    <div class="shell">
+      {% include "_collection_sidebar.html" %}
+      <main class="main"><div class="page">
+        <h1>{% if editing %}edit {{ existing_name }}{% else %}new function{% endif %}</h1>
+        {% if let Some(err) = error %}<div class="alert error" style="margin-bottom:12px;"><div class="msg">{{ err }}</div></div>{% endif %}
+        <form method="post" action="{% if editing %}/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/save{% else %}/drust/admin/tenants/{{ tenant_id }}/_rpc/new{% endif %}" class="card" style="padding:18px;display:grid;gap:14px;">
+          {% if !editing %}
+          <div class="field">
+            <label>name (snake_case, unique)</label>
+            <input class="input" type="text" name="name" required pattern="[a-z][a-z0-9_]*" maxlength="80" value="{{ form_name }}">
+          </div>
+          {% else %}
+          <input type="hidden" name="name" value="{{ existing_name }}">
+          {% endif %}
+          <div class="field">
+            <label>description (optional)</label>
+            <input class="input" type="text" name="description" value="{{ form_description }}">
+          </div>
+          <div class="field">
+            <label>sql (use :name for params)</label>
+            <textarea class="input" name="sql" rows="10" required style="font-family:var(--mono);">{{ form_sql }}</textarea>
+          </div>
+          <div class="field">
+            <label>params (JSON array, e.g. <code>[{"name":"id","type":"integer","required":true}]</code>)</label>
+            <textarea class="input" name="params_json" rows="6" required style="font-family:var(--mono);">{{ form_params_json }}</textarea>
+          </div>
+          <div class="field">
+            <label><input type="checkbox" name="anon_callable" value="1"{% if form_anon_callable %} checked{% endif %}> allow anon callers</label>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary" type="submit">{% if editing %}save{% else %}create{% endif %}</button>
+            <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">cancel</a>
+          </div>
+        </form>
+      </div></main>
+    </div>
+  </div>
+</div>
+{% include "_mascot.html" %}
+{% include "_modal.html" %}
+<script>
+  // Confirm "allow anon callers" toggle (matches the drustUI pattern used in tenant_rpc.html).
+  document.addEventListener("DOMContentLoaded", () => {
+    const cb = document.querySelector('input[name="anon_callable"]');
+    if (!cb) return;
+    cb.addEventListener("change", async (e) => {
+      if (!cb.checked) return;
+      const ok = await drustUI.confirm({
+        title: "allow anon callers?",
+        body: "Any caller (no service key) can invoke this RPC. Continue?",
+        okText: "Yes, allow anon",
+        danger: true,
+      });
+      if (!ok) cb.checked = false;
+    });
+  });
+</script>
+</body>
+</html>
