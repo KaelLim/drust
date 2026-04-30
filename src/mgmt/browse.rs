@@ -381,7 +381,10 @@ pub struct AnonCapsForm {
 pub async fn update_anon_caps(
     State(state): State<TenantsState>,
     Path((tenant_id, coll_name)): Path<(String, String)>,
-    axum::Form(form): axum::Form<AnonCapsForm>,
+    // Use axum_extra::Form (serde_html_form) — the stdlib serde_urlencoded
+    // backing axum::Form cannot deserialize repeated keys (`caps=select&caps=insert`)
+    // into Vec<String>, so the HTML checkbox form would 422 on every submit.
+    axum_extra::extract::Form(form): axum_extra::extract::Form<AnonCapsForm>,
 ) -> Response {
     use crate::storage::schema::{DmlVerb, write_anon_caps};
     let meta = state.session.meta.lock().await;
