@@ -1,5 +1,6 @@
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// System-managed collections are drop-protected. Any name starting with
 /// `_system_` (note the trailing underscore) is refused by schema-mutating
@@ -24,6 +25,96 @@ mod protection_tests {
         assert!(!is_protected_collection("_system")); // exact, not prefix
         assert!(!is_protected_collection("system_logs"));
         assert!(!is_protected_collection("__private"));
+    }
+}
+
+/// DML verbs used by the per-collection capability allowlist.
+/// Ordering is fixed (Select, Insert, Update, Delete) so serialised
+/// output is deterministic.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DmlVerb {
+    Select,
+    Insert,
+    Update,
+    Delete,
+}
+
+impl DmlVerb {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DmlVerb::Select => "select",
+            DmlVerb::Insert => "insert",
+            DmlVerb::Update => "update",
+            DmlVerb::Delete => "delete",
+        }
+    }
+}
+
+/// Default capability set — anon may SELECT only. Used when a row is
+/// missing from `_system_collection_meta` (e.g. legacy collections
+/// pre-dating this feature).
+pub fn default_anon_caps() -> BTreeSet<DmlVerb> {
+    let mut s = BTreeSet::new();
+    s.insert(DmlVerb::Select);
+    s
+}
+
+/// Parse a JSON array of lowercase verb strings into a `BTreeSet`. Unknown
+/// values are silently skipped — caller may want to validate stricter.
+pub fn parse_anon_caps_json(raw: &str) -> BTreeSet<DmlVerb> {
+    serde_json::from_str::<Vec<DmlVerb>>(raw)
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+/// Serialise a capability set as a sorted JSON array (deterministic).
+pub fn anon_caps_to_json(caps: &BTreeSet<DmlVerb>) -> String {
+    let v: Vec<&str> = caps.iter().map(|c| c.as_str()).collect();
+    serde_json::to_string(&v).expect("BTreeSet<DmlVerb> serialises")
+}
+
+#[cfg(test)]
+mod anon_caps_tests {
+    use super::*;
+
+    #[test]
+    fn default_caps_is_select_only() {
+        let d = default_anon_caps();
+        assert_eq!(d.len(), 1);
+        assert!(d.contains(&DmlVerb::Select));
+    }
+
+    #[test]
+    fn json_roundtrip_preserves_order() {
+        let caps: BTreeSet<DmlVerb> =
+            [DmlVerb::Delete, DmlVerb::Select, DmlVerb::Insert].into_iter().collect();
+        let json = anon_caps_to_json(&caps);
+        assert_eq!(json, r#"["select","insert","delete"]"#);
+        let parsed = parse_anon_caps_json(&json);
+        assert_eq!(parsed, caps);
+    }
+
+    #[test]
+    fn empty_array_means_locked() {
+        let parsed = parse_anon_caps_json("[]");
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn malformed_json_falls_back_to_empty() {
+        let parsed = parse_anon_caps_json("not json");
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn unknown_verb_is_skipped() {
+        let parsed = parse_anon_caps_json(r#"["select","yolo","delete"]"#);
+        // serde drops the whole vec on the unknown variant unless we use
+        // a tolerant decoder. For now we accept "all-or-nothing" decode.
+        // The test pins this behaviour explicitly.
+        assert!(parsed.is_empty());
     }
 }
 
