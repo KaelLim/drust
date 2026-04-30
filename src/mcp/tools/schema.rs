@@ -1,6 +1,7 @@
 use crate::mcp::server::DrustMcp;
 use crate::storage::schema::{
-    collection_exists, describe_collection, find_fk_referrers, is_protected_collection,
+    collection_exists, default_anon_caps, delete_collection_meta, describe_collection,
+    find_fk_referrers, is_protected_collection, write_anon_caps,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -180,8 +181,18 @@ pub async fn create_collection(
     );
     let pool = s.inner().pool.clone();
     let pool2 = pool.clone();
-    pool.with_writer(move |c| c.execute_batch(&format!("{sql}\n{trigger}")))
-        .await?;
+    let meta_name = name.to_string();
+    pool.with_writer(move |c| {
+        c.execute_batch(&format!("{sql}\n{trigger}"))?;
+        // Seed the anon_caps row so REST / cache lookups don't have to
+        // fall back to defaults the first time around.
+        write_anon_caps(c, &meta_name, &default_anon_caps())
+    })
+    .await?;
+
+    // Schema cache must drop any pre-existing entry for this name so the
+    // next describe_collection / REST request loads the fresh table.
+    pool.schema_cache.invalidate(name);
 
     let schema = pool2
         .with_reader(move |c| describe_collection(c, &table))
@@ -216,6 +227,8 @@ pub async fn add_field(
     let pool2 = pool.clone();
     let coll = collection.to_string();
     pool.with_writer(move |c| c.execute(&sql, [])).await?;
+    // The cached schema is stale — column list just changed.
+    pool.schema_cache.invalidate(collection);
     let schema = pool2
         .with_reader(move |c| describe_collection(c, &coll))
         .await?
@@ -277,6 +290,8 @@ pub async fn drop_field(
         field.replace('"', "\"\"")
     );
     pool.with_writer(move |c| c.execute(&sql, [])).await?;
+    // The cached schema is stale — column list just changed.
+    pool.schema_cache.invalidate(collection);
     let schema = pool2
         .with_reader(move |c| describe_collection(c, &coll))
         .await?
@@ -321,12 +336,24 @@ pub async fn drop_collection(s: &DrustMcp, name: &str) -> anyhow::Result<serde_j
         );
     }
     let table = name.to_string();
+    let meta_name = name.to_string();
     // The trigger name matches what create_collection installs.
     let ddl = format!(
         "DROP TRIGGER IF EXISTS \"{trig}\"; DROP TABLE \"{tbl}\";",
         trig = format!("{}_updated_at", table).replace('"', "\"\""),
         tbl = table.replace('"', "\"\""),
     );
-    pool.with_writer(move |c| c.execute_batch(&ddl)).await?;
+    pool.with_writer(move |c| {
+        c.execute_batch(&ddl)?;
+        // Drop the anon_caps row in the same writer transaction so meta
+        // and table go together.
+        delete_collection_meta(c, &meta_name)
+    })
+    .await?;
+
+    // Drop the cached schema so subsequent reads see the collection as
+    // gone.
+    pool.schema_cache.invalidate(name);
+
     Ok(json!({ "ok": true, "dropped_collection": name }))
 }
