@@ -246,6 +246,18 @@ impl MgmtState {
                 get(super::rpc_admin::rpc_index),
             )
             .route(
+                "/admin/tenants/{id}/_rpc/new",
+                get(super::rpc_admin::rpc_new_form).post(super::rpc_admin::rpc_save),
+            )
+            .route(
+                "/admin/tenants/{id}/_rpc/{name}/edit",
+                get(super::rpc_admin::rpc_edit_form),
+            )
+            .route(
+                "/admin/tenants/{id}/_rpc/{name}/save",
+                post(super::rpc_admin::rpc_save),
+            )
+            .route(
                 "/admin/tenants/{id}/_rpc/{name}/delete",
                 post(super::rpc_admin::rpc_delete),
             )
