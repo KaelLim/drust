@@ -75,6 +75,33 @@ CREATE INDEX IF NOT EXISTS idx_system_files_uploaded_at
 CREATE INDEX IF NOT EXISTS idx_system_files_visibility
   ON "_system_files"(visibility);
 
+-- v1.6: per-collection anon DML capability allowlist.
+-- Rows are upserted by the structured DDL handlers (create_collection,
+-- drop_collection); admin-UI edits to anon_caps also write here. A
+-- collection with no row defaults to ["select"] (status quo for legacy
+-- collections that pre-date this table).
+CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
+  collection_name TEXT PRIMARY KEY,
+  anon_caps_json  TEXT NOT NULL DEFAULT '["select"]',
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- v1.6: stored RPC functions (Supabase-style named SELECTs).
+-- service-key only for create / update / delete. anon callers gated
+-- by `anon_callable`. Counters bumped by drust internally on success.
+CREATE TABLE IF NOT EXISTS "_system_rpc" (
+  name              TEXT PRIMARY KEY,
+  sql               TEXT NOT NULL,
+  params_json       TEXT NOT NULL,
+  description       TEXT,
+  anon_callable     INTEGER NOT NULL DEFAULT 0,
+  anon_calls        INTEGER NOT NULL DEFAULT 0,
+  service_calls     INTEGER NOT NULL DEFAULT 0,
+  last_called_at    TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 COMMIT;
 "#;
 
@@ -111,4 +138,30 @@ pub fn open_read(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection
     // (the constant is commented out in the upstream source), so we only set DEFENSIVE.
     conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     Ok(conn)
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn open_write_creates_v1_6_system_tables() {
+        let tmp = TempDir::new().unwrap();
+        let conn = open_write(tmp.path(), "smoketest").unwrap();
+        let exists = |t: &str| -> bool {
+            conn.query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+                rusqlite::params![t],
+                |_| Ok(true),
+            )
+            .unwrap_or(false)
+        };
+        assert!(exists("_system_files"), "_system_files missing");
+        assert!(
+            exists("_system_collection_meta"),
+            "_system_collection_meta missing"
+        );
+        assert!(exists("_system_rpc"), "_system_rpc missing");
+    }
 }
