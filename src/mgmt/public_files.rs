@@ -39,6 +39,8 @@ pub struct PublicFilesState {
     /// Garage S3 access-key-id for the drust-client key. Used by reconcile
     /// retry to deny bucket access when re-running a failed soft-delete.
     pub garage_client_key_id: String,
+    /// HMAC secret used by admin sign_url → drust-served signed URLs.
+    pub url_sign_secret: Arc<[u8; 32]>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +64,7 @@ pub struct Counts {
 }
 
 /// Disk usage view for the banner.
+#[derive(Clone)]
 pub struct DiskView {
     pub used_gb: String,
     pub total_gb: String,
@@ -79,7 +82,6 @@ struct FilesPage {
     total_bytes_human: String,
     max_upload_mb: u64,
     page: u32,
-    per_page: u32,
     total_pages: u32,
     prev_url: Option<String>,
     next_url: Option<String>,
@@ -211,7 +213,6 @@ pub async fn list_page(
         total_bytes_human: humanize_bytes(total_bytes),
         max_upload_mb: (state.max_upload_bytes / (1024 * 1024)) as u64,
         page: page_num,
-        per_page,
         total_pages,
         prev_url,
         next_url,
@@ -395,18 +396,17 @@ pub async fn upload_submit(
         .get(axum::http::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
+        && cl as usize > state.max_upload_bytes
     {
-        if cl as usize > state.max_upload_bytes {
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!(
-                    "upload exceeds {} MB limit ({} bytes provided)",
-                    state.max_upload_bytes / (1024 * 1024),
-                    cl
-                ),
-            )
-                .into_response();
-        }
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "upload exceeds {} MB limit ({} bytes provided)",
+                state.max_upload_bytes / (1024 * 1024),
+                cl
+            ),
+        )
+            .into_response();
     }
 
     // Step 2: parse + validate multipart fields.
@@ -691,11 +691,8 @@ async fn retry_one_orphan_bucket(
     meta: &Arc<Mutex<Connection>>,
     bucket_name: &str,
 ) -> anyhow::Result<()> {
-    match garage.lookup_bucket(bucket_name).await? {
-        Some(info) => {
-            garage.delete_bucket(&info.id).await?;
-        }
-        None => {} // already gone — clear the row anyway
+    if let Some(info) = garage.lookup_bucket(bucket_name).await? {
+        garage.delete_bucket(&info.id).await?;
     }
     meta.lock().await.execute(
         "DELETE FROM _orphan_buckets WHERE bucket_name = ?1",
@@ -865,7 +862,7 @@ async fn load_files(
     Ok((files, total_files, total_bytes.max(0) as u64, counts))
 }
 
-fn humanize_bytes(n: u64) -> String {
+pub fn humanize_bytes(n: u64) -> String {
     const K: u64 = 1024;
     if n < K {
         format!("{n} B")
@@ -998,31 +995,26 @@ pub async fn admin_sign_url(
         }));
     }
 
-    let garage = state.garage.clone().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "storage not configured".into(),
-        )
-    })?;
-
-    let bucket = crate::storage::files::bucket_for_upload(
-        &crate::storage::files::Owner::Admin,
-        crate::storage::files::Visibility::Private,
+    // Private: mint a drust-HMAC-signed URL that points at our public origin
+    // (not Garage's 127.0.0.1). The /drust/s/admin/<key> handler validates
+    // the token and streams bytes.
+    let download = req.download.unwrap_or(false);
+    let expires_ts = chrono::Utc::now().timestamp() + expires_in as i64;
+    let token = crate::storage::signed_url::mint(
+        &*state.url_sign_secret,
+        &crate::storage::signed_url::Owner::Admin,
+        &row.key,
+        expires_ts,
+        download,
     );
-    let download_name = if req.download.unwrap_or(false) {
-        Some(row.original_name.as_str())
-    } else {
-        None
-    };
-    let url = garage
-        .signed_get_url(
-            &bucket,
-            &row.key,
-            std::time::Duration::from_secs(expires_in),
-            download_name,
-        )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("sign: {e}")))?;
+    let url = crate::storage::signed_url::build_url(
+        &state.base_url,
+        &crate::storage::signed_url::Owner::Admin,
+        &row.key,
+        expires_ts,
+        download,
+        &token,
+    );
 
     let expires_at =
         (chrono::Utc::now() + chrono::Duration::seconds(expires_in as i64)).to_rfc3339();

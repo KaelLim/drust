@@ -28,6 +28,12 @@ pub struct Config {
     pub tenant_read_pool_size: usize,
     pub session_ttl_days: u64,
     pub storage: Option<StorageConfig>,
+    /// Comma-separated allow-list parsed from `DRUST_CORS_ORIGINS`.
+    /// Empty Vec disables CORS entirely (browsers will keep blocking
+    /// cross-origin fetch — same as before this feature existed).
+    /// Each entry must be a full origin like `https://app.example.com`
+    /// — no trailing slash, no path.
+    pub cors_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +136,14 @@ impl Config {
             tenant_read_pool_size: parse_num("DRUST_TENANT_READ_POOL_SIZE", 4)?,
             session_ttl_days: parse_num("DRUST_SESSION_TTL_DAYS", 7)?,
             storage,
+            cors_origins: opt("DRUST_CORS_ORIGINS")
+                .map(|s| {
+                    s.split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
         })
     }
 }

@@ -19,6 +19,10 @@ pub struct TenantsState {
     pub data_dir: PathBuf,
     pub garage: Option<Arc<GarageClient>>,
     pub garage_client_key_id: String,
+    /// Used by the admin tenant-files subpage to render disk banner + form cap.
+    pub max_upload_bytes: usize,
+    pub disk_min_free_pct: u8,
+    pub public_base_url: String,
 }
 
 #[derive(Template)]
@@ -31,6 +35,8 @@ struct TenantsListPage {
 
 struct TenantRow {
     id: String,
+    /// Short display of id (e.g. first 8 chars + "…" + last 4) for UI cells.
+    id_short: String,
     name: String,
     created_at: String,
     db_size_kb: u64,
@@ -38,9 +44,18 @@ struct TenantRow {
     files_display: String,
 }
 
+fn short_id(id: &str) -> String {
+    if id.len() <= 12 {
+        return id.to_string();
+    }
+    format!("{}…{}", &id[..8], &id[id.len() - 4..])
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateTenantJson {
-    pub id: String,
+    /// Optional — auto-generated UUID v4 when omitted.
+    #[serde(default)]
+    pub id: Option<String>,
     pub name: String,
     #[serde(default)]
     pub quota_db_mb: Option<i64>,
@@ -50,7 +65,6 @@ pub struct CreateTenantJson {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateTenantForm {
-    pub id: String,
     pub name: String,
 }
 
@@ -76,62 +90,6 @@ pub struct TenantInfo {
     pub created_at: String,
     pub quota_db_mb: i64,
     pub quota_rows: i64,
-}
-
-/// Create both tenant buckets and grant drust-client access.
-/// Idempotent-ish: if a bucket with that name already exists, treat as reuse.
-/// On any mid-sequence failure, attempts to compensate by deleting buckets
-/// this call created (not pre-existing ones).
-pub async fn provision_storage_for_tenant(
-    garage: &GarageClient,
-    drust_client_key_id: &str,
-    tenant_id: &str,
-) -> anyhow::Result<(String, String)> {
-    let pub_name = format!("tenant-{tenant_id}-pub");
-    let prv_name = format!("tenant-{tenant_id}-prv");
-
-    // Track whether we created each bucket (for targeted rollback).
-    let pub_lookup = garage.lookup_bucket(&pub_name).await?;
-    let pub_existed = pub_lookup.is_some();
-    let pub_id = match pub_lookup {
-        Some(info) => info.id,
-        None => garage.create_bucket(&pub_name).await?,
-    };
-
-    let result: anyhow::Result<String> = async {
-        garage.set_website(&pub_id, true).await?;
-        garage
-            .bucket_allow(&pub_id, drust_client_key_id, true, true, true)
-            .await?;
-
-        let prv_lookup = garage.lookup_bucket(&prv_name).await?;
-        let prv_id = match prv_lookup {
-            Some(info) => info.id,
-            None => garage.create_bucket(&prv_name).await?,
-        };
-        garage
-            .bucket_allow(&prv_id, drust_client_key_id, true, true, true)
-            .await?;
-        Ok(prv_id)
-    }
-    .await;
-
-    match result {
-        Ok(prv_id) => Ok((pub_id, prv_id)),
-        Err(e) => {
-            // Roll back only what THIS call created.
-            if !pub_existed {
-                let _ = garage.delete_bucket(&pub_id).await;
-            }
-            // Also clean up prv if we got as far as creating it. `delete_bucket`
-            // is idempotent (404 ok), so the lookup-then-delete heuristic is
-            // safe even under pathological concurrent creation.
-            if let Ok(Some(info)) = garage.lookup_bucket(&prv_name).await {
-                let _ = garage.delete_bucket(&info.id).await;
-            }
-            Err(e.context(format!("provisioning tenant-{tenant_id} buckets")))
-        }
-    }
 }
 
 pub fn valid_slug(s: &str) -> bool {
@@ -187,6 +145,7 @@ pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
                 .unwrap_or(0.0);
             let files_display = format!("{:.1} MB", files_mb);
             TenantRow {
+                id_short: short_id(&id),
                 id,
                 name,
                 created_at,
@@ -218,6 +177,43 @@ fn make_tenant_inner(
 ) -> anyhow::Result<CreatedResp> {
     if let Err(e) = validate_tenant_id(id) {
         anyhow::bail!("invalid tenant id: {e}");
+    }
+    // A prior tenant with the same id may be soft-deleted. Treat the id as
+    // free and hard-purge the old row + its tokens + on-disk data before
+    // inserting. If the existing row is still active (deleted_at IS NULL),
+    // reject with a clear error.
+    let existing: Option<Option<String>> = conn
+        .query_row(
+            "SELECT deleted_at FROM tenants WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(deleted_at) = existing {
+        if deleted_at.is_none() {
+            anyhow::bail!("tenant '{id}' already exists");
+        }
+        tracing::info!(tenant_id = %id, "recycling id from soft-deleted tenant");
+        conn.execute(
+            "DELETE FROM tokens WHERE tenant_id = ?1",
+            rusqlite::params![id],
+        )?;
+        conn.execute("DELETE FROM tenants WHERE id = ?1", rusqlite::params![id])?;
+        let dir = tenant_dir(data_dir, id);
+        if dir.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // Clear any matching _trash/<id>-<ts> subdirs left from soft-delete.
+        if let Ok(entries) = std::fs::read_dir(data_dir.join("_trash")) {
+            let prefix = format!("{id}-");
+            for entry in entries.flatten() {
+                if let Some(n) = entry.file_name().to_str()
+                    && n.starts_with(&prefix)
+                {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
     }
     conn.execute(
         "INSERT INTO tenants (id, name, quota_db_mb, quota_rows) VALUES (?1, ?2, ?3, ?4)",
@@ -266,31 +262,19 @@ fn make_tenant_inner(
 /// Roll back everything `make_tenant_inner` did for `id`: delete token rows,
 /// the tenant row, and the on-disk directory. Used when Garage provisioning
 /// fails after local state has already been written.
-fn rollback_local_tenant(conn: &mut rusqlite::Connection, data_dir: &std::path::Path, id: &str) {
-    if let Err(e) = conn.execute(
-        "DELETE FROM tokens WHERE tenant_id = ?1",
-        rusqlite::params![id],
-    ) {
-        tracing::warn!(tenant_id = %id, error = %e, "rollback: failed to delete token rows");
-    }
-    if let Err(e) = conn.execute("DELETE FROM tenants WHERE id = ?1", rusqlite::params![id]) {
-        tracing::warn!(tenant_id = %id, error = %e, "rollback: failed to delete tenant row");
-    }
-    let dir = tenant_dir(data_dir, id);
-    if let Err(e) = std::fs::remove_dir_all(&dir) {
-        tracing::warn!(tenant_id = %id, path = %dir.display(), error = %e, "rollback: failed to remove tenant dir");
-    }
-}
-
 pub async fn create_tenant_json(
     State(state): State<TenantsState>,
     Json(form): Json<CreateTenantJson>,
 ) -> Response {
     let mb = form.quota_db_mb.unwrap_or(500);
     let rows = form.quota_rows.unwrap_or(1_000_000);
+    let id = form
+        .id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let mut conn = state.session.meta.lock().await;
-    let resp = match make_tenant_inner(&mut conn, &state.data_dir, &form.id, &form.name, mb, rows) {
+    let resp = match make_tenant_inner(&mut conn, &state.data_dir, &id, &form.name, mb, rows) {
         Ok(resp) => resp,
         Err(e) => {
             let msg = e.to_string();
@@ -303,31 +287,9 @@ pub async fn create_tenant_json(
     };
     drop(conn);
 
-    if let Some(ref garage) = state.garage {
-        if garage.ping().await.is_err() {
-            let mut conn = state.session.meta.lock().await;
-            rollback_local_tenant(&mut conn, &state.data_dir, &form.id);
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Garage unreachable — tenant not created",
-            )
-                .into_response();
-        }
-        if let Err(e) =
-            provision_storage_for_tenant(garage.as_ref(), &state.garage_client_key_id, &form.id)
-                .await
-        {
-            let mut conn = state.session.meta.lock().await;
-            rollback_local_tenant(&mut conn, &state.data_dir, &form.id);
-            tracing::error!(tenant_id = %form.id, error = %e, "storage provisioning failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("storage provisioning failed: {e}"),
-            )
-                .into_response();
-        }
-    }
-
+    // Storage is fully shared (two buckets host-wide: `public` + `private`);
+    // per-tenant bucket provisioning is no longer needed. The new tenant's
+    // files will live under `<tenant-id>/<key>` inside those buckets.
     (StatusCode::CREATED, Json(resp)).into_response()
 }
 
@@ -335,179 +297,59 @@ pub async fn create_tenant_form(
     State(state): State<TenantsState>,
     Form(form): Form<CreateTenantForm>,
 ) -> Response {
+    // UUID v4 — user never types a slug. Display name is the human label.
+    let id = uuid::Uuid::new_v4().to_string();
     let mut conn = state.session.meta.lock().await;
-    let created = make_tenant_inner(
-        &mut conn,
-        &state.data_dir,
-        &form.id,
-        &form.name,
-        500,
-        1_000_000,
-    );
+    let created = make_tenant_inner(&mut conn, &state.data_dir, &id, &form.name, 500, 1_000_000);
     drop(conn);
 
     match created {
-        Ok(_) => {
-            if let Some(ref garage) = state.garage {
-                if garage.ping().await.is_err() {
-                    let mut conn = state.session.meta.lock().await;
-                    rollback_local_tenant(&mut conn, &state.data_dir, &form.id);
-                    return (
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Garage unreachable — tenant not created",
-                    )
-                        .into_response();
-                }
-                if let Err(e) = provision_storage_for_tenant(
-                    garage.as_ref(),
-                    &state.garage_client_key_id,
-                    &form.id,
-                )
-                .await
-                {
-                    let mut conn = state.session.meta.lock().await;
-                    rollback_local_tenant(&mut conn, &state.data_dir, &form.id);
-                    tracing::error!(tenant_id = %form.id, error = %e, "storage provisioning failed");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("storage provisioning failed: {e}"),
-                    )
-                        .into_response();
-                }
-            }
-            Redirect::to("/drust/admin/tenants").into_response()
-        }
+        Ok(_) => Redirect::to("/drust/admin/tenants").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
-}
-
-/// Revoke drust-client access to a tenant's buckets. Disables the pub bucket's
-/// website. Best-effort — on Garage failure, records the tenant in
-/// `_trash_pending_revokes` so the reconcile page can retry, and returns Ok
-/// so the caller can still complete the local soft-delete (SQLite move to _trash).
-///
-/// `meta` must NOT be held across the await in the caller; this function
-/// acquires the lock only on the error path (sync INSERT), so the lock is never
-/// held across an await point.
-pub async fn soft_delete_storage_for_tenant(
-    garage: &GarageClient,
-    meta: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
-    drust_client_key_id: &str,
-    tenant_id: &str,
-) -> anyhow::Result<()> {
-    let pub_name = format!("tenant-{tenant_id}-pub");
-    let prv_name = format!("tenant-{tenant_id}-prv");
-
-    // All Garage calls happen here — no lock held.
-    let result: anyhow::Result<()> = async {
-        if let Some(info) = garage.lookup_bucket(&pub_name).await? {
-            garage.bucket_deny(&info.id, drust_client_key_id).await?;
-            garage.set_website(&info.id, false).await?;
-        }
-        if let Some(info) = garage.lookup_bucket(&prv_name).await? {
-            garage.bucket_deny(&info.id, drust_client_key_id).await?;
-        }
-        Ok(())
-    }
-    .await;
-
-    if let Err(e) = &result {
-        tracing::warn!(tenant = tenant_id, error = %e,
-            "soft-delete Garage revoke failed — queueing for retry");
-        // Acquire lock only here — sync work only, no await while held.
-        let conn = meta.lock().await;
-        conn.execute(
-            "INSERT OR REPLACE INTO _trash_pending_revokes \
-             (tenant_id, detected_at, last_attempt_at, last_error) \
-             VALUES (?1, datetime('now'), datetime('now'), ?2)",
-            rusqlite::params![tenant_id, e.to_string()],
-        )?;
-    }
-    Ok(()) // Always succeed locally — caller still moves SQLite to _trash.
-}
-
-/// Re-grant drust-client access to a previously-soft-deleted tenant's buckets.
-/// Re-enables the pub bucket's website. Unlike soft_delete, restore REQUIRES
-/// Garage to be reachable — propagates the error so the caller can revert
-/// any local restore work (move dir back to _trash). Also clears the tenant's
-/// row in _trash_pending_revokes if present.
-pub async fn restore_storage_for_tenant(
-    garage: &GarageClient,
-    meta: &Arc<tokio::sync::Mutex<rusqlite::Connection>>,
-    drust_client_key_id: &str,
-    tenant_id: &str,
-) -> anyhow::Result<()> {
-    let pub_name = format!("tenant-{tenant_id}-pub");
-    let prv_name = format!("tenant-{tenant_id}-prv");
-
-    if let Some(info) = garage.lookup_bucket(&pub_name).await? {
-        garage
-            .bucket_allow(&info.id, drust_client_key_id, true, true, true)
-            .await?;
-        garage.set_website(&info.id, true).await?;
-    }
-    if let Some(info) = garage.lookup_bucket(&prv_name).await? {
-        garage
-            .bucket_allow(&info.id, drust_client_key_id, true, true, true)
-            .await?;
-    }
-
-    let conn = meta.lock().await;
-    conn.execute(
-        "DELETE FROM _trash_pending_revokes WHERE tenant_id = ?1",
-        rusqlite::params![tenant_id],
-    )?;
-    Ok(())
-}
-
-/// Delete both tenant buckets via Garage admin API. On any per-bucket failure
-/// (lookup or delete), record the bucket name in `_orphan_buckets` and
-/// continue — caller (janitor) always proceeds with local filesystem cleanup,
-/// so SQLite truth is the source even when Garage is misbehaving.
-///
-/// Returns `Ok(())` even on Garage errors — those are recorded and surfaced
-/// later via the reconcile page (task 22).
-pub async fn hard_delete_storage_for_tenant(
-    garage: &GarageClient,
-    meta: &Arc<tokio::sync::Mutex<rusqlite::Connection>>,
-    tenant_id: &str,
-) -> anyhow::Result<()> {
-    for suffix in ["pub", "prv"] {
-        let name = format!("tenant-{tenant_id}-{suffix}");
-        match garage.lookup_bucket(&name).await {
-            Ok(Some(info)) => {
-                if let Err(e) = garage.delete_bucket(&info.id).await {
-                    tracing::warn!(bucket = %name, error = %e,
-                        "hard-delete: bucket delete failed; recording orphan");
-                    let conn = meta.lock().await;
-                    let _ = conn.execute(
-                        "INSERT OR IGNORE INTO _orphan_buckets (bucket_name, detected_at, reason) \
-                         VALUES (?1, datetime('now'), 'tenant_hard_delete')",
-                        rusqlite::params![name],
-                    );
-                }
-            }
-            Ok(None) => { /* already gone — idempotent success */ }
-            Err(e) => {
-                tracing::warn!(bucket = %name, error = %e,
-                    "hard-delete: lookup failed; recording orphan");
-                let conn = meta.lock().await;
-                let _ = conn.execute(
-                    "INSERT OR IGNORE INTO _orphan_buckets (bucket_name, detected_at, reason) \
-                     VALUES (?1, datetime('now'), 'tenant_hard_delete')",
-                    rusqlite::params![name],
-                );
-            }
-        }
-    }
-    Ok(())
 }
 
 pub async fn soft_delete_tenant(
     State(state): State<TenantsState>,
     Path(id): Path<String>,
 ) -> Response {
-    // Phase 1: synchronous SQLite + fs work — hold lock only over sync ops.
+    // Delete the tenant's objects from shared Garage buckets first (outside
+    // the meta lock). Iterate _system_files and DELETE each object. Admin
+    // keeps its files — they live at the root of the shared buckets, not
+    // under this tenant's prefix.
+    if let Some(ref garage) = state.garage {
+        let rows: Vec<(String, String)> =
+            match crate::storage::tenant_db::open_read(&state.data_dir, &id) {
+                Ok(conn) => {
+                    match conn.prepare("SELECT key, visibility FROM _system_files") {
+                        Ok(mut stmt) => stmt
+                            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                            .map(|it| it.filter_map(Result::ok).collect())
+                            .unwrap_or_default(),
+                        Err(_) => vec![], // table missing = no files to clean
+                    }
+                }
+                Err(_) => vec![],
+            };
+        for (key, vis) in rows {
+            let visibility = if vis == "public" {
+                crate::storage::files::Visibility::Public
+            } else {
+                crate::storage::files::Visibility::Private
+            };
+            let bucket = crate::storage::files::bucket_for(visibility);
+            let object_key = crate::storage::files::compose_key(
+                &crate::storage::files::Owner::Tenant(id.clone()),
+                &key,
+            );
+            if let Err(e) = garage.delete_object_in(bucket, &object_key).await {
+                tracing::warn!(tenant = %id, key = %object_key, error = %e,
+                    "soft-delete: object delete failed (ignored)");
+            }
+        }
+    }
+
+    // Now the synchronous SQLite + fs work — hold lock only over sync ops.
     {
         let conn = state.session.meta.lock().await;
         let affected = conn
@@ -528,19 +370,6 @@ pub async fn soft_delete_tenant(
         if src.exists() {
             let _ = std::fs::rename(&src, &dst);
         }
-        // conn (MutexGuard) dropped here — safe to await below.
-    }
-
-    // Phase 2: Garage revoke (async). Lock is re-acquired inside
-    // soft_delete_storage_for_tenant only on the error path (sync INSERT).
-    if let Some(ref garage) = state.garage {
-        let _ = soft_delete_storage_for_tenant(
-            garage.as_ref(),
-            &state.session.meta,
-            &state.garage_client_key_id,
-            &id,
-        )
-        .await;
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -559,9 +388,12 @@ pub async fn soft_delete_tenant_form(
 struct AdminTenantFileRow {
     key: String,
     original_name: String,
+    content_type: String,
     size_bytes: i64,
+    size_human: String,
     visibility: String,
     uploaded_at: String,
+    public_url: String,
 }
 
 #[derive(Template)]
@@ -573,11 +405,18 @@ struct TenantFilesAdminPage {
     files: Vec<AdminTenantFileRow>,
     total_files: usize,
     used_mb_display: String,
+    storage_available: bool,
+    max_upload_mb: u64,
+    disk: crate::mgmt::public_files::DiskView,
+    /// Driver list for `_collection_sidebar.html`.
+    collections: Vec<crate::storage::schema::Collection>,
+    /// Always `"_system_files"` here — kept for sidebar `.on` matching.
+    active_coll: String,
 }
 
 /// GET /admin/tenants/{id}/files
-/// Renders a read-only list of files in the tenant's _system_files table.
-/// Sign URL button is deferred — see commit message.
+/// Renders the tenant's _system_files with upload form + per-row actions.
+/// Admin uploads go to the tenant's own buckets (tenant-{id}-{pub,prv}).
 pub async fn tenant_files_admin_page(
     State(state): State<TenantsState>,
     Path(tenant_id): Path<String>,
@@ -603,59 +442,77 @@ pub async fn tenant_files_admin_page(
         }
     };
 
+    let disk = crate::mgmt::public_files::build_disk_view();
+    let max_upload_mb = (state.max_upload_bytes / (1024 * 1024)) as u64;
+    let storage_available = state.garage.is_some();
+
+    let empty_page = |tenant_id: String, tenant_name: String| -> Response {
+        // Sidebar still renders the virtual rows even when the tenant DB
+        // hasn't been opened; `collections: vec![]` is fine here.
+        Html(
+            TenantFilesAdminPage {
+                version: env!("CARGO_PKG_VERSION"),
+                tenant_id,
+                tenant_name,
+                files: vec![],
+                total_files: 0,
+                used_mb_display: "0.0 MB".into(),
+                storage_available,
+                max_upload_mb,
+                disk: disk.clone(),
+                collections: vec![],
+                active_coll: "_system_files".to_string(),
+            }
+            .render()
+            .unwrap(),
+        )
+        .into_response()
+    };
+
     // Open the tenant's data.sqlite read-only.
     let conn = match open_read(&state.data_dir, &tenant_id) {
         Ok(c) => c,
-        Err(_) => {
-            // Tenant exists in meta but has no data.sqlite (e.g. freshly created).
-            // Return an empty list page.
-            return Html(
-                TenantFilesAdminPage {
-                    version: env!("CARGO_PKG_VERSION"),
-                    tenant_id: tenant_id.clone(),
-                    tenant_name,
-                    files: vec![],
-                    total_files: 0,
-                    used_mb_display: "0.0 MB".into(),
-                }
-                .render()
-                .unwrap(),
-            )
-            .into_response();
-        }
+        Err(_) => return empty_page(tenant_id, tenant_name),
     };
 
     // Query _system_files. Table may not exist if Garage was disabled at creation time.
     let mut stmt = match conn.prepare(
-        "SELECT key, original_name, size_bytes, visibility, uploaded_at \
+        "SELECT id, key, original_name, content_type, size_bytes, visibility, uploaded_at \
          FROM _system_files ORDER BY uploaded_at DESC",
     ) {
         Ok(s) => s,
-        Err(_) => {
-            // Table doesn't exist — treat as empty.
-            return Html(
-                TenantFilesAdminPage {
-                    version: env!("CARGO_PKG_VERSION"),
-                    tenant_id: tenant_id.clone(),
-                    tenant_name,
-                    files: vec![],
-                    total_files: 0,
-                    used_mb_display: "0.0 MB".into(),
-                }
-                .render()
-                .unwrap(),
-            )
-            .into_response();
-        }
+        Err(_) => return empty_page(tenant_id, tenant_name),
     };
 
+    let base_url = &state.public_base_url;
     let files: Vec<AdminTenantFileRow> = match stmt.query_map([], |r| {
+        let _id: i64 = r.get(0)?;
+        let key: String = r.get(1)?;
+        let original_name: String = r.get(2)?;
+        let content_type: Option<String> = r.get(3)?;
+        let size_bytes: i64 = r.get(4)?;
+        let visibility: String = r.get(5)?;
+        let uploaded_at: String = r.get(6)?;
+        let vis_enum = if visibility == "public" {
+            crate::storage::files::Visibility::Public
+        } else {
+            crate::storage::files::Visibility::Private
+        };
+        let public_url = crate::storage::files::build_public_url(
+            base_url,
+            &crate::storage::files::Owner::Tenant(tenant_id.clone()),
+            vis_enum,
+            &key,
+        );
         Ok(AdminTenantFileRow {
-            key: r.get(0)?,
-            original_name: r.get(1)?,
-            size_bytes: r.get(2)?,
-            visibility: r.get(3)?,
-            uploaded_at: r.get(4)?,
+            key,
+            original_name,
+            content_type: content_type.unwrap_or_else(|| "application/octet-stream".into()),
+            size_bytes,
+            size_human: crate::mgmt::public_files::humanize_bytes(size_bytes as u64),
+            visibility,
+            uploaded_at,
+            public_url,
         })
     }) {
         Ok(rows) => rows.filter_map(Result::ok).collect(),
@@ -666,6 +523,8 @@ pub async fn tenant_files_admin_page(
     let total_bytes: i64 = files.iter().map(|f| f.size_bytes).sum();
     let used_mb_display = format!("{:.1} MB", total_bytes as f64 / 1_048_576.0);
 
+    let collections = crate::storage::schema::list_collections(&conn).unwrap_or_default();
+
     Html(
         TenantFilesAdminPage {
             version: env!("CARGO_PKG_VERSION"),
@@ -674,6 +533,11 @@ pub async fn tenant_files_admin_page(
             files,
             total_files,
             used_mb_display,
+            storage_available,
+            max_upload_mb,
+            disk,
+            collections,
+            active_coll: "_system_files".to_string(),
         }
         .render()
         .unwrap(),

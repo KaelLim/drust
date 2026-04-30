@@ -282,11 +282,27 @@ impl GarageClient {
     }
 
     pub async fn set_website(&self, bucket_id: &str, enabled: bool) -> anyhow::Result<()> {
+        // Garage v1 admin API: PUT /v1/bucket/{id} with a `websiteAccess`
+        // subobject. (There is no `/v1/bucket/{id}/website` endpoint —
+        // that 404s as "Unknown API endpoint".)
+        let body = if enabled {
+            serde_json::json!({
+                "websiteAccess": {
+                    "enabled": true,
+                    "indexDocument": "index.html",
+                    "errorDocument": "error.html"
+                }
+            })
+        } else {
+            serde_json::json!({
+                "websiteAccess": { "enabled": false }
+            })
+        };
         let resp = self
             .admin
-            .post(self.admin_url(&format!("/v1/bucket/{bucket_id}/website")))
+            .put(self.admin_url(&format!("/v1/bucket/{bucket_id}")))
             .bearer_auth(&self.admin_token)
-            .json(&serde_json::json!({ "enabled": enabled }))
+            .json(&body)
             .send()
             .await?;
         let status = resp.status();
@@ -402,6 +418,7 @@ impl GarageClient {
     }
 
     /// Cross-bucket PUT.
+    #[allow(clippy::too_many_arguments)]
     pub async fn put_object_in(
         &self,
         bucket: &str,

@@ -24,7 +24,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/tenants/{{ tenant_id }}/{{ coll_name }}</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_id }}</a>/{{ coll_name }}</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -45,23 +45,53 @@
       {% include "_collection_sidebar.html" %}
 
       <main class="main"><div class="page page-wide">
-        <nav class="crumbs">
-          <a href="/drust/admin/tenants">drust</a>
-          <span class="sep">/</span>
-          <a href="/drust/admin/tenants/{{ tenant_id }}">{{ tenant_id }}</a>
-        </nav>
-
         <div class="pagehead">
           <div>
-            <h1><span style="font-family:var(--mono);font-weight:500;">{{ tenant_id }}</span> / <span style="font-family:var(--mono);font-weight:500;color:var(--accent);">{{ coll_name }}</span></h1>
+            <h1>{{ coll_name }}</h1>
             <div class="meta">
               <b>{{ total_rows }}</b> records · <b>{{ fields.len() }}</b> fields
             </div>
           </div>
+          <nav class="tabs" aria-label="Collection view">
+            <a class="tab{% if active_tab == "data" %} on{% endif %}"
+               href="{{ tab_data_url }}">Data</a>
+            <a class="tab{% if active_tab == "schema" %} on{% endif %}"
+               href="{{ tab_schema_url }}">Schema</a>
+          </nav>
         </div>
 
+        {% if active_tab == "schema" %}
+        <div class="card">
+          <div class="card-head">
+            <span>schema <span class="count">· {{ fields.len() }} fields</span></span>
+          </div>
+          <table class="data schema-grid">
+            <thead>
+              <tr>
+                <th style="width:200px;">field</th>
+                <th style="width:140px;">type</th>
+                <th style="width:100px;">nullable</th>
+                <th style="width:80px;">pk</th>
+                <th>default</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in fields %}
+              <tr>
+                <td>{{ f.name }}</td>
+                <td class="type">{{ f.sql_type }}</td>
+                <td class="{% if !f.nullable %}muted-cell{% endif %}">{% if f.nullable %}yes{% else %}no{% endif %}</td>
+                <td>{% if f.pk %}<span class="chip ok"><i class="dot"></i>pk</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
+                <td class="{% if let Some(d) = f.default_value %}mono-cell{% else %}null{% endif %}">{% if let Some(d) = f.default_value %}{{ d }}{% else %}NULL{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
         <div class="card">
           <form method="get" class="toolbar">
+            <input type="hidden" name="tab" value="data">
             <div class="field">
               <label>filter · sql where fragment</label>
               <div class="input-prefix">
@@ -114,36 +144,6 @@
             <span class="spacer"></span>
           </div>
 
-          <div style="padding:14px 16px 0;border-bottom:1px solid var(--line);">
-            <h3 style="font-family:var(--mono);font-size:11.5px;color:var(--muted);text-transform:lowercase;letter-spacing:0.03em;margin:0 0 8px;">
-              schema
-            </h3>
-            <div style="border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-bottom:14px;">
-              <table class="data schema-grid">
-                <thead>
-                  <tr>
-                    <th style="width:200px;">field</th>
-                    <th style="width:140px;">type</th>
-                    <th style="width:100px;">nullable</th>
-                    <th style="width:80px;">pk</th>
-                    <th>default</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for f in fields %}
-                  <tr>
-                    <td>{{ f.name }}</td>
-                    <td class="type">{{ f.sql_type }}</td>
-                    <td class="{% if !f.nullable %}muted-cell{% endif %}">{% if f.nullable %}yes{% else %}no{% endif %}</td>
-                    <td>{% if f.pk %}<span class="chip ok"><i class="dot"></i>pk</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
-                    <td class="{% if let Some(d) = f.default_value %}mono-cell{% else %}null{% endif %}">{% if let Some(d) = f.default_value %}{{ d }}{% else %}NULL{% endif %}</td>
-                  </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
           <div class="records-scroll">
             {% if rows.is_empty() %}
             <div class="empty" style="padding:56px 24px 40px;">
@@ -187,6 +187,7 @@
           </div>
           {% endif %}
         </div>
+        {% endif %}
       </div></main>
     </div>
   </div>

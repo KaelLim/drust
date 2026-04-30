@@ -25,6 +25,9 @@ pub struct MgmtState {
     /// Minimum free-disk percentage before uploads are refused (507).
     /// Sourced from `DRUST_DISK_MIN_FREE_PCT`; default 20.
     pub disk_min_free_pct: u8,
+    /// 32-byte HMAC secret for drust-minted signed URLs. Generated at boot;
+    /// signed URLs do not survive a restart.
+    pub url_sign_secret: Arc<[u8; 32]>,
 }
 
 #[derive(Template)]
@@ -149,6 +152,10 @@ impl MgmtState {
             PublicFilesState, admin_sign_url, admin_stream_bytes, delete_submit,
             list_page as public_files_list_page, reconcile_apply, reconcile_page, upload_submit,
         };
+        use crate::mgmt::tenant_files::{
+            TenantFilesState, delete_one as tfiles_delete, sign_url as tfiles_sign,
+            stream_bytes as tfiles_stream, upload as tfiles_upload,
+        };
         use crate::mgmt::tenants::{
             TenantsState, create_tenant_form, create_tenant_json, list_page_axum,
             soft_delete_tenant, soft_delete_tenant_form, tenant_files_admin_page,
@@ -160,9 +167,12 @@ impl MgmtState {
         };
         let tenants_state = TenantsState {
             session: session.clone(),
-            data_dir,
+            data_dir: data_dir.clone(),
             garage: self.garage.clone(),
             garage_client_key_id: self.garage_client_key_id.clone(),
+            max_upload_bytes: self.max_upload_bytes,
+            disk_min_free_pct: self.disk_min_free_pct,
+            public_base_url: self.public_base_url.clone(),
         };
         let public_files_state = PublicFilesState {
             session: session.clone(),
@@ -172,6 +182,21 @@ impl MgmtState {
             max_upload_bytes: self.max_upload_bytes,
             disk_min_free_pct: self.disk_min_free_pct,
             garage_client_key_id: self.garage_client_key_id.clone(),
+            url_sign_secret: self.url_sign_secret.clone(),
+        };
+        let tenant_files_state = TenantFilesState {
+            garage: self.garage.clone(),
+            data_root: data_dir.clone(),
+            disk_min_free_pct: self.disk_min_free_pct,
+            max_upload_bytes: self.max_upload_bytes,
+            public_base_url: self.public_base_url.clone(),
+            url_sign_secret: self.url_sign_secret.clone(),
+        };
+        let signed_bytes_state = crate::mgmt::signed_bytes::SignedBytesState {
+            meta: self.meta.clone(),
+            data_root: data_dir,
+            garage: self.garage.clone(),
+            url_sign_secret: self.url_sign_secret.clone(),
         };
 
         let public = Router::new()
@@ -189,6 +214,18 @@ impl MgmtState {
                 get(legacy_reconcile_redirect),
             );
 
+        // Unauth public signed-bytes endpoints — token validates in the handler.
+        let signed_router = Router::new()
+            .route(
+                "/s/admin/{key}",
+                get(crate::mgmt::signed_bytes::admin_signed_bytes),
+            )
+            .route(
+                "/s/t/{tenant}/{key}",
+                get(crate::mgmt::signed_bytes::tenant_signed_bytes),
+            )
+            .with_state(signed_bytes_state);
+
         // Tenant admin sub-router (existing behaviour).
         let tenants_router = Router::new()
             .route("/admin/tenants", get(list_page_axum))
@@ -199,7 +236,11 @@ impl MgmtState {
                 axum::routing::delete(soft_delete_tenant),
             )
             .route("/admin/tenants/{id}/delete", post(soft_delete_tenant_form))
-            .route("/admin/tenants/{id}", get(super::tokens::detail_page))
+            .route("/admin/tenants/{id}", get(super::tokens::detail_redirect))
+            .route(
+                "/admin/tenants/{id}/_api_keys",
+                get(super::tokens::api_keys_page),
+            )
             .route(
                 "/admin/api/tenants/{id}/tokens/{role}/reroll",
                 post(super::tokens::reroll_token_json),
@@ -238,14 +279,34 @@ impl MgmtState {
             .route("/admin/files/{key}/sign", post(admin_sign_url))
             .with_state(public_files_state);
 
-        let protected =
-            tenants_router
-                .merge(public_files_router)
-                .layer(axum::middleware::from_fn_with_state(
-                    session,
-                    admin_session_layer,
-                ));
+        // Admin-scoped tenant files sub-router — uploads land in the tenant's
+        // own buckets (tenant-{id}-pub / tenant-{id}-prv) and its data.sqlite
+        // _system_files. Reuses the tenant-side handlers unchanged; admin
+        // auth is applied via `protected` below.
+        let admin_tenant_files_router = Router::new()
+            .route(
+                "/admin/tenants/{id}/files/upload",
+                post(tfiles_upload).layer(DefaultBodyLimit::max(self.max_upload_bytes)),
+            )
+            .route(
+                "/admin/tenants/{id}/files/{key}",
+                axum::routing::delete(tfiles_delete),
+            )
+            .route("/admin/tenants/{id}/files/{key}/sign", post(tfiles_sign))
+            .route("/admin/tenants/{id}/files/{key}/bytes", get(tfiles_stream))
+            .with_state(tenant_files_state);
 
-        public.merge(legacy_redirects).merge(protected)
+        let protected = tenants_router
+            .merge(public_files_router)
+            .merge(admin_tenant_files_router)
+            .layer(axum::middleware::from_fn_with_state(
+                session,
+                admin_session_layer,
+            ));
+
+        public
+            .merge(legacy_redirects)
+            .merge(signed_router)
+            .merge(protected)
     }
 }

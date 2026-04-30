@@ -1,9 +1,20 @@
 {% macro api_key_card(role, chip_class, scopes, info, tenant_id) %}
-<div style="border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;background:var(--bg-2);">
+<div style="border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;background:var(--bg-2);{% if role == "service" %}border-color:var(--warn-line);{% endif %}">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
     <span class="{{ chip_class }}"><i class="dot"></i>{{ role }}</span>
     <span class="meta" style="font-family:var(--mono);font-size:16px;color:var(--muted);">{{ scopes }}</span>
   </div>
+  {% if role == "service" %}
+  <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;margin-bottom:14px;background:var(--warn-soft);border:1px solid var(--warn-line);border-radius:var(--radius);font-family:var(--mono);font-size:14px;line-height:1.5;color:var(--text-soft);">
+    <span style="color:var(--warn);font-size:16px;line-height:1.3;flex-shrink:0;">⚠</span>
+    <div>
+      <b style="color:var(--warn);">Master key — never embed in browser JS or public repos.</b>
+      Anyone holding this token can drop tables, delete every row, and alter the schema on this tenant.
+      For browser apps, keep this key on a backend that proxies scoped endpoints to the frontend; or use the
+      <span class="chip"><i class="dot"></i>anon</span> key (read-only) above for direct fetch.
+    </div>
+  </div>
+  {% endif %}
   {% if let Some(info) = info %}
   {% if let Some(pt) = info.plaintext %}
   <div class="key-row">
@@ -46,8 +57,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_id }}</title>
-<meta name="description" content="drust admin — tenant {{ tenant_id }}: API keys (anon + service) and one-click Claude Code MCP server setup.">
+<title>drust admin — {{ tenant_name }} / _api_keys</title>
+<meta name="description" content="drust admin — tenant {{ tenant_name }}: API keys (anon + service) and one-click Claude Code MCP server setup.">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -56,7 +67,7 @@
 <div class="macwin">
   <div class="macwin-title">
     <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_id }}</span></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_name }}/_api_keys</span></span>
     <span></span>
   </div>
   <div class="macwin-body">
@@ -67,7 +78,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/tenants/{{ tenant_id }}</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/{{ tenant_name }}/_api_keys</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -84,66 +95,82 @@
       </div>
     </header>
 
-    <main class="main"><div class="page">
-      <nav class="crumbs">
-        <a href="/drust/admin/tenants">← all tenants</a>
-        <span class="sep">/</span>
-        <span class="here">{{ tenant_id }}</span>
-      </nav>
+    <div class="shell">
+      {% include "_collection_sidebar.html" %}
 
-      <div class="pagehead">
-        <div>
-          <h1>Tenant: <span style="font-family:var(--mono);font-weight:500;">{{ tenant_id }}</span></h1>
-          <div class="meta">
-            <b>{{ tenant_name }}</b> · created {{ created_at }}
-            <span style="margin:0 10px;">·</span>
-            <a href="/drust/admin/tenants/{{ tenant_id }}/collections"><svg class="icon" aria-hidden="true"><use href="#i-db"/></svg> browse data →</a>
+      <main class="main"><div class="page page-wide">
+        <div class="pagehead">
+          <div>
+            <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:18px;font-weight:400;">/ _api_keys</span></h1>
+            <div class="meta" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <button type="button" class="btn btn-sm btn-ghost" style="padding:0 6px;height:24px;font-size:11px;" data-copy-text="{{ tenant_id }}" title="copy full id">copy id</button>
+              <span style="color:var(--muted-2);">·</span>
+              <span>created {{ created_at }}</span>
+            </div>
           </div>
         </div>
-      </div>
+        <script>
+          document.querySelectorAll('[data-copy-text]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              navigator.clipboard.writeText(b.getAttribute('data-copy-text')).then(function () {
+                var orig = b.textContent; b.textContent = 'copied ✓';
+                if (window.chonkReact) window.chonkReact('happy');
+                setTimeout(function () { b.textContent = orig; }, 1200);
+              });
+            });
+          });
+        </script>
 
-      <div class="card">
-        <div class="card-head">
-          <span>API keys</span>
-          <span class="card-head-actions">2 fixed slots per tenant — anon (read-only) and service (full access)</span>
+        <div class="card">
+          <div class="card-head">
+            <span>API keys</span>
+            <span class="card-head-actions"></span>
+          </div>
+          <div class="card-body" style="display:grid;grid-template-columns:1fr;gap:22px;">
+            {% call api_key_card("anon", "chip", "read · list · subscribe · SELECT", anon, tenant_id) %}
+            {% call api_key_card("service", "chip ok", "full · create · update · delete · schema", service, tenant_id) %}
+          </div>
         </div>
-        <div class="card-body" style="display:grid;grid-template-columns:1fr;gap:22px;">
-          {% call api_key_card("anon", "chip", "read · list · subscribe · SELECT", anon, tenant_id) %}
-          {% call api_key_card("service", "chip ok", "full · create · update · delete · schema", service, tenant_id) %}
-        </div>
-      </div>
 
-      <div class="card" style="margin-top:24px;">
-        <div class="card-head">
-          <span><svg class="icon" style="width:0.95em;height:0.95em;vertical-align:-2px;margin-right:6px;"><use href="#i-braces"/></svg>MCP server</span>
-          <span class="card-head-actions">service-key-only · streamable http · claude code</span>
-        </div>
-        <div class="card-body">
-          {% if let Some(svc) = service %}
-            {% if let Some(_pt) = svc.plaintext %}
-          <div style="font-family:var(--mono);font-size:16px;color:var(--text-soft);margin:0 0 12px;">
-            Register this tenant as an MCP server for Claude Code — copy and run once in your terminal:
+        <div class="card" style="margin-top:24px;">
+          <div class="card-head">
+            <span><svg class="icon" style="width:0.95em;height:0.95em;vertical-align:-2px;margin-right:6px;"><use href="#i-braces"/></svg>MCP server</span>
+            <span class="card-head-actions">claude code</span>
           </div>
-          <div class="key-row">
-            <code class="key" id="mcp-cmd-preview" data-tenant="{{ tenant_id }}" style="font-size:16px;">loading…</code>
-            <button class="key-act" type="button" onclick="copyMcpCommand(this)" title="copy `claude mcp add-json` command" aria-label="copy claude mcp add-json command"><svg class="icon"><use href="#i-copy"/></svg></button>
-          </div>
-          <div style="font-family:var(--mono);font-size:15px;color:var(--muted);margin-top:14px;">
-            After success, Claude Code exposes all 13 drust tools under server name <code style="font-size:13px;">drust-{{ tenant_id }}</code>. To remove later: <code style="font-size:13px;">claude mcp remove drust-{{ tenant_id }}</code>.
-          </div>
+          <div class="card-body">
+            {% if let Some(svc) = service %}
+              {% if let Some(_pt) = svc.plaintext %}
+            <div style="font-family:var(--mono);font-size:16px;color:var(--text-soft);margin:0 0 8px;">
+              Register — copy &amp; run once in terminal:
+            </div>
+            <div class="key-row">
+              <code class="key" id="mcp-cmd-preview" data-tenant="{{ tenant_id }}" style="font-size:16px;">loading…</code>
+              <button class="key-act" type="button" onclick="copyMcpCommand(this)" title="copy `claude mcp add-json` command" aria-label="copy claude mcp add-json command"><svg class="icon"><use href="#i-copy"/></svg></button>
+            </div>
+            <details style="margin-top:18px;">
+              <summary style="font-family:var(--mono);font-size:16px;color:var(--muted);cursor:pointer;">Remove command…</summary>
+              <div class="key-row" style="margin-top:8px;">
+                <code class="key" id="mcp-remove-preview" style="font-size:16px;">claude mcp remove drust-{{ tenant_id }}</code>
+                <button class="key-act" type="button" onclick="copyMcpRemove(this)" title="copy `claude mcp remove` command" aria-label="copy claude mcp remove command"><svg class="icon"><use href="#i-copy"/></svg></button>
+              </div>
+            </details>
+            <div style="font-family:var(--mono);font-size:15px;color:var(--muted);margin-top:14px;">
+              After register, Claude Code exposes all 13 drust tools under server name <code style="font-size:13px;">drust-{{ tenant_id }}</code>.
+            </div>
+              {% else %}
+            <div style="font-family:var(--mono);font-size:16px;color:var(--muted);">
+              Legacy service key — plaintext not stored, so the one-click command can't be generated. Reroll the service key above to enable MCP setup.
+            </div>
+              {% endif %}
             {% else %}
-          <div style="font-family:var(--mono);font-size:16px;color:var(--muted);">
-            Legacy service key — plaintext not stored, so the one-click command can't be generated. Reroll the service key above to enable MCP setup.
-          </div>
+            <div style="font-family:var(--mono);font-size:16px;color:var(--muted);">
+              No service key yet. Generate one in the card above to enable MCP access.
+            </div>
             {% endif %}
-          {% else %}
-          <div style="font-family:var(--mono);font-size:16px;color:var(--muted);">
-            No service key yet. Generate one in the card above to enable MCP access.
           </div>
-          {% endif %}
         </div>
-      </div>
-    </div></main>
+      </div></main>
+    </div>
   </div>
 </div>
 {% include "_mascot.html" %}
@@ -184,6 +211,7 @@
       el.setAttribute('data-revealed', '1');
       _setIcon(btn, 'i-eye-off');
       btn.title = 'hide';
+      if (window.chonkReact) window.chonkReact('curious', 700);
     }
   }
   function copyKey(id, btn) {
@@ -191,15 +219,13 @@
     navigator.clipboard.writeText(el.getAttribute('data-plain')).then(function () {
       _setIcon(btn, 'i-check');
       btn.classList.add('is-ok');
+      if (window.chonkReact) window.chonkReact('happy');
       setTimeout(function () {
         _setIcon(btn, 'i-copy');
         btn.classList.remove('is-ok');
       }, 1500);
     });
   }
-  // Compose the `claude mcp add-json` command for the current tenant.
-  // maskToken=true → replaces the bearer token with a dotted preview;
-  // false → real token (used by the copy action).
   function _buildMcpCommand(tenantId, maskToken) {
     var keyEl = document.getElementById('key-service');
     if (!keyEl) return null;
@@ -232,6 +258,20 @@
     navigator.clipboard.writeText(cmd).then(function () {
       _setIcon(btn, 'i-check');
       btn.classList.add('is-ok');
+      if (window.chonkReact) window.chonkReact('happy', 1100);
+      setTimeout(function () {
+        _setIcon(btn, 'i-copy');
+        btn.classList.remove('is-ok');
+      }, 1500);
+    });
+  }
+  function copyMcpRemove(btn) {
+    var preview = document.getElementById('mcp-remove-preview');
+    if (!preview) return;
+    navigator.clipboard.writeText(preview.textContent.trim()).then(function () {
+      _setIcon(btn, 'i-check');
+      btn.classList.add('is-ok');
+      if (window.chonkReact) window.chonkReact('happy');
       setTimeout(function () {
         _setIcon(btn, 'i-copy');
         btn.classList.remove('is-ok');

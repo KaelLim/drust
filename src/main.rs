@@ -41,8 +41,6 @@ async fn main() -> anyhow::Result<()> {
         cfg.tenant_read_pool_size,
     ));
     let bus = EventBus::new();
-    let mcp_reg = Arc::new(McpRegistry::with_bus(tenants.clone(), bus.clone()));
-    let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 
     let garage = match &cfg.storage {
         Some(sc) => match drust::storage::garage::GarageClient::new(sc) {
@@ -85,6 +83,25 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.disk_min_free_pct)
         .unwrap_or(20);
 
+    // HMAC secret for drust-minted signed URLs. In-memory only: a restart
+    // invalidates live signed URLs, which is acceptable since the default
+    // TTL is 1 hour.
+    let url_sign_secret: Arc<[u8; 32]> = {
+        use rand::RngCore;
+        let mut b = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut b);
+        Arc::new(b)
+    };
+
+    let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
+        tenants.clone(),
+        bus.clone(),
+        garage.clone(),
+        cfg.public_base_url.clone(),
+        url_sign_secret.clone(),
+    ));
+    let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
+
     let mgmt_state = MgmtState {
         meta: meta.clone(),
         session_ttl_days: cfg.session_ttl_days,
@@ -93,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
         max_upload_bytes,
         garage_client_key_id,
         disk_min_free_pct,
+        url_sign_secret: url_sign_secret.clone(),
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
@@ -107,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
         disk_min_free_pct,
         max_upload_bytes,
         public_base_url: cfg.public_base_url.clone(),
+        url_sign_secret: url_sign_secret.clone(),
     });
 
     let tenant_stack = TenantStack {
@@ -119,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
         bus: bus.clone(),
         mcp: mcp_http,
         files: tenant_files_state,
+        cors_origins: cfg.cors_origins.clone(),
     };
     let tenant_router = build_tenant_router(tenant_stack);
 

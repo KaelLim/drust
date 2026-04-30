@@ -1,5 +1,7 @@
 use crate::auth::bearer::{generate_token, hash_token};
 use crate::mgmt::tenants::TenantsState;
+use crate::storage::schema::{Collection, list_collections};
+use crate::storage::tenant_db::open_read;
 use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -9,13 +11,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(Template)]
-#[template(path = "tenant_detail.html")]
-struct DetailPage {
+#[template(path = "tenant_api_keys.html")]
+struct ApiKeysPage {
     tenant_id: String,
     tenant_name: String,
     created_at: String,
     anon: Option<TokenSlotInfo>,
     service: Option<TokenSlotInfo>,
+    /// Driver list for `_collection_sidebar.html`. Empty Vec is fine — the
+    /// sidebar still renders the virtual `_api_keys` and `_system_files` rows.
+    collections: Vec<Collection>,
+    active_coll: String,
     version: &'static str,
 }
 
@@ -130,7 +136,11 @@ pub async fn reroll_token_form(
     if !resp.status().is_success() {
         return resp;
     }
-    Redirect::to(&format!("/drust/admin/tenants/{}", tenant_id)).into_response()
+    Redirect::to(&format!(
+        "/drust/admin/tenants/{}/_api_keys",
+        tenant_id
+    ))
+    .into_response()
 }
 
 fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option<TokenSlotInfo> {
@@ -160,7 +170,21 @@ fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option
     })
 }
 
-pub async fn detail_page(
+/// `GET /admin/tenants/{id}` — preserved as a 302 to `/_api_keys`. The old
+/// stand-alone detail page was folded into the 2-pane collection shell so the
+/// admin UI is now two pages instead of three.
+pub async fn detail_redirect(Path(tenant_id): Path<String>) -> Response {
+    Redirect::to(&format!(
+        "/drust/admin/tenants/{}/_api_keys",
+        tenant_id
+    ))
+    .into_response()
+}
+
+/// `GET /admin/tenants/{id}/_api_keys` — virtual collection that renders the
+/// API key cards + MCP setup card inside the same 2-pane shell as a real
+/// collection page. The sidebar's `_api_keys` row links here.
+pub async fn api_keys_page(
     State(state): State<TenantsState>,
     Path(tenant_id): Path<String>,
 ) -> Response {
@@ -178,13 +202,25 @@ pub async fn detail_page(
     };
     let anon = read_slot(&conn, &tenant_id, "anon");
     let service = read_slot(&conn, &tenant_id, "service");
+    drop(conn);
+
+    // Load collections for the sidebar. A failure here (DB missing, fresh
+    // tenant pre-write) is non-fatal — the sidebar still shows the virtual
+    // rows (`_api_keys`, `_system_files`).
+    let collections = open_read(&state.data_dir, &tenant_id)
+        .ok()
+        .and_then(|c| list_collections(&c).ok())
+        .unwrap_or_default();
+
     Html(
-        DetailPage {
+        ApiKeysPage {
             tenant_id: tenant_id.clone(),
             tenant_name: name,
             created_at: created,
             anon,
             service,
+            collections,
+            active_coll: "_api_keys".to_string(),
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()

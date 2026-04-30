@@ -5,4 +5,5 @@ pub mod meta;
 pub mod pool;
 pub mod quota;
 pub mod schema;
+pub mod signed_url;
 pub mod tenant_db;

@@ -24,7 +24,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/system/files</span>
+        <span class="path">~/<a href="/drust/admin/tenants">system</a>/files</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -42,12 +42,6 @@
     </header>
 
     <main class="main"><div class="page">
-      <nav class="crumbs">
-        <a href="/drust/admin/tenants">admin</a>
-        <span class="sep">/</span>
-        <span class="here">files</span>
-      </nav>
-
       <div class="pagehead">
         <div>
           <h1>Files</h1>
@@ -88,24 +82,24 @@
             </div>
 
             <div class="upload-fields">
-              <fieldset>
-                <legend>Visibility</legend>
-                <label><input type="radio" name="visibility" value="public" checked> public</label>
-                <label><input type="radio" name="visibility" value="private"> private</label>
-              </fieldset>
-              <fieldset>
-                <legend>Disposition</legend>
-                <label><input type="radio" name="disposition" value="inline" checked> inline (preview)</label>
-                <label><input type="radio" name="disposition" value="attachment"> attachment (download)</label>
-              </fieldset>
-              <label class="cache-cell">
-                <span>Cache-Control (optional)</span>
-                <input type="text" name="cache_control" placeholder="e.g. public, max-age=3600">
-              </label>
-              <details class="meta-cell">
-                <summary>Advanced: custom metadata (JSON)</summary>
-                <textarea name="meta" rows="4" placeholder='{"alt":"photo description"}'></textarea>
-              </details>
+              <div class="field">
+                <span class="field-label">visibility</span>
+                <div class="pill-toggle" role="radiogroup" aria-label="Visibility">
+                  <input type="radio" id="adm-vis-public" name="visibility" value="public" checked>
+                  <label for="adm-vis-public">public</label>
+                  <input type="radio" id="adm-vis-private" name="visibility" value="private">
+                  <label for="adm-vis-private">private</label>
+                </div>
+              </div>
+              <div class="field">
+                <span class="field-label">disposition</span>
+                <div class="pill-toggle" role="radiogroup" aria-label="Disposition">
+                  <input type="radio" id="adm-disp-inline" name="disposition" value="inline" checked>
+                  <label for="adm-disp-inline">inline</label>
+                  <input type="radio" id="adm-disp-attachment" name="disposition" value="attachment">
+                  <label for="adm-disp-attachment">attachment</label>
+                </div>
+              </div>
             </div>
 
             <div class="upload-row">
@@ -174,11 +168,12 @@
                 <td class="cell-size">{{ f.size_human }}</td>
                 <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
                 <td class="cell-actions">
+                  {% if f.visibility == "public" %}
                   <button type="button" class="btn btn-sm btn-ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">copy URL</button>
-                  {% if f.visibility == "private" %}
+                  {% else %}
                   <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">Sign URL</button>
                   {% endif %}
-                  <form method="post" action="/drust/admin/files/{{ f.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ f.original_name }}?');">
+                  <form method="post" action="/drust/admin/files/{{ f.id }}/delete" class="delete-form" style="display:inline;" data-name="{{ f.original_name }}">
                     <button type="submit" class="btn btn-sm btn-ghost" style="color:var(--danger);">delete</button>
                   </form>
                 </td>
@@ -227,6 +222,7 @@
   </div>
 </div>
 {% include "_mascot.html" %}
+{% include "_modal.html" %}
 
 <style>
   /* Card boundary: the card never stretches past its container; a wide
@@ -486,6 +482,16 @@
       inp.click();
     });
 
+    // Delete via form — intercept and ask via drustUI.confirm instead of native.
+    document.querySelectorAll('form.delete-form').forEach(function (f) {
+      f.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        var name = f.getAttribute('data-name') || 'this file';
+        var ok = await drustUI.confirm({title: 'Delete file', body: 'Delete "' + name + '"? This cannot be undone.', okText: 'Delete', danger: true});
+        if (ok) f.submit();
+      });
+    });
+
     // Copy URL buttons
     document.querySelectorAll('[data-copy-url]').forEach(function (b) {
       b.addEventListener('click', function () {
@@ -493,9 +499,27 @@
         navigator.clipboard.writeText(url).then(function () {
           var orig = b.textContent;
           b.textContent = 'copied ✓';
+          if (window.chonkReact) window.chonkReact('happy');
           setTimeout(function () { b.textContent = orig; }, 1500);
         });
       });
+    });
+
+    // Upload form: show 'working' the moment the user clicks Upload.
+    var uploadForm = document.getElementById('upload-form');
+    if (uploadForm) {
+      uploadForm.addEventListener('submit', function () {
+        if (window.chonkReact) window.chonkReact('working', 1400);
+      });
+    }
+
+    // Delete confirm triggers page reload, but flash 'working' before submit.
+    document.querySelectorAll('form.delete-form').forEach(function (f) {
+      var origSubmit = f.submit.bind(f);
+      f.submit = function () {
+        if (window.chonkReact) window.chonkReact('working', 900);
+        origSubmit();
+      };
     });
   })();
 
@@ -503,18 +527,30 @@
   document.querySelectorAll('[data-sign-key]').forEach(function(btn) {
     btn.addEventListener('click', async function() {
       var key = btn.dataset.signKey;
-      var ttl = prompt("TTL in seconds (1–604800):", "3600");
-      if (!ttl) return;
+      var ttl = await drustUI.prompt({
+        title: 'Sign URL',
+        body: 'Expiry in seconds (1–604800). Default 3600 = 1 hour.',
+        default: '3600', placeholder: '3600', okText: 'Sign',
+      });
+      if (ttl === null) return;
       var expires_in = parseInt(ttl, 10);
-      if (!Number.isFinite(expires_in)) return;
+      if (!Number.isFinite(expires_in) || expires_in < 1 || expires_in > 604800) {
+        drustUI.alert({title: 'Invalid TTL', body: 'Must be an integer between 1 and 604800.', danger: true});
+        return;
+      }
       var resp = await fetch('/drust/admin/files/' + encodeURIComponent(key) + '/sign', {
         method: 'POST',
         headers: {'content-type': 'application/json'},
         body: JSON.stringify({expires_in: expires_in}),
       });
-      if (!resp.ok) { alert('sign failed: ' + resp.status); return; }
+      if (!resp.ok) {
+        if (window.chonkReact) window.chonkReact('oops', 900);
+        drustUI.alert({title: 'Sign failed', body: 'HTTP ' + resp.status, danger: true});
+        return;
+      }
       var j = await resp.json();
-      prompt("Signed URL (copy now):", j.url);
+      if (window.chonkReact) window.chonkReact('happy');
+      drustUI.alert({title: 'Signed URL', body: 'Copy the URL below. It expires in ' + expires_in + ' seconds.', codeBlock: j.url});
     });
   });
 </script>

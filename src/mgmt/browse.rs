@@ -31,7 +31,6 @@ struct RowsPage {
     rows: Vec<Vec<String>>,
     total_rows: i64,
     page: u32,
-    per_page: u32,
     total_pages: u32,
     prev_url: Option<String>,
     next_url: Option<String>,
@@ -39,6 +38,14 @@ struct RowsPage {
     sort_options: Vec<SortOption>,
     per_page_options: Vec<PerPageOption>,
     error: Option<String>,
+    /// Either `"data"` (default) or `"schema"`. Toggled by `?tab=…`.
+    active_tab: String,
+    /// Pre-built href for the Data tab — preserves filter/sort/per_page/page
+    /// so switching tabs doesn't lose the user's query state.
+    tab_data_url: String,
+    /// Pre-built href for the Schema tab — strips data-only params (filter,
+    /// sort, per_page, page) since they're meaningless in schema view.
+    tab_schema_url: String,
     version: &'static str,
 }
 
@@ -63,6 +70,9 @@ pub struct BrowseQs {
     pub page: Option<u32>,
     #[serde(default)]
     pub per_page: Option<u32>,
+    /// `data` (default) or `schema`. Anything else falls back to `data`.
+    #[serde(default)]
+    pub tab: Option<String>,
 }
 
 fn tenant_active(conn: &rusqlite::Connection, tenant_id: &str) -> bool {
@@ -111,16 +121,6 @@ pub async fn collections_page(
         .unwrap(),
     )
     .into_response()
-}
-
-fn value_to_display(v: rusqlite::types::ValueRef<'_>) -> String {
-    match v {
-        rusqlite::types::ValueRef::Null => "NULL".into(),
-        rusqlite::types::ValueRef::Integer(i) => i.to_string(),
-        rusqlite::types::ValueRef::Real(f) => format!("{f}"),
-        rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
-        rusqlite::types::ValueRef::Blob(b) => format!("<blob {} bytes>", b.len()),
-    }
 }
 
 fn build_page_url(
@@ -175,6 +175,10 @@ pub async fn collection_rows_page(
     let sort_val = qs.sort.clone().unwrap_or_default();
     let per_page = qs.per_page.unwrap_or(20).clamp(1, 500);
     let page = qs.page.unwrap_or(1).max(1);
+    let active_tab = match qs.tab.as_deref() {
+        Some("schema") => "schema".to_string(),
+        _ => "data".to_string(),
+    };
 
     let (sort_field, sort_dir) = if sort_val.is_empty() {
         ("id".to_string(), SortDir::Desc)
@@ -249,7 +253,7 @@ pub async fn collection_rows_page(
     let total_pages = if total == 0 {
         1
     } else {
-        ((total as u64 + per_page as u64 - 1) / per_page as u64) as u32
+        (total as u64).div_ceil(per_page as u64) as u32
     };
     let prev_url = if page > 1 {
         Some(build_page_url(
@@ -298,6 +302,17 @@ pub async fn collection_rows_page(
         })
         .collect();
 
+    // Build the two tab anchors. The Data link preserves any current
+    // filter/sort/page so toggling tabs doesn't lose query state. The
+    // Schema link strips data-only params — they're meaningless in
+    // schema view and would just clutter the URL.
+    let tab_data_url =
+        build_page_url(&tenant_id, &coll_name, page, per_page, &filter_val, &sort_val);
+    let tab_schema_url = format!(
+        "/drust/admin/tenants/{}/collections/{}?tab=schema",
+        tenant_id, coll_name
+    );
+
     Html(
         RowsPage {
             tenant_id,
@@ -309,7 +324,6 @@ pub async fn collection_rows_page(
             rows,
             total_rows: total,
             page,
-            per_page,
             total_pages,
             prev_url,
             next_url,
@@ -317,6 +331,9 @@ pub async fn collection_rows_page(
             sort_options,
             per_page_options,
             error,
+            active_tab,
+            tab_data_url,
+            tab_schema_url,
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()

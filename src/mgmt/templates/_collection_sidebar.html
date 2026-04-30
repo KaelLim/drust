@@ -1,11 +1,19 @@
 <!-- _collection_sidebar.html — left-side collection nav for the detail page.
-     Parent scope must provide: tenant_id: String, collections: Vec<Collection>, active_coll: String. -->
+     Parent scope must provide: tenant_id: String, collections: Vec<Collection>, active_coll: String.
+     `active_coll` accepts collection names plus the virtual entries
+     `_api_keys` and `_system_files`. -->
 <aside class="sidebar">
   <div class="sidebar-head">
     <span>collections</span>
     <span class="count">{{ collections.len() }}</span>
   </div>
   <nav class="sidebar-list">
+    <a class="col-item{% if active_coll == "_api_keys" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_api_keys"
+       title="_api_keys (anon · service · MCP)">
+      <span class="arrow" style="opacity:.7;">🔑</span>
+      <span>_api_keys</span>
+    </a>
     <a class="col-item{% if active_coll == "_system_files" %} on{% endif %}"
        href="/drust/admin/tenants/{{ tenant_id }}/files"
        title="_system_files (file storage)">

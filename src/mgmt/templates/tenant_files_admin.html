@@ -23,7 +23,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/tenants/{{ tenant_id }}/files</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_id }}</a>/files</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -40,27 +40,75 @@
       </div>
     </header>
 
-    <main class="main"><div class="page">
-      <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
-        <span class="sep">/</span>
-        <a href="/drust/admin/tenants/{{ tenant_id }}">{{ tenant_id }}</a>
-        <span class="sep">/</span>
-        <span class="here">files</span>
-      </nav>
+    <div class="shell">
+      {% include "_collection_sidebar.html" %}
 
+      <main class="main"><div class="page page-wide">
       <div class="pagehead">
         <div>
-          <h1>{{ tenant_id }} / files <span class="muted" style="font-size:0.6em;font-weight:400;">{{ tenant_name }}</span></h1>
+          <h1>{{ tenant_name }} — files</h1>
           <div class="meta">
             <b>{{ total_files }}</b> files · <b>{{ used_mb_display }}</b> total
-            <span style="margin:0 10px;color:var(--muted-2);">·</span>
-            <span class="muted">read-only view — use tenant REST/MCP endpoints to upload</span>
           </div>
         </div>
       </div>
 
+      <div class="disk-banner{% if disk.free_pct < 20.0 %} low{% endif %}">
+        <span>Disk: <b>{{ disk.used_gb }}</b> GB used / {{ disk.total_gb }} GB total ({{ disk.free_pct_display }}% free)</span>
+        {% if disk.free_pct < 20.0 %}<span class="warn">⚠ uploads paused (&lt; 20% free)</span>{% endif %}
+      </div>
+
+      {% if storage_available %}
       <div class="card">
+        <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin → tenant-{{ tenant_id }}-*</span></div>
+        <div class="card-body">
+          <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/files/upload" enctype="multipart/form-data" id="upload-form">
+            <div class="dropzone" id="dropzone">
+              <div class="dropzone-inner">
+                <div class="dropzone-prompt">
+                  <span class="dz-arrow">↓</span>
+                  <span class="dz-text">drag &amp; drop a file here</span>
+                  <span class="dz-or">or</span>
+                  <label class="filepick-btn" for="upload-file" id="upload-btn">
+                    <span class="filepick-btn-label">browse…</span>
+                  </label>
+                </div>
+                <div class="dropzone-name" id="upload-name" data-empty="1">— no file chosen —</div>
+              </div>
+              <input type="file" name="file" id="upload-file" required class="filepick-input"
+                     data-max-mb="{{ max_upload_mb }}">
+            </div>
+
+            <div class="upload-fields">
+              <div class="field">
+                <span class="field-label">visibility</span>
+                <div class="pill-toggle" role="radiogroup" aria-label="Visibility">
+                  <input type="radio" id="tv-vis-public" name="visibility" value="public" checked>
+                  <label for="tv-vis-public">public</label>
+                  <input type="radio" id="tv-vis-private" name="visibility" value="private">
+                  <label for="tv-vis-private">private</label>
+                </div>
+              </div>
+              <div class="field">
+                <span class="field-label">disposition</span>
+                <div class="pill-toggle" role="radiogroup" aria-label="Disposition">
+                  <input type="radio" id="tv-disp-inline" name="disposition" value="inline" checked>
+                  <label for="tv-disp-inline">inline</label>
+                  <input type="radio" id="tv-disp-attachment" name="disposition" value="attachment">
+                  <label for="tv-disp-attachment">attachment</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="upload-row">
+              <span class="upload-hint" id="upload-hint"></span>
+              <button type="submit" class="btn btn-primary" id="upload-submit" disabled>Upload <span class="kbd">↵</span></button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:24px;">
         <div class="card-head">
           <span>_system_files <span class="count">· {{ total_files }} rows</span></span>
         </div>
@@ -71,28 +119,47 @@
             <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
           </div>
           <h3>No files yet</h3>
-          <p>Use the tenant REST or MCP file-upload tools to add files.</p>
+          <p>Upload the first one with the form above.</p>
         </div>
         {% else %}
         <div class="pub-scroll">
           <table class="data pub-files">
+            <colgroup>
+              <col class="col-name">
+              <col class="col-vis">
+              <col class="col-type">
+              <col class="col-size">
+              <col class="col-time">
+              <col class="col-actions">
+            </colgroup>
             <thead>
               <tr>
-                <th>name</th>
+                <th>original name</th>
                 <th>visibility</th>
-                <th class="num">size</th>
+                <th>type</th>
+                <th>size</th>
                 <th>uploaded</th>
-                <th>key</th>
+                <th>actions</th>
               </tr>
             </thead>
             <tbody>
               {% for f in files %}
               <tr>
-                <td>{{ f.original_name }}</td>
-                <td><span class="chip chip-vis-{{ f.visibility }}">{{ f.visibility }}</span></td>
-                <td class="num">{{ f.size_bytes }} B</td>
-                <td class="mono-cell">{{ f.uploaded_at }}</td>
-                <td class="mono-cell" style="font-size:11px;color:var(--muted);">{{ f.key }}</td>
+                <td class="cell-name" title="{{ f.original_name }} ({{ f.key }})">
+                  <div class="trunc-inner"><a href="{{ f.public_url }}" target="_blank" rel="noopener">{{ f.original_name }}</a></div>
+                </td>
+                <td class="cell-vis"><span class="chip chip-vis-{{ f.visibility }}">{{ f.visibility }}</span></td>
+                <td class="cell-type type" title="{{ f.content_type }}"><div class="trunc-inner">{{ f.content_type }}</div></td>
+                <td class="cell-size">{{ f.size_human }}</td>
+                <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
+                <td class="cell-actions">
+                  {% if f.visibility == "public" %}
+                  <button type="button" class="btn btn-sm btn-ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">copy URL</button>
+                  {% else %}
+                  <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">Sign URL</button>
+                  {% endif %}
+                  <button type="button" class="btn btn-sm btn-ghost" data-delete-key="{{ f.key }}" data-delete-name="{{ f.original_name }}" style="color:var(--danger);">delete</button>
+                </td>
               </tr>
               {% endfor %}
             </tbody>
@@ -100,14 +167,192 @@
         </div>
         {% endif %}
       </div>
-
-      <p style="margin-top:16px;font-size:12px;color:var(--muted);">
-        Sign URL and delete actions are available via the per-tenant REST/MCP endpoints.
-        Admin-scoped sign and delete for tenant files is deferred to a future release.
-      </p>
+      {% else %}
+      <div class="card">
+        <div class="card-body">
+          <div class="empty" style="padding:72px 24px;">
+            <div style="margin-bottom:22px;display:grid;place-items:center;">
+              <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
+            </div>
+            <h3>Storage not configured</h3>
+            <p>Set <code>GARAGE_S3_ENDPOINT</code> in drust's <code>.env</code> and restart.</p>
+          </div>
+        </div>
+      </div>
+      {% endif %}
     </div></main>
+    </div>
   </div>
 </div>
 {% include "_mascot.html" %}
+{% include "_modal.html" %}
+
+<style>
+  .pub-scroll { overflow-x: auto; position: relative; }
+  table.pub-files { width: 100%; min-width: 800px; border-collapse: collapse; }
+  table.pub-files colgroup .col-name    { width: auto; }
+  table.pub-files colgroup .col-vis     { width: 90px; }
+  table.pub-files colgroup .col-type    { width: 140px; }
+  table.pub-files colgroup .col-size    { width: 90px; }
+  table.pub-files colgroup .col-time    { width: 180px; }
+  table.pub-files colgroup .col-actions { width: 1px; }
+  .trunc-inner { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  table.pub-files td.cell-name a { color: var(--text); text-decoration: none; }
+  table.pub-files td.cell-name a:hover { color: var(--accent); text-decoration: underline; }
+  .chip-vis-public  { background: var(--ok-soft, #1a2e1a); color: var(--ok, #80c880); border: 1px solid var(--ok-line, #446044); }
+  .chip-vis-private { background: var(--warn-soft, #2e2a14); color: var(--warn, #d4b84a); border: 1px solid var(--warn-line, #5a4e1a); }
+  table.pub-files td.cell-size { white-space: nowrap; }
+  table.pub-files td.cell-time { white-space: nowrap; }
+  table.pub-files td.cell-actions, table.pub-files th:last-child {
+    position: sticky; right: 0; white-space: nowrap; background: var(--surface);
+    box-shadow: -8px 0 10px -6px rgba(0, 0, 0, 0.45); z-index: 1;
+  }
+  table.pub-files th:last-child { background: var(--bg-2); }
+  .dropzone { position: relative; border: 1.5px dashed var(--line); border-radius: var(--radius); background: var(--bg-1); padding: 32px 20px; transition: border-color .12s, background .12s; cursor: pointer; }
+  .dropzone:hover { border-color: var(--muted-2); }
+  .dropzone.is-dragover { border-color: var(--accent); border-style: solid; background: oklch(var(--accent-l) var(--accent-c) var(--accent-h) / 0.08); }
+  .dropzone-inner { display: flex; flex-direction: column; align-items: center; gap: 10px; font-family: var(--mono); color: var(--muted); }
+  .dropzone-prompt { display: inline-flex; align-items: center; gap: 10px; font-size: 18px; }
+  .dz-arrow { color: var(--accent); font-weight: 600; }
+  .dz-or { color: var(--muted-2); }
+  .dropzone-name { font-size: 16px; color: var(--text); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
+  .dropzone-name[data-empty="1"] { color: var(--muted-2); font-style: italic; }
+  .dropzone-name[data-state="error"] { color: var(--danger); }
+  .filepick-btn { display: inline-flex; align-items: center; padding: 6px 14px; font: 500 18px/1 var(--mono); color: var(--text-soft); background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; user-select: none; transition: color .1s, background .1s, border-color .1s; }
+  .filepick-btn:hover { color: var(--text); border-color: var(--muted-2); background: var(--bg-3); }
+  .filepick-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filepick-btn-label::before { content: "["; color: var(--muted); margin-right: 4px; }
+  .filepick-btn-label::after  { content: "]"; color: var(--muted); margin-left: 4px; }
+  .filepick-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .upload-row { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; margin-top: 14px; min-height: 32px; }
+  .upload-hint { font-family: var(--mono); font-size: 15px; color: var(--muted); flex: 1 1 auto; }
+  .upload-hint.ready { color: var(--accent); }
+  .upload-hint.error { color: var(--danger); }
+</style>
+
+<script>
+  (function () {
+    var inp = document.getElementById('upload-file');
+    if (!inp) return;
+    var MAX_BYTES = parseInt(inp.getAttribute('data-max-mb'), 10) * 1024 * 1024;
+    var nameEl = document.getElementById('upload-name');
+    var btn = document.getElementById('upload-submit');
+    var hint = document.getElementById('upload-hint');
+    var label = document.getElementById('upload-btn');
+    var dropzone = document.getElementById('dropzone');
+
+    function humanBytes(n) {
+      var K = 1024;
+      if (n < K) return n + ' B';
+      if (n < K * K) return (n / K).toFixed(1) + ' KB';
+      if (n < K * K * K) return (n / K / K).toFixed(1) + ' MB';
+      return (n / K / K / K).toFixed(2) + ' GB';
+    }
+    function setState(f) {
+      if (!f) { nameEl.textContent = '— no file chosen —'; nameEl.setAttribute('data-empty', '1'); nameEl.removeAttribute('data-state'); btn.disabled = true; hint.className = 'upload-hint'; hint.textContent = ''; return; }
+      nameEl.removeAttribute('data-empty');
+      if (f.size > MAX_BYTES) { nameEl.setAttribute('data-state', 'error'); nameEl.textContent = f.name + '  (' + humanBytes(f.size) + ' — exceeds ' + (MAX_BYTES / 1024 / 1024) + ' MB limit)'; btn.disabled = true; hint.className = 'upload-hint error'; hint.textContent = 'pick a smaller file (limit ' + (MAX_BYTES / 1024 / 1024) + ' MB)'; return; }
+      nameEl.removeAttribute('data-state'); nameEl.textContent = f.name + '  ·  ' + humanBytes(f.size); btn.disabled = false; hint.className = 'upload-hint ready'; hint.textContent = 'ready · press Upload ↵';
+    }
+
+    inp.addEventListener('change', function () { setState(inp.files && inp.files[0]); });
+    label.setAttribute('tabindex', '0'); label.setAttribute('role', 'button');
+    label.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inp.click(); } });
+    ['dragenter', 'dragover'].forEach(function (ev) { dropzone.addEventListener(ev, function (e) { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('is-dragover'); }); });
+    ['dragleave', 'dragend'].forEach(function (ev) { dropzone.addEventListener(ev, function (e) { e.preventDefault(); e.stopPropagation(); if (ev === 'dragleave' && dropzone.contains(e.relatedTarget)) return; dropzone.classList.remove('is-dragover'); }); });
+    dropzone.addEventListener('drop', function (e) { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('is-dragover'); if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) { inp.files = e.dataTransfer.files; setState(inp.files[0]); } });
+    dropzone.addEventListener('click', function (e) { if (e.target.closest('.filepick-btn')) return; inp.click(); });
+
+    // Upload is AJAX — the JSON response shouldn't leak to the browser.
+    var form = document.getElementById('upload-form');
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      btn.disabled = true;
+      hint.className = 'upload-hint'; hint.textContent = 'uploading…';
+      if (window.chonkReact) window.chonkReact('working', 3000);
+      try {
+        var fd = new FormData(form);
+        var resp = await fetch(form.action, { method: 'POST', body: fd });
+        if (!resp.ok) {
+          var msg = await resp.text();
+          hint.className = 'upload-hint error';
+          hint.textContent = 'upload failed (' + resp.status + '): ' + (msg || resp.statusText);
+          btn.disabled = false;
+          if (window.chonkReact) window.chonkReact('oops', 1100);
+          return;
+        }
+        if (window.chonkReact) window.chonkReact('happy', 900);
+        window.location.reload();
+      } catch (err) {
+        hint.className = 'upload-hint error';
+        hint.textContent = 'network error: ' + err.message;
+        btn.disabled = false;
+        if (window.chonkReact) window.chonkReact('oops', 1100);
+      }
+    });
+
+    document.querySelectorAll('[data-copy-url]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var url = b.getAttribute('data-copy-url');
+        navigator.clipboard.writeText(url).then(function () {
+          var orig = b.textContent; b.textContent = 'copied ✓';
+          if (window.chonkReact) window.chonkReact('happy');
+          setTimeout(function () { b.textContent = orig; }, 1500);
+        });
+      });
+    });
+  })();
+
+  document.querySelectorAll('[data-sign-key]').forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var key = btn.dataset.signKey;
+      var ttl = await drustUI.prompt({
+        title: 'Sign URL',
+        body: 'Expiry in seconds (1–604800). Default 3600 = 1 hour.',
+        default: '3600', placeholder: '3600', okText: 'Sign',
+      });
+      if (ttl === null) return;
+      var expires_in = parseInt(ttl, 10);
+      if (!Number.isFinite(expires_in) || expires_in < 1 || expires_in > 604800) {
+        drustUI.alert({title: 'Invalid TTL', body: 'Must be an integer between 1 and 604800.', danger: true});
+        return;
+      }
+      var tid = '{{ tenant_id }}';
+      var resp = await fetch('/drust/admin/tenants/' + encodeURIComponent(tid) + '/files/' + encodeURIComponent(key) + '/sign', {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify({expires_in: expires_in}),
+      });
+      if (!resp.ok) {
+        if (window.chonkReact) window.chonkReact('oops', 900);
+        drustUI.alert({title: 'Sign failed', body: 'HTTP ' + resp.status, danger: true});
+        return;
+      }
+      var j = await resp.json();
+      if (window.chonkReact) window.chonkReact('happy');
+      drustUI.alert({title: 'Signed URL', body: 'Copy the URL below. It expires in ' + expires_in + ' seconds.', codeBlock: j.url});
+    });
+  });
+
+  document.querySelectorAll('[data-delete-key]').forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var key = btn.dataset.deleteKey;
+      var name = btn.dataset.deleteName || key;
+      var ok = await drustUI.confirm({title: 'Delete file', body: 'Delete "' + name + '"? This cannot be undone.', okText: 'Delete', danger: true});
+      if (!ok) return;
+      if (window.chonkReact) window.chonkReact('working', 1200);
+      var tid = '{{ tenant_id }}';
+      var resp = await fetch('/drust/admin/tenants/' + encodeURIComponent(tid) + '/files/' + encodeURIComponent(key), {
+        method: 'DELETE',
+      });
+      if (!resp.ok && resp.status !== 204) {
+        if (window.chonkReact) window.chonkReact('oops', 900);
+        drustUI.alert({title: 'Delete failed', body: 'HTTP ' + resp.status, danger: true});
+        return;
+      }
+      if (window.chonkReact) window.chonkReact('happy', 700);
+      window.location.reload();
+    });
+  });
+</script>
 </body>
 </html>
