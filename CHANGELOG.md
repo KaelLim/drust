@@ -73,6 +73,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authorizer-hidden at the SQL layer for both anon and service. Access
   is only via structured REST/MCP handlers.
 
+### Fixed
+
+- **anon_caps editor form deserialization** — the Schema-tab form
+  POSTs `caps=select&caps=insert&...` (one repeated key per checked
+  checkbox), but `update_anon_caps` was wired to `axum::Form` which
+  uses `serde_urlencoded` and cannot collect repeated keys into
+  `Vec<String>` (returns `422 Unprocessable Entity: invalid type:
+  string "select", expected a sequence`). Switched to
+  `axum_extra::extract::Form` (backed by `serde_html_form`) — same
+  pattern already used in `mgmt::public_files`. Caught by the
+  T26 live integration smoke test.
+
 ## [Unreleased]
 
 ### Added — CORS support on tenant routes (browser-direct fetch finally works)
