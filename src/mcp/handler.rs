@@ -98,6 +98,17 @@ pub struct DeleteRecordArgs {
     pub id: i64,
 }
 
+#[derive(Debug, Clone, schemars::JsonSchema, Deserialize)]
+pub struct CreateRpcParams {
+    pub name: String,
+    pub sql: String,
+    pub params: Vec<crate::rpc::params::ParamSpec>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub anon_callable: Option<bool>,
+}
+
 // --- Handler -----------------------------------------------------------
 
 #[derive(Clone)]
@@ -356,6 +367,57 @@ impl DrustMcpService {
             Err(e) => bail_mcp(e),
         }
     }
+
+    #[tool(description = "Create a new stored RPC (named SELECT-only function). \
+        Required: name (snake_case), sql (a SELECT body using :name placeholders), \
+        params (array of {name, type, required, default}). \
+        Optional: description, anon_callable (default false). \
+        SQL is validated at create time via the read-only authorizer — \
+        non-SELECT actions, ATTACH, sqlite_master references, and unknown \
+        tables are refused before storage.")]
+    async fn create_rpc(
+        &self,
+        Parameters(p): Parameters<CreateRpcParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let pool = self.state.inner().pool.clone();
+        let params_json = serde_json::to_string(&p.params)
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let name = p.name.clone();
+        let sql = p.sql.clone();
+        let description = p.description.clone();
+        let anon_callable = p.anon_callable.unwrap_or(false);
+
+        pool.with_writer(move |c| {
+            crate::rpc::prepare::validate_rpc_sql(c, &sql).map_err(|e| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(e.to_string()),
+                )
+            })?;
+            crate::rpc::registry::create(
+                c,
+                &name,
+                &sql,
+                &params_json,
+                description.as_deref(),
+                anon_callable,
+            )
+            .map_err(|e| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(e.to_string()),
+                )
+            })?;
+            Ok::<_, rusqlite::Error>(())
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "rpc '{}' created",
+            p.name
+        ))]))
+    }
 }
 
 #[tool_handler]
@@ -365,10 +427,11 @@ impl ServerHandler for DrustMcpService {
         let base = self.state.public_base_url();
         let instructions = format!(
             "drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.\n\n\
-             16 tools: `list_collections`, `describe_collection`, `sample_rows`, \
+             17 tools: `list_collections`, `describe_collection`, `sample_rows`, \
              `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
-             `drop_collection`, `list_files`, `delete_file`, `get_file_url`.\n\n\
+             `drop_collection`, `list_files`, `delete_file`, `get_file_url`, \
+             `create_rpc`.\n\n\
              Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
              tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
              endpoint instead:\n\n  \
