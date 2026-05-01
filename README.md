@@ -128,4 +128,8 @@ Production. Currently `v1.6.0`. See [CHANGELOG.md](CHANGELOG.md) for full histor
 
 ## License
 
-Code is provided as-is; no license file is included yet. If you intend to use, vendor, or fork drust, please open an issue.
+drust is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
+
+Self-hosting for personal, internal, or non-commercial use is fully covered by AGPL-3.0. If you intend to (a) offer drust — or a modified version of it — as a hosted service to third parties, or (b) integrate drust into a proprietary product whose source you cannot release under AGPL, you will likely need a separate **commercial license**.
+
+For commercial-license inquiries, please open a GitHub issue with the `commercial-license` label, or contact the maintainer via the email listed on the GitHub profile.
