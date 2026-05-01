@@ -128,4 +128,8 @@ Production。目前版本 `v1.6.0`。完整變更歷史見 [CHANGELOG.md](CHANGE
 
 ## License
 
-程式碼以現狀提供（as-is），目前尚未加入正式授權檔案。若您打算使用、引用或 fork drust，請先開 issue 詢問。
+drust 採用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0-only）授權。
+
+個人、內部或非商業用途的 self-hosting 完全在 AGPL-3.0 涵蓋範圍內。若您打算 (a) 將 drust（或其修改版）以託管服務形式提供給第三方使用，或 (b) 將 drust 整合進「無法依 AGPL 公開原始碼」的專屬產品，通常需要另外取得**商業授權**。
+
+商業授權洽詢請於 GitHub 開 issue 並掛 `commercial-license` 標籤，或透過 GitHub profile 上列示的 email 聯繫維護者。
