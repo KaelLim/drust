@@ -23,6 +23,7 @@ struct CollectionsPage {
 #[template(path = "collection_rows.html")]
 struct RowsPage {
     tenant_id: String,
+    tenant_name: String,
     coll_name: String,
     active_coll: String,
     collections: Vec<Collection>,
@@ -86,6 +87,15 @@ fn tenant_active(conn: &rusqlite::Connection, tenant_id: &str) -> bool {
     )
     .map(|n| n > 0)
     .unwrap_or(false)
+}
+
+fn tenant_name_lookup(conn: &rusqlite::Connection, tenant_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT name FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+        rusqlite::params![tenant_id],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
 }
 
 pub async fn collections_page(
@@ -153,9 +163,10 @@ pub async fn collection_rows_page(
     Query(qs): Query<BrowseQs>,
 ) -> Response {
     let meta = state.session.meta.lock().await;
-    if !tenant_active(&meta, &tenant_id) {
-        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
-    }
+    let tenant_name = match tenant_name_lookup(&meta, &tenant_id) {
+        Some(n) => n,
+        None => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+    };
     drop(meta);
 
     let conn = match open_read(&state.data_dir, &tenant_id) {
@@ -336,6 +347,7 @@ pub async fn collection_rows_page(
     Html(
         RowsPage {
             tenant_id,
+            tenant_name,
             active_coll: coll_name.clone(),
             coll_name,
             collections,

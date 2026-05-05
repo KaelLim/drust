@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_id }} / _rpc / {% if editing %}{{ existing_name }}{% else %}new{% endif %}</title>
+<title>drust admin — {{ tenant_name }} / _rpc / {% if editing %}{{ existing_name }}{% else %}new{% endif %}</title>
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -12,7 +12,7 @@
 <div class="macwin">
   <div class="macwin-title">
     <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_id }}/_rpc/{% if editing %}{{ existing_name }}{% else %}new{% endif %}</span></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_name }}/_rpc/{% if editing %}{{ existing_name }}{% else %}new{% endif %}</span></span>
     <span></span>
   </div>
   <div class="macwin-body">
@@ -20,7 +20,7 @@
       <div class="prompt">
         <span class="dollar">$</span>
         <span class="user">admin</span><span class="at">@</span><span class="host">drust</span><span class="colon">:</span>
-        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_id }}</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_rpc">_rpc</a>/{% if editing %}{{ existing_name }}{% else %}new{% endif %}</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_name }}</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_rpc">_rpc</a>/{% if editing %}{{ existing_name }}{% else %}new{% endif %}</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">

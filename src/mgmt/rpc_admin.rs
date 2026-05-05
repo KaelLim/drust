@@ -18,12 +18,36 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 #[template(path = "tenant_rpc.html")]
 struct RpcPage {
     tenant_id: String,
+    tenant_name: String,
     /// Driver list for `_collection_sidebar.html`. Empty Vec is fine — the
     /// sidebar still renders the virtual rows.
     collections: Vec<Collection>,
     active_coll: String,
     version: &'static str,
     rpcs: Vec<registry::StoredRpc>,
+    /// Pagination — current 1-based page number.
+    page: u32,
+    total_pages: u32,
+    total_rpcs: usize,
+    prev_url: Option<String>,
+    next_url: Option<String>,
+    per_page_options: Vec<RpcPerPageOption>,
+}
+
+struct RpcPerPageOption {
+    value: u32,
+    selected: bool,
+}
+
+const RPC_DEFAULT_PER_PAGE: u32 = 20;
+const RPC_PER_PAGE_OPTIONS: &[u32] = &[20, 50, 100, 200];
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct RpcListQs {
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub per_page: Option<u32>,
 }
 
 /// `GET /admin/tenants/{id}/_rpc` — list stored RPCs for the tenant.
@@ -34,24 +58,26 @@ struct RpcPage {
 pub async fn rpc_index(
     State(state): State<TenantsState>,
     Path(tenant_id): Path<String>,
+    axum::extract::Query(qs): axum::extract::Query<RpcListQs>,
 ) -> Response {
     // Confirm tenant exists in the meta plane. 404 if missing/deleted —
     // matches the early-out shape in `api_keys_page`.
     let conn = state.session.meta.lock().await;
-    let exists: i64 = conn
+    let tenant_name: Option<String> = conn
         .query_row(
-            "SELECT COUNT(*) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT name FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
             rusqlite::params![tenant_id],
             |r| r.get(0),
         )
-        .unwrap_or(0);
+        .ok();
     drop(conn);
-    if exists == 0 {
-        return (StatusCode::NOT_FOUND, "tenant not found").into_response();
-    }
+    let tenant_name = match tenant_name {
+        Some(n) => n,
+        None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
+    };
 
     // Read RPC rows. A failed open (no data.sqlite yet) → empty list.
-    let rpcs = open_read(&state.data_dir, &tenant_id)
+    let all_rpcs: Vec<registry::StoredRpc> = open_read(&state.data_dir, &tenant_id)
         .ok()
         .and_then(|c| registry::list(&c).ok())
         .unwrap_or_default();
@@ -62,13 +88,52 @@ pub async fn rpc_index(
         .and_then(|c| list_collections(&c).ok())
         .unwrap_or_default();
 
+    let per_page = qs
+        .per_page
+        .filter(|n| RPC_PER_PAGE_OPTIONS.contains(n))
+        .unwrap_or(RPC_DEFAULT_PER_PAGE);
+    let total_rpcs = all_rpcs.len();
+    let total_pages = if total_rpcs == 0 {
+        1
+    } else {
+        ((total_rpcs as u64).div_ceil(per_page as u64)) as u32
+    };
+    let page = qs.page.unwrap_or(1).max(1).min(total_pages);
+    let start = ((page - 1) as usize) * per_page as usize;
+    let end = (start + per_page as usize).min(total_rpcs);
+    let rpcs: Vec<registry::StoredRpc> = all_rpcs.into_iter().skip(start).take(end - start).collect();
+
+    let pager_url = |p: u32| -> String {
+        if per_page == RPC_DEFAULT_PER_PAGE {
+            format!("/drust/admin/tenants/{tenant_id}/_rpc?page={p}")
+        } else {
+            format!("/drust/admin/tenants/{tenant_id}/_rpc?page={p}&per_page={per_page}")
+        }
+    };
+    let prev_url = (page > 1).then(|| pager_url(page - 1));
+    let next_url = (page < total_pages).then(|| pager_url(page + 1));
+    let per_page_options: Vec<RpcPerPageOption> = RPC_PER_PAGE_OPTIONS
+        .iter()
+        .map(|&v| RpcPerPageOption {
+            value: v,
+            selected: v == per_page,
+        })
+        .collect();
+
     Html(
         RpcPage {
             tenant_id,
+            tenant_name,
             collections,
             active_coll: "_rpc".to_string(),
             version: env!("CARGO_PKG_VERSION"),
             rpcs,
+            page,
+            total_pages,
+            total_rpcs,
+            prev_url,
+            next_url,
+            per_page_options,
         }
         .render()
         .unwrap(),
@@ -80,6 +145,7 @@ pub async fn rpc_index(
 #[template(path = "tenant_rpc_form.html")]
 struct RpcForm {
     tenant_id: String,
+    tenant_name: String,
     active_coll: String,
     version: &'static str,
     collections: Vec<Collection>,
@@ -92,6 +158,16 @@ struct RpcForm {
     form_params_json: String,
     form_anon_callable: bool,
     error: Option<String>,
+}
+
+async fn lookup_tenant_name(state: &TenantsState, tenant_id: &str) -> Option<String> {
+    let conn = state.session.meta.lock().await;
+    conn.query_row(
+        "SELECT name FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+        rusqlite::params![tenant_id],
+        |r| r.get(0),
+    )
+    .ok()
 }
 
 /// Load the sidebar collections for the tenant; falls back to empty Vec if
@@ -108,10 +184,15 @@ pub async fn rpc_new_form(
     State(state): State<TenantsState>,
     Path(tenant_id): Path<String>,
 ) -> Response {
+    let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
+        Some(n) => n,
+        None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
+    };
     let collections = load_collections(&state, &tenant_id);
     Html(
         RpcForm {
             tenant_id: tenant_id.clone(),
+            tenant_name,
             active_coll: "_rpc".to_string(),
             version: env!("CARGO_PKG_VERSION"),
             collections,
@@ -146,12 +227,17 @@ pub async fn rpc_edit_form(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     drop(conn);
+    let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
+        Some(n) => n,
+        None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
+    };
     let collections = load_collections(&state, &tenant_id);
     let params_json_string =
         serde_json::to_string_pretty(&existing.params).unwrap_or_else(|_| "[]".into());
     Html(
         RpcForm {
             tenant_id: tenant_id.clone(),
+            tenant_name,
             active_coll: "_rpc".to_string(),
             version: env!("CARGO_PKG_VERSION"),
             collections,
@@ -198,14 +284,17 @@ pub async fn rpc_save(
     let anon_callable = form.anon_callable.is_some();
 
     // Validate params_json parses.
+    let tenant_name = lookup_tenant_name(&state, &tenant_id)
+        .await
+        .unwrap_or_else(|| tenant_id.clone());
     if let Err(e) = crate::rpc::params::parse_params_json(&form.params_json) {
         let exists_now = registry::lookup(&writer, &form.name).ok().flatten().is_some();
-        return render_form_with_error(&state, &tenant_id, &form, exists_now, e.to_string());
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
     }
     // Validate SQL through the read-only authorizer.
     if let Err(e) = crate::rpc::prepare::validate_rpc_sql(&writer, &form.sql) {
         let exists_now = registry::lookup(&writer, &form.name).ok().flatten().is_some();
-        return render_form_with_error(&state, &tenant_id, &form, exists_now, e.to_string());
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
     }
 
     let exists_now = registry::lookup(&writer, &form.name).ok().flatten().is_some();
@@ -229,7 +318,7 @@ pub async fn rpc_save(
         )
     };
     if let Err(e) = res {
-        return render_form_with_error(&state, &tenant_id, &form, exists_now, e.to_string());
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
     }
     Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_rpc")).into_response()
 }
@@ -237,6 +326,7 @@ pub async fn rpc_save(
 fn render_form_with_error(
     state: &TenantsState,
     tenant_id: &str,
+    tenant_name: &str,
     form: &RpcFormBody,
     editing: bool,
     msg: String,
@@ -245,6 +335,7 @@ fn render_form_with_error(
     Html(
         RpcForm {
             tenant_id: tenant_id.to_string(),
+            tenant_name: tenant_name.to_string(),
             active_coll: "_rpc".to_string(),
             version: env!("CARGO_PKG_VERSION"),
             collections,

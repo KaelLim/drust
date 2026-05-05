@@ -421,6 +421,28 @@ struct TenantFilesAdminPage {
     collections: Vec<crate::storage::schema::Collection>,
     /// Always `"_system_files"` here — kept for sidebar `.on` matching.
     active_coll: String,
+    page: u32,
+    total_pages: u32,
+    prev_url: Option<String>,
+    next_url: Option<String>,
+    per_page_options: Vec<TenantFilesPerPageOption>,
+}
+
+#[derive(Clone)]
+pub struct TenantFilesPerPageOption {
+    pub value: u32,
+    pub selected: bool,
+}
+
+const TENANT_FILES_DEFAULT_PER_PAGE: u32 = 25;
+const TENANT_FILES_PER_PAGE_OPTIONS: &[u32] = &[10, 25, 50, 100];
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct TenantFilesListQs {
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub per_page: Option<u32>,
 }
 
 /// GET /admin/tenants/{id}/files
@@ -429,6 +451,7 @@ struct TenantFilesAdminPage {
 pub async fn tenant_files_admin_page(
     State(state): State<TenantsState>,
     Path(tenant_id): Path<String>,
+    axum::extract::Query(qs): axum::extract::Query<TenantFilesListQs>,
 ) -> Response {
     // Resolve tenant name (and validate existence) from meta.sqlite.
     let tenant_name: Option<String> = {
@@ -455,6 +478,27 @@ pub async fn tenant_files_admin_page(
     let max_upload_mb = (state.max_upload_bytes / (1024 * 1024)) as u64;
     let storage_available = state.garage.is_some();
 
+    let per_page = qs
+        .per_page
+        .filter(|n| TENANT_FILES_PER_PAGE_OPTIONS.contains(n))
+        .unwrap_or(TENANT_FILES_DEFAULT_PER_PAGE);
+    let req_page = qs.page.unwrap_or(1).max(1);
+    let per_page_options: Vec<TenantFilesPerPageOption> = TENANT_FILES_PER_PAGE_OPTIONS
+        .iter()
+        .map(|&v| TenantFilesPerPageOption {
+            value: v,
+            selected: v == per_page,
+        })
+        .collect();
+
+    let pager_url = |p: u32| -> String {
+        if per_page == TENANT_FILES_DEFAULT_PER_PAGE {
+            format!("/drust/admin/tenants/{tenant_id}/files?page={p}")
+        } else {
+            format!("/drust/admin/tenants/{tenant_id}/files?page={p}&per_page={per_page}")
+        }
+    };
+
     let empty_page = |tenant_id: String, tenant_name: String| -> Response {
         // Sidebar still renders the virtual rows even when the tenant DB
         // hasn't been opened; `collections: vec![]` is fine here.
@@ -471,6 +515,11 @@ pub async fn tenant_files_admin_page(
                 disk: disk.clone(),
                 collections: vec![],
                 active_coll: "_system_files".to_string(),
+                page: 1,
+                total_pages: 1,
+                prev_url: None,
+                next_url: None,
+                per_page_options: per_page_options.clone(),
             }
             .render()
             .unwrap(),
@@ -484,53 +533,75 @@ pub async fn tenant_files_admin_page(
         Err(_) => return empty_page(tenant_id, tenant_name),
     };
 
-    // Query _system_files. Table may not exist if Garage was disabled at creation time.
+    // Total count + total bytes for the header. Falls back to (0, 0) when
+    // _system_files doesn't exist yet (Garage disabled at creation).
+    let (total_files_i64, total_bytes_i64): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM _system_files",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .unwrap_or((0, 0));
+    let total_files = total_files_i64.max(0) as usize;
+    let used_mb_display = format!("{:.1} MB", total_bytes_i64 as f64 / 1_048_576.0);
+
+    let total_pages: u32 = if total_files == 0 {
+        1
+    } else {
+        ((total_files as u64).div_ceil(per_page as u64)) as u32
+    };
+    let page = req_page.min(total_pages);
+    let offset = ((page - 1) as i64) * (per_page as i64);
+
+    // Paginated SELECT.
     let mut stmt = match conn.prepare(
         "SELECT id, key, original_name, content_type, size_bytes, visibility, uploaded_at \
-         FROM _system_files ORDER BY uploaded_at DESC",
+         FROM _system_files ORDER BY uploaded_at DESC LIMIT ?1 OFFSET ?2",
     ) {
         Ok(s) => s,
         Err(_) => return empty_page(tenant_id, tenant_name),
     };
 
     let base_url = &state.public_base_url;
-    let files: Vec<AdminTenantFileRow> = match stmt.query_map([], |r| {
-        let _id: i64 = r.get(0)?;
-        let key: String = r.get(1)?;
-        let original_name: String = r.get(2)?;
-        let content_type: Option<String> = r.get(3)?;
-        let size_bytes: i64 = r.get(4)?;
-        let visibility: String = r.get(5)?;
-        let uploaded_at: String = r.get(6)?;
-        let vis_enum = if visibility == "public" {
-            crate::storage::files::Visibility::Public
-        } else {
-            crate::storage::files::Visibility::Private
-        };
-        let public_url = crate::storage::files::build_public_url(
-            base_url,
-            &crate::storage::files::Owner::Tenant(tenant_id.clone()),
-            vis_enum,
-            &key,
-        );
-        Ok(AdminTenantFileRow {
-            key,
-            original_name,
-            content_type: content_type.unwrap_or_else(|| "application/octet-stream".into()),
-            size_bytes,
-            size_human: crate::mgmt::public_files::humanize_bytes(size_bytes as u64),
-            visibility,
-            uploaded_at,
-            public_url,
-        })
-    }) {
+    let files: Vec<AdminTenantFileRow> = match stmt.query_map(
+        rusqlite::params![per_page as i64, offset],
+        |r| {
+            let _id: i64 = r.get(0)?;
+            let key: String = r.get(1)?;
+            let original_name: String = r.get(2)?;
+            let content_type: Option<String> = r.get(3)?;
+            let size_bytes: i64 = r.get(4)?;
+            let visibility: String = r.get(5)?;
+            let uploaded_at: String = r.get(6)?;
+            let vis_enum = if visibility == "public" {
+                crate::storage::files::Visibility::Public
+            } else {
+                crate::storage::files::Visibility::Private
+            };
+            let public_url = crate::storage::files::build_public_url(
+                base_url,
+                &crate::storage::files::Owner::Tenant(tenant_id.clone()),
+                vis_enum,
+                &key,
+            );
+            Ok(AdminTenantFileRow {
+                key,
+                original_name,
+                content_type: content_type.unwrap_or_else(|| "application/octet-stream".into()),
+                size_bytes,
+                size_human: crate::mgmt::public_files::humanize_bytes(size_bytes as u64),
+                visibility,
+                uploaded_at,
+                public_url,
+            })
+        },
+    ) {
         Ok(rows) => rows.filter_map(Result::ok).collect(),
         Err(_) => vec![],
     };
 
-    let total_files = files.len();
-    let total_bytes: i64 = files.iter().map(|f| f.size_bytes).sum();
-    let used_mb_display = format!("{:.1} MB", total_bytes as f64 / 1_048_576.0);
+    let prev_url = (page > 1).then(|| pager_url(page - 1));
+    let next_url = (page < total_pages).then(|| pager_url(page + 1));
 
     let collections = crate::storage::schema::list_collections(&conn).unwrap_or_default();
 
@@ -547,6 +618,11 @@ pub async fn tenant_files_admin_page(
             disk,
             collections,
             active_coll: "_system_files".to_string(),
+            page,
+            total_pages,
+            prev_url,
+            next_url,
+            per_page_options,
         }
         .render()
         .unwrap(),

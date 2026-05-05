@@ -21,7 +21,7 @@
 
 {% if tab == "overview" %}
 {% if let Some(ov) = overview %}
-<div class="grid-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:24px;">
+<div class="audit-stats">
   <div class="card"><div class="card-head">Total requests</div><div class="card-body" style="font-size:28px;font-family:var(--mono);">{{ ov.total }}</div></div>
   <div class="card"><div class="card-head">Errors</div><div class="card-body" style="font-size:28px;font-family:var(--mono);">{{ ov.error_count }} <span class="muted" style="font-size:14px;">({{ "{:.1}"|format(ov.error_pct) }}%)</span></div></div>
   <div class="card"><div class="card-head">p50 / p99 latency</div><div class="card-body" style="font-size:28px;font-family:var(--mono);">{{ ov.p50_ms }}ms <span class="muted">/</span> {{ ov.p99_ms }}ms</div></div>
@@ -31,41 +31,43 @@
 {% if is_host_scope %}
 <div class="card" style="margin-bottom:18px;">
   <div class="card-head">Top tenants</div>
-  <div class="card-body">
-    {% if ov.top_tenants.is_empty() %}<div class="muted">no data</div>{% else %}
-    <table class="tbl" style="width:100%;font-family:var(--mono);">
-      <thead><tr><th>tenant</th><th>count</th><th>err%</th></tr></thead>
-      <tbody>
-        {% for t in ov.top_tenants %}
-        <tr><td>{{ t.tenant }}</td><td class="num">{{ t.count }}</td><td class="num">{{ "{:.1}"|format(t.error_pct) }}%</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
-  </div>
+  {% if ov.top_tenants.is_empty() %}<div class="empty" style="padding:36px 24px;">no data</div>{% else %}
+  <table class="data">
+    <thead><tr><th>tenant</th><th class="num">count</th><th class="num">err%</th></tr></thead>
+    <tbody>
+      {% for t in ov.top_tenants %}
+      <tr><td>{{ t.tenant }}</td><td class="num">{{ t.count }}</td><td class="num">{{ "{:.1}"|format(t.error_pct) }}%</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
 </div>
 {% endif %}
 
 <div class="card">
   <div class="card-head">Top slowest ops</div>
-  <div class="card-body">
-    {% if ov.top_slow_ops.is_empty() %}<div class="muted">no data</div>{% else %}
-    <table class="tbl" style="width:100%;font-family:var(--mono);">
-      <thead><tr><th>ts</th><th>tenant</th><th>op</th><th>coll</th><th class="num">ms</th></tr></thead>
-      <tbody>
-        {% for e in ov.top_slow_ops %}
-        <tr>
-          <td>{{ e.ts }}</td>
-          <td>{{ e.tenant }}</td>
-          <td>{{ e.op }}</td>
-          <td>{% if let Some(c) = e.collection %}{{ c }}{% endif %}</td>
-          <td class="num">{{ e.duration_ms }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
-  </div>
+  {% if ov.top_slow_ops.is_empty() %}<div class="empty" style="padding:36px 24px;">no data</div>{% else %}
+  <table class="data">
+    <thead><tr>
+      <th>ts</th>
+      {% if is_host_scope %}<th>tenant</th>{% endif %}
+      <th>op</th>
+      <th>coll</th>
+      <th class="num">ms</th>
+    </tr></thead>
+    <tbody>
+      {% for e in ov.top_slow_ops %}
+      <tr>
+        <td>{{ e.ts }}</td>
+        {% if is_host_scope %}<td>{{ e.tenant }}</td>{% endif %}
+        <td>{{ e.op }}</td>
+        <td>{% if let Some(c) = e.collection %}{{ c }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
+        <td class="num">{{ e.duration_ms }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -88,47 +90,62 @@
 </form>
 
 <div class="card">
-  <div class="card-head">Audit entries <span class="muted">({{ entries.len() }} shown)</span></div>
-  <div class="card-body">
-    {% if entries.is_empty() %}
-    <div class="muted">no entries match.</div>
-    {% else %}
-    <table class="tbl" style="width:100%;font-family:var(--mono);font-size:13px;">
-      <thead><tr><th>ts</th><th>tenant</th><th>op</th><th>status</th><th class="num">ms</th><th>coll</th><th>error</th></tr></thead>
-      <tbody>
-        {% for e in entries %}
-        <tr>
-          <td>{{ e.ts }}</td>
-          <td>{{ e.tenant }}</td>
-          <td>{{ e.op }}</td>
-          <td>{% if e.status == "error" %}<b style="color:var(--warn);">ERROR</b>{% else %}{{ e.status }}{% endif %}</td>
-          <td class="num">{{ e.duration_ms }}</td>
-          <td>{% if let Some(c) = e.collection %}{{ c }}{% endif %}</td>
-          <td>{% if let Some(c) = e.error_code %}{{ c }}{% endif %}</td>
-        </tr>
-        <tr><td colspan="7" style="padding:0;border:0;">
-          <details style="margin:0;padding:0 12px 6px;">
-            <summary class="muted" style="cursor:pointer;font-size:12px;">expand JSON</summary>
-            <pre style="margin:6px 0 0;padding:8px;background:var(--bg-2);border-radius:6px;font-size:12px;overflow-x:auto;">{{ e.token_hint }} · {{ e.duration_ms }}ms{% if let Some(h) = e.sql_hash %} · sql:{{ h }}{% endif %}{% if let Some(id) = e.record_id %} · id:{{ id }}{% endif %}{% if let Some(m) = e.error_message %}{{ "\n" }}{{ m }}{% endif %}</pre>
-          </details>
-        </td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% if let Some(href) = next_page_link %}
-    <div style="margin-top:14px;display:flex;justify-content:flex-end;">
-      <a class="btn" href="{{ href }}">next page →</a>
-    </div>
-    {% endif %}
-    {% endif %}
+  <div class="card-head">
+    <span>Audit entries <span class="count">· {{ entries.len() }} shown</span></span>
   </div>
+  {% if entries.is_empty() %}
+  <div class="empty" style="padding:48px 24px;">no entries match.</div>
+  {% else %}
+  <table class="data">
+    <thead><tr>
+      <th>ts</th>
+      {% if is_host_scope %}<th>tenant</th>{% endif %}
+      <th>op</th>
+      <th>status</th>
+      <th class="num">ms</th>
+      <th>coll</th>
+      <th>error</th>
+    </tr></thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td>{{ e.ts }}</td>
+        {% if is_host_scope %}<td>{{ e.tenant }}</td>{% endif %}
+        <td>{{ e.op }}</td>
+        <td>{% if e.status == "error" %}<b style="color:var(--warn);">ERROR</b>{% else %}{{ e.status }}{% endif %}</td>
+        <td class="num">{{ e.duration_ms }}</td>
+        <td>{% if let Some(c) = e.collection %}{{ c }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
+        <td>{% if let Some(c) = e.error_code %}{{ c }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
+      </tr>
+      <tr class="audit-detail-row"><td colspan="{% if is_host_scope %}7{% else %}6{% endif %}" style="padding:0;border:0;background:transparent;">
+        <details style="margin:0;padding:0 var(--cell-x) 6px;">
+          <summary class="muted" style="cursor:pointer;font-size:12px;">expand JSON</summary>
+          <pre style="margin:6px 0 0;padding:8px;background:var(--bg-2);border-radius:6px;font-size:12px;overflow-x:auto;">{{ e.token_hint }} · {{ e.duration_ms }}ms{% if let Some(h) = e.sql_hash %} · sql:{{ h }}{% endif %}{% if let Some(id) = e.record_id %} · id:{{ id }}{% endif %}{% if let Some(m) = e.error_message %}{{ "\n" }}{{ m }}{% endif %}</pre>
+        </details>
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="pager">
+    <div class="page-of">
+      <b>{{ entries.len() }}</b> entries shown
+      {% if let Some(n) = truncated_from %} · truncated from <b>{{ n }}</b>{% endif %}
+    </div>
+    <div class="pager-group">
+      {% if let Some(href) = next_page_link %}
+      <a class="btn btn-sm btn-ghost" href="{{ href }}">next page →</a>
+      {% else %}
+      <span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next page →</span>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 
-{% if parse_errors > 0 || !archive_errors.is_empty() || truncated_from.is_some() %}
+{% if parse_errors > 0 || !archive_errors.is_empty() %}
 <div class="muted" style="margin-top:14px;font-size:12px;">
   {% if parse_errors > 0 %}{{ parse_errors }} unparseable lines skipped. {% endif %}
-  {% if !archive_errors.is_empty() %}{{ archive_errors.len() }} corrupt archive(s) skipped: {{ archive_errors|join(", ") }}. {% endif %}
-  {% if let Some(n) = truncated_from %}Truncated: showing newest 50000 of {{ n }} entries.{% endif %}
+  {% if !archive_errors.is_empty() %}{{ archive_errors.len() }} corrupt archive(s) skipped: {{ archive_errors|join(", ") }}.{% endif %}
 </div>
 {% endif %}
