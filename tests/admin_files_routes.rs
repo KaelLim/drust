@@ -23,6 +23,9 @@ async fn app() -> axum::Router {
         max_upload_bytes: 52_428_800,
         garage_client_key_id: String::new(),
         disk_min_free_pct: 20,
+        log_dir: std::env::temp_dir(),
+        url_sign_secret: Arc::new([0u8; 32]),
+        tenants: Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2)),
     };
     state.with_data_dir(data_dir)
 }

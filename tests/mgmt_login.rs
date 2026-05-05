@@ -10,7 +10,8 @@ use tower::ServiceExt;
 
 async fn app() -> axum::Router {
     let dir = tempdir().unwrap();
-    let mut conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "hunter2").unwrap();
     std::mem::forget(dir);
     let state = MgmtState {
@@ -21,6 +22,9 @@ async fn app() -> axum::Router {
         max_upload_bytes: 52_428_800,
         garage_client_key_id: String::new(),
         disk_min_free_pct: 20,
+        log_dir: std::env::temp_dir(),
+        url_sign_secret: Arc::new([0u8; 32]),
+        tenants: Arc::new(drust::storage::pool::TenantRegistry::new(data_dir, 2)),
     };
     build_mgmt_router(state)
 }

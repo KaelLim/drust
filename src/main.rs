@@ -110,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
         max_upload_bytes,
         garage_client_key_id,
         disk_min_free_pct,
+        log_dir: cfg.log_dir.clone(),
         url_sign_secret: url_sign_secret.clone(),
         tenants: tenants.clone(),
     };
