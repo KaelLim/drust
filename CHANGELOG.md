@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-05-05
+
+### Added
+
+- **Admin audit log UI** — two new admin-session-protected GET routes
+  surface the existing `audit-YYYY-MM-DD.jsonl` files via a stateless file
+  scan:
+  - `/admin/audit` — host-level overview across all tenants. Topbar
+    `Audit` link added to existing host pages
+    (`tenants_list.html`, `files.html`, `files_reconcile.html`,
+    `tenant_docs.html`).
+  - `/admin/tenants/{id}/_logs` — per-tenant scope, sidebar virtual entry
+    `📋 _logs` alongside `_api_keys` / `_rpc` / `_system_files`.
+  Both share `src/mgmt/audit.rs` (scan + parse + filter + aggregate).
+  Page modes: Overview (totals, error rate, p50/p99, avg QPS, top
+  tenants on host scope only, top slow ops) and Browse (paginated table
+  with `<details>` row expansion, server-side filter by tenant/op/status,
+  `before_ts` cursor pagination). Window is enum `1h | 24h | 7d`.
+  `flate2` is the new dependency for reading rotated `*.jsonl.*.gz`
+  archives.
+
+### Changed
+
+- `AuditEntry.status` changed from `&'static str` to `String` so the type
+  derives `Deserialize` for the audit JSONL parser. Constructors
+  (`success()` / `failure()`) updated accordingly; existing call sites
+  in `src/tenant/router.rs` and `tests/audit_log.rs` go through the
+  constructors and need no changes.
+- `MgmtState` and `TenantsState` carry a new `log_dir: PathBuf` field
+  (sourced from `cfg.log_dir` / `$DRUST_LOG_DIR`).
+
+### Fixed
+
+- `tests/mgmt_login.rs` and `tests/admin_files_routes.rs` were drifting
+  fixtures missing `url_sign_secret` and `tenants` fields introduced in
+  v1.5+ / v1.6+. Now compile and pass alongside the new audit suite.
+
+### Notes
+
+- No migration. Audit JSONL files are already produced by all prior
+  releases; the new UI only adds a read path.
+- `tests/tenant_files_rest.rs` remains broken pre-existing (separate
+  fixture for `TenantFilesState`, missing `url_sign_secret`). Out of
+  scope for this release; recommended as a separate housekeeping commit.
+
 ## [1.6.0] - 2026-04-30
 
 ### Added
