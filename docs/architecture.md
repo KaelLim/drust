@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-04-25
+updated: 2026-05-05
 generated_by: docs/gen-architecture.py
 ---
 
@@ -18,15 +18,16 @@ generated_by: docs/gen-architecture.py
 
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
-| [`(root)/`](#srcroot) | 4 | 14 | 0 | 1 |
+| [`(root)/`](#srcroot) | 4 | 15 | 0 | 1 |
 | [`auth/`](#srcauth) | 5 | 20 | 1 | 10 |
 | [`bin/`](#srcbin) | 1 | 0 | 0 | 0 |
-| [`mcp/`](#srcmcp) | 10 | 49 | 26 | 15 |
-| [`mgmt/`](#srcmgmt) | 8 | 68 | 29 | 7 |
-| [`query/`](#srcquery) | 4 | 15 | 0 | 12 |
+| [`mcp/`](#srcmcp) | 10 | 54 | 26 | 15 |
+| [`mgmt/`](#srcmgmt) | 10 | 80 | 33 | 8 |
+| [`query/`](#srcquery) | 4 | 16 | 2 | 14 |
+| [`rpc/`](#srcrpc) | 5 | 21 | 9 | 4 |
 | [`safety/`](#srcsafety) | 3 | 6 | 0 | 2 |
-| [`storage/`](#srcstorage) | 10 | 52 | 3 | 23 |
-| [`tenant/`](#srctenant) | 8 | 29 | 20 | 9 |
+| [`storage/`](#srcstorage) | 11 | 61 | 7 | 32 |
+| [`tenant/`](#srctenant) | 8 | 29 | 20 | 12 |
 
 ## Group-level dependency graph
 
@@ -37,9 +38,15 @@ graph LR
   mcp --> tenant
   mgmt --> auth
   mgmt --> query
+  mgmt --> rpc
   mgmt --> storage
+  query --> storage
+  rpc --> query
+  rpc --> storage
+  rpc --> tenant
   storage --> root
   storage --> auth
+  storage --> tenant
   tenant --> auth
   tenant --> mcp
   tenant --> mgmt
@@ -89,6 +96,7 @@ graph LR
 - [`src/mcp/mod.rs`](../src/mcp/mod.rs)
 - [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
 - [`src/query/mod.rs`](../src/query/mod.rs)
+- [`src/rpc/mod.rs`](../src/rpc/mod.rs)
 - [`src/safety/mod.rs`](../src/safety/mod.rs)
 - [`src/storage/mod.rs`](../src/storage/mod.rs)
 - [`src/tenant/mod.rs`](../src/tenant/mod.rs)
@@ -101,6 +109,7 @@ graph LR
 - `mod mcp`
 - `mod mgmt`
 - `mod query`
+- `mod rpc`
 - `mod safety`
 - `mod storage`
 - `mod tenant`
@@ -245,6 +254,11 @@ _rmcp Streamable HTTP handler that exposes the 13 drust tools._
 - `struct InsertRecordArgs`
 - `struct UpdateRecordArgs`
 - `struct DeleteRecordArgs`
+- `struct CreateRpcParams`
+- `struct UpdateRpcParams`
+- `struct NameOnly`
+- `struct EmptyParams`
+- `struct CallRpcParams`
 - `struct DrustMcpService`
 
 **Imports from:**
@@ -487,6 +501,8 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 - `struct BrowseQs`
 - `fn collections_page`
 - `fn collection_rows_page`
+- `struct AnonCapsForm`
+- `fn update_anon_caps` — POST `/admin/tenants/{tenant}/collections/{coll}/anon-caps`.
 
 **Imports from:**
 
@@ -497,13 +513,28 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 - [`src/storage/schema.rs`](../src/storage/schema.rs)
 - [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
 
+### [`src/mgmt/docs.rs`](../src/mgmt/docs.rs)
+
+_Admin-UI handler for the on-disk CHANGELOG viewer._
+
+**Declared by:**
+
+- [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
+
+**Public items:**
+
+- `struct NavItem`
+- `fn changelog_page`
+
 ### [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
 
 **Declares submodules:**
 
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
+- [`src/mgmt/docs.rs`](../src/mgmt/docs.rs)
 - [`src/mgmt/public_files.rs`](../src/mgmt/public_files.rs)
 - [`src/mgmt/routes.rs`](../src/mgmt/routes.rs)
+- [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
 - [`src/mgmt/signed_bytes.rs`](../src/mgmt/signed_bytes.rs)
 - [`src/mgmt/tenant_files.rs`](../src/mgmt/tenant_files.rs)
 - [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
@@ -516,8 +547,10 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 **Public items:**
 
 - `mod browse`
+- `mod docs`
 - `mod public_files`
 - `mod routes`
+- `mod rpc_admin`
 - `mod signed_bytes`
 - `mod tenant_files`
 - `mod tenants`
@@ -585,6 +618,30 @@ _Admin UI for the host-level public bucket. Provides list, upload, delete,_
 - [`src/mgmt/public_files.rs`](../src/mgmt/public_files.rs)
 - [`src/mgmt/tenant_files.rs`](../src/mgmt/tenant_files.rs)
 - [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+
+### [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
+
+_Admin-UI handlers for the `_rpc` virtual collection page._
+
+**Declared by:**
+
+- [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
+
+**Public items:**
+
+- `fn rpc_index` — `GET /admin/tenants/{id}/_rpc` — list stored RPCs for the tenant.
+- `fn rpc_new_form` — `GET /admin/tenants/{id}/_rpc/new` — render the empty create form.
+- `fn rpc_edit_form` — `GET /admin/tenants/{id}/_rpc/{name}/edit` — render the form pre-filled
+- `struct RpcFormBody`
+- `fn rpc_save` — `POST /admin/tenants/{id}/_rpc/new` (create) and
+- `fn rpc_delete` — `POST /admin/tenants/{id}/_rpc/{name}/delete` — drop a stored RPC.
+
+**Imports from:**
+
+- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+- [`src/rpc/registry.rs`](../src/rpc/registry.rs)
+- [`src/storage/schema.rs`](../src/storage/schema.rs)
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
 
 ### [`src/mgmt/signed_bytes.rs`](../src/mgmt/signed_bytes.rs)
 
@@ -673,6 +730,7 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
 - [`src/mgmt/routes.rs`](../src/mgmt/routes.rs)
+- [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
 - [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
 
 ### [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
@@ -713,11 +771,16 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - `fn detach_authorizer` — Replace the connection's authorizer with a permissive allow-all callback.
 - `fn attach_readonly_authorizer` — Attach the read-only authorizer. Every SQL action is inspected; anything
 
+**Imports from:**
+
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+
 **Imported by:**
 
 - [`src/mcp/tools/exploration.rs`](../src/mcp/tools/exploration.rs)
 - [`src/mcp/tools/read.rs`](../src/mcp/tools/read.rs)
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
+- [`src/rpc/prepare.rs`](../src/rpc/prepare.rs)
 - [`src/tenant/records.rs`](../src/tenant/records.rs)
 
 ### [`src/query/executor.rs`](../src/query/executor.rs)
@@ -732,13 +795,19 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - `enum ExecError`
 - `fn sql_hash`
 - `fn execute_read_query`
+- `fn execute_read_query_with_named` — Same as [`execute_read_query`] but binds `:name`-style placeholders from a
 - `struct InterruptGuard` — Spawn a task that interrupts the connection if a deadline passes.
+
+**Imports from:**
+
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
 
 **Imported by:**
 
 - [`src/mcp/tools/exploration.rs`](../src/mcp/tools/exploration.rs)
 - [`src/mcp/tools/read.rs`](../src/mcp/tools/read.rs)
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
+- [`src/rpc/handler.rs`](../src/rpc/handler.rs)
 - [`src/tenant/query_endpoint.rs`](../src/tenant/query_endpoint.rs)
 - [`src/tenant/records.rs`](../src/tenant/records.rs)
 
@@ -779,6 +848,121 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - `mod authorizer`
 - `mod executor`
 - `mod filter`
+
+<a id="srcrpc"></a>
+
+## `src/rpc/`
+
+### [`src/rpc/handler.rs`](../src/rpc/handler.rs)
+
+_REST handler for `POST /t/{tenant}/rpc/{name}`._
+
+**Declared by:**
+
+- [`src/rpc/mod.rs`](../src/rpc/mod.rs)
+
+**Public items:**
+
+- `fn call_rpc`
+
+**Imports from:**
+
+- [`src/query/executor.rs`](../src/query/executor.rs)
+- [`src/rpc/params.rs`](../src/rpc/params.rs)
+- [`src/rpc/registry.rs`](../src/rpc/registry.rs)
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
+
+### [`src/rpc/mod.rs`](../src/rpc/mod.rs)
+
+_RPC subsystem: stored Supabase-style named SQL functions._
+
+**Declares submodules:**
+
+- [`src/rpc/handler.rs`](../src/rpc/handler.rs)
+- [`src/rpc/params.rs`](../src/rpc/params.rs)
+- [`src/rpc/prepare.rs`](../src/rpc/prepare.rs)
+- [`src/rpc/registry.rs`](../src/rpc/registry.rs)
+
+**Declared by:**
+
+- [`src/lib.rs`](../src/lib.rs)
+
+**Public items:**
+
+- `mod handler`
+- `mod params`
+- `mod prepare`
+- `mod registry`
+
+### [`src/rpc/params.rs`](../src/rpc/params.rs)
+
+_RPC parameter schema and request validation._
+
+**Declared by:**
+
+- [`src/rpc/mod.rs`](../src/rpc/mod.rs)
+
+**Public items:**
+
+- `enum ParamType`
+- `struct ParamSpec`
+- `enum ParamError`
+- `fn parse_params_json`
+- `fn validate_and_bind` — Validate an incoming JSON body against a declared param list and
+- `enum BoundValue`
+
+**Imported by:**
+
+- [`src/rpc/handler.rs`](../src/rpc/handler.rs)
+- [`src/rpc/registry.rs`](../src/rpc/registry.rs)
+
+### [`src/rpc/prepare.rs`](../src/rpc/prepare.rs)
+
+_Prepare-time SQL safety: reject anything the read-only authorizer_
+
+**Declared by:**
+
+- [`src/rpc/mod.rs`](../src/rpc/mod.rs)
+
+**Public items:**
+
+- `enum PrepareError`
+- `fn validate_rpc_sql` — Open a read-only-style preparation: attach the authorizer, prepare
+
+**Imports from:**
+
+- [`src/query/authorizer.rs`](../src/query/authorizer.rs)
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+
+### [`src/rpc/registry.rs`](../src/rpc/registry.rs)
+
+_Persistence wrapper around the `_system_rpc` table._
+
+**Declared by:**
+
+- [`src/rpc/mod.rs`](../src/rpc/mod.rs)
+
+**Public items:**
+
+- `struct StoredRpc`
+- `enum RegistryError`
+- `fn lookup`
+- `fn list`
+- `fn create`
+- `fn update`
+- `fn delete`
+- `fn increment` — Bump the appropriate counter and `last_called_at`. Bypasses the
+
+**Imports from:**
+
+- [`src/rpc/params.rs`](../src/rpc/params.rs)
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
+
+**Imported by:**
+
+- [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
+- [`src/rpc/handler.rs`](../src/rpc/handler.rs)
 
 <a id="srcsafety"></a>
 
@@ -928,6 +1112,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - [`src/storage/pool.rs`](../src/storage/pool.rs)
 - [`src/storage/quota.rs`](../src/storage/quota.rs)
 - [`src/storage/schema.rs`](../src/storage/schema.rs)
+- [`src/storage/schema_cache.rs`](../src/storage/schema_cache.rs)
 - [`src/storage/signed_url.rs`](../src/storage/signed_url.rs)
 - [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
 
@@ -944,6 +1129,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - `mod pool`
 - `mod quota`
 - `mod schema`
+- `mod schema_cache`
 - `mod signed_url`
 - `mod tenant_db`
 
@@ -961,6 +1147,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 
 **Imports from:**
 
+- [`src/storage/schema_cache.rs`](../src/storage/schema_cache.rs)
 - [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
 
 **Imported by:**
@@ -989,6 +1176,10 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 **Public items:**
 
 - `fn is_protected_collection` — System-managed collections are drop-protected. Any name starting with
+- `enum DmlVerb`
+- `fn default_anon_caps` — Default capability set — anon may SELECT only. Used when a row is
+- `fn parse_anon_caps_json` — Parse a JSON array of lowercase verb strings into a `BTreeSet`.
+- `fn anon_caps_to_json` — Serialise a capability set as a sorted JSON array (deterministic).
 - `struct Collection`
 - `struct Field`
 - `struct IndexInfo`
@@ -997,6 +1188,13 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - `fn describe_collection`
 - `fn collection_exists`
 - `fn find_fk_referrers` — Find every other user-table that has a foreign-key column pointing at
+- `fn write_anon_caps` — Insert / replace the anon_caps row for a collection. Caller must
+- `fn delete_collection_meta` — Drop the metadata row for a collection. Called from drop_collection.
+- `fn has_dml_cap` — Returns true if the caller's role is permitted to perform `verb` on
+
+**Imports from:**
+
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
 
 **Imported by:**
 
@@ -1004,9 +1202,30 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - [`src/mcp/tools/schema.rs`](../src/mcp/tools/schema.rs)
 - [`src/mcp/tools/write.rs`](../src/mcp/tools/write.rs)
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
+- [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
 - [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
+- [`src/storage/schema_cache.rs`](../src/storage/schema_cache.rs)
 - [`src/tenant/collections.rs`](../src/tenant/collections.rs)
 - [`src/tenant/records.rs`](../src/tenant/records.rs)
+
+### [`src/storage/schema_cache.rs`](../src/storage/schema_cache.rs)
+
+**Declared by:**
+
+- [`src/storage/mod.rs`](../src/storage/mod.rs)
+
+**Public items:**
+
+- `struct SchemaCache`
+
+**Imports from:**
+
+- [`src/storage/schema.rs`](../src/storage/schema.rs)
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+
+**Imported by:**
+
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
 
 ### [`src/storage/signed_url.rs`](../src/storage/signed_url.rs)
 
@@ -1045,9 +1264,15 @@ _Drust-minted, drust-served signed URLs for private file downloads._
 **Imported by:**
 
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
+- [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
 - [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
 - [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
+- [`src/query/authorizer.rs`](../src/query/authorizer.rs)
+- [`src/query/executor.rs`](../src/query/executor.rs)
+- [`src/rpc/prepare.rs`](../src/rpc/prepare.rs)
+- [`src/rpc/registry.rs`](../src/rpc/registry.rs)
 - [`src/storage/pool.rs`](../src/storage/pool.rs)
+- [`src/storage/schema_cache.rs`](../src/storage/schema_cache.rs)
 
 <a id="srctenant"></a>
 
@@ -1201,6 +1426,9 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 
 **Imported by:**
 
+- [`src/rpc/handler.rs`](../src/rpc/handler.rs)
+- [`src/rpc/registry.rs`](../src/rpc/registry.rs)
+- [`src/storage/schema.rs`](../src/storage/schema.rs)
 - [`src/tenant/collections.rs`](../src/tenant/collections.rs)
 - [`src/tenant/mcp_dispatch.rs`](../src/tenant/mcp_dispatch.rs)
 - [`src/tenant/query_endpoint.rs`](../src/tenant/query_endpoint.rs)
