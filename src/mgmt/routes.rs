@@ -296,6 +296,14 @@ impl MgmtState {
                 "/admin/tenants/{id}/collections/{coll}/anon-caps",
                 post(super::browse::update_anon_caps),
             )
+            .route(
+                "/admin/audit",
+                get(super::audit::audit_host_page),
+            )
+            .route(
+                "/admin/tenants/{id}/_logs",
+                get(super::audit::audit_tenant_page),
+            )
             .with_state(tenants_state);
 
         // Public-files sub-router (new in v1.4.0). Upload route carries its
