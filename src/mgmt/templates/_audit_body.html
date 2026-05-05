@@ -118,9 +118,21 @@
         <td>{% if let Some(c) = e.error_code %}{{ c }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
       </tr>
       <tr class="audit-detail-row"><td colspan="{% if is_host_scope %}7{% else %}6{% endif %}" style="padding:0;border:0;background:transparent;">
-        <details style="margin:0;padding:0 var(--cell-x) 6px;">
-          <summary class="muted" style="cursor:pointer;font-size:12px;">expand JSON</summary>
-          <pre style="margin:6px 0 0;padding:8px;background:var(--bg-2);border-radius:6px;font-size:12px;overflow-x:auto;">{{ e.token_hint }} · {{ e.duration_ms }}ms{% if let Some(h) = e.sql_hash %} · sql:{{ h }}{% endif %}{% if let Some(id) = e.record_id %} · id:{{ id }}{% endif %}{% if let Some(m) = e.error_message %}{{ "\n" }}{{ m }}{% endif %}</pre>
+        <details style="margin:0;padding:0 var(--cell-x) 8px;">
+          <summary class="muted" style="cursor:pointer;font-size:12px;">details</summary>
+          <dl class="audit-detail">
+            <dt>ts</dt><dd>{{ e.ts }}</dd>
+            <dt>tenant</dt><dd>{{ e.tenant }}</dd>
+            <dt>token_hint</dt><dd>{{ e.token_hint }}</dd>
+            <dt>op</dt><dd>{{ e.op }}</dd>
+            <dt>status</dt><dd>{% if e.status == "error" %}<b style="color:var(--warn);">{{ e.status }}</b>{% else %}{{ e.status }}{% endif %}</dd>
+            <dt>duration_ms</dt><dd>{{ e.duration_ms }}</dd>
+            {% if let Some(c) = e.collection %}<dt>collection</dt><dd>{{ c }}</dd>{% endif %}
+            {% if let Some(h) = e.sql_hash %}<dt>sql_hash</dt><dd>{{ h }}</dd>{% endif %}
+            {% if let Some(id) = e.record_id %}<dt>record_id</dt><dd>{{ id }}</dd>{% endif %}
+            {% if let Some(c) = e.error_code %}<dt>error_code</dt><dd><b style="color:var(--warn);">{{ c }}</b></dd>{% endif %}
+            {% if let Some(m) = e.error_message %}<dt>error_message</dt><dd><pre class="audit-err">{{ m }}</pre></dd>{% endif %}
+          </dl>
         </details>
       </td></tr>
       {% endfor %}
