@@ -25,6 +25,9 @@ pub struct MgmtState {
     /// Minimum free-disk percentage before uploads are refused (507).
     /// Sourced from `DRUST_DISK_MIN_FREE_PCT`; default 20.
     pub disk_min_free_pct: u8,
+    /// Directory containing `audit-YYYY-MM-DD.jsonl` files. Sourced from
+    /// `$DRUST_LOG_DIR` at boot; consumed by the admin audit UI.
+    pub log_dir: std::path::PathBuf,
     /// 32-byte HMAC secret for drust-minted signed URLs. Generated at boot;
     /// signed URLs do not survive a restart.
     pub url_sign_secret: Arc<[u8; 32]>,
