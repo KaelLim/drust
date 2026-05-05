@@ -208,10 +208,13 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     // so TenantAuthState is available to the middleware while TenantFilesState
     // is available to the handler).
     let files_router = if let Some(files_state) = state.files {
+        let max_upload_bytes = files_state.max_upload_bytes;
         Router::new()
             .route(
                 "/t/{tenant}/files",
-                post(crate::mgmt::tenant_files::upload).get(crate::mgmt::tenant_files::list),
+                post(crate::mgmt::tenant_files::upload)
+                    .layer(axum::extract::DefaultBodyLimit::max(max_upload_bytes))
+                    .get(crate::mgmt::tenant_files::list),
             )
             .route(
                 "/t/{tenant}/files/{key}",
