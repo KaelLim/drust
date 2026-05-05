@@ -495,4 +495,24 @@ mod tests {
         assert_eq!(res.archive_errors.len(), 1);
         assert!(res.archive_errors[0].contains("audit-"));
     }
+
+    #[test]
+    fn scan_window_caps_at_max_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        // Synthesize MAX_ENTRIES + 100 lines with monotonic ts so all fall in window.
+        let mut buf = String::new();
+        for i in 0..(MAX_ENTRIES + 100) {
+            // milliseconds of the minute drift so ts strings are unique
+            let ts = format!("{today}T00:{:02}:{:02}.{:03}Z", (i / 60) % 60, i % 60, i % 1000);
+            buf.push_str(&entry_line(&ts, "acme", "GET", "ok", 1));
+            buf.push('\n');
+        }
+        write(&dir.path().join(format!("audit-{today}.jsonl")), &buf);
+
+        let res = scan_window(dir.path(), Window::H24, now);
+        assert_eq!(res.entries.len(), MAX_ENTRIES);
+        assert_eq!(res.truncated_from, Some(MAX_ENTRIES + 100));
+    }
 }
