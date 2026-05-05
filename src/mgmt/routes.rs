@@ -182,6 +182,7 @@ impl MgmtState {
             disk_min_free_pct: self.disk_min_free_pct,
             public_base_url: self.public_base_url.clone(),
             tenants: self.tenants.clone(),
+            log_dir: self.log_dir.clone(),
         };
         let public_files_state = PublicFilesState {
             session: session.clone(),
