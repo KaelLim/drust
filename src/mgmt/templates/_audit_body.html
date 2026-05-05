@@ -36,7 +36,11 @@
     <thead><tr><th>tenant</th><th class="num">count</th><th class="num">err%</th></tr></thead>
     <tbody>
       {% for t in ov.top_tenants %}
-      <tr><td>{{ t.tenant }}</td><td class="num">{{ t.count }}</td><td class="num">{{ "{:.1}"|format(t.error_pct) }}%</td></tr>
+      <tr>
+        <td><a class="cell-link" href="/drust/admin/tenants/{{ t.tenant }}/_logs" title="drill into this tenant's audit">{{ t.tenant }}</a></td>
+        <td class="num">{{ t.count }}</td>
+        <td class="num">{{ "{:.1}"|format(t.error_pct) }}%</td>
+      </tr>
       {% endfor %}
     </tbody>
   </table>
@@ -59,9 +63,9 @@
       {% for e in ov.top_slow_ops %}
       <tr>
         <td>{{ e.ts }}</td>
-        {% if is_host_scope %}<td>{{ e.tenant }}</td>{% endif %}
+        {% if is_host_scope %}<td><a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs">{{ e.tenant }}</a></td>{% endif %}
         <td>{{ e.op }}</td>
-        <td>{% if let Some(c) = e.collection %}{{ c }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
+        <td>{% if let Some(c) = e.collection %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/collections/{{ c }}">{{ c }}</a>{% else %}<span class="muted-cell">—</span>{% endif %}</td>
         <td class="num">{{ e.duration_ms }}</td>
       </tr>
       {% endfor %}
@@ -110,11 +114,11 @@
       {% for e in entries %}
       <tr>
         <td>{{ e.ts }}</td>
-        {% if is_host_scope %}<td>{{ e.tenant }}</td>{% endif %}
+        {% if is_host_scope %}<td><a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs" title="drill into this tenant's audit">{{ e.tenant }}</a></td>{% endif %}
         <td>{{ e.op }}</td>
         <td>{% if e.status == "error" %}<b style="color:var(--warn);">ERROR</b>{% else %}{{ e.status }}{% endif %}</td>
         <td class="num">{{ e.duration_ms }}</td>
-        <td>{% if let Some(c) = e.collection %}{{ c }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
+        <td>{% if let Some(c) = e.collection %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/collections/{{ c }}">{{ c }}</a>{% else %}<span class="muted-cell">—</span>{% endif %}</td>
         <td>{% if let Some(c) = e.error_code %}{{ c }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
       </tr>
       <tr class="audit-detail-row"><td colspan="{% if is_host_scope %}7{% else %}6{% endif %}" style="padding:0;border:0;background:transparent;">

@@ -204,9 +204,12 @@ impl MgmtState {
         };
         let signed_bytes_state = crate::mgmt::signed_bytes::SignedBytesState {
             meta: self.meta.clone(),
-            data_root: data_dir,
+            data_root: data_dir.clone(),
             garage: self.garage.clone(),
             url_sign_secret: self.url_sign_secret.clone(),
+        };
+        let backups_state = crate::mgmt::backups::BackupsState {
+            data_dir: data_dir.clone(),
         };
 
         let public = Router::new()
@@ -306,6 +309,17 @@ impl MgmtState {
             )
             .with_state(tenants_state);
 
+        // Backups sub-router — list + download snapshots produced by
+        // drust-backup.timer. Read-only; restore is intentionally manual
+        // (extract via `tar --zstd -xf`) until we add a guarded UI flow.
+        let backups_router = Router::new()
+            .route("/admin/backups", get(super::backups::list_page))
+            .route(
+                "/admin/backups/{filename}/download",
+                get(super::backups::download_one),
+            )
+            .with_state(backups_state);
+
         // Public-files sub-router (new in v1.4.0). Upload route carries its
         // own DefaultBodyLimit so multipart payloads larger than the cap
         // return 413 without consuming memory.
@@ -345,6 +359,7 @@ impl MgmtState {
         let protected = tenants_router
             .merge(public_files_router)
             .merge(admin_tenant_files_router)
+            .merge(backups_router)
             .layer(axum::middleware::from_fn_with_state(
                 session,
                 admin_session_layer,

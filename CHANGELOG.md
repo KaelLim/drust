@@ -5,6 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-05-05
+
+### Added
+
+- **Backup snapshot UI** at `/admin/backups` — read-only list + per-file
+  download (`Content-Type: application/zstd`, streamed via `tokio_util::io::ReaderStream`,
+  no buffering). Enumerates `<data_dir>/backups/drust-*.tar.zst` (the
+  output of `drust-backup.timer`), shows size + ISO mtime + relative age,
+  newest first. Filename pattern is whitelisted (`drust-…tar.zst`,
+  no path separators) so traversal attempts return 400 before any FS
+  access. Topbar `backups` link added to `tenants_list.html`. Restore /
+  inspect remain manual (`tar --zstd -xf …`) — guarded UI flow can land
+  later. New dependency: `tokio-util = "0.7"` (io feature only).
+- **Audit drill-down links** — in `_audit_body.html`, the `tenant`
+  cell (Top tenants / Top slowest ops / Browse) and the `coll` cell now
+  resolve to in-context destinations: tenant → `/admin/tenants/{id}/_logs`,
+  collection → `/admin/tenants/{id}/collections/{coll}`. Drilling from
+  host audit into a single tenant's audit is one click.
+- **Per-row audit detail panel** — `<details>` expansion replaces the
+  one-line `token_hint · duration_ms` summary with a full key/value
+  block (every populated `AuditEntry` field, optional ones gated by
+  `if let Some`). `error_message` renders in a red-tinted `<pre>` with
+  wrap so multi-line stack traces stay readable. Styling lives in new
+  `dl.audit-detail` rule in `_styles.html` — adding a new entry field
+  is one `<dt>/<dd>` pair, no CSS changes.
+- **Per-tenant disk breakdown** on tenants list — three numeric columns
+  (`db` / `files` / **total**) replacing the old `db_size_kb` (`KB`-only)
+  cell. All three pass through the new `humanize_bytes` helper (B / KB
+  / MB / GB autoscale). Sorting still by name; future column-sort can
+  build on the same struct fields.
+- **`GarageClient::bucket_usage(name)`** — admin API wrapper returning
+  `Option<BucketUsage { objects, bytes, multipart_orphan_objects,
+  multipart_orphan_bytes }>` from `GET /v1/bucket?globalAlias=...`.
+  Returns `Ok(None)` for 404 (matches `lookup_bucket` shape). No UI
+  consumer yet — the per-tenant `tenant-<id>-{pub,prv}` buckets aren't
+  provisioned on existing deployments. Hooking the host `/admin/files`
+  card or the per-tenant `tenant_files_admin` page once buckets exist
+  is one struct field + one template tweak.
+
+### Changed
+
+- **`tenant_name` in topbar paths**: `tenant_files_admin.html`,
+  `tenant_rpc.html`, `tenant_rpc_form.html`, and `collection_rows.html`
+  now show the tenant's display name in the macOS title bar and prompt
+  path; URLs still carry the uuid. `RpcPage` / `RpcForm` / `RowsPage`
+  gain a `tenant_name` field, and `rpc_admin.rs` / `browse.rs` look it
+  up via meta.sqlite (failure → 404 with the same shape as the
+  existence check). Reduces "which tenant am I in?" cognitive load
+  noticeably on the per-tenant pages.
+- **Audit table styling** — `top_tenants`, `top_slow_ops`, and Browse
+  switched from `class="tbl"` (undefined, fell back to browser
+  default) to the standard `class="data"` admin grid. Stat cards
+  (Total / Errors / p50/p99 / Avg QPS) now share the new
+  `.audit-stats` grid: equal-height by default, body fills card via
+  `flex:1`, content vertically centered — eliminates the ragged
+  bottoms when one card's content wraps.
+- **Audit Browse pager** — replaced the one-off "next page →" link
+  with the standard `.pager` / `.page-of` / `.pager-group` layout used
+  by collection rows + admin files. Cursor pagination semantics
+  unchanged (`before_ts` query param); only visual aligned.
+- **`_rpc` list pagination** — `page` / `per_page` query params
+  (default 20, options 20/50/100/200), `.pager` footer + per-page
+  selector. Slices in Rust on top of `registry::list` so the SQL
+  layer stays simple; large lists pay the full-list cost once per
+  page hit, but `_system_rpc` per tenant is bounded so this is fine.
+- **`_system_files` (tenant page) pagination** — proper `LIMIT/OFFSET`
+  against `_system_files` plus a `COUNT(*) + COALESCE(SUM(size_bytes), 0)`
+  for the header. Default 25/page, options 10/25/50/100. The previous
+  unpaginated `ORDER BY uploaded_at DESC` is gone.
+- **`.main` no longer sets `display: flex; flex-direction: column;`**
+  — single `.page` child means normal block flow is equivalent. Drops
+  one source of layout confusion across every admin page.
+
+### Fixed
+
+- The `_logs` page (tenant scope) used to render a `tenant` column that
+  was redundant — every row had the same value. Hidden in tenant scope
+  via `is_host_scope` gating on both Top slowest ops and the Browse
+  table; colspan on the expand row drops to 6 in tenant scope.
+
 ## [1.7.0] - 2026-05-05
 
 ### Added

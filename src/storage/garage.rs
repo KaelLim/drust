@@ -31,6 +31,17 @@ pub struct BucketInfo {
     pub website_enabled: bool,
 }
 
+/// Live usage stats from `GET /v1/bucket?globalAlias=<name>`. `bytes` covers
+/// committed objects only; `multipart_orphan_bytes` is what's tied up in
+/// unfinished multipart uploads (visible to admin but not via S3 listing).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BucketUsage {
+    pub objects: u64,
+    pub bytes: u64,
+    pub multipart_orphan_objects: u64,
+    pub multipart_orphan_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ObjectSummary {
     pub key: String,
@@ -251,6 +262,39 @@ impl GarageClient {
             anyhow::bail!("garage delete_bucket({bucket_id}) -> {status}: {body}");
         }
         Ok(())
+    }
+
+    /// Live usage for a bucket by global alias. Returns `Ok(None)` when the
+     /// bucket doesn't exist (404). Other errors propagate. Used by the
+     /// admin UI's disk-usage cards.
+    pub async fn bucket_usage(&self, name: &str) -> anyhow::Result<Option<BucketUsage>> {
+        let resp = self
+            .admin
+            .get(self.admin_url("/v1/bucket"))
+            .query(&[("globalAlias", name)])
+            .bearer_auth(&self.admin_token)
+            .send()
+            .await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("garage bucket_usage({name}) -> {status}: {body}");
+        }
+        let v: serde_json::Value = serde_json::from_str(&body)?;
+        let u64_field = |k: &str| -> u64 {
+            v.get(k)
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0)
+        };
+        Ok(Some(BucketUsage {
+            objects: u64_field("objects"),
+            bytes: u64_field("bytes"),
+            multipart_orphan_objects: u64_field("unfinishedMultipartUploads"),
+            multipart_orphan_bytes: u64_field("unfinishedMultipartUploadBytes"),
+        }))
     }
 
     pub async fn lookup_bucket(&self, name: &str) -> anyhow::Result<Option<BucketInfo>> {
