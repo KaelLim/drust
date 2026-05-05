@@ -5,6 +5,7 @@
 //! `docs/superpowers/specs/2026-05-05-drust-audit-ui-design.md`.
 
 use crate::safety::audit::AuditEntry;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {
@@ -84,6 +85,88 @@ pub struct TopTenant {
 /// Hard cap on entries returned per scan_window call.
 pub const MAX_ENTRIES: usize = 50_000;
 
+/// Enumerate audit files under `dir` whose date falls inside `window` relative
+/// to `now`. Match pattern is `audit-YYYY-MM-DD.jsonl(\.N(\.gz)?)?`. Files
+/// outside the window or non-matching are skipped silently.
+pub fn enumerate_audit_files(
+    dir: &Path,
+    window: Window,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let cutoff_date = (now - chrono::Duration::seconds(window.seconds()))
+        .date_naive();
+
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        // Match audit-YYYY-MM-DD.jsonl(.N(.gz)?)?
+        let stripped = match name_str.strip_prefix("audit-") {
+            Some(s) => s,
+            None => continue,
+        };
+        // first 10 chars must be YYYY-MM-DD
+        if stripped.len() < 11 {
+            continue;
+        }
+        let date_str = &stripped[..10];
+        let rest = &stripped[10..];
+        let date = match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        // rest must be ".jsonl" optionally followed by ".N" and optionally ".gz"
+        if !is_recognised_suffix(rest) {
+            continue;
+        }
+        // window check: date >= cutoff_date (inclusive)
+        if date < cutoff_date {
+            continue;
+        }
+        out.push(entry.path());
+    }
+    // Sort newest-first by file name (lexical = chronological for our naming)
+    out.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    out
+}
+
+fn is_recognised_suffix(rest: &str) -> bool {
+    // first char must be ".", followed by "jsonl"
+    let after_dot = match rest.strip_prefix('.') {
+        Some(s) => s,
+        None => return false,
+    };
+    let after_jsonl = match after_dot.strip_prefix("jsonl") {
+        Some(s) => s,
+        None => return false,
+    };
+    if after_jsonl.is_empty() {
+        return true; // .jsonl
+    }
+    // .jsonl.N or .jsonl.N.gz — N is digits
+    let after_dot2 = match after_jsonl.strip_prefix('.') {
+        Some(s) => s,
+        None => return false,
+    };
+    // Split off optional ".gz"
+    let (numeric, after_num) = match after_dot2.find('.') {
+        Some(i) => (&after_dot2[..i], &after_dot2[i..]),
+        None => (after_dot2, ""),
+    };
+    if numeric.is_empty() || !numeric.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    matches!(after_num, "" | ".gz")
+}
+
 /// Parse a single JSONL line into an `AuditEntry`. Returns `None` for empty
 /// lines, whitespace-only lines, or any parse failure (caller increments
 /// `parse_errors` for non-empty failures).
@@ -98,6 +181,13 @@ pub fn parse_jsonl_line(line: &str) -> Option<AuditEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use chrono::{Duration, Utc};
+
+    fn write(path: &PathBuf, content: &str) {
+        fs::write(path, content).unwrap();
+    }
 
     #[test]
     fn window_parses_known_values() {
@@ -139,5 +229,67 @@ mod tests {
     fn parse_empty_line_returns_none() {
         assert!(parse_jsonl_line("").is_none());
         assert!(parse_jsonl_line("   \t").is_none());
+    }
+
+    #[test]
+    fn enumerate_empty_dir_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let files = enumerate_audit_files(dir.path(), Window::H24, now);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn enumerate_picks_today_and_yesterday_for_24h() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let yesterday = (now - Duration::days(1)).format("%Y-%m-%d").to_string();
+        let earlier = (now - Duration::days(5)).format("%Y-%m-%d").to_string();
+        write(&dir.path().join(format!("audit-{today}.jsonl")), "");
+        write(&dir.path().join(format!("audit-{yesterday}.jsonl")), "");
+        write(&dir.path().join(format!("audit-{earlier}.jsonl.1.gz")), "");
+        write(&dir.path().join("unrelated.txt"), "");
+
+        let files = enumerate_audit_files(dir.path(), Window::H24, now);
+        let names: Vec<String> = files.iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&format!("audit-{today}.jsonl")));
+        assert!(names.contains(&format!("audit-{yesterday}.jsonl")));
+        assert!(!names.contains(&format!("audit-{earlier}.jsonl.1.gz")));
+        assert!(!names.iter().any(|n| n == "unrelated.txt"));
+    }
+
+    #[test]
+    fn enumerate_picks_archives_for_7d() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let day3 = (now - Duration::days(3)).format("%Y-%m-%d").to_string();
+        let day10 = (now - Duration::days(10)).format("%Y-%m-%d").to_string();
+        write(&dir.path().join(format!("audit-{today}.jsonl")), "");
+        write(&dir.path().join(format!("audit-{day3}.jsonl.1.gz")), "");
+        write(&dir.path().join(format!("audit-{day10}.jsonl.5.gz")), "");
+
+        let files = enumerate_audit_files(dir.path(), Window::D7, now);
+        let names: Vec<String> = files.iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&format!("audit-{today}.jsonl")));
+        assert!(names.contains(&format!("audit-{day3}.jsonl.1.gz")));
+        assert!(!names.contains(&format!("audit-{day10}.jsonl.5.gz")));
+    }
+
+    #[test]
+    fn enumerate_ignores_wrong_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        write(&dir.path().join("foo.jsonl"), "");
+        write(&dir.path().join("audit-bad-date.jsonl"), "");
+        write(&dir.path().join("audit-2026-13-99.jsonl"), ""); // bad month/day
+        write(&dir.path().join("audit-2026-05-05.jsonl.bak"), ""); // unrecognised suffix
+        let files = enumerate_audit_files(dir.path(), Window::H24, now);
+        assert!(files.is_empty());
     }
 }
