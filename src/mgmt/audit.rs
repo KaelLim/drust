@@ -340,6 +340,39 @@ fn compute_top_slow_ops(entries: &[AuditEntry]) -> Vec<AuditEntry> {
     sorted
 }
 
+/// Apply filter spec. Result preserves input order (caller scan_window
+/// already returns newest-first).
+pub fn filter(entries: &[AuditEntry], spec: &FilterSpec) -> Vec<AuditEntry> {
+    entries
+        .iter()
+        .filter(|e| {
+            if let Some(t) = &spec.tenant {
+                if &e.tenant != t {
+                    return false;
+                }
+            }
+            if let Some(o) = &spec.op {
+                if &e.op != o {
+                    return false;
+                }
+            }
+            if let Some(s) = spec.status {
+                if e.status != s {
+                    return false;
+                }
+            }
+            if let Some(cursor) = &spec.before_ts {
+                // strict less-than: cursor itself excluded
+                if e.ts.as_str() >= cursor.as_str() {
+                    return false;
+                }
+            }
+            true
+        })
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,5 +717,74 @@ mod tests {
         assert_eq!(ov.top_slow_ops.len(), 5);
         let durations: Vec<u64> = ov.top_slow_ops.iter().map(|e| e.duration_ms).collect();
         assert_eq!(durations, vec![1000, 800, 200, 50, 30]);
+    }
+
+    fn fixture() -> Vec<AuditEntry> {
+        // Sorted newest-first (matches what scan_window returns).
+        vec![
+            mk_entry("2026-05-05T01:00:03.000Z", "beta", "DELETE", "error", 4),
+            mk_entry("2026-05-05T01:00:02.000Z", "beta", "GET", "ok", 3),
+            mk_entry("2026-05-05T01:00:01.000Z", "acme", "POST", "error", 2),
+            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", 1),
+        ]
+    }
+
+    #[test]
+    fn filter_by_tenant() {
+        let f = FilterSpec { tenant: Some("acme".into()), ..Default::default() };
+        let r = filter(&fixture(), &f);
+        assert_eq!(r.len(), 2);
+        assert!(r.iter().all(|e| e.tenant == "acme"));
+    }
+
+    #[test]
+    fn filter_by_op() {
+        let f = FilterSpec { op: Some("GET".into()), ..Default::default() };
+        let r = filter(&fixture(), &f);
+        assert_eq!(r.len(), 2);
+        assert!(r.iter().all(|e| e.op == "GET"));
+    }
+
+    #[test]
+    fn filter_by_status_error() {
+        let f = FilterSpec { status: Some("error"), ..Default::default() };
+        let r = filter(&fixture(), &f);
+        assert_eq!(r.len(), 2);
+        assert!(r.iter().all(|e| e.status == "error"));
+    }
+
+    #[test]
+    fn filter_by_status_ok() {
+        let f = FilterSpec { status: Some("ok"), ..Default::default() };
+        let r = filter(&fixture(), &f);
+        assert_eq!(r.len(), 2);
+        assert!(r.iter().all(|e| e.status == "ok"));
+    }
+
+    #[test]
+    fn filter_combined_and() {
+        let f = FilterSpec {
+            tenant: Some("acme".into()),
+            status: Some("error"),
+            ..Default::default()
+        };
+        let r = filter(&fixture(), &f);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].op, "POST");
+    }
+
+    #[test]
+    fn filter_before_ts_excludes_cursor_entry() {
+        // before_ts is exclusive: entries with ts < cursor pass; ts == cursor excluded.
+        let f = FilterSpec {
+            before_ts: Some("2026-05-05T01:00:02.000Z".into()),
+            ..Default::default()
+        };
+        let r = filter(&fixture(), &f);
+        let timestamps: Vec<&str> = r.iter().map(|e| e.ts.as_str()).collect();
+        assert_eq!(
+            timestamps,
+            vec!["2026-05-05T01:00:01.000Z", "2026-05-05T01:00:00.000Z"]
+        );
     }
 }
