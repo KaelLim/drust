@@ -1,0 +1,134 @@
+{# _audit_body.html — audit viewer body. Parent template owns shell. #}
+
+{% if auto_refresh %}<meta http-equiv="refresh" content="30">{% endif %}
+
+<div class="tabs" style="display:flex;gap:6px;margin-bottom:18px;">
+  <a class="btn{% if tab == "overview" %} btn-primary{% endif %}" href="{{ overview_link }}">Overview</a>
+  <a class="btn{% if tab == "browse" %} btn-primary{% endif %}" href="{{ browse_link }}">Browse</a>
+</div>
+
+<div style="display:flex;gap:6px;margin-bottom:18px;align-items:center;">
+  <span class="muted" style="margin-right:8px;">window</span>
+  {% for w in window_choices %}
+  <a class="btn{% if w.active %} btn-primary{% endif %}" href="{{ w.href }}">{{ w.label }}</a>
+  {% endfor %}
+  <span style="flex:1;"></span>
+  <a class="btn" href="{{ refresh_link }}">Refresh</a>
+  <a class="btn{% if auto_refresh %} btn-primary{% endif %}" href="{{ auto_toggle_link }}">
+    {% if auto_refresh %}■ stop auto-refresh{% else %}□ auto-refresh 30s{% endif %}
+  </a>
+</div>
+
+{% if tab == "overview" %}
+{% if let Some(ov) = overview %}
+<div class="grid-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:24px;">
+  <div class="card"><div class="card-head">Total requests</div><div class="card-body" style="font-size:28px;font-family:var(--mono);">{{ ov.total }}</div></div>
+  <div class="card"><div class="card-head">Errors</div><div class="card-body" style="font-size:28px;font-family:var(--mono);">{{ ov.error_count }} <span class="muted" style="font-size:14px;">({{ "{:.1}"|format(ov.error_pct) }}%)</span></div></div>
+  <div class="card"><div class="card-head">p50 / p99 latency</div><div class="card-body" style="font-size:28px;font-family:var(--mono);">{{ ov.p50_ms }}ms <span class="muted">/</span> {{ ov.p99_ms }}ms</div></div>
+  <div class="card"><div class="card-head">Avg QPS</div><div class="card-body" style="font-size:28px;font-family:var(--mono);">{{ "{:.2}"|format(ov.qps_avg) }}/s</div></div>
+</div>
+
+{% if is_host_scope %}
+<div class="card" style="margin-bottom:18px;">
+  <div class="card-head">Top tenants</div>
+  <div class="card-body">
+    {% if ov.top_tenants.is_empty() %}<div class="muted">no data</div>{% else %}
+    <table class="tbl" style="width:100%;font-family:var(--mono);">
+      <thead><tr><th>tenant</th><th>count</th><th>err%</th></tr></thead>
+      <tbody>
+        {% for t in ov.top_tenants %}
+        <tr><td>{{ t.tenant }}</td><td class="num">{{ t.count }}</td><td class="num">{{ "{:.1}"|format(t.error_pct) }}%</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head">Top slowest ops</div>
+  <div class="card-body">
+    {% if ov.top_slow_ops.is_empty() %}<div class="muted">no data</div>{% else %}
+    <table class="tbl" style="width:100%;font-family:var(--mono);">
+      <thead><tr><th>ts</th><th>tenant</th><th>op</th><th>coll</th><th class="num">ms</th></tr></thead>
+      <tbody>
+        {% for e in ov.top_slow_ops %}
+        <tr>
+          <td>{{ e.ts }}</td>
+          <td>{{ e.tenant }}</td>
+          <td>{{ e.op }}</td>
+          <td>{% if let Some(c) = e.collection %}{{ c }}{% endif %}</td>
+          <td class="num">{{ e.duration_ms }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% else %}
+<form method="get" style="display:flex;gap:8px;align-items:center;margin-bottom:18px;flex-wrap:wrap;">
+  <input type="hidden" name="tab" value="browse">
+  <input type="hidden" name="window" value="{{ window_str }}">
+  {% if is_host_scope %}
+  <label>tenant <input class="input" name="tenant" value="{% if let Some(t) = tenant_filter %}{{ t }}{% endif %}" placeholder="(any)" style="width:160px;"></label>
+  {% endif %}
+  <label>op <input class="input" name="op" value="{% if let Some(o) = op_filter %}{{ o }}{% endif %}" placeholder="(any)" style="width:160px;"></label>
+  <label>status
+    <select class="input" name="status">
+      <option value="all"{% if status_filter == "all" %} selected{% endif %}>all</option>
+      <option value="ok"{% if status_filter == "ok" %} selected{% endif %}>ok</option>
+      <option value="error"{% if status_filter == "error" %} selected{% endif %}>error</option>
+    </select>
+  </label>
+  <button class="btn btn-primary" type="submit">Apply</button>
+</form>
+
+<div class="card">
+  <div class="card-head">Audit entries <span class="muted">({{ entries.len() }} shown)</span></div>
+  <div class="card-body">
+    {% if entries.is_empty() %}
+    <div class="muted">no entries match.</div>
+    {% else %}
+    <table class="tbl" style="width:100%;font-family:var(--mono);font-size:13px;">
+      <thead><tr><th>ts</th><th>tenant</th><th>op</th><th>status</th><th class="num">ms</th><th>coll</th><th>error</th></tr></thead>
+      <tbody>
+        {% for e in entries %}
+        <tr>
+          <td>{{ e.ts }}</td>
+          <td>{{ e.tenant }}</td>
+          <td>{{ e.op }}</td>
+          <td>{% if e.status == "error" %}<b style="color:var(--warn);">ERROR</b>{% else %}{{ e.status }}{% endif %}</td>
+          <td class="num">{{ e.duration_ms }}</td>
+          <td>{% if let Some(c) = e.collection %}{{ c }}{% endif %}</td>
+          <td>{% if let Some(c) = e.error_code %}{{ c }}{% endif %}</td>
+        </tr>
+        <tr><td colspan="7" style="padding:0;border:0;">
+          <details style="margin:0;padding:0 12px 6px;">
+            <summary class="muted" style="cursor:pointer;font-size:12px;">expand JSON</summary>
+            <pre style="margin:6px 0 0;padding:8px;background:var(--bg-2);border-radius:6px;font-size:12px;overflow-x:auto;">{{ e.token_hint }} · {{ e.duration_ms }}ms{% if let Some(h) = e.sql_hash %} · sql:{{ h }}{% endif %}{% if let Some(id) = e.record_id %} · id:{{ id }}{% endif %}{% if let Some(m) = e.error_message %}{{ "\n" }}{{ m }}{% endif %}</pre>
+          </details>
+        </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if let Some(href) = next_page_link %}
+    <div style="margin-top:14px;display:flex;justify-content:flex-end;">
+      <a class="btn" href="{{ href }}">next page →</a>
+    </div>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if parse_errors > 0 || !archive_errors.is_empty() || truncated_from.is_some() %}
+<div class="muted" style="margin-top:14px;font-size:12px;">
+  {% if parse_errors > 0 %}{{ parse_errors }} unparseable lines skipped. {% endif %}
+  {% if !archive_errors.is_empty() %}{{ archive_errors.len() }} corrupt archive(s) skipped: {{ archive_errors|join(", ") }}. {% endif %}
+  {% if let Some(n) = truncated_from %}Truncated: showing newest 50000 of {{ n }} entries.{% endif %}
+</div>
+{% endif %}
