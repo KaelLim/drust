@@ -305,12 +305,39 @@ fn percentile(sorted: &[u64], p: u8) -> u64 {
     sorted[idx]
 }
 
-// Stubs implemented in Task 9.
-fn compute_top_tenants(_entries: &[AuditEntry]) -> Vec<TopTenant> {
-    Vec::new()
+fn compute_top_tenants(entries: &[AuditEntry]) -> Vec<TopTenant> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<&str, (u64, u64)> = HashMap::new(); // (total, errors)
+    for e in entries {
+        let slot = counts.entry(e.tenant.as_str()).or_insert((0, 0));
+        slot.0 += 1;
+        if e.status == "error" {
+            slot.1 += 1;
+        }
+    }
+    let mut out: Vec<TopTenant> = counts
+        .into_iter()
+        .map(|(name, (total, errs))| TopTenant {
+            tenant: name.to_string(),
+            count: total,
+            error_pct: if total == 0 {
+                0.0
+            } else {
+                (errs as f64) / (total as f64) * 100.0
+            },
+        })
+        .collect();
+    // Stable order: by count desc, then by tenant name asc for tie-break.
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tenant.cmp(&b.tenant)));
+    out.truncate(5);
+    out
 }
-fn compute_top_slow_ops(_entries: &[AuditEntry]) -> Vec<AuditEntry> {
-    Vec::new()
+
+fn compute_top_slow_ops(entries: &[AuditEntry]) -> Vec<AuditEntry> {
+    let mut sorted: Vec<AuditEntry> = entries.to_vec();
+    sorted.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
+    sorted.truncate(5);
+    sorted
 }
 
 #[cfg(test)]
@@ -607,5 +634,55 @@ mod tests {
         let ov = aggregate(&entries, Window::H1);
         assert_eq!(ov.p50_ms, 50);
         assert_eq!(ov.p99_ms, 99);
+    }
+
+    #[test]
+    fn aggregate_top_tenants_ordered_by_count_capped_at_5() {
+        let mut entries = Vec::new();
+        for (tenant, n) in [("a", 10), ("b", 8), ("c", 6), ("d", 4), ("e", 2), ("f", 1), ("g", 1)] {
+            for _ in 0..n {
+                entries.push(mk_entry("2026-05-05T01:00:00.000Z", tenant, "GET", "ok", 1));
+            }
+        }
+        let ov = aggregate(&entries, Window::H1);
+        let names: Vec<&str> = ov.top_tenants.iter().map(|t| t.tenant.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c", "d", "e"]); // top 5, in count-desc order
+        assert_eq!(ov.top_tenants.len(), 5);
+    }
+
+    #[test]
+    fn aggregate_top_tenants_error_pct() {
+        let entries = vec![
+            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", 1),
+            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "error", 1),
+            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "error", 1),
+            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "error", 1),
+        ];
+        let ov = aggregate(&entries, Window::H1);
+        assert_eq!(ov.top_tenants.len(), 1);
+        assert_eq!(ov.top_tenants[0].tenant, "acme");
+        assert_eq!(ov.top_tenants[0].count, 4);
+        assert!((ov.top_tenants[0].error_pct - 75.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn aggregate_top_slow_ops_capped_at_5_desc() {
+        let entries: Vec<AuditEntry> = [10, 50, 200, 30, 5, 1000, 7, 800]
+            .iter()
+            .enumerate()
+            .map(|(i, ms)| {
+                mk_entry(
+                    &format!("2026-05-05T01:00:{:02}.000Z", i),
+                    "acme",
+                    "GET",
+                    "ok",
+                    *ms,
+                )
+            })
+            .collect();
+        let ov = aggregate(&entries, Window::H1);
+        assert_eq!(ov.top_slow_ops.len(), 5);
+        let durations: Vec<u64> = ov.top_slow_ops.iter().map(|e| e.duration_ms).collect();
+        assert_eq!(durations, vec![1000, 800, 200, 50, 30]);
     }
 }
