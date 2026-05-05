@@ -84,6 +84,17 @@ pub struct TopTenant {
 /// Hard cap on entries returned per scan_window call.
 pub const MAX_ENTRIES: usize = 50_000;
 
+/// Parse a single JSONL line into an `AuditEntry`. Returns `None` for empty
+/// lines, whitespace-only lines, or any parse failure (caller increments
+/// `parse_errors` for non-empty failures).
+pub fn parse_jsonl_line(line: &str) -> Option<AuditEntry> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_str(trimmed).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +118,26 @@ mod tests {
         assert_eq!(Window::H1.seconds(), 3600);
         assert_eq!(Window::H24.seconds(), 86_400);
         assert_eq!(Window::D7.seconds(), 604_800);
+    }
+
+    #[test]
+    fn parse_valid_line() {
+        let line = r#"{"ts":"2026-05-05T01:00:00.000Z","tenant":"acme","token_hint":"abcd1234","op":"GET /records","status":"ok","duration_ms":42}"#;
+        let entry = parse_jsonl_line(line).expect("Some(_)");
+        assert_eq!(entry.tenant, "acme");
+        assert_eq!(entry.duration_ms, 42);
+        assert_eq!(entry.status, "ok");
+    }
+
+    #[test]
+    fn parse_malformed_line_returns_none() {
+        assert!(parse_jsonl_line("not json").is_none());
+        assert!(parse_jsonl_line(r#"{"ts":"x"}"#).is_none()); // missing required fields
+    }
+
+    #[test]
+    fn parse_empty_line_returns_none() {
+        assert!(parse_jsonl_line("").is_none());
+        assert!(parse_jsonl_line("   \t").is_none());
     }
 }

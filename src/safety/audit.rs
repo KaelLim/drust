@@ -1,16 +1,16 @@
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuditEntry {
     pub ts: String,
     pub tenant: String,
     pub token_hint: String,
     pub op: String,
-    pub status: &'static str,
+    pub status: String,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collection: Option<String>,
@@ -31,7 +31,7 @@ impl AuditEntry {
             tenant: tenant.to_string(),
             token_hint: token_hint.to_string(),
             op: op.to_string(),
-            status: "ok",
+            status: "ok".to_string(),
             duration_ms,
             collection: None,
             sql_hash: None,
@@ -53,7 +53,7 @@ impl AuditEntry {
             tenant: tenant.to_string(),
             token_hint: token_hint.to_string(),
             op: op.to_string(),
-            status: "error",
+            status: "error".to_string(),
             duration_ms,
             collection: None,
             sql_hash: None,
