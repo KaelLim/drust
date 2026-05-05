@@ -28,6 +28,10 @@ pub struct TenantsState {
     /// to invalidate the cache so REST/MCP requests pick up the change
     /// on the very next call.
     pub tenants: Arc<crate::storage::pool::TenantRegistry>,
+    /// Directory containing `audit-YYYY-MM-DD.jsonl` files. Sourced from
+    /// `$DRUST_LOG_DIR` at boot; consumed by the admin audit UI handlers
+    /// mounted under tenants_router.
+    pub log_dir: PathBuf,
 }
 
 #[derive(Template)]

@@ -373,6 +373,247 @@ pub fn filter(entries: &[AuditEntry], spec: &FilterSpec) -> Vec<AuditEntry> {
         .collect()
 }
 
+use askama::Template;
+use axum::extract::{Query, State};
+use axum::response::{Html, IntoResponse, Response};
+use serde::Deserialize;
+
+#[derive(Deserialize, Default)]
+pub struct AuditQuery {
+    pub tab: Option<String>,
+    pub window: Option<String>,
+    pub tenant: Option<String>,
+    pub op: Option<String>,
+    pub status: Option<String>,
+    pub before_ts: Option<String>,
+    pub auto: Option<String>,
+}
+
+const PAGE_SIZE: usize = 100;
+
+#[derive(Debug)]
+pub struct WindowChoice {
+    pub label: &'static str,
+    pub href: String,
+    pub active: bool,
+}
+
+/// Precomputed view-model fed to the body partial. Both shell templates
+/// (audit_host / audit_tenant) include `_audit_body.html` and pass these
+/// fields by name.
+pub struct BodyCtx {
+    pub scope: AuditScope,
+    pub is_host_scope: bool,
+    pub tab: &'static str,
+    pub window_str: &'static str,
+    pub auto_refresh: bool,
+    pub overview_link: String,
+    pub browse_link: String,
+    pub window_choices: Vec<WindowChoice>,
+    pub refresh_link: String,
+    pub auto_toggle_link: String,
+    pub next_page_link: Option<String>,
+    pub overview: Option<Overview>,
+    pub entries: Vec<AuditEntry>,
+    pub parse_errors: usize,
+    pub archive_errors: Vec<String>,
+    pub truncated_from: Option<usize>,
+    pub tenant_filter: Option<String>,
+    pub op_filter: Option<String>,
+    pub status_filter: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "audit_host.html")]
+struct AuditHostPage {
+    version: &'static str,
+    is_host_scope: bool,
+    tab: &'static str,
+    window_str: &'static str,
+    auto_refresh: bool,
+    overview_link: String,
+    browse_link: String,
+    window_choices: Vec<WindowChoice>,
+    refresh_link: String,
+    auto_toggle_link: String,
+    next_page_link: Option<String>,
+    overview: Option<Overview>,
+    entries: Vec<AuditEntry>,
+    parse_errors: usize,
+    archive_errors: Vec<String>,
+    truncated_from: Option<usize>,
+    tenant_filter: Option<String>,
+    op_filter: Option<String>,
+    status_filter: &'static str,
+}
+
+fn base_link(scope: &AuditScope) -> String {
+    match scope {
+        AuditScope::Host => "/drust/admin/audit".to_string(),
+        AuditScope::Tenant(id) => format!("/drust/admin/tenants/{id}/_logs"),
+    }
+}
+
+fn url_with(
+    base: &str,
+    tab: &str,
+    window_str: &str,
+    auto: bool,
+    extra: &[(&str, &str)],
+) -> String {
+    use std::fmt::Write;
+    let mut s = format!("{base}?tab={tab}&window={window_str}");
+    for (k, v) in extra {
+        if !v.is_empty() {
+            write!(s, "&{k}={}", urlencoding::encode(v)).unwrap();
+        }
+    }
+    if auto {
+        s.push_str("&auto=1");
+    }
+    s
+}
+
+pub fn build_body_ctx(
+    log_dir: &Path,
+    scope: AuditScope,
+    q: &AuditQuery,
+) -> BodyCtx {
+    let now = chrono::Utc::now();
+    let window = Window::from_str_or_default(q.window.as_deref().unwrap_or(""));
+    let tab: &'static str = match q.tab.as_deref() {
+        Some("browse") => "browse",
+        _ => "overview",
+    };
+    let status_filter: &'static str = match q.status.as_deref() {
+        Some("ok") => "ok",
+        Some("error") => "error",
+        _ => "all",
+    };
+    let auto_refresh = matches!(q.auto.as_deref(), Some("1"));
+
+    let scan = scan_window(log_dir, window, now);
+
+    let tenant_filter_effective: Option<String> = match &scope {
+        AuditScope::Tenant(id) => Some(id.clone()),
+        AuditScope::Host => q.tenant.as_ref().filter(|s| !s.is_empty()).cloned(),
+    };
+    let op_filter_effective: Option<String> = q.op.as_ref().filter(|s| !s.is_empty()).cloned();
+    let status_for_filter = match status_filter {
+        "ok" => Some("ok"),
+        "error" => Some("error"),
+        _ => None,
+    };
+
+    let (overview, entries, next_cursor) = if tab == "overview" {
+        let mut for_overview = scan.entries.clone();
+        if let Some(t) = &tenant_filter_effective {
+            for_overview.retain(|e| &e.tenant == t);
+        }
+        (Some(aggregate(&for_overview, window)), Vec::new(), None)
+    } else {
+        let spec = FilterSpec {
+            tenant: tenant_filter_effective.clone(),
+            op: op_filter_effective.clone(),
+            status: status_for_filter,
+            before_ts: q.before_ts.clone(),
+        };
+        let filtered = filter(&scan.entries, &spec);
+        let page: Vec<AuditEntry> = filtered.iter().take(PAGE_SIZE).cloned().collect();
+        let next = if filtered.len() > PAGE_SIZE {
+            page.last().map(|e| e.ts.clone())
+        } else {
+            None
+        };
+        (None, page, next)
+    };
+
+    let base = base_link(&scope);
+    let window_str = window.as_str();
+
+    let window_choices = ["1h", "24h", "7d"]
+        .iter()
+        .map(|w| WindowChoice {
+            label: *w,
+            href: url_with(&base, tab, w, false, &[]),
+            active: *w == window_str,
+        })
+        .collect();
+
+    let overview_link = url_with(&base, "overview", window_str, false, &[]);
+    let browse_link = url_with(&base, "browse", window_str, false, &[]);
+
+    let refresh_link = url_with(&base, tab, window_str, false, &[]);
+    let auto_toggle_link = url_with(&base, tab, window_str, !auto_refresh, &[]);
+
+    let next_page_link = next_cursor.map(|cursor| {
+        let extras: Vec<(&str, &str)> = vec![
+            ("tenant", tenant_filter_effective.as_deref().unwrap_or("")),
+            ("op", op_filter_effective.as_deref().unwrap_or("")),
+            ("status", status_filter),
+            ("before_ts", &cursor),
+        ];
+        url_with(&base, "browse", window_str, auto_refresh, &extras)
+    });
+
+    let tenant_filter_for_render: Option<String> = match &scope {
+        AuditScope::Host => tenant_filter_effective.clone(),
+        AuditScope::Tenant(_) => None,
+    };
+
+    let is_host_scope = matches!(&scope, AuditScope::Host);
+    BodyCtx {
+        scope,
+        is_host_scope,
+        tab,
+        window_str,
+        auto_refresh,
+        overview_link,
+        browse_link,
+        window_choices,
+        refresh_link,
+        auto_toggle_link,
+        next_page_link,
+        overview,
+        entries,
+        parse_errors: scan.parse_errors,
+        archive_errors: scan.archive_errors,
+        truncated_from: scan.truncated_from,
+        tenant_filter: tenant_filter_for_render,
+        op_filter: op_filter_effective,
+        status_filter,
+    }
+}
+
+pub async fn audit_host_page(
+    State(state): State<crate::mgmt::tenants::TenantsState>,
+    Query(q): Query<AuditQuery>,
+) -> Response {
+    let body = build_body_ctx(&state.log_dir, AuditScope::Host, &q);
+    let page = AuditHostPage {
+        version: env!("CARGO_PKG_VERSION"),
+        is_host_scope: body.is_host_scope,
+        tab: body.tab,
+        window_str: body.window_str,
+        auto_refresh: body.auto_refresh,
+        overview_link: body.overview_link,
+        browse_link: body.browse_link,
+        window_choices: body.window_choices,
+        refresh_link: body.refresh_link,
+        auto_toggle_link: body.auto_toggle_link,
+        next_page_link: body.next_page_link,
+        overview: body.overview,
+        entries: body.entries,
+        parse_errors: body.parse_errors,
+        archive_errors: body.archive_errors,
+        truncated_from: body.truncated_from,
+        tenant_filter: body.tenant_filter,
+        op_filter: body.op_filter,
+        status_filter: body.status_filter,
+    };
+    Html(page.render().unwrap()).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
