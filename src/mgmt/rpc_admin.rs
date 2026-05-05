@@ -354,6 +354,362 @@ fn render_form_with_error(
     .into_response()
 }
 
+/// One row in the test page's parameter form. Mirrors `ParamSpec` for
+/// rendering; the `value` field carries either the empty string (initial
+/// render) or the user-submitted value (re-rendered after a run).
+struct RpcTestParam {
+    name: String,
+    /// Lowercase string of `ParamType` — feeds the input `data-type` attribute.
+    ty: String,
+    required: bool,
+    /// Pretty-printed default JSON, or empty string when no default.
+    default_display: String,
+    value: String,
+}
+
+#[derive(Template)]
+#[template(path = "tenant_rpc_test.html")]
+struct RpcTestPage {
+    tenant_id: String,
+    tenant_name: String,
+    version: &'static str,
+    collections: Vec<Collection>,
+    active_coll: String,
+    existing_name: String,
+    description: Option<String>,
+    sql: String,
+    anon_callable: bool,
+    params: Vec<RpcTestParam>,
+    /// Set when the user has just clicked Run. None on the bare GET.
+    outcome: Option<RpcTestOutcome>,
+}
+
+struct RpcTestOutcome {
+    duration_ms: u128,
+    /// Pretty-printed JSON of the bound params (to confirm coercion).
+    bound_json: String,
+    /// `Some(...)` on success.
+    result: Option<RpcTestResult>,
+    /// `Some(...)` on failure (set instead of `result`).
+    error: Option<String>,
+    /// Rows from `EXPLAIN QUERY PLAN <sql>`. Empty on early failures.
+    explain_rows: Vec<String>,
+}
+
+struct RpcTestResult {
+    column_names: Vec<String>,
+    rows: Vec<Vec<String>>,
+    row_count: usize,
+    truncated: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct RpcTestRunForm {
+    /// Each param submitted as `p_<name>=<string>`. We collect dynamically.
+    #[serde(flatten)]
+    fields: std::collections::BTreeMap<String, String>,
+}
+
+/// `GET /admin/tenants/{id}/_rpc/{name}/test` — render the test playground
+/// for a stored RPC. 404 when the RPC doesn't exist; 404 when the tenant
+/// doesn't exist (matches the existence check shape of other handlers).
+pub async fn rpc_test_form(
+    State(state): State<TenantsState>,
+    Path((tenant_id, name)): Path<(String, String)>,
+) -> Response {
+    let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
+        Some(n) => n,
+        None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
+    };
+    let conn = match open_read(&state.data_dir, &tenant_id) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let stored = match registry::lookup(&conn, &name) {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such rpc").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let collections = list_collections(&conn).unwrap_or_default();
+    drop(conn);
+
+    Html(
+        RpcTestPage {
+            tenant_id,
+            tenant_name,
+            version: env!("CARGO_PKG_VERSION"),
+            collections,
+            active_coll: "_rpc".to_string(),
+            existing_name: stored.name.clone(),
+            description: stored.description.clone(),
+            sql: stored.sql.clone(),
+            anon_callable: stored.anon_callable,
+            params: stored
+                .params
+                .iter()
+                .map(|p| RpcTestParam {
+                    name: p.name.clone(),
+                    ty: param_ty_to_str(p.ty).to_string(),
+                    required: p.required,
+                    default_display: p
+                        .default
+                        .as_ref()
+                        .map(|d| serde_json::to_string(d).unwrap_or_default())
+                        .unwrap_or_default(),
+                    value: String::new(),
+                })
+                .collect(),
+            outcome: None,
+        }
+        .render()
+        .unwrap(),
+    )
+    .into_response()
+}
+
+fn param_ty_to_str(t: crate::rpc::params::ParamType) -> &'static str {
+    use crate::rpc::params::ParamType::*;
+    match t {
+        Text => "text",
+        Integer => "integer",
+        Real => "real",
+        Boolean => "boolean",
+    }
+}
+
+/// Coerce a single form-string into a JSON value typed by the declared
+/// param. Empty string → `null` (let `validate_and_bind` apply default
+/// or report as missing). Unparseable → string back; `validate_and_bind`
+/// will raise `TypeMismatch`.
+fn coerce_form_string(ty: crate::rpc::params::ParamType, s: &str) -> serde_json::Value {
+    use crate::rpc::params::ParamType::*;
+    use serde_json::Value;
+    if s.is_empty() {
+        return Value::Null;
+    }
+    match ty {
+        Text => Value::String(s.to_string()),
+        Integer => s
+            .parse::<i64>()
+            .map(|n| Value::Number(n.into()))
+            .unwrap_or_else(|_| Value::String(s.to_string())),
+        Real => s
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::String(s.to_string())),
+        Boolean => match s {
+            "1" | "true" | "on" | "yes" => Value::Bool(true),
+            "0" | "false" | "off" | "no" => Value::Bool(false),
+            _ => Value::String(s.to_string()),
+        },
+    }
+}
+
+/// `POST /admin/tenants/{id}/_rpc/{name}/test/run` — execute the RPC with
+/// the submitted form values and re-render the page with the result.
+pub async fn rpc_test_run(
+    State(state): State<TenantsState>,
+    Path((tenant_id, name)): Path<(String, String)>,
+    axum::Form(form): axum::Form<RpcTestRunForm>,
+) -> Response {
+    let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
+        Some(n) => n,
+        None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
+    };
+    let conn = match open_read(&state.data_dir, &tenant_id) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let stored = match registry::lookup(&conn, &name) {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such rpc").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let collections = list_collections(&conn).unwrap_or_default();
+
+    // Build a JSON body Map by coercing each `p_<name>=<value>` form entry.
+    let mut body_map = serde_json::Map::new();
+    let mut visible_inputs: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for spec in &stored.params {
+        let key = format!("p_{}", spec.name);
+        let raw = form.fields.get(&key).cloned().unwrap_or_default();
+        visible_inputs.insert(spec.name.clone(), raw.clone());
+        let coerced = coerce_form_string(spec.ty, &raw);
+        // Skip null entries so missing-required surfaces via validate_and_bind.
+        if !coerced.is_null() {
+            body_map.insert(spec.name.clone(), coerced);
+        }
+    }
+
+    // Validate + bind. On failure, surface as outcome.error.
+    let bound_result = crate::rpc::params::validate_and_bind(&stored.params, &body_map);
+    let bound = match bound_result {
+        Ok(b) => b,
+        Err(e) => {
+            return render_test_outcome(
+                tenant_id,
+                tenant_name,
+                collections,
+                &stored,
+                visible_inputs,
+                Err(e.to_string()),
+                Vec::new(),
+                0,
+                serde_json::to_string_pretty(&body_map).unwrap_or_default(),
+            );
+        }
+    };
+
+    let bound_json = serde_json::to_string_pretty(&body_map).unwrap_or_default();
+
+    // EXPLAIN QUERY PLAN — best-effort. Failures here are non-fatal; we
+    // still attempt the real query so the user sees whichever signal is
+    // more informative.
+    let explain_rows = explain_plan(&conn, &stored.sql, &bound).unwrap_or_default();
+
+    // Real execution.
+    let started = std::time::Instant::now();
+    let exec_result = crate::query::executor::execute_read_query_with_named(
+        &conn,
+        &stored.sql,
+        &bound,
+        1_000,
+        1_048_576,
+    );
+    let duration_ms = started.elapsed().as_millis();
+
+    match exec_result {
+        Ok(qr) => render_test_outcome(
+            tenant_id,
+            tenant_name,
+            collections,
+            &stored,
+            visible_inputs,
+            Ok(qr),
+            explain_rows,
+            duration_ms,
+            bound_json,
+        ),
+        Err(e) => render_test_outcome(
+            tenant_id,
+            tenant_name,
+            collections,
+            &stored,
+            visible_inputs,
+            Err(e.to_string()),
+            explain_rows,
+            duration_ms,
+            bound_json,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_test_outcome(
+    tenant_id: String,
+    tenant_name: String,
+    collections: Vec<Collection>,
+    stored: &registry::StoredRpc,
+    visible_inputs: std::collections::BTreeMap<String, String>,
+    exec: Result<crate::query::executor::QueryResult, String>,
+    explain_rows: Vec<String>,
+    duration_ms: u128,
+    bound_json: String,
+) -> Response {
+    let result = exec.as_ref().ok().map(|qr| RpcTestResult {
+        column_names: qr.column_names.clone(),
+        rows: qr
+            .rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|v| match v {
+                        serde_json::Value::Null => "NULL".to_string(),
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect()
+            })
+            .collect(),
+        row_count: qr.rows.len(),
+        truncated: qr.truncated,
+    });
+    let error = exec.err();
+
+    let params: Vec<RpcTestParam> = stored
+        .params
+        .iter()
+        .map(|p| RpcTestParam {
+            name: p.name.clone(),
+            ty: param_ty_to_str(p.ty).to_string(),
+            required: p.required,
+            default_display: p
+                .default
+                .as_ref()
+                .map(|d| serde_json::to_string(d).unwrap_or_default())
+                .unwrap_or_default(),
+            value: visible_inputs.get(&p.name).cloned().unwrap_or_default(),
+        })
+        .collect();
+
+    Html(
+        RpcTestPage {
+            tenant_id,
+            tenant_name,
+            version: env!("CARGO_PKG_VERSION"),
+            collections,
+            active_coll: "_rpc".to_string(),
+            existing_name: stored.name.clone(),
+            description: stored.description.clone(),
+            sql: stored.sql.clone(),
+            anon_callable: stored.anon_callable,
+            params,
+            outcome: Some(RpcTestOutcome {
+                duration_ms,
+                bound_json,
+                result,
+                error,
+                explain_rows,
+            }),
+        }
+        .render()
+        .unwrap(),
+    )
+    .into_response()
+}
+
+/// Run `EXPLAIN QUERY PLAN <sql>` with the given bound params. Returns
+/// the `detail` column from each plan row. Errors are non-fatal and
+/// returned as `Err` so the caller can decide whether to surface them.
+fn explain_plan(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    bound: &std::collections::BTreeMap<String, crate::rpc::params::BoundValue>,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
+    let mut stmt = conn.prepare(&plan_sql)?;
+    // Bind named params. Missing ones are tolerated by SQLite (NULL).
+    let bind_pairs: Vec<(String, rusqlite::types::Value)> = bound
+        .iter()
+        .map(|(k, v)| (format!(":{k}"), v.to_sql()))
+        .collect();
+    let bind_refs: Vec<(&str, &dyn rusqlite::ToSql)> = bind_pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v as &dyn rusqlite::ToSql))
+        .collect();
+    let rows: Vec<String> = stmt
+        .query_map(bind_refs.as_slice(), |r| {
+            // SQLite EXPLAIN QUERY PLAN columns: id, parent, notused, detail
+            r.get::<_, String>(3)
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(rows)
+}
+
 /// `POST /admin/tenants/{id}/_rpc/{name}/delete` — drop a stored RPC.
 ///
 /// Idempotent: a missing row still 303-redirects back to the list (matches

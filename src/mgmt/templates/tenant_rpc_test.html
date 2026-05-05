@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust admin — {{ tenant_name }} / _rpc / {{ existing_name }} / test</title>
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+</head>
+<body>
+{% include "_icons.html" %}
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_name }}/_rpc/{{ existing_name }}/test</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <header class="topbar">
+      <div class="prompt">
+        <span class="dollar">$</span>
+        <span class="user">admin</span><span class="at">@</span><span class="host">drust</span><span class="colon">:</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_name }}</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_rpc">_rpc</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/edit">{{ existing_name }}</a>/test</span>
+        <span class="caret"></span>
+      </div>
+      <div class="topbar-right">
+        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
+        <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
+        <form method="post" action="/drust/logout" style="display:inline;">
+          <button type="submit">logout ↵</button>
+        </form>
+      </div>
+    </header>
+
+    <div class="shell">
+      {% include "_collection_sidebar.html" %}
+
+      <main class="main"><div class="page page-wide">
+        <div class="pagehead">
+          <div>
+            <h1>test {{ existing_name }}</h1>
+            <div class="meta">
+              {% if anon_callable %}<span class="chip ok"><i class="dot"></i>anon-callable</span>{% else %}<span class="chip" style="opacity:.55;">service-only</span>{% endif %}
+              {% if let Some(d) = description %} · <span>{{ d }}</span>{% endif %}
+            </div>
+          </div>
+          <div>
+            <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/edit">edit →</a>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-head">sql</div>
+          <pre style="margin:0;padding:14px 18px;background:var(--bg-2);font-family:var(--mono);font-size:13px;overflow-x:auto;">{{ sql }}</pre>
+        </div>
+
+        <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/test/run" class="card">
+          <div class="card-head">
+            <span>params <span class="count">· {{ params.len() }} declared</span></span>
+            <button class="btn btn-primary btn-sm" type="submit">Run ↵</button>
+          </div>
+          <div class="card-body">
+            {% if params.is_empty() %}
+            <div class="muted">No parameters — press <b>Run</b> to execute.</div>
+            {% else %}
+            <div style="display:grid;grid-template-columns:160px 90px 1fr;gap:10px 14px;align-items:center;">
+              <div class="muted" style="font-size:12px;">name</div>
+              <div class="muted" style="font-size:12px;">type</div>
+              <div class="muted" style="font-size:12px;">value{% if !params.is_empty() %} <span class="muted-cell" style="font-size:11px;margin-left:8px;">empty → null/default</span>{% endif %}</div>
+              {% for p in params %}
+              <label for="p_{{ p.name }}" style="font-family:var(--mono);">
+                {{ p.name }}{% if p.required %} <span style="color:var(--danger);">*</span>{% endif %}
+              </label>
+              <span class="chip mute" style="font-size:11px;">{{ p.ty }}</span>
+              <input id="p_{{ p.name }}" class="input" name="p_{{ p.name }}" value="{{ p.value }}"
+                     placeholder="{% if !p.default_display.is_empty() %}default: {{ p.default_display }}{% else %}{% if p.required %}required{% else %}optional · null{% endif %}{% endif %}"
+                     data-type="{{ p.ty }}">
+              {% endfor %}
+            </div>
+            {% endif %}
+          </div>
+        </form>
+
+        {% if let Some(o) = outcome %}
+        <div class="card" style="margin-top:14px;">
+          <div class="card-head">
+            <span>result</span>
+            <span class="card-head-actions"><b>{{ o.duration_ms }}</b> ms</span>
+          </div>
+
+          {% if let Some(err) = o.error %}
+          <div class="alert error" style="margin:14px 18px;">
+            <div class="icon">✕</div>
+            <div class="msg" style="white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:13px;">{{ err }}</div>
+            <span></span>
+          </div>
+          {% endif %}
+
+          {% if let Some(r) = o.result %}
+          <div style="padding:0 18px 14px;display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--muted);">
+            <span><b style="color:var(--text);">{{ r.row_count }}</b> rows</span>
+            <span><b style="color:var(--text);">{{ r.column_names.len() }}</b> columns</span>
+            {% if r.truncated %}<span class="chip warn"><i class="dot"></i>truncated</span>{% endif %}
+          </div>
+          <div class="records-scroll" style="max-height:480px;">
+            <table class="data">
+              <thead>
+                <tr>
+                  {% for name in r.column_names %}
+                  <th>{{ name }}</th>
+                  {% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in r.rows %}
+                <tr>
+                  {% for cell in row %}
+                  <td class="{% if cell == "NULL" %}null{% endif %} trunc" title="{{ cell }}">{% if cell == "NULL" %}NULL{% else %}{{ cell }}{% endif %}</td>
+                  {% endfor %}
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% endif %}
+        </div>
+
+        {% if !o.bound_json.is_empty() %}
+        <details class="card" style="margin-top:14px;">
+          <summary class="card-head" style="cursor:pointer;list-style:none;">bound params (JSON)</summary>
+          <pre style="margin:0;padding:14px 18px;background:var(--bg-2);font-family:var(--mono);font-size:12px;overflow-x:auto;">{{ o.bound_json }}</pre>
+        </details>
+        {% endif %}
+
+        {% if !o.explain_rows.is_empty() %}
+        <details class="card" style="margin-top:14px;" open>
+          <summary class="card-head" style="cursor:pointer;list-style:none;">EXPLAIN QUERY PLAN <span class="count">· {{ o.explain_rows.len() }} rows</span></summary>
+          <pre style="margin:0;padding:14px 18px;background:var(--bg-2);font-family:var(--mono);font-size:12px;line-height:1.55;overflow-x:auto;">{% for line in o.explain_rows %}{{ line }}
+{% endfor %}</pre>
+        </details>
+        {% endif %}
+        {% endif %}
+      </div></main>
+    </div>
+  </div>
+</div>
+{% include "_mascot.html" %}
+</body>
+</html>

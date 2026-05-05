@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 2026-05-05
+
+### Added
+
+- **RPC test playground** at `/admin/tenants/{id}/_rpc/{name}/test`. The
+  link from `tenant_rpc.html` was previously dead — this lights it up.
+  Renders one input per declared param with type-aware coercion
+  (`text` / `integer` / `real` / `boolean`), submits via POST to a
+  `/test/run` route, and re-renders with: result table (column names +
+  rows, with NULL formatting), execution `duration_ms`, the bound JSON
+  body for confirmation, and `EXPLAIN QUERY PLAN <sql>` rows. Empty
+  inputs surface as `null` so missing-required errors come from
+  `validate_and_bind`, matching the live REST endpoint's behaviour.
+  Implementation reuses `crate::query::executor::execute_read_query_with_named`
+  and `crate::rpc::params::{validate_and_bind, BoundValue}` directly —
+  no duplication of the gating logic. EXPLAIN is best-effort; failures
+  there don't block the real run.
+- **Backup snapshot inspection** at `/admin/backups/{filename}/inspect`.
+  Streams the `.tar.zst` through `zstd::Decoder` → `tar::Archive` on a
+  blocking thread (`tokio::task::spawn_blocking`), extracts only
+  `meta.sqlite` to a `tempfile::NamedTempFile`, opens it read-only,
+  and lists active tenants with each tenant's `data.sqlite` size in
+  the archive. Tenants with no `data.sqlite` in the snapshot (created
+  after the backup ran) render with an em dash and no restore button.
+- **Backup tenant restore** at `POST /admin/backups/{filename}/restore`.
+  Extracts `tenants/<id>/data.sqlite` (and `meta.json` if present) to
+  `<data_dir>/_trash/<tid>-restored-<ts>/`. **Does NOT overwrite the
+  live tenant directory** — admin must `mv` the file back manually
+  after inspection. This protects against accidental clobber of work
+  that post-dates the snapshot. Tenant id validated with a strict
+  uuid-v4-shaped regex (36 chars, hex with hyphens at the canonical
+  positions); anything else returns 400 before any FS access. PRG
+  redirect carries a success flash to the inspect page on completion;
+  partial extracts are cleaned up on failure.
+- New deps: `tar = "0.4"`, `zstd = "0.13"`, `tempfile = "3"` (was
+  dev-only). Three new unit tests for `parse_tenant_db_path`,
+  `is_uuid_like`, and a full `extract_meta_and_sizes` round-trip
+  building a synthetic `.tar.zst` in memory and asserting size
+  recovery + `meta.sqlite` byte-for-byte.
+
 ## [1.7.1] - 2026-05-05
 
 ### Added

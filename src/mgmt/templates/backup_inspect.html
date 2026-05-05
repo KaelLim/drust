@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust admin — backup inspect — {{ filename }}</title>
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+</head>
+<body>
+{% include "_icons.html" %}
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/system/backups/{{ filename }}</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <header class="topbar">
+      <div class="prompt">
+        <span class="dollar">$</span>
+        <span class="user">admin</span>
+        <span class="at">@</span>
+        <span class="host">drust</span>
+        <span class="colon">:</span>
+        <span class="path">~/<a href="/drust/admin/tenants">system</a>/<a href="/drust/admin/backups">backups</a>/{{ filename }}</span>
+        <span class="caret"></span>
+      </div>
+      <div class="topbar-right">
+        <a class="who" href="/drust/admin/audit" title="audit log">audit</a>
+        <span class="sep">│</span>
+        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
+        <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
+        <form method="post" action="/drust/logout" style="display:inline;">
+          <button type="submit">logout ↵</button>
+        </form>
+      </div>
+    </header>
+
+    <main class="main"><div class="page">
+      <div class="pagehead">
+        <div>
+          <h1>{{ filename }}</h1>
+          <div class="meta">
+            <b>{{ snapshot_size_human }}</b> · <span class="muted">{{ snapshot_ts }}</span>
+            <span style="margin:0 10px;color:var(--muted-2);">·</span>
+            <a href="/drust/admin/backups/{{ filename }}/download" download="{{ filename }}" style="color:var(--accent);text-decoration:none;">download .tar.zst</a>
+          </div>
+        </div>
+        <div>
+          <a class="btn btn-ghost" href="/drust/admin/backups">← all snapshots</a>
+        </div>
+      </div>
+
+      {% if let Some(f) = flash %}
+      <div class="alert ok" style="margin-bottom:18px;">
+        <div class="icon">✓</div>
+        <div class="msg">
+          Restored tenant <code>{{ f.tenant_id }}</code> to:<br>
+          <code style="word-break:break-all;">{{ f.destination }}</code><br>
+          <span class="muted-cell" style="font-size:13px;">Inspect, then <code>mv</code> the <code>data.sqlite</code> back into <code>tenants/&lt;id&gt;/</code> when you're ready. The current live database is untouched.</span>
+        </div>
+        <span></span>
+      </div>
+      {% endif %}
+
+      {% if let Some(err) = error %}
+      <div class="alert error" style="margin-bottom:18px;">
+        <div class="icon">✕</div>
+        <div class="msg" style="white-space:pre-wrap;word-break:break-word;">{{ err }}</div>
+        <span></span>
+      </div>
+      {% endif %}
+
+      <div class="alert info" style="margin-bottom:18px;">
+        <div class="icon">ℹ</div>
+        <div class="msg">
+          Restore extracts the selected tenant's <code>data.sqlite</code> (and <code>meta.json</code> if present) to
+          <code>&lt;data_dir&gt;/_trash/&lt;tenant_id&gt;-restored-&lt;ts&gt;/</code>.
+          It does <b>not</b> overwrite the live tenant directory — review the file, then <code>mv</code> manually.
+        </div>
+        <span></span>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span>tenants in snapshot <span class="count">· {{ tenants.len() }} rows</span></span>
+        </div>
+        {% if tenants.is_empty() %}
+        <div class="empty" style="padding:48px 24px;">
+          <p>{% if let Some(_) = error %}meta.sqlite couldn't be parsed; see error above.{% else %}No active tenants in this snapshot.{% endif %}</p>
+        </div>
+        {% else %}
+        <table class="data">
+          <thead>
+            <tr>
+              <th>name</th>
+              <th style="width:200px;">created</th>
+              <th class="num" style="width:130px;">db size in archive</th>
+              <th class="actions" style="width:140px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in tenants %}
+            <tr>
+              <td>
+                <span style="color:var(--text);font-weight:500;">{{ t.name }}</span>
+                <div class="mono-cell" style="font-size:12px;color:var(--muted);margin-top:2px;">{{ t.id }}</div>
+              </td>
+              <td class="muted-cell">{{ t.created_at }}</td>
+              <td class="num">{% if t.db_present %}{{ t.db_size_human }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
+              <td class="actions">
+                {% if t.db_present %}
+                <form method="post" action="/drust/admin/backups/{{ filename }}/restore" class="restore-form" data-tenant-name="{{ t.name }}" data-tenant-id="{{ t.id }}" style="display:inline;">
+                  <input type="hidden" name="tenant_id" value="{{ t.id }}">
+                  <button class="btn btn-sm" type="submit">restore →</button>
+                </form>
+                {% else %}
+                <span class="muted-cell" style="font-size:12px;">no db in archive</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </div>
+    </div></main>
+  </div>
+</div>
+{% include "_mascot.html" %}
+{% include "_modal.html" %}
+<script>
+  document.querySelectorAll('form.restore-form').forEach(function (f) {
+    f.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var name = f.getAttribute('data-tenant-name');
+      var ok = await drustUI.confirm({
+        title: 'Restore tenant from snapshot',
+        body: 'Extract "' + name + '" data.sqlite from this snapshot to _trash/<id>-restored-<ts>/ ? The live tenant directory is NOT overwritten.',
+        okText: 'Extract',
+      });
+      if (ok) f.submit();
+    });
+  });
+</script>
+</body>
+</html>
