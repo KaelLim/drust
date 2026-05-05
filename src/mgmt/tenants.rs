@@ -48,9 +48,25 @@ struct TenantRow {
     id_short: String,
     name: String,
     created_at: String,
-    db_size_kb: u64,
-    /// Formatted string like "1.3 MB" or "0.0 MB".
+    /// Humanised data.sqlite size (e.g. "1.3 MB", "742 KB").
+    db_display: String,
+    /// Formatted string like "1.3 MB" or "0.0 MB" — _system_files SUM(size_bytes).
     files_display: String,
+    /// Humanised db + files combined — at-a-glance "who's eating disk" signal.
+    total_display: String,
+}
+
+fn humanize_bytes(n: u64) -> String {
+    let nf = n as f64;
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1024 * 1024 {
+        format!("{:.1} KB", nf / 1024.0)
+    } else if n < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", nf / 1_048_576.0)
+    } else {
+        format!("{:.2} GB", nf / 1_073_741_824.0)
+    }
 }
 
 fn short_id(id: &str) -> String {
@@ -134,13 +150,11 @@ pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
         .filter_map(Result::ok)
         .map(|(id, name, created_at)| {
             let db_path = tenant_dir(&state.data_dir, &id).join("data.sqlite");
-            let db_size_kb = std::fs::metadata(&db_path)
-                .map(|m| m.len() / 1024)
-                .unwrap_or(0);
+            let db_bytes: u64 = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
             // Compute files usage from the tenant's _system_files table.
-            // Gracefully degrades to 0 MB if the tenant predates Task 4 (no
-            // _system_files table) or the DB doesn't exist yet.
-            let files_mb = crate::storage::tenant_db::open_read(&state.data_dir, &id)
+            // Gracefully degrades to 0 if the tenant predates the per-tenant
+            // files feature or the DB doesn't exist yet.
+            let files_bytes: u64 = crate::storage::tenant_db::open_read(&state.data_dir, &id)
                 .ok()
                 .and_then(|conn| {
                     conn.query_row(
@@ -150,16 +164,16 @@ pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
                     )
                     .ok()
                 })
-                .map(|bytes| bytes as f64 / 1_048_576.0)
-                .unwrap_or(0.0);
-            let files_display = format!("{:.1} MB", files_mb);
+                .map(|b| b.max(0) as u64)
+                .unwrap_or(0);
             TenantRow {
                 id_short: short_id(&id),
                 id,
                 name,
                 created_at,
-                db_size_kb,
-                files_display,
+                db_display: humanize_bytes(db_bytes),
+                files_display: humanize_bytes(files_bytes),
+                total_display: humanize_bytes(db_bytes + files_bytes),
             }
         })
         .collect();

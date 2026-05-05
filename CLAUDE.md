@@ -6,7 +6,7 @@ port: 47826
 path: /drust
 status: production
 updated: 2026-05-05
-version: 1.7.0
+version: 1.7.1
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -41,7 +41,7 @@ curl -s http://127.0.0.1:47826/health   # → ok
 - **CORS** (v1.5.1+): tenant routes (`/t/<tenant>/...`) carry a `tower_http::cors::CorsLayer` applied **outside** `bearer_auth_layer` so `OPTIONS` preflight short-circuits before auth (preflight by spec carries no token). Allow-list comes from `DRUST_CORS_ORIGINS`; empty/unset disables the layer. Each entry is either an exact origin (`https://app.example.com`) or a single-`*` pattern — e.g. `https://*.tzuchi.org` matches any subdomain (refuses the bare apex), `http://localhost:*` matches any dev port. Multi-`*` patterns are rejected at parse time. Wildcard semantics live in `tenant::origin_matches` with unit tests against suffix-injection (`https://tzuchi.org.attacker.com`) and hyphen-confusion (`https://attacker-tzuchi.org`). Real GET/POST/etc. still flow through `bearer_auth_layer` unchanged — CORS only intercepts preflight and appends `Access-Control-Allow-Origin` to responses. Mgmt UI routes (`/admin/*`) have no CORS layer; they're server-rendered.
 - SSE broadcast channels per `(tenant, collection)` fan events from record CRUD.
 - Soft-delete moves `tenants/<id>/` into `_trash/<id>-<ts>/`; `drust-janitor.timer` deletes after 7d.
-- Daily `drust-backup.timer` runs `VACUUM INTO` snapshots → `backups/drust-YYYY-MM-DD-HHMMSS.tar.zst` (30d retention).
+- Daily `drust-backup.timer` runs `VACUUM INTO` snapshots → `backups/drust-YYYY-MM-DD-HHMMSS.tar.zst` (30d retention). **Admin UI** (v1.7.1+): `/admin/backups` lists snapshots with size + age + ISO mtime, GET `/admin/backups/{filename}/download` streams the .tar.zst (`tokio_util::io::ReaderStream`, no buffering). Filename whitelisted to `drust-…tar.zst` so traversal returns 400. Restore + inspect remain manual (`tar --zstd -xf …`); guarded UI flow can land later. Lives in `src/mgmt/backups.rs`.
 
 ## Storage integration (Garage client, v1.4.0+)
 

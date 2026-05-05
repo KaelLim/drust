@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod backups;
 pub mod browse;
 pub mod docs;
 pub mod public_files;
