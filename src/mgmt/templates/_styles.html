@@ -328,6 +328,42 @@
   .form-inline { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
   .form-inline .field { min-width: 240px; }
 
+  /* audit details — key/value list inside expandable row of audit table */
+  dl.audit-detail {
+    margin: 6px 0 0;
+    padding: 10px 14px;
+    background: var(--bg-2);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.55;
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 4px 18px;
+  }
+  dl.audit-detail dt {
+    color: var(--muted);
+    text-align: right;
+    white-space: nowrap;
+  }
+  dl.audit-detail dd {
+    margin: 0;
+    color: var(--text);
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  dl.audit-detail pre.audit-err {
+    margin: 0;
+    padding: 8px 10px;
+    background: var(--bg);
+    border-radius: 4px;
+    color: var(--danger);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
   /* audit dashboard stat cards: equal-height row with body filling card and content centered */
   .audit-stats {
     display: grid;
