@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust admin — audit</title>
+<meta name="description" content="drust admin — audit log viewer (host scope, all tenants).">
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+</head>
+<body>
+{% include "_icons.html" %}
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/audit</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <header class="topbar">
+      <div class="prompt">
+        <span class="dollar">$</span>
+        <span class="user">admin</span>
+        <span class="at">@</span>
+        <span class="host">drust</span>
+        <span class="colon">:</span>
+        <span class="path">~/audit</span>
+        <span class="caret"></span>
+      </div>
+      <div class="topbar-right">
+        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
+        <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
+        <form method="post" action="/drust/logout" style="display:inline;">
+          <button type="submit">logout ↵</button>
+        </form>
+      </div>
+    </header>
+    <main class="main"><div class="page page-wide">
+      <div class="pagehead">
+        <div>
+          <h1>Audit</h1>
+          <div class="meta"><a href="/drust/admin/tenants" style="color:var(--muted);">← tenants</a></div>
+        </div>
+      </div>
+      {% include "_audit_body.html" %}
+    </div></main>
+  </div>
+</div>
+{% include "_mascot.html" %}
+</body>
+</html>
