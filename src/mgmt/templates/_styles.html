@@ -158,7 +158,6 @@
   /* layout */
   .main {
     min-width: 0; min-height: 0;
-    display: flex; flex-direction: column;
     overflow-y: auto; overflow-x: hidden;
     scrollbar-width: thin;
     scrollbar-color: oklch(0.36 0.013 255) transparent;
@@ -328,6 +327,20 @@
 
   .form-inline { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
   .form-inline .field { min-width: 240px; }
+
+  /* audit dashboard stat cards: equal-height row with body filling card and content centered */
+  .audit-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .audit-stats > .card { display: flex; flex-direction: column; }
+  .audit-stats > .card > .card-body {
+    flex: 1;
+    display: flex;
+    align-items: center;
+  }
 
   /* cards / tables */
   .card {

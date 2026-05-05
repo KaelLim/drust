@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_id }} / files</title>
+<title>drust admin — {{ tenant_name }} / files</title>
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -12,7 +12,7 @@
 <div class="macwin">
   <div class="macwin-title">
     <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_id }}/files</span></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_name }}/files</span></span>
     <span></span>
   </div>
   <div class="macwin-body">
@@ -23,7 +23,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_id }}</a>/files</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_name }}</a>/files</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -111,6 +111,14 @@
       <div class="card" style="margin-top:24px;">
         <div class="card-head">
           <span>_system_files <span class="count">· {{ total_files }} rows</span></span>
+          <form method="get" style="display:inline-flex;gap:8px;align-items:center;">
+            <span class="muted" style="font-size:13px;">per page</span>
+            <select class="input" name="per_page" onchange="this.form.submit()" style="height:32px;width:80px;font-size:13px;">
+              {% for opt in per_page_options %}
+              <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
+              {% endfor %}
+            </select>
+          </form>
         </div>
 
         {% if files.is_empty() %}
@@ -164,6 +172,14 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+        <div class="pager">
+          <div class="page-of">page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_files }}</b> total</div>
+          <div class="pager-group">
+            {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
+            <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
+            {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+          </div>
         </div>
         {% endif %}
       </div>

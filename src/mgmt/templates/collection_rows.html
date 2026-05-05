@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_id }} / {{ coll_name }}</title>
-<meta name="description" content="drust admin — browse {{ coll_name }} in tenant {{ tenant_id }}. {{ total_rows }} records, {{ fields.len() }} fields.">
+<title>drust admin — {{ tenant_name }} / {{ coll_name }}</title>
+<meta name="description" content="drust admin — browse {{ coll_name }} in tenant {{ tenant_name }}. {{ total_rows }} records, {{ fields.len() }} fields.">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -13,7 +13,7 @@
 <div class="macwin">
   <div class="macwin-title">
     <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_id }}/{{ coll_name }}</span></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_name }}/{{ coll_name }}</span></span>
     <span></span>
   </div>
   <div class="macwin-body">
@@ -24,7 +24,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_id }}</a>/{{ coll_name }}</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_name }}</a>/{{ coll_name }}</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">

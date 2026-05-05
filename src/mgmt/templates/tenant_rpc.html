@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_id }} / _rpc</title>
+<title>drust admin — {{ tenant_name }} / _rpc</title>
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -12,7 +12,7 @@
 <div class="macwin">
   <div class="macwin-title">
     <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_id }}/_rpc</span></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_name }}/_rpc</span></span>
     <span></span>
   </div>
   <div class="macwin-body">
@@ -20,7 +20,7 @@
       <div class="prompt">
         <span class="dollar">$</span>
         <span class="user">admin</span><span class="at">@</span><span class="host">drust</span><span class="colon">:</span>
-        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_id }}</a>/_rpc</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_name }}</a>/_rpc</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -53,7 +53,7 @@
           </div>
         </div>
 
-        {% if rpcs.is_empty() %}
+        {% if total_rpcs == 0 %}
         <div class="empty" style="padding:64px 24px;text-align:center;">
           <div style="margin-bottom:18px;display:grid;place-items:center;">
             <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
@@ -62,6 +62,15 @@
           <p>Stored RPCs are named <code>SELECT</code> queries that frontends and MCP clients call by name. Click <b>+ new function</b> to create one.</p>
         </div>
         {% else %}
+        <form method="get" style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
+          <span class="muted">per page</span>
+          <select class="input" name="per_page" onchange="this.form.submit()" style="width:90px;">
+            {% for opt in per_page_options %}
+            <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
+            {% endfor %}
+          </select>
+          <span class="muted" style="margin-left:auto;"><b>{{ total_rpcs }}</b> total · page <b>{{ page }}</b> / {{ total_pages }}</span>
+        </form>
         {% for r in rpcs %}
         <div class="card" style="margin-bottom:14px;">
           <div class="card-head">
@@ -84,6 +93,16 @@
           </div>
         </div>
         {% endfor %}
+        <div class="card" style="margin-top:14px;">
+          <div class="pager">
+            <div class="page-of">page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_rpcs }}</b> total</div>
+            <div class="pager-group">
+              {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
+              <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
+              {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+            </div>
+          </div>
+        </div>
         {% endif %}
       </div></main>
     </div>
