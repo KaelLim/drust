@@ -187,11 +187,12 @@ pub fn scan_window(
         .to_string();
 
     for path in files {
-        if path.extension().and_then(|s| s.to_str()) == Some("gz") {
-            // .gz handled in Task 6; for now, skip without recording an error
-            continue;
-        }
-        match read_plain(&path) {
+        let read = if path.extension().and_then(|s| s.to_str()) == Some("gz") {
+            read_gz(&path)
+        } else {
+            read_plain(&path)
+        };
+        match read {
             Ok((entries, errs)) => {
                 for e in entries {
                     if e.ts.as_str() >= cutoff_ts.as_str() {
@@ -222,6 +223,15 @@ pub fn scan_window(
 fn read_plain(path: &Path) -> std::io::Result<(Vec<AuditEntry>, usize)> {
     let f = std::fs::File::open(path)?;
     let reader = BufReader::new(f);
+    parse_lines(reader)
+}
+
+fn read_gz(path: &Path) -> std::io::Result<(Vec<AuditEntry>, usize)> {
+    let f = std::fs::File::open(path)?;
+    let dec = flate2::read::GzDecoder::new(f);
+    // BufReader::lines is lazy; the first read will surface a corrupt-gzip
+    // header error which propagates via parse_lines's `?`.
+    let reader = BufReader::new(dec);
     parse_lines(reader)
 }
 
@@ -262,6 +272,15 @@ mod tests {
 
     fn write(path: &PathBuf, content: &str) {
         fs::write(path, content).unwrap();
+    }
+
+    use std::io::Write;
+
+    fn write_gz(path: &PathBuf, content: &str) {
+        let f = std::fs::File::create(path).unwrap();
+        let mut enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+        enc.write_all(content.as_bytes()).unwrap();
+        enc.finish().unwrap();
     }
 
     fn entry_line(ts: &str, tenant: &str, op: &str, status: &str, ms: u64) -> String {
@@ -437,5 +456,43 @@ mod tests {
         let res = scan_window(dir.path(), Window::H24, now);
         assert_eq!(res.entries.len(), 2);
         assert_eq!(res.parse_errors, 1); // empty line not counted, "not json" counted
+    }
+
+    #[test]
+    fn scan_window_reads_gz_archives_for_7d() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let day3 = (now - Duration::days(3)).format("%Y-%m-%d").to_string();
+        write(
+            &dir.path().join(format!("audit-{today}.jsonl")),
+            &format!("{}\n", entry_line(&format!("{today}T00:01:00.000Z"), "acme", "GET", "ok", 10)),
+        );
+        write_gz(
+            &dir.path().join(format!("audit-{day3}.jsonl.1.gz")),
+            &format!(
+                "{}\n{}\n",
+                entry_line(&format!("{day3}T12:00:00.000Z"), "beta", "POST", "ok", 50),
+                entry_line(&format!("{day3}T12:01:00.000Z"), "beta", "GET", "ok", 7),
+            ),
+        );
+
+        let res = scan_window(dir.path(), Window::D7, now);
+        assert_eq!(res.entries.len(), 3);
+        assert!(res.archive_errors.is_empty());
+    }
+
+    #[test]
+    fn scan_window_corrupt_gz_records_archive_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let day3 = (now - Duration::days(3)).format("%Y-%m-%d").to_string();
+        // Not a valid gzip stream:
+        write(&dir.path().join(format!("audit-{day3}.jsonl.1.gz")), "this is not gzip");
+
+        let res = scan_window(dir.path(), Window::D7, now);
+        assert!(res.entries.is_empty());
+        assert_eq!(res.archive_errors.len(), 1);
+        assert!(res.archive_errors[0].contains("audit-"));
     }
 }
