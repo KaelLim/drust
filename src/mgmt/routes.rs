@@ -275,6 +275,14 @@ impl MgmtState {
                 post(super::rpc_admin::rpc_delete),
             )
             .route(
+                "/admin/tenants/{id}/_rpc/{name}/test",
+                get(super::rpc_admin::rpc_test_form),
+            )
+            .route(
+                "/admin/tenants/{id}/_rpc/{name}/test/run",
+                post(super::rpc_admin::rpc_test_run),
+            )
+            .route(
                 "/admin/api/tenants/{id}/tokens/{role}/reroll",
                 post(super::tokens::reroll_token_json),
             )
@@ -317,6 +325,14 @@ impl MgmtState {
             .route(
                 "/admin/backups/{filename}/download",
                 get(super::backups::download_one),
+            )
+            .route(
+                "/admin/backups/{filename}/inspect",
+                get(super::backups::inspect),
+            )
+            .route(
+                "/admin/backups/{filename}/restore",
+                post(super::backups::restore_tenant),
             )
             .with_state(backups_state);
 

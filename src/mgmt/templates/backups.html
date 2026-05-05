@@ -84,7 +84,7 @@
               <th style="width:200px;">timestamp (UTC)</th>
               <th class="num" style="width:120px;">size</th>
               <th style="width:140px;">age</th>
-              <th class="actions" style="width:160px;"></th>
+              <th class="actions" style="width:220px;"></th>
             </tr>
           </thead>
           <tbody>
@@ -95,7 +95,8 @@
               <td class="num">{{ b.size_human }}</td>
               <td class="muted-cell">{{ b.age_human }}</td>
               <td class="actions">
-                <a class="btn btn-sm" href="/drust/admin/backups/{{ b.filename }}/download" download="{{ b.filename }}">download</a>
+                <a class="btn btn-sm btn-ghost" href="/drust/admin/backups/{{ b.filename }}/inspect" title="inspect tenants in snapshot">inspect</a>
+                <a class="btn btn-sm" href="/drust/admin/backups/{{ b.filename }}/download" download="{{ b.filename }}" title="download .tar.zst">download</a>
               </td>
             </tr>
             {% endfor %}
