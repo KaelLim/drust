@@ -263,6 +263,56 @@ pub fn parse_jsonl_line(line: &str) -> Option<AuditEntry> {
     serde_json::from_str(trimmed).ok()
 }
 
+/// Compute summary stats over `entries`. `window` is used only for QPS denom.
+pub fn aggregate(entries: &[AuditEntry], window: Window) -> Overview {
+    let total = entries.len() as u64;
+    if total == 0 {
+        return Overview::default();
+    }
+    let error_count = entries.iter().filter(|e| e.status == "error").count() as u64;
+    let error_pct = (error_count as f64) / (total as f64) * 100.0;
+
+    let mut durations: Vec<u64> = entries.iter().map(|e| e.duration_ms).collect();
+    durations.sort_unstable();
+    let p50_ms = percentile(&durations, 50);
+    let p99_ms = percentile(&durations, 99);
+
+    let qps_avg = (total as f64) / (window.seconds() as f64);
+
+    let top_tenants = compute_top_tenants(entries);
+    let top_slow_ops = compute_top_slow_ops(entries);
+
+    Overview {
+        total,
+        error_count,
+        error_pct,
+        p50_ms,
+        p99_ms,
+        qps_avg,
+        top_tenants,
+        top_slow_ops,
+    }
+}
+
+fn percentile(sorted: &[u64], p: u8) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    // nearest-rank method: index = ceil(p/100 * N) - 1, clamped to [0, N-1]
+    let n = sorted.len();
+    let rank = ((p as f64) / 100.0 * (n as f64)).ceil() as usize;
+    let idx = rank.saturating_sub(1).min(n - 1);
+    sorted[idx]
+}
+
+// Stubs implemented in Task 9.
+fn compute_top_tenants(_entries: &[AuditEntry]) -> Vec<TopTenant> {
+    Vec::new()
+}
+fn compute_top_slow_ops(_entries: &[AuditEntry]) -> Vec<AuditEntry> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +337,11 @@ mod tests {
         format!(
             r#"{{"ts":"{ts}","tenant":"{tenant}","token_hint":"hash0001","op":"{op}","status":"{status}","duration_ms":{ms}}}"#
         )
+    }
+
+    fn mk_entry(ts: &str, tenant: &str, op: &str, status: &str, ms: u64) -> AuditEntry {
+        let line = entry_line(ts, tenant, op, status, ms);
+        parse_jsonl_line(&line).unwrap()
     }
 
     #[test]
@@ -514,5 +569,43 @@ mod tests {
         let res = scan_window(dir.path(), Window::H24, now);
         assert_eq!(res.entries.len(), MAX_ENTRIES);
         assert_eq!(res.truncated_from, Some(MAX_ENTRIES + 100));
+    }
+
+    #[test]
+    fn aggregate_empty_input() {
+        let ov = aggregate(&[], Window::H24);
+        assert_eq!(ov.total, 0);
+        assert_eq!(ov.error_count, 0);
+        assert_eq!(ov.error_pct, 0.0);
+        assert_eq!(ov.p50_ms, 0);
+        assert_eq!(ov.p99_ms, 0);
+        assert_eq!(ov.qps_avg, 0.0);
+        assert!(ov.top_tenants.is_empty());
+        assert!(ov.top_slow_ops.is_empty());
+    }
+
+    #[test]
+    fn aggregate_totals_and_errors() {
+        let entries = vec![
+            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", 10),
+            mk_entry("2026-05-05T01:00:01.000Z", "acme", "GET", "error", 12),
+            mk_entry("2026-05-05T01:00:02.000Z", "beta", "POST", "ok", 5),
+        ];
+        let ov = aggregate(&entries, Window::H1);
+        assert_eq!(ov.total, 3);
+        assert_eq!(ov.error_count, 1);
+        // 33.333...%
+        assert!((ov.error_pct - 33.333).abs() < 0.01, "got {}", ov.error_pct);
+    }
+
+    #[test]
+    fn aggregate_p50_p99_known_dataset() {
+        // 100 entries, durations 1..=100 ms. p50 should be 50, p99 should be 99.
+        let entries: Vec<AuditEntry> = (1..=100)
+            .map(|i| mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", i))
+            .collect();
+        let ov = aggregate(&entries, Window::H1);
+        assert_eq!(ov.p50_ms, 50);
+        assert_eq!(ov.p99_ms, 99);
     }
 }
