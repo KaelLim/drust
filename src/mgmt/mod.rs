@@ -1,4 +1,5 @@
 pub mod browse;
+pub mod docs;
 pub mod public_files;
 pub mod routes;
 pub mod rpc_admin;

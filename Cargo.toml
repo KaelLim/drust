@@ -42,6 +42,7 @@ object_store       = { version = "0.11", features = ["aws"] }
 mime_guess         = "2"
 bytes              = "1"
 reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+pulldown-cmark     = { version = "0.12", default-features = false, features = ["html"] }
 
 [dev-dependencies]
 tempfile           = "3"

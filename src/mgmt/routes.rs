@@ -277,6 +277,10 @@ impl MgmtState {
             )
             .route("/admin/tenants/{id}/files", get(tenant_files_admin_page))
             .route(
+                "/admin/_docs/changelog",
+                get(super::docs::changelog_page),
+            )
+            .route(
                 "/admin/tenants/{id}/collections",
                 get(super::browse::collections_page),
             )
