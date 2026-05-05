@@ -614,6 +614,90 @@ pub async fn audit_host_page(
     Html(page.render().unwrap()).into_response()
 }
 
+#[derive(Template)]
+#[template(path = "audit_tenant.html")]
+struct AuditTenantPage {
+    version: &'static str,
+    tenant_id: String,
+    tenant_name: String,
+    collections: Vec<crate::storage::schema::Collection>,
+    active_coll: String,
+    is_host_scope: bool,
+    tab: &'static str,
+    window_str: &'static str,
+    auto_refresh: bool,
+    overview_link: String,
+    browse_link: String,
+    window_choices: Vec<WindowChoice>,
+    refresh_link: String,
+    auto_toggle_link: String,
+    next_page_link: Option<String>,
+    overview: Option<Overview>,
+    entries: Vec<AuditEntry>,
+    parse_errors: usize,
+    archive_errors: Vec<String>,
+    truncated_from: Option<usize>,
+    tenant_filter: Option<String>,
+    op_filter: Option<String>,
+    status_filter: &'static str,
+}
+
+pub async fn audit_tenant_page(
+    State(state): State<crate::mgmt::tenants::TenantsState>,
+    axum::extract::Path(tenant_id): axum::extract::Path<String>,
+    Query(q): Query<AuditQuery>,
+) -> Response {
+    // Tenant existence check (mirrors src/mgmt/tokens.rs:api_keys_page).
+    let conn = state.session.meta.lock().await;
+    let tenant_name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tenant_id],
+            |r| r.get(0),
+        )
+        .ok();
+    drop(conn);
+    let tenant_name = match tenant_name {
+        Some(n) => n,
+        None => return (axum::http::StatusCode::NOT_FOUND, "tenant not found").into_response(),
+    };
+
+    // Load collections for the sidebar (failure non-fatal — sidebar still
+    // renders virtual rows like `_api_keys`).
+    let collections = crate::storage::tenant_db::open_read(&state.data_dir, &tenant_id)
+        .ok()
+        .and_then(|c| crate::storage::schema::list_collections(&c).ok())
+        .unwrap_or_default();
+
+    let body = build_body_ctx(&state.log_dir, AuditScope::Tenant(tenant_id.clone()), &q);
+    let tpl = AuditTenantPage {
+        version: env!("CARGO_PKG_VERSION"),
+        tenant_id,
+        tenant_name,
+        collections,
+        active_coll: "_logs".to_string(),
+        is_host_scope: body.is_host_scope,
+        tab: body.tab,
+        window_str: body.window_str,
+        auto_refresh: body.auto_refresh,
+        overview_link: body.overview_link,
+        browse_link: body.browse_link,
+        window_choices: body.window_choices,
+        refresh_link: body.refresh_link,
+        auto_toggle_link: body.auto_toggle_link,
+        next_page_link: body.next_page_link,
+        overview: body.overview,
+        entries: body.entries,
+        parse_errors: body.parse_errors,
+        archive_errors: body.archive_errors,
+        truncated_from: body.truncated_from,
+        tenant_filter: body.tenant_filter,
+        op_filter: body.op_filter,
+        status_filter: body.status_filter,
+    };
+    Html(tpl.render().unwrap()).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
