@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust admin — _docs / {{ active }}</title>
+<meta name="description" content="drust admin — on-disk doc viewer ({{ active }}).">
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+</head>
+<body>
+{% include "_icons.html" %}
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/_docs/{{ active }}</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <header class="topbar">
+      <div class="prompt">
+        <span class="dollar">$</span>
+        <span class="user">admin</span>
+        <span class="at">@</span>
+        <span class="host">drust</span>
+        <span class="colon">:</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/_docs/<b>{{ active }}</b></span>
+        <span class="caret"></span>
+      </div>
+      <div class="topbar-right">
+        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
+        <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
+        <form method="post" action="/drust/logout" style="display:inline;">
+          <button type="submit">logout ↵</button>
+        </form>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="docs-shell">
+        <aside class="docs-toc">
+          <div class="docs-toc-head">on this page <span class="count">{{ nav.len() }}</span></div>
+          <nav class="docs-toc-list">
+            {% for item in nav %}
+              <a href="#{{ item.slug }}">{{ item.text }}</a>
+            {% endfor %}
+          </nav>
+        </aside>
+        <div class="docs-content">
+          <div class="pagehead">
+            <div>
+              <h1>{{ title }} <span class="muted" style="font-family:var(--mono);font-size:18px;font-weight:400;">/ {{ active }}</span></h1>
+              <div class="meta" style="font-family:var(--mono);font-size:14px;color:var(--muted);">
+                source: <code style="background:var(--bg-2);padding:1px 6px;border-radius:3px;">{{ source_path }}</code>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-body" style="padding:24px;">
+              <div class="markdown-body">
+                {{ body_html|safe }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+  </div>
+</div>
+{% include "_mascot.html" %}
+
+<script>
+(function () {
+  const links = document.querySelectorAll('.docs-toc-list a');
+  if (!links.length) return;
+  const map = {};
+  links.forEach(a => { map[a.getAttribute('href').slice(1)] = a; });
+  const setActive = (id) => {
+    Object.values(map).forEach(a => a.classList.remove('active'));
+    if (id && map[id]) map[id].classList.add('active');
+  };
+  const targets = Array.from(document.querySelectorAll('.markdown-body h2[id]'));
+  if (!targets.length) return;
+  const obs = new IntersectionObserver((entries) => {
+    const visible = entries.filter(e => e.isIntersecting);
+    if (visible.length) {
+      visible.sort((a, b) => a.target.getBoundingClientRect().top - b.target.getBoundingClientRect().top);
+      setActive(visible[0].target.id);
+    }
+  }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
+  targets.forEach(t => obs.observe(t));
+  // Initial highlight: nearest h2 above the viewport top.
+  const initial = targets.find(t => t.getBoundingClientRect().top >= 0) || targets[targets.length - 1];
+  if (initial) setActive(initial.id);
+})();
+</script>
+</body>
+</html>
