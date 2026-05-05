@@ -168,6 +168,80 @@ fn is_recognised_suffix(rest: &str) -> bool {
     matches!(after_num, "" | ".gz")
 }
 
+use std::io::{BufRead, BufReader};
+
+/// Scan all audit files in `dir` whose date falls in `window`. Returns parsed
+/// entries (sorted newest-ts first), parse_errors counter, and archive_errors
+/// list. Caller is responsible for further in-memory filter/aggregate.
+///
+/// `now` is taken as a parameter so tests are deterministic.
+pub fn scan_window(
+    dir: &Path,
+    window: Window,
+    now: chrono::DateTime<chrono::Utc>,
+) -> ScanResult {
+    let mut result = ScanResult::default();
+    let files = enumerate_audit_files(dir, window, now);
+    let cutoff_ts = (now - chrono::Duration::seconds(window.seconds()))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+
+    for path in files {
+        if path.extension().and_then(|s| s.to_str()) == Some("gz") {
+            // .gz handled in Task 6; for now, skip without recording an error
+            continue;
+        }
+        match read_plain(&path) {
+            Ok((entries, errs)) => {
+                for e in entries {
+                    if e.ts.as_str() >= cutoff_ts.as_str() {
+                        result.entries.push(e);
+                    }
+                }
+                result.parse_errors += errs;
+            }
+            Err(_) => {
+                result
+                    .archive_errors
+                    .push(path.file_name().unwrap().to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    // Sort newest-first by ts.
+    result.entries.sort_by(|a, b| b.ts.cmp(&a.ts));
+
+    // Hard cap.
+    if result.entries.len() > MAX_ENTRIES {
+        result.truncated_from = Some(result.entries.len());
+        result.entries.truncate(MAX_ENTRIES);
+    }
+    result
+}
+
+fn read_plain(path: &Path) -> std::io::Result<(Vec<AuditEntry>, usize)> {
+    let f = std::fs::File::open(path)?;
+    let reader = BufReader::new(f);
+    parse_lines(reader)
+}
+
+fn parse_lines<R: BufRead>(reader: R) -> std::io::Result<(Vec<AuditEntry>, usize)> {
+    let mut entries = Vec::new();
+    let mut errs = 0usize;
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match parse_jsonl_line(trimmed) {
+            Some(e) => entries.push(e),
+            None => errs += 1,
+        }
+    }
+    Ok((entries, errs))
+}
+
 /// Parse a single JSONL line into an `AuditEntry`. Returns `None` for empty
 /// lines, whitespace-only lines, or any parse failure (caller increments
 /// `parse_errors` for non-empty failures).
@@ -188,6 +262,12 @@ mod tests {
 
     fn write(path: &PathBuf, content: &str) {
         fs::write(path, content).unwrap();
+    }
+
+    fn entry_line(ts: &str, tenant: &str, op: &str, status: &str, ms: u64) -> String {
+        format!(
+            r#"{{"ts":"{ts}","tenant":"{tenant}","token_hint":"hash0001","op":"{op}","status":"{status}","duration_ms":{ms}}}"#
+        )
     }
 
     #[test]
@@ -311,5 +391,51 @@ mod tests {
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec![format!("audit-{today}.jsonl")]);
+    }
+
+    #[test]
+    fn scan_window_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let res = scan_window(dir.path(), Window::H24, now);
+        assert!(res.entries.is_empty());
+        assert_eq!(res.parse_errors, 0);
+        assert!(res.archive_errors.is_empty());
+        assert!(res.truncated_from.is_none());
+    }
+
+    #[test]
+    fn scan_window_reads_plain_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let lines = format!(
+            "{}\n{}\n{}\n",
+            entry_line(&format!("{today}T00:01:00.000Z"), "acme", "GET", "ok", 10),
+            entry_line(&format!("{today}T00:02:00.000Z"), "beta", "POST", "error", 20),
+            entry_line(&format!("{today}T00:03:00.000Z"), "acme", "DELETE", "ok", 5),
+        );
+        write(&dir.path().join(format!("audit-{today}.jsonl")), &lines);
+
+        let res = scan_window(dir.path(), Window::H24, now);
+        assert_eq!(res.entries.len(), 3);
+        assert_eq!(res.parse_errors, 0);
+    }
+
+    #[test]
+    fn scan_window_skips_malformed_lines_with_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let lines = format!(
+            "{}\nnot json\n\n{}\n",
+            entry_line(&format!("{today}T00:01:00.000Z"), "acme", "GET", "ok", 10),
+            entry_line(&format!("{today}T00:02:00.000Z"), "beta", "POST", "error", 20),
+        );
+        write(&dir.path().join(format!("audit-{today}.jsonl")), &lines);
+
+        let res = scan_window(dir.path(), Window::H24, now);
+        assert_eq!(res.entries.len(), 2);
+        assert_eq!(res.parse_errors, 1); // empty line not counted, "not json" counted
     }
 }
