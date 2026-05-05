@@ -113,12 +113,13 @@ pub fn enumerate_audit_files(
             Some(s) => s,
             None => continue,
         };
-        // first 10 chars must be YYYY-MM-DD
-        if stripped.len() < 11 {
-            continue;
-        }
-        let date_str = &stripped[..10];
-        let rest = &stripped[10..];
+        // first 10 bytes must be YYYY-MM-DD (ASCII). Use `str::get` so a
+        // non-ASCII filename at byte offset 10 doesn't panic on slicing.
+        let date_str = match stripped.get(..10) {
+            Some(s) => s,
+            None => continue,
+        };
+        let rest = &stripped[10..]; // safe: stripped.get(..10) succeeded
         let date = match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
             Ok(d) => d,
             Err(_) => continue,
@@ -291,5 +292,24 @@ mod tests {
         write(&dir.path().join("audit-2026-05-05.jsonl.bak"), ""); // unrecognised suffix
         let files = enumerate_audit_files(dir.path(), Window::H24, now);
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn enumerate_skips_non_ascii_names_without_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        // Filename has the "audit-" prefix and is byte-len > 10, but byte 10
+        // falls inside a multi-byte codepoint. Must be skipped, not panic.
+        write(&dir.path().join("audit-abcdefghi😀.jsonl"), "");
+        // Sanity: a valid file should still be picked.
+        let today = now.format("%Y-%m-%d").to_string();
+        write(&dir.path().join(format!("audit-{today}.jsonl")), "");
+
+        let files = enumerate_audit_files(dir.path(), Window::H24, now);
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec![format!("audit-{today}.jsonl")]);
     }
 }
