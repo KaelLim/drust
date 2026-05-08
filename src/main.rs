@@ -120,9 +120,13 @@ async fn main() -> anyhow::Result<()> {
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
-    let limiter = Arc::new(RateLimiter::new(
+    let limiter = Arc::new(RateLimiter::with_cap(
         cfg.rate_limit_per_token,
         Duration::from_secs(cfg.rate_limit_window_secs),
+        cfg.rate_limit_map_cap,
+    ));
+    let _cleanup_handle = limiter.clone().spawn_cleanup(Duration::from_secs(
+        cfg.rate_limit_cleanup_interval_secs,
     ));
     let audit = Arc::new(AuditLog::new(cfg.log_dir.clone()));
     let tenant_files_state = garage.as_ref().map(|g| TenantFilesState {
