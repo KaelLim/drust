@@ -362,12 +362,13 @@ impl DrustMcpService {
         &self,
         Parameters(CreateIndexArgs { collection, fields, unique, force }): Parameters<CreateIndexArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match crate::mcp::tools::index::create_index(
+        match crate::mcp::tools::index::create_index_with_threshold(
             &self.state.inner().pool,
             &collection,
             &fields,
             unique.unwrap_or(false),
             force.unwrap_or(false),
+            self.state.inner().index_large_table_rows,
         ).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),

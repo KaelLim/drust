@@ -61,6 +61,7 @@ async fn mcp_stack(tenant: &str) -> (axum::Router, String, String, tempfile::Tem
         registry: tenants.clone(),
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
+        index_large_table_rows: 1_000_000,
     };
     let app = build_tenant_router(TenantStack {
         auth: state,

@@ -32,6 +32,7 @@ async fn app() -> (Router, String, tempfile::TempDir) {
         registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
+        index_large_table_rows: 1_000_000,
     };
     // Need to seed tenant data file
     let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();

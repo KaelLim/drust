@@ -484,12 +484,13 @@ pub async fn create_index_admin(
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     };
-    match crate::mcp::tools::index::create_index(
+    match crate::mcp::tools::index::create_index_with_threshold(
         &pool,
         &coll_name,
         &body.fields,
         body.unique.unwrap_or(false),
         body.force.unwrap_or(false),
+        state.index_large_table_rows,
     )
     .await
     {

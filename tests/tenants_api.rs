@@ -35,6 +35,7 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
         tenants,
         mcp,
         bus,
+        index_large_table_rows: 1_000_000,
     };
     (state.with_data_dir(data_dir.clone()), tok, dir)
 }
@@ -153,6 +154,7 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
         tenants: tenants.clone(),
         mcp: mcp.clone(),
         bus: bus.clone(),
+        index_large_table_rows: 1_000_000,
     };
     let app = state.with_data_dir(data_dir);
 

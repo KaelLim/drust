@@ -32,6 +32,7 @@ async fn app() -> axum::Router {
         tenants,
         mcp,
         bus,
+        index_large_table_rows: 1_000_000,
     };
     build_mgmt_router(state)
 }

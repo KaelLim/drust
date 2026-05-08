@@ -113,6 +113,7 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         Arc::new([0u8; 32]),
         Some(meta),
         12_345,
+        1_000_000,
     );
     let svc = reg.get_or_create("blog").await.unwrap();
 

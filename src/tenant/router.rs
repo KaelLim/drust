@@ -17,6 +17,10 @@ pub struct TenantAuthState {
     pub registry: Arc<TenantRegistry>,
     pub limiter: Arc<RateLimiter>,
     pub audit: Arc<AuditLog>,
+    /// Row count threshold above which index creation is considered "large
+    /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
+    /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
+    pub index_large_table_rows: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

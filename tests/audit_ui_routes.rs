@@ -44,6 +44,7 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, tempfile::TempDir)
         tenants,
         mcp,
         bus,
+        index_large_table_rows: 1_000_000,
     };
     let router = state.with_data_dir(data_dir);
     (router, dir)

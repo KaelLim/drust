@@ -43,6 +43,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         registry: tenants.clone(),
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
+        index_large_table_rows: 1_000_000,
     };
     let stack = TenantStack {
         auth: state,
@@ -88,6 +89,50 @@ pub async fn spin_up_tenant_with_role(
         registry: tenants.clone(),
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
+        index_large_table_rows: 1_000_000,
+    };
+    let stack = TenantStack {
+        auth: state,
+        bus: bus.clone(),
+        mcp: test_mcp_http(tenants, bus),
+        files: None,
+        cors_origins: Vec::new(),
+    };
+    let app = build_tenant_router(stack);
+    (app, tok, dir)
+}
+
+/// Like `spin_up_tenant_with_role` but uses a specific `index_large_table_rows`
+/// threshold. Useful for regression-testing that the configured threshold is
+/// plumbed end-to-end (REST + MCP + admin) rather than a hardcoded default.
+pub async fn spin_up_tenant_with_threshold(
+    tenant: &str,
+    role: &str,
+    index_large_table_rows: u64,
+) -> (Router, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let tok = generate_token();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, ?3)",
+        rusqlite::params![tenant, hash_token(&tok), role],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
+    let state = TenantAuthState {
+        meta: Arc::new(Mutex::new(conn)),
+        registry: tenants.clone(),
+        limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
+        audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
+        index_large_table_rows,
     };
     let stack = TenantStack {
         auth: state,
