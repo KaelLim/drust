@@ -297,3 +297,45 @@ async fn large_table_with_force_proceeds() {
     .unwrap();
     assert_eq!(resp["ok"], true);
 }
+
+#[tokio::test]
+async fn drop_by_name_succeeds() {
+    let (svc, _d) = fixture("t13").await;
+    drust::mcp::tools::index::create_index(
+        &svc,
+        "posts",
+        &["author_id".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let resp = drust::mcp::tools::index::drop_index(
+        &svc,
+        "posts",
+        Some("idx_posts_author_id"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp["ok"], true);
+    assert_eq!(resp["dropped_name"], "idx_posts_author_id");
+    let names: Vec<String> = resp["indices"].as_array().unwrap()
+        .iter().map(|i| i["name"].as_str().unwrap().to_string()).collect();
+    assert!(!names.contains(&"idx_posts_author_id".to_string()));
+}
+
+#[tokio::test]
+async fn drop_unknown_index_returns_404() {
+    let (svc, _d) = fixture("t14").await;
+    let err = drust::mcp::tools::index::drop_index(
+        &svc,
+        "posts",
+        Some("idx_does_not_exist"),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("no such index"));
+}
