@@ -47,6 +47,7 @@ async fn app_with_audit(
         bus: bus.clone(),
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
+        cors_origins: Vec::new(),
     });
     (app, tok, dir, audit_dir)
 }
