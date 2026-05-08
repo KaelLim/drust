@@ -80,3 +80,37 @@ async fn explain_blocks_non_select_via_authorizer() {
     assert!(msg.contains("not authorized") || msg.contains("authorizer"),
         "expected authorizer error, got: {msg}");
 }
+
+#[tokio::test]
+async fn explain_shows_using_index_after_create() {
+    let (svc, _d) = fixture("e5").await;
+
+    // Seed rows so the optimizer has cardinality stats and picks a real plan.
+    for i in 1i64..=3 {
+        drust::mcp::tools::write::insert_record(
+            &svc,
+            "posts",
+            serde_json::json!({ "author_id": i }),
+        )
+        .await
+        .unwrap();
+    }
+
+    let before = drust::mcp::tools::index::explain_select(
+        &svc,
+        "SELECT * FROM posts WHERE author_id = 1",
+    ).await.unwrap();
+    let before_detail = before["plan"][0]["detail"].as_str().unwrap();
+    assert!(before_detail.contains("SCAN"), "before-index plan should SCAN: {before_detail}");
+
+    drust::mcp::tools::index::create_index(
+        &svc, "posts", &["author_id".to_string()], false, false,
+    ).await.unwrap();
+
+    let after = drust::mcp::tools::index::explain_select(
+        &svc,
+        "SELECT * FROM posts WHERE author_id = 1",
+    ).await.unwrap();
+    let after_detail = after["plan"][0]["detail"].as_str().unwrap();
+    assert!(after_detail.contains("USING INDEX"), "after-index plan should USING INDEX: {after_detail}");
+}
