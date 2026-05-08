@@ -50,3 +50,55 @@ async fn creates_simple_index_on_one_field() {
     assert!(resp["row_count_at_build"].is_number());
     assert!(resp["duration_ms"].is_number());
 }
+
+#[tokio::test]
+async fn creates_composite_index_on_two_fields() {
+    let (svc, _d) = fixture("t2").await;
+    drust::mcp::tools::schema::add_field(
+        &svc,
+        "posts",
+        drust::mcp::tools::schema::FieldSpec {
+            name: "day_number".into(),
+            sql_type: "integer".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let resp = drust::mcp::tools::index::create_index(
+        &svc,
+        "posts",
+        &["author_id".to_string(), "day_number".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resp["name"], "idx_posts_author_id_day_number");
+    let idx = resp["indices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "idx_posts_author_id_day_number")
+        .unwrap();
+    assert_eq!(idx["fields"], serde_json::json!(["author_id", "day_number"]));
+    assert_eq!(idx["unique"], false);
+}
+
+#[test]
+fn auto_name_format_matches_spec() {
+    use drust::mcp::tools::index::derive_index_name;
+    assert_eq!(
+        derive_index_name("check_ins", &["user_id".into(), "day_number".into()]),
+        "idx_check_ins_user_id_day_number"
+    );
+    assert_eq!(
+        derive_index_name("posts", &["slug".into()]),
+        "idx_posts_slug"
+    );
+}
