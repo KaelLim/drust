@@ -138,6 +138,65 @@ pub async fn create_index_with_threshold(
     }))
 }
 
+pub async fn drop_index(
+    s: &DrustMcp,
+    collection: &str,
+    name: Option<&str>,
+    fields: Option<&[String]>,
+) -> anyhow::Result<serde_json::Value> {
+    identifier(collection)?;
+    if is_protected_collection(collection) {
+        anyhow::bail!("no such collection: {collection}");
+    }
+    let resolved_name = match (name, fields) {
+        (Some(n), _) => {
+            identifier(n)?;
+            n.to_string()
+        }
+        (None, Some(fs)) if !fs.is_empty() => {
+            for f in fs { identifier(f)?; }
+            derive_index_name(collection, fs)
+        }
+        _ => anyhow::bail!("INVALID_PARAMS: provide either name or non-empty fields"),
+    };
+
+    let pool = s.inner().pool.clone();
+    let pool2 = pool.clone();
+    let name_for_check = resolved_name.clone();
+    let exists: i64 = pool
+        .with_reader(move |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = ?1",
+                rusqlite::params![&name_for_check],
+                |r| r.get(0),
+            )
+        })
+        .await?;
+    if exists == 0 {
+        anyhow::bail!("no such index: {resolved_name}");
+    }
+
+    let drop_sql = format!(
+        "DROP INDEX \"{}\";",
+        resolved_name.replace('"', "\"\"")
+    );
+    pool.with_writer(move |c| c.execute_batch(&drop_sql)).await?;
+    pool.schema_cache.invalidate(collection);
+
+    let coll_for_describe = collection.to_string();
+    let schema = pool2
+        .with_reader(move |c| describe_collection(c, &coll_for_describe))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("collection vanished after drop_index"))?;
+
+    Ok(json!({
+        "ok": true,
+        "collection": collection,
+        "dropped_name": resolved_name,
+        "indices": schema.indices
+    }))
+}
+
 pub(crate) fn derive_index_name(collection: &str, fields: &[String]) -> String {
     let mut s = String::from("idx_");
     s.push_str(collection);
