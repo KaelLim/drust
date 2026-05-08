@@ -3,6 +3,7 @@ use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{
     CollectionSchema, DmlVerb, collection_exists, describe_collection, has_dml_cap,
+    is_protected_collection,
 };
 use crate::tenant::events::{Event, EventBus};
 use crate::tenant::router::TenantRef;
@@ -41,6 +42,16 @@ async fn require_dml_cap(
     coll: &str,
     verb: DmlVerb,
 ) -> Result<CollectionSchema, Response> {
+    // _system_* tables are internal storage and never exposed via the
+    // records API regardless of role. Service tokens that need to touch
+    // them have dedicated admin/MCP entry points.
+    if is_protected_collection(coll) {
+        return Err(json_error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            &format!("no such collection: {coll}"),
+        ));
+    }
     let pool = tenant.pool.clone();
     let cache = pool.schema_cache.clone();
     let coll_owned = coll.to_string();
@@ -212,6 +223,9 @@ pub async fn get_handler(
     Extension(t): Extension<TenantRef>,
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
 ) -> Response {
+    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Select).await {
+        return r;
+    }
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let out = pool
