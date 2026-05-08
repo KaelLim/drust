@@ -74,6 +74,13 @@
             {% endfor %}
             <button class="btn btn-primary btn-sm" type="submit" style="margin-left:auto;">apply</button>
           </form>
+          <div class="muted" style="padding:0 16px 14px;font-size:12px;line-height:1.5;">
+            ⚠️ This setting only governs the REST <code>/records/*</code> API.
+            Anon tokens can still read this collection through
+            <code>POST /t/&lt;tid&gt;/query</code> (free-form SELECT) regardless
+            of the capability allowlist above. To fully restrict anon read
+            access, revoke the anon token entirely.
+          </div>
         </div>
         <div class="card">
           <div class="card-head">
