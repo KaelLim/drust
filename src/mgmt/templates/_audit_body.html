@@ -53,10 +53,9 @@
   {% if ov.top_slow_ops.is_empty() %}<div class="empty" style="padding:36px 24px;">no data</div>{% else %}
   <table class="data">
     <thead><tr>
-      <th>ts</th>
+      <th>timestamp</th>
       {% if is_host_scope %}<th>tenant</th>{% endif %}
-      <th>op</th>
-      <th>coll</th>
+      <th>operation</th>
       <th class="num">ms</th>
     </tr></thead>
     <tbody>
@@ -65,7 +64,6 @@
         <td>{{ e.ts }}</td>
         {% if is_host_scope %}<td><a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs">{{ e.tenant }}</a></td>{% endif %}
         <td>{{ e.op }}</td>
-        <td>{% if let Some(c) = e.collection %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/collections/{{ c }}">{{ c }}</a>{% else %}<span class="muted-cell">—</span>{% endif %}</td>
         <td class="num">{{ e.duration_ms }}</td>
       </tr>
       {% endfor %}
@@ -102,13 +100,12 @@
   {% else %}
   <table class="data">
     <thead><tr>
-      <th>ts</th>
+      <th>timestamp</th>
       {% if is_host_scope %}<th>tenant</th>{% endif %}
-      <th>op</th>
+      <th>operation</th>
       <th>status</th>
       <th class="num">ms</th>
-      <th>coll</th>
-      <th>error</th>
+      <th>error_code</th>
     </tr></thead>
     <tbody>
       {% for e in entries %}
@@ -118,20 +115,19 @@
         <td>{{ e.op }}</td>
         <td>{% if e.status == "error" %}<b style="color:var(--warn);">ERROR</b>{% else %}{{ e.status }}{% endif %}</td>
         <td class="num">{{ e.duration_ms }}</td>
-        <td>{% if let Some(c) = e.collection %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/collections/{{ c }}">{{ c }}</a>{% else %}<span class="muted-cell">—</span>{% endif %}</td>
         <td>{% if let Some(c) = e.error_code %}{{ c }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
       </tr>
-      <tr class="audit-detail-row"><td colspan="{% if is_host_scope %}7{% else %}6{% endif %}" style="padding:0;border:0;background:transparent;">
+      <tr class="audit-detail-row"><td colspan="{% if is_host_scope %}6{% else %}5{% endif %}" style="padding:0;border:0;background:transparent;">
         <details style="margin:0;padding:0 var(--cell-x) 8px;">
           <summary class="muted" style="cursor:pointer;font-size:12px;">details</summary>
           <dl class="audit-detail">
-            <dt>ts</dt><dd>{{ e.ts }}</dd>
+            <dt>timestamp</dt><dd>{{ e.ts }}</dd>
             <dt>tenant</dt><dd>{{ e.tenant }}</dd>
             <dt>token_hint</dt><dd>{{ e.token_hint }}</dd>
-            <dt>op</dt><dd>{{ e.op }}</dd>
+            <dt>operation</dt><dd>{{ e.op }}</dd>
             <dt>status</dt><dd>{% if e.status == "error" %}<b style="color:var(--warn);">{{ e.status }}</b>{% else %}{{ e.status }}{% endif %}</dd>
             <dt>duration_ms</dt><dd>{{ e.duration_ms }}</dd>
-            {% if let Some(c) = e.collection %}<dt>collection</dt><dd>{{ c }}</dd>{% endif %}
+            {% if let Some(c) = e.collection %}<dt>collection</dt><dd><a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/collections/{{ c }}">{{ c }}</a></dd>{% endif %}
             {% if let Some(h) = e.sql_hash %}<dt>sql_hash</dt><dd>{{ h }}</dd>{% endif %}
             {% if let Some(id) = e.record_id %}<dt>record_id</dt><dd>{{ id }}</dd>{% endif %}
             {% if let Some(c) = e.error_code %}<dt>error_code</dt><dd><b style="color:var(--warn);">{{ c }}</b></dd>{% endif %}
