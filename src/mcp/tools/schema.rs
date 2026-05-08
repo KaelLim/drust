@@ -63,7 +63,7 @@ fn type_to_sqlite(t: &str) -> anyhow::Result<&'static str> {
     })
 }
 
-fn identifier(s: &str) -> anyhow::Result<()> {
+pub(crate) fn identifier(s: &str) -> anyhow::Result<()> {
     let ok = !s.is_empty()
         && s.chars()
             .next()
