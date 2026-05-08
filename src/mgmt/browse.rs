@@ -7,6 +7,7 @@ use crate::storage::schema::{
 };
 use crate::storage::tenant_db::{open_read, open_write};
 use askama::Template;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -443,4 +444,161 @@ pub async fn update_anon_caps(
         "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
     ))
     .into_response()
+}
+
+// ── Admin index DDL endpoints ─────────────────────────────────────────────────
+// These are JSON-returning endpoints called via fetch() from the admin UI
+// (Tasks 19/20). They use the same admin-session middleware as all other
+// tenants_router routes — no explicit session extractor needed.
+
+#[derive(serde::Deserialize)]
+pub struct AdminCreateIndexBody {
+    pub fields: Vec<String>,
+    #[serde(default)]
+    pub unique: Option<bool>,
+    #[serde(default)]
+    pub force: Option<bool>,
+}
+
+/// POST `/admin/tenants/{id}/collections/{coll}/_indexes`
+///
+/// Create an index on a collection. Returns JSON. Admin-session-protected
+/// (via the wrapping `admin_session_layer` on `tenants_router`).
+pub async fn create_index_admin(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name)): Path<(String, String)>,
+    Json(body): Json<AdminCreateIndexBody>,
+) -> Response {
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    };
+    match crate::mcp::tools::index::create_index(
+        &pool,
+        &coll_name,
+        &body.fields,
+        body.unique.unwrap_or(false),
+        body.force.unwrap_or(false),
+    )
+    .await
+    {
+        Ok(v) => (StatusCode::CREATED, axum::Json(v)).into_response(),
+        Err(e) => {
+            use axum::Json;
+            let msg = e.to_string();
+            let (status, code) = map_index_admin_error(&msg);
+            let body = serde_json::json!({ "error_code": code, "message": msg });
+            let mut r = Json(body).into_response();
+            *r.status_mut() = status;
+            r
+        }
+    }
+}
+
+/// DELETE `/admin/tenants/{id}/collections/{coll}/_indexes/{name}`
+///
+/// Drop an index by name. Returns JSON.
+pub async fn drop_index_admin(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name, index_name)): Path<(String, String, String)>,
+) -> Response {
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    };
+    match crate::mcp::tools::index::drop_index(&pool, &coll_name, Some(&index_name), None).await {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => {
+            use axum::Json;
+            let msg = e.to_string();
+            let (status, code) = map_index_admin_error(&msg);
+            let body = serde_json::json!({ "error_code": code, "message": msg });
+            let mut r = Json(body).into_response();
+            *r.status_mut() = status;
+            r
+        }
+    }
+}
+
+/// POST `/admin/tenants/{id}/collections/{coll}/_explain`
+///
+/// Run `EXPLAIN QUERY PLAN` on a SQL string. Returns JSON `{"plan":[...]}`.
+pub async fn explain_admin(
+    State(state): State<TenantsState>,
+    Path((tenant_id, _coll_name)): Path<(String, String)>,
+    Json(body): Json<crate::tenant::query_endpoint::ExplainBody>,
+) -> Response {
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    };
+    match crate::mcp::tools::index::explain_select(&pool, &body.sql).await {
+        Ok(v) => (StatusCode::OK, axum::Json(v)).into_response(),
+        Err(e) => {
+            use axum::Json;
+            let msg = e.to_string();
+            let (status, code) = if msg.contains("not authorized")
+                || msg.contains("authorizer")
+                || msg.contains("prohibited")
+            {
+                (StatusCode::BAD_REQUEST, "SQL_NOT_ALLOWED")
+            } else if msg.contains("syntax") || msg.contains("near") {
+                (StatusCode::BAD_REQUEST, "SQL_PARSE_ERROR")
+            } else {
+                (StatusCode::BAD_REQUEST, "SQL_ERROR")
+            };
+            let body = serde_json::json!({ "error_code": code, "message": msg });
+            let mut r = Json(body).into_response();
+            *r.status_mut() = status;
+            r
+        }
+    }
+}
+
+fn map_index_admin_error(msg: &str) -> (StatusCode, &'static str) {
+    if msg.contains("no such collection") || msg.contains("no such index") {
+        (StatusCode::NOT_FOUND, "NOT_FOUND")
+    } else if msg.contains("not found on collection") {
+        (StatusCode::NOT_FOUND, "FIELD_NOT_FOUND")
+    } else if msg.contains("LARGE_TABLE") {
+        (StatusCode::CONFLICT, "LARGE_TABLE")
+    } else if msg.contains("already exists") {
+        (StatusCode::CONFLICT, "INDEX_EXISTS")
+    } else if msg.contains("UNIQUE") || msg.contains("unique") {
+        (StatusCode::CONFLICT, "UNIQUE_VIOLATION")
+    } else if msg.contains("INVALID_PARAMS")
+        || msg.contains("must be non-empty")
+        || msg.contains("non-empty")
+        || msg.contains("duplicate")
+    {
+        (StatusCode::BAD_REQUEST, "INVALID_PARAMS")
+    } else if msg.contains("invalid identifier") {
+        (StatusCode::BAD_REQUEST, "INVALID_IDENTIFIER")
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL")
+    }
 }

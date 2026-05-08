@@ -318,6 +318,18 @@ impl MgmtState {
                 post(super::browse::update_anon_caps),
             )
             .route(
+                "/admin/tenants/{id}/collections/{coll}/_indexes",
+                post(super::browse::create_index_admin),
+            )
+            .route(
+                "/admin/tenants/{id}/collections/{coll}/_indexes/{name}",
+                axum::routing::delete(super::browse::drop_index_admin),
+            )
+            .route(
+                "/admin/tenants/{id}/collections/{coll}/_explain",
+                post(super::browse::explain_admin),
+            )
+            .route(
                 "/admin/audit",
                 get(super::audit::audit_host_page),
             )
