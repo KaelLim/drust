@@ -4,9 +4,14 @@
 //!
 //! We keep it deliberately minimal: the goal is to prove the wiring is
 //! real (rmcp handler → axum route → bearer auth → per-tenant service)
-//! rather than to re-test every tool. The underlying 13 tools are
-//! covered by the in-process tests in `mcp_write_schema.rs`,
-//! `mcp_read.rs`, `mcp_exploration.rs`.
+//! rather than to re-test every tool. Per-tool behavior is covered by
+//! the in-process tests in `mcp_write_schema.rs`, `mcp_read.rs`,
+//! `mcp_exploration.rs`.
+//!
+//! NOTE: every request that reaches rmcp must carry a loopback `Host`
+//! header — rmcp's DNS-rebinding guard rejects anything else with 400
+//! "missing Host header". In production Caddy sets this via
+//! `header_up Host "127.0.0.1:47826"`. Tests must do it themselves.
 
 mod helpers;
 
@@ -71,6 +76,7 @@ fn mcp_request(tenant: &str, bearer: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method(Method::POST)
         .uri(format!("/t/{tenant}/mcp"))
+        .header(header::HOST, "127.0.0.1")
         .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
         .header(header::CONTENT_TYPE, "application/json")
         // The MCP Streamable HTTP transport requires the client advertise
@@ -116,7 +122,7 @@ async fn parse_mcp_body(resp: axum::response::Response) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn initialize_then_tools_list_returns_all_13_tools() {
+async fn initialize_then_tools_list_returns_core_tools() {
     let (app, service_tok, _anon, _dir) = mcp_stack("mcp1").await;
 
     // Step 1: MCP initialize handshake — this is required before any
@@ -155,6 +161,7 @@ async fn initialize_then_tools_list_returns_all_13_tools() {
     let initd = Request::builder()
         .method(Method::POST)
         .uri("/t/mcp1/mcp")
+        .header(header::HOST, "127.0.0.1")
         .header(header::AUTHORIZATION, format!("Bearer {}", service_tok))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
@@ -171,10 +178,13 @@ async fn initialize_then_tools_list_returns_all_13_tools() {
     // 202 Accepted for notification (no response body).
     assert!(ack.status() == StatusCode::ACCEPTED || ack.status() == StatusCode::OK);
 
-    // Step 3: tools/list — must return exactly 13 named tools.
+    // Step 3: tools/list — assert the core read/write/schema tools are
+    // present. We do NOT assert the total count: new tools (set_anon_caps,
+    // whoami, …) get added over time and a strict count just rots.
     let tl_req = Request::builder()
         .method(Method::POST)
         .uri("/t/mcp1/mcp")
+        .header(header::HOST, "127.0.0.1")
         .header(header::AUTHORIZATION, format!("Bearer {}", service_tok))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
@@ -199,12 +209,6 @@ async fn initialize_then_tools_list_returns_all_13_tools() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(
-        names.len(),
-        13,
-        "expected 13 tools, got {}: {names:?}",
-        names.len()
-    );
     for expected in [
         "list_collections",
         "describe_collection",
@@ -307,6 +311,7 @@ async fn tools_call_list_collections_succeeds() {
     let ack = Request::builder()
         .method(Method::POST)
         .uri("/t/mcp4/mcp")
+        .header(header::HOST, "127.0.0.1")
         .header(header::AUTHORIZATION, format!("Bearer {}", service_tok))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
@@ -320,6 +325,7 @@ async fn tools_call_list_collections_succeeds() {
     let call = Request::builder()
         .method(Method::POST)
         .uri("/t/mcp4/mcp")
+        .header(header::HOST, "127.0.0.1")
         .header(header::AUTHORIZATION, format!("Bearer {}", service_tok))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
