@@ -142,6 +142,50 @@
             <pre id="create-idx-output" style="margin-top:8px;color:#c00;font-size:12px;white-space:pre-wrap;display:none;"></pre>
           </div>
         </div>
+        <div class="card" style="margin-top:16px;">
+          <div class="card-head">Try SELECT (EXPLAIN QUERY PLAN)</div>
+          <div style="padding:12px 16px;">
+            <textarea id="explain-sql"
+                      rows="3"
+                      style="width:100%;font-family:monospace;"
+                      placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
+            <button id="explain-run" type="button" class="btn btn-sm btn-primary" style="margin-top:8px;">Run plan</button>
+            <pre id="explain-output"
+                 style="margin-top:8px;background:#f6f8fa;padding:12px;border-radius:6px;font-size:13px;white-space:pre-wrap;display:none;"></pre>
+          </div>
+        </div>
+        <script>
+(function() {
+  var tenantId = '{{ tenant_id }}';
+  var collName = '{{ coll_name }}';
+  document.getElementById('explain-run').addEventListener('click', function() {
+    var sql = document.getElementById('explain-sql').value;
+    var out = document.getElementById('explain-output');
+    out.textContent = 'Running...';
+    out.style.display = '';
+    fetch(
+      '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_explain',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sql: sql })
+      }
+    ).then(function(r) {
+      return r.json().then(function(j) { return { ok: r.ok, j: j }; });
+    }).then(function(res) {
+      if (res.j.plan) {
+        out.textContent = res.j.plan.map(function(p) {
+          return (p.parent > 0 ? '  ' : '') + p.detail;
+        }).join('\n');
+      } else {
+        out.textContent = (res.j.error_code || 'ERROR') + ': ' + (res.j.message || '');
+      }
+    }).catch(function(e) {
+      out.textContent = String(e);
+    });
+  });
+})();
+        </script>
         <div class="card">
           <div class="card-head">
             <span>schema <span class="count">· {{ fields.len() }} fields</span></span>
