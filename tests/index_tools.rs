@@ -339,3 +339,52 @@ async fn drop_unknown_index_returns_404() {
     .unwrap_err();
     assert!(err.to_string().contains("no such index"));
 }
+
+#[tokio::test]
+async fn drop_by_fields_resolves_to_same_index() {
+    let (svc, _d) = fixture("t15").await;
+    drust::mcp::tools::schema::add_field(
+        &svc, "posts",
+        drust::mcp::tools::schema::FieldSpec {
+            name: "day_number".into(),
+            sql_type: "integer".into(),
+            nullable: true, unique: false, default_value: None, foreign_key: None,
+        },
+    ).await.unwrap();
+    drust::mcp::tools::index::create_index(
+        &svc, "posts",
+        &["author_id".to_string(), "day_number".to_string()],
+        false, false,
+    ).await.unwrap();
+
+    let resp = drust::mcp::tools::index::drop_index(
+        &svc, "posts",
+        None,
+        Some(&["author_id".to_string(), "day_number".to_string()]),
+    ).await.unwrap();
+    assert_eq!(resp["dropped_name"], "idx_posts_author_id_day_number");
+}
+
+#[tokio::test]
+async fn drop_with_neither_name_nor_fields_returns_invalid_params() {
+    let (svc, _d) = fixture("t16").await;
+    let err = drust::mcp::tools::index::drop_index(&svc, "posts", None, None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("INVALID_PARAMS"));
+}
+
+#[tokio::test]
+async fn drop_then_recreate_works() {
+    let (svc, _d) = fixture("t17").await;
+    drust::mcp::tools::index::create_index(
+        &svc, "posts", &["author_id".to_string()], false, false
+    ).await.unwrap();
+    drust::mcp::tools::index::drop_index(
+        &svc, "posts", Some("idx_posts_author_id"), None
+    ).await.unwrap();
+    let resp = drust::mcp::tools::index::create_index(
+        &svc, "posts", &["author_id".to_string()], false, false
+    ).await.unwrap();
+    assert_eq!(resp["ok"], true);
+}
