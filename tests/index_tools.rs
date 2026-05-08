@@ -245,3 +245,55 @@ async fn unique_index_on_duplicate_data_returns_unique_violation() {
         "expected UNIQUE_VIOLATION-style error, got: {msg}"
     );
 }
+
+#[tokio::test]
+async fn large_table_without_force_returns_409() {
+    let (svc, _d) = fixture("t11").await;
+    // Seed 5 rows; we'll set threshold=3 in the call.
+    for i in 0..5 {
+        drust::mcp::tools::write::insert_record(
+            &svc,
+            "posts",
+            serde_json::json!({"author_id": i}),
+        )
+        .await
+        .unwrap();
+    }
+    let err = drust::mcp::tools::index::create_index_with_threshold(
+        &svc,
+        "posts",
+        &["author_id".to_string()],
+        false, // unique
+        false, // force
+        3,     // threshold
+    )
+    .await
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("LARGE_TABLE") || msg.contains("force"), "got: {msg}");
+}
+
+#[tokio::test]
+async fn large_table_with_force_proceeds() {
+    let (svc, _d) = fixture("t12").await;
+    for i in 0..5 {
+        drust::mcp::tools::write::insert_record(
+            &svc,
+            "posts",
+            serde_json::json!({"author_id": i}),
+        )
+        .await
+        .unwrap();
+    }
+    let resp = drust::mcp::tools::index::create_index_with_threshold(
+        &svc,
+        "posts",
+        &["author_id".to_string()],
+        false,
+        true,  // force
+        3,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp["ok"], true);
+}
