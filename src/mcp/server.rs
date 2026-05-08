@@ -2,12 +2,19 @@ use crate::storage::garage::GarageClient;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
 use crate::tenant::events::EventBus;
 use dashmap::DashMap;
+use rusqlite::Connection;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Per-tenant MCP state bundling the connection pool, the event bus, the
 /// tenant id, and (optionally) a Garage client + the public base URL
 /// used by the Y-scope file tools. Tool handlers receive a reference
 /// to this struct.
+///
+/// `meta` is optional because the test-only `McpRegistry::new` /
+/// `with_bus` constructors don't have a real meta.sqlite to hand in;
+/// tools that need it (currently `whoami`) bail with a clear error
+/// when it's absent.
 #[derive(Clone)]
 pub struct DrustMcpInner {
     pub tenant_id: String,
@@ -16,6 +23,8 @@ pub struct DrustMcpInner {
     pub garage: Option<Arc<GarageClient>>,
     pub public_base_url: String,
     pub url_sign_secret: Arc<[u8; 32]>,
+    pub meta: Option<Arc<Mutex<Connection>>>,
+    pub max_upload_bytes: usize,
 }
 
 /// Newtype so we can hand out `Arc` without exposing the inner struct.
@@ -32,6 +41,8 @@ impl DrustMcp {
         garage: Option<Arc<GarageClient>>,
         public_base_url: String,
         url_sign_secret: Arc<[u8; 32]>,
+        meta: Option<Arc<Mutex<Connection>>>,
+        max_upload_bytes: usize,
     ) -> Self {
         Self {
             inner: Arc::new(DrustMcpInner {
@@ -41,6 +52,8 @@ impl DrustMcp {
                 garage,
                 public_base_url,
                 url_sign_secret,
+                meta,
+                max_upload_bytes,
             }),
         }
     }
@@ -59,6 +72,12 @@ impl DrustMcp {
     pub fn url_sign_secret(&self) -> &[u8; 32] {
         &self.inner.url_sign_secret
     }
+    pub fn meta(&self) -> Option<&Arc<Mutex<Connection>>> {
+        self.inner.meta.as_ref()
+    }
+    pub fn max_upload_bytes(&self) -> usize {
+        self.inner.max_upload_bytes
+    }
 }
 
 /// Lazy cache of per-tenant MCP services. Entries are evicted when a tenant is
@@ -71,6 +90,8 @@ pub struct McpRegistry {
     garage: Option<Arc<GarageClient>>,
     public_base_url: String,
     url_sign_secret: Arc<[u8; 32]>,
+    meta: Option<Arc<Mutex<Connection>>>,
+    max_upload_bytes: usize,
     services: DashMap<String, DrustMcp>,
 }
 
@@ -82,6 +103,8 @@ impl McpRegistry {
             garage: None,
             public_base_url: String::new(),
             url_sign_secret: Arc::new([0u8; 32]),
+            meta: None,
+            max_upload_bytes: 52_428_800,
             services: DashMap::new(),
         }
     }
@@ -92,6 +115,8 @@ impl McpRegistry {
             garage: None,
             public_base_url: String::new(),
             url_sign_secret: Arc::new([0u8; 32]),
+            meta: None,
+            max_upload_bytes: 52_428_800,
             services: DashMap::new(),
         }
     }
@@ -101,6 +126,8 @@ impl McpRegistry {
         garage: Option<Arc<GarageClient>>,
         public_base_url: String,
         url_sign_secret: Arc<[u8; 32]>,
+        meta: Option<Arc<Mutex<Connection>>>,
+        max_upload_bytes: usize,
     ) -> Self {
         Self {
             tenants,
@@ -108,6 +135,8 @@ impl McpRegistry {
             garage,
             public_base_url,
             url_sign_secret,
+            meta,
+            max_upload_bytes,
             services: DashMap::new(),
         }
     }
@@ -123,6 +152,8 @@ impl McpRegistry {
             self.garage.clone(),
             self.public_base_url.clone(),
             self.url_sign_secret.clone(),
+            self.meta.clone(),
+            self.max_upload_bytes,
         );
         self.services.insert(tenant_id.to_string(), svc.clone());
         Ok(svc)

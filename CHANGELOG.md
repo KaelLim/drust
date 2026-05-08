@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.3] - 2026-05-08
+
+### Added
+
+- **MCP tool `set_anon_caps`** — replaces the per-collection anon DML
+  capability set (`["select","insert","update","delete"]` subset).
+  Closes the gap where this was reachable only from the admin UI's
+  Schema-tab editor; service tokens calling MCP can now toggle anon
+  read/write per collection without the round-trip through a browser
+  cookie session. Refuses `_system_*` collections (matches the
+  protection on `drop_collection`), verifies the collection exists
+  before writing, and invalidates the in-process schema cache so the
+  next REST/MCP request through the tenant router sees the new gate
+  immediately. Tests: round-trip with `describe_collection`, empty
+  caps lock anon out, `_system_*` rejection, unknown-collection
+  rejection.
+- **MCP tool `whoami`** — returns the calling tenant's identity, both
+  bearer tokens (anon + service) in **plaintext**, the relative
+  REST/MCP/files/rpc endpoint paths, and the configured
+  `max_upload_bytes`. Designed for the file-upload flow specifically:
+  `POST /drust/t/<id>/files` (multipart) deliberately has no MCP tool
+  because MCP can't carry binary payloads, so a model wired only to
+  MCP previously had no way to construct the curl/HTTP call. `whoami`
+  surfaces everything that call needs in one shot. MCP is service-only
+  at the auth layer, so the caller already holds the service token —
+  re-emitting it here doesn't widen the threat model.
+- **Plumbing**: `DrustMcpInner` gains `meta: Option<Arc<Mutex<Connection>>>`
+  + `max_upload_bytes: usize`. `McpRegistry::with_bus_and_storage`
+  now takes both. The `McpRegistry::new` / `with_bus` test
+  constructors leave `meta = None`; tools that require it (`whoami`)
+  bail with `META_UNAVAILABLE` instead of panicking.
+
+### Changed
+
+- `storage::schema::DmlVerb` now derives `schemars::JsonSchema` so it
+  can appear in MCP tool argument schemas directly (used by
+  `set_anon_caps`).
+- `tests/helpers.rs`: added missing `cors_origins: Vec::new()` to the
+  `TenantStack` literal — pre-existing breakage from the v1.5.1 CORS
+  field addition that only surfaced now because tests outside the
+  `helpers.rs` mod weren't recompiling against it.
+
+### Notes
+
+Tokens minted before v1.1c stored only the hash, not the plaintext.
+For those, `whoami.tokens.<role>.plaintext` is `null`; admin UI reroll
+is the recovery path. Fresh tenants on v1.1c+ always have plaintext
+populated.
+
 ## [1.7.2] - 2026-05-05
 
 ### Added

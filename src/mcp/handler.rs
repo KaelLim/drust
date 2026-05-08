@@ -78,6 +78,15 @@ pub struct DropCollectionArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetAnonCapsArgs {
+    pub collection: String,
+    /// Subset of `["select", "insert", "update", "delete"]`. Empty array
+    /// locks the collection from the anon role entirely (service is
+    /// unrestricted by design and not affected).
+    pub caps: Vec<crate::storage::schema::DmlVerb>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct InsertRecordArgs {
     pub collection: String,
     /// JSON object mapping field name → value for the new row.
@@ -167,6 +176,23 @@ impl DrustMcpService {
     #[tool(description = "List all collections in this tenant's database, with their row counts.")]
     async fn list_collections(&self) -> Result<CallToolResult, McpError> {
         match exploration::list_collections(&self.state).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Return this tenant's identity, both bearer tokens \
+        (anon + service, plaintext), the relative REST/MCP/files/rpc \
+        endpoint paths, and the configured `max_upload_bytes`. Use this \
+        to surface credentials needed for surfaces with no MCP tool — \
+        most importantly the multipart file upload endpoint. Tokens \
+        minted before v1.1c only stored the hash; their `plaintext` \
+        field is null and require an admin reroll to recover.")]
+    async fn whoami(
+        &self,
+        Parameters(_): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match exploration::whoami(&self.state).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -302,6 +328,20 @@ impl DrustMcpService {
         Parameters(DropCollectionArgs { collection }): Parameters<DropCollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
         match schema_tools::drop_collection(&self.state, &collection).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Replace the anon-role DML capability set for one \
+        collection. `caps` is a subset of [\"select\",\"insert\",\"update\",\"delete\"]; \
+        empty locks anon out entirely. Service tokens are unrestricted and \
+        not affected. Refuses `_system_*` collections.")]
+    async fn set_anon_caps(
+        &self,
+        Parameters(SetAnonCapsArgs { collection, caps }): Parameters<SetAnonCapsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match schema_tools::set_anon_caps(&self.state, &collection, &caps).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }

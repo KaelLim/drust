@@ -1,10 +1,11 @@
 use crate::mcp::server::DrustMcp;
 use crate::storage::schema::{
-    collection_exists, default_anon_caps, delete_collection_meta, describe_collection,
+    DmlVerb, collection_exists, default_anon_caps, delete_collection_meta, describe_collection,
     find_fk_referrers, is_protected_collection, write_anon_caps,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeSet;
 
 /// Columns drust maintains automatically; users cannot drop them.
 /// `id` is PRIMARY KEY (SQLite would reject the drop anyway); `created_at`
@@ -356,4 +357,45 @@ pub async fn drop_collection(s: &DrustMcp, name: &str) -> anyhow::Result<serde_j
     pool.schema_cache.invalidate(name);
 
     Ok(json!({ "ok": true, "dropped_collection": name }))
+}
+
+/// Replace the anon-role DML capability set for one collection.
+///
+/// `caps` is a subset of `{select, insert, update, delete}`. Empty
+/// caps lock the collection to anon (service is unaffected — service
+/// is unrestricted by design). Refuses `_system_*` collections to
+/// match the existing protection on `drop_collection`.
+pub async fn set_anon_caps(
+    s: &DrustMcp,
+    collection: &str,
+    caps: &[DmlVerb],
+) -> anyhow::Result<serde_json::Value> {
+    identifier(collection)?;
+    if is_protected_collection(collection) {
+        anyhow::bail!(
+            "refusing to set anon_caps on system collection {collection:?} (protected by _system_ prefix)"
+        );
+    }
+    let pool = s.inner().pool.clone();
+
+    let name_check = collection.to_string();
+    let exists = pool
+        .with_reader(move |c| collection_exists(c, &name_check))
+        .await?;
+    if !exists {
+        anyhow::bail!("unknown collection: {collection}");
+    }
+
+    let caps_set: BTreeSet<DmlVerb> = caps.iter().copied().collect();
+    let meta_name = collection.to_string();
+    let caps_for_writer = caps_set.clone();
+    pool.with_writer(move |c| write_anon_caps(c, &meta_name, &caps_for_writer))
+        .await?;
+    pool.schema_cache.invalidate(collection);
+
+    Ok(json!({
+        "ok": true,
+        "collection": collection,
+        "anon_caps": caps_set.iter().map(|v| v.as_str()).collect::<Vec<_>>(),
+    }))
 }

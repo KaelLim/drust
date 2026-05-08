@@ -31,7 +31,9 @@ mod protection_tests {
 /// DML verbs used by the per-collection capability allowlist.
 /// Ordering is fixed (Select, Insert, Update, Delete) so serialised
 /// output is deterministic.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum DmlVerb {
     Select,
