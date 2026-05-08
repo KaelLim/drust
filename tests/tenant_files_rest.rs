@@ -6,24 +6,17 @@ use drust::storage::files::{Owner, Visibility, bucket_for_upload};
 
 #[test]
 fn private_tenant_bucket_routes_via_helper() {
-    // The bytes handler resolves bucket via bucket_for_upload(Owner, Visibility).
-    // Verify the routing directly — handler integration is exercised by smoke tests.
+    // bucket_for_upload ignores Owner — tenant ownership is in the key prefix.
     let owner = Owner::Tenant("acme".into());
-    assert_eq!(
-        bucket_for_upload(&owner, Visibility::Private),
-        "tenant-acme-prv"
-    );
-    assert_eq!(
-        bucket_for_upload(&owner, Visibility::Public),
-        "tenant-acme-pub"
-    );
+    assert_eq!(bucket_for_upload(&owner, Visibility::Private), "private");
+    assert_eq!(bucket_for_upload(&owner, Visibility::Public), "public");
 }
 
 #[test]
 fn admin_bucket_routes_via_helper() {
     assert_eq!(
         bucket_for_upload(&Owner::Admin, Visibility::Private),
-        "admin-private"
+        "private"
     );
     assert_eq!(
         bucket_for_upload(&Owner::Admin, Visibility::Public),
@@ -309,16 +302,16 @@ async fn sign_url_private_row_returns_signed_url() {
     .expect("sign_url should succeed for private row with configured garage");
 
     let resp = result.0;
+    // Private URLs are now drust-served HMAC: {base}/drust/s/t/{tenant}/{key}?e=&t=&d=
     assert!(
-        resp.url.contains("X-Amz-Signature="),
-        "URL should have S3v4 signature: {}",
+        resp.url
+            .contains(&format!("/drust/s/t/{tenant_id}/{file_key}")),
+        "URL should be drust-served HMAC route: {}",
         resp.url
     );
-    assert!(
-        resp.url.contains("X-Amz-Expires=3600"),
-        "URL should embed TTL: {}",
-        resp.url
-    );
+    assert!(resp.url.contains("?e="), "URL should embed expires: {}", resp.url);
+    assert!(resp.url.contains("&t="), "URL should embed HMAC token: {}", resp.url);
+    assert!(resp.url.contains("&d=0"), "URL should embed download flag: {}", resp.url);
     assert!(
         resp.expires_at.is_some(),
         "expires_at should be set for private file"
@@ -393,8 +386,8 @@ async fn sign_url_public_row_returns_stable_url() {
     let resp = result.0;
     assert!(
         resp.url
-            .contains(&format!("/t-public/{tenant_id}/{file_key}")),
-        "public URL should be stable /t-public path: {}",
+            .contains(&format!("/public/{tenant_id}/{file_key}")),
+        "public URL should be stable /public path: {}",
         resp.url
     );
     assert!(
