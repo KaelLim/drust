@@ -170,11 +170,7 @@ pub async fn bearer_auth_layer(
             "",
         )
     };
-    tokio::spawn(async move {
-        if let Err(e) = audit_sink.append(entry).await {
-            tracing::warn!(error = %e, "audit append failed");
-        }
-    });
+    audit_sink.append(entry);
     resp
 }
 

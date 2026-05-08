@@ -4,12 +4,10 @@ use tempfile::tempdir;
 #[tokio::test]
 async fn writes_jsonl_and_rolls_by_date() {
     let dir = tempdir().unwrap();
-    let log = AuditLog::new(dir.path().to_path_buf());
+    let (log, handle) = AuditLog::start(dir.path().to_path_buf());
     log.append(
         AuditEntry::success("t1", "drust_abc", "insert_record", 12).with_collection("posts"),
-    )
-    .await
-    .unwrap();
+    );
     log.append(AuditEntry::failure(
         "t1",
         "drust_abc",
@@ -17,9 +15,11 @@ async fn writes_jsonl_and_rolls_by_date() {
         5001,
         "QUERY_TIMEOUT",
         "timed out",
-    ))
-    .await
-    .unwrap();
+    ));
+    // Close the channel so the writer drains and exits before we read.
+    drop(log);
+    handle.join().await;
+
     let files: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(Result::ok)

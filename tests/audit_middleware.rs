@@ -52,8 +52,9 @@ async fn app_with_audit(
     (app, tok, dir, audit_dir)
 }
 
-/// The audit append runs in a `tokio::spawn`, so the JSONL file may not
-/// exist the instant the response returns. Poll briefly.
+/// The audit append goes through an mpsc to a dedicated writer task,
+/// so the JSONL file may not exist the instant the response returns.
+/// Poll briefly.
 async fn read_audit_lines(dir: &StdPath) -> Vec<serde_json::Value> {
     for _ in 0..50 {
         if dir.exists() {

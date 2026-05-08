@@ -128,7 +128,8 @@ async fn main() -> anyhow::Result<()> {
     let _cleanup_handle = limiter.clone().spawn_cleanup(Duration::from_secs(
         cfg.rate_limit_cleanup_interval_secs,
     ));
-    let audit = Arc::new(AuditLog::new(cfg.log_dir.clone()));
+    let (audit_inner, audit_handle) = AuditLog::start(cfg.log_dir.clone());
+    let audit = Arc::new(audit_inner);
     let tenant_files_state = garage.as_ref().map(|g| TenantFilesState {
         garage: Some(g.clone()),
         data_root: cfg.data_dir.clone(),
@@ -143,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
             meta: meta.clone(),
             registry: tenants.clone(),
             limiter,
-            audit,
+            audit: audit.clone(),
         },
         bus: bus.clone(),
         mcp: mcp_http,
@@ -159,6 +160,36 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     tracing::info!(addr = %cfg.bind, "drust listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!("drust http server stopped; draining audit queue");
+    // axum::serve has dropped its Service, so all the Arc<AuditLog>
+    // clones threaded into request state are gone. Drop our local Arc
+    // to release the last sender; the writer's rx.recv() will then
+    // return None and drain the remaining queue before exiting.
+    drop(audit);
+    audit_handle.join().await;
+    tracing::info!("audit drain complete; exit");
     Ok(())
+}
+
+/// Graceful-shutdown trigger. Resolves on SIGINT (Ctrl-C) or SIGTERM
+/// (systemd `stop`). Without this, axum::serve runs forever and
+/// requests/audit lines mid-flight on shutdown are dropped.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let term = async {
+        if let Ok(mut s) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            s.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! { _ = ctrl_c => (), _ = term => () }
 }
