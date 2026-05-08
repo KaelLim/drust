@@ -12,18 +12,16 @@ fn bucket_for_admin_public() {
 fn bucket_for_admin_private() {
     assert_eq!(
         bucket_for_upload(&Owner::Admin, Visibility::Private),
-        "admin-private"
+        "private"
     );
 }
 
 #[test]
 fn bucket_for_tenant() {
+    // bucket_for_upload ignores Owner — tenant ownership is in the key prefix.
     let o = Owner::Tenant("acme".into());
-    assert_eq!(bucket_for_upload(&o, Visibility::Public), "tenant-acme-pub");
-    assert_eq!(
-        bucket_for_upload(&o, Visibility::Private),
-        "tenant-acme-prv"
-    );
+    assert_eq!(bucket_for_upload(&o, Visibility::Public), "public");
+    assert_eq!(bucket_for_upload(&o, Visibility::Private), "private");
 }
 
 #[test]
@@ -40,7 +38,7 @@ fn build_public_url_tenant() {
     let b = "https://tool.example";
     assert_eq!(
         build_public_url(b, &Owner::Tenant("acme".into()), Visibility::Public, "abc"),
-        "https://tool.example/t-public/acme/abc"
+        "https://tool.example/public/acme/abc"
     );
 }
 
