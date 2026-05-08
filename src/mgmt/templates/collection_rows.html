@@ -82,6 +82,66 @@
             access, revoke the anon token entirely.
           </div>
         </div>
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-head">
+            <span>indexes <span class="count">· {{ indices.len() }} defined</span></span>
+          </div>
+          <table class="data" style="width:100%;">
+            <thead>
+              <tr>
+                <th>name</th>
+                <th>fields</th>
+                <th style="width:70px;">unique</th>
+                <th style="width:60px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for idx in indices %}
+              <tr>
+                <td><code>{{ idx.name }}</code></td>
+                <td>{% for f in idx.fields %}<code>{{ f }}</code>{% if !loop.last %},&nbsp;{% endif %}{% endfor %}</td>
+                <td>{% if idx.unique %}<span class="chip ok"><i class="dot"></i>yes</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
+                <td>
+                  <button type="button"
+                          class="btn btn-sm btn-ghost drop-idx-btn"
+                          data-idx-name="{{ idx.name }}">drop</button>
+                </td>
+              </tr>
+              {% endfor %}
+              {% if indices.is_empty() %}
+              <tr>
+                <td colspan="4" style="text-align:center;color:var(--muted);padding:14px;">
+                  No indexes yet
+                </td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+          <div style="padding:12px 16px;border-top:1px solid var(--line);">
+            <form id="create-idx-form" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+              <label style="display:flex;flex-direction:column;gap:4px;font-size:13px;">
+                <span class="muted">fields (Ctrl+click for multi)</span>
+                <select name="fields" multiple size="4" class="select" style="min-width:160px;">
+                  {% for f in fields %}
+                  <option value="{{ f.name }}">{{ f.name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                <label class="check">
+                  <input type="checkbox" name="unique">
+                  <span>unique</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" name="force">
+                  <span>force (skip large-table guard)</span>
+                </label>
+              </div>
+              <button class="btn btn-primary btn-sm" type="submit">create index</button>
+            </form>
+            <pre id="create-idx-output" style="margin-top:8px;color:#c00;font-size:12px;white-space:pre-wrap;display:none;"></pre>
+          </div>
+        </div>
         <div class="card">
           <div class="card-head">
             <span>schema <span class="count">· {{ fields.len() }} fields</span></span>
@@ -109,6 +169,63 @@
             </tbody>
           </table>
         </div>
+        <script>
+(function() {
+  var tenantId = '{{ tenant_id }}';
+  var collName = '{{ coll_name }}';
+
+  document.querySelectorAll('.drop-idx-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      if (!confirm('Drop index ' + btn.dataset.idxName + '?')) return;
+      fetch(
+        '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_indexes/' + btn.dataset.idxName,
+        { method: 'DELETE' }
+      ).then(function(r) {
+        if (r.ok) { location.reload(); }
+        else { r.text().then(function(t) { alert('Drop failed: ' + t); }); }
+      }).catch(function(e) { alert(e); });
+    });
+  });
+
+  var form = document.getElementById('create-idx-form');
+  var out  = document.getElementById('create-idx-output');
+  if (form) {
+    form.addEventListener('submit', function(e) {
+      e.preventDefault();
+      var fd = new FormData(form);
+      var fields = fd.getAll('fields');
+      if (fields.length === 0) {
+        out.textContent = 'Select at least one field.';
+        out.style.display = '';
+        return;
+      }
+      var unique = fd.has('unique');
+      var force  = fd.has('force');
+      out.textContent = '';
+      out.style.display = 'none';
+      fetch(
+        '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_indexes',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ fields: fields, unique: unique, force: force })
+        }
+      ).then(function(r) {
+        if (r.ok) { location.reload(); }
+        else {
+          r.json().catch(function() { return {}; }).then(function(j) {
+            out.textContent = (j.error_code || 'ERROR') + ': ' + (j.message || r.statusText);
+            out.style.display = '';
+          });
+        }
+      }).catch(function(err) {
+        out.textContent = String(err);
+        out.style.display = '';
+      });
+    });
+  }
+})();
+        </script>
         {% else %}
         <div class="card">
           <form method="get" class="toolbar">

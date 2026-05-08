@@ -3,7 +3,7 @@ use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{
-    Collection, CollectionSchema, Field, describe_collection, list_collections,
+    Collection, CollectionSchema, Field, IndexInfo, describe_collection, list_collections,
 };
 use crate::storage::tenant_db::{open_read, open_write};
 use askama::Template;
@@ -51,6 +51,8 @@ struct RowsPage {
     /// Pairs of `(verb, currently_enabled)` for the four DML verbs in
     /// canonical order. Drives the checkbox row in the Schema tab editor.
     anon_cap_choices: Vec<(&'static str, bool)>,
+    /// Index list for the Schema tab's Indexes section.
+    indices: Vec<IndexInfo>,
     version: &'static str,
 }
 
@@ -353,6 +355,7 @@ pub async fn collection_rows_page(
             coll_name,
             collections,
             fields: schema.fields,
+            indices: schema.indices,
             column_names,
             rows,
             total_rows: total,
