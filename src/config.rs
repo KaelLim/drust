@@ -39,6 +39,12 @@ pub struct Config {
     /// Each entry must be a full origin like `https://app.example.com`
     /// — no trailing slash, no path.
     pub cors_origins: Vec<String>,
+    /// Row count above which index creation is considered "large table" and
+    /// may be guarded (e.g. background-threaded, warned, or refused in
+    /// certain contexts). Parsed from `DRUST_INDEX_LARGE_TABLE_ROWS`;
+    /// defaults to 1 000 000. The guard logic that consumes this lands
+    /// in a later task — this field is plumbing only for now.
+    pub index_large_table_rows: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +160,7 @@ impl Config {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default(),
+            index_large_table_rows: parse_num("DRUST_INDEX_LARGE_TABLE_ROWS", 1_000_000)?,
         })
     }
 }
