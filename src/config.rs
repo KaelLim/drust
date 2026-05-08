@@ -25,6 +25,11 @@ pub struct Config {
     pub rate_limit_window_secs: u64,
     pub rate_limit_anon_per_ip: u32,
     pub rate_limit_anon_window_secs: u64,
+    /// Hard upper bound on the rate-limiter's bucket map size. Prevents
+    /// memory DoS from a flood of distinct random bearer tokens.
+    pub rate_limit_map_cap: usize,
+    /// How often the rate-limiter's background cleanup task runs.
+    pub rate_limit_cleanup_interval_secs: u64,
     pub tenant_read_pool_size: usize,
     pub session_ttl_days: u64,
     pub storage: Option<StorageConfig>,
@@ -133,6 +138,11 @@ impl Config {
             rate_limit_window_secs: parse_num("DRUST_RATE_LIMIT_WINDOW_SECS", 10)?,
             rate_limit_anon_per_ip: parse_num("DRUST_RATE_LIMIT_ANON_PER_IP", 30)?,
             rate_limit_anon_window_secs: parse_num("DRUST_RATE_LIMIT_ANON_WINDOW_SECS", 60)?,
+            rate_limit_map_cap: parse_num("DRUST_RATE_LIMIT_MAP_CAP", 10_000)?,
+            rate_limit_cleanup_interval_secs: parse_num(
+                "DRUST_RATE_LIMIT_CLEANUP_INTERVAL_SECS",
+                60,
+            )?,
             tenant_read_pool_size: parse_num("DRUST_TENANT_READ_POOL_SIZE", 4)?,
             session_ttl_days: parse_num("DRUST_SESSION_TTL_DAYS", 7)?,
             storage,
