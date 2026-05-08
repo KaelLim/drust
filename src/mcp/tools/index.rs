@@ -1,5 +1,5 @@
-use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::schema::identifier;
+use crate::storage::pool::SharedTenantPool;
 use crate::storage::schema::{collection_exists, describe_collection, is_protected_collection};
 use serde_json::json;
 use std::time::Instant;
@@ -9,13 +9,13 @@ use std::time::Instant;
 /// Thin wrapper that calls [`create_index_with_threshold`] with the default
 /// 1 000 000-row threshold.
 pub async fn create_index(
-    s: &DrustMcp,
+    pool: &SharedTenantPool,
     collection: &str,
     fields: &[String],
     unique: bool,
     force: bool,
 ) -> anyhow::Result<serde_json::Value> {
-    create_index_with_threshold(s, collection, fields, unique, force, 1_000_000).await
+    create_index_with_threshold(pool, collection, fields, unique, force, 1_000_000).await
 }
 
 /// Create a (possibly unique) index on one or more fields of a collection.
@@ -25,7 +25,7 @@ pub async fn create_index(
 /// On success, returns the new index's identity plus the full updated
 /// `indices` array (mirrors `add_field`'s "post-state" return shape).
 pub async fn create_index_with_threshold(
-    s: &DrustMcp,
+    pool: &SharedTenantPool,
     collection: &str,
     fields: &[String],
     unique: bool,
@@ -51,7 +51,7 @@ pub async fn create_index_with_threshold(
         }
     }
 
-    let pool = s.inner().pool.clone();
+    let pool = pool.clone();
     let coll_for_check = collection.to_string();
     let exists = pool
         .with_reader(move |c| collection_exists(c, &coll_for_check))
@@ -139,7 +139,7 @@ pub async fn create_index_with_threshold(
 }
 
 pub async fn drop_index(
-    s: &DrustMcp,
+    pool: &SharedTenantPool,
     collection: &str,
     name: Option<&str>,
     fields: Option<&[String]>,
@@ -160,7 +160,7 @@ pub async fn drop_index(
         _ => anyhow::bail!("INVALID_PARAMS: provide either name or non-empty fields"),
     };
 
-    let pool = s.inner().pool.clone();
+    let pool = pool.clone();
     let pool2 = pool.clone();
     let name_for_check = resolved_name.clone();
     let exists: i64 = pool
@@ -203,11 +203,11 @@ pub async fn drop_index(
 /// The authorizer is detached after the call so internal pool queries are
 /// unaffected (same pattern as `execute_read_query` in query/executor.rs).
 pub async fn explain_select(
-    s: &DrustMcp,
+    pool: &SharedTenantPool,
     sql: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
-    let pool = s.inner().pool.clone();
+    let pool = pool.clone();
     let plan: Vec<serde_json::Value> = pool
         .with_reader(move |c| {
             crate::query::authorizer::attach_readonly_authorizer(c);

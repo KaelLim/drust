@@ -32,7 +32,7 @@ async fn fixture(tenant: &str) -> (drust::mcp::server::DrustMcp, tempfile::TempD
 async fn explain_returns_plan_for_simple_select() {
     let (svc, _d) = fixture("e1").await;
     let resp = drust::mcp::tools::index::explain_select(
-        &svc,
+        &svc.inner().pool,
         "SELECT * FROM posts WHERE author_id = 1",
     )
     .await
@@ -47,7 +47,7 @@ async fn explain_returns_plan_for_simple_select() {
 async fn explain_blocks_attach_via_authorizer() {
     let (svc, _d) = fixture("e2").await;
     let err = drust::mcp::tools::index::explain_select(
-        &svc,
+        &svc.inner().pool,
         "ATTACH DATABASE 'evil.db' AS evil",
     ).await.unwrap_err();
     let msg = err.to_string();
@@ -59,7 +59,7 @@ async fn explain_blocks_attach_via_authorizer() {
 async fn explain_blocks_sqlite_master_via_authorizer() {
     let (svc, _d) = fixture("e3").await;
     let err = drust::mcp::tools::index::explain_select(
-        &svc,
+        &svc.inner().pool,
         "SELECT name FROM sqlite_master",
     ).await.unwrap_err();
     let msg = err.to_string();
@@ -73,7 +73,7 @@ async fn explain_blocks_sqlite_master_via_authorizer() {
 async fn explain_blocks_non_select_via_authorizer() {
     let (svc, _d) = fixture("e4").await;
     let err = drust::mcp::tools::index::explain_select(
-        &svc,
+        &svc.inner().pool,
         "INSERT INTO posts (author_id) VALUES (1)",
     ).await.unwrap_err();
     let msg = err.to_string();
@@ -97,18 +97,18 @@ async fn explain_shows_using_index_after_create() {
     }
 
     let before = drust::mcp::tools::index::explain_select(
-        &svc,
+        &svc.inner().pool,
         "SELECT * FROM posts WHERE author_id = 1",
     ).await.unwrap();
     let before_detail = before["plan"][0]["detail"].as_str().unwrap();
     assert!(before_detail.contains("SCAN"), "before-index plan should SCAN: {before_detail}");
 
     drust::mcp::tools::index::create_index(
-        &svc, "posts", &["author_id".to_string()], false, false,
+        &svc.inner().pool, "posts", &["author_id".to_string()], false, false,
     ).await.unwrap();
 
     let after = drust::mcp::tools::index::explain_select(
-        &svc,
+        &svc.inner().pool,
         "SELECT * FROM posts WHERE author_id = 1",
     ).await.unwrap();
     let after_detail = after["plan"][0]["detail"].as_str().unwrap();

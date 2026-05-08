@@ -10,7 +10,7 @@ use crate::mcp::http_registry::McpHttpRegistry;
 use crate::mgmt::tenant_files::TenantFilesState;
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
-use axum::routing::{any, get, post};
+use axum::routing::{any, delete, get, post};
 use events::EventBus;
 use router::TenantAuthState;
 use std::sync::Arc;
@@ -158,6 +158,14 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .route(
             "/t/{tenant}/collections/{coll}",
             get(collections::describe_handler),
+        )
+        .route(
+            "/t/{tenant}/collections/{coll}/indexes",
+            post(collections::create_index_handler),
+        )
+        .route(
+            "/t/{tenant}/collections/{coll}/indexes/{name}",
+            delete(collections::drop_index_handler),
         )
         .route(
             "/t/{tenant}/records/{coll}",
