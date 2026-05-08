@@ -113,7 +113,7 @@ async fn anon_token_cannot_create_record() {
         .await
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["error_code"], "WRITE_DENIED");
+    assert_eq!(v["error_code"], "ANON_DENIED");
 }
 
 #[tokio::test]
@@ -136,7 +136,7 @@ async fn anon_token_cannot_update_record() {
         .await
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["error_code"], "WRITE_DENIED");
+    assert_eq!(v["error_code"], "ANON_DENIED");
 }
 
 #[tokio::test]
@@ -158,7 +158,7 @@ async fn anon_token_cannot_delete_record() {
         .await
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["error_code"], "WRITE_DENIED");
+    assert_eq!(v["error_code"], "ANON_DENIED");
 }
 
 #[tokio::test]
