@@ -72,21 +72,26 @@ async fn delete_bucket_sends_id_query() {
 }
 
 #[tokio::test]
-async fn set_website_enabled_posts_true() {
+async fn set_website_enabled_puts_websiteaccess_true() {
     let srv = MockAdminServer::start().await;
     let c = GarageClient::from_mock_admin(&srv.base_url(), "t");
     c.set_website("bkt-7", true).await.unwrap();
     let last = srv.requests().last().unwrap().clone();
-    assert_eq!(last.path, "/v1/bucket/bkt-7/website");
+    assert_eq!(last.method, "PUT");
+    assert_eq!(last.path, "/v1/bucket/bkt-7");
+    assert!(last.body.contains("\"websiteAccess\""));
     assert!(last.body.contains("\"enabled\":true"));
 }
 
 #[tokio::test]
-async fn set_website_disabled_posts_false() {
+async fn set_website_disabled_puts_websiteaccess_false() {
     let srv = MockAdminServer::start().await;
     let c = GarageClient::from_mock_admin(&srv.base_url(), "t");
     c.set_website("bkt-7", false).await.unwrap();
     let last = srv.requests().last().unwrap().clone();
+    assert_eq!(last.method, "PUT");
+    assert_eq!(last.path, "/v1/bucket/bkt-7");
+    assert!(last.body.contains("\"websiteAccess\""));
     assert!(last.body.contains("\"enabled\":false"));
 }
 
