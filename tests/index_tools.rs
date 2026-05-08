@@ -89,16 +89,3 @@ async fn creates_composite_index_on_two_fields() {
     assert_eq!(idx["fields"], serde_json::json!(["author_id", "day_number"]));
     assert_eq!(idx["unique"], false);
 }
-
-#[test]
-fn auto_name_format_matches_spec() {
-    use drust::mcp::tools::index::derive_index_name;
-    assert_eq!(
-        derive_index_name("check_ins", &["user_id".into(), "day_number".into()]),
-        "idx_check_ins_user_id_day_number"
-    );
-    assert_eq!(
-        derive_index_name("posts", &["slug".into()]),
-        "idx_posts_slug"
-    );
-}

@@ -77,7 +77,7 @@ pub async fn create_index(
     }))
 }
 
-pub fn derive_index_name(collection: &str, fields: &[String]) -> String {
+pub(crate) fn derive_index_name(collection: &str, fields: &[String]) -> String {
     let mut s = String::from("idx_");
     s.push_str(collection);
     for f in fields {
@@ -85,4 +85,21 @@ pub fn derive_index_name(collection: &str, fields: &[String]) -> String {
         s.push_str(f);
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_name_format_matches_spec() {
+        assert_eq!(
+            derive_index_name("check_ins", &["user_id".into(), "day_number".into()]),
+            "idx_check_ins_user_id_day_number"
+        );
+        assert_eq!(
+            derive_index_name("posts", &["slug".into()]),
+            "idx_posts_slug"
+        );
+    }
 }
