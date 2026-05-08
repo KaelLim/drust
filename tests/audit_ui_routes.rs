@@ -26,6 +26,11 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, tempfile::TempDir)
     .unwrap();
     // Initialise its data.sqlite so the sidebar context loader doesn't fail.
     let _ = drust::storage::tenant_db::open_write(&data_dir, "acme").unwrap();
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2));
+    let bus = drust::tenant::events::EventBus::new();
+    let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
+        drust::mcp::server::McpRegistry::new(tenants.clone()),
+    )));
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
         session_ttl_days: 7,
@@ -36,7 +41,9 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, tempfile::TempDir)
         disk_min_free_pct: 20,
         log_dir,
         url_sign_secret: Arc::new([0u8; 32]),
-        tenants: Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2)),
+        tenants,
+        mcp,
+        bus,
     };
     let router = state.with_data_dir(data_dir);
     (router, dir)

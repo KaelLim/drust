@@ -28,6 +28,12 @@ pub struct TenantsState {
     /// to invalidate the cache so REST/MCP requests pick up the change
     /// on the very next call.
     pub tenants: Arc<crate::storage::pool::TenantRegistry>,
+    /// Per-tenant MCP service registry. Used by soft_delete_tenant to
+    /// evict the cached `DrustMcpService` so in-flight sessions release.
+    pub mcp: Arc<crate::mcp::http_registry::McpHttpRegistry>,
+    /// SSE broadcast channels. Used by soft_delete_tenant to drop every
+    /// channel keyed on the tenant.
+    pub bus: crate::tenant::events::EventBus,
     /// Directory containing `audit-YYYY-MM-DD.jsonl` files. Sourced from
     /// `$DRUST_LOG_DIR` at boot; consumed by the admin audit UI handlers
     /// mounted under tenants_router.
@@ -394,6 +400,13 @@ pub async fn soft_delete_tenant(
             let _ = std::fs::rename(&src, &dst);
         }
     }
+    // Eviction order matters: pools first (release rusqlite Connection FDs
+    // on the rename target so the inode + disk space release immediately),
+    // then MCP cache (drops its Arc<TenantPool> clones + session state),
+    // then SSE channels (subscribers receive Closed on next recv).
+    state.tenants.evict(&id);
+    state.mcp.evict(&id);
+    state.bus.evict_tenant(&id);
     StatusCode::NO_CONTENT.into_response()
 }
 

@@ -101,4 +101,9 @@ impl TenantRegistry {
     pub fn evict(&self, tenant_id: &str) {
         self.pools.remove(tenant_id);
     }
+
+    /// How many tenant pools are currently cached. Test/observability hook.
+    pub fn cached_count(&self) -> usize {
+        self.pools.len()
+    }
 }

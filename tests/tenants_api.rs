@@ -14,6 +14,14 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
     let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
     let tok = create_session(&mut conn, 1, 3600).unwrap();
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
+    let bus = drust::tenant::events::EventBus::new();
+    let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
+        drust::mcp::server::McpRegistry::new(tenants.clone()),
+    )));
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
         session_ttl_days: 7,
@@ -24,10 +32,9 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
         disk_min_free_pct: 20,
         log_dir: dir.path().join("audit"),
         url_sign_secret: Arc::new([0u8; 32]),
-        tenants: Arc::new(drust::storage::pool::TenantRegistry::new(
-            data_dir.clone(),
-            2,
-        )),
+        tenants,
+        mcp,
+        bus,
     };
     (state.with_data_dir(data_dir.clone()), tok, dir)
 }
@@ -95,4 +102,75 @@ async fn soft_delete_moves_to_trash() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+}
+
+/// Regression test for the soft-delete eviction sweep. Without this,
+/// TenantRegistry / McpHttpRegistry / EventBus would each retain Arc
+/// clones of the deleted tenant's state until process restart — pinning
+/// rusqlite Connection FDs against the renamed-to-_trash tenant dir,
+/// keeping MCP sessions alive, and leaking SSE broadcast channels.
+#[tokio::test]
+async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
+    bootstrap_admin(&mut conn, "root", "pw").unwrap();
+    let tok = create_session(&mut conn, 1, 3600).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES ('blog', 'Blog')",
+        [],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data_dir, "blog").unwrap();
+
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
+    let bus = drust::tenant::events::EventBus::new();
+    let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
+        drust::mcp::server::McpRegistry::new(tenants.clone()),
+    )));
+
+    // Populate all three caches.
+    let _ = tenants.get_or_open("blog").unwrap();
+    let _ = mcp.get_or_create("blog").await.unwrap();
+    let _rx = bus.subscribe("blog", "items");
+    assert_eq!(tenants.cached_count(), 1);
+    assert_eq!(mcp.cached_count(), 1);
+    assert_eq!(bus.channel_count(), 1);
+
+    let state = MgmtState {
+        meta: Arc::new(Mutex::new(conn)),
+        session_ttl_days: 7,
+        garage: None,
+        public_base_url: "http://localhost:8793".to_string(),
+        max_upload_bytes: 52_428_800,
+        garage_client_key_id: String::new(),
+        disk_min_free_pct: 20,
+        log_dir: dir.path().join("audit"),
+        url_sign_secret: Arc::new([0u8; 32]),
+        tenants: tenants.clone(),
+        mcp: mcp.clone(),
+        bus: bus.clone(),
+    };
+    let app = state.with_data_dir(data_dir);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/admin/api/tenants/blog")
+                .header(header::COOKIE, format!("drust_session={tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // All three caches must be empty after soft-delete.
+    assert_eq!(tenants.cached_count(), 0, "tenant pool not evicted");
+    assert_eq!(mcp.cached_count(), 0, "mcp service not evicted");
+    assert_eq!(bus.channel_count(), 0, "sse channel not evicted");
 }
