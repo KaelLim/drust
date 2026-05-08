@@ -161,3 +161,50 @@ async fn strips_tenant_prefix_from_op_path() {
         "op should not contain the tenant-id segment, got {op:?}"
     );
 }
+
+#[tokio::test]
+async fn create_index_writes_audit_with_extra_fields() {
+    let (app, tok, dir, audit_dir) = app_with_audit("ax1").await;
+
+    // Seed a `posts` table with an `author_id INTEGER` field directly via pool.
+    let pool = helpers::grab_pool("ax1", &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                author_id INTEGER
+            );",
+        )
+    })
+    .await
+    .unwrap();
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/t/ax1/collections/posts/indexes")
+                .header("authorization", format!("Bearer {tok}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"fields":["author_id"]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let lines = read_audit_lines(&audit_dir).await;
+    let line = lines
+        .iter()
+        .find(|l| l["op"] == "POST /collections/posts/indexes")
+        .expect("no audit entry for POST /collections/posts/indexes");
+    assert_eq!(line["status"], "ok");
+    assert_eq!(line["index_name"], "idx_posts_author_id");
+    assert_eq!(line["index_fields"], serde_json::json!(["author_id"]));
+    assert!(
+        line["row_count"].is_number(),
+        "row_count should be a number, got {:?}",
+        line["row_count"]
+    );
+    assert_eq!(line["force_used"], false);
+}

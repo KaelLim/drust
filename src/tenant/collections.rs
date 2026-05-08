@@ -58,8 +58,15 @@ pub async fn create_index_handler(
     .await
     {
         Ok(v) => {
-            let mut r = Json(v).into_response();
-            *r.status_mut() = StatusCode::CREATED;
+            let extras = serde_json::json!({
+                "index_name":   v["name"].clone(),
+                "index_fields": &body.fields,
+                "row_count":    v["row_count_at_build"].clone(),
+                "force_used":   body.force.unwrap_or(false),
+            });
+            let mut r = (StatusCode::CREATED, axum::Json(v)).into_response();
+            r.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(extras));
             r
         }
         Err(e) => map_index_error(e),
@@ -75,7 +82,13 @@ pub async fn drop_index_handler(
     }
     // REST drop is name-only; field-based resolution is MCP-only.
     match crate::mcp::tools::index::drop_index(&t.pool, &_coll, Some(&name), None).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => {
+            let extras = serde_json::json!({ "index_name": &name });
+            let mut r = axum::Json(v).into_response();
+            r.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(extras));
+            r
+        }
         Err(e) => map_index_error(e),
     }
 }
