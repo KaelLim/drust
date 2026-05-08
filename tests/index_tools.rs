@@ -196,3 +196,52 @@ async fn duplicate_index_name_returns_409() {
         "expected INDEX_EXISTS-style error, got: {msg}"
     );
 }
+
+#[tokio::test]
+async fn creates_unique_index_succeeds_when_data_unique() {
+    let (svc, _d) = fixture("t9").await;
+    // Insert two distinct rows.
+    drust::mcp::tools::write::insert_record(&svc, "posts", serde_json::json!({"author_id": 1}))
+        .await
+        .unwrap();
+    drust::mcp::tools::write::insert_record(&svc, "posts", serde_json::json!({"author_id": 2}))
+        .await
+        .unwrap();
+    let resp = drust::mcp::tools::index::create_index(
+        &svc,
+        "posts",
+        &["author_id".to_string()],
+        true,  // unique
+        false,
+    )
+    .await
+    .unwrap();
+    let idx = resp["indices"].as_array().unwrap().iter()
+        .find(|i| i["name"] == "idx_posts_author_id").unwrap();
+    assert_eq!(idx["unique"], true);
+}
+
+#[tokio::test]
+async fn unique_index_on_duplicate_data_returns_unique_violation() {
+    let (svc, _d) = fixture("t10").await;
+    drust::mcp::tools::write::insert_record(&svc, "posts", serde_json::json!({"author_id": 1}))
+        .await
+        .unwrap();
+    drust::mcp::tools::write::insert_record(&svc, "posts", serde_json::json!({"author_id": 1}))
+        .await
+        .unwrap();
+    let err = drust::mcp::tools::index::create_index(
+        &svc,
+        "posts",
+        &["author_id".to_string()],
+        true,
+        false,
+    )
+    .await
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("UNIQUE") || msg.contains("unique") || msg.contains("duplicate"),
+        "expected UNIQUE_VIOLATION-style error, got: {msg}"
+    );
+}
