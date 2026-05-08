@@ -158,6 +158,11 @@ pub async fn bearer_auth_layer(
         .unwrap_or(&path_for_audit);
     let op = format!("{method_for_audit} {op_path}");
     let status = resp.status();
+    // Read handler-supplied extras BEFORE consuming `resp`.
+    let extra: Option<crate::safety::audit::AuditExtra> = resp
+        .extensions()
+        .get::<crate::safety::audit::AuditExtra>()
+        .cloned();
     let entry = if status.is_success() || status.is_redirection() {
         AuditEntry::success(&tenant_for_audit, &hint_for_audit, &op, duration_ms)
     } else {
@@ -169,6 +174,11 @@ pub async fn bearer_auth_layer(
             &format!("HTTP_{}", status.as_u16()),
             "",
         )
+    };
+    let entry = if let Some(extra) = extra {
+        entry.with_extra(extra.0)
+    } else {
+        entry
     };
     audit_sink.append(entry);
     resp

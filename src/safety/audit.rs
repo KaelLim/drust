@@ -4,6 +4,13 @@ use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
+/// Cloneable carrier for handler-supplied audit metadata. Index DDL
+/// handlers attach this via `Response.extensions_mut().insert(AuditExtra(...))`,
+/// which the audit-emit point in `bearer_auth_layer` reads and merges
+/// into the entry via `with_extra`.
+#[derive(Clone, Debug)]
+pub struct AuditExtra(pub serde_json::Value);
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuditEntry {
     pub ts: String,
