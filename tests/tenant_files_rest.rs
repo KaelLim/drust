@@ -73,6 +73,7 @@ async fn stream_bytes_returns_404_when_row_missing() {
         disk_min_free_pct: 20,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     // Call stream_bytes with a key that doesn't exist in the DB.
@@ -162,6 +163,7 @@ async fn sign_url_returns_400_for_zero_ttl() {
         disk_min_free_pct: 20,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let req = SignRequest {
@@ -222,6 +224,7 @@ async fn sign_url_returns_400_for_ttl_over_7days() {
         disk_min_free_pct: 20,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let req = SignRequest {
@@ -290,6 +293,7 @@ async fn sign_url_private_row_returns_signed_url() {
         disk_min_free_pct: 20,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let req = SignRequest {
@@ -371,6 +375,7 @@ async fn sign_url_public_row_returns_stable_url() {
         disk_min_free_pct: 20,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://example.com".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let req = SignRequest {
@@ -447,6 +452,7 @@ async fn stream_bytes_returns_not_found_when_row_absent_with_garage() {
         disk_min_free_pct: 20,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let result = stream_bytes(
@@ -512,6 +518,7 @@ async fn upload_rejects_oversize_via_content_length_pre_check() {
         disk_min_free_pct: 0, // skip disk check
         max_upload_bytes: 1024,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     // Build a real router and send a POST request with Content-Length: 9999
@@ -555,6 +562,7 @@ async fn list_returns_empty_for_fresh_tenant() {
         disk_min_free_pct: 0,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let response = list(State(state), Path(tenant_id.to_string())).await;
@@ -586,6 +594,7 @@ async fn get_one_returns_404_for_missing_key() {
         disk_min_free_pct: 0,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let response = get_one(
@@ -624,6 +633,7 @@ async fn delete_one_returns_404_for_missing_key() {
         disk_min_free_pct: 0,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let response = delete_one(
@@ -672,6 +682,7 @@ async fn get_one_returns_row_when_key_exists() {
         disk_min_free_pct: 0,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let response = get_one(
@@ -723,6 +734,7 @@ async fn list_returns_rows_when_files_exist() {
         disk_min_free_pct: 0,
         max_upload_bytes: 52_428_800,
         public_base_url: "http://localhost".into(),
+        url_sign_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let response = list(State(state), Path(tenant_id.to_string())).await;
