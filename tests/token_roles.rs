@@ -198,6 +198,67 @@ async fn service_token_can_create_record() {
 }
 
 #[tokio::test]
+async fn anon_get_single_row_respects_empty_anon_caps() {
+    use drust::storage::schema::write_anon_caps;
+    use std::collections::BTreeSet;
+    let (app, anon, _svc, dir) = tenant_with_two_tokens("blog").await;
+    // Lock the collection: anon_caps = [] (no DML for anon).
+    let pool = grab_pool("blog", &dir).await;
+    pool.with_writer(|c| write_anon_caps(c, "items", &BTreeSet::new()))
+        .await
+        .unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/t/blog/records/items/1")
+                .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "ANON_DENIED");
+}
+
+#[tokio::test]
+async fn records_api_blocks_system_collections_even_for_service() {
+    let (app, _anon, svc, dir) = tenant_with_two_tokens("blog").await;
+    // Service can write to a _system_* table directly via the pool, but
+    // accessing it through the records API must 404 — _system_* is not
+    // intended to be exposed via /records/* under any role.
+    let pool = grab_pool("blog", &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE _system_secret (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                v TEXT NOT NULL
+            );
+            INSERT INTO _system_secret (v) VALUES ('shh');",
+        )
+    })
+    .await
+    .unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/t/blog/records/_system_secret/1")
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn migration_preserves_existing_tokens_as_service() {
     // Simulate a v0.1.0 DB by opening meta.sqlite, dropping the role column
     // (SQLite 3.35+), reinserting a token without role, then reopening —
