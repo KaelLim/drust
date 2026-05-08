@@ -197,6 +197,31 @@ pub async fn drop_index(
     }))
 }
 
+/// Run `EXPLAIN QUERY PLAN <sql>` under the read connection.
+/// The read connection's authorizer applies during `prepare()`, so
+/// ATTACH / sqlite_master / non-SELECT all surface as SQL_NOT_ALLOWED.
+pub async fn explain_select(
+    s: &DrustMcp,
+    sql: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
+    let pool = s.inner().pool.clone();
+    let plan: Vec<serde_json::Value> = pool
+        .with_reader(move |c| {
+            let mut stmt = c.prepare(&plan_sql)?;
+            // EXPLAIN QUERY PLAN columns: id, parent, notused, detail.
+            let rows = stmt.query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                let parent: i64 = r.get(1)?;
+                let detail: String = r.get(3)?;
+                Ok(json!({ "id": id, "parent": parent, "detail": detail }))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .await?;
+    Ok(json!({ "plan": plan }))
+}
+
 pub(crate) fn derive_index_name(collection: &str, fields: &[String]) -> String {
     let mut s = String::from("idx_");
     s.push_str(collection);
