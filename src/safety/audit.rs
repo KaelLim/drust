@@ -22,6 +22,10 @@ pub struct AuditEntry {
     pub error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// Extra top-level keys for op-specific metadata (index_name, row_count, etc.).
+    /// Flattened on serialisation; empty map is skipped.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl AuditEntry {
@@ -38,6 +42,7 @@ impl AuditEntry {
             record_id: None,
             error_code: None,
             error_message: None,
+            extra: serde_json::Map::new(),
         }
     }
     pub fn failure(
@@ -60,6 +65,7 @@ impl AuditEntry {
             record_id: None,
             error_code: Some(code.to_string()),
             error_message: Some(msg.to_string()),
+            extra: serde_json::Map::new(),
         }
     }
     pub fn with_collection(mut self, c: &str) -> Self {
@@ -72,6 +78,12 @@ impl AuditEntry {
     }
     pub fn with_record_id(mut self, id: i64) -> Self {
         self.record_id = Some(id);
+        self
+    }
+    pub fn with_extra(mut self, value: serde_json::Value) -> Self {
+        if let serde_json::Value::Object(m) = value {
+            self.extra.extend(m);
+        }
         self
     }
 }
