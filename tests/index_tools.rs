@@ -32,7 +32,7 @@ async fn fixture(tenant: &str) -> (drust::mcp::server::DrustMcp, tempfile::TempD
 async fn creates_simple_index_on_one_field() {
     let (svc, _d) = fixture("t1").await;
     let resp = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         false, // unique
@@ -70,7 +70,7 @@ async fn creates_composite_index_on_two_fields() {
     .unwrap();
 
     let resp = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string(), "day_number".to_string()],
         false,
@@ -94,7 +94,7 @@ async fn creates_composite_index_on_two_fields() {
 async fn unknown_collection_returns_404() {
     let (svc, _d) = fixture("t3").await;
     let err = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "nonexistent",
         &["x".to_string()],
         false,
@@ -109,7 +109,7 @@ async fn unknown_collection_returns_404() {
 async fn unknown_field_returns_field_not_found() {
     let (svc, _d) = fixture("t4").await;
     let err = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["does_not_exist".to_string()],
         false,
@@ -126,7 +126,7 @@ async fn system_collection_returns_404() {
     let (svc, _d) = fixture("t5").await;
     // _system_* prefix protection fires regardless of whether the table actually exists.
     let err = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "_system_files",
         &["k".to_string()],
         false,
@@ -141,7 +141,7 @@ async fn system_collection_returns_404() {
 async fn empty_fields_returns_invalid_params() {
     let (svc, _d) = fixture("t6").await;
     let err = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &[],
         false,
@@ -156,7 +156,7 @@ async fn empty_fields_returns_invalid_params() {
 async fn duplicate_fields_returns_invalid_params() {
     let (svc, _d) = fixture("t7").await;
     let err = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string(), "author_id".to_string()],
         false,
@@ -171,7 +171,7 @@ async fn duplicate_fields_returns_invalid_params() {
 async fn duplicate_index_name_returns_409() {
     let (svc, _d) = fixture("t8").await;
     drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         false,
@@ -182,7 +182,7 @@ async fn duplicate_index_name_returns_409() {
 
     // Re-create with the same fields → same auto-name → already exists.
     let err = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         false,
@@ -208,7 +208,7 @@ async fn creates_unique_index_succeeds_when_data_unique() {
         .await
         .unwrap();
     let resp = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         true,  // unique
@@ -231,7 +231,7 @@ async fn unique_index_on_duplicate_data_returns_unique_violation() {
         .await
         .unwrap();
     let err = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         true,
@@ -260,7 +260,7 @@ async fn large_table_without_force_returns_409() {
         .unwrap();
     }
     let err = drust::mcp::tools::index::create_index_with_threshold(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         false, // unique
@@ -286,7 +286,7 @@ async fn large_table_with_force_proceeds() {
         .unwrap();
     }
     let resp = drust::mcp::tools::index::create_index_with_threshold(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         false,
@@ -302,7 +302,7 @@ async fn large_table_with_force_proceeds() {
 async fn drop_by_name_succeeds() {
     let (svc, _d) = fixture("t13").await;
     drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         false,
@@ -312,7 +312,7 @@ async fn drop_by_name_succeeds() {
     .unwrap();
 
     let resp = drust::mcp::tools::index::drop_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         Some("idx_posts_author_id"),
         None,
@@ -330,7 +330,7 @@ async fn drop_by_name_succeeds() {
 async fn drop_unknown_index_returns_404() {
     let (svc, _d) = fixture("t14").await;
     let err = drust::mcp::tools::index::drop_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         Some("idx_does_not_exist"),
         None,
@@ -352,13 +352,13 @@ async fn drop_by_fields_resolves_to_same_index() {
         },
     ).await.unwrap();
     drust::mcp::tools::index::create_index(
-        &svc, "posts",
+        &svc.inner().pool, "posts",
         &["author_id".to_string(), "day_number".to_string()],
         false, false,
     ).await.unwrap();
 
     let resp = drust::mcp::tools::index::drop_index(
-        &svc, "posts",
+        &svc.inner().pool, "posts",
         None,
         Some(&["author_id".to_string(), "day_number".to_string()]),
     ).await.unwrap();
@@ -368,7 +368,7 @@ async fn drop_by_fields_resolves_to_same_index() {
 #[tokio::test]
 async fn drop_with_neither_name_nor_fields_returns_invalid_params() {
     let (svc, _d) = fixture("t16").await;
-    let err = drust::mcp::tools::index::drop_index(&svc, "posts", None, None)
+    let err = drust::mcp::tools::index::drop_index(&svc.inner().pool, "posts", None, None)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("INVALID_PARAMS"));
@@ -378,15 +378,117 @@ async fn drop_with_neither_name_nor_fields_returns_invalid_params() {
 async fn drop_then_recreate_works() {
     let (svc, _d) = fixture("t17").await;
     drust::mcp::tools::index::create_index(
-        &svc, "posts", &["author_id".to_string()], false, false
+        &svc.inner().pool, "posts", &["author_id".to_string()], false, false
     ).await.unwrap();
     drust::mcp::tools::index::drop_index(
-        &svc, "posts", Some("idx_posts_author_id"), None
+        &svc.inner().pool, "posts", Some("idx_posts_author_id"), None
     ).await.unwrap();
     let resp = drust::mcp::tools::index::create_index(
-        &svc, "posts", &["author_id".to_string()], false, false
+        &svc.inner().pool, "posts", &["author_id".to_string()], false, false
     ).await.unwrap();
     assert_eq!(resp["ok"], true);
+}
+
+// ── REST endpoint tests ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn rest_post_indexes_creates_and_returns_201() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use tower::ServiceExt;
+
+    let (app, tok, dir) = helpers::spin_up_tenant_with_role("rt1", "service").await;
+    helpers::seed_posts_collection(&app, &tok, "rt1", &dir).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/t/rt1/collections/posts/indexes")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"fields":["author_id"]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["name"], "idx_posts_author_id");
+}
+
+#[tokio::test]
+async fn rest_delete_index_returns_200() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use tower::ServiceExt;
+
+    let (app, tok, dir) = helpers::spin_up_tenant_with_role("rt1b", "service").await;
+    helpers::seed_posts_collection(&app, &tok, "rt1b", &dir).await;
+
+    // First create an index via REST.
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/t/rt1b/collections/posts/indexes")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"fields":["author_id"]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Then delete it by name.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/t/rt1b/collections/posts/indexes/idx_posts_author_id")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dropped_name"], "idx_posts_author_id");
+}
+
+#[tokio::test]
+async fn rest_anon_token_cannot_create_index() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use tower::ServiceExt;
+
+    let (app, anon_tok, dir) = helpers::spin_up_tenant_with_role("rt2", "anon").await;
+    helpers::seed_posts_collection(&app, &anon_tok, "rt2", &dir).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/t/rt2/collections/posts/indexes")
+                .header(header::AUTHORIZATION, format!("Bearer {anon_tok}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"fields":["author_id"]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "WRITE_DENIED");
 }
 
 /// Verifies that the `#[tool]` handler entries for create_index and drop_index
@@ -400,7 +502,7 @@ async fn mcp_create_index_tool_works() {
 
     // Exercise create_index — the same function the #[tool] entry delegates to.
     let resp = drust::mcp::tools::index::create_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         Some(false).unwrap_or(false),
@@ -410,7 +512,7 @@ async fn mcp_create_index_tool_works() {
     assert!(resp.is_ok(), "create_index via mcp-layer path failed: {:?}", resp.err());
 
     let drop_resp = drust::mcp::tools::index::drop_index(
-        &svc,
+        &svc.inner().pool,
         "posts",
         Some("idx_posts_author_id"),
         None,

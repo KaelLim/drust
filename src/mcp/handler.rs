@@ -363,7 +363,7 @@ impl DrustMcpService {
         Parameters(CreateIndexArgs { collection, fields, unique, force }): Parameters<CreateIndexArgs>,
     ) -> Result<CallToolResult, McpError> {
         match crate::mcp::tools::index::create_index(
-            &self.state,
+            &self.state.inner().pool,
             &collection,
             &fields,
             unique.unwrap_or(false),
@@ -382,7 +382,7 @@ impl DrustMcpService {
         Parameters(DropIndexArgs { collection, name, fields }): Parameters<DropIndexArgs>,
     ) -> Result<CallToolResult, McpError> {
         match crate::mcp::tools::index::drop_index(
-            &self.state,
+            &self.state.inner().pool,
             &collection,
             name.as_deref(),
             fields.as_deref(),
