@@ -1,8 +1,11 @@
 mod helpers;
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
 use drust::mcp::server::McpRegistry;
 use drust::storage::pool::TenantRegistry;
 use std::sync::Arc;
+use tower::ServiceExt;
 
 async fn fixture(tenant: &str) -> (drust::mcp::server::DrustMcp, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -113,4 +116,31 @@ async fn explain_shows_using_index_after_create() {
     ).await.unwrap();
     let after_detail = after["plan"][0]["detail"].as_str().unwrap();
     assert!(after_detail.contains("USING INDEX"), "after-index plan should USING INDEX: {after_detail}");
+}
+
+#[tokio::test]
+async fn rest_explain_returns_plan() {
+    let (app, tok, d) = helpers::spin_up_tenant_with_role("ex_rest1", "service").await;
+    helpers::seed_posts_collection(&app, &tok, "ex_rest1", &d).await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/t/ex_rest1/query/explain")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"sql":"SELECT * FROM posts WHERE author_id = 1"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(v["plan"].as_array().unwrap().len() >= 1);
 }
