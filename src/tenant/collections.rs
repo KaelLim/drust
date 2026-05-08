@@ -1,6 +1,6 @@
 use crate::storage::schema::{describe_collection, list_collections};
-use crate::tenant::router::{TenantRef, require_service};
-use axum::extract::Path;
+use crate::tenant::router::{TenantAuthState, TenantRef, require_service};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
@@ -41,6 +41,7 @@ pub struct CreateIndexBody {
 }
 
 pub async fn create_index_handler(
+    State(state): State<TenantAuthState>,
     Extension(t): Extension<TenantRef>,
     Path((_tenant, coll)): Path<(String, String)>,
     Json(body): Json<CreateIndexBody>,
@@ -48,12 +49,13 @@ pub async fn create_index_handler(
     if let Err(r) = require_service(&t) {
         return r;
     }
-    match crate::mcp::tools::index::create_index(
+    match crate::mcp::tools::index::create_index_with_threshold(
         &t.pool,
         &coll,
         &body.fields,
         body.unique.unwrap_or(false),
         body.force.unwrap_or(false),
+        state.index_large_table_rows,
     )
     .await
     {

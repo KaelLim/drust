@@ -38,6 +38,10 @@ pub struct TenantsState {
     /// `$DRUST_LOG_DIR` at boot; consumed by the admin audit UI handlers
     /// mounted under tenants_router.
     pub log_dir: PathBuf,
+    /// Row count threshold above which index creation is considered "large
+    /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
+    /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
+    pub index_large_table_rows: u64,
 }
 
 #[derive(Template)]

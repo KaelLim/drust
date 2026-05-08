@@ -41,6 +41,7 @@ async fn app_with_audit(
         registry: tenants.clone(),
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(audit_dir.clone())),
+        index_large_table_rows: 1_000_000,
     };
     let app = build_tenant_router(TenantStack {
         auth: state,

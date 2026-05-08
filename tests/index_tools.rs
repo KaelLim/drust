@@ -491,6 +491,86 @@ async fn rest_anon_token_cannot_create_index() {
     assert_eq!(v["error_code"], "WRITE_DENIED");
 }
 
+/// Regression test: `DRUST_INDEX_LARGE_TABLE_ROWS` (baked into `TenantAuthState`
+/// at app-build time) must reach the REST `create_index_handler` and trigger
+/// LARGE_TABLE when the table exceeds the configured threshold.
+///
+/// Before the config-plumbing fix every entry point called the thin
+/// `create_index()` wrapper which hardcodes 1 000 000; operators setting
+/// `DRUST_INDEX_LARGE_TABLE_ROWS=5` would see the guard silently bypassed.
+#[tokio::test]
+async fn rest_create_index_respects_configured_threshold() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use tower::ServiceExt;
+
+    // threshold=3 means any table with >3 rows triggers LARGE_TABLE.
+    let threshold: u64 = 3;
+    let (app, tok, dir) =
+        helpers::spin_up_tenant_with_threshold("rt_thresh", "service", threshold).await;
+    helpers::seed_posts_collection(&app, &tok, "rt_thresh", &dir).await;
+
+    // Seed 5 rows (> threshold=3).
+    let pool = helpers::grab_pool("rt_thresh", &dir).await;
+    for i in 0..5i64 {
+        pool.with_writer(move |c| {
+            c.execute(
+                "INSERT INTO posts (author_id) VALUES (?1)",
+                rusqlite::params![i],
+            )
+        })
+        .await
+        .unwrap();
+    }
+
+    // Without force=true the REST handler must return 409 LARGE_TABLE.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/t/rt_thresh/collections/posts/indexes")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"fields":["author_id"]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "expected 409 LARGE_TABLE for table with 5 rows and threshold=3"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        v["error_code"], "LARGE_TABLE",
+        "expected LARGE_TABLE error_code, got: {v}"
+    );
+
+    // With force=true the same request must succeed.
+    let resp_forced = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/t/rt_thresh/collections/posts/indexes")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"fields":["author_id"],"force":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp_forced.status(),
+        StatusCode::CREATED,
+        "expected 201 when force=true overrides LARGE_TABLE"
+    );
+}
+
 /// Verifies that the `#[tool]` handler entries for create_index and drop_index
 /// compile and wire through correctly. The handler layer is thin (delegates to
 /// the same underlying functions covered by the tests above), so this test

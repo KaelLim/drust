@@ -25,6 +25,10 @@ pub struct DrustMcpInner {
     pub url_sign_secret: Arc<[u8; 32]>,
     pub meta: Option<Arc<Mutex<Connection>>>,
     pub max_upload_bytes: usize,
+    /// Row count threshold above which index creation is considered "large
+    /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
+    /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
+    pub index_large_table_rows: u64,
 }
 
 /// Newtype so we can hand out `Arc` without exposing the inner struct.
@@ -43,6 +47,7 @@ impl DrustMcp {
         url_sign_secret: Arc<[u8; 32]>,
         meta: Option<Arc<Mutex<Connection>>>,
         max_upload_bytes: usize,
+        index_large_table_rows: u64,
     ) -> Self {
         Self {
             inner: Arc::new(DrustMcpInner {
@@ -54,6 +59,7 @@ impl DrustMcp {
                 url_sign_secret,
                 meta,
                 max_upload_bytes,
+                index_large_table_rows,
             }),
         }
     }
@@ -78,6 +84,9 @@ impl DrustMcp {
     pub fn max_upload_bytes(&self) -> usize {
         self.inner.max_upload_bytes
     }
+    pub fn index_large_table_rows(&self) -> u64 {
+        self.inner.index_large_table_rows
+    }
 }
 
 /// Lazy cache of per-tenant MCP services. Entries are evicted when a tenant is
@@ -92,6 +101,9 @@ pub struct McpRegistry {
     url_sign_secret: Arc<[u8; 32]>,
     meta: Option<Arc<Mutex<Connection>>>,
     max_upload_bytes: usize,
+    /// Row count threshold above which index creation is considered "large
+    /// table". Forwarded to each `DrustMcp` instance on creation.
+    index_large_table_rows: u64,
     services: DashMap<String, DrustMcp>,
 }
 
@@ -105,6 +117,7 @@ impl McpRegistry {
             url_sign_secret: Arc::new([0u8; 32]),
             meta: None,
             max_upload_bytes: 52_428_800,
+            index_large_table_rows: 1_000_000,
             services: DashMap::new(),
         }
     }
@@ -117,6 +130,7 @@ impl McpRegistry {
             url_sign_secret: Arc::new([0u8; 32]),
             meta: None,
             max_upload_bytes: 52_428_800,
+            index_large_table_rows: 1_000_000,
             services: DashMap::new(),
         }
     }
@@ -128,6 +142,7 @@ impl McpRegistry {
         url_sign_secret: Arc<[u8; 32]>,
         meta: Option<Arc<Mutex<Connection>>>,
         max_upload_bytes: usize,
+        index_large_table_rows: u64,
     ) -> Self {
         Self {
             tenants,
@@ -137,6 +152,7 @@ impl McpRegistry {
             url_sign_secret,
             meta,
             max_upload_bytes,
+            index_large_table_rows,
             services: DashMap::new(),
         }
     }
@@ -154,6 +170,7 @@ impl McpRegistry {
             self.url_sign_secret.clone(),
             self.meta.clone(),
             self.max_upload_bytes,
+            self.index_large_table_rows,
         );
         self.services.insert(tenant_id.to_string(), svc.clone());
         Ok(svc)

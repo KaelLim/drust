@@ -101,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
         url_sign_secret.clone(),
         Some(meta.clone()),
         max_upload_bytes,
+        cfg.index_large_table_rows,
     ));
     let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 
@@ -117,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
         tenants: tenants.clone(),
         mcp: mcp_http.clone(),
         bus: bus.clone(),
+        index_large_table_rows: cfg.index_large_table_rows,
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
@@ -145,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
             registry: tenants.clone(),
             limiter,
             audit: audit.clone(),
+            index_large_table_rows: cfg.index_large_table_rows,
         },
         bus: bus.clone(),
         mcp: mcp_http,
