@@ -7,7 +7,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
-    routing::{any, delete, get, post},
+    routing::{any, delete, get, post, put},
 };
 use serde_json::{Value, json};
 use std::{
@@ -50,7 +50,7 @@ impl MockAdminServer {
             .route("/v1/bucket", get(handle_lookup_bucket))
             .route("/v1/bucket/allow", post(handle_allow))
             .route("/v1/bucket/deny", post(handle_deny))
-            .route("/v1/bucket/{id}/website", post(handle_website))
+            .route("/v1/bucket/{id}", put(handle_website))
             .fallback(any(handle_fallback))
             .with_state(state.clone());
 
@@ -285,9 +285,9 @@ async fn handle_website(
     headers: HeaderMap,
     body: String,
 ) -> impl IntoResponse {
-    let path = format!("/v1/bucket/{id}/website");
+    let path = format!("/v1/bucket/{id}");
     if let Some(s) =
-        record_and_maybe_fail(&state, Method::POST, &path, String::new(), headers, body).await
+        record_and_maybe_fail(&state, Method::PUT, &path, String::new(), headers, body).await
     {
         return (s, Json(json!({"error":"forced"}))).into_response();
     }
