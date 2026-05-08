@@ -118,3 +118,30 @@ fn storage_config_loads_disk_min_free_pct_override() {
     let cfg = drust::config::StorageConfig::from_env().unwrap().unwrap();
     assert_eq!(cfg.disk_min_free_pct, 35);
 }
+
+#[test]
+#[serial]
+fn parses_index_large_table_rows_default() {
+    clear_env();
+    unsafe {
+        std::env::set_var("DRUST_DATA_DIR", "/tmp/drust-data");
+        std::env::set_var("DRUST_LOG_DIR", "/tmp/drust-log");
+        std::env::remove_var("DRUST_INDEX_LARGE_TABLE_ROWS");
+    }
+    let cfg = Config::from_env().expect("config parses");
+    assert_eq!(cfg.index_large_table_rows, 1_000_000);
+}
+
+#[test]
+#[serial]
+fn parses_index_large_table_rows_override() {
+    clear_env();
+    unsafe {
+        std::env::set_var("DRUST_DATA_DIR", "/tmp/drust-data");
+        std::env::set_var("DRUST_LOG_DIR", "/tmp/drust-log");
+        std::env::set_var("DRUST_INDEX_LARGE_TABLE_ROWS", "1000");
+    }
+    let cfg = Config::from_env().expect("config parses");
+    assert_eq!(cfg.index_large_table_rows, 1000u64);
+    unsafe { std::env::remove_var("DRUST_INDEX_LARGE_TABLE_ROWS") };
+}
