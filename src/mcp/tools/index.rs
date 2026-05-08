@@ -6,16 +6,31 @@ use std::time::Instant;
 
 /// Create a (possibly unique) index on one or more fields of a collection.
 ///
-/// Auto-names the index `idx_<coll>_<f1>_<f2>_..._<fN>`. Refuses to build
-/// on a collection larger than `large_table_rows` unless `force` is true.
-/// On success, returns the new index's identity plus the full updated
-/// `indices` array (mirrors `add_field`'s "post-state" return shape).
+/// Thin wrapper that calls [`create_index_with_threshold`] with the default
+/// 1 000 000-row threshold.
 pub async fn create_index(
     s: &DrustMcp,
     collection: &str,
     fields: &[String],
     unique: bool,
     force: bool,
+) -> anyhow::Result<serde_json::Value> {
+    create_index_with_threshold(s, collection, fields, unique, force, 1_000_000).await
+}
+
+/// Create a (possibly unique) index on one or more fields of a collection.
+///
+/// Auto-names the index `idx_<coll>_<f1>_<f2>_..._<fN>`. Refuses to build
+/// on a collection larger than `large_table_rows` unless `force` is true.
+/// On success, returns the new index's identity plus the full updated
+/// `indices` array (mirrors `add_field`'s "post-state" return shape).
+pub async fn create_index_with_threshold(
+    s: &DrustMcp,
+    collection: &str,
+    fields: &[String],
+    unique: bool,
+    force: bool,
+    large_table_rows: u64,
 ) -> anyhow::Result<serde_json::Value> {
     identifier(collection)?;
     if is_protected_collection(collection) {
@@ -68,6 +83,23 @@ pub async fn create_index(
         anyhow::bail!("field \"{f}\" not found on collection \"{collection}\"");
     }
 
+    // Row-count guard: refuse to build on a large table unless force=true.
+    let coll_for_count = collection.to_string();
+    let row_count: u64 = pool
+        .with_reader(move |c| {
+            c.query_row(
+                &format!("SELECT COUNT(*) FROM \"{}\"", coll_for_count.replace('"', "\"\"")),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+        })
+        .await? as u64;
+    if row_count > large_table_rows && !force {
+        anyhow::bail!(
+            "LARGE_TABLE: {collection} has {row_count} rows (threshold {large_table_rows}); pass force=true to proceed"
+        );
+    }
+
     let index_name = derive_index_name(collection, fields);
     let cols_clause = fields
         .iter()
@@ -95,16 +127,14 @@ pub async fn create_index(
         .await?
         .ok_or_else(|| anyhow::anyhow!("collection vanished after create_index"))?;
 
-    // suppress unused-variable warning when force is not yet used
-    let _ = force;
-
     Ok(json!({
         "ok": true,
         "collection": collection,
         "name": index_name,
         "indices": schema.indices,
-        "row_count_at_build": schema.row_count,
-        "duration_ms": duration_ms
+        "row_count_at_build": row_count,
+        "duration_ms": duration_ms,
+        "force_used": force
     }))
 }
 
