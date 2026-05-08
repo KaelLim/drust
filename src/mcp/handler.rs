@@ -78,6 +78,25 @@ pub struct DropCollectionArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateIndexArgs {
+    pub collection: String,
+    pub fields: Vec<String>,
+    #[serde(default)]
+    pub unique: Option<bool>,
+    #[serde(default)]
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DropIndexArgs {
+    pub collection: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetAnonCapsArgs {
     pub collection: String,
     /// Subset of `["select", "insert", "update", "delete"]`. Empty array
@@ -328,6 +347,46 @@ impl DrustMcpService {
         Parameters(DropCollectionArgs { collection }): Parameters<DropCollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
         match schema_tools::drop_collection(&self.state, &collection).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Create a non-unique or unique index on one or more fields of a \
+        collection. Speeds up `WHERE field = ?` and `ORDER BY field` queries. \
+        `fields` is a non-empty list of column names (order matters for composite indices). \
+        `unique` defaults to false. \
+        Tables with more than DRUST_INDEX_LARGE_TABLE_ROWS rows return LARGE_TABLE — \
+        pass force=true only after understanding the temporary write lock implication.")]
+    async fn create_index(
+        &self,
+        Parameters(CreateIndexArgs { collection, fields, unique, force }): Parameters<CreateIndexArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::index::create_index(
+            &self.state,
+            &collection,
+            &fields,
+            unique.unwrap_or(false),
+            force.unwrap_or(false),
+        ).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Drop an index by name (use `name`) or by field set (use `fields`). \
+        Exactly one of `name` or `fields` must be provided. \
+        Removes the lookup structure but does NOT touch row data. Irreversible.")]
+    async fn drop_index(
+        &self,
+        Parameters(DropIndexArgs { collection, name, fields }): Parameters<DropIndexArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::index::drop_index(
+            &self.state,
+            &collection,
+            name.as_deref(),
+            fields.as_deref(),
+        ).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -684,11 +743,12 @@ impl ServerHandler for DrustMcpService {
         let base = self.state.public_base_url();
         let instructions = format!(
             "drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.\n\n\
-             21 tools: `list_collections`, `describe_collection`, `sample_rows`, \
+             23 tools: `list_collections`, `describe_collection`, `sample_rows`, \
              `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
-             `drop_collection`, `list_files`, `delete_file`, `get_file_url`, \
-             `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, `call_rpc`.\n\n\
+             `drop_collection`, `create_index`, `drop_index`, `list_files`, `delete_file`, \
+             `get_file_url`, `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, \
+             `call_rpc`.\n\n\
              Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
              tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
              endpoint instead:\n\n  \
