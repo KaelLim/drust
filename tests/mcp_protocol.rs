@@ -62,6 +62,7 @@ async fn mcp_stack(tenant: &str) -> (axum::Router, String, String, tempfile::Tem
         bus: bus.clone(),
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
+        cors_origins: Vec::new(),
     });
     (app, service_tok, anon_tok, dir)
 }
