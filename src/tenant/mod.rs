@@ -195,6 +195,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         )
         .route("/t/{tenant}/query", post(query_endpoint::query_handler))
         .route(
+            "/t/{tenant}/query/explain",
+            post(query_endpoint::explain_handler),
+        )
+        .route(
             "/t/{tenant}/rpc/{name}",
             post(crate::rpc::handler::call_rpc),
         )
