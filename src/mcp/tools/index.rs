@@ -77,7 +77,7 @@ pub async fn create_index(
     }))
 }
 
-pub(crate) fn derive_index_name(collection: &str, fields: &[String]) -> String {
+pub fn derive_index_name(collection: &str, fields: &[String]) -> String {
     let mut s = String::from("idx_");
     s.push_str(collection);
     for f in fields {
