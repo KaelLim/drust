@@ -243,6 +243,7 @@ async fn upload_submit_returns_503_when_garage_none() {
         max_upload_bytes: 1_048_576,
         disk_min_free_pct: 20,
         garage_client_key_id: String::new(),
+        url_sign_secret: Arc::new([0u8; 32]),
     };
 
     // Build a trivial multipart request.
