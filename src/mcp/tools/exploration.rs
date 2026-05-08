@@ -57,3 +57,84 @@ pub async fn count_rows(
         .await?;
     Ok(json!({ "count": n }))
 }
+
+/// Return the calling tenant's identity, both bearer tokens (plaintext),
+/// the relative REST/MCP endpoint paths, and the upload size limit.
+///
+/// MCP is service-only at the auth layer, so the caller already holds
+/// the service token; surfacing it here lets a model that's wired only
+/// to MCP construct curl/HTTP requests for non-MCP-exposed surfaces
+/// (chiefly the multipart file upload endpoint, which deliberately has
+/// no MCP tool).
+///
+/// Tokens minted before v1.1c stored only the hash; the corresponding
+/// `plaintext` field is `null` and the operator must reroll via the
+/// admin UI to recover it.
+pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
+    let inner = s.inner();
+    let tenant_id = inner.tenant_id.clone();
+    let max_upload_bytes = inner.max_upload_bytes;
+    let Some(meta) = inner.meta.as_ref() else {
+        anyhow::bail!("META_UNAVAILABLE: this drust process was started without a meta connection");
+    };
+
+    let conn = meta.lock().await;
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT name, created_at FROM tenants \
+             WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![&tenant_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let (tenant_name, tenant_created_at) = match row {
+        Some(t) => t,
+        None => anyhow::bail!("tenant {tenant_id} not found in meta.sqlite"),
+    };
+
+    let read_token = |role: &str| -> Option<serde_json::Value> {
+        let r: Option<(i64, String, Option<String>)> = conn
+            .query_row(
+                "SELECT id, created_at, plaintext FROM tokens \
+                 WHERE tenant_id = ?1 AND role = ?2 AND revoked_at IS NULL \
+                 ORDER BY created_at DESC LIMIT 1",
+                rusqlite::params![&tenant_id, role],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+        r.map(|(id, created_at, plaintext)| {
+            json!({
+                "id": id,
+                "created_at": created_at,
+                "plaintext": plaintext,
+            })
+        })
+    };
+    let anon = read_token("anon");
+    let service = read_token("service");
+    drop(conn);
+
+    let rest_base = format!("/drust/t/{tenant_id}/");
+    let mcp_path = format!("/drust/t/{tenant_id}/mcp");
+    let files_upload = format!("/drust/t/{tenant_id}/files");
+    let rpc_pattern = format!("/drust/t/{tenant_id}/rpc/<name>");
+
+    Ok(json!({
+        "tenant_id": tenant_id,
+        "tenant_name": tenant_name,
+        "tenant_created_at": tenant_created_at,
+        "tokens": {
+            "anon": anon,
+            "service": service,
+        },
+        "endpoints": {
+            "rest_base": rest_base,
+            "mcp": mcp_path,
+            "files_upload": files_upload,
+            "rpc": rpc_pattern,
+        },
+        "limits": {
+            "max_upload_bytes": max_upload_bytes,
+        },
+    }))
+}

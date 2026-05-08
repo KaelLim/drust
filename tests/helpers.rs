@@ -49,6 +49,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         bus: bus.clone(),
         mcp: test_mcp_http(tenants, bus),
         files: None,
+        cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
     (app, tok, dir)

@@ -1,7 +1,7 @@
 mod helpers;
 use drust::mcp::server::McpRegistry;
 use drust::mcp::tools::exploration::{
-    count_rows, describe_collection, list_collections, sample_rows,
+    count_rows, describe_collection, list_collections, sample_rows, whoami,
 };
 use drust::storage::pool::TenantRegistry;
 use helpers::seed_tenant_fs;
@@ -72,4 +72,70 @@ async fn count_all() {
     assert_eq!(v["count"], 3);
     let v2 = count_rows(&s, "posts", Some("title='b'")).await.unwrap();
     assert_eq!(v2["count"], 1);
+}
+
+#[tokio::test]
+async fn whoami_returns_tenant_tokens_and_endpoints() {
+    use drust::storage::meta::open_meta;
+    use drust::tenant::events::EventBus;
+    use tokio::sync::Mutex;
+
+    let d = tempfile::tempdir().unwrap();
+    let data = d.path().to_path_buf();
+
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, ?2)",
+        rusqlite::params!["blog", "Blog Tenant"],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role, plaintext) \
+         VALUES (?1, ?2, 'service', ?3)",
+        rusqlite::params!["blog", "hash-svc", "drust_svc_plain"],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role, plaintext) \
+         VALUES (?1, ?2, 'anon', ?3)",
+        rusqlite::params!["blog", "hash-anon", "drust_anon_plain"],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();
+    let meta = Arc::new(Mutex::new(conn));
+
+    let tr = Arc::new(TenantRegistry::new(data, 2));
+    let reg = McpRegistry::with_bus_and_storage(
+        tr,
+        EventBus::new(),
+        None,
+        String::new(),
+        Arc::new([0u8; 32]),
+        Some(meta),
+        12_345,
+    );
+    let svc = reg.get_or_create("blog").await.unwrap();
+
+    let v = whoami(&svc).await.unwrap();
+    assert_eq!(v["tenant_id"], "blog");
+    assert_eq!(v["tenant_name"], "Blog Tenant");
+    assert_eq!(v["tokens"]["service"]["plaintext"], "drust_svc_plain");
+    assert_eq!(v["tokens"]["anon"]["plaintext"], "drust_anon_plain");
+    assert_eq!(v["endpoints"]["mcp"], "/drust/t/blog/mcp");
+    assert_eq!(v["endpoints"]["files_upload"], "/drust/t/blog/files");
+    assert_eq!(v["endpoints"]["rest_base"], "/drust/t/blog/");
+    assert_eq!(v["endpoints"]["rpc"], "/drust/t/blog/rpc/<name>");
+    assert_eq!(v["limits"]["max_upload_bytes"], 12_345);
+}
+
+#[tokio::test]
+async fn whoami_bails_when_meta_unavailable() {
+    let d = tempfile::tempdir().unwrap();
+    seed_tenant_fs(&d, "blog");
+    let s = svc(&d).await; // built via McpRegistry::new (meta is None)
+    let err = whoami(&s).await.unwrap_err();
+    assert!(
+        err.to_string().contains("META_UNAVAILABLE"),
+        "expected META_UNAVAILABLE error, got: {err}"
+    );
 }

@@ -99,6 +99,8 @@ async fn main() -> anyhow::Result<()> {
         garage.clone(),
         cfg.public_base_url.clone(),
         url_sign_secret.clone(),
+        Some(meta.clone()),
+        max_upload_bytes,
     ));
     let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 
