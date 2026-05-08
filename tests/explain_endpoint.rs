@@ -42,3 +42,41 @@ async fn explain_returns_plan_for_simple_select() {
     let detail = plan[0]["detail"].as_str().unwrap();
     assert!(detail.contains("posts"), "plan should mention table name: {detail}");
 }
+
+#[tokio::test]
+async fn explain_blocks_attach_via_authorizer() {
+    let (svc, _d) = fixture("e2").await;
+    let err = drust::mcp::tools::index::explain_select(
+        &svc,
+        "ATTACH DATABASE 'evil.db' AS evil",
+    ).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("not authorized") || msg.contains("authorizer"),
+        "expected authorizer error, got: {msg}");
+}
+
+#[tokio::test]
+async fn explain_blocks_sqlite_master_via_authorizer() {
+    let (svc, _d) = fixture("e3").await;
+    let err = drust::mcp::tools::index::explain_select(
+        &svc,
+        "SELECT name FROM sqlite_master",
+    ).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not authorized") || msg.contains("authorizer") || msg.contains("prohibited"),
+        "expected authorizer error, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn explain_blocks_non_select_via_authorizer() {
+    let (svc, _d) = fixture("e4").await;
+    let err = drust::mcp::tools::index::explain_select(
+        &svc,
+        "INSERT INTO posts (author_id) VALUES (1)",
+    ).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("not authorized") || msg.contains("authorizer"),
+        "expected authorizer error, got: {msg}");
+}

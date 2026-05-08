@@ -198,8 +198,10 @@ pub async fn drop_index(
 }
 
 /// Run `EXPLAIN QUERY PLAN <sql>` under the read connection.
-/// The read connection's authorizer applies during `prepare()`, so
-/// ATTACH / sqlite_master / non-SELECT all surface as SQL_NOT_ALLOWED.
+/// The read-only authorizer is installed for the duration of `prepare()` so
+/// ATTACH / sqlite_master reads / non-SELECT all surface as authorizer errors.
+/// The authorizer is detached after the call so internal pool queries are
+/// unaffected (same pattern as `execute_read_query` in query/executor.rs).
 pub async fn explain_select(
     s: &DrustMcp,
     sql: &str,
@@ -208,15 +210,20 @@ pub async fn explain_select(
     let pool = s.inner().pool.clone();
     let plan: Vec<serde_json::Value> = pool
         .with_reader(move |c| {
-            let mut stmt = c.prepare(&plan_sql)?;
-            // EXPLAIN QUERY PLAN columns: id, parent, notused, detail.
-            let rows = stmt.query_map([], |r| {
-                let id: i64 = r.get(0)?;
-                let parent: i64 = r.get(1)?;
-                let detail: String = r.get(3)?;
-                Ok(json!({ "id": id, "parent": parent, "detail": detail }))
-            })?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
+            crate::query::authorizer::attach_readonly_authorizer(c);
+            let result = (|| {
+                let mut stmt = c.prepare(&plan_sql)?;
+                // EXPLAIN QUERY PLAN columns: id, parent, notused, detail.
+                let rows = stmt.query_map([], |r| {
+                    let id: i64 = r.get(0)?;
+                    let parent: i64 = r.get(1)?;
+                    let detail: String = r.get(3)?;
+                    Ok(json!({ "id": id, "parent": parent, "detail": detail }))
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+            })();
+            crate::query::authorizer::detach_authorizer(c);
+            result
         })
         .await?;
     Ok(json!({ "plan": plan }))
