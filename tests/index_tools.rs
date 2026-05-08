@@ -166,3 +166,33 @@ async fn duplicate_fields_returns_invalid_params() {
     .unwrap_err();
     assert!(err.to_string().contains("duplicate"));
 }
+
+#[tokio::test]
+async fn duplicate_index_name_returns_409() {
+    let (svc, _d) = fixture("t8").await;
+    drust::mcp::tools::index::create_index(
+        &svc,
+        "posts",
+        &["author_id".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+
+    // Re-create with the same fields → same auto-name → already exists.
+    let err = drust::mcp::tools::index::create_index(
+        &svc,
+        "posts",
+        &["author_id".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("already exists") || msg.contains("idx_posts_author_id"),
+        "expected INDEX_EXISTS-style error, got: {msg}"
+    );
+}
