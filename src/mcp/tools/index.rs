@@ -28,6 +28,14 @@ pub async fn create_index(
         identifier(f)?;
     }
 
+    // Reject duplicate field names inside the same index spec.
+    let mut seen = std::collections::BTreeSet::new();
+    for f in fields {
+        if !seen.insert(f.as_str()) {
+            anyhow::bail!("duplicate field in index spec: {f}");
+        }
+    }
+
     let pool = s.inner().pool.clone();
     let coll_for_check = collection.to_string();
     let exists = pool
@@ -35,6 +43,29 @@ pub async fn create_index(
         .await?;
     if !exists {
         anyhow::bail!("no such collection: {collection}");
+    }
+
+    // Validate that every requested field exists on the collection.
+    let coll_for_fields = collection.to_string();
+    let fields_owned: Vec<String> = fields.to_vec();
+    let pool_for_field_check = pool.clone();
+    let missing: Option<String> = pool_for_field_check
+        .with_reader(move |c| {
+            for f in &fields_owned {
+                let count: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                    rusqlite::params![&coll_for_fields, f],
+                    |r| r.get(0),
+                )?;
+                if count == 0 {
+                    return Ok::<Option<String>, rusqlite::Error>(Some(f.clone()));
+                }
+            }
+            Ok(None)
+        })
+        .await?;
+    if let Some(f) = missing {
+        anyhow::bail!("field \"{f}\" not found on collection \"{collection}\"");
     }
 
     let index_name = derive_index_name(collection, fields);

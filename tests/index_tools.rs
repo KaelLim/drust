@@ -89,3 +89,80 @@ async fn creates_composite_index_on_two_fields() {
     assert_eq!(idx["fields"], serde_json::json!(["author_id", "day_number"]));
     assert_eq!(idx["unique"], false);
 }
+
+#[tokio::test]
+async fn unknown_collection_returns_404() {
+    let (svc, _d) = fixture("t3").await;
+    let err = drust::mcp::tools::index::create_index(
+        &svc,
+        "nonexistent",
+        &["x".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("no such collection"));
+}
+
+#[tokio::test]
+async fn unknown_field_returns_field_not_found() {
+    let (svc, _d) = fixture("t4").await;
+    let err = drust::mcp::tools::index::create_index(
+        &svc,
+        "posts",
+        &["does_not_exist".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("does_not_exist"),
+        "error should name the missing field: {err}");
+}
+
+#[tokio::test]
+async fn system_collection_returns_404() {
+    let (svc, _d) = fixture("t5").await;
+    // _system_* prefix protection fires regardless of whether the table actually exists.
+    let err = drust::mcp::tools::index::create_index(
+        &svc,
+        "_system_files",
+        &["k".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("no such collection"));
+}
+
+#[tokio::test]
+async fn empty_fields_returns_invalid_params() {
+    let (svc, _d) = fixture("t6").await;
+    let err = drust::mcp::tools::index::create_index(
+        &svc,
+        "posts",
+        &[],
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("non-empty"));
+}
+
+#[tokio::test]
+async fn duplicate_fields_returns_invalid_params() {
+    let (svc, _d) = fixture("t7").await;
+    let err = drust::mcp::tools::index::create_index(
+        &svc,
+        "posts",
+        &["author_id".to_string(), "author_id".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("duplicate"));
+}
