@@ -14,6 +14,11 @@ async fn app() -> axum::Router {
     let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "hunter2").unwrap();
     std::mem::forget(dir);
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir, 2));
+    let bus = drust::tenant::events::EventBus::new();
+    let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
+        drust::mcp::server::McpRegistry::new(tenants.clone()),
+    )));
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
         session_ttl_days: 7,
@@ -24,7 +29,9 @@ async fn app() -> axum::Router {
         disk_min_free_pct: 20,
         log_dir: std::env::temp_dir(),
         url_sign_secret: Arc::new([0u8; 32]),
-        tenants: Arc::new(drust::storage::pool::TenantRegistry::new(data_dir, 2)),
+        tenants,
+        mcp,
+        bus,
     };
     build_mgmt_router(state)
 }

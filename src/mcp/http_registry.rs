@@ -56,4 +56,9 @@ impl McpHttpRegistry {
     pub fn evict(&self, tenant_id: &str) {
         self.services.remove(tenant_id);
     }
+
+    /// How many tenants are currently cached. Test/observability hook.
+    pub fn cached_count(&self) -> usize {
+        self.services.len()
+    }
 }

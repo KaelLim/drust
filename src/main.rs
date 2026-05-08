@@ -115,6 +115,8 @@ async fn main() -> anyhow::Result<()> {
         log_dir: cfg.log_dir.clone(),
         url_sign_secret: url_sign_secret.clone(),
         tenants: tenants.clone(),
+        mcp: mcp_http.clone(),
+        bus: bus.clone(),
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 

@@ -47,4 +47,18 @@ impl EventBus {
             .clone();
         tx.subscribe()
     }
+
+    /// Drop every broadcast channel for `tenant`. Existing subscribers
+    /// receive `Closed` on their next recv. Called from the
+    /// soft_delete_tenant path so a deleted tenant doesn't leave channels
+    /// hanging in memory until process restart.
+    pub fn evict_tenant(&self, tenant: &str) {
+        self.channels.retain(|(t, _coll), _| t != tenant);
+    }
+
+    /// How many `(tenant, collection)` channels are currently allocated.
+    /// Test/observability hook.
+    pub fn channel_count(&self) -> usize {
+        self.channels.len()
+    }
 }

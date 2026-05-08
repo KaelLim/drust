@@ -36,6 +36,14 @@ pub struct MgmtState {
     /// next REST/MCP request through the tenant router sees the change
     /// without waiting for natural cache turnover.
     pub tenants: Arc<crate::storage::pool::TenantRegistry>,
+    /// Per-tenant MCP service registry. soft_delete_tenant evicts the
+    /// cached `DrustMcpService` for a tenant so its in-flight session
+    /// state and `Arc<TenantPool>` clones release.
+    pub mcp: Arc<crate::mcp::http_registry::McpHttpRegistry>,
+    /// Per-(tenant, collection) SSE broadcast channels. soft_delete_tenant
+    /// drops every channel keyed on the tenant so subscribers receive
+    /// `Closed` instead of dangling forever.
+    pub bus: crate::tenant::events::EventBus,
 }
 
 #[derive(Template)]
@@ -182,6 +190,8 @@ impl MgmtState {
             disk_min_free_pct: self.disk_min_free_pct,
             public_base_url: self.public_base_url.clone(),
             tenants: self.tenants.clone(),
+            mcp: self.mcp.clone(),
+            bus: self.bus.clone(),
             log_dir: self.log_dir.clone(),
         };
         let public_files_state = PublicFilesState {
