@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn create_system_users_idempotent() {
-        let mut c = fresh();
+        let c = fresh();
         c.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS).unwrap();
         c.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS).unwrap();
         let n: i64 = c.query_row(
@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn create_system_sessions_idempotent() {
-        let mut c = fresh();
+        let c = fresh();
         c.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS).unwrap();
         c.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS).unwrap();
         let n: i64 = c.query_row(
