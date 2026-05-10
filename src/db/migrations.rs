@@ -45,6 +45,22 @@ pub fn add_column_if_missing(
     Ok(())
 }
 
+use std::path::Path;
+
+pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> {
+    let path = tenants_dir.join("tenants").join(tid).join("data.sqlite");
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut conn = Connection::open(&path)?;
+    let tx = conn.transaction()?;
+    tx.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS)?;
+    tx.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)?;
+    add_column_if_missing(&tx, "_system_collection_meta", "owner_field", "TEXT")?;
+    add_column_if_missing(&tx, "_system_collection_meta", "read_scope", "TEXT")?;
+    tx.commit()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +102,47 @@ mod tests {
             .query_map([], |r| r.get::<_, String>(1)).unwrap()
             .collect::<Result<_, _>>().unwrap();
         assert_eq!(cols, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn migrate_tenant_db_creates_tables_and_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-x");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        // Simulate existing tenant DB with a _system_collection_meta table
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT)",
+            )
+            .unwrap();
+        }
+
+        migrate_tenant_db(dir.path(), "t-x").unwrap();
+        migrate_tenant_db(dir.path(), "t-x").unwrap(); // idempotent
+
+        let c = Connection::open(&p).unwrap();
+        let n_users: i64 = c.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_users'",
+            [], |r| r.get(0)).unwrap();
+        let n_sess: i64 = c.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_sessions'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(n_users, 1);
+        assert_eq!(n_sess, 1);
+
+        let cols: Vec<String> = c.prepare("PRAGMA table_info(_system_collection_meta)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert!(cols.contains(&"owner_field".to_string()));
+        assert!(cols.contains(&"read_scope".to_string()));
+    }
+
+    #[test]
+    fn migrate_tenant_db_skips_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // No tenants/t-gone/ dir at all
+        migrate_tenant_db(dir.path(), "t-gone").unwrap();
     }
 }
