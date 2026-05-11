@@ -125,6 +125,119 @@ pub async fn register_handler(
     }
 }
 
+#[derive(Deserialize)]
+pub struct LoginBody {
+    pub email: String,
+    pub password: String,
+}
+
+pub async fn login_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<LoginBody>,
+) -> Response {
+    let tenant_id = match params.get("tenant") {
+        Some(t) => t.clone(),
+        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+    };
+    // ConnectInfo unavailable with oneshot — use XFF header, fall back to loopback.
+    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
+    if !state.login_rl.check(ip) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED_IP", "rate limited");
+    }
+    let email = body.email.trim().to_string();
+
+    // Validate tenant exists in meta BEFORE opening pool — prevents disk-fill
+    // from arbitrary tenant IDs in the URL. Return INVALID_CREDENTIALS (not
+    // TENANT_NOT_FOUND) so callers cannot enumerate tenant existence via login.
+    let tenant_exists: bool = {
+        let conn = state.meta.lock().await;
+        conn.query_row(
+            "SELECT 1 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tenant_id],
+            |_| Ok(()),
+        )
+        .is_ok()
+    };
+    if !tenant_exists {
+        // S1: still spend an argon2 verify so timing matches the legit path.
+        let _ = crate::auth::user::verify_password(&body.password, &crate::auth::user::DUMMY_HASH);
+        return err(
+            StatusCode::UNAUTHORIZED,
+            "INVALID_CREDENTIALS",
+            "invalid email or password",
+        );
+    }
+    let pool = match state.registry.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(_) => {
+            let _ = crate::auth::user::verify_password(
+                &body.password,
+                &crate::auth::user::DUMMY_HASH,
+            );
+            return err(
+                StatusCode::UNAUTHORIZED,
+                "INVALID_CREDENTIALS",
+                "invalid email or password",
+            );
+        }
+    };
+
+    // Lookup user (case-insensitive). If absent, use DUMMY_HASH so argon2
+    // still runs (S1 timing equalization). Empty uid flags the absent case.
+    let email_for_lookup = email.clone();
+    let row: rusqlite::Result<Option<(String, String)>> = pool
+        .with_reader(move |c| {
+            match c.query_row(
+                "SELECT id, password_hash FROM _system_users \
+                 WHERE email = ?1 COLLATE NOCASE",
+                rusqlite::params![email_for_lookup],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            ) {
+                Ok(row) => Ok(Some(row)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(e),
+            }
+        })
+        .await;
+    let (uid, phc) = match row {
+        Ok(Some(pair)) => pair,
+        _ => (String::new(), crate::auth::user::DUMMY_HASH.clone()),
+    };
+    let ok = crate::auth::user::verify_password(&body.password, &phc).unwrap_or(false);
+    if !ok || uid.is_empty() {
+        return err(
+            StatusCode::UNAUTHORIZED,
+            "INVALID_CREDENTIALS",
+            "invalid email or password",
+        );
+    }
+
+    let ip_str = ip.to_string();
+    let uid_clone = uid.clone();
+    let token = match pool
+        .with_writer(move |c| {
+            crate::auth::user_session::create_session(c, &uid_clone, Some(&ip_str), 30)
+        })
+        .await
+    {
+        Ok(t) => t,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "SESSION_INSERT", ""),
+    };
+    let exp = chrono::Utc::now() + chrono::Duration::days(30);
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "token": token,
+            "user_id": uid,
+            "expires_at": exp.to_rfc3339(),
+        })),
+    )
+        .into_response()
+}
+
 /// Light syntactic check. Accepts `local@domain.tld`; rejects bare domains,
 /// multiple `@`, empty parts. Not RFC 5321 exhaustive — full validation
 /// happens at email-verification time.
