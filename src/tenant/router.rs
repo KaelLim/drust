@@ -1,4 +1,5 @@
 use crate::auth::bearer::{hash_token, token_hint};
+use crate::auth::middleware::AuthCtx;
 use crate::safety::audit::{AuditEntry, AuditLog};
 use crate::safety::rate_limit::RateLimiter;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
@@ -27,6 +28,8 @@ pub struct TenantAuthState {
 pub enum TokenRole {
     Anon,
     Service,
+    /// A user session token resolved from `_system_sessions` in the tenant db.
+    User,
 }
 
 impl TokenRole {
@@ -34,12 +37,14 @@ impl TokenRole {
         match self {
             Self::Anon => "anon",
             Self::Service => "service",
+            Self::User => "user",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "anon" => Some(Self::Anon),
             "service" => Some(Self::Service),
+            "user" => Some(Self::User),
             _ => None,
         }
     }
@@ -101,6 +106,51 @@ pub async fn bearer_auth_layer(
             );
             return r;
         }
+        // Open the tenant pool early so we can probe _system_sessions for
+        // user tokens before hitting meta.sqlite.
+        let pool = match state.registry.get_or_open(&tenant_id) {
+            Ok(p) => p,
+            Err(_) => {
+                return json_error(
+                    StatusCode::NOT_FOUND,
+                    "TENANT_NOT_FOUND",
+                    "tenant data missing",
+                );
+            }
+        };
+        // --- User-session path ---
+        // Check tenant's _system_sessions table first. User tokens never
+        // appear in the meta.sqlite `tokens` table.
+        let bearer_for_lookup = bearer.clone();
+        let session_result = pool
+            .with_reader(move |c| {
+                crate::auth::user_session::lookup_session(c, &bearer_for_lookup)
+            })
+            .await;
+        if let Ok(Some(session_info)) = session_result {
+            // Slide expiry best-effort on a background task.
+            let token_for_slide = bearer.clone();
+            let pool_for_slide = pool.clone();
+            tokio::spawn(async move {
+                let _ = pool_for_slide
+                    .with_writer(move |c| {
+                        crate::auth::user_session::slide_expiry(c, &token_for_slide, 30)
+                    })
+                    .await;
+            });
+            req.extensions_mut().insert(AuthCtx::User {
+                user_id: session_info.user_id.clone(),
+                token_hash: hash.clone(),
+            });
+            req.extensions_mut().insert(TenantRef {
+                tenant_id: tenant_id.clone(),
+                token_hint: token_hint(&bearer),
+                pool,
+                role: TokenRole::User,
+            });
+            return next.run(req).await;
+        }
+        // --- Service / Anon path (meta.sqlite tokens table) ---
         // Verify: (token active) AND (tenant active). Fetch role alongside.
         let conn = state.meta.lock().await;
         let ok: Option<(String, String)> = conn
@@ -136,16 +186,11 @@ pub async fn bearer_auth_layer(
                 );
             }
         };
-        let pool = match state.registry.get_or_open(&tenant_id) {
-            Ok(p) => p,
-            Err(_) => {
-                return json_error(
-                    StatusCode::NOT_FOUND,
-                    "TENANT_NOT_FOUND",
-                    "tenant data missing",
-                );
-            }
-        };
+        req.extensions_mut().insert(match role {
+            TokenRole::Anon => AuthCtx::Anon,
+            TokenRole::Service => AuthCtx::Service,
+            TokenRole::User => unreachable!("user sessions are resolved before meta lookup"),
+        });
         req.extensions_mut().insert(TenantRef {
             tenant_id: tenant_id.clone(),
             token_hint: token_hint(&bearer),
@@ -189,13 +234,13 @@ pub async fn bearer_auth_layer(
 }
 
 /// Guard used by write-path handlers. Returns `Err(response)` if the
-/// current bearer is an anon key, ready to short-circuit the handler.
+/// current bearer is an anon or user key, ready to short-circuit the handler.
 #[allow(clippy::result_large_err)]
 pub fn require_service(t: &TenantRef) -> Result<(), Response> {
-    if t.role == TokenRole::Anon {
+    if matches!(t.role, TokenRole::Anon | TokenRole::User) {
         let body = axum::Json(serde_json::json!({
             "error_code": "WRITE_DENIED",
-            "message": "anon key cannot write; use a service key"
+            "message": "anon/user key cannot write; use a service key"
         }));
         let mut r = body.into_response();
         *r.status_mut() = StatusCode::FORBIDDEN;
