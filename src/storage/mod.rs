@@ -1,6 +1,7 @@
 pub mod disk;
 pub mod files;
 pub mod garage;
+pub mod janitor;
 pub mod meta;
 pub mod pool;
 pub mod quota;
