@@ -41,10 +41,11 @@ impl TokenRole {
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
+        // Only anon/service appear in meta.sqlite's `tokens.role` column;
+        // user is resolved from `_system_sessions` and never persisted here.
         match s {
             "anon" => Some(Self::Anon),
             "service" => Some(Self::Service),
-            "user" => Some(Self::User),
             _ => None,
         }
     }
@@ -105,6 +106,27 @@ pub async fn bearer_auth_layer(
                 axum::http::HeaderValue::from_str(&secs.to_string()).unwrap(),
             );
             return r;
+        }
+        // Validate tenant exists in meta BEFORE opening its pool — prevents
+        // an attacker from spamming arbitrary tenant ids in the path and
+        // forcing the pool to materialize ghost data.sqlite files on disk.
+        {
+            let conn = state.meta.lock().await;
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+                    rusqlite::params![tenant_id],
+                    |_| Ok(()),
+                )
+                .is_ok();
+            drop(conn);
+            if !exists {
+                return json_error(
+                    StatusCode::NOT_FOUND,
+                    "TENANT_NOT_FOUND",
+                    "tenant not accessible",
+                );
+            }
         }
         // Open the tenant pool early so we can probe _system_sessions for
         // user tokens before hitting meta.sqlite.
