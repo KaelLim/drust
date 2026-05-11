@@ -12,7 +12,7 @@ use crate::mgmt::tenant_files::TenantFilesState;
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
 use axum::routing::{any, delete, get, post};
-use auth_routes::register_handler;
+use auth_routes::{login_handler, register_handler};
 use events::EventBus;
 use router::TenantAuthState;
 use std::sync::Arc;
@@ -257,6 +257,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     // these routes are NOT wrapped in bearer_auth_layer.
     let auth_router = Router::new()
         .route("/t/{tenant}/auth/register", post(register_handler))
+        .route("/t/{tenant}/auth/login", post(login_handler))
         .with_state(auth_state);
 
     let merged = core.merge(files_router).merge(auth_router);
