@@ -79,6 +79,14 @@ pub fn revoke_session(conn: &Connection, token: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+pub fn revoke_session_by_hash(conn: &Connection, token_hash: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM _system_sessions WHERE token_hash = ?1",
+        params![token_hash],
+    )?;
+    Ok(())
+}
+
 pub fn revoke_all_sessions(conn: &Connection, user_id: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM _system_sessions WHERE user_id = ?1",
@@ -146,6 +154,15 @@ mod tests {
         slide_expiry(&c, &token, 30).unwrap();
         let after: String = c.query_row("SELECT expires_at FROM _system_sessions LIMIT 1", [], |r| r.get(0)).unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn revoke_by_hash_works() {
+        let c = fresh();
+        let token = create_session(&c, "u-1", None, 30).unwrap();
+        let h = hash_token(&token);
+        revoke_session_by_hash(&c, &h).unwrap();
+        assert!(lookup_session(&c, &token).unwrap().is_none());
     }
 
     #[test]

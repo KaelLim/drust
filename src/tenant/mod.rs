@@ -12,7 +12,7 @@ use crate::mgmt::tenant_files::TenantFilesState;
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
 use axum::routing::{any, delete, get, post};
-use auth_routes::{login_handler, register_handler};
+use auth_routes::{login_handler, logout_all_handler, logout_handler, register_handler};
 use events::EventBus;
 use router::TenantAuthState;
 use std::sync::Arc;
@@ -200,6 +200,8 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             "/t/{tenant}/query/explain",
             post(query_endpoint::explain_handler),
         )
+        .route("/t/{tenant}/auth/logout", post(logout_handler))
+        .route("/t/{tenant}/auth/logout-all", post(logout_all_handler))
         .route(
             "/t/{tenant}/rpc/{name}",
             post(crate::rpc::handler::call_rpc),

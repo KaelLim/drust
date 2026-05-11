@@ -165,9 +165,14 @@ pub async fn bearer_auth_layer(
                     })
                     .await;
             });
+            // Use user_session::hash_token (base64) — the same encoding used
+            // when the session row was inserted — so logout handlers can DELETE
+            // by hash without re-hashing from the plaintext bearer.
+            let session_hash =
+                crate::auth::user_session::hash_token(&bearer);
             req.extensions_mut().insert(AuthCtx::User {
                 user_id: session_info.user_id.clone(),
-                token_hash: hash.clone(),
+                token_hash: session_hash,
             });
             req.extensions_mut().insert(TenantRef {
                 tenant_id: tenant_id.clone(),

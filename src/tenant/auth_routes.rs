@@ -1,3 +1,4 @@
+use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -7,6 +8,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
+use crate::auth::middleware::AuthCtx;
 use crate::auth::user::hash_password;
 use crate::tenant::router::TenantAuthState;
 
@@ -256,6 +258,57 @@ fn email_looks_valid(s: &str) -> bool {
         && domain.contains('.')
         && !domain.starts_with('.')
         && !domain.ends_with('.')
+}
+
+pub async fn logout_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+) -> Response {
+    let token_hash = match &ctx {
+        AuthCtx::User { token_hash, .. } => token_hash.clone(),
+        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "logout requires user token"),
+    };
+    let tenant_id = match params.get("tenant") {
+        Some(t) => t.clone(),
+        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+    };
+    let pool = match state.registry.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let _ = pool
+        .with_writer(move |c| {
+            crate::auth::user_session::revoke_session_by_hash(c, &token_hash)
+        })
+        .await;
+    (StatusCode::OK, Json(json!({}))).into_response()
+}
+
+pub async fn logout_all_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+) -> Response {
+    let user_id = match &ctx {
+        AuthCtx::User { user_id, .. } => user_id.clone(),
+        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "logout-all requires user token"),
+    };
+    let tenant_id = match params.get("tenant") {
+        Some(t) => t.clone(),
+        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+    };
+    let pool = match state.registry.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let n = pool
+        .with_writer(move |c| {
+            crate::auth::user_session::revoke_all_sessions(c, &user_id)
+        })
+        .await
+        .unwrap_or(0);
+    (StatusCode::OK, Json(json!({"revoked": n}))).into_response()
 }
 
 fn err(status: StatusCode, code: &str, msg: &str) -> Response {
