@@ -112,4 +112,14 @@ mod ctx_tests {
         assert_eq!(AuthCtx::Service.kind(), "service");
         assert_eq!(AuthCtx::User { user_id: "u".into(), token_hash: "h".into() }.kind(), "user");
     }
+
+    #[test]
+    fn auth_ctx_user_id_extracts_only_for_user_variant() {
+        assert_eq!(AuthCtx::Anon.user_id(), None);
+        assert_eq!(AuthCtx::Service.user_id(), None);
+        assert_eq!(
+            AuthCtx::User { user_id: "u-42".into(), token_hash: "h".into() }.user_id(),
+            Some("u-42"),
+        );
+    }
 }
