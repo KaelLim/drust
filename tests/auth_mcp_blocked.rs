@@ -65,3 +65,28 @@ async fn mcp_rejects_user_token() {
         String::from_utf8_lossy(&bytes)
     );
 }
+
+#[tokio::test]
+async fn mcp_rejects_anon_with_write_denied() {
+    // Regression guard: the T15 split must not have collapsed anon → MCP_USER_DENIED.
+    let (app, anon_tok, _dir) = helpers::spin_up_tenant_with_role("t-mcp2", "anon").await;
+    let r = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/t/t-mcp2/mcp")
+                .header(header::AUTHORIZATION, format!("Bearer {anon_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","method":"tools/list","id":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let bytes = axum::body::to_bytes(r.into_body(), 65536).await.unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains("WRITE_DENIED"), "body was: {body}");
+    assert!(!body.contains("MCP_USER_DENIED"), "body was: {body}");
+}
