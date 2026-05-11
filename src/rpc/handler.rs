@@ -7,12 +7,13 @@
 //! counter and `last_called_at` on `_system_rpc` — fire-and-forget
 //! so the response isn't blocked on the writer mutex.
 
+use crate::auth::middleware::AuthCtx;
 use crate::query::executor::{
     ExecError, QueryResult, execute_read_query_with_named,
 };
 use crate::rpc::params::{ParamError, validate_and_bind};
 use crate::rpc::registry::{self, RegistryError};
-use crate::tenant::router::{TenantRef, TokenRole};
+use crate::tenant::router::TenantRef;
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -36,6 +37,7 @@ enum RpcOutcome {
 
 pub async fn call_rpc(
     Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
     Path((_tenant, name)): Path<(String, String)>,
     // Accept missing or empty bodies gracefully. Axum's `Json<T>` extractor
     // rejects an empty body outright; using `Option<Json<...>>` would force
@@ -61,8 +63,8 @@ pub async fn call_rpc(
     };
 
     let pool = t.pool.clone();
-    let role = t.role;
     let name_for_closure = name.clone();
+    let ctx_for_closure = ctx.clone();
     let outcome_res = pool
         .with_reader(move |conn| {
             // 1. Look up the RPC by name.
@@ -72,9 +74,30 @@ pub async fn call_rpc(
                 Err(e) => return Ok(RpcOutcome::Registry(e)),
             };
 
-            // 2. Anon allow-list check.
-            if role == TokenRole::Anon && !stored.anon_callable {
+            // 2. Role allow-list check.
+            //    Service: always allowed.
+            //    Anon / User: allowed only when anon_callable = true.
+            let allowed = match &ctx_for_closure {
+                AuthCtx::Service => true,
+                AuthCtx::Anon | AuthCtx::User { .. } => stored.anon_callable,
+            };
+            if !allowed {
                 return Ok(RpcOutcome::AnonDenied);
+            }
+
+            // 2b. Auto-bind :user_id from AuthCtx when:
+            //     (a) the RPC declares a param named "user_id",
+            //     (b) the caller is a User token, and
+            //     (c) the body did not supply user_id.
+            let mut body_map = body_map;
+            if let AuthCtx::User { user_id, .. } = &ctx_for_closure {
+                let declares_user_id = stored.params.iter().any(|p| p.name == "user_id");
+                if declares_user_id && !body_map.contains_key("user_id") {
+                    body_map.insert(
+                        "user_id".into(),
+                        serde_json::Value::String(user_id.clone()),
+                    );
+                }
             }
 
             // 3. Validate + bind params.
