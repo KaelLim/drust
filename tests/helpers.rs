@@ -180,4 +180,5 @@ pub fn seed_tenant_fs(dir: &tempfile::TempDir, tenant: &str) {
     )
     .unwrap();
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
 }
