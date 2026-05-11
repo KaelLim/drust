@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use std::path::Path;
 
 pub const SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS: &str = r#"
 CREATE TABLE IF NOT EXISTS _system_users (
@@ -44,8 +45,6 @@ pub fn add_column_if_missing(
     }
     Ok(())
 }
-
-use std::path::Path;
 
 pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> {
     let path = tenants_dir.join("tenants").join(tid).join("data.sqlite");
