@@ -112,12 +112,32 @@ async fn patch_me_updates_profile_only() {
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
+    // PATCH response itself should carry the full updated row.
+    let patched = read_json(r).await;
+    assert_eq!(patched["profile"]["nickname"].as_str().unwrap(), "alice");
+    assert_eq!(patched["email"].as_str().unwrap(), "a@b.com");
+    assert!(patched["id"].as_str().unwrap().starts_with("u-"));
+    assert!(patched.get("password_hash").is_none());
+
     let resp = app
         .oneshot(req_json("GET", "t-me3", "/me", None, Some(&token)))
         .await
         .unwrap();
     let v = read_json(resp).await;
     assert_eq!(v["profile"]["nickname"].as_str().unwrap(), "alice");
+}
+
+#[tokio::test]
+async fn me_rejects_service_token() {
+    // Service / anon tokens must not access /me; only AuthCtx::User passes.
+    let (app, svc_tok, _dir) = helpers::spin_up_tenant_with_role("t-me-svc", "service").await;
+    let resp = app
+        .oneshot(req_json("GET", "t-me-svc", "/me", None, Some(&svc_tok)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("NOT_USER_TOKEN"));
 }
 
 #[tokio::test]

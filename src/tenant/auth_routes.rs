@@ -65,14 +65,14 @@ pub async fn register_handler(
         return err(StatusCode::UNPROCESSABLE_ENTITY, "EMAIL_INVALID", "invalid email");
     }
     let profile_str = body.profile.as_ref().map(|v| v.to_string());
-    if let Some(s) = &profile_str {
-        if s.len() > PROFILE_MAX_BYTES {
-            return err(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "PROFILE_TOO_LARGE",
-                "profile JSON exceeds 64 KB",
-            );
-        }
+    if let Some(s) = &profile_str
+        && s.len() > PROFILE_MAX_BYTES
+    {
+        return err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "PROFILE_TOO_LARGE",
+            "profile JSON exceeds 64 KB",
+        );
     }
     let allow: bool = {
         let conn = state.meta.lock().await;
@@ -429,14 +429,18 @@ pub async fn me_patch_handler(
     };
     let now = chrono::Utc::now().to_rfc3339();
     let uid_for_update = user_id.clone();
-    let _ = pool
+    if pool
         .with_writer(move |c| {
             c.execute(
                 "UPDATE _system_users SET profile = ?1, updated_at = ?2 WHERE id = ?3",
                 rusqlite::params![profile_str, now, uid_for_update],
             )
         })
-        .await;
+        .await
+        .is_err()
+    {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "UPDATE_FAILED", "");
+    }
     match fetch_me_row(&pool, &user_id).await {
         Ok((id, email, verified, profile, ca, ua)) => {
             me_row_to_response(id, email, verified, profile, ca, ua)
@@ -529,7 +533,7 @@ pub async fn me_password_handler(
                 rusqlite::params![uid_for_tx],
             )?;
             let token =
-                crate::auth::user_session::create_session(&*tx, &uid_for_tx, Some(&ip), 30)?;
+                crate::auth::user_session::create_session(&tx, &uid_for_tx, Some(&ip), 30)?;
             tx.commit()?;
             Ok(token)
         })
