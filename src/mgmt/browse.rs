@@ -1,6 +1,6 @@
 use crate::mgmt::tenants::TenantsState;
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
-use crate::query::executor::execute_read_query;
+use crate::query::executor::{execute_read_query, execute_read_query_admin};
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{
     Collection, CollectionSchema, Field, IndexInfo, describe_collection, list_collections,
@@ -160,6 +160,49 @@ fn build_page_url(
     )
 }
 
+/// Replace cell values in columns that should never appear in HTML
+/// (e.g. password hashes). Returns the column names unchanged and the
+/// masked rows. When there are no sensitive columns for the given
+/// collection name this is a zero-cost passthrough.
+fn mask_sensitive_columns(
+    coll: &str,
+    column_names: Vec<String>,
+    rows: Vec<Vec<String>>,
+) -> (Vec<String>, Vec<Vec<String>>) {
+    let mask_cols: &[&str] = match coll {
+        "_system_users" => &["password_hash"],
+        _ => &[],
+    };
+    if mask_cols.is_empty() {
+        return (column_names, rows);
+    }
+    let masked_idxs: Vec<usize> = column_names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| mask_cols.contains(&n.as_str()))
+        .map(|(i, _)| i)
+        .collect();
+    if masked_idxs.is_empty() {
+        return (column_names, rows);
+    }
+    let masked_rows = rows
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    if masked_idxs.contains(&i) {
+                        "\u{25cf}\u{25cf}\u{25cf}\u{25cf}".to_string()
+                    } else {
+                        v
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    (column_names, masked_rows)
+}
+
 pub async fn collection_rows_page(
     State(state): State<TenantsState>,
     Path((tenant_id, coll_name)): Path<(String, String)>,
@@ -228,7 +271,14 @@ pub async fn collection_rows_page(
 
     let mut error: Option<String> = None;
 
-    let rows_result = execute_read_query(&conn, &list_sql, per_page as usize, 32_768);
+    // Admin UI is allowed to browse _system_* tables (e.g. _system_users). The
+    // read-only authorizer would block them, so bypass it for protected names —
+    // the connection is still SQLITE_OPEN_READONLY, so writes are impossible.
+    let rows_result = if crate::storage::schema::is_protected_collection(&coll_name) {
+        execute_read_query_admin(&conn, &list_sql, per_page as usize, 32_768)
+    } else {
+        execute_read_query(&conn, &list_sql, per_page as usize, 32_768)
+    };
     let (column_names, rows): (Vec<String>, Vec<Vec<String>>) = match rows_result {
         Ok(qr) => {
             let cols = qr.column_names.clone();
@@ -259,9 +309,17 @@ pub async fn collection_rows_page(
         }
     };
 
-    // Count uses raw query_row with scoped authorizer
+    // Mask sensitive columns so secrets never appear in the HTML response.
+    // Currently only _system_users.password_hash — the argon2 PHC string
+    // is security-irrelevant to display but could leak into logs/screenshots.
+    let (column_names, rows) = mask_sensitive_columns(&coll_name, column_names, rows);
+
+    // Count uses raw query_row. Skip the authorizer for protected system
+    // tables (admin-only route; connection is still SQLITE_OPEN_READONLY).
     let total: i64 = {
-        attach_readonly_authorizer(&conn);
+        if !crate::storage::schema::is_protected_collection(&coll_name) {
+            attach_readonly_authorizer(&conn);
+        }
         let r = conn
             .query_row(&count_sql, [], |r| r.get::<_, i64>(0))
             .unwrap_or(schema.row_count);
