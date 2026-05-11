@@ -9,7 +9,8 @@
 
 use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::{
-    exploration, files as file_tools, read, schema as schema_tools, write as write_tools,
+    exploration, files as file_tools, owner_field as owner_field_tools, read,
+    schema as schema_tools, user as user_tools, write as write_tools,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -167,6 +168,72 @@ pub struct CallRpcParams {
     /// (text / integer / real / boolean / null).
     #[serde(default)]
     pub body: Option<HashMap<String, Value>>,
+}
+
+// --- T24: User-management parameter types --------------------------------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateUserArgs {
+    pub email: String,
+    pub password: String,
+    #[serde(default)]
+    pub profile: Option<serde_json::Value>,
+    #[serde(default)]
+    pub verified: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListUsersArgs {
+    #[serde(default)]
+    pub q: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UserIdArgs {
+    pub user_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateUserArgs {
+    pub user_id: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub profile: Option<serde_json::Value>,
+    #[serde(default)]
+    pub verified: Option<bool>,
+}
+
+// --- T25: Owner-field + self-register parameter types --------------------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetOwnerFieldArgs {
+    pub collection: String,
+    pub field: String,
+    /// `"own"` (default) — anon reads see only their own rows.
+    /// `"all"` — anon reads see all rows.
+    #[serde(default = "default_own")]
+    pub read_scope: String,
+}
+
+fn default_own() -> String {
+    "own".to_string()
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ClearOwnerFieldArgs {
+    pub collection: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetSelfRegisterArgs {
+    pub enabled: bool,
 }
 
 // --- Handler -----------------------------------------------------------
@@ -735,6 +802,163 @@ impl DrustMcpService {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(body_str)]))
     }
+
+    // ── T24: User-management tools ─────────────────────────────────────────
+
+    #[tool(description = "Create a new user in this tenant's _system_users table. \
+        Required: email (unique, case-insensitive), password (hashed server-side). \
+        Optional: profile (JSON object), verified (boolean, default false). \
+        Returns {user_id, email, created_at}. \
+        Errors with EMAIL_EXISTS if the email is already taken.")]
+    async fn create_user(
+        &self,
+        Parameters(CreateUserArgs { email, password, profile, verified }): Parameters<CreateUserArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match user_tools::create_user(&self.state.inner().pool, email, password, profile, verified)
+            .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "List users in this tenant. Optional: q (email substring filter), \
+        limit (1–500, default 50), offset. \
+        Returns {users: [...], total}.")]
+    async fn list_users(
+        &self,
+        Parameters(ListUsersArgs { q, limit, offset }): Parameters<ListUsersArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match user_tools::list_users(&self.state.inner().pool, q, limit, offset).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Get a single user by user_id. \
+        Returns {id, email, verified, profile, created_at, updated_at} (no password_hash). \
+        Errors with NOT_FOUND if the user does not exist.")]
+    async fn get_user(
+        &self,
+        Parameters(UserIdArgs { user_id }): Parameters<UserIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match user_tools::get_user(&self.state.inner().pool, user_id).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Update one or more fields of a user. All fields except user_id \
+        are optional — only supplied fields are changed. password is re-hashed server-side. \
+        Returns the updated row. Errors: NOT_FOUND, EMAIL_EXISTS, HASH_FAILED.")]
+    async fn update_user(
+        &self,
+        Parameters(UpdateUserArgs { user_id, email, password, profile, verified }): Parameters<UpdateUserArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match user_tools::update_user(
+            &self.state.inner().pool,
+            user_id,
+            email,
+            password,
+            profile,
+            verified,
+        )
+        .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Delete a user and cascade: removes the user's records from every \
+        collection that has owner_field set, revokes all sessions, then deletes the user row. \
+        Returns {deleted_records: {<collection>: <count>, ...}, revoked_sessions: <n>}. \
+        Errors with NOT_FOUND if the user does not exist.")]
+    async fn delete_user(
+        &self,
+        Parameters(UserIdArgs { user_id }): Parameters<UserIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match user_tools::delete_user(&self.state.inner().pool, user_id).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Revoke all active sessions for a user (forces re-login on all devices). \
+        Returns {revoked: <n>}. Safe to call on a non-existent user (returns revoked: 0).")]
+    async fn revoke_user_sessions(
+        &self,
+        Parameters(UserIdArgs { user_id }): Parameters<UserIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match user_tools::revoke_user_sessions(&self.state.inner().pool, user_id).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    // ── T25: Owner-field + self-register tools ─────────────────────────────
+
+    #[tool(description = "Declare that a column in `collection` is the owner-field — \
+        a foreign key to _system_users(id) that links rows to their creator. \
+        `field` must already exist on the table and carry a FK to _system_users(id). \
+        `read_scope`: 'own' (default) — anon reads filtered to caller's user_id; \
+        'all' — anon reads unfiltered. \
+        Returns {owner_field, read_scope}. \
+        Errors: OWNER_FIELD_INVALID_COLUMN (no such column), OWNER_FIELD_NOT_FK (missing FK).")]
+    async fn set_owner_field(
+        &self,
+        Parameters(SetOwnerFieldArgs { collection, field, read_scope }): Parameters<SetOwnerFieldArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match owner_field_tools::set_owner_field(
+            &self.state.inner().pool,
+            collection,
+            field,
+            read_scope,
+        )
+        .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Remove the owner-field declaration from a collection, \
+        reverting to no ownership filtering. Does not touch row data. \
+        Returns {cleared: true}.")]
+    async fn clear_owner_field(
+        &self,
+        Parameters(ClearOwnerFieldArgs { collection }): Parameters<ClearOwnerFieldArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match owner_field_tools::clear_owner_field(&self.state.inner().pool, collection).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Enable or disable self-registration for this tenant. \
+        When enabled (true), unauthenticated users may POST /auth/register to create an account. \
+        When disabled (false, the default), /auth/register returns 403. \
+        Returns {allow_self_register: <bool>}. \
+        Requires meta.sqlite access — errors with NOT_FOUND if the tenant row is missing.")]
+    async fn set_self_register(
+        &self,
+        Parameters(SetSelfRegisterArgs { enabled }): Parameters<SetSelfRegisterArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let meta = match self.state.meta() {
+            Some(m) => m.clone(),
+            None => {
+                return Err(McpError::internal_error(
+                    "meta connection not available in this context".to_string(),
+                    None,
+                ))
+            }
+        };
+        let tenant_id = self.state.tenant_id().to_string();
+        match owner_field_tools::set_self_register(&meta, &tenant_id, enabled).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
 }
 
 #[tool_handler]
@@ -744,12 +968,14 @@ impl ServerHandler for DrustMcpService {
         let base = self.state.public_base_url();
         let instructions = format!(
             "drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.\n\n\
-             23 tools: `list_collections`, `describe_collection`, `sample_rows`, \
+             32 tools: `list_collections`, `describe_collection`, `sample_rows`, \
              `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
              `drop_collection`, `create_index`, `drop_index`, `list_files`, `delete_file`, \
              `get_file_url`, `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, \
-             `call_rpc`.\n\n\
+             `call_rpc`, `create_user`, `list_users`, `get_user`, `update_user`, \
+             `delete_user`, `revoke_user_sessions`, `set_owner_field`, `clear_owner_field`, \
+             `set_self_register`.\n\n\
              Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
              tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
              endpoint instead:\n\n  \

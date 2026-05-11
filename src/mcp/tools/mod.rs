@@ -1,6 +1,8 @@
 pub mod exploration;
 pub mod files;
 pub mod index;
+pub mod owner_field;
 pub mod read;
 pub mod schema;
+pub mod user;
 pub mod write;
