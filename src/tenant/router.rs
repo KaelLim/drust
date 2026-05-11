@@ -1,6 +1,6 @@
 use crate::auth::bearer::{hash_token, token_hint};
 use crate::auth::middleware::AuthCtx;
-use crate::safety::audit::{AuditEntry, AuditLog};
+use crate::safety::audit::{AuditEntry, AuditLog, DefaultAuditExtra};
 use crate::safety::rate_limit::RateLimiter;
 use crate::safety::rate_limit_ip::IpRateLimit;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
@@ -79,7 +79,12 @@ pub async fn bearer_auth_layer(
         .unwrap_or_else(|| "-".to_string());
     let audit_sink = state.audit.clone();
 
-    let resp = async move {
+    // Resolved during auth; captured here so the audit-emit code below can
+    // attach `auth_kind` / `auth_user_id` without re-reading request extensions
+    // (request is consumed by `next.run`).
+    let mut resolved_auth_ctx: Option<AuthCtx> = None;
+
+    let resp = async {
         let tenant_id = match params.get("tenant") {
             Some(t) => t.clone(),
             None => return (StatusCode::BAD_REQUEST, "missing tenant in path").into_response(),
@@ -170,10 +175,12 @@ pub async fn bearer_auth_layer(
             // by hash without re-hashing from the plaintext bearer.
             let session_hash =
                 crate::auth::user_session::hash_token(&bearer);
-            req.extensions_mut().insert(AuthCtx::User {
+            let ctx = AuthCtx::User {
                 user_id: session_info.user_id.clone(),
                 token_hash: session_hash,
-            });
+            };
+            resolved_auth_ctx = Some(ctx.clone());
+            req.extensions_mut().insert(ctx);
             req.extensions_mut().insert(TenantRef {
                 tenant_id: tenant_id.clone(),
                 token_hint: token_hint(&bearer),
@@ -218,11 +225,13 @@ pub async fn bearer_auth_layer(
                 );
             }
         };
-        req.extensions_mut().insert(match role {
+        let ctx = match role {
             TokenRole::Anon => AuthCtx::Anon,
             TokenRole::Service => AuthCtx::Service,
             TokenRole::User => unreachable!("user sessions are resolved before meta lookup"),
-        });
+        };
+        resolved_auth_ctx = Some(ctx.clone());
+        req.extensions_mut().insert(ctx);
         req.extensions_mut().insert(TenantRef {
             tenant_id: tenant_id.clone(),
             token_hint: token_hint(&bearer),
@@ -240,9 +249,13 @@ pub async fn bearer_auth_layer(
     let op = format!("{method_for_audit} {op_path}");
     let status = resp.status();
     // Read handler-supplied extras BEFORE consuming `resp`.
-    let extra: Option<crate::safety::audit::AuditExtra> = resp
+    let handler_extra: Option<crate::safety::audit::AuditExtra> = resp
         .extensions()
         .get::<crate::safety::audit::AuditExtra>()
+        .cloned();
+    let default_extra: Option<DefaultAuditExtra> = resp
+        .extensions()
+        .get::<DefaultAuditExtra>()
         .cloned();
     let entry = if status.is_success() || status.is_redirection() {
         AuditEntry::success(&tenant_for_audit, &hint_for_audit, &op, duration_ms)
@@ -256,7 +269,29 @@ pub async fn bearer_auth_layer(
             "",
         )
     };
-    let entry = if let Some(extra) = extra {
+    // Layer 1: default fields from auth context (auth_kind, auth_user_id).
+    // Only present when auth actually succeeded (pre-auth failures have None).
+    let entry = if let Some(ctx) = &resolved_auth_ctx {
+        let default_fields = match ctx {
+            AuthCtx::User { user_id, .. } => serde_json::json!({
+                "auth_kind": "user",
+                "auth_user_id": user_id,
+            }),
+            AuthCtx::Service => serde_json::json!({"auth_kind": "service"}),
+            AuthCtx::Anon => serde_json::json!({"auth_kind": "anon"}),
+        };
+        entry.with_extra(default_fields)
+    } else {
+        entry
+    };
+    // Layer 2: handler-set DefaultAuditExtra (overrides layer-1 fields if present).
+    let entry = if let Some(de) = default_extra {
+        entry.with_extra(de.0)
+    } else {
+        entry
+    };
+    // Layer 3: handler-set AuditExtra (overrides all previous fields).
+    let entry = if let Some(extra) = handler_extra {
         entry.with_extra(extra.0)
     } else {
         entry

@@ -11,6 +11,12 @@ use tokio::sync::mpsc;
 #[derive(Clone, Debug)]
 pub struct AuditExtra(pub serde_json::Value);
 
+/// Default audit metadata derived from the authentication context, set
+/// by `bearer_auth_layer` once per request. Merged BEFORE `AuditExtra`,
+/// so handler-supplied keys override these defaults.
+#[derive(Clone, Debug)]
+pub struct DefaultAuditExtra(pub serde_json::Value);
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuditEntry {
     pub ts: String,
