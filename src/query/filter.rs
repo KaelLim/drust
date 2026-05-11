@@ -11,6 +11,10 @@ pub struct ListParams {
     pub sort_dir: SortDir,
     pub page: u32,
     pub per_page: u32,
+    /// Row-level owner filter: when `Some((field, user_id))`, an
+    /// `AND "field" = 'user_id'` clause is appended to the WHERE.
+    /// User IDs are `u-<uuid4>` shaped — safe to inline after escaping.
+    pub owner_filter: Option<(String, String)>,
 }
 
 impl Default for ListParams {
@@ -21,6 +25,7 @@ impl Default for ListParams {
             sort_dir: SortDir::Desc,
             page: 1,
             per_page: 20,
+            owner_filter: None,
         }
     }
 }
@@ -37,6 +42,11 @@ fn q(id: &str) -> String {
     format!("\"{}\"", id.replace('"', "\"\""))
 }
 
+/// Single-quote escape for safe SQL literal inlining (e.g. user IDs).
+fn sql_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 pub fn build_list_sql(collection: &str, p: &ListParams) -> String {
     let table = q(collection);
     let dir = match p.sort_dir {
@@ -47,18 +57,38 @@ pub fn build_list_sql(collection: &str, p: &ListParams) -> String {
     let page = p.page.max(1) as u64;
     let offset = (page - 1) * per_page;
     let mut out = format!("SELECT * FROM {table}");
+    // Combine user-supplied filter and owner filter under one WHERE clause.
+    let mut wheres: Vec<String> = Vec::new();
     if let Some(f) = &p.filter {
-        out.push_str(&format!(" WHERE ({f})"));
+        wheres.push(format!("({f})"));
+    }
+    if let Some((field, val)) = &p.owner_filter {
+        wheres.push(format!("{} = '{}'", q(field), sql_escape(val)));
+    }
+    if !wheres.is_empty() {
+        out.push_str(&format!(" WHERE {}", wheres.join(" AND ")));
     }
     out.push_str(&format!(" ORDER BY {} {}", q(&p.sort_field), dir));
     out.push_str(&format!(" LIMIT {per_page} OFFSET {offset}"));
     out
 }
 
-pub fn build_count_sql(collection: &str, filter: Option<&str>) -> String {
+pub fn build_count_sql(
+    collection: &str,
+    filter: Option<&str>,
+    owner_filter: Option<(&str, &str)>,
+) -> String {
     let table = q(collection);
-    match filter {
-        Some(f) => format!("SELECT COUNT(*) FROM {table} WHERE ({f})"),
-        None => format!("SELECT COUNT(*) FROM {table}"),
+    let mut wheres: Vec<String> = Vec::new();
+    if let Some(f) = filter {
+        wheres.push(format!("({f})"));
+    }
+    if let Some((field, val)) = owner_filter {
+        wheres.push(format!("{} = '{}'", q(field), sql_escape(val)));
+    }
+    if wheres.is_empty() {
+        format!("SELECT COUNT(*) FROM {table}")
+    } else {
+        format!("SELECT COUNT(*) FROM {table} WHERE {}", wheres.join(" AND "))
     }
 }

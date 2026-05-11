@@ -190,6 +190,81 @@ pub async fn spin_up_tenant_self_register(tenant: &str) -> (Router, String, temp
     (router, tid, dir)
 }
 
+/// Register a user and log them in via the tenant auth endpoints, returning
+/// the session token. Uses `oneshot` — no live server required.
+pub async fn register_and_login_via_app(
+    app: &Router,
+    tid: &str,
+    email: &str,
+    pw: &str,
+) -> String {
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use tower::ServiceExt;
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/auth/register"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({"email": email, "password": pw}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/auth/login"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({"email": email, "password": pw}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    v["token"].as_str().unwrap().to_string()
+}
+
+/// Spin up a tenant with a service token AND an anon token, with
+/// `allow_self_register = 1` enabled.
+///
+/// Returns `(app, tenant_id, service_token, anon_token, dir)`.
+pub async fn spin_up_dual_role_self_register(
+    tenant: &str,
+) -> (Router, String, String, String, tempfile::TempDir) {
+    let (app, svc_tok, dir) = spin_up_tenant_with_role(tenant, "service").await;
+    // Enable self-registration on the tenant.
+    let meta_path = dir.path().join("meta.sqlite");
+    rusqlite::Connection::open(&meta_path)
+        .unwrap()
+        .execute(
+            "UPDATE tenants SET allow_self_register = 1 WHERE id = ?1",
+            rusqlite::params![tenant],
+        )
+        .unwrap();
+    // Insert a second token with role = 'anon' for the same tenant.
+    let anon_tok = generate_token();
+    let anon_hash = hash_token(&anon_tok);
+    rusqlite::Connection::open(&meta_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, 'anon')",
+            rusqlite::params![tenant, anon_hash],
+        )
+        .unwrap();
+    (app, tenant.to_string(), svc_tok, anon_tok, dir)
+}
+
 pub fn seed_tenant_fs(dir: &tempfile::TempDir, tenant: &str) {
     use drust::storage::meta::open_meta;
     let data = dir.path().to_path_buf();

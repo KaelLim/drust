@@ -512,18 +512,22 @@ mod meta_io_tests {
 }
 
 /// Returns true if the caller's role is permitted to perform `verb` on
-/// the given collection. Service is unrestricted; anon is checked
-/// against the cached anon_caps. Missing schema (or cache miss + DB
+/// the given collection. Service and User tokens are unrestricted; Anon is
+/// checked against the cached anon_caps. Missing schema (or cache miss + DB
 /// error) yields `false` — fail closed.
+///
+/// Note: owner-scoped policy (ANON_FORBIDDEN_OWNER_SCOPED) is enforced at the
+/// handler level for writes, *after* this gate passes for the User role.
 pub fn has_dml_cap(
     role: crate::tenant::router::TokenRole,
     verb: DmlVerb,
     schema: &CollectionSchema,
 ) -> bool {
-    if matches!(role, crate::tenant::router::TokenRole::Service) {
-        return true;
+    match role {
+        crate::tenant::router::TokenRole::Service
+        | crate::tenant::router::TokenRole::User => true,
+        crate::tenant::router::TokenRole::Anon => schema.anon_caps.contains(&verb),
     }
-    schema.anon_caps.contains(&verb)
 }
 
 #[cfg(test)]

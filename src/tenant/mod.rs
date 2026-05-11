@@ -182,7 +182,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             "/t/{tenant}/records/{coll}",
             get(records::list_handler).post({
                 let b = bus.clone();
-                move |ext, p, body| records::create_handler(ext, p, body, b.clone())
+                move |ext, ctx, p, body| records::create_handler(ext, ctx, p, body, b.clone())
             }),
         )
         .route(
@@ -190,11 +190,11 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             get(records::get_handler)
                 .patch({
                     let b = bus.clone();
-                    move |ext, p, body| records::update_handler(ext, p, body, b.clone())
+                    move |ext, ctx, p, body| records::update_handler(ext, ctx, p, body, b.clone())
                 })
                 .delete({
                     let b = bus.clone();
-                    move |ext, p| records::delete_handler(ext, p, b.clone())
+                    move |ext, ctx, p| records::delete_handler(ext, ctx, p, b.clone())
                 }),
         )
         .route(

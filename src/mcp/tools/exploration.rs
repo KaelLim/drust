@@ -46,7 +46,7 @@ pub async fn count_rows(
     where_clause: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
     let pool = s.inner().pool.clone();
-    let sql = build_count_sql(name, where_clause);
+    let sql = build_count_sql(name, where_clause, None);
     let n: i64 = pool
         .with_reader(move |c| {
             attach_readonly_authorizer(c);

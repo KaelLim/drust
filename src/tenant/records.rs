@@ -1,3 +1,4 @@
+use crate::auth::middleware::AuthCtx;
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
@@ -89,6 +90,82 @@ async fn require_dml_cap(
     Ok(schema)
 }
 
+/// Same as `require_dml_cap` for write verbs (Insert/Update/Delete), but
+/// additionally checks owner-scoped anon policy *before* anon_caps, so
+/// anon callers on owner-scoped collections get `ANON_FORBIDDEN_OWNER_SCOPED`
+/// rather than the generic `ANON_DENIED`.
+async fn require_write_cap(
+    tenant: &TenantRef,
+    ctx: &AuthCtx,
+    coll: &str,
+    verb: DmlVerb,
+) -> Result<CollectionSchema, Response> {
+    if is_protected_collection(coll) {
+        return Err(json_error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            &format!("no such collection: {coll}"),
+        ));
+    }
+    let pool = tenant.pool.clone();
+    let cache = pool.schema_cache.clone();
+    let coll_owned = coll.to_string();
+    let load_res = pool
+        .with_reader(move |c| cache.ensure_loaded(c, &coll_owned))
+        .await;
+    let schema = match load_res {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return Err(json_error(
+                StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+                &format!("no such collection: {coll}"),
+            ));
+        }
+        Err(e) => {
+            return Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            ));
+        }
+    };
+    // Anon on an owner-scoped collection gets a specific error that distinguishes
+    // "collection is owner-gated" from "this collection doesn't allow anon writes".
+    if matches!(ctx, AuthCtx::Anon) && schema.owner_field.is_some() {
+        return Err(json_error(
+            StatusCode::FORBIDDEN,
+            "ANON_FORBIDDEN_OWNER_SCOPED",
+            "anon tokens may not write to owner-scoped collections",
+        ));
+    }
+    // Standard anon_caps gate (also allows User/Service through unconditionally).
+    if !has_dml_cap(tenant.role, verb, &schema) {
+        return Err(json_error(
+            StatusCode::FORBIDDEN,
+            "ANON_DENIED",
+            &format!(
+                "anon role lacks '{}' on collection '{}'",
+                verb.as_str(),
+                coll
+            ),
+        ));
+    }
+    Ok(schema)
+}
+
+/// Compute an owner row-level filter `(field_name, user_id)` when:
+/// - the collection has an `owner_field` with `read_scope = "own"`, AND
+/// - the caller is a `User` token (Service and Anon bypass the filter).
+fn compute_owner_filter(ctx: &AuthCtx, schema: &CollectionSchema) -> Option<(String, String)> {
+    match (ctx, schema.owner_field.as_deref(), schema.read_scope.as_deref()) {
+        (AuthCtx::User { user_id, .. }, Some(field), Some("own")) => {
+            Some((field.to_string(), user_id.clone()))
+        }
+        _ => None,
+    }
+}
+
 fn json_to_sql_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Null,
@@ -136,12 +213,14 @@ fn record_as_json(
 
 pub async fn list_handler(
     Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
     Path((_tenant, coll)): Path<(String, String)>,
     Query(qs): Query<ListQs>,
 ) -> Response {
-    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Select).await {
-        return r;
-    }
+    let schema = match require_dml_cap(&t, &coll, DmlVerb::Select).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let exists = pool
@@ -155,19 +234,32 @@ pub async fn list_handler(
             "no such collection",
         );
     }
+    // Compute owner_filter: only for User tokens on collections with
+    // read_scope = "own".  Service and Anon bypass the row-level filter.
+    let owner_filter = compute_owner_filter(&ctx, &schema);
     let (sort_field, sort_dir) = match qs.sort.as_deref() {
         Some(s) => parse_sort(s),
         None => ("created_at".into(), SortDir::Desc),
     };
+    // Keep a copy of the (field, user_id) tuple for the count query — we
+    // need `&str` slices that outlive the params struct.
+    let owner_filter_for_count = owner_filter.clone();
     let params = ListParams {
         filter: qs.filter.clone(),
         sort_field,
         sort_dir,
         page: qs.page.unwrap_or(1),
         per_page: qs.per_page.unwrap_or(20),
+        owner_filter,
     };
     let list_sql = build_list_sql(&coll, &params);
-    let count_sql = build_count_sql(&coll, qs.filter.as_deref());
+    let count_sql = build_count_sql(
+        &coll,
+        qs.filter.as_deref(),
+        owner_filter_for_count
+            .as_ref()
+            .map(|(f, v)| (f.as_str(), v.as_str())),
+    );
     let records_res = {
         let sql = list_sql.clone();
         pool.with_reader(move |c| {
@@ -221,11 +313,14 @@ pub async fn list_handler(
 
 pub async fn get_handler(
     Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
 ) -> Response {
-    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Select).await {
-        return r;
-    }
+    let schema = match require_dml_cap(&t, &coll, DmlVerb::Select).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let owner_filter = compute_owner_filter(&ctx, &schema);
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let out = pool
@@ -233,10 +328,19 @@ pub async fn get_handler(
             if !collection_exists(c, &coll_clone)? {
                 return Ok(None);
             }
-            let mut stmt = c.prepare(&format!(
+            // Build the query; append owner filter as a literal when needed.
+            let mut sql = format!(
                 "SELECT * FROM \"{}\" WHERE id = ?1",
                 coll_clone.replace('"', "\"\"")
-            ))?;
+            );
+            if let Some((field, user_id)) = &owner_filter {
+                sql.push_str(&format!(
+                    " AND \"{}\" = '{}'",
+                    field.replace('"', "\"\""),
+                    user_id.replace('\'', "''")
+                ));
+            }
+            let mut stmt = c.prepare(&sql)?;
             let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
             let rec = record_as_json(&mut stmt, &cols, id);
             match rec {
@@ -260,14 +364,54 @@ pub struct DataBody {
 
 pub async fn create_handler(
     Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
     Path((_tenant, coll)): Path<(String, String)>,
     Json(body): Json<DataBody>,
     bus: EventBus,
 ) -> Response {
-    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Insert).await {
-        return r;
+    let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Insert).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+
+    // Owner-field policy checks for Service/User (anon already blocked by require_write_cap):
+    if let Some(ref owner_field) = schema.owner_field {
+        match &ctx {
+            AuthCtx::Anon => {
+                // already blocked above; unreachable but keep for exhaustiveness
+                return json_error(
+                    StatusCode::FORBIDDEN,
+                    "ANON_FORBIDDEN_OWNER_SCOPED",
+                    "anon tokens may not write to owner-scoped collections",
+                );
+            }
+            AuthCtx::Service => {
+                // Service must explicitly supply the owner field so the row
+                // is attributed to a real user; missing it is a caller error.
+                let data_obj = body.data.as_object();
+                let supplied = data_obj
+                    .and_then(|o| o.get(owner_field))
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
+                if !supplied {
+                    return json_error(
+                        StatusCode::CONFLICT,
+                        "OWNER_FIELD_REQUIRED",
+                        &format!("service token must supply '{owner_field}' on owner-scoped collection"),
+                    );
+                }
+            }
+            AuthCtx::User { user_id, .. } => {
+                // User token: the owner field is always overwritten to the
+                // caller's user_id — clients cannot forge another user's id.
+                // (Handled inside the writer closure below.)
+                let _ = user_id; // used in closure capture
+            }
+        }
     }
-    let data = match body.data.as_object() {
+
+    let mut data = match body.data.as_object() {
         Some(o) => o.clone(),
         None => {
             return json_error(
@@ -277,6 +421,15 @@ pub async fn create_handler(
             );
         }
     };
+
+    // For user tokens with an owner_field, overwrite whatever the client sent.
+    if let (Some(owner_field), AuthCtx::User { user_id, .. }) = (&schema.owner_field, &ctx) {
+        data.insert(
+            owner_field.clone(),
+            serde_json::Value::String(user_id.clone()),
+        );
+    }
+
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
@@ -356,13 +509,16 @@ pub async fn create_handler(
 
 pub async fn update_handler(
     Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
     Json(body): Json<DataBody>,
     bus: EventBus,
 ) -> Response {
-    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Update).await {
-        return r;
-    }
+    let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Update).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let owner_filter = compute_owner_filter(&ctx, &schema);
     let data = match body.data.as_object() {
         Some(o) => o.clone(),
         None => {
@@ -401,11 +557,24 @@ pub async fn update_handler(
                 .enumerate()
                 .map(|(i, k)| format!("\"{}\" = ?{}", k.replace('"', "\"\""), i + 1))
                 .collect();
+            let id_param_idx = data.len() + 1;
+            // Append owner filter as a literal — user_id is UUID shaped,
+            // safe to inline after escaping.
+            let owner_clause = if let Some((field, user_id)) = &owner_filter {
+                format!(
+                    " AND \"{}\" = '{}'",
+                    field.replace('"', "\"\""),
+                    user_id.replace('\'', "''")
+                )
+            } else {
+                String::new()
+            };
             let sql = format!(
-                "UPDATE \"{}\" SET {}, updated_at = datetime('now') WHERE id = ?{}",
+                "UPDATE \"{}\" SET {}, updated_at = datetime('now') WHERE id = ?{}{}",
                 coll_clone.replace('"', "\"\""),
                 set_exprs.join(","),
-                data.len() + 1
+                id_param_idx,
+                owner_clause,
             );
             let mut params: Vec<Value> = data.values().map(json_to_sql_value).collect();
             params.push(Value::Integer(id));
@@ -451,20 +620,33 @@ pub async fn update_handler(
 
 pub async fn delete_handler(
     Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
     bus: EventBus,
 ) -> Response {
-    if let Err(r) = require_dml_cap(&t, &coll, DmlVerb::Delete).await {
-        return r;
-    }
+    let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Delete).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let owner_filter = compute_owner_filter(&ctx, &schema);
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
     let res = pool
         .with_writer(move |c| {
+            let owner_clause = if let Some((field, user_id)) = &owner_filter {
+                format!(
+                    " AND \"{}\" = '{}'",
+                    field.replace('"', "\"\""),
+                    user_id.replace('\'', "''")
+                )
+            } else {
+                String::new()
+            };
             let sql = format!(
-                "DELETE FROM \"{}\" WHERE id = ?1",
-                coll_clone.replace('"', "\"\"")
+                "DELETE FROM \"{}\" WHERE id = ?1{}",
+                coll_clone.replace('"', "\"\""),
+                owner_clause,
             );
             c.execute(&sql, rusqlite::params![id])
         })

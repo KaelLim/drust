@@ -212,6 +212,7 @@ pub async fn collection_rows_page(
         sort_dir,
         page,
         per_page,
+        owner_filter: None, // admin browse has no row-level owner filter
     };
 
     let list_sql = build_list_sql(&coll_name, &params);
@@ -222,6 +223,7 @@ pub async fn collection_rows_page(
         } else {
             Some(filter_val.as_str())
         },
+        None,
     );
 
     let mut error: Option<String> = None;
