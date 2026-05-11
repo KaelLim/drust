@@ -377,7 +377,10 @@ pub fn write_anon_caps(
 }
 
 /// Set or clear `owner_field` + `read_scope` for a collection. Pass `None`
-/// for both to unset (revert to non-owner-scoped behavior).
+/// for both to unset (revert to non-owner-scoped behavior). Upserts: if no
+/// meta row exists yet (legacy collections pre-v1.6), one is created with
+/// default `anon_caps_json = '["select"]'` so the setter is never a silent
+/// no-op.
 pub fn set_owner_field(
     conn: &Connection,
     collection: &str,
@@ -385,9 +388,14 @@ pub fn set_owner_field(
     read_scope: Option<&str>,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE _system_collection_meta SET owner_field = ?1, read_scope = ?2 \
-         WHERE collection_name = ?3",
-        rusqlite::params![field, read_scope, collection],
+        "INSERT INTO _system_collection_meta \
+              (collection_name, anon_caps_json, owner_field, read_scope, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, ?3, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              owner_field = excluded.owner_field, \
+              read_scope  = excluded.read_scope, \
+              updated_at  = excluded.updated_at",
+        rusqlite::params![collection, field, read_scope],
     )?;
     Ok(())
 }
@@ -486,6 +494,20 @@ mod meta_io_tests {
     fn delete_missing_row_is_noop() {
         let (_t, conn) = fresh();
         delete_collection_meta(&conn, "nonexistent").unwrap();
+    }
+
+    #[test]
+    fn set_owner_field_upserts_when_row_absent() {
+        // Legacy collection: meta row never created yet. Upsert path must
+        // create the row instead of silently dropping the write.
+        let (_t, conn) = fresh();
+        set_owner_field(&conn, "legacy", Some("user_id"), Some("own")).unwrap();
+        let (f, s) = read_owner_field(&conn, "legacy").unwrap();
+        assert_eq!(f.as_deref(), Some("user_id"));
+        assert_eq!(s.as_deref(), Some("own"));
+        // The implicit row keeps default anon_caps so the collection is
+        // not inadvertently locked down.
+        assert_eq!(read_anon_caps(&conn, "legacy").unwrap(), default_anon_caps());
     }
 }
 
