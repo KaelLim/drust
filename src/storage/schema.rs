@@ -166,6 +166,13 @@ pub struct CollectionSchema {
     /// `[Select]` for backwards compatibility with collections that
     /// pre-date the capability feature.
     pub anon_caps: BTreeSet<DmlVerb>,
+    /// Column used for row-level ownership. None = non-owner-scoped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_field: Option<String>,
+    /// Either "own" or "all" (T1 vocabulary). Only meaningful when
+    /// `owner_field` is `Some`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_scope: Option<String>,
 }
 
 fn user_tables(conn: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -298,12 +305,15 @@ pub fn describe_collection(
 
     let rc = row_count(conn, name)?;
     let anon_caps = read_anon_caps(conn, name)?;
+    let (owner_field, read_scope) = read_owner_field(conn, name)?;
     Ok(Some(CollectionSchema {
         name: name.to_string(),
         fields,
         indices,
         row_count: rc,
         anon_caps,
+        owner_field,
+        read_scope,
     }))
 }
 
@@ -366,6 +376,40 @@ pub fn write_anon_caps(
     Ok(())
 }
 
+/// Set or clear `owner_field` + `read_scope` for a collection. Pass `None`
+/// for both to unset (revert to non-owner-scoped behavior).
+pub fn set_owner_field(
+    conn: &Connection,
+    collection: &str,
+    field: Option<&str>,
+    read_scope: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE _system_collection_meta SET owner_field = ?1, read_scope = ?2 \
+         WHERE collection_name = ?3",
+        rusqlite::params![field, read_scope, collection],
+    )?;
+    Ok(())
+}
+
+/// Read the current `(owner_field, read_scope)` pair. Returns `(None, None)`
+/// for collections with no meta row at all (legacy collections pre-v1.6).
+pub fn read_owner_field(
+    conn: &Connection,
+    collection: &str,
+) -> rusqlite::Result<(Option<String>, Option<String>)> {
+    match conn.query_row(
+        "SELECT owner_field, read_scope FROM _system_collection_meta \
+         WHERE collection_name = ?1",
+        rusqlite::params![collection],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+    ) {
+        Ok(t) => Ok(t),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok((None, None)),
+        Err(e) => Err(e),
+    }
+}
+
 /// Drop the metadata row for a collection. Called from drop_collection.
 /// Idempotent — missing row is fine.
 pub fn delete_collection_meta(
@@ -392,7 +436,9 @@ mod meta_io_tests {
             "CREATE TABLE _system_collection_meta (
                 collection_name TEXT PRIMARY KEY,
                 anon_caps_json  TEXT NOT NULL,
-                updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                owner_field     TEXT,
+                read_scope      TEXT
             );",
         ).unwrap();
         (tmp, conn)
@@ -470,6 +516,8 @@ mod cap_gate_tests {
             indices: vec![],
             row_count: 0,
             anon_caps: caps.iter().copied().collect(),
+            owner_field: None,
+            read_scope: None,
         }
     }
 
@@ -504,5 +552,52 @@ mod cap_gate_tests {
         for verb in [DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
             assert!(has_dml_cap(TokenRole::Anon, verb, &s));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_field_round_trips_through_meta() {
+        use rusqlite::Connection;
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE _system_collection_meta ( \
+                collection_name TEXT PRIMARY KEY, \
+                anon_caps_json TEXT NOT NULL DEFAULT '[\"select\"]', \
+                owner_field TEXT, read_scope TEXT, \
+                updated_at TEXT NOT NULL DEFAULT '');"
+        ).unwrap();
+        c.execute(
+            "INSERT INTO _system_collection_meta (collection_name, anon_caps_json, updated_at) \
+             VALUES ('posts', '[\"select\"]', '2026')",
+            [],
+        ).unwrap();
+
+        set_owner_field(&c, "posts", Some("user_id"), Some("own")).unwrap();
+        let (f, s) = read_owner_field(&c, "posts").unwrap();
+        assert_eq!(f.as_deref(), Some("user_id"));
+        assert_eq!(s.as_deref(), Some("own"));
+
+        set_owner_field(&c, "posts", None, None).unwrap();
+        let (f, s) = read_owner_field(&c, "posts").unwrap();
+        assert_eq!(f, None);
+        assert_eq!(s, None);
+    }
+
+    #[test]
+    fn read_owner_field_missing_row_yields_none() {
+        use rusqlite::Connection;
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE _system_collection_meta ( \
+                collection_name TEXT PRIMARY KEY, \
+                anon_caps_json TEXT, owner_field TEXT, read_scope TEXT, updated_at TEXT);"
+        ).unwrap();
+        let (f, s) = read_owner_field(&c, "absent").unwrap();
+        assert_eq!(f, None);
+        assert_eq!(s, None);
     }
 }

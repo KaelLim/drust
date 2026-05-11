@@ -83,7 +83,9 @@ CREATE INDEX IF NOT EXISTS idx_system_files_visibility
 CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
   collection_name TEXT PRIMARY KEY,
   anon_caps_json  TEXT NOT NULL DEFAULT '["select"]',
-  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  owner_field     TEXT,
+  read_scope      TEXT
 );
 
 -- v1.6: stored RPC functions (Supabase-style named SELECTs).
