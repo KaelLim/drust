@@ -2,6 +2,7 @@ pub mod auth_routes;
 pub mod collections;
 pub mod events;
 pub mod mcp_dispatch;
+pub mod owner_field;
 pub mod query_endpoint;
 pub mod records;
 pub mod router;
@@ -163,6 +164,11 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .route(
             "/t/{tenant}/collections/{coll}",
             get(collections::describe_handler),
+        )
+        .route(
+            "/t/{tenant}/collections/{coll}/owner-field",
+            axum::routing::post(owner_field::set_owner_field_handler)
+                .delete(owner_field::clear_owner_field_handler),
         )
         .route(
             "/t/{tenant}/collections/{coll}/indexes",
