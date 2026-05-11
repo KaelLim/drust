@@ -203,7 +203,7 @@ pub fn increment(
     role: TokenRole,
 ) -> rusqlite::Result<()> {
     let col = match role {
-        TokenRole::Anon => "anon_calls",
+        TokenRole::Anon | TokenRole::User => "anon_calls",
         TokenRole::Service => "service_calls",
     };
     let sql = format!(

@@ -28,14 +28,14 @@ pub async fn dispatch(
     Path(params): Path<std::collections::HashMap<String, String>>,
     req: Request<Body>,
 ) -> Response {
-    // MCP is service-only. An anon key is for read-only REST consumers;
-    // exposing MCP over anon would widen the attack surface without a
-    // clear use case.
-    if tenant_ref.role == TokenRole::Anon {
+    // MCP is service-only. Anon and user keys are for REST consumers;
+    // exposing MCP over non-service keys would widen the attack surface
+    // without a clear use case.
+    if matches!(tenant_ref.role, TokenRole::Anon | TokenRole::User) {
         return json_err(
             StatusCode::FORBIDDEN,
             "WRITE_DENIED",
-            "MCP requires a service key; anon keys cannot open an MCP session",
+            "MCP requires a service key; anon/user keys cannot open an MCP session",
         );
     }
 
