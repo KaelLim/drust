@@ -54,7 +54,12 @@ pub async fn register_handler(
             "password too long",
         );
     }
-    if !email_looks_valid(&body.email) {
+    // Canonicalize email — strip surrounding whitespace before validating and
+    // storing. Without this, `a@b.com` and ` a@b.com ` would both be accepted
+    // as distinct users since SQL's UNIQUE COLLATE NOCASE is case-only, not
+    // whitespace-aware.
+    let email = body.email.trim().to_string();
+    if !email_looks_valid(&email) {
         return err(StatusCode::UNPROCESSABLE_ENTITY, "EMAIL_INVALID", "invalid email");
     }
     let profile_str = body.profile.as_ref().map(|v| v.to_string());
@@ -94,25 +99,23 @@ pub async fn register_handler(
     };
     let now = chrono::Utc::now().to_rfc3339();
     let user_id = format!("u-{}", uuid::Uuid::new_v4());
-    let email = body.email.clone();
-    let hash_clone = hash.clone();
-    let profile_clone = profile_str.clone();
-    let now_clone = now.clone();
-    let uid_clone = user_id.clone();
+    let uid_for_insert = user_id.clone();
+    let email_for_insert = email.clone();
+    let now_for_insert = now.clone();
     let inserted = pool
         .with_writer(move |c| {
             c.execute(
                 "INSERT INTO _system_users \
                  (id, email, password_hash, verified, profile, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, 0, ?4, ?5, ?5)",
-                rusqlite::params![uid_clone, email, hash_clone, profile_clone, now_clone],
+                rusqlite::params![uid_for_insert, email_for_insert, hash, profile_str, now_for_insert],
             )
         })
         .await;
     match inserted {
         Ok(_) => (
             StatusCode::CREATED,
-            Json(json!({"user_id": user_id, "email": body.email, "created_at": now})),
+            Json(json!({"user_id": user_id, "email": email, "created_at": now})),
         )
             .into_response(),
         Err(e) if e.to_string().contains("UNIQUE") => {
