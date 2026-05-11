@@ -34,6 +34,18 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(username = %u, "bootstrapped initial admin");
         }
     }
+    // Run schema migrations on every boot. Idempotent + per-tenant isolated.
+    let migration_report = drust::db::migrations::run_migrations(&meta, &cfg.data_dir)
+        .expect("meta-level migration failed; refusing to boot");
+    tracing::info!(
+        meta_done = migration_report.meta_done,
+        tenants_ok = migration_report.tenants_ok.len(),
+        tenants_failed = migration_report.tenants_failed.len(),
+        "migration complete"
+    );
+    for (tid, err) in &migration_report.tenants_failed {
+        tracing::warn!(tenant = %tid, error = %err, "tenant migration failed; tenant will return 503");
+    }
     let meta = Arc::new(Mutex::new(meta));
 
     let tenants = Arc::new(TenantRegistry::new(
