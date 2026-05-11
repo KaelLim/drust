@@ -416,11 +416,19 @@ pub async fn delete_user_handler(
         })
         .await;
     match res {
-        Ok((dr, rs)) => (
-            StatusCode::OK,
-            Json(json!({"deleted_records": dr, "revoked_sessions": rs})),
-        )
-            .into_response(),
+        Ok((dr, rs)) => {
+            let mut resp = (
+                StatusCode::OK,
+                Json(json!({"deleted_records": dr, "revoked_sessions": rs})),
+            )
+                .into_response();
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(serde_json::json!({
+                    "deleted_records": dr,
+                    "revoked_sessions": rs,
+                })));
+            resp
+        }
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             err(StatusCode::NOT_FOUND, "NOT_FOUND", "user not found")
         }
