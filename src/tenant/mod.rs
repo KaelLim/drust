@@ -1,3 +1,4 @@
+pub mod admin_user_routes;
 pub mod auth_routes;
 pub mod collections;
 pub mod events;
@@ -219,6 +220,22 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .route(
             "/t/{tenant}/rpc/{name}",
             post(crate::rpc::handler::call_rpc),
+        )
+        // ── Admin user-management (service-only) ──────────────────────────
+        .route(
+            "/t/{tenant}/admin/users",
+            post(admin_user_routes::create_user_handler)
+                .get(admin_user_routes::list_users_handler),
+        )
+        .route(
+            "/t/{tenant}/admin/users/{uid}",
+            get(admin_user_routes::get_user_handler)
+                .patch(admin_user_routes::update_user_handler)
+                .delete(admin_user_routes::delete_user_handler),
+        )
+        .route(
+            "/t/{tenant}/admin/users/{uid}/revoke-sessions",
+            post(admin_user_routes::revoke_sessions_handler),
         )
         .route(
             "/t/{tenant}/mcp",
