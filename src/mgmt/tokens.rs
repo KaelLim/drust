@@ -22,6 +22,8 @@ struct ApiKeysPage {
     /// sidebar still renders the virtual `_api_keys` and `_system_files` rows.
     collections: Vec<Collection>,
     active_coll: String,
+    /// Current state of `tenants.allow_self_register`. Drives the checkbox.
+    allow_self_register: bool,
     version: &'static str,
 }
 
@@ -189,14 +191,14 @@ pub async fn api_keys_page(
     Path(tenant_id): Path<String>,
 ) -> Response {
     let conn = state.session.meta.lock().await;
-    let meta: Option<(String, String)> = conn
+    let meta: Option<(String, String, i64)> = conn
         .query_row(
-            "SELECT name, created_at FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT name, created_at, COALESCE(allow_self_register, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
             rusqlite::params![tenant_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok();
-    let (name, created) = match meta {
+    let (name, created, self_register_flag) = match meta {
         Some(m) => m,
         None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
     };
@@ -221,6 +223,7 @@ pub async fn api_keys_page(
             service,
             collections,
             active_coll: "_api_keys".to_string(),
+            allow_self_register: self_register_flag != 0,
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()

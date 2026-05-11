@@ -26,6 +26,12 @@
       <span class="arrow" style="opacity:.7;">🔒</span>
       <span>_system_files</span>
     </a>
+    <a class="col-item{% if active_coll == "_system_users" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/collections/_system_users"
+       title="_system_users (registered users)">
+      <span class="arrow" style="opacity:.7;">👤</span>
+      <span>_system_users</span>
+    </a>
     <a class="col-item{% if active_coll == "_logs" %} on{% endif %}"
        href="/drust/admin/tenants/{{ tenant_id }}/_logs"
        title="_logs (audit · request history)">

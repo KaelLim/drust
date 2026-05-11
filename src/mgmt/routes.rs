@@ -179,6 +179,7 @@ impl MgmtState {
         use crate::mgmt::tenants::{
             TenantsState, create_tenant_form, create_tenant_json, list_page_axum,
             soft_delete_tenant, soft_delete_tenant_form, tenant_files_admin_page,
+            toggle_self_register,
         };
         use axum::extract::DefaultBodyLimit;
 
@@ -341,6 +342,10 @@ impl MgmtState {
             .route(
                 "/admin/tenants/{id}/_logs",
                 get(super::audit::audit_tenant_page),
+            )
+            .route(
+                "/admin/tenants/{id}/allow-self-register",
+                post(toggle_self_register),
             )
             .with_state(tenants_state);
 

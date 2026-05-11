@@ -422,6 +422,40 @@ pub async fn soft_delete_tenant_form(
     Redirect::to("/drust/admin/tenants").into_response()
 }
 
+// ─── T28: allow_self_register toggle ─────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct ToggleSelfRegisterBody {
+    pub enabled: bool,
+}
+
+/// `POST /admin/tenants/{id}/allow-self-register`
+///
+/// Flips `tenants.allow_self_register` for the given tenant. Body must be
+/// `{"enabled": true|false}`. Returns `{"enabled": <bool>}` on success.
+/// Requires an active admin session (enforced by `admin_session_layer`).
+pub async fn toggle_self_register(
+    State(state): State<TenantsState>,
+    Path(tid): Path<String>,
+    axum::Extension(_admin): axum::Extension<crate::auth::middleware::AdminId>,
+    axum::Json(body): axum::Json<ToggleSelfRegisterBody>,
+) -> Response {
+    let conn = state.session.meta.lock().await;
+    let v = if body.enabled { 1i64 } else { 0i64 };
+    match conn.execute(
+        "UPDATE tenants SET allow_self_register = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+        rusqlite::params![v, tid],
+    ) {
+        Ok(0) => (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+        Ok(_) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({"enabled": body.enabled})),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 // ─── Admin tenant-files subpage (Task 21) ────────────────────────────────────
 
 /// A single file row for the admin tenant-files view.

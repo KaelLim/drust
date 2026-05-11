@@ -73,6 +73,26 @@ pub fn execute_read_query(
     result
 }
 
+/// Like [`execute_read_query`] but skips the read-only authorizer. Only
+/// call this from **admin-authenticated** code paths where restricting
+/// `_system_*` table access is not required (e.g. the admin UI table
+/// browser). The connection is still opened `SQLITE_OPEN_READONLY`, so
+/// mutation is impossible regardless.
+pub fn execute_read_query_admin(
+    conn: &Connection,
+    sql: &str,
+    row_cap: usize,
+    max_sql_bytes: usize,
+) -> Result<QueryResult, ExecError> {
+    if sql.len() > max_sql_bytes {
+        return Err(ExecError::TooLarge {
+            bytes: sql.len(),
+            limit: max_sql_bytes,
+        });
+    }
+    execute_read_query_inner(conn, sql, row_cap)
+}
+
 fn execute_read_query_inner(
     conn: &Connection,
     sql: &str,
