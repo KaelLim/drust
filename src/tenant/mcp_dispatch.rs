@@ -31,12 +31,22 @@ pub async fn dispatch(
     // MCP is service-only. Anon and user keys are for REST consumers;
     // exposing MCP over non-service keys would widen the attack surface
     // without a clear use case.
-    if matches!(tenant_ref.role, TokenRole::Anon | TokenRole::User) {
-        return json_err(
-            StatusCode::FORBIDDEN,
-            "WRITE_DENIED",
-            "MCP requires a service key; anon/user keys cannot open an MCP session",
-        );
+    match tenant_ref.role {
+        TokenRole::User => {
+            return json_err(
+                StatusCode::FORBIDDEN,
+                "MCP_USER_DENIED",
+                "user tokens cannot access MCP; use a service key",
+            );
+        }
+        TokenRole::Anon => {
+            return json_err(
+                StatusCode::FORBIDDEN,
+                "WRITE_DENIED",
+                "MCP requires a service key; anon keys cannot open an MCP session",
+            );
+        }
+        TokenRole::Service => { /* fall through */ }
     }
 
     let tenant_id = match params.get("tenant") {

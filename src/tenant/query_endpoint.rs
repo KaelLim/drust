@@ -1,3 +1,4 @@
+use crate::auth::middleware::AuthCtx;
 use crate::query::executor::{ExecError, execute_read_query};
 use crate::tenant::router::TenantRef;
 use axum::http::StatusCode;
@@ -12,9 +13,17 @@ pub struct QueryBody {
 }
 
 pub async fn query_handler(
+    Extension(ctx): Extension<AuthCtx>,
     Extension(t): Extension<TenantRef>,
     Json(body): Json<QueryBody>,
 ) -> Response {
+    if matches!(ctx, AuthCtx::User { .. }) {
+        return (
+            StatusCode::FORBIDDEN,
+            json_err("QUERY_USER_DENIED", "user token cannot use /query"),
+        )
+            .into_response();
+    }
     const ROW_CAP: usize = 10_000;
     const MAX_SQL: usize = 16_384;
     let pool = t.pool.clone();
@@ -76,9 +85,17 @@ pub struct ExplainBody {
 }
 
 pub async fn explain_handler(
+    Extension(ctx): Extension<AuthCtx>,
     Extension(t): Extension<TenantRef>,
     Json(body): Json<ExplainBody>,
 ) -> Response {
+    if matches!(ctx, AuthCtx::User { .. }) {
+        return (
+            StatusCode::FORBIDDEN,
+            json_err("QUERY_USER_DENIED", "user token cannot use /query/explain"),
+        )
+            .into_response();
+    }
     match crate::mcp::tools::index::explain_select(&t.pool, &body.sql).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err(e) => {
