@@ -65,7 +65,7 @@ pub async fn register_handler(
     if !email_looks_valid(&email) {
         return err(StatusCode::UNPROCESSABLE_ENTITY, "EMAIL_INVALID", "invalid email");
     }
-    let profile_str = body.profile.as_ref().map(|v| v.to_string());
+    let profile_str = crate::auth::profile::encode(body.profile.as_ref());
     if let Some(s) = &profile_str
         && s.len() > PROFILE_MAX_BYTES
     {
@@ -379,9 +379,7 @@ fn me_row_to_response(
     created_at: String,
     updated_at: String,
 ) -> Response {
-    let prof = profile
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .unwrap_or(serde_json::Value::Null);
+    let prof = crate::auth::profile::decode(profile.as_deref());
     (
         StatusCode::OK,
         Json(json!({
@@ -444,7 +442,8 @@ pub async fn me_patch_handler(
         Some(t) => t.clone(),
         None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
-    let profile_str = body.profile.to_string();
+    let profile_str = crate::auth::profile::encode(Some(&body.profile))
+        .unwrap_or_default();
     if profile_str.len() > PROFILE_MAX_BYTES {
         return err(
             StatusCode::PAYLOAD_TOO_LARGE,
