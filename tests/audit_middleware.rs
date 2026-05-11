@@ -42,6 +42,8 @@ async fn app_with_audit(
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(audit_dir.clone())),
         index_large_table_rows: 1_000_000,
+        register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(3, Duration::from_secs(60), 4096)),
+        login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     let app = build_tenant_router(TenantStack {
         auth: state,

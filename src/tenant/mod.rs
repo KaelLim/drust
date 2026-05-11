@@ -1,3 +1,4 @@
+pub mod auth_routes;
 pub mod collections;
 pub mod events;
 pub mod mcp_dispatch;
@@ -11,6 +12,7 @@ use crate::mgmt::tenant_files::TenantFilesState;
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
 use axum::routing::{any, delete, get, post};
+use auth_routes::register_handler;
 use events::EventBus;
 use router::TenantAuthState;
 use std::sync::Arc;
@@ -242,7 +244,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 post(crate::mgmt::tenant_files::sign_url),
             )
             .layer(axum::middleware::from_fn_with_state(
-                auth_state,
+                auth_state.clone(),
                 router::bearer_auth_layer,
             ))
             .with_state(files_state)
@@ -250,7 +252,14 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         Router::new()
     };
 
-    let merged = core.merge(files_router);
+    // Auth routes: no bearer token required (register/login are public entry points).
+    // State is TenantAuthState (for meta db + registry + rate limiters), but
+    // these routes are NOT wrapped in bearer_auth_layer.
+    let auth_router = Router::new()
+        .route("/t/{tenant}/auth/register", post(register_handler))
+        .with_state(auth_state);
+
+    let merged = core.merge(files_router).merge(auth_router);
     // CORS layer goes OUTSIDE bearer_auth_layer (= applied last) so OPTIONS
     // preflight is intercepted by tower_http before reaching auth, returning
     // 200 + ACA* headers without seeing the bearer token. Real GET/POST/etc.
