@@ -651,3 +651,72 @@ async fn mcp_set_self_register_tool() {
     );
     drop(dir);
 }
+
+#[tokio::test]
+async fn mcp_create_user_with_profile_returns_object_not_string() {
+    // Regression: profile written as JSON object should round-trip as JSON
+    // object, not as a JSON-encoded string.
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-mcpu-profile").await;
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let txt = mcp_call_tool(
+        &app, &tid, &svc, &sid,
+        "create_user",
+        json!({
+            "email": "p@x.com",
+            "password": "longpassword",
+            "profile": {"kind": "mcp-test", "note": "validation run"},
+        }),
+    ).await;
+    let create_resp: serde_json::Value = serde_json::from_str(&txt).unwrap();
+    let uid = create_resp["user_id"].as_str().unwrap().to_string();
+
+    // get_user — the profile field should be an OBJECT, not a string.
+    let txt = mcp_call_tool(
+        &app, &tid, &svc, &sid,
+        "get_user",
+        json!({"user_id": uid}),
+    ).await;
+    let got: serde_json::Value = serde_json::from_str(&txt).unwrap();
+    let profile = &got["profile"];
+    assert!(
+        profile.is_object(),
+        "profile must round-trip as JSON object, got: {profile:?} (full response: {got})"
+    );
+    assert_eq!(profile["kind"].as_str().unwrap(), "mcp-test");
+    assert_eq!(profile["note"].as_str().unwrap(), "validation run");
+}
+
+#[tokio::test]
+async fn mcp_create_user_with_stringified_profile_still_round_trips_as_object() {
+    // Regression: some clients (older MCP integrations, hand-rolled JSON-RPC)
+    // pre-stringify a JSON object before sending. profile arrives as
+    // Value::String("{...}") instead of Value::Object. We should detect this
+    // and store the inner JSON so reads still surface a structured object.
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-mcpu-strprofile").await;
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let txt = mcp_call_tool(
+        &app, &tid, &svc, &sid,
+        "create_user",
+        json!({
+            "email": "s@x.com",
+            "password": "longpassword",
+            // Client sends profile as a JSON-encoded STRING, not an object.
+            "profile": r#"{"kind":"stringified","note":"client double-encoded"}"#,
+        }),
+    ).await;
+    let create_resp: serde_json::Value = serde_json::from_str(&txt).unwrap();
+    let uid = create_resp["user_id"].as_str().unwrap().to_string();
+
+    let txt = mcp_call_tool(
+        &app, &tid, &svc, &sid,
+        "get_user",
+        json!({"user_id": uid}),
+    ).await;
+    let got: serde_json::Value = serde_json::from_str(&txt).unwrap();
+    let profile = &got["profile"];
+    assert!(
+        profile.is_object(),
+        "stringified profile must still round-trip as JSON object, got: {profile:?}"
+    );
+    assert_eq!(profile["kind"].as_str().unwrap(), "stringified");
+}

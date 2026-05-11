@@ -21,7 +21,7 @@ pub async fn create_user(
         .map_err(|e| anyhow::anyhow!("HASH_FAILED: {e}"))?;
     let uid = format!("u-{}", uuid::Uuid::new_v4());
     let now = chrono::Utc::now().to_rfc3339();
-    let profile_str = profile.as_ref().map(|v| v.to_string());
+    let profile_str = crate::auth::profile::encode(profile.as_ref());
     let verified_i = if verified.unwrap_or(false) { 1i64 } else { 0i64 };
     let uid2 = uid.clone();
     let email2 = email.clone();
@@ -73,10 +73,7 @@ pub async fn list_users(
             )?;
             stmt.query_map(rusqlite::params![pat2, limit, offset], |r| {
                 let profile_raw: Option<String> = r.get(3)?;
-                let profile = profile_raw
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str(s).ok())
-                    .unwrap_or(serde_json::Value::Null);
+                let profile = crate::auth::profile::decode(profile_raw.as_deref());
                 Ok(json!({
                     "id":         r.get::<_, String>(0)?,
                     "email":      r.get::<_, String>(1)?,
@@ -119,10 +116,7 @@ pub async fn get_user(
                 rusqlite::params![user_id],
                 |r| {
                     let profile_raw: Option<String> = r.get(3)?;
-                    let profile = profile_raw
-                        .as_deref()
-                        .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or(serde_json::Value::Null);
+                    let profile = crate::auth::profile::decode(profile_raw.as_deref());
                     Ok(json!({
                         "id":         r.get::<_, String>(0)?,
                         "email":      r.get::<_, String>(1)?,
@@ -159,7 +153,7 @@ pub async fn update_user(
     };
     let now = chrono::Utc::now().to_rfc3339();
     let new_email = email.as_ref().map(|e| e.trim().to_string());
-    let new_profile = profile.as_ref().map(|v| v.to_string());
+    let new_profile = crate::auth::profile::encode(profile.as_ref());
     let uid2 = user_id.clone();
 
     let count = pool

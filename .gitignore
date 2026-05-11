@@ -4,3 +4,4 @@
 .env.test
 *.log
 /data
+.claude/
