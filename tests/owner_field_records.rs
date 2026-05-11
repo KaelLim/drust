@@ -429,3 +429,108 @@ async fn service_required_to_pass_owner_field_on_insert() {
         String::from_utf8_lossy(&bytes)
     );
 }
+
+// === Regression tests for review fixes ===
+
+#[tokio::test]
+async fn anon_blocked_from_owner_scoped_read_when_scope_own() {
+    // Anon has no user_id to match against; the SELECT filter would
+    // produce an empty list silently. We want a loud 403 instead.
+    let (app, tid, _d, _svc, anon, _ta, _tb) = setup("own", "t-rec-anonread").await;
+    let r = app
+        .oneshot(req("GET", &tid, "/records/posts", None, &anon))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let bytes = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("ANON_FORBIDDEN_OWNER_SCOPED_READ"),
+        "wrong error code: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+}
+
+#[tokio::test]
+async fn user_cannot_transfer_ownership_via_patch_user_id() {
+    // PATCH with a {user_id: other-uid} payload must NOT change ownership.
+    // The strip-owner-field guard removes it from the SET clause.
+    let (app, tid, _d, _svc, _anon, ta, tb) = setup("own", "t-rec-transfer").await;
+    let r = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            &tid,
+            "/records/posts",
+            Some(json!({"data": {"title": "mine"}})),
+            &ta,
+        ))
+        .await
+        .unwrap();
+    let pid = read_json(r).await["id"].as_i64().unwrap();
+    // Alice tries to set user_id to bob's id (we don't know bob's id, but
+    // any non-alice value triggers the bug if strip is missing).
+    let r = app
+        .clone()
+        .oneshot(req(
+            "PATCH",
+            &tid,
+            &format!("/records/posts/{pid}"),
+            Some(json!({"data": {"title": "edited", "user_id": "u-someone-else"}})),
+            &ta,
+        ))
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "patch should succeed: {}", r.status());
+    // Alice can still see + update the row (still owns it).
+    let resp = app
+        .clone()
+        .oneshot(req("GET", &tid, "/records/posts", None, &ta))
+        .await
+        .unwrap();
+    let v = read_json(resp).await;
+    let arr = v["records"].as_array().unwrap();
+    assert_eq!(arr.len(), 1, "alice should still own the row");
+    assert_eq!(arr[0]["title"].as_str().unwrap(), "edited");
+    // Bob still doesn't see it.
+    let resp = app
+        .oneshot(req("GET", &tid, "/records/posts", None, &tb))
+        .await
+        .unwrap();
+    let v = read_json(resp).await;
+    assert_eq!(v["records"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn user_falls_through_to_anon_caps_on_non_owner_scoped() {
+    // Non-owner-scoped collection with anon_caps locked to [] —
+    // user tokens must NOT inherit broader access than anon allows.
+    let (app, tid, _svc, _anon, _dir) =
+        helpers::spin_up_dual_role_self_register("t-rec-userfall").await;
+    let pool = helpers::grab_pool(&tid, &_dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                body TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            INSERT INTO _system_collection_meta
+                (collection_name, anon_caps_json, updated_at)
+                VALUES ('notes', '[]', datetime('now'));",
+        )
+    })
+    .await
+    .unwrap();
+    let token = helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
+    // User token tries to SELECT a collection where anon_caps=[] — should be denied.
+    let r = app
+        .oneshot(req("GET", &tid, "/records/notes", None, &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::FORBIDDEN,
+        "user must inherit anon_caps on non-owner-scoped collection"
+    );
+}

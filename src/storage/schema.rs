@@ -512,20 +512,29 @@ mod meta_io_tests {
 }
 
 /// Returns true if the caller's role is permitted to perform `verb` on
-/// the given collection. Service and User tokens are unrestricted; Anon is
-/// checked against the cached anon_caps. Missing schema (or cache miss + DB
-/// error) yields `false` — fail closed.
+/// the given collection. Service is unrestricted. User is unrestricted ONLY
+/// on owner-scoped collections (where the row-level filter limits visibility
+/// per row); on non-owner-scoped collections, User falls through to anon_caps
+/// — registering users does not grant broader collection access than what
+/// the tenant explicitly opened for anon. Anon is always checked against
+/// anon_caps. Missing schema (cache miss + DB error) yields `false` — fail
+/// closed.
 ///
-/// Note: owner-scoped policy (ANON_FORBIDDEN_OWNER_SCOPED) is enforced at the
-/// handler level for writes, *after* this gate passes for the User role.
+/// Note: anon-on-owner-scoped (ANON_FORBIDDEN_OWNER_SCOPED for writes,
+/// ANON_FORBIDDEN_OWNER_SCOPED_READ for reads under read_scope=own) is
+/// enforced at the handler level *before* this gate.
 pub fn has_dml_cap(
     role: crate::tenant::router::TokenRole,
     verb: DmlVerb,
     schema: &CollectionSchema,
 ) -> bool {
     match role {
-        crate::tenant::router::TokenRole::Service
-        | crate::tenant::router::TokenRole::User => true,
+        crate::tenant::router::TokenRole::Service => true,
+        crate::tenant::router::TokenRole::User => {
+            // Owner-scoped: filter handles row access, cap is open.
+            // Non-owner-scoped: inherit anon_caps (no escalation).
+            schema.owner_field.is_some() || schema.anon_caps.contains(&verb)
+        }
         crate::tenant::router::TokenRole::Anon => schema.anon_caps.contains(&verb),
     }
 }
