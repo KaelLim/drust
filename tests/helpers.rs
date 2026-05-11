@@ -6,6 +6,7 @@ use drust::mcp::http_registry::McpHttpRegistry;
 use drust::mcp::server::McpRegistry;
 use drust::safety::audit::AuditLog;
 use drust::safety::rate_limit::RateLimiter;
+use drust::safety::rate_limit_ip::IpRateLimit;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::{SharedTenantPool, TenantRegistry};
 use drust::tenant::router::TenantAuthState;
@@ -45,6 +46,8 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
         index_large_table_rows: 1_000_000,
+        register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
+        login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     let stack = TenantStack {
         auth: state,
@@ -92,6 +95,8 @@ pub async fn spin_up_tenant_with_role(
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
         index_large_table_rows: 1_000_000,
+        register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
+        login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     let stack = TenantStack {
         auth: state,
@@ -136,6 +141,8 @@ pub async fn spin_up_tenant_with_threshold(
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
         index_large_table_rows,
+        register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
+        login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     let stack = TenantStack {
         auth: state,
@@ -168,6 +175,19 @@ pub async fn seed_posts_collection(
     })
     .await
     .unwrap();
+}
+
+pub async fn spin_up_tenant_self_register(tenant: &str) -> (Router, String, tempfile::TempDir) {
+    let (router, tid, dir) = spin_up_tenant(tenant).await;
+    let meta_path = dir.path().join("meta.sqlite");
+    rusqlite::Connection::open(&meta_path)
+        .unwrap()
+        .execute(
+            "UPDATE tenants SET allow_self_register = 1 WHERE id = ?1",
+            rusqlite::params![tenant],
+        )
+        .unwrap();
+    (router, tid, dir)
 }
 
 pub fn seed_tenant_fs(dir: &tempfile::TempDir, tenant: &str) {

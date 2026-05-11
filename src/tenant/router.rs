@@ -2,6 +2,7 @@ use crate::auth::bearer::{hash_token, token_hint};
 use crate::auth::middleware::AuthCtx;
 use crate::safety::audit::{AuditEntry, AuditLog};
 use crate::safety::rate_limit::RateLimiter;
+use crate::safety::rate_limit_ip::IpRateLimit;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
 use axum::extract::{Path, State};
 use axum::http::{Request, StatusCode, header};
@@ -22,6 +23,10 @@ pub struct TenantAuthState {
     /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
     /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
     pub index_large_table_rows: u64,
+    /// Per-IP rate limiter for POST /auth/register. Default: 3 per 60 s.
+    pub register_rl: Arc<IpRateLimit>,
+    /// Per-IP rate limiter for POST /auth/login. Default: 5 per 60 s.
+    pub login_rl: Arc<IpRateLimit>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -6,6 +6,7 @@ use drust::mgmt::routes::MgmtState;
 use drust::mgmt::tenant_files::TenantFilesState;
 use drust::safety::audit::AuditLog;
 use drust::safety::rate_limit::RateLimiter;
+use drust::safety::rate_limit_ip::IpRateLimit;
 use drust::storage::meta::{bootstrap_admin, open_meta};
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::{TenantStack, build_tenant_router, events::EventBus, router::TenantAuthState};
@@ -160,6 +161,8 @@ async fn main() -> anyhow::Result<()> {
             limiter,
             audit: audit.clone(),
             index_large_table_rows: cfg.index_large_table_rows,
+            register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
+            login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         },
         bus: bus.clone(),
         mcp: mcp_http,

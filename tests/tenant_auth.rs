@@ -33,6 +33,8 @@ async fn app() -> (Router, String, tempfile::TempDir) {
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
         index_large_table_rows: 1_000_000,
+        register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(3, Duration::from_secs(60), 4096)),
+        login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     // Need to seed tenant data file
     let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();

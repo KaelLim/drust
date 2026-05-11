@@ -61,6 +61,8 @@ async fn tenant_with_two_tokens(tenant: &str) -> (axum::Router, String, String, 
         limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
         audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
         index_large_table_rows: 1_000_000,
+        register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(3, Duration::from_secs(60), 4096)),
+        login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     let stack = TenantStack {
         auth: state,
