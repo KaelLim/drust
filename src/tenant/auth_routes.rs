@@ -314,3 +314,237 @@ pub async fn logout_all_handler(
 fn err(status: StatusCode, code: &str, msg: &str) -> Response {
     (status, Json(json!({"error_code": code, "message": msg}))).into_response()
 }
+
+// ── helpers shared by GET /me and PATCH /me ──────────────────────────────────
+
+async fn fetch_me_row(
+    pool: &crate::storage::pool::TenantPool,
+    user_id: &str,
+) -> rusqlite::Result<(String, String, i64, Option<String>, String, String)> {
+    let uid = user_id.to_string();
+    pool.with_reader(move |c| {
+        c.query_row(
+            "SELECT id, email, verified, profile, created_at, updated_at \
+             FROM _system_users WHERE id = ?1",
+            rusqlite::params![uid],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                ))
+            },
+        )
+    })
+    .await
+}
+
+fn me_row_to_response(
+    id: String,
+    email: String,
+    verified: i64,
+    profile: Option<String>,
+    created_at: String,
+    updated_at: String,
+) -> Response {
+    let prof = profile
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "id": id,
+            "email": email,
+            "verified": verified != 0,
+            "profile": prof,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        })),
+    )
+        .into_response()
+}
+
+// ── GET /t/{tenant}/me ────────────────────────────────────────────────────────
+
+pub async fn me_get_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+) -> Response {
+    let user_id = match &ctx {
+        AuthCtx::User { user_id, .. } => user_id.clone(),
+        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
+    };
+    let tenant_id = match params.get("tenant") {
+        Some(t) => t.clone(),
+        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+    };
+    let pool = match state.registry.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    match fetch_me_row(&pool, &user_id).await {
+        Ok((id, email, verified, profile, ca, ua)) => {
+            me_row_to_response(id, email, verified, profile, ca, ua)
+        }
+        Err(_) => err(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", "user no longer exists"),
+    }
+}
+
+// ── PATCH /t/{tenant}/me ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct PatchMeBody {
+    pub profile: serde_json::Value,
+}
+
+pub async fn me_patch_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Json(body): Json<PatchMeBody>,
+) -> Response {
+    let user_id = match &ctx {
+        AuthCtx::User { user_id, .. } => user_id.clone(),
+        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
+    };
+    let tenant_id = match params.get("tenant") {
+        Some(t) => t.clone(),
+        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+    };
+    let profile_str = body.profile.to_string();
+    if profile_str.len() > PROFILE_MAX_BYTES {
+        return err(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "PROFILE_TOO_LARGE",
+            "profile JSON exceeds 64 KB",
+        );
+    }
+    let pool = match state.registry.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    let uid_for_update = user_id.clone();
+    let _ = pool
+        .with_writer(move |c| {
+            c.execute(
+                "UPDATE _system_users SET profile = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![profile_str, now, uid_for_update],
+            )
+        })
+        .await;
+    match fetch_me_row(&pool, &user_id).await {
+        Ok((id, email, verified, profile, ca, ua)) => {
+            me_row_to_response(id, email, verified, profile, ca, ua)
+        }
+        Err(_) => err(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", "user no longer exists"),
+    }
+}
+
+// ── POST /t/{tenant}/me/password ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ChangePasswordBody {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+pub async fn me_password_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<ChangePasswordBody>,
+) -> Response {
+    let user_id = match &ctx {
+        AuthCtx::User { user_id, .. } => user_id.clone(),
+        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
+    };
+    let tenant_id = match params.get("tenant") {
+        Some(t) => t.clone(),
+        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+    };
+    if body.new_password.len() < PASSWORD_MIN {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "PASSWORD_TOO_SHORT",
+            "password too short",
+        );
+    }
+    if body.new_password.len() > PASSWORD_MAX {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "PASSWORD_TOO_LONG",
+            "password too long",
+        );
+    }
+    let pool = match state.registry.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    // Fetch current password hash for verification
+    let uid_for_read = user_id.clone();
+    let phc: String = match pool
+        .with_reader(move |c| {
+            c.query_row(
+                "SELECT password_hash FROM _system_users WHERE id = ?1",
+                rusqlite::params![uid_for_read],
+                |r| r.get::<_, String>(0),
+            )
+        })
+        .await
+    {
+        Ok(s) => s,
+        Err(_) => return err(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", ""),
+    };
+    if !crate::auth::user::verify_password(&body.current_password, &phc).unwrap_or(false) {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "WRONG_CURRENT_PASSWORD",
+            "current password is incorrect",
+        );
+    }
+    let new_hash = match hash_password(&body.new_password) {
+        Ok(h) => h,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
+    };
+    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let ip = crate::safety::ip::client_ip(&headers, fallback_addr).to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let uid_for_tx = user_id.clone();
+    // Atomic: update hash, revoke all sessions, issue new session
+    let new_token = match pool
+        .with_writer(move |c| -> rusqlite::Result<String> {
+            let tx = c.transaction()?;
+            tx.execute(
+                "UPDATE _system_users SET password_hash = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![new_hash, now, uid_for_tx],
+            )?;
+            tx.execute(
+                "DELETE FROM _system_sessions WHERE user_id = ?1",
+                rusqlite::params![uid_for_tx],
+            )?;
+            let token =
+                crate::auth::user_session::create_session(&*tx, &uid_for_tx, Some(&ip), 30)?;
+            tx.commit()?;
+            Ok(token)
+        })
+        .await
+    {
+        Ok(t) => t,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "TX_FAILED", ""),
+    };
+    let exp = chrono::Utc::now() + chrono::Duration::days(30);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "token": new_token,
+            "expires_at": exp.to_rfc3339(),
+        })),
+    )
+        .into_response()
+}
