@@ -76,6 +76,19 @@ async fn require_dml_cap(
             ));
         }
     };
+    // Anon on owner-scoped collection with read_scope=own has no user_id to
+    // match against, so it can't see any rows — fail loudly rather than
+    // silently returning an empty list.
+    if matches!(tenant.role, crate::tenant::router::TokenRole::Anon)
+        && schema.owner_field.is_some()
+        && schema.read_scope.as_deref() == Some("own")
+    {
+        return Err(json_error(
+            StatusCode::FORBIDDEN,
+            "ANON_FORBIDDEN_OWNER_SCOPED_READ",
+            "anon cannot read owner-scoped collection with read_scope=own",
+        ));
+    }
     if !has_dml_cap(tenant.role, verb, &schema) {
         return Err(json_error(
             StatusCode::FORBIDDEN,
@@ -519,7 +532,7 @@ pub async fn update_handler(
         Err(r) => return r,
     };
     let owner_filter = compute_owner_filter(&ctx, &schema);
-    let data = match body.data.as_object() {
+    let mut data = match body.data.as_object() {
         Some(o) => o.clone(),
         None => {
             return json_error(
@@ -529,6 +542,12 @@ pub async fn update_handler(
             );
         }
     };
+    // Strip any client-supplied owner_field on the User-owner-scoped path so
+    // a user cannot transfer ownership of their own row to another user via
+    // PATCH {"data": {"user_id": "u-other"}}.
+    if let (AuthCtx::User { .. }, Some(field)) = (&ctx, schema.owner_field.as_deref()) {
+        data.shift_remove(field);
+    }
     if data.is_empty() {
         return json_error(
             StatusCode::BAD_REQUEST,
