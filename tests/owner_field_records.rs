@@ -534,3 +534,47 @@ async fn user_falls_through_to_anon_caps_on_non_owner_scoped() {
         "user must inherit anon_caps on non-owner-scoped collection"
     );
 }
+
+#[tokio::test]
+async fn user_can_read_but_not_write_when_anon_caps_is_select_only() {
+    // Non-owner-scoped collection with default anon_caps=[select].
+    // User token: SELECT succeeds (inherits anon's select cap), INSERT denied.
+    let (app, tid, _svc, _anon, _dir) =
+        helpers::spin_up_dual_role_self_register("t-rec-userselect").await;
+    let pool = helpers::grab_pool(&tid, &_dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );",
+        )
+    })
+    .await
+    .unwrap();
+    // No _system_collection_meta row → default anon_caps = [select]
+    let token = helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
+    // GET succeeds (select in caps)
+    let r = app
+        .clone()
+        .oneshot(req("GET", &tid, "/records/tags", None, &token))
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "user GET should pass via anon's select cap: {}", r.status());
+    // POST denied (insert not in caps)
+    let r = app
+        .oneshot(req(
+            "POST",
+            &tid,
+            "/records/tags",
+            Some(json!({"data": {"label": "rust"}})),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let bytes = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("ANON_DENIED"));
+}
