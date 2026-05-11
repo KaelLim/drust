@@ -95,6 +95,11 @@ impl AuditEntry {
     }
 }
 
+/// Spec S6: path whitelist gating future body logging. Auth bodies must never be persisted.
+pub fn should_log_body(path: &str) -> bool {
+    !path.contains("/auth/")
+}
+
 /// Audit-log writer. Non-blocking append: callers send entries through
 /// an unbounded mpsc to a dedicated writer task that batches file
 /// I/O off the request hot path. The previous design serialised every
@@ -180,5 +185,23 @@ impl AuditLog {
     /// silently if the writer task has exited (only on shutdown).
     pub fn append(&self, entry: AuditEntry) {
         let _ = self.tx.send(entry);
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::*;
+
+    #[test]
+    fn auth_paths_block_body_logging() {
+        assert!(!should_log_body("/t/abc/auth/login"));
+        assert!(!should_log_body("/t/abc/auth/register"));
+        assert!(!should_log_body("/t/abc/auth/logout"));
+    }
+    #[test]
+    fn non_auth_paths_allow_body_logging() {
+        assert!(should_log_body("/t/abc/records/posts"));
+        assert!(should_log_body("/t/abc/me"));
+        assert!(should_log_body("/t/abc/query"));
     }
 }
