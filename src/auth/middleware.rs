@@ -12,6 +12,30 @@ pub struct AdminSessionState {
     pub meta: Arc<Mutex<Connection>>,
 }
 
+/// Tri-state authentication context attached to every request after `bearer_auth_layer`.
+#[derive(Clone, Debug)]
+pub enum AuthCtx {
+    Anon,
+    Service,
+    User { user_id: String, token_hash: String },
+}
+
+impl AuthCtx {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            AuthCtx::Anon => "anon",
+            AuthCtx::Service => "service",
+            AuthCtx::User { .. } => "user",
+        }
+    }
+    pub fn user_id(&self) -> Option<&str> {
+        match self {
+            AuthCtx::User { user_id, .. } => Some(user_id),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AdminId(pub i64);
 
@@ -75,5 +99,17 @@ pub fn clear_session_cookie() -> String {
 impl IntoResponse for AdminId {
     fn into_response(self) -> Response {
         Response::new(axum::body::Body::from(self.0.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod ctx_tests {
+    use super::*;
+
+    #[test]
+    fn auth_ctx_kind_strings() {
+        assert_eq!(AuthCtx::Anon.kind(), "anon");
+        assert_eq!(AuthCtx::Service.kind(), "service");
+        assert_eq!(AuthCtx::User { user_id: "u".into(), token_hash: "h".into() }.kind(), "user");
     }
 }
