@@ -60,6 +60,40 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     tx.commit()
 }
 
+#[derive(Debug, Default)]
+pub struct MigrationReport {
+    pub meta_done: bool,
+    pub tenants_ok: Vec<String>,
+    pub tenants_failed: Vec<(String, String)>,
+}
+
+pub fn run_migrations(
+    meta: &Connection,
+    tenants_root: &Path,
+) -> rusqlite::Result<MigrationReport> {
+    let mut report = MigrationReport::default();
+
+    add_column_if_missing(meta, "tenants", "allow_self_register",
+        "INTEGER NOT NULL DEFAULT 0")?;
+    report.meta_done = true;
+
+    let mut stmt = meta.prepare("SELECT id FROM tenants")?;
+    let ids: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    for tid in ids {
+        match migrate_tenant_db(tenants_root, &tid) {
+            Ok(_) => report.tenants_ok.push(tid),
+            Err(e) => {
+                tracing::error!(tenant = %tid, error = ?e, "tenant migration failed");
+                report.tenants_failed.push((tid, e.to_string()));
+            }
+        }
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +177,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // No tenants/t-gone/ dir at all
         migrate_tenant_db(dir.path(), "t-gone").unwrap();
+    }
+
+    #[test]
+    fn run_migrations_isolates_per_tenant_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("meta.sqlite");
+        // meta.sqlite with two tenants
+        let meta = Connection::open(&meta_path).unwrap();
+        meta.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY); \
+             INSERT INTO tenants VALUES ('t-ok'), ('t-locked');",
+        ).unwrap();
+
+        // t-ok has a normal data.sqlite with the old _system_collection_meta
+        let ok_dir = dir.path().join("tenants").join("t-ok");
+        std::fs::create_dir_all(&ok_dir).unwrap();
+        Connection::open(ok_dir.join("data.sqlite")).unwrap().execute_batch(
+            "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT)",
+        ).unwrap();
+        // t-locked's data.sqlite has a corrupt path (use a directory instead of file to provoke open failure)
+        let bad_dir = dir.path().join("tenants").join("t-locked");
+        std::fs::create_dir_all(bad_dir.join("data.sqlite")).unwrap(); // dir where a file should be → open fails
+
+        let report = run_migrations(&meta, dir.path()).unwrap();
+        assert!(report.tenants_ok.contains(&"t-ok".to_string()));
+        assert!(report.tenants_failed.iter().any(|(t, _)| t == "t-locked"));
+        // t-ok must have been migrated despite t-locked failing
+        let c = Connection::open(ok_dir.join("data.sqlite")).unwrap();
+        let n: i64 = c.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_users'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 }
