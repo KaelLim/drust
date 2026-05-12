@@ -70,7 +70,7 @@ pub struct Overview {
     pub error_pct: f64,
     pub p50_ms: u64,
     pub p99_ms: u64,
-    pub qps_avg: f64,
+    pub rps_avg: f64,
     pub top_tenants: Vec<TopTenant>,  // len ≤ 5
     pub top_slow_ops: Vec<AuditEntry>, // len ≤ 5
 }
@@ -263,7 +263,8 @@ pub fn parse_jsonl_line(line: &str) -> Option<AuditEntry> {
     serde_json::from_str(trimmed).ok()
 }
 
-/// Compute summary stats over `entries`. `window` is used only for QPS denom.
+/// Compute summary stats over `entries`. `window` is used only for RPS denom
+/// (each audit row corresponds to one HTTP request — not one SQL query).
 pub fn aggregate(entries: &[AuditEntry], window: Window) -> Overview {
     let total = entries.len() as u64;
     if total == 0 {
@@ -277,7 +278,7 @@ pub fn aggregate(entries: &[AuditEntry], window: Window) -> Overview {
     let p50_ms = percentile(&durations, 50);
     let p99_ms = percentile(&durations, 99);
 
-    let qps_avg = (total as f64) / (window.seconds() as f64);
+    let rps_avg = (total as f64) / (window.seconds() as f64);
 
     let top_tenants = compute_top_tenants(entries);
     let top_slow_ops = compute_top_slow_ops(entries);
@@ -288,7 +289,7 @@ pub fn aggregate(entries: &[AuditEntry], window: Window) -> Overview {
         error_pct,
         p50_ms,
         p99_ms,
-        qps_avg,
+        rps_avg,
         top_tenants,
         top_slow_ops,
     }
@@ -964,7 +965,7 @@ mod tests {
         assert_eq!(ov.error_pct, 0.0);
         assert_eq!(ov.p50_ms, 0);
         assert_eq!(ov.p99_ms, 0);
-        assert_eq!(ov.qps_avg, 0.0);
+        assert_eq!(ov.rps_avg, 0.0);
         assert!(ov.top_tenants.is_empty());
         assert!(ov.top_slow_ops.is_empty());
     }

@@ -118,28 +118,38 @@
             </tbody>
           </table>
           <div class="card-body-tight">
-            <form id="create-idx-form" class="form-inline">
-              <label class="field" style="min-width:160px;">
-                <span class="muted">fields (Ctrl+click for multi)</span>
-                <select name="fields" multiple size="4" class="select">
+            <div class="muted" style="font-size:13px;margin-bottom:10px;">
+              fields — row order is the index column order (matters for composite indexes)
+            </div>
+            <div id="idx-rows" style="display:flex;flex-direction:column;gap:8px;">
+              <div class="idx-row" style="display:flex;gap:8px;align-items:center;">
+                <span class="idx-num muted" style="font-family:var(--mono);font-size:13px;width:24px;text-align:right;">1.</span>
+                <select class="select idx-field" style="flex:1;min-width:0;">
+                  <option value="">— select field —</option>
                   {% for f in fields %}
                   <option value="{{ f.name }}">{{ f.name }}</option>
                   {% endfor %}
                 </select>
-              </label>
-              <div class="field">
-                <label class="check">
-                  <input type="checkbox" name="unique">
-                  <span>unique</span>
-                </label>
-                <label class="check">
-                  <input type="checkbox" name="force">
-                  <span>force (skip large-table guard)</span>
-                </label>
+                <button type="button" class="btn btn-sm btn-ghost idx-remove" title="remove this field" aria-label="remove">×</button>
               </div>
-              <button class="btn btn-primary btn-sm" type="submit">create index</button>
-            </form>
-            <pre id="create-idx-output" class="output is-error" hidden></pre>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap;">
+              <button type="button" id="idx-add" class="btn btn-sm">+ add field</button>
+              <span id="idx-preview" class="muted" style="font-family:var(--mono);font-size:13px;flex:1;min-width:0;"></span>
+            </div>
+            <div style="display:flex;gap:18px;align-items:center;margin-top:14px;flex-wrap:wrap;">
+              <label class="check">
+                <input type="checkbox" name="unique" id="idx-unique">
+                <span>unique</span>
+              </label>
+              <label class="check">
+                <input type="checkbox" name="force" id="idx-force">
+                <span>force (skip large-table guard)</span>
+              </label>
+              <span style="flex:1;"></span>
+              <button id="idx-submit" type="button" class="btn btn-primary btn-sm">create index</button>
+            </div>
+            <pre id="create-idx-output" class="output is-error" hidden style="margin-top:10px;"></pre>
           </div>
         </div>
         <div class="card" style="margin-top:16px;">
@@ -230,20 +240,78 @@
     });
   });
 
-  var form = document.getElementById('create-idx-form');
-  var out  = document.getElementById('create-idx-output');
-  if (form) {
-    form.addEventListener('submit', function(e) {
-      e.preventDefault();
-      var fd = new FormData(form);
-      var fields = fd.getAll('fields');
+  var rowsEl  = document.getElementById('idx-rows');
+  var addBtn  = document.getElementById('idx-add');
+  var preview = document.getElementById('idx-preview');
+  var uniqueCb = document.getElementById('idx-unique');
+  var forceCb  = document.getElementById('idx-force');
+  var submitBtn = document.getElementById('idx-submit');
+  var out      = document.getElementById('create-idx-output');
+
+  if (rowsEl) {
+    function getSelectedFields() {
+      return Array.from(rowsEl.querySelectorAll('.idx-field'))
+        .map(function(s) { return s.value; })
+        .filter(function(v) { return v !== ''; });
+    }
+
+    function refresh() {
+      var rows = Array.from(rowsEl.querySelectorAll('.idx-row'));
+      var selected = rows.map(function(r) { return r.querySelector('.idx-field').value; });
+      rows.forEach(function(r, i) {
+        r.querySelector('.idx-num').textContent = (i + 1) + '.';
+      });
+      rows.forEach(function(r, i) {
+        var s = r.querySelector('.idx-field');
+        Array.from(s.options).forEach(function(opt) {
+          if (opt.value === '') return;
+          var idx = selected.indexOf(opt.value);
+          opt.disabled = idx !== -1 && idx !== i;
+        });
+        var rm = r.querySelector('.idx-remove');
+        rm.style.visibility = rows.length === 1 ? 'hidden' : 'visible';
+      });
+      var fields = getSelectedFields();
+      if (fields.length === 0) {
+        preview.textContent = '';
+      } else {
+        var suffix = uniqueCb.checked ? '_uniq' : '';
+        preview.textContent = 'will create: idx_' + collName + '_' + fields.join('_') + suffix + ' (' + fields.join(', ') + ')';
+      }
+    }
+
+    function bindRow(row) {
+      row.querySelector('.idx-field').addEventListener('change', refresh);
+      row.querySelector('.idx-remove').addEventListener('click', function() {
+        if (rowsEl.querySelectorAll('.idx-row').length === 1) return;
+        row.remove();
+        refresh();
+      });
+    }
+
+    addBtn.addEventListener('click', function() {
+      var seed = rowsEl.querySelector('.idx-row');
+      var copy = seed.cloneNode(true);
+      copy.querySelector('.idx-field').value = '';
+      bindRow(copy);
+      rowsEl.appendChild(copy);
+      refresh();
+    });
+
+    uniqueCb.addEventListener('change', refresh);
+
+    Array.from(rowsEl.querySelectorAll('.idx-row')).forEach(bindRow);
+    refresh();
+
+    submitBtn.addEventListener('click', function() {
+      var fields = getSelectedFields();
       if (fields.length === 0) {
         out.textContent = 'Select at least one field.';
         out.hidden = false;
         return;
       }
-      var unique = fd.has('unique');
-      var force  = fd.has('force');
+      var unique = uniqueCb.checked;
+      var force  = forceCb.checked;
       out.textContent = '';
       out.hidden = true;
       fetch(
