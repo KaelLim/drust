@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-05-05
+updated: 2026-05-12
 generated_by: docs/gen-architecture.py
 ---
 
@@ -18,16 +18,17 @@ generated_by: docs/gen-architecture.py
 
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
-| [`(root)/`](#srcroot) | 4 | 15 | 0 | 1 |
-| [`auth/`](#srcauth) | 5 | 20 | 1 | 10 |
-| [`bin/`](#srcbin) | 1 | 0 | 0 | 0 |
-| [`mcp/`](#srcmcp) | 10 | 54 | 26 | 15 |
-| [`mgmt/`](#srcmgmt) | 10 | 80 | 33 | 8 |
-| [`query/`](#srcquery) | 4 | 16 | 2 | 14 |
-| [`rpc/`](#srcrpc) | 5 | 21 | 9 | 4 |
-| [`safety/`](#srcsafety) | 3 | 6 | 0 | 2 |
-| [`storage/`](#srcstorage) | 11 | 61 | 7 | 32 |
-| [`tenant/`](#srctenant) | 8 | 29 | 20 | 12 |
+| [`(root)/`](#srcroot) | 4 | 16 | 0 | 1 |
+| [`auth/`](#srcauth) | 8 | 38 | 1 | 18 |
+| [`bin/`](#srcbin) | 2 | 0 | 0 | 0 |
+| [`db/`](#srcdb) | 2 | 7 | 0 | 0 |
+| [`mcp/`](#srcmcp) | 13 | 84 | 33 | 18 |
+| [`mgmt/`](#srcmgmt) | 13 | 123 | 38 | 11 |
+| [`query/`](#srcquery) | 4 | 17 | 2 | 14 |
+| [`rpc/`](#srcrpc) | 5 | 21 | 10 | 5 |
+| [`safety/`](#srcsafety) | 5 | 14 | 0 | 5 |
+| [`storage/`](#srcstorage) | 12 | 66 | 7 | 36 |
+| [`tenant/`](#srctenant) | 11 | 60 | 32 | 15 |
 
 ## Group-level dependency graph
 
@@ -39,8 +40,10 @@ graph LR
   mgmt --> auth
   mgmt --> query
   mgmt --> rpc
+  mgmt --> safety
   mgmt --> storage
   query --> storage
+  rpc --> auth
   rpc --> query
   rpc --> storage
   rpc --> tenant
@@ -92,6 +95,7 @@ graph LR
 
 - [`src/auth/mod.rs`](../src/auth/mod.rs)
 - [`src/config.rs`](../src/config.rs)
+- [`src/db/mod.rs`](../src/db/mod.rs)
 - [`src/error.rs`](../src/error.rs)
 - [`src/mcp/mod.rs`](../src/mcp/mod.rs)
 - [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
@@ -105,6 +109,7 @@ graph LR
 
 - `mod auth`
 - `mod config`
+- `mod db`
 - `mod error`
 - `mod mcp`
 - `mod mgmt`
@@ -166,6 +171,7 @@ _(no top-level pub items)_
 **Public items:**
 
 - `struct AdminSessionState`
+- `enum AuthCtx`
 - `struct AdminId`
 - `const SESSION_COOKIE`
 - `fn admin_session_layer`
@@ -181,6 +187,13 @@ _(no top-level pub items)_
 - [`src/mgmt/public_files.rs`](../src/mgmt/public_files.rs)
 - [`src/mgmt/routes.rs`](../src/mgmt/routes.rs)
 - [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+- [`src/rpc/handler.rs`](../src/rpc/handler.rs)
+- [`src/tenant/admin_user_routes.rs`](../src/tenant/admin_user_routes.rs)
+- [`src/tenant/auth_routes.rs`](../src/tenant/auth_routes.rs)
+- [`src/tenant/owner_field.rs`](../src/tenant/owner_field.rs)
+- [`src/tenant/query_endpoint.rs`](../src/tenant/query_endpoint.rs)
+- [`src/tenant/records.rs`](../src/tenant/records.rs)
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
 
 ### [`src/auth/mod.rs`](../src/auth/mod.rs)
 
@@ -189,7 +202,10 @@ _(no top-level pub items)_
 - [`src/auth/admin.rs`](../src/auth/admin.rs)
 - [`src/auth/bearer.rs`](../src/auth/bearer.rs)
 - [`src/auth/middleware.rs`](../src/auth/middleware.rs)
+- [`src/auth/profile.rs`](../src/auth/profile.rs)
 - [`src/auth/session.rs`](../src/auth/session.rs)
+- [`src/auth/user.rs`](../src/auth/user.rs)
+- [`src/auth/user_session.rs`](../src/auth/user_session.rs)
 
 **Declared by:**
 
@@ -200,7 +216,23 @@ _(no top-level pub items)_
 - `mod admin`
 - `mod bearer`
 - `mod middleware`
+- `mod profile`
 - `mod session`
+- `mod user`
+- `mod user_session`
+
+### [`src/auth/profile.rs`](../src/auth/profile.rs)
+
+_Profile encoding/decoding helpers shared by REST + MCP user paths._
+
+**Declared by:**
+
+- [`src/auth/mod.rs`](../src/auth/mod.rs)
+
+**Public items:**
+
+- `fn encode` — Encode a client-supplied `profile` value to the TEXT form stored in
+- `fn decode` — Decode the TEXT form read from `_system_users.profile`. Returns
 
 ### [`src/auth/session.rs`](../src/auth/session.rs)
 
@@ -220,13 +252,86 @@ _(no top-level pub items)_
 - [`src/auth/middleware.rs`](../src/auth/middleware.rs)
 - [`src/mgmt/routes.rs`](../src/mgmt/routes.rs)
 
+### [`src/auth/user.rs`](../src/auth/user.rs)
+
+**Declared by:**
+
+- [`src/auth/mod.rs`](../src/auth/mod.rs)
+
+**Public items:**
+
+- `fn dummy_hash` — argon2id PHC string for a password the attacker cannot guess. Used by login when the
+- `fn hash_password`
+- `fn verify_password`
+
+**Imported by:**
+
+- [`src/tenant/auth_routes.rs`](../src/tenant/auth_routes.rs)
+
+### [`src/auth/user_session.rs`](../src/auth/user_session.rs)
+
+**Declared by:**
+
+- [`src/auth/mod.rs`](../src/auth/mod.rs)
+
+**Public items:**
+
+- `struct SessionInfo`
+- `fn generate_token`
+- `fn hash_token`
+- `fn create_session`
+- `fn lookup_session`
+- `fn slide_expiry`
+- `fn revoke_session`
+- `fn revoke_session_by_hash`
+- `fn revoke_all_sessions`
+
 <a id="srcbin"></a>
 
 ## `src/bin/`
 
+### [`src/bin/drust_session_janitor.rs`](../src/bin/drust_session_janitor.rs)
+
+_Daily janitor for expired user sessions. Invoked by the_
+
+_(no top-level pub items)_
+
 ### [`src/bin/set_admin_password.rs`](../src/bin/set_admin_password.rs)
 
 _(no top-level pub items)_
+
+<a id="srcdb"></a>
+
+## `src/db/`
+
+### [`src/db/migrations.rs`](../src/db/migrations.rs)
+
+**Declared by:**
+
+- [`src/db/mod.rs`](../src/db/mod.rs)
+
+**Public items:**
+
+- `const SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS`
+- `const SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS`
+- `fn add_column_if_missing`
+- `fn migrate_tenant_db`
+- `struct MigrationReport`
+- `fn run_migrations`
+
+### [`src/db/mod.rs`](../src/db/mod.rs)
+
+**Declares submodules:**
+
+- [`src/db/migrations.rs`](../src/db/migrations.rs)
+
+**Declared by:**
+
+- [`src/lib.rs`](../src/lib.rs)
+
+**Public items:**
+
+- `mod migrations`
 
 <a id="srcmcp"></a>
 
@@ -251,6 +356,9 @@ _rmcp Streamable HTTP handler that exposes the 13 drust tools._
 - `struct AddFieldArgs`
 - `struct DropFieldArgs`
 - `struct DropCollectionArgs`
+- `struct CreateIndexArgs`
+- `struct DropIndexArgs`
+- `struct SetAnonCapsArgs`
 - `struct InsertRecordArgs`
 - `struct UpdateRecordArgs`
 - `struct DeleteRecordArgs`
@@ -259,6 +367,13 @@ _rmcp Streamable HTTP handler that exposes the 13 drust tools._
 - `struct NameOnly`
 - `struct EmptyParams`
 - `struct CallRpcParams`
+- `struct CreateUserArgs`
+- `struct ListUsersArgs`
+- `struct UserIdArgs`
+- `struct UpdateUserArgs`
+- `struct SetOwnerFieldArgs`
+- `struct ClearOwnerFieldArgs`
+- `struct SetSelfRegisterArgs`
 - `struct DrustMcpService`
 
 **Imports from:**
@@ -266,8 +381,10 @@ _rmcp Streamable HTTP handler that exposes the 13 drust tools._
 - [`src/mcp/server.rs`](../src/mcp/server.rs)
 - [`src/mcp/tools/exploration.rs`](../src/mcp/tools/exploration.rs)
 - [`src/mcp/tools/files.rs`](../src/mcp/tools/files.rs)
+- [`src/mcp/tools/owner_field.rs`](../src/mcp/tools/owner_field.rs)
 - [`src/mcp/tools/read.rs`](../src/mcp/tools/read.rs)
 - [`src/mcp/tools/schema.rs`](../src/mcp/tools/schema.rs)
+- [`src/mcp/tools/user.rs`](../src/mcp/tools/user.rs)
 - [`src/mcp/tools/write.rs`](../src/mcp/tools/write.rs)
 
 **Imported by:**
@@ -357,6 +474,7 @@ _Per-tenant cache of `StreamableHttpService` instances._
 - `fn describe_collection`
 - `fn sample_rows`
 - `fn count_rows`
+- `fn whoami` — Return the calling tenant's identity, both bearer tokens (plaintext),
 
 **Imports from:**
 
@@ -396,14 +514,37 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 
 - [`src/mcp/handler.rs`](../src/mcp/handler.rs)
 
+### [`src/mcp/tools/index.rs`](../src/mcp/tools/index.rs)
+
+**Declared by:**
+
+- [`src/mcp/tools/mod.rs`](../src/mcp/tools/mod.rs)
+
+**Public items:**
+
+- `fn create_index` — Create a (possibly unique) index on one or more fields of a collection.
+- `fn create_index_with_threshold` — Create a (possibly unique) index on one or more fields of a collection.
+- `fn drop_index`
+- `fn explain_select` — Run `EXPLAIN QUERY PLAN <sql>` under the read connection.
+- `fn derive_index_name`
+
+**Imports from:**
+
+- [`src/mcp/tools/schema.rs`](../src/mcp/tools/schema.rs)
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
+- [`src/storage/schema.rs`](../src/storage/schema.rs)
+
 ### [`src/mcp/tools/mod.rs`](../src/mcp/tools/mod.rs)
 
 **Declares submodules:**
 
 - [`src/mcp/tools/exploration.rs`](../src/mcp/tools/exploration.rs)
 - [`src/mcp/tools/files.rs`](../src/mcp/tools/files.rs)
+- [`src/mcp/tools/index.rs`](../src/mcp/tools/index.rs)
+- [`src/mcp/tools/owner_field.rs`](../src/mcp/tools/owner_field.rs)
 - [`src/mcp/tools/read.rs`](../src/mcp/tools/read.rs)
 - [`src/mcp/tools/schema.rs`](../src/mcp/tools/schema.rs)
+- [`src/mcp/tools/user.rs`](../src/mcp/tools/user.rs)
 - [`src/mcp/tools/write.rs`](../src/mcp/tools/write.rs)
 
 **Declared by:**
@@ -414,9 +555,34 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 
 - `mod exploration`
 - `mod files`
+- `mod index`
+- `mod owner_field`
 - `mod read`
 - `mod schema`
+- `mod user`
 - `mod write`
+
+### [`src/mcp/tools/owner_field.rs`](../src/mcp/tools/owner_field.rs)
+
+_Pure async helpers for T25 MCP owner-field + set_self_register tools._
+
+**Declared by:**
+
+- [`src/mcp/tools/mod.rs`](../src/mcp/tools/mod.rs)
+
+**Public items:**
+
+- `fn set_owner_field` — Validate then persist the owner-field for `collection`.
+- `fn clear_owner_field`
+- `fn set_self_register` — Update `tenants.allow_self_register` for this tenant in meta.sqlite.
+
+**Imports from:**
+
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
+
+**Imported by:**
+
+- [`src/mcp/handler.rs`](../src/mcp/handler.rs)
 
 ### [`src/mcp/tools/read.rs`](../src/mcp/tools/read.rs)
 
@@ -450,15 +616,43 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 - `const SYSTEM_COLUMNS` — Columns drust maintains automatically; users cannot drop them.
 - `struct FieldSpec`
 - `const SQL_DEFAULT_ALLOWLIST` — Allowlist of SQL expressions that may appear as a field default.
+- `fn identifier`
 - `fn create_collection`
 - `fn add_field`
 - `fn drop_field` — Drop a user-defined column via `ALTER TABLE … DROP COLUMN`.
 - `fn drop_collection` — Drop an entire collection (table + its `<name>_updated_at` trigger).
+- `fn set_anon_caps` — Replace the anon-role DML capability set for one collection.
 
 **Imports from:**
 
 - [`src/mcp/server.rs`](../src/mcp/server.rs)
 - [`src/storage/schema.rs`](../src/storage/schema.rs)
+
+**Imported by:**
+
+- [`src/mcp/handler.rs`](../src/mcp/handler.rs)
+- [`src/mcp/tools/index.rs`](../src/mcp/tools/index.rs)
+
+### [`src/mcp/tools/user.rs`](../src/mcp/tools/user.rs)
+
+_Pure async helpers for T24 MCP user-management tools._
+
+**Declared by:**
+
+- [`src/mcp/tools/mod.rs`](../src/mcp/tools/mod.rs)
+
+**Public items:**
+
+- `fn create_user`
+- `fn list_users`
+- `fn get_user`
+- `fn update_user`
+- `fn delete_user`
+- `fn revoke_user_sessions`
+
+**Imports from:**
+
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
 
 **Imported by:**
 
@@ -490,6 +684,64 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 
 ## `src/mgmt/`
 
+### [`src/mgmt/audit.rs`](../src/mgmt/audit.rs)
+
+_Admin-UI audit log viewer._
+
+**Declared by:**
+
+- [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
+
+**Public items:**
+
+- `enum Window`
+- `enum AuditScope`
+- `struct ScanResult`
+- `struct FilterSpec`
+- `struct Overview`
+- `struct TopTenant`
+- `const MAX_ENTRIES` — Hard cap on entries returned per scan_window call.
+- `fn enumerate_audit_files` — Enumerate audit files under `dir` whose date falls inside `window` relative
+- `fn scan_window` — Scan all audit files in `dir` whose date falls in `window`. Returns parsed
+- `fn parse_jsonl_line` — Parse a single JSONL line into an `AuditEntry`. Returns `None` for empty
+- `fn aggregate` — Compute summary stats over `entries`. `window` is used only for RPS denom
+- `fn filter` — Apply filter spec. Result preserves input order (caller scan_window
+- `struct AuditQuery`
+- `struct WindowChoice`
+- `struct BodyCtx` — Precomputed view-model fed to the body partial. Both shell templates
+- `fn build_body_ctx`
+- `fn audit_host_page`
+- `fn audit_tenant_page`
+
+**Imports from:**
+
+- [`src/safety/audit.rs`](../src/safety/audit.rs)
+
+### [`src/mgmt/backups.rs`](../src/mgmt/backups.rs)
+
+_Admin-UI handlers for `drust-backup` snapshot inspection + download._
+
+**Declared by:**
+
+- [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
+
+**Public items:**
+
+- `struct BackupsState`
+- `struct BackupRow`
+- `struct TenantInBackup`
+- `struct RestoreFlash`
+- `struct RestoreForm`
+- `struct InspectQs`
+- `fn list_page`
+- `fn inspect` — `GET /admin/backups/{filename}/inspect` — open the archive on a blocking
+- `fn restore_tenant` — `POST /admin/backups/{filename}/restore` — extract the named tenant's
+- `fn download_one`
+
+**Imports from:**
+
+- [`src/mgmt/format.rs`](../src/mgmt/format.rs)
+
 ### [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
 
 **Declared by:**
@@ -503,6 +755,10 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 - `fn collection_rows_page`
 - `struct AnonCapsForm`
 - `fn update_anon_caps` — POST `/admin/tenants/{tenant}/collections/{coll}/anon-caps`.
+- `struct AdminCreateIndexBody`
+- `fn create_index_admin` — POST `/admin/tenants/{id}/collections/{coll}/_indexes`
+- `fn drop_index_admin` — DELETE `/admin/tenants/{id}/collections/{coll}/_indexes/{name}`
+- `fn explain_admin` — POST `/admin/tenants/{id}/collections/{coll}/_explain`
 
 **Imports from:**
 
@@ -526,12 +782,33 @@ _Admin-UI handler for the on-disk CHANGELOG viewer._
 - `struct NavItem`
 - `fn changelog_page`
 
+### [`src/mgmt/format.rs`](../src/mgmt/format.rs)
+
+_Small formatting helpers shared across the admin UI._
+
+**Declared by:**
+
+- [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
+
+**Public items:**
+
+- `fn humanize_bytes` — Format a byte count as `"NNN B"` / `"N.N KB"` / `"N.N MB"` / `"N.NN GB"`.
+
+**Imported by:**
+
+- [`src/mgmt/backups.rs`](../src/mgmt/backups.rs)
+- [`src/mgmt/public_files.rs`](../src/mgmt/public_files.rs)
+- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+
 ### [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
 
 **Declares submodules:**
 
+- [`src/mgmt/audit.rs`](../src/mgmt/audit.rs)
+- [`src/mgmt/backups.rs`](../src/mgmt/backups.rs)
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
 - [`src/mgmt/docs.rs`](../src/mgmt/docs.rs)
+- [`src/mgmt/format.rs`](../src/mgmt/format.rs)
 - [`src/mgmt/public_files.rs`](../src/mgmt/public_files.rs)
 - [`src/mgmt/routes.rs`](../src/mgmt/routes.rs)
 - [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
@@ -546,8 +823,11 @@ _Admin-UI handler for the on-disk CHANGELOG viewer._
 
 **Public items:**
 
+- `mod audit`
+- `mod backups`
 - `mod browse`
 - `mod docs`
+- `mod format`
 - `mod public_files`
 - `mod routes`
 - `mod rpc_admin`
@@ -582,7 +862,6 @@ _Admin UI for the host-level public bucket. Provides list, upload, delete,_
 - `fn reconcile_page`
 - `struct ReconcileForm`
 - `fn reconcile_apply`
-- `fn humanize_bytes`
 - `fn admin_stream_bytes` — GET /drust/admin/files/<key>/bytes
 - `struct AdminSignRequest`
 - `struct AdminSignResponse`
@@ -591,6 +870,7 @@ _Admin UI for the host-level public bucket. Provides list, upload, delete,_
 **Imports from:**
 
 - [`src/auth/middleware.rs`](../src/auth/middleware.rs)
+- [`src/mgmt/format.rs`](../src/mgmt/format.rs)
 - [`src/storage/files.rs`](../src/storage/files.rs)
 - [`src/storage/garage.rs`](../src/storage/garage.rs)
 
@@ -629,16 +909,21 @@ _Admin-UI handlers for the `_rpc` virtual collection page._
 
 **Public items:**
 
+- `struct RpcListQs`
 - `fn rpc_index` — `GET /admin/tenants/{id}/_rpc` — list stored RPCs for the tenant.
 - `fn rpc_new_form` — `GET /admin/tenants/{id}/_rpc/new` — render the empty create form.
 - `fn rpc_edit_form` — `GET /admin/tenants/{id}/_rpc/{name}/edit` — render the form pre-filled
 - `struct RpcFormBody`
 - `fn rpc_save` — `POST /admin/tenants/{id}/_rpc/new` (create) and
+- `struct RpcTestRunForm`
+- `fn rpc_test_form` — `GET /admin/tenants/{id}/_rpc/{name}/test` — render the test playground
+- `fn rpc_test_run` — `POST /admin/tenants/{id}/_rpc/{name}/test/run` — execute the RPC with
 - `fn rpc_delete` — `POST /admin/tenants/{id}/_rpc/{name}/delete` — drop a stored RPC.
 
 **Imports from:**
 
 - [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+- [`src/rpc/params.rs`](../src/rpc/params.rs)
 - [`src/rpc/registry.rs`](../src/rpc/registry.rs)
 - [`src/storage/schema.rs`](../src/storage/schema.rs)
 - [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
@@ -717,12 +1002,17 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - `fn create_tenant_form`
 - `fn soft_delete_tenant`
 - `fn soft_delete_tenant_form`
+- `struct ToggleSelfRegisterBody`
+- `fn toggle_self_register` — `POST /admin/tenants/{id}/allow-self-register`
+- `struct TenantFilesPerPageOption`
+- `struct TenantFilesListQs`
 - `fn tenant_files_admin_page` — GET /admin/tenants/{id}/files
 
 **Imports from:**
 
 - [`src/auth/bearer.rs`](../src/auth/bearer.rs)
 - [`src/auth/middleware.rs`](../src/auth/middleware.rs)
+- [`src/mgmt/format.rs`](../src/mgmt/format.rs)
 - [`src/storage/garage.rs`](../src/storage/garage.rs)
 - [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
 
@@ -795,6 +1085,7 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - `enum ExecError`
 - `fn sql_hash`
 - `fn execute_read_query`
+- `fn execute_read_query_admin` — Like [`execute_read_query`] but skips the read-only authorizer. Only
 - `fn execute_read_query_with_named` — Same as [`execute_read_query`] but binds `:name`-style placeholders from a
 - `struct InterruptGuard` — Spawn a task that interrupts the connection if a deadline passes.
 
@@ -867,6 +1158,7 @@ _REST handler for `POST /t/{tenant}/rpc/{name}`._
 
 **Imports from:**
 
+- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
 - [`src/query/executor.rs`](../src/query/executor.rs)
 - [`src/rpc/params.rs`](../src/rpc/params.rs)
 - [`src/rpc/registry.rs`](../src/rpc/registry.rs)
@@ -913,6 +1205,7 @@ _RPC parameter schema and request validation._
 
 **Imported by:**
 
+- [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
 - [`src/rpc/handler.rs`](../src/rpc/handler.rs)
 - [`src/rpc/registry.rs`](../src/rpc/registry.rs)
 
@@ -976,19 +1269,37 @@ _Persistence wrapper around the `_system_rpc` table._
 
 **Public items:**
 
+- `struct AuditExtra`
+- `struct DefaultAuditExtra`
 - `struct AuditEntry`
-- `struct AuditLog`
+- `fn should_log_body` — Spec S6: path whitelist gating future body logging. Auth bodies must never be persisted.
+- `struct AuditLog` — Audit-log writer. Non-blocking append: callers send entries through
+- `struct AuditWriterHandle` — Returned by `AuditLog::start`. Holding the handle lets graceful
 
 **Imported by:**
 
+- [`src/mgmt/audit.rs`](../src/mgmt/audit.rs)
+- [`src/tenant/auth_routes.rs`](../src/tenant/auth_routes.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
+
+### [`src/safety/ip.rs`](../src/safety/ip.rs)
+
+**Declared by:**
+
+- [`src/safety/mod.rs`](../src/safety/mod.rs)
+
+**Public items:**
+
+- `fn client_ip` — Returns the verified client IP behind a known proxy chain.
 
 ### [`src/safety/mod.rs`](../src/safety/mod.rs)
 
 **Declares submodules:**
 
 - [`src/safety/audit.rs`](../src/safety/audit.rs)
+- [`src/safety/ip.rs`](../src/safety/ip.rs)
 - [`src/safety/rate_limit.rs`](../src/safety/rate_limit.rs)
+- [`src/safety/rate_limit_ip.rs`](../src/safety/rate_limit_ip.rs)
 
 **Declared by:**
 
@@ -997,7 +1308,9 @@ _Persistence wrapper around the `_system_rpc` table._
 **Public items:**
 
 - `mod audit`
+- `mod ip`
 - `mod rate_limit`
+- `mod rate_limit_ip`
 
 ### [`src/safety/rate_limit.rs`](../src/safety/rate_limit.rs)
 
@@ -1007,8 +1320,22 @@ _Persistence wrapper around the `_system_rpc` table._
 
 **Public items:**
 
-- `struct RateLimiter`
+- `struct RateLimiter` — Token-bucket rate limiter, keyed on caller-supplied opaque strings
 - `struct RateLimitedError`
+
+**Imported by:**
+
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
+
+### [`src/safety/rate_limit_ip.rs`](../src/safety/rate_limit_ip.rs)
+
+**Declared by:**
+
+- [`src/safety/mod.rs`](../src/safety/mod.rs)
+
+**Public items:**
+
+- `struct IpRateLimit`
 
 **Imported by:**
 
@@ -1071,6 +1398,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 
 - `struct GarageClient`
 - `struct BucketInfo`
+- `struct BucketUsage`
 - `struct ObjectSummary`
 - `fn ascii_fallback_filename` — ASCII-safe fallback for the plain `filename="..."` token in
 
@@ -1085,6 +1413,16 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - [`src/mgmt/signed_bytes.rs`](../src/mgmt/signed_bytes.rs)
 - [`src/mgmt/tenant_files.rs`](../src/mgmt/tenant_files.rs)
 - [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+
+### [`src/storage/janitor.rs`](../src/storage/janitor.rs)
+
+**Declared by:**
+
+- [`src/storage/mod.rs`](../src/storage/mod.rs)
+
+**Public items:**
+
+- `fn sweep_expired_sessions` — Sweep expired sessions across every active tenant. Returns the total
 
 ### [`src/storage/meta.rs`](../src/storage/meta.rs)
 
@@ -1108,6 +1446,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - [`src/storage/disk.rs`](../src/storage/disk.rs)
 - [`src/storage/files.rs`](../src/storage/files.rs)
 - [`src/storage/garage.rs`](../src/storage/garage.rs)
+- [`src/storage/janitor.rs`](../src/storage/janitor.rs)
 - [`src/storage/meta.rs`](../src/storage/meta.rs)
 - [`src/storage/pool.rs`](../src/storage/pool.rs)
 - [`src/storage/quota.rs`](../src/storage/quota.rs)
@@ -1125,6 +1464,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - `mod disk`
 - `mod files`
 - `mod garage`
+- `mod janitor`
 - `mod meta`
 - `mod pool`
 - `mod quota`
@@ -1153,6 +1493,9 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 **Imported by:**
 
 - [`src/mcp/server.rs`](../src/mcp/server.rs)
+- [`src/mcp/tools/index.rs`](../src/mcp/tools/index.rs)
+- [`src/mcp/tools/owner_field.rs`](../src/mcp/tools/owner_field.rs)
+- [`src/mcp/tools/user.rs`](../src/mcp/tools/user.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
 
 ### [`src/storage/quota.rs`](../src/storage/quota.rs)
@@ -1189,6 +1532,8 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - `fn collection_exists`
 - `fn find_fk_referrers` — Find every other user-table that has a foreign-key column pointing at
 - `fn write_anon_caps` — Insert / replace the anon_caps row for a collection. Caller must
+- `fn set_owner_field` — Set or clear `owner_field` + `read_scope` for a collection. Pass `None`
+- `fn read_owner_field` — Read the current `(owner_field, read_scope)` pair. Returns `(None, None)`
 - `fn delete_collection_meta` — Drop the metadata row for a collection. Called from drop_collection.
 - `fn has_dml_cap` — Returns true if the caller's role is permitted to perform `verb` on
 
@@ -1199,6 +1544,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 **Imported by:**
 
 - [`src/mcp/tools/exploration.rs`](../src/mcp/tools/exploration.rs)
+- [`src/mcp/tools/index.rs`](../src/mcp/tools/index.rs)
 - [`src/mcp/tools/schema.rs`](../src/mcp/tools/schema.rs)
 - [`src/mcp/tools/write.rs`](../src/mcp/tools/write.rs)
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
@@ -1278,6 +1624,58 @@ _Drust-minted, drust-served signed URLs for private file downloads._
 
 ## `src/tenant/`
 
+### [`src/tenant/admin_user_routes.rs`](../src/tenant/admin_user_routes.rs)
+
+_Service-only admin endpoints for managing users within a tenant._
+
+**Declared by:**
+
+- [`src/tenant/mod.rs`](../src/tenant/mod.rs)
+
+**Public items:**
+
+- `struct CreateUserBody`
+- `struct UpdateUserBody`
+- `struct ListQuery`
+- `fn create_user_handler`
+- `fn list_users_handler`
+- `fn get_user_handler`
+- `fn update_user_handler`
+- `fn delete_user_handler`
+- `fn revoke_sessions_handler`
+
+**Imports from:**
+
+- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
+
+### [`src/tenant/auth_routes.rs`](../src/tenant/auth_routes.rs)
+
+**Declared by:**
+
+- [`src/tenant/mod.rs`](../src/tenant/mod.rs)
+
+**Public items:**
+
+- `struct RegisterBody`
+- `fn register_handler`
+- `struct LoginBody`
+- `fn login_handler`
+- `fn logout_handler`
+- `fn logout_all_handler`
+- `fn me_get_handler`
+- `struct PatchMeBody`
+- `fn me_patch_handler`
+- `struct ChangePasswordBody`
+- `fn me_password_handler`
+
+**Imports from:**
+
+- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
+- [`src/auth/user.rs`](../src/auth/user.rs)
+- [`src/safety/audit.rs`](../src/safety/audit.rs)
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
+
 ### [`src/tenant/collections.rs`](../src/tenant/collections.rs)
 
 **Declared by:**
@@ -1288,6 +1686,9 @@ _Drust-minted, drust-served signed URLs for private file downloads._
 
 - `fn list_handler`
 - `fn describe_handler`
+- `struct CreateIndexBody`
+- `fn create_index_handler`
+- `fn drop_index_handler`
 
 **Imports from:**
 
@@ -1333,9 +1734,12 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 
 **Declares submodules:**
 
+- [`src/tenant/admin_user_routes.rs`](../src/tenant/admin_user_routes.rs)
+- [`src/tenant/auth_routes.rs`](../src/tenant/auth_routes.rs)
 - [`src/tenant/collections.rs`](../src/tenant/collections.rs)
 - [`src/tenant/events.rs`](../src/tenant/events.rs)
 - [`src/tenant/mcp_dispatch.rs`](../src/tenant/mcp_dispatch.rs)
+- [`src/tenant/owner_field.rs`](../src/tenant/owner_field.rs)
 - [`src/tenant/query_endpoint.rs`](../src/tenant/query_endpoint.rs)
 - [`src/tenant/records.rs`](../src/tenant/records.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
@@ -1347,9 +1751,12 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 
 **Public items:**
 
+- `mod admin_user_routes`
+- `mod auth_routes`
 - `mod collections`
 - `mod events`
 - `mod mcp_dispatch`
+- `mod owner_field`
 - `mod query_endpoint`
 - `mod records`
 - `mod router`
@@ -1362,6 +1769,23 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 - [`src/mcp/http_registry.rs`](../src/mcp/http_registry.rs)
 - [`src/mgmt/tenant_files.rs`](../src/mgmt/tenant_files.rs)
 
+### [`src/tenant/owner_field.rs`](../src/tenant/owner_field.rs)
+
+**Declared by:**
+
+- [`src/tenant/mod.rs`](../src/tenant/mod.rs)
+
+**Public items:**
+
+- `struct SetOwnerFieldBody`
+- `fn set_owner_field_handler`
+- `fn clear_owner_field_handler`
+
+**Imports from:**
+
+- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
+
 ### [`src/tenant/query_endpoint.rs`](../src/tenant/query_endpoint.rs)
 
 **Declared by:**
@@ -1372,9 +1796,12 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 
 - `struct QueryBody`
 - `fn query_handler`
+- `struct ExplainBody`
+- `fn explain_handler`
 
 **Imports from:**
 
+- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
 - [`src/query/executor.rs`](../src/query/executor.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
 
@@ -1396,6 +1823,7 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 
 **Imports from:**
 
+- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
 - [`src/query/authorizer.rs`](../src/query/authorizer.rs)
 - [`src/query/executor.rs`](../src/query/executor.rs)
 - [`src/query/filter.rs`](../src/query/filter.rs)
@@ -1420,8 +1848,10 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 **Imports from:**
 
 - [`src/auth/bearer.rs`](../src/auth/bearer.rs)
+- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
 - [`src/safety/audit.rs`](../src/safety/audit.rs)
 - [`src/safety/rate_limit.rs`](../src/safety/rate_limit.rs)
+- [`src/safety/rate_limit_ip.rs`](../src/safety/rate_limit_ip.rs)
 - [`src/storage/pool.rs`](../src/storage/pool.rs)
 
 **Imported by:**
@@ -1429,8 +1859,11 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 - [`src/rpc/handler.rs`](../src/rpc/handler.rs)
 - [`src/rpc/registry.rs`](../src/rpc/registry.rs)
 - [`src/storage/schema.rs`](../src/storage/schema.rs)
+- [`src/tenant/admin_user_routes.rs`](../src/tenant/admin_user_routes.rs)
+- [`src/tenant/auth_routes.rs`](../src/tenant/auth_routes.rs)
 - [`src/tenant/collections.rs`](../src/tenant/collections.rs)
 - [`src/tenant/mcp_dispatch.rs`](../src/tenant/mcp_dispatch.rs)
+- [`src/tenant/owner_field.rs`](../src/tenant/owner_field.rs)
 - [`src/tenant/query_endpoint.rs`](../src/tenant/query_endpoint.rs)
 - [`src/tenant/records.rs`](../src/tenant/records.rs)
 - [`src/tenant/sse.rs`](../src/tenant/sse.rs)

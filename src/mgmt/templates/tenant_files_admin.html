@@ -203,48 +203,6 @@
 {% include "_mascot.html" %}
 {% include "_modal.html" %}
 
-<style>
-  .pub-scroll { overflow-x: auto; position: relative; }
-  table.pub-files { width: 100%; min-width: 800px; border-collapse: collapse; }
-  table.pub-files colgroup .col-name    { width: auto; }
-  table.pub-files colgroup .col-vis     { width: 90px; }
-  table.pub-files colgroup .col-type    { width: 140px; }
-  table.pub-files colgroup .col-size    { width: 90px; }
-  table.pub-files colgroup .col-time    { width: 180px; }
-  table.pub-files colgroup .col-actions { width: 1px; }
-  .trunc-inner { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  table.pub-files td.cell-name a { color: var(--text); text-decoration: none; }
-  table.pub-files td.cell-name a:hover { color: var(--accent); text-decoration: underline; }
-  .chip-vis-public  { background: var(--ok-soft, #1a2e1a); color: var(--ok, #80c880); border: 1px solid var(--ok-line, #446044); }
-  .chip-vis-private { background: var(--warn-soft, #2e2a14); color: var(--warn, #d4b84a); border: 1px solid var(--warn-line, #5a4e1a); }
-  table.pub-files td.cell-size { white-space: nowrap; }
-  table.pub-files td.cell-time { white-space: nowrap; }
-  table.pub-files td.cell-actions, table.pub-files th:last-child {
-    position: sticky; right: 0; white-space: nowrap; background: var(--surface);
-    box-shadow: -8px 0 10px -6px rgba(0, 0, 0, 0.45); z-index: 1;
-  }
-  table.pub-files th:last-child { background: var(--bg-2); }
-  .dropzone { position: relative; border: 1.5px dashed var(--line); border-radius: var(--radius); background: var(--bg-1); padding: 32px 20px; transition: border-color .12s, background .12s; cursor: pointer; }
-  .dropzone:hover { border-color: var(--muted-2); }
-  .dropzone.is-dragover { border-color: var(--accent); border-style: solid; background: oklch(var(--accent-l) var(--accent-c) var(--accent-h) / 0.08); }
-  .dropzone-inner { display: flex; flex-direction: column; align-items: center; gap: 10px; font-family: var(--mono); color: var(--muted); }
-  .dropzone-prompt { display: inline-flex; align-items: center; gap: 10px; font-size: 18px; }
-  .dz-arrow { color: var(--accent); font-weight: 600; }
-  .dz-or { color: var(--muted-2); }
-  .dropzone-name { font-size: 16px; color: var(--text); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
-  .dropzone-name[data-empty="1"] { color: var(--muted-2); font-style: italic; }
-  .dropzone-name[data-state="error"] { color: var(--danger); }
-  .filepick-btn { display: inline-flex; align-items: center; padding: 6px 14px; font: 500 18px/1 var(--mono); color: var(--text-soft); background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; user-select: none; transition: color .1s, background .1s, border-color .1s; }
-  .filepick-btn:hover { color: var(--text); border-color: var(--muted-2); background: var(--bg-3); }
-  .filepick-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .filepick-btn-label::before { content: "["; color: var(--muted); margin-right: 4px; }
-  .filepick-btn-label::after  { content: "]"; color: var(--muted); margin-left: 4px; }
-  .filepick-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-  .upload-row { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; margin-top: 14px; min-height: 32px; }
-  .upload-hint { font-family: var(--mono); font-size: 15px; color: var(--muted); flex: 1 1 auto; }
-  .upload-hint.ready { color: var(--accent); }
-  .upload-hint.error { color: var(--danger); }
-</style>
 
 <script>
   (function () {

@@ -180,7 +180,7 @@ pub async fn login_handler(
     };
     if !tenant_exists {
         // S1: still spend an argon2 verify so timing matches the legit path.
-        let _ = crate::auth::user::verify_password(&body.password, &crate::auth::user::DUMMY_HASH);
+        let _ = crate::auth::user::verify_password(&body.password, crate::auth::user::dummy_hash());
         return err(
             StatusCode::UNAUTHORIZED,
             "INVALID_CREDENTIALS",
@@ -192,7 +192,7 @@ pub async fn login_handler(
         Err(_) => {
             let _ = crate::auth::user::verify_password(
                 &body.password,
-                &crate::auth::user::DUMMY_HASH,
+                crate::auth::user::dummy_hash(),
             );
             return err(
                 StatusCode::UNAUTHORIZED,
@@ -221,7 +221,7 @@ pub async fn login_handler(
         .await;
     let (uid, phc) = match row {
         Ok(Some(pair)) => pair,
-        _ => (String::new(), crate::auth::user::DUMMY_HASH.clone()),
+        _ => (String::new(), crate::auth::user::dummy_hash().to_owned()),
     };
     let op = format!("POST /auth/login");
     let ok = crate::auth::user::verify_password(&body.password, &phc).unwrap_or(false);

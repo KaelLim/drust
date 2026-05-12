@@ -1,14 +1,17 @@
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use once_cell::sync::Lazy;
+use std::sync::OnceLock;
 
 /// argon2id PHC string for a password the attacker cannot guess. Used by login when the
 /// email is unknown to make the response timing match the "email exists, wrong password"
 /// path. Never a valid credential because no user can register an empty password.
-pub static DUMMY_HASH: Lazy<String> = Lazy::new(|| {
-    hash_password("__drust_dummy__never_a_real_password__")
-        .expect("DUMMY_HASH bootstrap")
-});
+pub fn dummy_hash() -> &'static str {
+    static DUMMY_HASH: OnceLock<String> = OnceLock::new();
+    DUMMY_HASH.get_or_init(|| {
+        hash_password("__drust_dummy__never_a_real_password__")
+            .expect("DUMMY_HASH bootstrap")
+    })
+}
 
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut rand::rngs::OsRng);
@@ -42,10 +45,10 @@ mod tests {
 
     #[test]
     fn dummy_hash_is_constant_and_verifies_against_nothing() {
-        let d1 = DUMMY_HASH.to_string();
-        let d2 = DUMMY_HASH.to_string();
+        let d1 = dummy_hash().to_owned();
+        let d2 = dummy_hash().to_owned();
         assert_eq!(d1, d2); // it's a constant, not regenerated
-        assert!(!verify_password("anything", &DUMMY_HASH).unwrap());
+        assert!(!verify_password("anything", dummy_hash()).unwrap());
     }
 
     /// Spec S1: a verify against DUMMY_HASH must take comparable wall-clock to a real verify.
@@ -59,7 +62,7 @@ mod tests {
         let real_dur = warm.elapsed();
 
         let cold = Instant::now();
-        verify_password("benchmarkpassword", &DUMMY_HASH).unwrap();
+        verify_password("benchmarkpassword", dummy_hash()).unwrap();
         let dummy_dur = cold.elapsed();
 
         let ratio = real_dur.as_nanos() as f64 / dummy_dur.as_nanos().max(1) as f64;
