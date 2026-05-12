@@ -117,17 +117,17 @@
               {% endif %}
             </tbody>
           </table>
-          <div style="padding:12px 16px;border-top:1px solid var(--line);">
-            <form id="create-idx-form" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
-              <label style="display:flex;flex-direction:column;gap:4px;font-size:13px;">
+          <div class="card-body-tight">
+            <form id="create-idx-form" class="form-inline">
+              <label class="field" style="min-width:160px;">
                 <span class="muted">fields (Ctrl+click for multi)</span>
-                <select name="fields" multiple size="4" class="select" style="min-width:160px;">
+                <select name="fields" multiple size="4" class="select">
                   {% for f in fields %}
                   <option value="{{ f.name }}">{{ f.name }}</option>
                   {% endfor %}
                 </select>
               </label>
-              <div style="display:flex;flex-direction:column;gap:8px;">
+              <div class="field">
                 <label class="check">
                   <input type="checkbox" name="unique">
                   <span>unique</span>
@@ -139,19 +139,18 @@
               </div>
               <button class="btn btn-primary btn-sm" type="submit">create index</button>
             </form>
-            <pre id="create-idx-output" style="margin-top:8px;color:#c00;font-size:12px;white-space:pre-wrap;display:none;"></pre>
+            <pre id="create-idx-output" class="output is-error" hidden></pre>
           </div>
         </div>
         <div class="card" style="margin-top:16px;">
           <div class="card-head">Try SELECT (EXPLAIN QUERY PLAN)</div>
-          <div style="padding:12px 16px;">
+          <div class="card-body-tight">
             <textarea id="explain-sql"
+                      class="textarea"
                       rows="3"
-                      style="width:100%;font-family:monospace;"
                       placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
             <button id="explain-run" type="button" class="btn btn-sm btn-primary" style="margin-top:8px;">Run plan</button>
-            <pre id="explain-output"
-                 style="margin-top:8px;background:#f6f8fa;padding:12px;border-radius:6px;font-size:13px;white-space:pre-wrap;display:none;"></pre>
+            <pre id="explain-output" class="output" hidden></pre>
           </div>
         </div>
         <script>
@@ -162,7 +161,7 @@
     var sql = document.getElementById('explain-sql').value;
     var out = document.getElementById('explain-output');
     out.textContent = 'Running...';
-    out.style.display = '';
+    out.hidden = false;
     fetch(
       '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_explain',
       {
@@ -240,13 +239,13 @@
       var fields = fd.getAll('fields');
       if (fields.length === 0) {
         out.textContent = 'Select at least one field.';
-        out.style.display = '';
+        out.hidden = false;
         return;
       }
       var unique = fd.has('unique');
       var force  = fd.has('force');
       out.textContent = '';
-      out.style.display = 'none';
+      out.hidden = true;
       fetch(
         '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_indexes',
         {
@@ -259,12 +258,12 @@
         else {
           r.json().catch(function() { return {}; }).then(function(j) {
             out.textContent = (j.error_code || 'ERROR') + ': ' + (j.message || r.statusText);
-            out.style.display = '';
+            out.hidden = false;
           });
         }
       }).catch(function(err) {
         out.textContent = String(err);
-        out.style.display = '';
+        out.hidden = false;
       });
     });
   }

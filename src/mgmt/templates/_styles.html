@@ -396,6 +396,51 @@
   .card-head .count { color: var(--muted); font-weight: 400; margin-left: 10px; }
   .card-head-actions { display: inline-flex; gap: 10px; font-size: 18px; color: var(--muted); }
   .card-body { padding: 22px; }
+  /* compact body for forms slotted into the same card as a data table */
+  .card-body-tight { padding: 12px 16px; }
+  .card-body-tight + .card-body-tight,
+  table.data + .card-body-tight { border-top: 1px solid var(--line); }
+
+  /* multi-line text input — same focus ring + colour palette as .input */
+  .textarea {
+    display: block; width: 100%; min-height: 76px;
+    padding: 10px 14px;
+    font: 400 16px/1.5 var(--mono);
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    resize: vertical;
+    transition: border-color .1s, box-shadow .1s;
+  }
+  .textarea::placeholder { color: var(--muted-2); }
+  .textarea:hover { border-color: var(--muted-2); }
+  .textarea:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px oklch(var(--accent-l) var(--accent-c) var(--accent-h) / 0.25);
+  }
+
+  /* output block — command result / error message under a form or button */
+  .output {
+    margin: 0; padding: 12px 14px;
+    font: 400 13px/1.45 var(--mono);
+    color: var(--text);
+    background: var(--bg-2);
+    border-radius: var(--radius);
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .output + .output, .form-inline + .output, .textarea + .btn + .output,
+  .textarea + .output { margin-top: 8px; }
+  .output.is-error { color: var(--danger); background: var(--danger-soft); }
+
+  /* code display — static SQL / JSON shown inside a card body */
+  .code {
+    margin: 0; padding: 14px 18px;
+    font: 400 13px/1.55 var(--mono);
+    color: var(--text);
+    background: var(--bg-2);
+    overflow-x: auto;
+  }
+  .code.code-sm { font-size: 12px; }
 
   table.data {
     width: 100%; border-collapse: collapse;
