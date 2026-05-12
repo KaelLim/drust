@@ -83,7 +83,7 @@
             </span>
           </div>
           {% if let Some(d) = r.description %}<p style="padding:0 16px;margin:8px 0 0;color:var(--muted);">{{ d }}</p>{% endif %}
-          <pre style="padding:14px 16px;margin:8px 0;background:var(--bg-2);border-radius:6px;overflow:auto;font-family:var(--mono);font-size:14px;">{{ r.sql }}</pre>
+          <pre class="code" style="margin:8px 0;padding:14px 16px;border-radius:6px;font-size:14px;">{{ r.sql }}</pre>
           <div style="padding:8px 16px 14px;display:flex;gap:8px;">
             <a class="btn btn-sm" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/edit">edit</a>
             <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/delete" class="rpc-delete-form" data-rpc-name="{{ r.name }}" style="display:inline;">

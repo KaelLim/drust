@@ -56,11 +56,11 @@
           </div>
           <div class="field">
             <label>sql (use :name for params)</label>
-            <textarea class="input" name="sql" rows="10" required style="font-family:var(--mono);">{{ form_sql }}</textarea>
+            <textarea class="textarea" name="sql" rows="10" required>{{ form_sql }}</textarea>
           </div>
           <div class="field">
             <label>params (JSON array, e.g. <code>[{"name":"id","type":"integer","required":true}]</code>)</label>
-            <textarea class="input" name="params_json" rows="6" required style="font-family:var(--mono);">{{ form_params_json }}</textarea>
+            <textarea class="textarea" name="params_json" rows="6" required>{{ form_params_json }}</textarea>
           </div>
           <div class="field">
             <label><input type="checkbox" name="anon_callable" value="1"{% if form_anon_callable %} checked{% endif %}> allow anon callers</label>
