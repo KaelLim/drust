@@ -1,7 +1,7 @@
 use rusqlite::{Connection, types::ValueRef};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Serialize)]
@@ -253,11 +253,6 @@ impl InterruptGuard {
     pub fn disarm(self) {
         let _ = self.cancel.send(());
     }
-}
-
-#[allow(dead_code)]
-fn _unused_timing() -> Instant {
-    Instant::now()
 }
 
 #[cfg(test)]

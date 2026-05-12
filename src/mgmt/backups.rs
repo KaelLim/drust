@@ -80,18 +80,7 @@ pub struct InspectQs {
     pub dest: Option<String>,
 }
 
-fn humanize_bytes(n: u64) -> String {
-    let nf = n as f64;
-    if n < 1024 {
-        format!("{n} B")
-    } else if n < 1024 * 1024 {
-        format!("{:.1} KB", nf / 1024.0)
-    } else if n < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", nf / 1_048_576.0)
-    } else {
-        format!("{:.2} GB", nf / 1_073_741_824.0)
-    }
-}
+use crate::mgmt::format::humanize_bytes;
 
 fn humanize_age(secs: i64) -> String {
     if secs < 0 {
@@ -538,15 +527,6 @@ mod tests {
     fn accepts_real_backup_names() {
         assert!(is_safe_backup_filename("drust-2026-04-20-191001.tar.zst"));
         assert!(is_safe_backup_filename("drust-2026-05-05-030000.tar.zst"));
-    }
-
-    #[test]
-    fn humanize_bytes_picks_correct_unit() {
-        assert_eq!(humanize_bytes(0), "0 B");
-        assert_eq!(humanize_bytes(512), "512 B");
-        assert_eq!(humanize_bytes(2048), "2.0 KB");
-        assert_eq!(humanize_bytes(2_097_152), "2.0 MB");
-        assert_eq!(humanize_bytes(2_147_483_648), "2.00 GB");
     }
 
     #[test]

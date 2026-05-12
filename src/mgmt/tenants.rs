@@ -66,18 +66,7 @@ struct TenantRow {
     total_display: String,
 }
 
-fn humanize_bytes(n: u64) -> String {
-    let nf = n as f64;
-    if n < 1024 {
-        format!("{n} B")
-    } else if n < 1024 * 1024 {
-        format!("{:.1} KB", nf / 1024.0)
-    } else if n < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", nf / 1_048_576.0)
-    } else {
-        format!("{:.2} GB", nf / 1_073_741_824.0)
-    }
-}
+use crate::mgmt::format::humanize_bytes;
 
 fn short_id(id: &str) -> String {
     if id.len() <= 12 {
@@ -463,7 +452,6 @@ struct AdminTenantFileRow {
     key: String,
     original_name: String,
     content_type: String,
-    size_bytes: i64,
     size_human: String,
     visibility: String,
     uploaded_at: String,
@@ -653,8 +641,7 @@ pub async fn tenant_files_admin_page(
                 key,
                 original_name,
                 content_type: content_type.unwrap_or_else(|| "application/octet-stream".into()),
-                size_bytes,
-                size_human: crate::mgmt::public_files::humanize_bytes(size_bytes as u64),
+                size_human: humanize_bytes(size_bytes as u64),
                 visibility,
                 uploaded_at,
                 public_url,

@@ -862,18 +862,7 @@ async fn load_files(
     Ok((files, total_files, total_bytes.max(0) as u64, counts))
 }
 
-pub fn humanize_bytes(n: u64) -> String {
-    const K: u64 = 1024;
-    if n < K {
-        format!("{n} B")
-    } else if n < K * K {
-        format!("{:.1} KB", n as f64 / K as f64)
-    } else if n < K * K * K {
-        format!("{:.1} MB", n as f64 / (K * K) as f64)
-    } else {
-        format!("{:.2} GB", n as f64 / (K * K * K) as f64)
-    }
-}
+pub use crate::mgmt::format::humanize_bytes;
 
 // (Previous `parse_size_human` summed displayed strings back into bytes —
 // removed in favour of SQL SUM at query time, which is both exact and
@@ -1024,15 +1013,3 @@ pub async fn admin_sign_url(
     }))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn humanize_bytes_ranges() {
-        assert_eq!(humanize_bytes(0), "0 B");
-        assert_eq!(humanize_bytes(512), "512 B");
-        assert_eq!(humanize_bytes(1536), "1.5 KB");
-        assert_eq!(humanize_bytes(5 * 1024 * 1024), "5.0 MB");
-    }
-}
