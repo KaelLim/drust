@@ -968,14 +968,15 @@ impl ServerHandler for DrustMcpService {
         let base = self.state.public_base_url();
         let instructions = format!(
             "drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.\n\n\
-             32 tools: `list_collections`, `describe_collection`, `sample_rows`, \
+             Tools: `whoami`, `list_collections`, `describe_collection`, `sample_rows`, \
              `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
-             `drop_collection`, `create_index`, `drop_index`, `list_files`, `delete_file`, \
-             `get_file_url`, `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, \
-             `call_rpc`, `create_user`, `list_users`, `get_user`, `update_user`, \
-             `delete_user`, `revoke_user_sessions`, `set_owner_field`, `clear_owner_field`, \
-             `set_self_register`.\n\n\
+             `drop_collection`, `set_anon_caps`, `create_index`, `drop_index`, \
+             `list_files`, `delete_file`, `get_file_url`, `create_rpc`, `update_rpc`, \
+             `delete_rpc`, `list_rpc`, `call_rpc`, `create_user`, `list_users`, `get_user`, \
+             `update_user`, `delete_user`, `revoke_user_sessions`, `set_owner_field`, \
+             `clear_owner_field`, `set_self_register`. (Call `tools/list` for the \
+             canonical schema-and-list.)\n\n\
              Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
              tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
              endpoint instead:\n\n  \
