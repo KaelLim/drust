@@ -5,6 +5,200 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-05-12
+
+### Added — Per-tenant end-user authentication (registered users, sessions, owner-scoped rows)
+
+Drust gains a real notion of "end user" on top of the existing anon /
+service tokens. Tenants can register users, issue session-backed bearer
+tokens, and scope rows per-user via a declarative `owner_field` —
+without giving up the BaaS-shaped REST/MCP surface. Spec:
+[`docs/superpowers/specs/2026-05-09-drust-user-auth-design.md`](docs/superpowers/specs/2026-05-09-drust-user-auth-design.md).
+
+- **New per-tenant tables** (auto-migrated on startup, soft-delete safe):
+  - `_system_users` — `(id, email UNIQUE NOCASE, password_hash, verified,
+    profile JSON, created_at, updated_at)`. Password hashed with
+    argon2id. Profile column stores arbitrary JSON; encoded
+    idempotently so a client that stringifies the object on the wire
+    still round-trips as a JSON object on read (legacy double-encoded
+    rows are healed on the read path).
+  - `_system_sessions` — `(token_hash, user_id, ip_at_login,
+    user_agent, created_at, expires_at)`. Plaintext tokens prefixed
+    `drust_user_`, SHA-256-hashed at rest; sliding 30-day expiry
+    refreshed on each authenticated request.
+
+- **Three-kind bearer resolution** in `bearer_auth_layer` — checks
+  user-session table first (per-tenant), then falls through to the
+  existing service / anon meta lookup. Result is exposed downstream as
+  the new `AuthCtx` enum `{ Anon, Service, User { user_id,
+  token_hash } }`, which DML/RPC/admin handlers branch on.
+
+- **REST surface** (per tenant, mounted under `/drust/t/<id>/`):
+  - `POST /auth/register` — gated by `tenants.allow_self_register` flag
+    (default `0`); per-IP rate-limit 3/min on registration attempts.
+  - `POST /auth/login` — uses argon2id + a fixed `DUMMY_HASH` to
+    equalize timing across known/unknown email paths (S1). Per-IP
+    rate-limit 5/min. Returns the plaintext session token once.
+  - `POST /auth/logout` / `POST /auth/logout-all` — revoke the current
+    token or all of the user's tokens.
+  - `GET /me` / `PATCH /me` — read or update the caller's profile.
+  - `POST /me/password` — rotate password; revokes all existing
+    sessions and mints a fresh one.
+  - `POST/DELETE /admin/users` + `GET/PATCH/DELETE /admin/users/<uid>`
+    — service-only CRUD with cascade delete (drops owner-scoped rows
+    from every collection that declares an `owner_field`, plus
+    revokes the user's sessions) and an explicit revoke-sessions
+    endpoint.
+
+- **Per-collection row-level filter** (`owner_field` + `read_scope`):
+  - `POST/DELETE /collections/<coll>/owner-field` — admin tool to bind
+    a collection's row-ownership column. The setter validates the
+    target field is `TEXT NOT NULL` and references `_system_users(id)`
+    via FK before accepting; safe to set on populated tables only when
+    every existing row already satisfies the FK.
+  - `read_scope` per collection: `own` (default — user sees only rows
+    where `owner_field = user_id`) or `all` (user sees everything,
+    INSERT still overwrites `owner_field` with caller's `user_id`).
+  - `UPDATE` / `DELETE` of a foreign row returns 404 (not 403), to
+    avoid enumeration.
+  - **Anon is denied** on owner-scoped collections regardless of
+    `anon_caps`. Service tokens bypass the filter on read but must
+    populate `owner_field` on INSERT (`409 OWNER_FIELD_REQUIRED`
+    otherwise).
+  - User tokens **fall through** to `anon_caps` on non-owner-scoped
+    collections — they never escalate above what anon could do there.
+
+- **User tokens denied on `/query`, `/query/explain`, `/mcp`** — drust
+  doesn't rewrite user-supplied SQL, so the `owner_field` filter can't
+  be enforced on those surfaces. Returns `403 QUERY_USER_DENIED` /
+  `403 MCP_USER_DENIED`. For per-user SELECTs on owner-scoped data,
+  use a stored RPC with `:user_id` (auto-bound from `AuthCtx`).
+
+- **Stored RPCs accept user tokens** when `anon_callable = true`. When
+  the RPC declares a `:user_id` parameter and the body omits it, drust
+  auto-binds the calling user's id from `AuthCtx`. The RPC body itself
+  is **not** subject to `owner_field` filtering — RPC author owns the
+  filter (S4).
+
+- **MCP tools** (9 new, MCP remains service-only):
+  - `create_user`, `list_users`, `get_user`, `update_user`,
+    `delete_user`, `revoke_user_sessions`
+  - `set_owner_field`, `unset_owner_field`
+  - `set_self_register`
+
+- **Admin UI**:
+  - Virtual sidebar entry `👤 _system_users` (slotted after `_rpc`,
+    before real collections). `password_hash` column masked as `●●●●`
+    in the rendered table.
+  - `Allow self-register` checkbox on the `_api_keys` page toggles
+    `tenants.allow_self_register`.
+
+- **Audit-log enrichment** — every authenticated request now records
+  `auth_kind` (`anon`/`service`/`user`) and, for user tokens,
+  `auth_user_id`. Auth-endpoint rows additionally carry `email` and
+  `ip_at_login` on login/register; admin user-delete rows carry
+  `deleted_records` (per-collection cascade counts) and
+  `revoked_sessions`. **Auth bodies are NEVER persisted** (S6 — the
+  path-aware sanitizer strips `password`, `current_password`,
+  `new_password` from request/response payloads on every auth route).
+
+- **New janitor binary `drust_session_janitor`** — daily systemd timer
+  sweeps expired `_system_sessions` rows with a 1-day grace window,
+  per-tenant, soft-delete-aware. Replaces the would-be `_system_sessions`
+  bloat without touching live writers.
+
+### Security
+
+- Bearer-token surface widens from `{anon, service}` to
+  `{anon, service, user}`. User tokens are strictly weaker than anon
+  on non-owner-scoped collections (they fall through to `anon_caps`)
+  and strictly weaker than service on the management surface
+  (`/admin/*`, `/query*`, `/mcp` all reject).
+- `_system_users` and `_system_sessions` are drop-protected (same
+  `is_protected_collection()` rule as `_system_files` etc.) and hidden
+  at the SQL authorizer layer.
+- argon2id at default OWASP-2023 parameters; rate-limit is global
+  per-IP, computed from `XFF[-2]` to match the `.221 → :8793 → 127.0.0.1`
+  two-hop chain (S3). Trusting just the right hop matters: trusting
+  `XFF[-1]` would let any unauthenticated caller forge an IP by
+  setting the header themselves.
+
+### Fixed
+
+- **Profile column asymmetry** (post-ship): MCP `create_user` with a
+  JSON-object `profile` round-tripped fine, but a client that
+  stringified the object on the wire ended up reading back a JSON
+  string instead of an object. New `src/auth/profile.rs` encode/decode
+  helpers normalize on write and unwrap one layer on read — idempotent
+  on both shapes, heals legacy double-encoded rows.
+
+## [1.8.0] - 2026-05-08
+
+### Added — Per-collection indexes (MCP + REST + admin UI)
+
+Tenants can now create and drop SQLite indexes on their collections —
+single-field or composite, optional `UNIQUE`, with a large-table guard
+to keep accidental DDL from stalling the writer mutex on big tables.
+
+- **MCP tools** `create_index` + `drop_index`. Auto-names composite
+  indexes as `idx_<coll>_<f1>_<f2>_...`; rejects unknown fields,
+  duplicate field lists, and `_system_*` tables outright.
+- **REST surface** `POST/DELETE /drust/t/<id>/collections/<coll>/indexes`
+  (service-only) — same validation, same naming rules.
+- **Admin UI** — Indexes section on every collection page, lists
+  existing indexes + a create form (composite supported, unique
+  checkbox). Uses the same admin-session token under the hood; no
+  separate auth boundary.
+- **`POST /drust/t/<id>/query/explain`** — anon-allowed (same SQL
+  authorizer as `/query`), returns the `EXPLAIN QUERY PLAN` rows for
+  a given SELECT. Surfaced as a textarea on the admin collection page
+  so you can verify an index is actually picked up before relying on
+  it.
+
+### Added — Large-table guard for CREATE INDEX
+
+- New env var `DRUST_INDEX_LARGE_TABLE_ROWS` (default `1_000_000`).
+  `create_index` queries `count(*)` on the target collection first; if
+  it exceeds the threshold and the caller didn't pass `force: true`,
+  returns `409 LARGE_TABLE` with the row count in the error body.
+  Plumbed end-to-end to all three surfaces (MCP / REST / admin UI).
+- Audit-log entries for index DDL include `index_name`,
+  `index_fields`, `row_count`, and `force_used` so you can later tell
+  which big-table indexes were intentional.
+
+### Added — Audit log extensibility
+
+- `AuditEntry::with_extra` — op-specific keys flatten into the JSONL
+  row instead of nesting under a generic `meta` field, so log readers
+  (the on-disk renderer at `/admin/audit`, the per-tenant `_logs`
+  page, downstream tooling) can grep by exact key without a JSON
+  path.
+
+### Changed
+
+- **Authorizer** for `/records/<coll>` get-by-id path now consults
+  `anon_caps` (was: missed; only the list / write paths did).
+  `/records/_system_*` is blocked for both anon and service
+  regardless of caps (404, not 403 — same shape as `/query`'s
+  `_system_*` denial). The Schema-tab UI's anon_caps editor notes
+  inline that the cap governs `/records/*` only, **not** `/query`.
+- **MCP tool count: 21 → 23** (`create_index` + `drop_index`).
+
+### Fixed
+
+- **Soft-delete cache eviction** — `delete_tenant` now evicts the
+  per-tenant pool, MCP service instance, and SSE broadcast bus
+  before moving the directory to `_trash/`. Previously a quick
+  re-create on the same tenant id would still see stale opened
+  handles, including a writer connection holding a `wal` lock on
+  the now-moved file.
+- **Rate-limit bucket map** — bounded with a hard cap +
+  background-task cleanup, so a long-running drust serving many
+  distinct client IPs no longer grows the bucket map unboundedly.
+- **Graceful shutdown** — main loop now waits for the audit-writer
+  mpsc channel to drain on SIGTERM. Previously a fast restart could
+  truncate the in-flight `audit-YYYY-MM-DD.jsonl` line.
+
 ## [1.7.3] - 2026-05-08
 
 ### Added
@@ -299,7 +493,11 @@ populated.
   pattern already used in `mgmt::public_files`. Caught by the
   T26 live integration smoke test.
 
-## [Unreleased]
+## [1.5.1] - 2026-04-29
+
+> Note: these changes also rode in the v1.6-pre commit on 2026-04-30 but
+> are scoped separately here because they're orthogonal to the v1.6.0
+> anon_caps / RPC feature set.
 
 ### Added — CORS support on tenant routes (browser-direct fetch finally works)
 
