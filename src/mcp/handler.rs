@@ -10,7 +10,7 @@
 use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::{
     exploration, files as file_tools, owner_field as owner_field_tools, read,
-    schema as schema_tools, user as user_tools, write as write_tools,
+    schema as schema_tools, user as user_tools, vector as vector_tools, write as write_tools,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -469,6 +469,24 @@ impl DrustMcpService {
         Parameters(SetAnonCapsArgs { collection, caps }): Parameters<SetAnonCapsArgs>,
     ) -> Result<CallToolResult, McpError> {
         match schema_tools::set_anon_caps(&self.state, &collection, &caps).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Search a collection by vector similarity. Builds the \
+        SQL itself from the structured body — no raw SQL accepted. Returns up to \
+        `k` nearest rows ordered by distance, each row carrying an injected \
+        `_distance` column. Default metric is `cosine`; alternatives are `l2` \
+        and `l1`. Optional `where` filter accepts an and/or/not tree of \
+        eq/ne/gt/gte/lt/lte/like/in/nin leaves; vector fields cannot appear \
+        in the filter. Optional `select` lists projected columns (default: all \
+        non-vector columns).")]
+    async fn search_collection(
+        &self,
+        Parameters(input): Parameters<vector_tools::SearchInput>,
+    ) -> Result<CallToolResult, McpError> {
+        match vector_tools::search_collection(&self.state, input).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -972,11 +990,12 @@ impl ServerHandler for DrustMcpService {
              `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
              `drop_collection`, `set_anon_caps`, `create_index`, `drop_index`, \
-             `list_files`, `delete_file`, `get_file_url`, `create_rpc`, `update_rpc`, \
-             `delete_rpc`, `list_rpc`, `call_rpc`, `create_user`, `list_users`, `get_user`, \
-             `update_user`, `delete_user`, `revoke_user_sessions`, `set_owner_field`, \
-             `clear_owner_field`, `set_self_register`. (Call `tools/list` for the \
-             canonical schema-and-list.)\n\n\
+             `search_collection`, `list_files`, `delete_file`, `get_file_url`, \
+             `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, `call_rpc`, \
+             `create_user`, `list_users`, `get_user`, `update_user`, `delete_user`, \
+             `revoke_user_sessions`, `set_owner_field`, `clear_owner_field`, \
+             `set_self_register`. (Call `tools/list` for the canonical \
+             schema-and-list.)\n\n\
              Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
              tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
              endpoint instead:\n\n  \
