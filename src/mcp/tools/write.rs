@@ -1,8 +1,9 @@
 use crate::mcp::server::DrustMcp;
-use crate::storage::schema::describe_collection;
+use crate::storage::schema::{describe_collection, VectorField};
 use crate::tenant::events::Event;
 use rusqlite::types::Value;
 use serde_json::json;
+use std::collections::HashSet;
 
 /// Build a `rusqlite::Error` whose Display renders the given human-readable
 /// message. Using `rusqlite::Error::InvalidQuery` (the obvious-looking variant)
@@ -34,6 +35,7 @@ fn read_record(
     c: &rusqlite::Connection,
     coll: &str,
     id: i64,
+    vector_names: &HashSet<String>,
 ) -> rusqlite::Result<serde_json::Value> {
     let sql = format!(
         "SELECT * FROM \"{}\" WHERE id = ?1",
@@ -44,6 +46,12 @@ fn read_record(
     stmt.query_row(rusqlite::params![id], |r| {
         let mut obj = serde_json::Map::new();
         for (i, n) in col_names.iter().enumerate() {
+            // Vector columns are hidden by default — same shape as the REST
+            // records.rs path. Keep them out of the response entirely;
+            // retrieval is via search_collection.
+            if vector_names.contains(n) {
+                continue;
+            }
             let v = r.get_ref(i)?;
             let jv = match v {
                 rusqlite::types::ValueRef::Null => serde_json::Value::Null,
@@ -60,6 +68,36 @@ fn read_record(
     })
 }
 
+/// Encode every vector field present in `data_map` to a packed-f32
+/// BLOB, returning the bytes keyed by field name. Errors map to typed
+/// strings so callers can render them as the expected error codes
+/// (`VECTOR_DIM_MISMATCH` / `VECTOR_NON_FINITE` / `VECTOR_TYPE_ERROR`).
+fn pre_encode_vectors(
+    vector_fields: &[VectorField],
+    data_map: &serde_json::Map<String, serde_json::Value>,
+) -> Result<std::collections::HashMap<String, Vec<u8>>, anyhow::Error> {
+    let mut out = std::collections::HashMap::new();
+    for vf in vector_fields {
+        if let Some(v) = data_map.get(&vf.name) {
+            match crate::query::vector_codec::pack(&vf.name, vf.dim, v) {
+                Ok(bytes) => {
+                    out.insert(vf.name.clone(), bytes);
+                }
+                Err(crate::query::vector_codec::VectorCodecError::DimMismatch { .. }) => {
+                    anyhow::bail!("VECTOR_DIM_MISMATCH: vector field {:?} has wrong dim", vf.name);
+                }
+                Err(crate::query::vector_codec::VectorCodecError::NonFinite { .. }) => {
+                    anyhow::bail!("VECTOR_NON_FINITE: vector field {:?} contains NaN or Inf", vf.name);
+                }
+                Err(e) => {
+                    anyhow::bail!("VECTOR_TYPE_ERROR: {e}");
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub async fn insert_record(
     s: &DrustMcp,
     collection: &str,
@@ -73,6 +111,23 @@ pub async fn insert_record(
     let pool = s.inner().pool.clone();
     let tenant = s.inner().tenant_id.clone();
     let bus = s.inner().bus.clone();
+
+    // Read schema OUTSIDE the writer closure so vector_codec errors
+    // can surface as typed anyhow!() before we take the writer lock —
+    // matches records.rs (REST) shape.
+    let coll_for_schema = coll.clone();
+    let schema = pool
+        .with_reader(move |c| describe_collection(c, &coll_for_schema))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("unknown collection: '{}'", coll))?;
+
+    let vector_bytes = pre_encode_vectors(&schema.vector_fields, &data_map)?;
+    let vector_names: HashSet<String> = schema
+        .vector_fields
+        .iter()
+        .map(|v| v.name.clone())
+        .collect();
+
     let (id, record) = pool
         .with_writer(move |c| -> rusqlite::Result<(i64, serde_json::Value)> {
             let schema = describe_collection(c, &coll)?.ok_or_else(|| {
@@ -110,12 +165,20 @@ pub async fn insert_record(
                     placeholders.join(","),
                 )
             };
-            let params: Vec<Value> = data_map.values().map(json_to_sql_value).collect();
+            // Vector fields bind as BLOB from the pre-encoded bytes; the
+            // rest go through json_to_sql_value.
+            let params: Vec<Value> = data_map
+                .iter()
+                .map(|(k, v)| match vector_bytes.get(k) {
+                    Some(bytes) => Value::Blob(bytes.clone()),
+                    None => json_to_sql_value(v),
+                })
+                .collect();
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
             c.execute(&sql, &refs[..])?;
             let id = c.last_insert_rowid();
-            let rec = read_record(c, &coll, id)?;
+            let rec = read_record(c, &coll, id, &vector_names)?;
             Ok((id, rec))
         })
         .await?;
@@ -146,6 +209,19 @@ pub async fn update_record(
     let pool = s.inner().pool.clone();
     let tenant = s.inner().tenant_id.clone();
     let bus = s.inner().bus.clone();
+
+    let coll_for_schema = coll.clone();
+    let schema = pool
+        .with_reader(move |c| describe_collection(c, &coll_for_schema))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("unknown collection: '{}'", coll))?;
+    let vector_bytes = pre_encode_vectors(&schema.vector_fields, &data_map)?;
+    let vector_names: HashSet<String> = schema
+        .vector_fields
+        .iter()
+        .map(|v| v.name.clone())
+        .collect();
+
     let record = pool
         .with_writer(move |c| -> rusqlite::Result<serde_json::Value> {
             let schema = describe_collection(c, &coll)?.ok_or_else(|| {
@@ -176,7 +252,13 @@ pub async fn update_record(
                 set_exprs.join(","),
                 data_map.len() + 1
             );
-            let mut params: Vec<Value> = data_map.values().map(json_to_sql_value).collect();
+            let mut params: Vec<Value> = data_map
+                .iter()
+                .map(|(k, v)| match vector_bytes.get(k) {
+                    Some(bytes) => Value::Blob(bytes.clone()),
+                    None => json_to_sql_value(v),
+                })
+                .collect();
             params.push(Value::Integer(id));
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -184,7 +266,7 @@ pub async fn update_record(
             if n == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
-            read_record(c, &coll, id)
+            read_record(c, &coll, id, &vector_names)
         })
         .await?;
     bus.publish(
