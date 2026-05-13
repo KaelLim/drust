@@ -81,11 +81,12 @@ CREATE INDEX IF NOT EXISTS idx_system_files_visibility
 -- collection with no row defaults to ["select"] (status quo for legacy
 -- collections that pre-date this table).
 CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
-  collection_name TEXT PRIMARY KEY,
-  anon_caps_json  TEXT NOT NULL DEFAULT '["select"]',
-  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  owner_field     TEXT,
-  read_scope      TEXT
+  collection_name      TEXT PRIMARY KEY,
+  anon_caps_json       TEXT NOT NULL DEFAULT '["select"]',
+  updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  owner_field          TEXT,
+  read_scope           TEXT,
+  vector_fields_json   TEXT NOT NULL DEFAULT '[]'
 );
 
 -- v1.6: stored RPC functions (Supabase-style named SELECTs).
@@ -185,6 +186,23 @@ pub fn ensure_sqlite_vec_loaded() {
 mod schema_tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn new_tenant_meta_has_vector_fields_json_column() {
+        let tmp = TempDir::new().unwrap();
+        let conn = open_write(tmp.path(), "newtenant").unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(_system_collection_meta)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"vector_fields_json".to_string()),
+            "fresh tenant missing vector_fields_json; cols = {cols:?}"
+        );
+    }
 
     #[test]
     fn open_write_creates_v1_6_system_tables() {
