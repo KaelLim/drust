@@ -17,7 +17,7 @@ pub const SYSTEM_COLUMNS: &[&str] = &["id", "created_at", "updated_at"];
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FieldSpec {
     pub name: String,
-    pub sql_type: String, // text|integer|real|boolean|datetime|json
+    pub sql_type: String, // text|integer|real|boolean|datetime|json|vector
     #[serde(default = "default_true")]
     pub nullable: bool,
     #[serde(default)]
@@ -29,10 +29,88 @@ pub struct FieldSpec {
     /// target must already exist at DDL time.
     #[serde(default)]
     pub foreign_key: Option<String>,
+    /// Vector dimension. Required when `sql_type == "vector"`; ignored
+    /// otherwise. Bounded 1..=4096 to keep BLOB sizes sane (4096 dim ×
+    /// 4 byte/elem = 16 KB per row).
+    #[serde(default)]
+    pub dim: Option<u32>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod field_spec_vector_tests {
+    use super::*;
+
+    #[test]
+    fn vector_field_requires_dim() {
+        let f = FieldSpec {
+            name: "embedding".into(),
+            sql_type: "vector".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: None,
+        };
+        let err = column_expr(&f).unwrap_err();
+        assert!(
+            err.to_string().contains("dim"),
+            "expected error mentioning dim; got: {err}"
+        );
+    }
+
+    #[test]
+    fn vector_field_with_dim_lowers_to_blob() {
+        let f = FieldSpec {
+            name: "embedding".into(),
+            sql_type: "vector".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: Some(384),
+        };
+        let expr = column_expr(&f).unwrap();
+        assert_eq!(expr, "\"embedding\" BLOB NOT NULL");
+    }
+
+    #[test]
+    fn vector_dim_out_of_range_rejected() {
+        for bad_dim in [0u32, 4097, 100_000] {
+            let f = FieldSpec {
+                name: "v".into(),
+                sql_type: "vector".into(),
+                nullable: true,
+                unique: false,
+                default_value: None,
+                foreign_key: None,
+                dim: Some(bad_dim),
+            };
+            let err = column_expr(&f).unwrap_err();
+            assert!(
+                err.to_string().contains("dim"),
+                "dim={bad_dim} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn non_vector_field_ignores_dim() {
+        let f = FieldSpec {
+            name: "title".into(),
+            sql_type: "text".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: Some(42),
+        };
+        let expr = column_expr(&f).unwrap();
+        assert_eq!(expr, "\"title\" TEXT");
+    }
 }
 
 /// Allowlist of SQL expressions that may appear as a field default.
@@ -56,9 +134,10 @@ fn type_to_sqlite(t: &str) -> anyhow::Result<&'static str> {
         "text" | "datetime" | "json" => "TEXT",
         "integer" | "boolean" => "INTEGER",
         "real" => "REAL",
+        "vector" => "BLOB",
         other => anyhow::bail!(
             "unsupported sql_type: '{other}' \
-             (allowed: text, integer, real, boolean, datetime, json — all lowercase)"
+             (allowed: text, integer, real, boolean, datetime, json, vector — all lowercase)"
         ),
     })
 }
@@ -79,6 +158,17 @@ pub(crate) fn identifier(s: &str) -> anyhow::Result<()> {
 fn column_expr(f: &FieldSpec) -> anyhow::Result<String> {
     identifier(&f.name)?;
     let ty = type_to_sqlite(&f.sql_type)?;
+    if f.sql_type == "vector" {
+        let dim = f.dim.ok_or_else(|| {
+            anyhow::anyhow!("vector field {:?} requires `dim` (1..=4096)", f.name)
+        })?;
+        if dim == 0 || dim > 4096 {
+            anyhow::bail!(
+                "vector field {:?} has dim={dim}, must be 1..=4096",
+                f.name
+            );
+        }
+    }
     let mut s = format!("\"{}\" {}", f.name, ty);
     if !f.nullable {
         s.push_str(" NOT NULL");
