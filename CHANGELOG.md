@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.10.0 - 2026-05-13
+
+### Added — Vector storage & similarity search (sqlite-vec)
+
+Per-tenant vector storage as a first-class field type plus a
+similarity-search endpoint, both REST and MCP. Built on `sqlite-vec`
+statically linked alongside `rusqlite::bundled`. Brute-force scan
+v1 — vec0 paired index deferred to vNext (non-breaking upgrade).
+
+- **New `FieldSpec` type `vector(dim)`** — lowers to a SQLite BLOB
+  column. Dim bounded 1..=4096. Declared on `create_collection` /
+  `add_field` like any other field; persisted in
+  `_system_collection_meta.vector_fields_json`.
+- **Records CRUD encodes JSON arrays as packed-f32 BLOBs** —
+  `[0.12, -0.04, …]` on the wire, exactly `dim * 4` byte BLOB at
+  rest. Dim mismatch / NaN / Inf rejected at 422 with
+  `VECTOR_DIM_MISMATCH` / `VECTOR_NON_FINITE` / `VECTOR_TYPE_ERROR`.
+- **Vector fields default-hidden on read** — list / get / insert /
+  update responses exclude vector columns. v1 has no opt-in
+  mechanism (`fields=` deferred); vectors are retrieved via
+  `/search`. Avoids ballooning list responses by ~1.5 KB per row
+  × 384-dim.
+- **New `POST /t/{tenant}/collections/{coll}/search`** — body:
+  ```json
+  { "field": "embedding", "vector": [...], "k": 10,
+    "metric": "cosine|l2|l1",
+    "where": <FilterAst>, "select": ["id", "title"] }
+  ```
+  Returns rows ordered by `_distance`. drust constructs all SQL
+  from the structured Filter AST — no raw SQL accepted.
+- **Filter AST** (`src/query/vector_filter.rs`) — tree of
+  `and / or / not` over leaves `{field: scalar}` (eq shorthand) or
+  `{field: {op: operand}}` with ops `eq|ne|gt|gte|lt|lte|like|in|nin`.
+  Every operand binds as `?`. Vector fields cannot appear.
+- **Auth**: anon needs `select` cap; user token with read_scope=own
+  gets auto-appended `<owner_field> = :user_id` clause; service
+  bypasses. **User tokens CAN call `/search`** even though they
+  cannot call `/query` — drust constructs the SQL itself.
+- **MCP `search_collection` tool** — same body shape, same compile
+  + execute path. Service-only by transport.
+- **Extension load**: `sqlite-vec` registered as a SQLite
+  auto-extension (OnceLock-gated) before any tenant connection
+  opens. Side benefit: stored RPCs and `/query` can call
+  `vec_distance_*` with a service token.
+- **Schema migration**: `migrate_tenant_db` adds
+  `vector_fields_json TEXT NOT NULL DEFAULT '[]'` to
+  `_system_collection_meta`. Idempotent.
+
+Non-goals / deferred to vNext: vec0 paired indexes (ANN), embedding
+generation, hybrid (FTS5 + vector) ranking, `hamming` metric (needs
+bit-packed vectors), opt-in `fields=` to surface vectors on read,
+per-user-token owner-scoped search integration tests.
+
+Spec: `docs/superpowers/specs/2026-05-13-drust-vector-search-design.md`.
+
 ## 1.9.0 - 2026-05-12
 
 ### Added — Per-tenant end-user authentication (registered users, sessions, owner-scoped rows)
