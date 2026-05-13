@@ -57,6 +57,12 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     tx.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)?;
     add_column_if_missing(&tx, "_system_collection_meta", "owner_field", "TEXT")?;
     add_column_if_missing(&tx, "_system_collection_meta", "read_scope", "TEXT")?;
+    add_column_if_missing(
+        &tx,
+        "_system_collection_meta",
+        "vector_fields_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
     tx.commit()
 }
 
@@ -170,6 +176,39 @@ mod tests {
             .collect::<Result<_, _>>().unwrap();
         assert!(cols.contains(&"owner_field".to_string()));
         assert!(cols.contains(&"read_scope".to_string()));
+    }
+
+    #[test]
+    fn migrate_tenant_db_adds_vector_fields_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-vec");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (
+                    collection_name TEXT PRIMARY KEY,
+                    anon_caps_json  TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL)",
+            )
+            .unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-vec").unwrap();
+        migrate_tenant_db(dir.path(), "t-vec").unwrap(); // idempotent
+
+        let c = Connection::open(&p).unwrap();
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(_system_collection_meta)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"vector_fields_json".to_string()),
+            "vector_fields_json column missing after migration; cols = {cols:?}"
+        );
     }
 
     #[test]
