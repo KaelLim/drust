@@ -155,6 +155,12 @@ pub struct IndexInfo {
     pub unique: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VectorField {
+    pub name: String,
+    pub dim: u32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CollectionSchema {
     pub name: String,
@@ -173,6 +179,11 @@ pub struct CollectionSchema {
     /// `owner_field` is `Some`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_scope: Option<String>,
+    /// Vector fields registered on this collection. Empty for
+    /// non-vector collections. Sourced from
+    /// `_system_collection_meta.vector_fields_json`.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub vector_fields: Vec<VectorField>,
 }
 
 fn user_tables(conn: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -306,6 +317,7 @@ pub fn describe_collection(
     let rc = row_count(conn, name)?;
     let anon_caps = read_anon_caps(conn, name)?;
     let (owner_field, read_scope) = read_owner_field(conn, name)?;
+    let vector_fields = read_vector_fields(conn, name)?;
     Ok(Some(CollectionSchema {
         name: name.to_string(),
         fields,
@@ -314,6 +326,7 @@ pub fn describe_collection(
         anon_caps,
         owner_field,
         read_scope,
+        vector_fields,
     }))
 }
 
@@ -418,6 +431,50 @@ pub fn read_owner_field(
     }
 }
 
+/// Write the full set of vector fields for a collection. Caller holds
+/// the writer mutex. Overwrites whatever was there. Upserts so legacy
+/// collections (pre-v1.10) get a meta row on first vector add.
+pub fn write_vector_fields(
+    conn: &Connection,
+    coll: &str,
+    fields: &[VectorField],
+) -> rusqlite::Result<()> {
+    let json = serde_json::to_string(fields)
+        .expect("VectorField slice serialises");
+    conn.execute(
+        "INSERT INTO _system_collection_meta \
+              (collection_name, anon_caps_json, vector_fields_json, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              vector_fields_json = excluded.vector_fields_json, \
+              updated_at         = excluded.updated_at",
+        rusqlite::params![coll, json],
+    )?;
+    Ok(())
+}
+
+/// Read the vector fields registered against a collection. Returns an
+/// empty Vec when the meta row is absent (legacy / non-vector
+/// collections).
+pub fn read_vector_fields(
+    conn: &Connection,
+    coll: &str,
+) -> rusqlite::Result<Vec<VectorField>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT vector_fields_json FROM _system_collection_meta \
+             WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    let raw = match raw {
+        Some(s) => s,
+        None => return Ok(Vec::new()),
+    };
+    Ok(serde_json::from_str::<Vec<VectorField>>(&raw).unwrap_or_default())
+}
+
 /// Drop the metadata row for a collection. Called from drop_collection.
 /// Idempotent — missing row is fine.
 pub fn delete_collection_meta(
@@ -497,6 +554,35 @@ mod meta_io_tests {
     }
 
     #[test]
+    fn vector_fields_roundtrip_through_meta() {
+        let (_t, conn) = fresh();
+        conn.execute_batch(
+            "ALTER TABLE _system_collection_meta \
+             ADD COLUMN vector_fields_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .unwrap();
+        let fields = vec![
+            VectorField { name: "title_emb".into(), dim: 384 },
+            VectorField { name: "body_emb".into(),  dim: 768 },
+        ];
+        write_vector_fields(&conn, "posts", &fields).unwrap();
+        let got = read_vector_fields(&conn, "posts").unwrap();
+        assert_eq!(got, fields);
+    }
+
+    #[test]
+    fn read_vector_fields_missing_row_yields_empty() {
+        let (_t, conn) = fresh();
+        conn.execute_batch(
+            "ALTER TABLE _system_collection_meta \
+             ADD COLUMN vector_fields_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .unwrap();
+        let got = read_vector_fields(&conn, "absent").unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[test]
     fn set_owner_field_upserts_when_row_absent() {
         // Legacy collection: meta row never created yet. Upsert path must
         // create the row instead of silently dropping the write.
@@ -553,6 +639,7 @@ mod cap_gate_tests {
             anon_caps: caps.iter().copied().collect(),
             owner_field: None,
             read_scope: None,
+            vector_fields: vec![],
         }
     }
 

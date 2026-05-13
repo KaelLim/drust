@@ -270,14 +270,33 @@ pub async fn create_collection(
          BEGIN UPDATE \"{name}\" SET updated_at = datetime('now') WHERE id = OLD.id; END;",
         name = table.replace('"', "\"\"")
     );
+    // Collect vector fields up front so the writer closure can persist
+    // them in the same transaction as the table DDL + anon_caps seed.
+    let vector_fields: Vec<crate::storage::schema::VectorField> = fields
+        .iter()
+        .filter(|f| f.sql_type == "vector")
+        .map(|f| crate::storage::schema::VectorField {
+            name: f.name.clone(),
+            dim: f.dim.expect("validated by column_expr"),
+        })
+        .collect();
     let pool = s.inner().pool.clone();
     let pool2 = pool.clone();
     let meta_name = name.to_string();
-    pool.with_writer(move |c| {
+    let vfields_for_writer = vector_fields.clone();
+    pool.with_writer(move |c| -> rusqlite::Result<()> {
         c.execute_batch(&format!("{sql}\n{trigger}"))?;
         // Seed the anon_caps row so REST / cache lookups don't have to
         // fall back to defaults the first time around.
-        write_anon_caps(c, &meta_name, &default_anon_caps())
+        write_anon_caps(c, &meta_name, &default_anon_caps())?;
+        if !vfields_for_writer.is_empty() {
+            crate::storage::schema::write_vector_fields(
+                c,
+                &meta_name,
+                &vfields_for_writer,
+            )?;
+        }
+        Ok(())
     })
     .await?;
 
@@ -318,6 +337,25 @@ pub async fn add_field(
     let pool2 = pool.clone();
     let coll = collection.to_string();
     pool.with_writer(move |c| c.execute(&sql, [])).await?;
+    // If this is a vector field, register it in the meta. Done in a
+    // separate writer step so the ALTER TABLE error path (e.g. column
+    // name clash) still surfaces cleanly without partial meta writes.
+    if field.sql_type == "vector" {
+        let dim = field.dim.expect("validated by column_expr");
+        let coll_for_writer = collection.to_string();
+        let field_name = field.name.clone();
+        pool.with_writer(move |c| -> rusqlite::Result<()> {
+            let mut existing =
+                crate::storage::schema::read_vector_fields(c, &coll_for_writer)?;
+            existing.retain(|v| v.name != field_name);
+            existing.push(crate::storage::schema::VectorField {
+                name: field_name,
+                dim,
+            });
+            crate::storage::schema::write_vector_fields(c, &coll_for_writer, &existing)
+        })
+        .await?;
+    }
     // The cached schema is stale — column list just changed.
     pool.schema_cache.invalidate(collection);
     let schema = pool2
@@ -381,6 +419,23 @@ pub async fn drop_field(
         field.replace('"', "\"\"")
     );
     pool.with_writer(move |c| c.execute(&sql, [])).await?;
+    // Drop the field from vector-field meta too if it was a vector
+    // column. Read-filter-write under the writer mutex.
+    {
+        let coll_for_writer = collection.to_string();
+        let field_for_writer = field.to_string();
+        pool.with_writer(move |c| -> rusqlite::Result<()> {
+            let mut existing =
+                crate::storage::schema::read_vector_fields(c, &coll_for_writer)?;
+            let before = existing.len();
+            existing.retain(|v| v.name != field_for_writer);
+            if existing.len() != before {
+                crate::storage::schema::write_vector_fields(c, &coll_for_writer, &existing)?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
     // The cached schema is stale — column list just changed.
     pool.schema_cache.invalidate(collection);
     let schema = pool2
