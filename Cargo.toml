@@ -20,6 +20,7 @@ rmcp               = { version = "1.5", features = ["server", "transport-streama
 schemars           = "1"
 tower              = { version = "0.5", features = ["util"] }
 rusqlite           = { version = "0.32", features = ["bundled", "hooks"] }
+sqlite-vec         = "0.1"
 serde              = { version = "1", features = ["derive"] }
 serde_json         = { version = "1", features = ["preserve_order"] }
 askama             = { version = "0.12", features = ["with-axum"] }
