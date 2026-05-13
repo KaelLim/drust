@@ -8,6 +8,7 @@ pub mod query_endpoint;
 pub mod records;
 pub mod router;
 pub mod sse;
+pub mod vector_search;
 
 use crate::mcp::http_registry::McpHttpRegistry;
 use crate::mgmt::tenant_files::TenantFilesState;
@@ -178,6 +179,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .route(
             "/t/{tenant}/collections/{coll}/indexes/{name}",
             delete(collections::drop_index_handler),
+        )
+        .route(
+            "/t/{tenant}/collections/{coll}/search",
+            post(vector_search::search_handler),
         )
         .route(
             "/t/{tenant}/records/{coll}",
