@@ -5,4 +5,5 @@ pub mod owner_field;
 pub mod read;
 pub mod schema;
 pub mod user;
+pub mod vector;
 pub mod write;
