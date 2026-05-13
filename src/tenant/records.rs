@@ -301,12 +301,24 @@ pub async fn list_handler(
         .await
         .unwrap_or(0)
     };
+    // Vector fields are excluded from list responses by default — they
+    // serialise to a useless `{"__blob_bytes": n}` sentinel anyway via
+    // the read-only executor, and a 384-dim vector inflates each row by
+    // ~1.5 KB. Vectors are retrieved via /search.
+    let vector_names: std::collections::HashSet<String> = schema
+        .vector_fields
+        .iter()
+        .map(|v| v.name.clone())
+        .collect();
     let records_out: Vec<serde_json::Value> = records
         .rows
         .iter()
         .map(|row| {
             let mut m = serde_json::Map::new();
             for (i, name) in records.column_names.iter().enumerate() {
+                if vector_names.contains(name) {
+                    continue;
+                }
                 m.insert(name.clone(), row[i].clone());
             }
             serde_json::Value::Object(m)
@@ -334,6 +346,11 @@ pub async fn get_handler(
         Err(r) => return r,
     };
     let owner_filter = compute_owner_filter(&ctx, &schema);
+    let vector_names: std::collections::HashSet<String> = schema
+        .vector_fields
+        .iter()
+        .map(|v| v.name.clone())
+        .collect();
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let out = pool
@@ -357,7 +374,12 @@ pub async fn get_handler(
             let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
             let rec = record_as_json(&mut stmt, &cols, id);
             match rec {
-                Ok(v) => Ok(Some(v)),
+                Ok(mut v) => {
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.retain(|k, _| !vector_names.contains(k));
+                    }
+                    Ok(Some(v))
+                }
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(e),
             }
@@ -443,6 +465,53 @@ pub async fn create_handler(
         );
     }
 
+    // Pre-encode vector fields BEFORE the writer mutex so codec errors
+    // (dim mismatch, non-finite, etc.) surface as typed 422s. Each
+    // declared vector field present in `data` becomes a Vec<u8> in
+    // `vector_bytes` and is removed from `data` (so json_to_sql_value
+    // doesn't try to stringify it as text).
+    let mut vector_bytes: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    for vf in &schema.vector_fields {
+        if let Some(v) = data.get(&vf.name).cloned() {
+            match crate::query::vector_codec::pack(&vf.name, vf.dim, &v) {
+                Ok(bytes) => {
+                    vector_bytes.insert(vf.name.clone(), bytes);
+                }
+                Err(crate::query::vector_codec::VectorCodecError::DimMismatch { .. }) => {
+                    return json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "VECTOR_DIM_MISMATCH",
+                        &format!("vector field {:?} has wrong dim", vf.name),
+                    );
+                }
+                Err(crate::query::vector_codec::VectorCodecError::NonFinite { .. }) => {
+                    return json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "VECTOR_NON_FINITE",
+                        &format!("vector field {:?} contains NaN or Inf", vf.name),
+                    );
+                }
+                Err(e) => {
+                    return json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "VECTOR_TYPE_ERROR",
+                        &e.to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    // Vector field names that exist on this collection — used after the
+    // INSERT to filter them out of the response shape (default-hide on
+    // read; vectors are only meant to be retrieved via /search).
+    let vector_names: std::collections::HashSet<String> = schema
+        .vector_fields
+        .iter()
+        .map(|v| v.name.clone())
+        .collect();
+
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
@@ -478,17 +547,30 @@ pub async fn create_handler(
                     placeholders.join(","),
                 )
             };
-            let params: Vec<Value> = data.values().map(json_to_sql_value).collect();
+            // Bind values: vector fields → Value::Blob from the pre-encoded
+            // bytes map; everything else → json_to_sql_value.
+            let params: Vec<Value> = data
+                .iter()
+                .map(|(k, v)| match vector_bytes.get(k) {
+                    Some(bytes) => Value::Blob(bytes.clone()),
+                    None => json_to_sql_value(v),
+                })
+                .collect();
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
             c.execute(&sql, &refs[..])?;
             let id = c.last_insert_rowid();
+            // Read back the row excluding vector columns so the response
+            // is small and the BLOB never leaks as {"__blob_bytes": n}.
             let mut stmt = c.prepare(&format!(
                 "SELECT * FROM \"{}\" WHERE id = ?1",
                 coll_clone.replace('"', "\"\"")
             ))?;
             let cols_out: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-            let rec = record_as_json(&mut stmt, &cols_out, id)?;
+            let mut rec = record_as_json(&mut stmt, &cols_out, id)?;
+            if let Some(obj) = rec.as_object_mut() {
+                obj.retain(|k, _| !vector_names.contains(k));
+            }
             Ok((id, rec))
         })
         .await;
@@ -555,6 +637,47 @@ pub async fn update_handler(
             "data must have at least one field",
         );
     }
+
+    // Pre-encode vector fields, same shape as create_handler. Errors
+    // surface as 422 with typed codes before the writer mutex.
+    let mut vector_bytes: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    for vf in &schema.vector_fields {
+        if let Some(v) = data.get(&vf.name).cloned() {
+            match crate::query::vector_codec::pack(&vf.name, vf.dim, &v) {
+                Ok(bytes) => {
+                    vector_bytes.insert(vf.name.clone(), bytes);
+                }
+                Err(crate::query::vector_codec::VectorCodecError::DimMismatch { .. }) => {
+                    return json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "VECTOR_DIM_MISMATCH",
+                        &format!("vector field {:?} has wrong dim", vf.name),
+                    );
+                }
+                Err(crate::query::vector_codec::VectorCodecError::NonFinite { .. }) => {
+                    return json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "VECTOR_NON_FINITE",
+                        &format!("vector field {:?} contains NaN or Inf", vf.name),
+                    );
+                }
+                Err(e) => {
+                    return json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "VECTOR_TYPE_ERROR",
+                        &e.to_string(),
+                    );
+                }
+            }
+        }
+    }
+    let vector_names: std::collections::HashSet<String> = schema
+        .vector_fields
+        .iter()
+        .map(|v| v.name.clone())
+        .collect();
+
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
@@ -595,7 +718,14 @@ pub async fn update_handler(
                 id_param_idx,
                 owner_clause,
             );
-            let mut params: Vec<Value> = data.values().map(json_to_sql_value).collect();
+            // Bind: vector fields → BLOB; others → json_to_sql_value.
+            let mut params: Vec<Value> = data
+                .iter()
+                .map(|(k, v)| match vector_bytes.get(k) {
+                    Some(bytes) => Value::Blob(bytes.clone()),
+                    None => json_to_sql_value(v),
+                })
+                .collect();
             params.push(Value::Integer(id));
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -608,7 +738,10 @@ pub async fn update_handler(
                 coll_clone.replace('"', "\"\"")
             ))?;
             let cols_out: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-            let rec = record_as_json(&mut stmt, &cols_out, id)?;
+            let mut rec = record_as_json(&mut stmt, &cols_out, id)?;
+            if let Some(obj) = rec.as_object_mut() {
+                obj.retain(|k, _| !vector_names.contains(k));
+            }
             Ok(rec)
         })
         .await;
