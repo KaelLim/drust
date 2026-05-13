@@ -114,6 +114,9 @@ fn apply_schema(conn: &Connection) -> rusqlite::Result<()> {
 pub fn open_write(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection> {
     let dir = tenant_dir(data_root, tenant_id);
     std::fs::create_dir_all(&dir)?;
+    // Register sqlite-vec's auto-extension BEFORE Connection::open so
+    // the new connection sees vec_distance_* on first use. Idempotent.
+    ensure_sqlite_vec_loaded();
     let path = tenant_data_path(data_root, tenant_id);
     let conn = Connection::open_with_flags(
         &path,
@@ -129,6 +132,8 @@ pub fn open_read(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection
     if !path.exists() {
         anyhow::bail!("tenant data not found: {}", path.display());
     }
+    // Auto-extension must register before Connection::open. Idempotent.
+    ensure_sqlite_vec_loaded();
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     conn.execute_batch(
         "PRAGMA query_only = ON;
@@ -140,6 +145,40 @@ pub fn open_read(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection
     // (the constant is commented out in the upstream source), so we only set DEFENSIVE.
     conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     Ok(conn)
+}
+
+/// Register sqlite-vec's scalar function family (`vec_distance_cosine`
+/// / `_l2` / `_l1`, `vec_to_json`, etc.) as a SQLite auto-extension —
+/// every subsequent `Connection::open*` call in this process picks it
+/// up automatically.
+///
+/// Idempotent: the `OnceLock` guarantees the underlying
+/// `sqlite3_auto_extension` is called exactly once per process. Safe to
+/// invoke from `main.rs` boot, `open_write`, and `open_read` — whichever
+/// fires first wins, the rest are no-ops.
+///
+/// We can't use a `load(&conn)` per-connection path because
+/// `sqlite_vec::sqlite3_vec_init` is declared with a zero-arg C ABI in
+/// the upstream crate — it is designed to be invoked **by** SQLite
+/// through the auto-extension callback, which passes the real
+/// `(db, errmsg, api)` triple at registration time.
+pub fn ensure_sqlite_vec_loaded() {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        unsafe {
+            let rc = rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+            if rc != rusqlite::ffi::SQLITE_OK {
+                // We can't return an error from OnceLock::get_or_init,
+                // and failing this is a programmer error (linker
+                // misconfig). Panic loudly so the test/boot path
+                // doesn't silently produce broken connections.
+                panic!("sqlite3_auto_extension(sqlite_vec) failed: rc={rc}");
+            }
+        }
+    });
 }
 
 #[cfg(test)]
