@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.9.0] - 2026-05-12
+## 1.9.0 - 2026-05-12
 
 ### Added — Per-tenant end-user authentication (registered users, sessions, owner-scoped rows)
 
@@ -132,7 +132,7 @@ without giving up the BaaS-shaped REST/MCP surface. Spec:
   helpers normalize on write and unwrap one layer on read — idempotent
   on both shapes, heals legacy double-encoded rows.
 
-## [1.8.0] - 2026-05-08
+## 1.8.0 - 2026-05-08
 
 ### Added — Per-collection indexes (MCP + REST + admin UI)
 
@@ -199,7 +199,7 @@ to keep accidental DDL from stalling the writer mutex on big tables.
   mpsc channel to drain on SIGTERM. Previously a fast restart could
   truncate the in-flight `audit-YYYY-MM-DD.jsonl` line.
 
-## [1.7.3] - 2026-05-08
+## 1.7.3 - 2026-05-08
 
 ### Added
 
@@ -248,7 +248,7 @@ For those, `whoami.tokens.<role>.plaintext` is `null`; admin UI reroll
 is the recovery path. Fresh tenants on v1.1c+ always have plaintext
 populated.
 
-## [1.7.2] - 2026-05-05
+## 1.7.2 - 2026-05-05
 
 ### Added
 
@@ -288,7 +288,7 @@ populated.
   building a synthetic `.tar.zst` in memory and asserting size
   recovery + `meta.sqlite` byte-for-byte.
 
-## [1.7.1] - 2026-05-05
+## 1.7.1 - 2026-05-05
 
 ### Added
 
@@ -368,7 +368,7 @@ populated.
   via `is_host_scope` gating on both Top slowest ops and the Browse
   table; colspan on the expand row drops to 6 in tenant scope.
 
-## [1.7.0] - 2026-05-05
+## 1.7.0 - 2026-05-05
 
 ### Added
 
@@ -413,7 +413,7 @@ populated.
   fixture for `TenantFilesState`, missing `url_sign_secret`). Out of
   scope for this release; recommended as a separate housekeeping commit.
 
-## [1.6.0] - 2026-04-30
+## 1.6.0 - 2026-04-30
 
 ### Added
 
@@ -493,7 +493,7 @@ populated.
   pattern already used in `mgmt::public_files`. Caught by the
   T26 live integration smoke test.
 
-## [1.5.1] - 2026-04-29
+## 1.5.1 - 2026-04-29
 
 > Note: these changes also rode in the v1.6-pre commit on 2026-04-30 but
 > are scoped separately here because they're orthogonal to the v1.6.0
@@ -822,7 +822,7 @@ populated.
   auth. Private files only show "Sign URL" → issues a public, time-
   limited, drust-served URL via the HMAC route.
 
-## [1.5.0] - 2026-04-23
+## 1.5.0 - 2026-04-23
 
 ### Added
 
@@ -887,7 +887,7 @@ populated.
   the plan's `tenant_files_mcp` integration tests are deferred —
   in-process unit coverage + live smoke-test is the current stand-in.
 
-## [1.4.0] - 2026-04-21
+## 1.4.0 - 2026-04-21
 
 ### Added
 
@@ -932,7 +932,7 @@ populated.
 - The Garage service itself lives at `tool/garage/` (not versioned in
   this repo — see its `CLAUDE.md` for the service-level invariants).
 
-## [1.3.1] - 2026-04-21
+## 1.3.1 - 2026-04-21
 
 ### Added
 - **Favicon** — 16×16 LiveChonk (happy pose) as inline SVG, served via
@@ -952,7 +952,7 @@ populated.
   addition to `_styles.html`; it's the canonical place for browser
   metadata that's independent of the visible body.
 
-## [1.3.0] - 2026-04-21
+## 1.3.0 - 2026-04-21
 
 ### Added
 - **Two new schema MCP tools — `drop_field` and `drop_collection`** —
@@ -977,7 +977,7 @@ populated.
 - Admin UI MCP card caption + `tenant_detail.html` now say "all 13
   drust tools" to match the new count.
 
-## [1.2.2] - 2026-04-21
+## 1.2.2 - 2026-04-21
 
 ### Changed
 - **Tenant detail: MCP setup now lives in its own card**, separate from
@@ -993,7 +993,7 @@ populated.
   see a dedicated "reroll to enable" hint in the MCP card instead of a
   broken copy button.
 
-## [1.2.1] - 2026-04-21
+## 1.2.1 - 2026-04-21
 
 ### Changed
 - **Copy MCP config button now emits a `claude mcp add-json` command**
@@ -1005,7 +1005,7 @@ populated.
   ```
   Caption under the service-key card updated to match.
 
-## [1.2.0] - 2026-04-21
+## 1.2.0 - 2026-04-21
 
 ### Added
 - **LiveChonk pixel-cat mascot** — vanilla-JS port of the design-bundle
@@ -1033,7 +1033,7 @@ populated.
 - Login page now renders inside the `.macwin` frame (previously used
   a bare `.auth-wrap`), matching every other admin page.
 
-## [1.1.1] - 2026-04-21
+## 1.1.1 - 2026-04-21
 
 ### Added
 - **"Copy MCP config" button on the tenant-detail page.** Next to the
@@ -1167,7 +1167,7 @@ populated.
       ./target/release/set_admin_password admin <<< "$P"'
   ```
 
-## [1.1.0] - 2026-04-21
+## 1.1.0 - 2026-04-21
 
 ### Added
 - **Reveal / copy / reroll API keys inline on the tenant detail page**
@@ -1235,7 +1235,7 @@ populated.
   `'service'` role — no manual migration required.
 - New `ErrorCode::WriteDenied` variant (serialises as `WRITE_DENIED`)
 
-## [0.1.0] - 2026-04-20
+## 0.1.0 - 2026-04-20
 
 Initial production release.
 
@@ -1285,15 +1285,3 @@ Initial production release.
 - rmcp HTTP endpoint at `/t/{tenant}/mcp` is deferred; the 11 MCP tool
   functions are exercised in-process by integration tests but are not yet
   reachable over HTTP
-
-[Unreleased]: https://example.invalid/drust/compare/v1.5.0...HEAD
-[1.5.0]: https://example.invalid/drust/compare/v1.4.0...v1.5.0
-[1.4.0]: https://example.invalid/drust/compare/v1.3.1...v1.4.0
-[1.3.1]: https://example.invalid/drust/compare/v1.3.0...v1.3.1
-[1.3.0]: https://example.invalid/drust/compare/v1.2.2...v1.3.0
-[1.2.2]: https://example.invalid/drust/compare/v1.2.1...v1.2.2
-[1.2.1]: https://example.invalid/drust/compare/v1.2.0...v1.2.1
-[1.2.0]: https://example.invalid/drust/compare/v1.1.1...v1.2.0
-[1.1.1]: https://example.invalid/drust/compare/v1.1.0...v1.1.1
-[1.1.0]: https://example.invalid/drust/compare/v0.1.0...v1.1.0
-[0.1.0]: https://example.invalid/drust/releases/tag/v0.1.0
