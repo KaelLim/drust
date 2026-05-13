@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-05-12
+updated: 2026-05-13
 generated_by: docs/gen-architecture.py
 ---
 
@@ -19,16 +19,16 @@ generated_by: docs/gen-architecture.py
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
 | [`(root)/`](#srcroot) | 4 | 16 | 0 | 1 |
-| [`auth/`](#srcauth) | 8 | 38 | 1 | 18 |
+| [`auth/`](#srcauth) | 8 | 38 | 1 | 19 |
 | [`bin/`](#srcbin) | 2 | 0 | 0 | 0 |
 | [`db/`](#srcdb) | 2 | 7 | 0 | 0 |
-| [`mcp/`](#srcmcp) | 13 | 84 | 33 | 18 |
+| [`mcp/`](#srcmcp) | 14 | 87 | 37 | 20 |
 | [`mgmt/`](#srcmgmt) | 13 | 123 | 38 | 11 |
-| [`query/`](#srcquery) | 4 | 17 | 2 | 14 |
+| [`query/`](#srcquery) | 6 | 25 | 3 | 18 |
 | [`rpc/`](#srcrpc) | 5 | 21 | 10 | 5 |
 | [`safety/`](#srcsafety) | 5 | 14 | 0 | 5 |
-| [`storage/`](#srcstorage) | 12 | 66 | 7 | 36 |
-| [`tenant/`](#srctenant) | 11 | 60 | 32 | 15 |
+| [`storage/`](#srcstorage) | 12 | 70 | 7 | 38 |
+| [`tenant/`](#srctenant) | 12 | 63 | 37 | 16 |
 
 ## Group-level dependency graph
 
@@ -194,6 +194,7 @@ _(no top-level pub items)_
 - [`src/tenant/query_endpoint.rs`](../src/tenant/query_endpoint.rs)
 - [`src/tenant/records.rs`](../src/tenant/records.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
+- [`src/tenant/vector_search.rs`](../src/tenant/vector_search.rs)
 
 ### [`src/auth/mod.rs`](../src/auth/mod.rs)
 
@@ -385,6 +386,7 @@ _rmcp Streamable HTTP handler that exposes the 13 drust tools._
 - [`src/mcp/tools/read.rs`](../src/mcp/tools/read.rs)
 - [`src/mcp/tools/schema.rs`](../src/mcp/tools/schema.rs)
 - [`src/mcp/tools/user.rs`](../src/mcp/tools/user.rs)
+- [`src/mcp/tools/vector.rs`](../src/mcp/tools/vector.rs)
 - [`src/mcp/tools/write.rs`](../src/mcp/tools/write.rs)
 
 **Imported by:**
@@ -460,6 +462,7 @@ _Per-tenant cache of `StreamableHttpService` instances._
 - [`src/mcp/tools/files.rs`](../src/mcp/tools/files.rs)
 - [`src/mcp/tools/read.rs`](../src/mcp/tools/read.rs)
 - [`src/mcp/tools/schema.rs`](../src/mcp/tools/schema.rs)
+- [`src/mcp/tools/vector.rs`](../src/mcp/tools/vector.rs)
 - [`src/mcp/tools/write.rs`](../src/mcp/tools/write.rs)
 
 ### [`src/mcp/tools/exploration.rs`](../src/mcp/tools/exploration.rs)
@@ -545,6 +548,7 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 - [`src/mcp/tools/read.rs`](../src/mcp/tools/read.rs)
 - [`src/mcp/tools/schema.rs`](../src/mcp/tools/schema.rs)
 - [`src/mcp/tools/user.rs`](../src/mcp/tools/user.rs)
+- [`src/mcp/tools/vector.rs`](../src/mcp/tools/vector.rs)
 - [`src/mcp/tools/write.rs`](../src/mcp/tools/write.rs)
 
 **Declared by:**
@@ -560,6 +564,7 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 - `mod read`
 - `mod schema`
 - `mod user`
+- `mod vector`
 - `mod write`
 
 ### [`src/mcp/tools/owner_field.rs`](../src/mcp/tools/owner_field.rs)
@@ -653,6 +658,29 @@ _Pure async helpers for T24 MCP user-management tools._
 **Imports from:**
 
 - [`src/storage/pool.rs`](../src/storage/pool.rs)
+
+**Imported by:**
+
+- [`src/mcp/handler.rs`](../src/mcp/handler.rs)
+
+### [`src/mcp/tools/vector.rs`](../src/mcp/tools/vector.rs)
+
+_MCP `search_collection` tool. Thin wrapper that constructs the same_
+
+**Declared by:**
+
+- [`src/mcp/tools/mod.rs`](../src/mcp/tools/mod.rs)
+
+**Public items:**
+
+- `struct SearchInput`
+- `fn search_collection`
+
+**Imports from:**
+
+- [`src/mcp/server.rs`](../src/mcp/server.rs)
+- [`src/query/vector_codec.rs`](../src/query/vector_codec.rs)
+- [`src/query/vector_filter.rs`](../src/query/vector_filter.rs)
 
 **Imported by:**
 
@@ -1129,6 +1157,8 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - [`src/query/authorizer.rs`](../src/query/authorizer.rs)
 - [`src/query/executor.rs`](../src/query/executor.rs)
 - [`src/query/filter.rs`](../src/query/filter.rs)
+- [`src/query/vector_codec.rs`](../src/query/vector_codec.rs)
+- [`src/query/vector_filter.rs`](../src/query/vector_filter.rs)
 
 **Declared by:**
 
@@ -1139,6 +1169,50 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - `mod authorizer`
 - `mod executor`
 - `mod filter`
+- `mod vector_codec`
+- `mod vector_filter`
+
+### [`src/query/vector_codec.rs`](../src/query/vector_codec.rs)
+
+_JSON ↔ packed-f32 BLOB codec for vector fields._
+
+**Declared by:**
+
+- [`src/query/mod.rs`](../src/query/mod.rs)
+
+**Public items:**
+
+- `enum VectorCodecError`
+- `fn pack` — Encode a JSON array of numbers as a packed-f32 BLOB of exactly
+- `fn unpack` — Decode a packed-f32 BLOB back into a JSON array of f32 numbers.
+
+**Imported by:**
+
+- [`src/mcp/tools/vector.rs`](../src/mcp/tools/vector.rs)
+- [`src/tenant/vector_search.rs`](../src/tenant/vector_search.rs)
+
+### [`src/query/vector_filter.rs`](../src/query/vector_filter.rs)
+
+_Filter AST used by /search. Intentionally minimal: a tenant-supplied_
+
+**Declared by:**
+
+- [`src/query/mod.rs`](../src/query/mod.rs)
+
+**Public items:**
+
+- `enum FilterError`
+- `enum FilterAst`
+- `fn compile`
+
+**Imports from:**
+
+- [`src/storage/schema.rs`](../src/storage/schema.rs)
+
+**Imported by:**
+
+- [`src/mcp/tools/vector.rs`](../src/mcp/tools/vector.rs)
+- [`src/tenant/vector_search.rs`](../src/tenant/vector_search.rs)
 
 <a id="srcrpc"></a>
 
@@ -1526,6 +1600,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - `struct Collection`
 - `struct Field`
 - `struct IndexInfo`
+- `struct VectorField`
 - `struct CollectionSchema`
 - `fn list_collections`
 - `fn describe_collection`
@@ -1534,6 +1609,8 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - `fn write_anon_caps` — Insert / replace the anon_caps row for a collection. Caller must
 - `fn set_owner_field` — Set or clear `owner_field` + `read_scope` for a collection. Pass `None`
 - `fn read_owner_field` — Read the current `(owner_field, read_scope)` pair. Returns `(None, None)`
+- `fn write_vector_fields` — Write the full set of vector fields for a collection. Caller holds
+- `fn read_vector_fields` — Read the vector fields registered against a collection. Returns an
 - `fn delete_collection_meta` — Drop the metadata row for a collection. Called from drop_collection.
 - `fn has_dml_cap` — Returns true if the caller's role is permitted to perform `verb` on
 
@@ -1550,9 +1627,11 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
 - [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
 - [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
+- [`src/query/vector_filter.rs`](../src/query/vector_filter.rs)
 - [`src/storage/schema_cache.rs`](../src/storage/schema_cache.rs)
 - [`src/tenant/collections.rs`](../src/tenant/collections.rs)
 - [`src/tenant/records.rs`](../src/tenant/records.rs)
+- [`src/tenant/vector_search.rs`](../src/tenant/vector_search.rs)
 
 ### [`src/storage/schema_cache.rs`](../src/storage/schema_cache.rs)
 
@@ -1606,6 +1685,7 @@ _Drust-minted, drust-served signed URLs for private file downloads._
 - `fn tenant_data_path`
 - `fn open_write`
 - `fn open_read`
+- `fn ensure_sqlite_vec_loaded` — Register sqlite-vec's scalar function family (`vec_distance_cosine`
 
 **Imported by:**
 
@@ -1744,6 +1824,7 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 - [`src/tenant/records.rs`](../src/tenant/records.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
 - [`src/tenant/sse.rs`](../src/tenant/sse.rs)
+- [`src/tenant/vector_search.rs`](../src/tenant/vector_search.rs)
 
 **Declared by:**
 
@@ -1761,6 +1842,7 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 - `mod records`
 - `mod router`
 - `mod sse`
+- `mod vector_search`
 - `struct TenantStack`
 - `fn build_tenant_router`
 
@@ -1867,6 +1949,7 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 - [`src/tenant/query_endpoint.rs`](../src/tenant/query_endpoint.rs)
 - [`src/tenant/records.rs`](../src/tenant/records.rs)
 - [`src/tenant/sse.rs`](../src/tenant/sse.rs)
+- [`src/tenant/vector_search.rs`](../src/tenant/vector_search.rs)
 
 ### [`src/tenant/sse.rs`](../src/tenant/sse.rs)
 
@@ -1881,5 +1964,26 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 **Imports from:**
 
 - [`src/tenant/events.rs`](../src/tenant/events.rs)
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
+
+### [`src/tenant/vector_search.rs`](../src/tenant/vector_search.rs)
+
+_POST /t/{tenant}/collections/{coll}/search_
+
+**Declared by:**
+
+- [`src/tenant/mod.rs`](../src/tenant/mod.rs)
+
+**Public items:**
+
+- `struct SearchBody`
+- `fn search_handler`
+
+**Imports from:**
+
+- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
+- [`src/query/vector_codec.rs`](../src/query/vector_codec.rs)
+- [`src/query/vector_filter.rs`](../src/query/vector_filter.rs)
+- [`src/storage/schema.rs`](../src/storage/schema.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
 
