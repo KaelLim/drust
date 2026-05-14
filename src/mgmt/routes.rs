@@ -240,10 +240,19 @@ impl MgmtState {
             data_dir: data_dir.clone(),
         };
 
+        // TODO(v1.12): rate-limit oauth callback
         let public = Router::new()
             .route("/", get(root_redirect))
             .route("/login", get(login_page).post(login_submit))
             .route("/logout", post(logout_submit))
+            .route(
+                "/admin/oauth/{provider}/start",
+                get(crate::mgmt::oauth_login::oauth_start),
+            )
+            .route(
+                "/admin/oauth/{provider}/callback",
+                get(crate::mgmt::oauth_login::oauth_callback),
+            )
             .with_state(self.clone());
 
         // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require
