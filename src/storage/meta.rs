@@ -9,8 +9,12 @@ CREATE TABLE IF NOT EXISTS admins (
   id            INTEGER PRIMARY KEY,
   username      TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
+  email         TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_email
+  ON admins(email) WHERE email IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sessions (
   token         TEXT PRIMARY KEY,
@@ -181,6 +185,13 @@ fn apply_migrations(conn: &Connection) -> anyhow::Result<()> {
             return Err(e.into());
         }
     }
+    // v1.11: admins.email — nullable, partial unique index for OAuth linking.
+    crate::db::migrations::add_column_if_missing(conn, "admins", "email", "TEXT")?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_email \
+         ON admins(email) WHERE email IS NOT NULL",
+        [],
+    )?;
 
     Ok(())
 }
