@@ -1,11 +1,15 @@
 //! Admin-specific OAuth glue. Calls into src/oauth/ (provider-agnostic
 //! library) and turns a VerifiedUser into an admin session.
 
+use crate::auth::middleware::build_session_cookie;
+use crate::auth::session::create_session;
 use crate::mgmt::routes::MgmtState;
 use crate::oauth::state as oauth_state;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
+use axum_extra::extract::CookieJar;
+use serde::Deserialize;
 
 pub(crate) fn secure_from_headers(h: &HeaderMap) -> bool {
     h.get("x-forwarded-proto")
@@ -52,6 +56,114 @@ pub async fn oauth_start(
         )
         .body(axum::body::Body::empty())
         .unwrap()
+}
+
+#[derive(Deserialize)]
+pub struct CallbackQuery {
+    pub code: String,
+    pub state: String,
+}
+
+pub async fn oauth_callback(
+    Path(provider): Path<String>,
+    Query(q): Query<CallbackQuery>,
+    cookies: CookieJar,
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> Response {
+    // 1. provider exists
+    let Some(p) = s.oauth_registry.get(&provider) else {
+        return redirect_login_error("oauth_misconfigured");
+    };
+    // 2. state match
+    let cookie_state = cookies
+        .get(oauth_state::STATE_COOKIE)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
+    if !oauth_state::verify_state(&cookie_state, &q.state) {
+        return redirect_login_error("oauth_state_mismatch");
+    }
+    // 3. PKCE verifier from cookie
+    let verifier = cookies
+        .get(oauth_state::PKCE_COOKIE)
+        .map(|c| c.value().to_string())
+        .unwrap_or_default();
+    if verifier.is_empty() {
+        return redirect_login_error("oauth_state_mismatch");
+    }
+    // 4. exchange
+    let redirect_uri = format!("{}/drust/admin/oauth/{}/callback", s.public_url, provider);
+    let user = match p.exchange(&q.code, &verifier, &redirect_uri).await {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!(provider, "oauth exchange failed: {e}");
+            return redirect_login_error("oauth_provider_error");
+        }
+    };
+    // 5. verified
+    if !user.email_verified {
+        audit_oauth_failure(&s, &provider, Some(&user.email), "oauth_email_unverified").await;
+        return redirect_login_error("oauth_email_unverified");
+    }
+    // 6. allowlist
+    if !s.oauth_allowlist.contains(&user.email) {
+        audit_oauth_failure(&s, &provider, Some(&user.email), "oauth_not_allowed").await;
+        return redirect_login_error("oauth_not_allowed");
+    }
+    // 7. admin row + 8. session — both touch the meta connection, so hold
+    // the mutex for both. Matches the locking shape of `login_submit` in
+    // src/mgmt/routes.rs.
+    let mut conn = s.meta.lock().await;
+    let admin_id = match crate::storage::meta::find_admin_id_by_email(&conn, &user.email) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            drop(conn);
+            audit_oauth_failure(&s, &provider, Some(&user.email), "oauth_admin_email_missing")
+                .await;
+            return redirect_login_error("oauth_admin_email_missing");
+        }
+        Err(e) => {
+            drop(conn);
+            tracing::error!("admin lookup failed: {e}");
+            return redirect_login_error("oauth_provider_error");
+        }
+    };
+    let ttl_secs = (s.session_ttl_days * 86_400) as i64;
+    let token = match create_session(&mut conn, admin_id, ttl_secs) {
+        Ok(t) => t,
+        Err(e) => {
+            drop(conn);
+            tracing::error!("session create failed: {e}");
+            return redirect_login_error("oauth_provider_error");
+        }
+    };
+    drop(conn);
+    let session_cookie = build_session_cookie(&token, s.session_ttl_days * 86_400);
+    let _ = secure_from_headers(&headers); // reserved for future use; admin cookie is always Secure
+    audit_oauth_success(&s, &provider, &user.email, admin_id).await;
+
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(header::LOCATION, "/drust/admin/tenants")
+        .header(header::SET_COOKIE, session_cookie)
+        .header(
+            header::SET_COOKIE,
+            oauth_state::clear_state_cookie().to_string(),
+        )
+        .header(
+            header::SET_COOKIE,
+            oauth_state::clear_pkce_cookie().to_string(),
+        )
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+async fn audit_oauth_success(_s: &MgmtState, _provider: &str, _email: &str, _admin_id: i64) {
+    // Filled in T15.
+}
+
+async fn audit_oauth_failure(_s: &MgmtState, _provider: &str, _email: Option<&str>, _code: &str) {
+    // Filled in T15.
 }
 
 #[cfg(test)]

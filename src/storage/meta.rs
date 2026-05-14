@@ -197,6 +197,18 @@ fn apply_migrations(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Look up an admin's id by email (case-insensitive). Returns `Ok(None)`
+/// when no row matches. Used by the OAuth callback to map a provider-
+/// verified email to a local admin row before minting a session.
+pub fn find_admin_id_by_email(conn: &Connection, email: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM admins WHERE email = ?1 COLLATE NOCASE",
+        [email],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
 pub fn bootstrap_admin(
     conn: &mut Connection,
     username: &str,
