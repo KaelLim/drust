@@ -163,6 +163,16 @@ pub async fn search_handler(
                     &format!("filter cannot target vector field: {f:?}"),
                 );
             }
+            Err(FilterError::TooDeep) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "FILTER_TOO_DEEP",
+                    &format!(
+                        "filter nesting exceeds max depth ({})",
+                        vector_filter::MAX_FILTER_DEPTH
+                    ),
+                );
+            }
             Err(e) => {
                 return json_error(
                     StatusCode::BAD_REQUEST,
