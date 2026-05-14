@@ -12,9 +12,10 @@ CREATE TABLE IF NOT EXISTS admins (
   email         TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_email
-  ON admins(email) WHERE email IS NOT NULL;
+-- Note: idx_admins_email is created in apply_migrations (not here)
+-- because on x-era upgrade, the admins table exists without the email
+-- column at SCHEMA_SQL time, so a CREATE INDEX referencing email would
+-- fail. apply_migrations runs after add_column_if_missing fills it.
 
 CREATE TABLE IF NOT EXISTS sessions (
   token         TEXT PRIMARY KEY,
