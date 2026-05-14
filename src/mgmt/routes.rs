@@ -48,6 +48,18 @@ pub struct MgmtState {
     /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
     /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
     pub index_large_table_rows: u64,
+    /// External base URL used to build OAuth redirect URIs (e.g.
+    /// `https://tool.tzuchi-org.tw`). Sourced from `DRUST_PUBLIC_URL`.
+    /// Empty when unset, which disables OAuth login.
+    pub public_url: String,
+    /// Registered OAuth providers (Google / GitHub) keyed by short name.
+    /// Cloned per request, so wrapped in `Arc`. When `enabled_names()` is
+    /// empty, the admin login page hides the OAuth button.
+    pub oauth_registry: std::sync::Arc<crate::oauth::ProviderRegistry>,
+    /// Lower-case email allowlist for admin OAuth login. Sourced from
+    /// `DRUST_ADMIN_OAUTH_ALLOWED_EMAILS` (comma-separated). Empty when
+    /// unset, which disables OAuth login.
+    pub oauth_allowlist: std::sync::Arc<std::collections::HashSet<String>>,
 }
 
 #[derive(Template)]

@@ -118,6 +118,28 @@ async fn main() -> anyhow::Result<()> {
     ));
     let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 
+    let public_url = std::env::var("DRUST_PUBLIC_URL").unwrap_or_default();
+    let oauth_registry_inner = drust::oauth::ProviderRegistry::from_env();
+    let oauth_allowlist_inner = drust::oauth::config::parse_allowlist(
+        &std::env::var("DRUST_ADMIN_OAUTH_ALLOWED_EMAILS").unwrap_or_default(),
+    );
+
+    // Defensive: if any provider is configured but public_url/allowlist
+    // is missing, disable all OAuth (button hidden, /start returns
+    // oauth_misconfigured).
+    let oauth_registry = if !oauth_registry_inner.enabled_names().is_empty()
+        && (public_url.is_empty() || oauth_allowlist_inner.is_empty())
+    {
+        tracing::warn!(
+            "OAuth provider(s) configured but DRUST_PUBLIC_URL or \
+             DRUST_ADMIN_OAUTH_ALLOWED_EMAILS missing; disabling OAuth"
+        );
+        std::sync::Arc::new(drust::oauth::ProviderRegistry::from_env_empty())
+    } else {
+        std::sync::Arc::new(oauth_registry_inner)
+    };
+    let oauth_allowlist = std::sync::Arc::new(oauth_allowlist_inner);
+
     let mgmt_state = MgmtState {
         meta: meta.clone(),
         session_ttl_days: cfg.session_ttl_days,
@@ -132,6 +154,9 @@ async fn main() -> anyhow::Result<()> {
         mcp: mcp_http.clone(),
         bus: bus.clone(),
         index_large_table_rows: cfg.index_large_table_rows,
+        public_url,
+        oauth_registry,
+        oauth_allowlist,
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
