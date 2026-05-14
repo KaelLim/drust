@@ -5,6 +5,7 @@ pub mod db;
 pub mod error;
 pub mod mcp;
 pub mod mgmt;
+pub mod oauth;
 pub mod query;
 pub mod rpc;
 pub mod safety;
