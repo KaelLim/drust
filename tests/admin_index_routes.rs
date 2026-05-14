@@ -59,6 +59,9 @@ async fn app_with_tenant_and_coll() -> (axum::Router, tempfile::TempDir) {
         mcp,
         bus,
         index_large_table_rows: 1_000_000,
+        public_url: String::new(),
+        oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
+        oauth_allowlist: Arc::new(std::collections::HashSet::new()),
     };
     let router = state.with_data_dir(data_dir);
     (router, dir)
