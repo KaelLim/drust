@@ -38,6 +38,9 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
         mcp,
         bus,
         index_large_table_rows: 1_000_000,
+        public_url: String::new(),
+        oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
+        oauth_allowlist: Arc::new(std::collections::HashSet::new()),
     };
     (state.with_data_dir(data.clone()), tok, dir)
 }

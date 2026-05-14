@@ -71,6 +71,9 @@ async fn admin_app_with_tenant() -> (axum::Router, String, String, tempfile::Tem
         mcp,
         bus,
         index_large_table_rows: 1_000_000,
+        public_url: String::new(),
+        oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
+        oauth_allowlist: Arc::new(std::collections::HashSet::new()),
     };
     let router = state.with_data_dir(data_dir);
     (router, TENANT.to_string(), svc_tok, dir)
@@ -231,6 +234,9 @@ async fn password_hash_is_masked_in_system_users_page() {
         mcp,
         bus,
         index_large_table_rows: 1_000_000,
+        public_url: String::new(),
+        oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
+        oauth_allowlist: Arc::new(std::collections::HashSet::new()),
     };
     let router = state.with_data_dir(data_dir);
     let cookie = login_cookie(&router).await;

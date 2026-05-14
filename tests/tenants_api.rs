@@ -36,6 +36,9 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
         mcp,
         bus,
         index_large_table_rows: 1_000_000,
+        public_url: String::new(),
+        oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
+        oauth_allowlist: Arc::new(std::collections::HashSet::new()),
     };
     (state.with_data_dir(data_dir.clone()), tok, dir)
 }
@@ -155,6 +158,9 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
         mcp: mcp.clone(),
         bus: bus.clone(),
         index_large_table_rows: 1_000_000,
+        public_url: String::new(),
+        oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
+        oauth_allowlist: Arc::new(std::collections::HashSet::new()),
     };
     let app = state.with_data_dir(data_dir);
 
