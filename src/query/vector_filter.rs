@@ -13,6 +13,12 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 use thiserror::Error;
 
+/// Maximum nesting depth of the boolean tree (and/or/not). A deeply nested
+/// `{"and":[{"and":[...]}]}` chain could otherwise blow the tokio worker
+/// stack — axum's default 2 MB body cap is large enough to encode such a
+/// payload. 32 levels is comfortably above any realistic legitimate filter.
+pub const MAX_FILTER_DEPTH: usize = 32;
+
 #[derive(Debug, Error, PartialEq)]
 pub enum FilterError {
     #[error("filter parse error: {0}")]
@@ -27,6 +33,8 @@ pub enum FilterError {
         field: String,
         required: &'static str,
     },
+    #[error("filter nesting exceeds max depth ({MAX_FILTER_DEPTH})")]
+    TooDeep,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,7 +51,7 @@ pub fn compile(
     ast: &FilterAst,
 ) -> Result<(String, Vec<Value>), FilterError> {
     let mut binds: Vec<Value> = Vec::new();
-    let sql = compile_node(schema, ast, &mut binds)?;
+    let sql = compile_node(schema, ast, &mut binds, 0)?;
     Ok((sql, binds))
 }
 
@@ -51,26 +59,34 @@ fn compile_node(
     schema: &CollectionSchema,
     node: &FilterAst,
     binds: &mut Vec<Value>,
+    depth: usize,
 ) -> Result<String, FilterError> {
+    if depth >= MAX_FILTER_DEPTH {
+        return Err(FilterError::TooDeep);
+    }
     match node {
         FilterAst::And { and } => {
             if and.is_empty() {
                 return Ok("1=1".into());
             }
-            let parts: Result<Vec<_>, _> =
-                and.iter().map(|n| compile_node(schema, n, binds)).collect();
+            let parts: Result<Vec<_>, _> = and
+                .iter()
+                .map(|n| compile_node(schema, n, binds, depth + 1))
+                .collect();
             Ok(format!("({})", parts?.join(" AND ")))
         }
         FilterAst::Or { or } => {
             if or.is_empty() {
                 return Ok("1=0".into());
             }
-            let parts: Result<Vec<_>, _> =
-                or.iter().map(|n| compile_node(schema, n, binds)).collect();
+            let parts: Result<Vec<_>, _> = or
+                .iter()
+                .map(|n| compile_node(schema, n, binds, depth + 1))
+                .collect();
             Ok(format!("({})", parts?.join(" OR ")))
         }
         FilterAst::Not { not } => {
-            let inner = compile_node(schema, not, binds)?;
+            let inner = compile_node(schema, not, binds, depth + 1)?;
             Ok(format!("(NOT {inner})"))
         }
         FilterAst::Leaf(obj) => {
@@ -282,5 +298,32 @@ mod tests {
         let s = schema_with(&[("title", "text")], &[("embedding", 8)]);
         let err = compile(&s, &leaf(r#"{"embedding":[0.0]}"#)).unwrap_err();
         assert!(matches!(err, FilterError::VectorField(_)));
+    }
+
+    /// Build a `{"not": {"not": ... {"cat":"x"} ... }}` chain n-deep.
+    fn deep_not_chain(n: usize) -> FilterAst {
+        let mut node = leaf(r#"{"cat":"x"}"#);
+        for _ in 0..n {
+            node = FilterAst::Not { not: Box::new(node) };
+        }
+        node
+    }
+
+    #[test]
+    fn depth_at_cap_minus_one_compiles() {
+        // The chain wraps the leaf in MAX_FILTER_DEPTH - 1 `not` nodes,
+        // so total recursion reaches depth = MAX_FILTER_DEPTH at the leaf,
+        // which is still rejected. Use one shallower to land legal.
+        let s = schema_with(&[("cat", "text")], &[]);
+        let ast = deep_not_chain(MAX_FILTER_DEPTH - 2);
+        assert!(compile(&s, &ast).is_ok());
+    }
+
+    #[test]
+    fn depth_over_cap_rejected() {
+        let s = schema_with(&[("cat", "text")], &[]);
+        let ast = deep_not_chain(MAX_FILTER_DEPTH + 5);
+        let err = compile(&s, &ast).unwrap_err();
+        assert!(matches!(err, FilterError::TooDeep));
     }
 }

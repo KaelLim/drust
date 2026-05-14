@@ -87,6 +87,10 @@ pub async fn search_collection(
             vector_filter::compile(&schema, &ast).map_err(|e| match e {
                 FilterError::UnknownField(f) => anyhow::anyhow!("FILTER_UNKNOWN_FIELD: {f}"),
                 FilterError::VectorField(f) => anyhow::anyhow!("FILTER_VECTOR_FIELD: {f}"),
+                FilterError::TooDeep => anyhow::anyhow!(
+                    "FILTER_TOO_DEEP: filter nesting exceeds max depth ({})",
+                    vector_filter::MAX_FILTER_DEPTH
+                ),
                 other => anyhow::anyhow!("FILTER_PARSE_ERROR: {other}"),
             })?
         }
