@@ -24,6 +24,7 @@ async fn fixture(tenant: &str) -> (drust::mcp::server::DrustMcp, tempfile::TempD
             unique: false,
             default_value: None,
             foreign_key: None,
+            dim: None,
         }],
     )
     .await
