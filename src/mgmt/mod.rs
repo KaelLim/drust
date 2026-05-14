@@ -3,6 +3,7 @@ pub mod backups;
 pub mod browse;
 pub mod docs;
 pub mod format;
+pub mod oauth_login;
 pub mod public_files;
 pub mod routes;
 pub mod rpc_admin;
