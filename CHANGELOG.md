@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.10.1 - 2026-05-14
+
+### Fixed — Code-review follow-ups for v1.10 vector search
+
+- **FilterAst depth cap** — `/search`'s `where` AST now refuses bool
+  trees nested deeper than 32 levels. Returns
+  `400 FILTER_TOO_DEEP`. Prevents stack exhaustion on a maliciously
+  deep `{"and":[{"and":[…]}]}` payload that fits inside axum's
+  default 2 MB body cap. `MAX_FILTER_DEPTH` lives in
+  `src/query/vector_filter.rs`.
+- **MCP integration tests for vector storage & search** — new
+  `tests/mcp_vector.rs` (10 tests) pins the MCP-side codepath that
+  v1.10.0 nearly shipped broken: insert/update vector encoding,
+  default-hide vector column on response, dim mismatch typed error
+  (`VECTOR_DIM_MISMATCH`), search top-k ordering, k/metric/filter
+  guards, `FILTER_TOO_DEEP` rejection.
+
 ## 1.10.0 - 2026-05-13
 
 ### Added — Vector storage & similarity search (sqlite-vec)
