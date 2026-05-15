@@ -130,6 +130,17 @@ pub fn should_log_body(path: &str) -> bool {
 /// the per-request `tokio::spawn` futures were dropped mid-write.
 pub struct AuditLog {
     tx: mpsc::UnboundedSender<AuditEntry>,
+    log_dir: PathBuf,
+}
+
+impl AuditLog {
+    /// Directory containing the daily `audit-YYYY-MM-DD.jsonl` files.
+    /// Exposed so code paths that don't carry the `Arc<AuditLog>` (e.g.
+    /// per-tenant OAuth callback's stateless `write_entry` call) can
+    /// resolve the same directory without re-reading env vars.
+    pub fn log_dir(&self) -> &std::path::Path {
+        &self.log_dir
+    }
 }
 
 /// Returned by `AuditLog::start`. Holding the handle lets graceful
@@ -201,7 +212,13 @@ impl AuditLog {
                 let _ = f.flush().await;
             }
         });
-        (Self { tx }, AuditWriterHandle(handle))
+        (
+            Self {
+                tx,
+                log_dir: dir,
+            },
+            AuditWriterHandle(handle),
+        )
     }
 
     /// Enqueue one audit entry. O(1), never blocks. Drops the entry

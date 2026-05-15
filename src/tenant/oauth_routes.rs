@@ -193,6 +193,66 @@ pub(crate) async fn oauth_start(
         .unwrap()
 }
 
+async fn audit_oauth_success(
+    state: &TenantAuthState,
+    tid: &str,
+    provider: &str,
+    user_id: &str,
+    email: &str,
+) {
+    let op = format!("GET /t/{tid}/oauth/{provider}/callback");
+    let mut entry = crate::safety::audit::AuditEntry::success(tid, "-", &op, 0)
+        .with_extra(serde_json::json!({ "auth_user_id": user_id }));
+    entry.auth_method = Some(format!("oauth_{provider}"));
+    entry.oauth_email = Some(sanitize_email(email));
+    crate::safety::audit::write_entry(state.audit.log_dir(), &entry).await;
+}
+
+async fn audit_oauth_failure(
+    state: &TenantAuthState,
+    tid: &str,
+    provider: &str,
+    email: Option<&str>,
+    error_code: &str,
+) {
+    let op = format!("GET /t/{tid}/oauth/{provider}/callback");
+    let mut entry =
+        crate::safety::audit::AuditEntry::failure(tid, "-", &op, 0, "HTTP_400", "");
+    entry.auth_method = Some(format!("oauth_{provider}"));
+    entry.oauth_email = email.map(sanitize_email);
+    entry.oauth_error_code = Some(error_code.to_string());
+    crate::safety::audit::write_entry(state.audit.log_dir(), &entry).await;
+}
+
+pub(crate) fn sanitize_email(s: &str) -> String {
+    // Duplicated from src/mgmt/oauth_login.rs intentionally — moving to a
+    // shared module is the v1.13 refactor (yagni for now).
+    if crate::bin_helpers::validate_email(s) {
+        s.to_lowercase()
+    } else {
+        "<invalid>".into()
+    }
+}
+
+fn redirect_with_fragment_success(
+    frontend: &str,
+    token: &str,
+    expires_in_secs: u64,
+    tid: &str,
+) -> Response {
+    let loc = format!(
+        "{frontend}#access_token={token}&token_type=Bearer&expires_in={expires_in_secs}"
+    );
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(header::LOCATION, loc)
+        .header(header::SET_COOKIE, clear_cookie(STATE_COOKIE, tid))
+        .header(header::SET_COOKIE, clear_cookie(PKCE_COOKIE, tid))
+        .header(header::SET_COOKIE, clear_cookie(REDIRECT_URI_COOKIE, tid))
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
 /// Look up `_system_users.id` by case-insensitive email match, or auto-create
 /// a row when `allow_self_register` is true. Returns `Ok(None)` to signal the
 /// caller should render `oauth_not_allowed` (existing row absent, self-register
@@ -324,12 +384,23 @@ pub(crate) async fn oauth_callback(
                 error = %e,
                 "oauth exchange failed"
             );
+            // Email not yet known — pass None.
+            audit_oauth_failure(&state, &tid, &provider_name, None, "oauth_provider_error")
+                .await;
             return redirect_with_fragment_error(&frontend_uri, "oauth_provider_error", &tid);
         }
     };
 
     // Step 6: email_verified.
     if !user.email_verified {
+        audit_oauth_failure(
+            &state,
+            &tid,
+            &provider_name,
+            Some(&user.email),
+            "oauth_email_unverified",
+        )
+        .await;
         return redirect_with_fragment_error(&frontend_uri, "oauth_email_unverified", &tid);
     }
 
@@ -342,6 +413,14 @@ pub(crate) async fn oauth_callback(
                 error = %e,
                 "allow_self_register read failed"
             );
+            audit_oauth_failure(
+                &state,
+                &tid,
+                &provider_name,
+                Some(&user.email),
+                "oauth_session_error",
+            )
+            .await;
             return redirect_with_fragment_error(&frontend_uri, "oauth_session_error", &tid);
         }
     };
@@ -360,6 +439,14 @@ pub(crate) async fn oauth_callback(
     let user_id = match user_id_res {
         Ok(Some(uid)) => uid,
         Ok(None) => {
+            audit_oauth_failure(
+                &state,
+                &tid,
+                &provider_name,
+                Some(&user.email),
+                "oauth_not_allowed",
+            )
+            .await;
             return redirect_with_fragment_error(&frontend_uri, "oauth_not_allowed", &tid);
         }
         Err(e) => {
@@ -368,6 +455,14 @@ pub(crate) async fn oauth_callback(
                 error = %e,
                 "user lookup/insert failed"
             );
+            audit_oauth_failure(
+                &state,
+                &tid,
+                &provider_name,
+                Some(&user.email),
+                "oauth_session_error",
+            )
+            .await;
             return redirect_with_fragment_error(&frontend_uri, "oauth_session_error", &tid);
         }
     };
@@ -388,13 +483,24 @@ pub(crate) async fn oauth_callback(
                 error = %e,
                 "session insert failed"
             );
+            audit_oauth_failure(
+                &state,
+                &tid,
+                &provider_name,
+                Some(&user.email),
+                "oauth_session_error",
+            )
+            .await;
             return redirect_with_fragment_error(&frontend_uri, "oauth_session_error", &tid);
         }
     };
 
-    // Steps 9 (audit) + 10 (success redirect) in T9. Placeholder for now:
-    let _ = (token, &user.email);
-    redirect_with_fragment_error(&frontend_uri, "oauth_session_error_TODO_T9", &tid)
+    // Step 9: audit success row.
+    audit_oauth_success(&state, &tid, &provider_name, &user_id, &user.email).await;
+
+    // Step 10: 302 to frontend with success fragment.
+    const THIRTY_DAYS_SECS: u64 = 30 * 86400;
+    redirect_with_fragment_success(&frontend_uri, &token, THIRTY_DAYS_SECS, &tid)
 }
 
 #[cfg(test)]
