@@ -764,6 +764,31 @@ async fn load_tenant_shell(
     Ok((tenant_name, collections))
 }
 
+/// Lightweight existence guard for admin POST handlers (DELETE / upsert):
+/// returns `None` if the tenant exists in `meta.tenants` and isn't
+/// soft-deleted, or a 404 response otherwise. Used before
+/// `state.tenants.get_or_open(...)` so we don't materialise an empty
+/// `tenants/<bogus_id>/data.sqlite` for an admin-typed path. Cheaper than
+/// `load_tenant_shell` (no collection list).
+async fn ensure_tenant_exists(
+    state: &TenantsState,
+    tenant_id: &str,
+) -> Option<Response> {
+    let exists: bool = {
+        let conn = state.session.meta.lock().await;
+        conn.query_row(
+            "SELECT 1 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tenant_id],
+            |_| Ok(()),
+        )
+        .is_ok()
+    };
+    if !exists {
+        return Some((StatusCode::NOT_FOUND, "no such tenant").into_response());
+    }
+    None
+}
+
 /// Render the page. Internal helper so the upsert handler can surface an
 /// error inline without an extra round-trip.
 async fn render_oauth_providers_page(
@@ -823,6 +848,14 @@ pub async fn tenant_oauth_provider_upsert(
     Path(tenant_id): Path<String>,
     Form(form): Form<OauthProviderUpsertForm>,
 ) -> Response {
+    // Guard FIRST: a missing/soft-deleted tenant must not be re-materialised
+    // by the writer-mutex below via get_or_open → open_write → create_dir_all.
+    // GET path runs the same check via load_tenant_shell; DELETE and the
+    // upsert error-leg need it too.
+    if let Some(r) = ensure_tenant_exists(&state, &tenant_id).await {
+        return r;
+    }
+
     let uris: Vec<String> = form
         .allowed_redirect_uris
         .lines()
@@ -873,6 +906,12 @@ pub async fn tenant_oauth_provider_delete(
     State(state): State<TenantsState>,
     Path((tenant_id, provider)): Path<(String, String)>,
 ) -> Response {
+    // Guard FIRST: a missing/soft-deleted tenant must not be re-materialised
+    // by get_or_open → open_write → create_dir_all. GET path runs the same
+    // check via load_tenant_shell.
+    if let Some(r) = ensure_tenant_exists(&state, &tenant_id).await {
+        return r;
+    }
     if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
         let provider2 = provider.clone();
         let _ = pool
