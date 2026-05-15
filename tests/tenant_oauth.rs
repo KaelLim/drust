@@ -1452,3 +1452,30 @@ async fn admin_put_oauth_validation_emits_granular_codes() {
     .await;
     assert_eq!(v["error_code"], "INVALID_CLIENT_SECRET", "got {v}");
 }
+
+// ---------- T2: auth_kind enrichment on tenant OAuth callback ----------
+
+#[tokio::test]
+async fn tenant_oauth_success_carries_auth_kind_user() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "alice@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-kind".into(),
+        picture: "https://example.test/avatar.png".into(),
+    };
+    let (app, _dir, tid, _service, log_dir) = spin_up_tenant_with_google_fake(&fake).await;
+    let frontend = "https://app.example.com/auth/callback";
+    let resp = drive_callback(&app, &tid, "google", frontend).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+
+    // poll_for_audit_row finds by auth_method; check that the same row also
+    // carries auth_kind=user (T2) in the flattened extra map.
+    let row = poll_for_audit_row(&log_dir, "oauth_google", 500).await;
+    assert_eq!(row["status"], "ok");
+    assert_eq!(
+        row["auth_kind"].as_str().unwrap_or(""),
+        "user",
+        "tenant OAuth success row must carry auth_kind=user: {row}"
+    );
+}

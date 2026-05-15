@@ -547,6 +547,56 @@ async fn oauth_existing_password_login_unaffected() {
     assert!(extract_set_cookie(&resp, "drust_session").is_some());
 }
 
+// ---------- T2: auth_kind enrichment on admin OAuth callback ----------
+
+#[tokio::test]
+async fn admin_oauth_success_carries_auth_kind_admin() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "kael@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-admin-kind".into(),
+        picture: "https://example.test/avatar.png".into(),
+    };
+    let (app, _dir, log_dir) = spin_up_admin_with_google_fake(&fake).await;
+
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/google/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state = extract_set_cookie(&start_resp, "drust_oauth_state").expect("state cookie set");
+    let pkce = extract_set_cookie(&start_resp, "drust_oauth_pkce").expect("pkce cookie set");
+
+    let cookie_hdr = format!("drust_oauth_state={state}; drust_oauth_pkce={pkce}");
+    let url = format!("/admin/oauth/google/callback?code=CODE-KIND&state={state}");
+    let _ = app
+        .oneshot(
+            Request::builder()
+                .uri(&url)
+                .header(header::COOKIE, cookie_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // poll_for_audit_row finds by auth_method; check that row also carries
+    // auth_kind=admin in the flattened extra map (T2).
+    let row = poll_for_audit_row(&log_dir, "oauth_google", 500).await;
+    assert_eq!(row["status"], "ok");
+    assert_eq!(
+        row["auth_kind"].as_str().unwrap_or(""),
+        "admin",
+        "admin OAuth success row must carry auth_kind=admin: {row}"
+    );
+}
+
 // ---------- T18: happy path github ----------
 
 #[tokio::test]
