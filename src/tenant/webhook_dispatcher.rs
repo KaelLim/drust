@@ -39,7 +39,7 @@ pub(crate) fn events_contains(events_json: &str, name: &str) -> bool {
 
 /// HMAC-SHA256 over `body` keyed by `secret`, hex-encoded, prefixed
 /// `sha256=`. Matches GitHub-webhook signature convention.
-pub(crate) fn compute_signature(secret: &str, body: &[u8]) -> String {
+pub fn compute_signature(secret: &str, body: &[u8]) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .expect("HMAC accepts any key length");
     mac.update(body);
@@ -153,6 +153,114 @@ pub(crate) fn record_failure(
         rusqlite::params![id, truncated],
     )?;
     Ok(())
+}
+
+/// Backoff schedule for `deliver()`. Production uses `default()`
+/// (0/1/5/30 s). Tests override to skip waits.
+#[derive(Clone, Copy)]
+pub struct DeliverySchedule {
+    pub backoffs: [u64; 4], // seconds, 4 total attempts
+    pub per_attempt_timeout_secs: u64,
+}
+
+impl Default for DeliverySchedule {
+    fn default() -> Self {
+        Self { backoffs: [0, 1, 5, 30], per_attempt_timeout_secs: 10 }
+    }
+}
+
+impl DeliverySchedule {
+    pub const fn fast_for_tests() -> Self {
+        Self { backoffs: [0, 0, 0, 0], per_attempt_timeout_secs: 2 }
+    }
+}
+
+#[derive(Debug)]
+pub enum DeliveryError {
+    /// 4xx response — terminal, no retry attempted.
+    NonRetryable { status: u16, body: String },
+    /// All retries exhausted on retryable errors (5xx / network / timeout).
+    Exhausted { last_error: String, attempts: usize },
+}
+
+impl std::fmt::Display for DeliveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeliveryError::NonRetryable { status, body } => {
+                write!(f, "4xx {} from subscriber: {}", status, body)
+            }
+            DeliveryError::Exhausted { last_error, attempts } => {
+                write!(f, "all {} attempts failed: {}", attempts, last_error)
+            }
+        }
+    }
+}
+
+/// Production entry: one delivery, 4 attempts, fail-then-record_failure.
+pub(crate) async fn deliver(
+    http: &reqwest::Client,
+    row: &WebhookRow,
+    body_bytes: Vec<u8>,
+    sched: DeliverySchedule,
+    tenants_root: &std::path::Path,
+    tenant_id: &str,
+) -> Result<(), DeliveryError> {
+    let outcome = deliver_for_test(http, row, body_bytes, sched).await;
+    if let Err(ref e) = outcome {
+        if let Ok(conn) = open_tenant_conn(tenants_root, tenant_id) {
+            let _ = record_failure(&conn, row.id, &e.to_string());
+        }
+    }
+    outcome
+}
+
+/// Pure HTTP-only entry — does NOT touch the DB. Exposed for the
+/// integration tests so they can assert signature / retry shape without
+/// spinning up a tenant DB.
+pub async fn deliver_for_test(
+    http: &reqwest::Client,
+    row: &WebhookRow,
+    body_bytes: Vec<u8>,
+    sched: DeliverySchedule,
+) -> Result<(), DeliveryError> {
+    let sig = compute_signature(&row.secret, &body_bytes);
+    let delivery_id = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let mut last_err = String::new();
+    for (attempt_idx, wait_secs) in sched.backoffs.iter().enumerate() {
+        if *wait_secs > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(*wait_secs)).await;
+        }
+        let req = http
+            .post(&row.url)
+            .header("content-type", "application/json")
+            .header("x-drust-signature", &sig)
+            .header("x-drust-delivery-id", &delivery_id)
+            .header("x-drust-timestamp", &timestamp)
+            .timeout(std::time::Duration::from_secs(sched.per_attempt_timeout_secs))
+            .body(body_bytes.clone());
+        match req.send().await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                if (200..300).contains(&status) {
+                    return Ok(());
+                }
+                if (400..500).contains(&status) {
+                    let body = resp.text().await.unwrap_or_default();
+                    let truncated: String = body.chars().take(200).collect();
+                    return Err(DeliveryError::NonRetryable { status, body: truncated });
+                }
+                last_err = format!("attempt {} got status {}", attempt_idx + 1, status);
+            }
+            Err(e) => {
+                last_err = format!("attempt {} network err: {}", attempt_idx + 1, e);
+            }
+        }
+    }
+    Err(DeliveryError::Exhausted {
+        last_error: last_err,
+        attempts: sched.backoffs.len(),
+    })
 }
 
 #[cfg(test)]
