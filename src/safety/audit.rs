@@ -17,6 +17,9 @@ pub struct AuditExtra(pub serde_json::Value);
 #[derive(Clone, Debug)]
 pub struct DefaultAuditExtra(pub serde_json::Value);
 
+/// `tenant` / `token_hint` are `"-"` on admin-plane rows (e.g. admin OAuth
+/// callback) that aren't tenant-scoped — the admin audit UI filters on
+/// presence of the typed `oauth_*` fields, not on these sentinels.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuditEntry {
     pub ts: String,
@@ -35,16 +38,12 @@ pub struct AuditEntry {
     pub error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
-    /// Authentication mechanism for this request, e.g. `"oauth_google"`.
-    /// Set by the admin OAuth login flow; absent for password / bearer paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
-    /// Lower-cased provider-supplied email, or `"<invalid>"` when the address
-    /// fails `validate_email`. Admin OAuth only; absent elsewhere.
+    /// `"<invalid>"` when the upstream address fails `validate_email`;
+    /// otherwise lowercased.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_email: Option<String>,
-    /// Short error code from the OAuth login state machine
-    /// (e.g. `"oauth_state_mismatch"`). Absent on success.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_error_code: Option<String>,
     /// Extra top-level keys for op-specific metadata (index_name, row_count, etc.).
