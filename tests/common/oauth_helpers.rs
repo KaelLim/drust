@@ -23,6 +23,10 @@ pub struct FakeScript {
     pub email: String,
     pub email_verified: bool,
     pub provider_user_id: String,
+    /// Avatar URL the fake provider returns. Google emits this in the
+    /// id_token `picture` claim; GitHub emits it as `avatar_url` on
+    /// `GET /user`.
+    pub picture: String,
 }
 
 impl Default for FakeScript {
@@ -31,6 +35,7 @@ impl Default for FakeScript {
             email: "kael@example.com".to_string(),
             email_verified: true,
             provider_user_id: "sub-default".to_string(),
+            picture: "https://example.test/avatar.png".to_string(),
         }
     }
 }
@@ -69,6 +74,7 @@ pub async fn spawn_fake_google() -> Arc<FakeProvider> {
                     "email": script.email,
                     "email_verified": script.email_verified,
                     "name": "Kael",
+                    "picture": script.picture,
                 });
                 let payload = URL_SAFE_NO_PAD.encode(claims.to_string());
                 let id_token = format!("header.{payload}.sig");
@@ -173,6 +179,7 @@ pub async fn spawn_fake_github() -> Arc<FakeProvider> {
                     Json(serde_json::json!({
                         "id": id,
                         "name": "Kael",
+                        "avatar_url": script.picture,
                     }))
                 }
             }),

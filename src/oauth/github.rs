@@ -64,6 +64,11 @@ pub(crate) struct GitHubEmail {
 struct GitHubUser {
     id: u64,
     name: Option<String>,
+    /// GitHub returns the user's avatar URL here on `GET /user`.
+    /// Optional in serde for defence-in-depth; in practice GitHub
+    /// always populates this.
+    #[serde(default)]
+    avatar_url: Option<String>,
 }
 
 pub(crate) fn pick_primary_verified(emails: &[GitHubEmail]) -> Option<String> {
@@ -154,6 +159,7 @@ impl OauthProvider for GitHubAdapter {
                 &email,
                 true, // GitHub primary+verified ⇒ verified
                 user.name,
+                user.avatar_url,
             ))
         })
     }

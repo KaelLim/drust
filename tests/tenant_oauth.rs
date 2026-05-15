@@ -233,6 +233,7 @@ async fn tenant_oauth_happy_path_google() {
         email: "alice@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-1".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
 
@@ -293,6 +294,7 @@ async fn tenant_oauth_happy_path_github() {
         email: "alice@example.com".into(),
         email_verified: true,
         provider_user_id: "424242".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, _dir, tid, _service, _log) = spin_up_tenant_with_github_fake(&fake).await;
 
@@ -489,6 +491,7 @@ async fn tenant_oauth_email_unverified_rejected() {
         email: "alice@example.com".into(),
         email_verified: false,
         provider_user_id: "sub-1".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
     let frontend = "https://app.example.com/auth/callback";
@@ -605,6 +608,7 @@ async fn tenant_oauth_not_allowed_when_self_register_off() {
         email: "newcomer@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-x".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     // allow_self_register=false, no pre-existing user → step 7 returns None.
     let (app, dir, tid, _service, _log) = spin_up_tenant_with_google_fake_opts(
@@ -635,6 +639,7 @@ async fn tenant_oauth_auto_create_when_self_register_on() {
         email: "newcomer@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-y".into(),
+        picture: "https://lh3.googleusercontent.com/newcomer".into(),
     };
     let (app, dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
     let frontend = "https://app.example.com/auth/callback";
@@ -659,6 +664,45 @@ async fn tenant_oauth_auto_create_when_self_register_on() {
     assert_eq!(verified, 1);
     let profile_json: serde_json::Value = serde_json::from_str(&profile.unwrap()).unwrap();
     assert_eq!(profile_json["name"], "Kael");
+    // Spec §3.3: picture is extracted from the Google id_token claim and
+    // persisted in the profile JSON.
+    assert_eq!(
+        profile_json["picture"],
+        "https://lh3.googleusercontent.com/newcomer",
+        "profile.picture must carry the Google id_token claim"
+    );
+}
+
+#[tokio::test]
+async fn tenant_oauth_auto_create_picture_from_github() {
+    // Mirror of the Google picture assertion via the GitHub `/user.avatar_url`
+    // path — the third round-trip is where GitHub returns the avatar.
+    let fake = spawn_fake_github().await;
+    *fake.script.lock().await = FakeScript {
+        email: "ghuser@example.com".into(),
+        email_verified: true,
+        provider_user_id: "424242".into(),
+        picture: "https://avatars.githubusercontent.com/u/424242".into(),
+    };
+    let (app, dir, tid, _service, _log) = spin_up_tenant_with_github_fake(&fake).await;
+    let frontend = "https://app.example.com/auth/callback";
+    let resp = drive_callback(&app, &tid, "github", frontend).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+
+    let tconn = open_tenant_db(&dir, &tid);
+    let profile: String = tconn
+        .query_row(
+            "SELECT profile FROM _system_users WHERE email = ?1 COLLATE NOCASE",
+            ["ghuser@example.com"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&profile).unwrap();
+    assert_eq!(
+        v["picture"],
+        "https://avatars.githubusercontent.com/u/424242",
+        "profile.picture must carry the GitHub /user.avatar_url field"
+    );
 }
 
 #[tokio::test]
@@ -671,6 +715,7 @@ async fn tenant_oauth_auto_links_existing_email() {
         email: "alice@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-link".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
 
@@ -726,6 +771,7 @@ async fn tenant_oauth_only_user_password_login_rejected() {
         email: "oauthonly@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-only".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
 
@@ -861,6 +907,7 @@ async fn tenant_oauth_cross_tenant_user_isolation() {
         email: "alice@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-cross".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
@@ -925,6 +972,7 @@ async fn tenant_oauth_audit_logged_on_success() {
         email: "alice@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-1".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, _dir, tid, _service, log_dir) = spin_up_tenant_with_google_fake(&fake).await;
     let frontend = "https://app.example.com/auth/callback";
