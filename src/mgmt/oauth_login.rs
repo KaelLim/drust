@@ -156,12 +156,33 @@ pub async fn oauth_callback(
         .unwrap()
 }
 
-async fn audit_oauth_success(_s: &MgmtState, _provider: &str, _email: &str, _admin_id: i64) {
-    // Filled in T15.
+async fn audit_oauth_success(s: &MgmtState, provider: &str, email: &str, admin_id: i64) {
+    let op = format!("GET /admin/oauth/{provider}/callback");
+    let mut entry = crate::safety::audit::AuditEntry::success("-", "-", &op, 0);
+    entry.auth_method = Some(format!("oauth_{provider}"));
+    entry.oauth_email = Some(sanitize_email(email));
+    entry.extra.insert(
+        "admin_id".to_string(),
+        serde_json::Value::Number(admin_id.into()),
+    );
+    crate::safety::audit::write_entry(&s.log_dir, &entry).await;
 }
 
-async fn audit_oauth_failure(_s: &MgmtState, _provider: &str, _email: Option<&str>, _code: &str) {
-    // Filled in T15.
+async fn audit_oauth_failure(s: &MgmtState, provider: &str, email: Option<&str>, code: &str) {
+    let op = format!("GET /admin/oauth/{provider}/callback");
+    let mut entry = crate::safety::audit::AuditEntry::failure("-", "-", &op, 0, "HTTP_403", "");
+    entry.auth_method = Some(format!("oauth_{provider}"));
+    entry.oauth_email = email.map(sanitize_email);
+    entry.oauth_error_code = Some(code.to_string());
+    crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+}
+
+fn sanitize_email(s: &str) -> String {
+    if crate::bin_helpers::validate_email(s) {
+        s.to_lowercase()
+    } else {
+        "<invalid>".into()
+    }
 }
 
 #[cfg(test)]
