@@ -35,6 +35,18 @@ pub struct AuditEntry {
     pub error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// Authentication mechanism for this request, e.g. `"oauth_google"`.
+    /// Set by the admin OAuth login flow; absent for password / bearer paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
+    /// Lower-cased provider-supplied email, or `"<invalid>"` when the address
+    /// fails `validate_email`. Admin OAuth only; absent elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_email: Option<String>,
+    /// Short error code from the OAuth login state machine
+    /// (e.g. `"oauth_state_mismatch"`). Absent on success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_error_code: Option<String>,
     /// Extra top-level keys for op-specific metadata (index_name, row_count, etc.).
     /// Flattened on serialisation; empty map is skipped.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -55,6 +67,9 @@ impl AuditEntry {
             record_id: None,
             error_code: None,
             error_message: None,
+            auth_method: None,
+            oauth_email: None,
+            oauth_error_code: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -78,6 +93,9 @@ impl AuditEntry {
             record_id: None,
             error_code: Some(code.to_string()),
             error_message: Some(msg.to_string()),
+            auth_method: None,
+            oauth_email: None,
+            oauth_error_code: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -191,6 +209,48 @@ impl AuditLog {
     /// silently if the writer task has exited (only on shutdown).
     pub fn append(&self, entry: AuditEntry) {
         let _ = self.tx.send(entry);
+    }
+}
+
+/// Stateless one-shot writer used by code paths that don't carry the
+/// shared `Arc<AuditLog>` (currently: admin OAuth login, called rarely
+/// enough that the per-call open/close is fine). Writes to the same
+/// `audit-YYYY-MM-DD.jsonl` file that `AuditLog::start` writes to, so
+/// the admin audit UI sees both. Failures are logged at WARN and
+/// swallowed — audit writes must never block the request path.
+pub async fn write_entry(dir: &std::path::Path, entry: &AuditEntry) {
+    let date = entry.ts.get(..10).unwrap_or(&entry.ts);
+    let path = dir.join(format!("audit-{date}.jsonl"));
+    if let Err(e) = tokio::fs::create_dir_all(dir).await {
+        tracing::warn!(error = %e, "audit create_dir_all failed");
+        return;
+    }
+    let mut line = match serde_json::to_string(entry) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "audit serialize failed");
+            return;
+        }
+    };
+    line.push('\n');
+    let mut f = match tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(error = %e, "audit open failed");
+            return;
+        }
+    };
+    if let Err(e) = f.write_all(line.as_bytes()).await {
+        tracing::warn!(error = %e, "audit write_all failed");
+        return;
+    }
+    if let Err(e) = f.flush().await {
+        tracing::warn!(error = %e, "audit flush failed");
     }
 }
 
