@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.11.1 - 2026-05-15
+
+### Fixed — Production-only OAuth bugs caught in T29 manual smoke
+
+- **Cookie `Path` matches Caddy prefix.** OAuth state + PKCE cookies were
+  emitted with `Path=/admin`, but the browser sees the callback URL as
+  `/drust/admin/oauth/<p>/callback` (Caddy `handle_path /drust/*` strips
+  the prefix before forwarding to axum). Result: the browser refused to
+  send the cookie on the callback → every login failed with
+  `oauth_state_mismatch`. Fix: `Path=/drust/admin` in `src/oauth/state.rs`,
+  with a unit-test regression guard
+  (`oauth::state::tests::cookie_paths_match_caddy_prefix`).
+- **Admin session cookie `SameSite=Lax`.** Was `Strict`, which breaks the
+  OAuth callback redirect chain — browsers consider the whole
+  `Google → drust callback → 302 to /drust/admin/tenants` chain
+  cross-site-initiated, so the freshly-set Strict cookie isn't sent on
+  the followup GET. Users bounced back to `/drust/login` despite the
+  session being created in DB (3 audit rows confirmed). Lax is the
+  industry-standard stance for session cookies; CSRF protection should
+  come from CSRF tokens, not from `SameSite=Strict`. Fix in
+  `src/auth/middleware.rs`, regression test
+  `auth::middleware::ctx_tests::session_cookie_is_samesite_lax`.
+
+### Why integration tests didn't catch these
+
+`tests/admin_oauth.rs` uses `tower::ServiceExt::oneshot()` to drive the
+axum Router directly, bypassing Caddy entirely. Cookie `Path` and
+SameSite are browser-side enforcement; the test harness doesn't model
+a browser. The two unit-test regression guards above pin the literal
+attribute strings as the durable fix.
+
 ## 1.11.0 - 2026-05-15
 
 ### Added — Admin OAuth login (Google + GitHub)
