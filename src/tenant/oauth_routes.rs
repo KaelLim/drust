@@ -193,6 +193,66 @@ pub(crate) async fn oauth_start(
         .unwrap()
 }
 
+/// Look up `_system_users.id` by case-insensitive email match, or auto-create
+/// a row when `allow_self_register` is true. Returns `Ok(None)` to signal the
+/// caller should render `oauth_not_allowed` (existing row absent, self-register
+/// disabled). OAuth-only users carry the sentinel password hash so the password
+/// login path short-circuits before reaching argon2. `name` lands in the
+/// `profile` JSON column under the conventional `"name"` key.
+fn find_or_create_user(
+    conn: &rusqlite::Connection,
+    email: &str,
+    name: Option<&str>,
+    allow_self_register: bool,
+) -> rusqlite::Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM _system_users WHERE email = ?1 COLLATE NOCASE",
+            [email],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(id) = existing {
+        return Ok(Some(id));
+    }
+    if !allow_self_register {
+        return Ok(None);
+    }
+    let new_id = format!("u-{}", uuid::Uuid::new_v4());
+    let profile = serde_json::json!({
+        "name": name.unwrap_or(""),
+    })
+    .to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO _system_users \
+           (id, email, password_hash, verified, profile, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, 1, ?4, ?5, ?5)",
+        rusqlite::params![
+            new_id,
+            email,
+            crate::auth::oauth_sentinel::OAUTH_ONLY_SENTINEL,
+            profile,
+            now,
+        ],
+    )?;
+    Ok(Some(new_id))
+}
+
+async fn allow_self_register_for_tenant(
+    state: &TenantAuthState,
+    tid: &str,
+) -> Result<bool, rusqlite::Error> {
+    let meta = state.meta.lock().await;
+    let v: i64 = meta.query_row(
+        "SELECT allow_self_register FROM tenants WHERE id = ?1",
+        [tid],
+        |r| r.get(0),
+    )?;
+    Ok(v != 0)
+}
+
 pub(crate) async fn oauth_callback(
     Path(params): Path<HashMap<String, String>>,
     State(state): State<TenantAuthState>,
@@ -247,10 +307,94 @@ pub(crate) async fn oauth_callback(
         return plain_text(StatusCode::BAD_REQUEST, "oauth_invalid_redirect");
     }
 
-    // Steps 5–10 land in T8/T9. Return a placeholder for now.
-    // Note: keeps `cfg`, `pool`, `pkce_verifier`, `provider_name` in scope for T8 reuse.
-    let _ = (&cfg, &pool, &pkce_verifier, &provider_name, &q.code, &state);
-    redirect_with_fragment_error(&frontend_uri, "oauth_provider_error_TODO_T8", &tid)
+    // Step 5: exchange code+verifier with the provider.
+    let public_url = std::env::var("DRUST_PUBLIC_URL").unwrap_or_default();
+    let drust_callback =
+        format!("{public_url}/drust/t/{tid}/oauth/{provider_name}/callback");
+    let adapter = match build_adapter(&cfg) {
+        Some(a) => a,
+        None => return plain_text(StatusCode::BAD_REQUEST, "oauth_misconfigured"),
+    };
+    let user = match adapter.exchange(&q.code, &pkce_verifier, &drust_callback).await {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!(
+                tenant = %tid,
+                provider = %provider_name,
+                error = %e,
+                "oauth exchange failed"
+            );
+            return redirect_with_fragment_error(&frontend_uri, "oauth_provider_error", &tid);
+        }
+    };
+
+    // Step 6: email_verified.
+    if !user.email_verified {
+        return redirect_with_fragment_error(&frontend_uri, "oauth_email_unverified", &tid);
+    }
+
+    // Step 7: find or auto-create _system_users.
+    let allow_self_register = match allow_self_register_for_tenant(&state, &tid).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(
+                tenant = %tid,
+                error = %e,
+                "allow_self_register read failed"
+            );
+            return redirect_with_fragment_error(&frontend_uri, "oauth_session_error", &tid);
+        }
+    };
+    let email_for_lookup = user.email.clone();
+    let name_for_lookup = user.name.clone();
+    let user_id_res = pool
+        .with_writer(move |c| {
+            find_or_create_user(
+                c,
+                &email_for_lookup,
+                name_for_lookup.as_deref(),
+                allow_self_register,
+            )
+        })
+        .await;
+    let user_id = match user_id_res {
+        Ok(Some(uid)) => uid,
+        Ok(None) => {
+            return redirect_with_fragment_error(&frontend_uri, "oauth_not_allowed", &tid);
+        }
+        Err(e) => {
+            tracing::error!(
+                tenant = %tid,
+                error = %e,
+                "user lookup/insert failed"
+            );
+            return redirect_with_fragment_error(&frontend_uri, "oauth_session_error", &tid);
+        }
+    };
+
+    // Step 8: session create (reuse the v1.9 user-session helper).
+    let user_id_for_session = user_id.clone();
+    let token_res = pool
+        .with_writer(move |c| {
+            crate::auth::user_session::create_session(c, &user_id_for_session, None, 30)
+        })
+        .await;
+    let token = match token_res {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(
+                tenant = %tid,
+                user_id = %user_id,
+                error = %e,
+                "session insert failed"
+            );
+            return redirect_with_fragment_error(&frontend_uri, "oauth_session_error", &tid);
+        }
+    };
+
+    // Steps 9 (audit) + 10 (success redirect) in T9. Placeholder for now:
+    let _ = (token, &user.email);
+    redirect_with_fragment_error(&frontend_uri, "oauth_session_error_TODO_T9", &tid)
 }
 
 #[cfg(test)]
