@@ -76,6 +76,37 @@ fn write_audit_fixture(log_dir: &std::path::Path) {
     .unwrap();
 }
 
+/// Write a fixture that includes typed OAuth fields + extra map keys,
+/// and an admin-plane row with tenant="-".
+fn write_oauth_audit_fixture(log_dir: &std::path::Path) {
+    let now = chrono::Utc::now();
+    let ts1 = now - chrono::Duration::seconds(180);
+    let ts2 = now - chrono::Duration::seconds(90);
+    let ts3 = now - chrono::Duration::seconds(30);
+    let day = now.format("%Y-%m-%d");
+    // Tenant OAuth success row: has auth_method, oauth_email, auth_kind, auth_user_id.
+    let line_oauth_ok = format!(
+        r#"{{"ts":"{ts1}","tenant":"acme","token_hint":"hashTOK1","op":"oauth_callback","status":"ok","duration_ms":55,"auth_method":"oauth_google","oauth_email":"user@example.com","auth_kind":"user","auth_user_id":"u-abc-123"}}"#,
+        ts1 = ts1.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
+    );
+    // Tenant OAuth failure row: has oauth_error_code.
+    let line_oauth_err = format!(
+        r#"{{"ts":"{ts2}","tenant":"acme","token_hint":"hashTOK2","op":"oauth_callback","status":"error","duration_ms":10,"auth_method":"oauth_github","oauth_email":"bad@example.com","oauth_error_code":"oauth_state_mismatch"}}"#,
+        ts2 = ts2.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
+    );
+    // Admin-plane row: tenant="-", auth_method set (admin OAuth login).
+    let line_admin = format!(
+        r#"{{"ts":"{ts3}","tenant":"-","token_hint":"-","op":"admin_oauth_callback","status":"ok","duration_ms":33,"auth_method":"oauth_google","oauth_email":"admin@example.com"}}"#,
+        ts3 = ts3.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
+    );
+    std::fs::create_dir_all(log_dir).unwrap();
+    std::fs::write(
+        log_dir.join(format!("audit-{day}.jsonl")),
+        format!("{line_oauth_ok}\n{line_oauth_err}\n{line_admin}\n"),
+    )
+    .unwrap();
+}
+
 async fn login_session_cookie(app: &axum::Router) -> String {
     let form = format!("username={ADMIN}&password={PWD}");
     let resp = app
@@ -256,4 +287,70 @@ async fn host_audit_overview_contains_top_tenants_with_data() {
     // Both fixture tenants present in Top tenants table.
     assert!(body.contains("acme"));
     assert!(body.contains("beta"));
+}
+
+#[tokio::test]
+async fn browse_renders_typed_oauth_fields_and_extra_map() {
+    let log_dir = tempdir().unwrap();
+    write_oauth_audit_fixture(log_dir.path());
+    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let cookie = login_session_cookie(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/audit?tab=browse")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+
+    // Typed OAuth fields must appear in the rendered details block.
+    assert!(body.contains("auth_method"), "auth_method label must render");
+    assert!(body.contains("oauth_google"), "oauth_google value must render");
+    assert!(body.contains("oauth_email"), "oauth_email label must render");
+    assert!(body.contains("user@example.com"), "oauth_email value must render");
+    assert!(body.contains("oauth_error_code"), "oauth_error_code label must render");
+    assert!(body.contains("oauth_state_mismatch"), "oauth_error_code value must render");
+
+    // Extra map keys (auth_kind, auth_user_id) must appear in the extra JSON block.
+    assert!(body.contains("auth_kind"), "extra map key auth_kind must render");
+    assert!(body.contains("u-abc-123"), "extra map value auth_user_id must render");
+}
+
+#[tokio::test]
+async fn browse_admin_plane_row_shows_admin_text_not_broken_link() {
+    let log_dir = tempdir().unwrap();
+    write_oauth_audit_fixture(log_dir.path());
+    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let cookie = login_session_cookie(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/audit?tab=browse")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+
+    // Admin-plane rows (tenant="-") must render as the "admin" label, not a broken link.
+    assert!(
+        body.contains(r#"class="muted">admin</span>"#),
+        "admin sentinel must render as <span class=\"muted\">admin</span>"
+    );
+    assert!(
+        !body.contains("/drust/admin/tenants/-/_logs"),
+        "broken link to /tenants/-/_logs must not appear"
+    );
 }

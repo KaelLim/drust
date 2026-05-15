@@ -58,7 +58,7 @@
     <tbody>
       {% for t in ov.top_tenants %}
       <tr>
-        <td><a class="cell-link" href="/drust/admin/tenants/{{ t.tenant }}/_logs" title="drill into this tenant's audit">{{ t.tenant }}</a></td>
+        <td>{% if t.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ t.tenant }}/_logs" title="drill into this tenant's audit">{{ t.tenant }}</a>{% endif %}</td>
         <td class="num">{{ t.count }}</td>
         <td class="num">{{ "{:.1}"|format(t.error_pct) }}%</td>
       </tr>
@@ -83,7 +83,7 @@
       {% for e in ov.top_slow_ops %}
       <tr>
         <td>{{ e.ts }}</td>
-        {% if is_host_scope %}<td><a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs">{{ e.tenant }}</a></td>{% endif %}
+        {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs">{{ e.tenant }}</a>{% endif %}</td>{% endif %}
         <td>{{ e.op }}</td>
         <td class="num">{{ e.duration_ms }}</td>
       </tr>
@@ -132,7 +132,7 @@
       {% for e in entries %}
       <tr>
         <td>{{ e.ts }}</td>
-        {% if is_host_scope %}<td><a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs" title="drill into this tenant's audit">{{ e.tenant }}</a></td>{% endif %}
+        {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs" title="drill into this tenant's audit">{{ e.tenant }}</a>{% endif %}</td>{% endif %}
         <td>{{ e.op }}</td>
         <td>{% if e.status == "error" %}<b style="color:var(--warn);">ERROR</b>{% else %}{{ e.status }}{% endif %}</td>
         <td class="num">{{ e.duration_ms }}</td>
@@ -143,7 +143,7 @@
           <summary class="muted" style="cursor:pointer;font-size:12px;">details</summary>
           <dl class="audit-detail">
             <dt>timestamp</dt><dd>{{ e.ts }}</dd>
-            <dt>tenant</dt><dd>{{ e.tenant }}</dd>
+            <dt>tenant</dt><dd>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}{{ e.tenant }}{% endif %}</dd>
             <dt>token_hint</dt><dd>{{ e.token_hint }}</dd>
             <dt>operation</dt><dd>{{ e.op }}</dd>
             <dt>status</dt><dd>{% if e.status == "error" %}<b style="color:var(--warn);">{{ e.status }}</b>{% else %}{{ e.status }}{% endif %}</dd>
@@ -153,6 +153,10 @@
             {% if let Some(id) = e.record_id %}<dt>record_id</dt><dd>{{ id }}</dd>{% endif %}
             {% if let Some(c) = e.error_code %}<dt>error_code</dt><dd><b style="color:var(--warn);">{{ c }}</b></dd>{% endif %}
             {% if let Some(m) = e.error_message %}<dt>error_message</dt><dd><pre class="audit-err">{{ m }}</pre></dd>{% endif %}
+            {% if let Some(m) = e.auth_method %}<dt>auth_method</dt><dd>{{ m }}</dd>{% endif %}
+            {% if let Some(em) = e.oauth_email %}<dt>oauth_email</dt><dd>{{ em }}</dd>{% endif %}
+            {% if let Some(ec) = e.oauth_error_code %}<dt>oauth_error_code</dt><dd><b style="color:var(--warn);">{{ ec }}</b></dd>{% endif %}
+            {% if let Some(xj) = e.extra_as_json() %}<dt>extra</dt><dd><pre class="audit-err">{{ xj }}</pre></dd>{% endif %}
           </dl>
         </details>
       </td></tr>
