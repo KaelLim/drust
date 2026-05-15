@@ -237,6 +237,17 @@ fn bootstrap_meta_with_email(data_dir: &std::path::Path, email: &str) -> rusqlit
     open_meta(&meta_path).unwrap()
 }
 
+/// Variant of `bootstrap_meta_with_email` that leaves `admins.email` NULL.
+/// Used to drive the `oauth_admin_email_missing` rejection path: the
+/// upstream email is in the allowlist (step 6 passes) but
+/// `find_admin_id_by_email` returns `None` (step 7 fails).
+fn bootstrap_meta_without_email(data_dir: &std::path::Path) -> rusqlite::Connection {
+    let meta_path = data_dir.join("meta.sqlite");
+    let mut conn = open_meta(&meta_path).unwrap();
+    bootstrap_admin(&mut conn, "kael", "pass").unwrap();
+    conn
+}
+
 /// Spin up a mgmt router whose `oauth_registry` contains a `google`
 /// provider pointed at `fake.base_url`. Returns the router, the data
 /// tempdir (kept alive so SQLite files survive), and the audit log dir.
@@ -252,6 +263,34 @@ pub async fn spin_up_admin_with_google_fake(
     let log_dir = data_dir.join("audit");
     std::fs::create_dir_all(&log_dir).unwrap();
     let conn = bootstrap_meta_with_email(&data_dir, "kael@example.com");
+
+    let google = GoogleAdapter::new(
+        "test-client-id".to_string(),
+        "test-client-secret".to_string(),
+        format!("{}/authorize", fake.base_url),
+        format!("{}/token", fake.base_url),
+    );
+    let mut providers: HashMap<&'static str, Arc<dyn OauthProvider>> = HashMap::new();
+    providers.insert("google", Arc::new(google));
+    let registry = ProviderRegistry::from_providers(providers);
+
+    let allow: HashSet<String> = ["kael@example.com".to_string()].into_iter().collect();
+    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry, allow);
+    (state.with_data_dir(data_dir), dir, log_dir)
+}
+
+/// Variant of `spin_up_admin_with_google_fake` whose admin row has NO email
+/// column populated. The allowlist still contains `kael@example.com` so the
+/// callback gets past step 6 (allowlist check) before step 7 fails on
+/// `find_admin_id_by_email`.
+pub async fn spin_up_admin_with_google_fake_no_email(
+    fake: &Arc<FakeProvider>,
+) -> (axum::Router, TempDir, std::path::PathBuf) {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let log_dir = data_dir.join("audit");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let conn = bootstrap_meta_without_email(&data_dir);
 
     let google = GoogleAdapter::new(
         "test-client-id".to_string(),
@@ -534,6 +573,88 @@ async fn oauth_email_unverified_rejected() {
         .await
         .unwrap();
     assert_redirect_contains(&resp, "oauth_error=oauth_email_unverified");
+}
+
+// ---------- T22: not allowed + admin email missing ----------
+
+#[tokio::test]
+async fn oauth_not_in_allowlist_rejected() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "attacker@evil.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-2".into(),
+    };
+    // `spin_up_admin_with_google_fake` sets allowlist = {"kael@example.com"},
+    // so "attacker@evil.com" is NOT allowed → step 6 fails.
+    let (app, _dir, _log) = spin_up_admin_with_google_fake(&fake).await;
+
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/google/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state = extract_set_cookie(&start_resp, "drust_oauth_state").expect("state cookie set");
+    let pkce = extract_set_cookie(&start_resp, "drust_oauth_pkce").expect("pkce cookie set");
+
+    let cookie_hdr = format!("drust_oauth_state={state}; drust_oauth_pkce={pkce}");
+    let url = format!("/admin/oauth/google/callback?code=C&state={state}");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&url)
+                .header(header::COOKIE, cookie_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_redirect_contains(&resp, "oauth_error=oauth_not_allowed");
+}
+
+#[tokio::test]
+async fn oauth_admin_email_missing_rejected() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "kael@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-1".into(),
+    };
+    // Email IS in allowlist (step 6 passes) but no admin row matches —
+    // admin row was created without an email column value.
+    let (app, _dir, _log) = spin_up_admin_with_google_fake_no_email(&fake).await;
+
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/google/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state = extract_set_cookie(&start_resp, "drust_oauth_state").expect("state cookie set");
+    let pkce = extract_set_cookie(&start_resp, "drust_oauth_pkce").expect("pkce cookie set");
+
+    let cookie_hdr = format!("drust_oauth_state={state}; drust_oauth_pkce={pkce}");
+    let url = format!("/admin/oauth/google/callback?code=C&state={state}");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&url)
+                .header(header::COOKIE, cookie_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_redirect_contains(&resp, "oauth_error=oauth_admin_email_missing");
 }
 
 // ---------- T18: happy path github ----------
