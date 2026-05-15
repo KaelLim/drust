@@ -17,7 +17,7 @@ use crate::mcp::http_registry::McpHttpRegistry;
 use crate::mgmt::tenant_files::TenantFilesState;
 use axum::Router;
 use axum::http::{HeaderValue, Method, header};
-use axum::routing::{any, delete, get, post};
+use axum::routing::{any, delete, get, post, put};
 use auth_routes::{
     login_handler, logout_all_handler, logout_handler, me_get_handler, me_patch_handler,
     me_password_handler, register_handler,
@@ -249,6 +249,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .route(
             "/t/{tenant}/admin/oauth-providers",
             get(oauth_admin_routes::list_oauth_providers_handler),
+        )
+        .route(
+            "/t/{tenant}/admin/oauth-providers/{provider}",
+            put(oauth_admin_routes::put_oauth_provider_handler),
         )
         .route(
             "/t/{tenant}/mcp",
