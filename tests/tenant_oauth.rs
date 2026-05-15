@@ -592,6 +592,172 @@ async fn tenant_oauth_toctou_invalid_redirect_at_callback() {
     );
 }
 
+// ---------- T24: user-row negatives ----------
+
+fn open_tenant_db(dir: &TempDir, tid: &str) -> rusqlite::Connection {
+    drust::storage::tenant_db::open_write(dir.path(), tid).unwrap()
+}
+
+#[tokio::test]
+async fn tenant_oauth_not_allowed_when_self_register_off() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "newcomer@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-x".into(),
+    };
+    // allow_self_register=false, no pre-existing user → step 7 returns None.
+    let (app, dir, tid, _service, _log) = spin_up_tenant_with_google_fake_opts(
+        &fake,
+        false,
+        &["https://app.example.com/auth/callback"],
+    )
+    .await;
+    let frontend = "https://app.example.com/auth/callback";
+    let resp = drive_callback(&app, &tid, "google", frontend).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(loc.starts_with(frontend), "loc={loc}");
+    assert!(loc.contains("#error=oauth_not_allowed"), "loc={loc}");
+
+    // No user row should have been inserted.
+    let tconn = open_tenant_db(&dir, &tid);
+    let count: i64 = tconn
+        .query_row("SELECT COUNT(*) FROM _system_users", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0, "no user should be created when self_register=off");
+}
+
+#[tokio::test]
+async fn tenant_oauth_auto_create_when_self_register_on() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "newcomer@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-y".into(),
+    };
+    let (app, dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+    let frontend = "https://app.example.com/auth/callback";
+    let resp = drive_callback(&app, &tid, "google", frontend).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(loc.starts_with(frontend), "loc={loc}");
+    assert!(loc.contains("#access_token=drust_user_"), "loc={loc}");
+
+    // The user row exists with sentinel hash + verified=1 + profile JSON.
+    let tconn = open_tenant_db(&dir, &tid);
+    let (email, phc, verified, profile): (String, String, i64, Option<String>) = tconn
+        .query_row(
+            "SELECT email, password_hash, verified, profile FROM _system_users \
+             WHERE email = ?1 COLLATE NOCASE",
+            ["newcomer@example.com"],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(email, "newcomer@example.com");
+    assert_eq!(phc, "$oauth-only$");
+    assert_eq!(verified, 1);
+    let profile_json: serde_json::Value = serde_json::from_str(&profile.unwrap()).unwrap();
+    assert_eq!(profile_json["name"], "Kael");
+}
+
+#[tokio::test]
+async fn tenant_oauth_auto_links_existing_email() {
+    // Pre-seed a non-OAuth user with a real argon2id hash. After OAuth
+    // login the SAME row should be reused — password_hash unchanged so a
+    // password login keeps working.
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "alice@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-link".into(),
+    };
+    let (app, dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let original_hash = drust::auth::user::hash_password("secret").unwrap();
+    {
+        let tconn = open_tenant_db(&dir, &tid);
+        tconn
+            .execute(
+                "INSERT INTO _system_users \
+                   (id, email, password_hash, verified, profile, created_at, updated_at) \
+                 VALUES ('pre-existing-uid', ?1, ?2, 1, '{\"name\":\"alice-original\"}', \
+                         datetime('now'), datetime('now'))",
+                rusqlite::params!["alice@example.com", original_hash],
+            )
+            .unwrap();
+    }
+
+    let frontend = "https://app.example.com/auth/callback";
+    let resp = drive_callback(&app, &tid, "google", frontend).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(loc.contains("#access_token=drust_user_"), "loc={loc}");
+
+    // Row count stayed at one, password_hash unchanged, profile untouched.
+    let tconn = open_tenant_db(&dir, &tid);
+    let (n, phc, profile): (i64, String, String) = tconn
+        .query_row(
+            "SELECT COUNT(*), MAX(password_hash), MAX(profile) FROM _system_users",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "auto-link must not create a second row");
+    assert_eq!(phc, original_hash, "password_hash must NOT be overwritten");
+    assert!(
+        drust::auth::user::verify_password("secret", &phc).unwrap_or(false),
+        "argon2 verify must still succeed for the original password"
+    );
+    let profile_json: serde_json::Value = serde_json::from_str(&profile).unwrap();
+    assert_eq!(
+        profile_json["name"], "alice-original",
+        "profile JSON must be untouched on auto-link"
+    );
+}
+
+#[tokio::test]
+async fn tenant_oauth_only_user_password_login_rejected() {
+    // After auto-create with the sentinel hash, POST /auth/login with any
+    // password must return 401 INVALID_CREDENTIALS — NOT a 500 (argon2
+    // would panic on the non-PHC `$oauth-only$` string if not gated).
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "oauthonly@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-only".into(),
+    };
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    // 1. Drive OAuth to auto-create the user row with sentinel hash.
+    let frontend = "https://app.example.com/auth/callback";
+    let cb_resp = drive_callback(&app, &tid, "google", frontend).await;
+    assert_eq!(cb_resp.status(), StatusCode::FOUND);
+
+    // 2. POST /auth/login with email + arbitrary password.
+    let body = serde_json::json!({
+        "email": "oauthonly@example.com",
+        "password": "anything",
+    });
+    let login_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/auth/login"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login_resp.status(), StatusCode::UNAUTHORIZED, "must be 401");
+    let body = axum::body::to_bytes(login_resp.into_body(), 1024)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "INVALID_CREDENTIALS");
+}
+
 // ---------- existing T21 smoke ----------
 
 #[tokio::test]
