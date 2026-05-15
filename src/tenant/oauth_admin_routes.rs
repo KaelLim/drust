@@ -47,7 +47,6 @@ fn get_tid(params: &HashMap<String, String>) -> Result<String, Response> {
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
 }
 
-#[allow(dead_code)] // Used by PUT/DELETE handlers added in T12/T13.
 fn get_provider(params: &HashMap<String, String>) -> Result<String, Response> {
     params
         .get("provider")
@@ -107,9 +106,8 @@ pub async fn list_oauth_providers_handler(
     (StatusCode::OK, Json(json!({ "providers": resp }))).into_response()
 }
 
-// ─── request bodies (re-used by PUT in T12) ──────────────────────────────────
+// ─── request bodies ──────────────────────────────────────────────────────────
 
-#[allow(dead_code)] // Used by PUT handler added in T12.
 #[derive(Deserialize)]
 pub struct UpsertBody {
     pub client_id: String,
@@ -117,10 +115,75 @@ pub struct UpsertBody {
     pub allowed_redirect_uris: Vec<String>,
 }
 
-#[allow(dead_code)] // Used by PUT/DELETE handlers added in T12/T13.
 fn oauth_err_status(e: &OauthConfigError) -> StatusCode {
     match e {
         OauthConfigError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
+    }
+}
+
+pub async fn put_oauth_provider_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Json(body): Json<UpsertBody>,
+) -> Response {
+    if let Some(r) = require_service_ctx(&ctx) {
+        return r;
+    }
+    let tid = match get_tid(&params) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let provider = match get_provider(&params) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    // Validate up front so we return 400 INVALID_OAUTH_CONFIG without ever
+    // touching the writer mutex.
+    if let Err(e) = oauth_config::validate_upsert(
+        &provider,
+        &body.client_id,
+        &body.client_secret,
+        &body.allowed_redirect_uris,
+    ) {
+        return (
+            oauth_err_status(&e),
+            Json(json!({
+                "error_code": "INVALID_OAUTH_CONFIG",
+                "message": e.to_string(),
+            })),
+        )
+            .into_response();
+    }
+    let pool = match state.registry.get_or_open(&tid) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let provider2 = provider.clone();
+    let client_id = body.client_id;
+    let client_secret = body.client_secret;
+    let uris = body.allowed_redirect_uris;
+    let res = pool
+        .with_writer(move |c| {
+            oauth_config::upsert(c, &provider2, &client_id, &client_secret, &uris)
+                .map_err(|e| match e {
+                    OauthConfigError::Db(re) => re,
+                    // Validation already ran above; treat any residual
+                    // validation miss as a generic Rusqlite error so the
+                    // outer handler can map to 500. (We do not expect to
+                    // hit this branch — validate_upsert is called twice
+                    // intentionally for defence-in-depth.)
+                    _ => rusqlite::Error::InvalidParameterName(e.to_string()),
+                })
+        })
+        .await;
+    match res {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "provider": provider })),
+        )
+            .into_response(),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     }
 }
