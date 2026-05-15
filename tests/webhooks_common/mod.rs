@@ -31,7 +31,13 @@ struct State_ {
 pub struct FakeHook {
     base_url: String,
     state:    Arc<Mutex<State_>>,
-    _handle:  tokio::task::JoinHandle<()>,
+    handle:   tokio::task::JoinHandle<()>,
+}
+
+impl Drop for FakeHook {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
 }
 
 impl FakeHook {
@@ -57,7 +63,7 @@ impl FakeHook {
         Self {
             base_url: format!("http://{}/hook", addr),
             state,
-            _handle: handle,
+            handle,
         }
     }
 
