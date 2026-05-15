@@ -9,8 +9,9 @@
 
 use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::{
-    exploration, files as file_tools, owner_field as owner_field_tools, read,
-    schema as schema_tools, user as user_tools, vector as vector_tools, write as write_tools,
+    exploration, files as file_tools, oauth as oauth_tools,
+    owner_field as owner_field_tools, read, schema as schema_tools, user as user_tools,
+    vector as vector_tools, write as write_tools,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -973,6 +974,25 @@ impl DrustMcpService {
         };
         let tenant_id = self.state.tenant_id().to_string();
         match owner_field_tools::set_self_register(&meta, &tenant_id, enabled).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    // ── v1.12: Per-tenant OAuth-provider admin tools ──────────────────────
+
+    #[tool(description = "List the OAuth providers configured for this tenant's \
+        end-user login flow (the `_system_oauth_providers` table). \
+        Returns {providers: [{provider, client_id, client_secret, \
+        allowed_redirect_uris, created_at, updated_at}]}. \
+        `client_secret` is always returned as the literal '●●●●' — real \
+        secrets never leave the writer. Service-key-only; anon callers \
+        cannot reach MCP.")]
+    async fn list_oauth_providers(
+        &self,
+        Parameters(_): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match oauth_tools::list_oauth_providers(&self.state.inner().pool).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
