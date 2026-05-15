@@ -84,14 +84,14 @@ fn extract_cookie<B>(req: &Request<B>, name: &str) -> Option<String> {
 
 pub fn build_session_cookie(token: &str, ttl_secs: u64) -> String {
     format!(
-        "{}={}; Path=/drust; HttpOnly; Secure; SameSite=Strict; Max-Age={}",
+        "{}={}; Path=/drust; HttpOnly; Secure; SameSite=Lax; Max-Age={}",
         SESSION_COOKIE, token, ttl_secs
     )
 }
 
 pub fn clear_session_cookie() -> String {
     format!(
-        "{}=; Path=/drust; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
+        "{}=; Path=/drust; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
         SESSION_COOKIE
     )
 }
@@ -121,5 +121,20 @@ mod ctx_tests {
             AuthCtx::User { user_id: "u-42".into(), token_hash: "h".into() }.user_id(),
             Some("u-42"),
         );
+    }
+
+    /// Admin session cookie MUST be SameSite=Lax, not Strict — Strict
+    /// breaks the OAuth callback redirect chain (Google → drust → drust
+    /// is treated as cross-site-initiated, so Strict cookies set on the
+    /// callback aren't sent on the followup GET to /drust/admin/tenants
+    /// and the user bounces back to /drust/login despite the session
+    /// being created in the DB.
+    #[test]
+    fn session_cookie_is_samesite_lax() {
+        let set = build_session_cookie("tok", 60);
+        assert!(set.contains("SameSite=Lax"), "got: {set}");
+        assert!(!set.contains("SameSite=Strict"), "got: {set}");
+        let clear = clear_session_cookie();
+        assert!(clear.contains("SameSite=Lax"), "got: {clear}");
     }
 }
