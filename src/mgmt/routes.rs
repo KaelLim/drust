@@ -206,7 +206,8 @@ impl MgmtState {
         use crate::mgmt::tenants::{
             TenantsState, create_tenant_form, create_tenant_json, list_page_axum,
             soft_delete_tenant, soft_delete_tenant_form, tenant_files_admin_page,
-            toggle_self_register,
+            tenant_oauth_provider_delete, tenant_oauth_provider_upsert,
+            tenant_oauth_providers_page, toggle_self_register,
         };
         use axum::extract::DefaultBodyLimit;
 
@@ -382,6 +383,17 @@ impl MgmtState {
             .route(
                 "/admin/tenants/{id}/allow-self-register",
                 post(toggle_self_register),
+            )
+            // v1.12 per-tenant OAuth admin UI — virtual sidebar entry
+            // `🔐 _oauth_providers`. GET renders the page; POST upserts a
+            // provider (form-encoded); `<provider>/delete` removes one.
+            .route(
+                "/admin/tenants/{id}/_oauth_providers",
+                get(tenant_oauth_providers_page).post(tenant_oauth_provider_upsert),
+            )
+            .route(
+                "/admin/tenants/{id}/_oauth_providers/{provider}/delete",
+                post(tenant_oauth_provider_delete),
             )
             .with_state(tenants_state);
 
