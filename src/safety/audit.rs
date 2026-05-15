@@ -116,6 +116,19 @@ impl AuditEntry {
         }
         self
     }
+
+    /// Serialise the `extra` flatten map to a compact JSON string for display
+    /// in the audit UI. Returns `None` when the map is empty so templates can
+    /// skip the block entirely.
+    pub fn extra_as_json(&self) -> Option<String> {
+        if self.extra.is_empty() {
+            return None;
+        }
+        // Use a BTreeMap round-trip to get deterministic key ordering.
+        let ordered: std::collections::BTreeMap<&str, &serde_json::Value> =
+            self.extra.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        serde_json::to_string(&ordered).ok()
+    }
 }
 
 /// Spec S6: path whitelist gating future body logging. Auth bodies must never be persisted.
