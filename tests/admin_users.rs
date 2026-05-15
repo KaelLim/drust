@@ -575,10 +575,12 @@ async fn mcp_set_self_register_tool() {
 
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    let webhooks = drust::tenant::WebhookDispatcher::new(data.clone());
     let meta_arc = Arc::new(Mutex::new(conn));
     let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
         tenants.clone(),
         bus.clone(),
+        webhooks.clone(),
         None,
         String::new(),
         Arc::new([0u8; 32]),
@@ -603,6 +605,7 @@ async fn mcp_set_self_register_tool() {
         bus: bus.clone(),
         mcp: Arc::new(McpHttpRegistry::new(mcp_reg)),
         files: None,
+        webhooks,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

@@ -55,6 +55,7 @@ async fn tenant_with_two_tokens(tenant: &str) -> (axum::Router, String, String, 
 
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    let webhooks = drust::tenant::WebhookDispatcher::new(data.clone());
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: tenants.clone(),
@@ -72,6 +73,7 @@ async fn tenant_with_two_tokens(tenant: &str) -> (axum::Router, String, String, 
         bus: bus.clone(),
         mcp: test_mcp_http(tenants, bus),
         files: None,
+        webhooks,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

@@ -36,6 +36,7 @@ pub struct TenantStack {
     pub bus: EventBus,
     pub mcp: Arc<McpHttpRegistry>,
     pub files: Option<TenantFilesState>,
+    pub webhooks: Arc<WebhookDispatcher>,
     /// Allow-list for cross-origin browser fetch on tenant routes (parsed
     /// from `DRUST_CORS_ORIGINS`). Empty Vec ⇒ no CORS layer, browsers
     /// keep blocking — same as before this feature shipped.
@@ -163,6 +164,7 @@ mod cors_tests {
 pub fn build_tenant_router(state: TenantStack) -> Router {
     let auth_state = state.auth.clone();
     let bus = state.bus.clone();
+    let webhooks = state.webhooks.clone();
     let mcp = state.mcp.clone();
     let cors = build_cors_layer(&state.cors_origins);
 
@@ -193,7 +195,8 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             "/t/{tenant}/records/{coll}",
             get(records::list_handler).post({
                 let b = bus.clone();
-                move |ext, ctx, p, body| records::create_handler(ext, ctx, p, body, b.clone())
+                let wh = webhooks.clone();
+                move |ext, ctx, p, body| records::create_handler(ext, ctx, p, body, b.clone(), wh.clone())
             }),
         )
         .route(
@@ -201,11 +204,13 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             get(records::get_handler)
                 .patch({
                     let b = bus.clone();
-                    move |ext, ctx, p, body| records::update_handler(ext, ctx, p, body, b.clone())
+                    let wh = webhooks.clone();
+                    move |ext, ctx, p, body| records::update_handler(ext, ctx, p, body, b.clone(), wh.clone())
                 })
                 .delete({
                     let b = bus.clone();
-                    move |ext, ctx, p| records::delete_handler(ext, ctx, p, b.clone())
+                    let wh = webhooks.clone();
+                    move |ext, ctx, p| records::delete_handler(ext, ctx, p, b.clone(), wh.clone())
                 }),
         )
         .route(

@@ -112,6 +112,7 @@ fn build_tenant_state(
 fn build_router(state: TenantAuthState) -> Router {
     let registry = state.registry.clone();
     let bus = EventBus::new();
+    let webhooks = drust::tenant::WebhookDispatcher::new(registry.data_root().to_path_buf());
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(registry),
     )));
@@ -120,6 +121,7 @@ fn build_router(state: TenantAuthState) -> Router {
         bus,
         mcp,
         files: None,
+        webhooks,
         cors_origins: Vec::new(),
     })
 }

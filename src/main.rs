@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.tenant_read_pool_size,
     ));
     let bus = EventBus::new();
+    let webhooks = drust::tenant::WebhookDispatcher::new(cfg.data_dir.clone());
 
     let garage = match &cfg.storage {
         Some(sc) => match drust::storage::garage::GarageClient::new(sc) {
@@ -109,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
     let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
         tenants.clone(),
         bus.clone(),
+        webhooks.clone(),
         garage.clone(),
         cfg.public_base_url.clone(),
         url_sign_secret.clone(),
@@ -195,6 +197,7 @@ async fn main() -> anyhow::Result<()> {
         bus: bus.clone(),
         mcp: mcp_http,
         files: tenant_files_state,
+        webhooks: webhooks.clone(),
         cors_origins: cfg.cors_origins.clone(),
     };
     let tenant_router = build_tenant_router(tenant_stack);

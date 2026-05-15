@@ -8,6 +8,8 @@ use crate::storage::schema::{
 };
 use crate::tenant::events::{Event, EventBus};
 use crate::tenant::router::TenantRef;
+use crate::tenant::WebhookDispatcher;
+use std::sync::Arc;
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -403,6 +405,7 @@ pub async fn create_handler(
     Path((_tenant, coll)): Path<(String, String)>,
     Json(body): Json<DataBody>,
     bus: EventBus,
+    webhooks: Arc<WebhookDispatcher>,
 ) -> Response {
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Insert).await {
         Ok(s) => s,
@@ -576,13 +579,9 @@ pub async fn create_handler(
         .await;
     match res {
         Ok((id, rec)) => {
-            bus.publish(
-                &tenant_id,
-                &coll,
-                Event::Created {
-                    record: rec.clone(),
-                },
-            );
+            let ev = Event::Created { record: rec.clone() };
+            bus.publish(&tenant_id, &coll, ev.clone());
+            webhooks.dispatch(&tenant_id, &coll, ev);
             let mut r = Json(json!({ "id": id, "record": rec })).into_response();
             *r.status_mut() = StatusCode::CREATED;
             r
@@ -608,6 +607,7 @@ pub async fn update_handler(
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
     Json(body): Json<DataBody>,
     bus: EventBus,
+    webhooks: Arc<WebhookDispatcher>,
 ) -> Response {
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Update).await {
         Ok(s) => s,
@@ -747,13 +747,9 @@ pub async fn update_handler(
         .await;
     match res {
         Ok(rec) => {
-            bus.publish(
-                &tenant_id,
-                &coll,
-                Event::Updated {
-                    record: rec.clone(),
-                },
-            );
+            let ev = Event::Updated { record: rec.clone() };
+            bus.publish(&tenant_id, &coll, ev.clone());
+            webhooks.dispatch(&tenant_id, &coll, ev);
             Json(json!({ "record": rec })).into_response()
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -775,6 +771,7 @@ pub async fn delete_handler(
     Extension(ctx): Extension<AuthCtx>,
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
     bus: EventBus,
+    webhooks: Arc<WebhookDispatcher>,
 ) -> Response {
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Delete).await {
         Ok(s) => s,
@@ -806,7 +803,9 @@ pub async fn delete_handler(
     match res {
         Ok(0) => (StatusCode::NOT_FOUND, "no such record").into_response(),
         Ok(_) => {
-            bus.publish(&tenant_id, &coll, Event::Deleted { id });
+            let ev = Event::Deleted { id };
+            bus.publish(&tenant_id, &coll, ev.clone());
+            webhooks.dispatch(&tenant_id, &coll, ev);
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),

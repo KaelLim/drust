@@ -1,6 +1,7 @@
 use crate::storage::garage::GarageClient;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
 use crate::tenant::events::EventBus;
+use crate::tenant::WebhookDispatcher;
 use dashmap::DashMap;
 use rusqlite::Connection;
 use std::sync::Arc;
@@ -20,6 +21,7 @@ pub struct DrustMcpInner {
     pub tenant_id: String,
     pub pool: SharedTenantPool,
     pub bus: EventBus,
+    pub webhooks: Arc<WebhookDispatcher>,
     pub garage: Option<Arc<GarageClient>>,
     pub public_base_url: String,
     pub url_sign_secret: Arc<[u8; 32]>,
@@ -42,6 +44,7 @@ impl DrustMcp {
         tenant_id: &str,
         pool: SharedTenantPool,
         bus: EventBus,
+        webhooks: Arc<WebhookDispatcher>,
         garage: Option<Arc<GarageClient>>,
         public_base_url: String,
         url_sign_secret: Arc<[u8; 32]>,
@@ -54,6 +57,7 @@ impl DrustMcp {
                 tenant_id: tenant_id.to_string(),
                 pool,
                 bus,
+                webhooks,
                 garage,
                 public_base_url,
                 url_sign_secret,
@@ -96,6 +100,7 @@ impl DrustMcp {
 pub struct McpRegistry {
     tenants: Arc<TenantRegistry>,
     bus: EventBus,
+    webhooks: Arc<WebhookDispatcher>,
     garage: Option<Arc<GarageClient>>,
     public_base_url: String,
     url_sign_secret: Arc<[u8; 32]>,
@@ -109,9 +114,11 @@ pub struct McpRegistry {
 
 impl McpRegistry {
     pub fn new(tenants: Arc<TenantRegistry>) -> Self {
+        let data_root = tenants.data_root().to_path_buf();
         Self {
             tenants,
             bus: EventBus::new(),
+            webhooks: WebhookDispatcher::new(data_root),
             garage: None,
             public_base_url: String::new(),
             url_sign_secret: Arc::new([0u8; 32]),
@@ -122,9 +129,11 @@ impl McpRegistry {
         }
     }
     pub fn with_bus(tenants: Arc<TenantRegistry>, bus: EventBus) -> Self {
+        let data_root = tenants.data_root().to_path_buf();
         Self {
             tenants,
             bus,
+            webhooks: WebhookDispatcher::new(data_root),
             garage: None,
             public_base_url: String::new(),
             url_sign_secret: Arc::new([0u8; 32]),
@@ -137,6 +146,7 @@ impl McpRegistry {
     pub fn with_bus_and_storage(
         tenants: Arc<TenantRegistry>,
         bus: EventBus,
+        webhooks: Arc<WebhookDispatcher>,
         garage: Option<Arc<GarageClient>>,
         public_base_url: String,
         url_sign_secret: Arc<[u8; 32]>,
@@ -147,6 +157,7 @@ impl McpRegistry {
         Self {
             tenants,
             bus,
+            webhooks,
             garage,
             public_base_url,
             url_sign_secret,
@@ -165,6 +176,7 @@ impl McpRegistry {
             tenant_id,
             pool,
             self.bus.clone(),
+            self.webhooks.clone(),
             self.garage.clone(),
             self.public_base_url.clone(),
             self.url_sign_secret.clone(),

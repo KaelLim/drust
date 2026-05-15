@@ -59,10 +59,10 @@ pub(crate) fn build_payload(
     delivery_id: &str,
     timestamp: &str,
 ) -> Value {
-    let (ev, rec) = match event {
-        Event::Created { record } => ("created", record.clone()),
-        Event::Updated { record } => ("updated", record.clone()),
-        Event::Deleted { id }     => ("deleted", json!({"id": id})),
+    let ev = event.name();
+    let rec = match event {
+        Event::Created { record } | Event::Updated { record } => record.clone(),
+        Event::Deleted { id } => json!({"id": id}),
     };
     json!({
         "tenant":      tenant,
@@ -92,10 +92,59 @@ impl WebhookDispatcher {
         Arc::new(Self { tenants_root, http })
     }
 
-    /// Public dispatch entry — see Task 5 wiring + Task 4 delivery.
-    /// Currently a no-op stub so this task's tests still compile.
-    pub fn dispatch(&self, _tenant: &str, _collection: &str, _event: Event) {
-        // intentionally empty for Task 2; Task 5 fills in.
+    /// Fan out `event` to every active subscriber for `(tenant, collection)`.
+    /// Spawns a Tokio task per delivery; errors are silently swallowed at the
+    /// dispatch level (individual delivery failures are recorded via
+    /// `record_failure`). Returns immediately — the callers are on the hot
+    /// REST/MCP path and must not block.
+    pub fn dispatch(&self, tenant: &str, collection: &str, event: Event) {
+        let tenants_root = self.tenants_root.clone();
+        let tenant = tenant.to_string();
+        let collection = collection.to_string();
+        let http = self.http.clone();
+        tokio::spawn(async move {
+            let conn = match open_tenant_conn(&tenants_root, &tenant) {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            let subs = match list_subscriptions(&conn, &collection) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            drop(conn); // release before spawning per-delivery tasks
+            let event_name = event.name();
+            for sub in subs {
+                if !events_contains(&sub.events, event_name) {
+                    continue;
+                }
+                let delivery_id = uuid::Uuid::new_v4().to_string();
+                let timestamp = chrono::Utc::now().to_rfc3339();
+                let body_bytes = match serde_json::to_vec(&build_payload(
+                    &tenant,
+                    &collection,
+                    &event,
+                    &delivery_id,
+                    &timestamp,
+                )) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let http2 = http.clone();
+                let root2 = tenants_root.clone();
+                let tenant2 = tenant.clone();
+                tokio::spawn(async move {
+                    let _ = deliver(
+                        &http2,
+                        &sub,
+                        body_bytes,
+                        DeliverySchedule::default(),
+                        &root2,
+                        &tenant2,
+                    )
+                    .await;
+                });
+            }
+        });
     }
 }
 
@@ -214,9 +263,9 @@ pub(crate) async fn deliver(
     outcome
 }
 
-/// Pure HTTP-only entry — does NOT touch the DB. Exposed for the
-/// integration tests so they can assert signature / retry shape without
-/// spinning up a tenant DB.
+/// Exposed only for integration tests in `tests/`. Production code
+/// uses `deliver()` (which wraps this + calls `record_failure` on
+/// failure). Do NOT call from the dispatch path.
 pub async fn deliver_for_test(
     http: &reqwest::Client,
     row: &WebhookRow,

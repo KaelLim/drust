@@ -36,6 +36,7 @@ async fn app_with_audit(
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    let webhooks = drust::tenant::WebhookDispatcher::new(data.clone());
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: tenants.clone(),
@@ -53,6 +54,7 @@ async fn app_with_audit(
         bus: bus.clone(),
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
+        webhooks,
         cors_origins: Vec::new(),
     });
     (app, tok, dir, audit_dir)
