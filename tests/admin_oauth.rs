@@ -380,3 +380,55 @@ async fn oauth_happy_path_google() {
     let observed = fake.last_code.lock().await.clone();
     assert_eq!(observed.as_deref(), Some("CODE-G"));
 }
+
+// ---------- T18: happy path github ----------
+
+#[tokio::test]
+async fn oauth_happy_path_github() {
+    let fake = spawn_fake_github().await;
+    *fake.script.lock().await = FakeScript {
+        email: "kael@example.com".into(),
+        email_verified: true,
+        provider_user_id: "424242".into(),
+    };
+    let (app, _dir, _log) = spin_up_admin_with_github_fake(&fake).await;
+
+    // 1) /start: 302 to provider auth_url, with state + pkce cookies.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/github/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let state = extract_set_cookie(&resp, "drust_oauth_state").expect("state cookie set");
+    let pkce = extract_set_cookie(&resp, "drust_oauth_pkce").expect("pkce cookie set");
+    assert!(!state.is_empty());
+    assert!(!pkce.is_empty());
+
+    // 2) /callback drives the three-round-trip exchange against the fake
+    //    (POST /login/oauth/access_token, GET /user/emails, GET /user).
+    let cookie_hdr = format!("drust_oauth_state={state}; drust_oauth_pkce={pkce}");
+    let url = format!("/admin/oauth/github/callback?code=CODE-H&state={state}");
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&url)
+                .header(header::COOKIE, cookie_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_redirect_contains(&resp, "/drust/admin/tenants");
+    let session = extract_set_cookie(&resp, "drust_session").expect("session cookie set");
+    assert!(!session.is_empty());
+
+    let observed = fake.last_code.lock().await.clone();
+    assert_eq!(observed.as_deref(), Some("CODE-H"));
+}
