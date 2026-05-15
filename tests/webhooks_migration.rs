@@ -35,14 +35,27 @@ fn existing_tenant_db_gets_webhooks_table_via_migrate() {
     let conn = Connection::open(&path).unwrap();
     conn.execute("DROP TABLE _system_webhooks", []).unwrap();
     drop(conn);
+
+    // First migration recreates the table + index.
     drust::db::migrations::migrate_tenant_db(dir.path(), tid).unwrap();
+    // Second migration must be a no-op (idempotent).
+    drust::db::migrations::migrate_tenant_db(dir.path(), tid).unwrap();
+
     let conn = Connection::open(&path).unwrap();
-    let exists: i64 = conn
+    let table: i64 = conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_webhooks'",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(exists, 1, "migrate must recreate _system_webhooks");
+    assert_eq!(table, 1, "migrate must recreate _system_webhooks");
+    let idx: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_system_webhooks_collection'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(idx, 1, "migrate must recreate the partial index");
 }
