@@ -714,12 +714,34 @@ async fn oauth_audit_logged_on_success() {
         .await
         .unwrap();
 
-    // Brief sleep — `write_entry` uses tokio::fs::write (async).
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Poll for the audit row instead of a fixed sleep — `write_entry`
+    // is async (tokio::fs) and slow CI can lag past any single timeout.
+    let row = poll_for_audit_row(&log_dir, "oauth_google", 500).await;
+    assert_eq!(row["oauth_email"], "kael@example.com");
+    assert_eq!(row["admin_id"].as_i64().unwrap(), 1);
+    assert_eq!(row["status"], "ok");
+}
 
-    // Find the latest audit-YYYY-MM-DD.jsonl in log_dir.
-    let latest_path = std::fs::read_dir(&log_dir)
-        .unwrap()
+async fn poll_for_audit_row(
+    log_dir: &std::path::Path,
+    auth_method: &str,
+    max_ms: u64,
+) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_ms);
+    loop {
+        if let Some(row) = try_find_audit_row(log_dir, auth_method) {
+            return row;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("audit row with auth_method={auth_method} not written within {max_ms}ms");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+fn try_find_audit_row(log_dir: &std::path::Path, auth_method: &str) -> Option<serde_json::Value> {
+    let latest = std::fs::read_dir(log_dir)
+        .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
@@ -727,18 +749,11 @@ async fn oauth_audit_logged_on_success() {
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with("audit-") && n.ends_with(".jsonl"))
         })
-        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
-        .expect("expected one audit file");
-
-    let body = std::fs::read_to_string(&latest_path).unwrap();
-    let row: serde_json::Value = body
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .find(|v: &serde_json::Value| v["auth_method"] == "oauth_google")
-        .expect("expected oauth_google success row");
-    assert_eq!(row["oauth_email"], "kael@example.com");
-    assert_eq!(row["admin_id"].as_i64().unwrap(), 1);
-    assert!(row["status"] == "ok" || row["status"] == "200");
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())?;
+    let body = std::fs::read_to_string(&latest).ok()?;
+    body.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["auth_method"] == auth_method)
 }
 
 #[tokio::test]
