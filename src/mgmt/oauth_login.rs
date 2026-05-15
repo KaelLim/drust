@@ -69,7 +69,6 @@ pub async fn oauth_callback(
     Query(q): Query<CallbackQuery>,
     cookies: CookieJar,
     State(s): State<MgmtState>,
-    headers: HeaderMap,
 ) -> Response {
     // 1. provider exists
     let Some(p) = s.oauth_registry.get(&provider) else {
@@ -139,7 +138,6 @@ pub async fn oauth_callback(
     };
     drop(conn);
     let session_cookie = build_session_cookie(&token, s.session_ttl_days * 86_400);
-    let _ = secure_from_headers(&headers); // reserved for future use; admin cookie is always Secure
     audit_oauth_success(&s, &provider, &user.email, admin_id).await;
 
     Response::builder()
