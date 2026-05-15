@@ -44,15 +44,18 @@ pub async fn set_oauth_provider(
     client_secret: String,
     allowed_redirect_uris: Vec<String>,
 ) -> anyhow::Result<serde_json::Value> {
-    // Validate up front so we fail fast with INVALID_OAUTH_CONFIG before
-    // touching the writer mutex (mirrors the REST handler).
+    // Validate up front so we fail fast with the granular error code
+    // (INVALID_PROVIDER / INVALID_REDIRECT_URI / EMPTY_REDIRECT_URIS /
+    // INVALID_CLIENT_ID / INVALID_CLIENT_SECRET) before touching the writer
+    // mutex. The `<CODE>: <message>` shape is what `bail_mcp` surfaces in
+    // the tool's text payload — LLMs can branch on the leading code.
     if let Err(e) = oauth_config::validate_upsert(
         &provider,
         &client_id,
         &client_secret,
         &allowed_redirect_uris,
     ) {
-        return Err(anyhow::anyhow!("INVALID_OAUTH_CONFIG: {e}"));
+        return Err(anyhow::anyhow!("{}: {}", e.error_code(), e));
     }
     let provider2 = provider.clone();
     pool.with_writer(move |c| {
