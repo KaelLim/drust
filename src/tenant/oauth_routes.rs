@@ -51,17 +51,24 @@ pub(crate) fn secure_from_headers(h: &axum::http::HeaderMap) -> bool {
         == Some("https")
 }
 
-pub(crate) fn build_adapter(cfg: &oauth_config::OauthProviderConfig) -> Box<dyn OauthProvider> {
+/// Build an adapter from a stored config row. Returns `None` on an
+/// unrecognised provider name. The upsert path validates the provider
+/// name, but a stale row from a future drust release (or hand-edited
+/// SQL) could carry an unknown value — returning None instead of
+/// panicking keeps the request handler honest.
+pub(crate) fn build_adapter(
+    cfg: &oauth_config::OauthProviderConfig,
+) -> Option<Box<dyn OauthProvider>> {
     match cfg.provider.as_str() {
-        "google" => Box::new(GoogleAdapter::production(
+        "google" => Some(Box::new(GoogleAdapter::production(
             cfg.client_id.clone(),
             cfg.client_secret.clone(),
-        )),
-        "github" => Box::new(GitHubAdapter::production(
+        ))),
+        "github" => Some(Box::new(GitHubAdapter::production(
             cfg.client_id.clone(),
             cfg.client_secret.clone(),
-        )),
-        _ => unreachable!("validated by oauth_config::validate_provider"),
+        ))),
+        _ => None,
     }
 }
 
@@ -74,11 +81,11 @@ pub(crate) fn plain_text(status: StatusCode, body: &str) -> Response {
 }
 
 #[derive(serde::Deserialize)]
-pub struct StartQuery {
-    pub redirect_uri: String,
+pub(crate) struct StartQuery {
+    pub(crate) redirect_uri: String,
 }
 
-pub async fn oauth_start(
+pub(crate) async fn oauth_start(
     Path(params): Path<HashMap<String, String>>,
     State(state): State<TenantAuthState>,
     Query(q): Query<StartQuery>,
@@ -127,7 +134,10 @@ pub async fn oauth_start(
     let drust_callback =
         format!("{public_url}/drust/t/{tid}/oauth/{provider_name}/callback");
 
-    let adapter = build_adapter(&cfg);
+    let adapter = match build_adapter(&cfg) {
+        Some(a) => a,
+        None => return plain_text(StatusCode::BAD_REQUEST, "oauth_misconfigured"),
+    };
     let auth_url = adapter.authorize_url(&csrf_state, &pkce_challenge, &drust_callback);
 
     let secure = secure_from_headers(&headers);
