@@ -91,6 +91,41 @@ pub async fn spawn_fake_google() -> Arc<FakeProvider> {
     state
 }
 
+/// Variant of `spawn_fake_google` whose `/token` endpoint returns 400 so
+/// `GoogleAdapter::exchange` (which calls `.error_for_status()?`) fails —
+/// exercising the `oauth_provider_error` branch in `oauth_callback`.
+pub async fn spawn_fake_google_returning_400() -> Arc<FakeProvider> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{addr}");
+    let state = Arc::new(FakeProvider {
+        base_url: base_url.clone(),
+        last_code: Mutex::new(None),
+        script: Mutex::new(FakeScript::default()),
+    });
+
+    let st = state.clone();
+    let app = axum::Router::new().route(
+        "/token",
+        axum::routing::post(move |Form(form): Form<HashMap<String, String>>| {
+            let st = st.clone();
+            async move {
+                if let Some(code) = form.get("code") {
+                    *st.last_code.lock().await = Some(code.clone());
+                }
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "invalid_grant" })),
+                )
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    state
+}
+
 /// Spawn a fake GitHub OAuth provider on 127.0.0.1:0. Exposes the three
 /// endpoints `GitHubAdapter::exchange` calls.
 pub async fn spawn_fake_github() -> Arc<FakeProvider> {
@@ -421,6 +456,43 @@ async fn oauth_missing_state_cookie_rejected() {
         .await
         .unwrap();
     assert_redirect_contains(&resp, "oauth_error=oauth_state_mismatch");
+}
+
+// ---------- T20: provider error on token endpoint ----------
+
+#[tokio::test]
+async fn oauth_provider_error_returns_typed_redirect() {
+    let fake = spawn_fake_google_returning_400().await;
+    let (app, _dir, _log) = spin_up_admin_with_google_fake(&fake).await;
+
+    // Drive a full /start + /callback. We need real state+pkce cookies because
+    // the state-mismatch check fires before the exchange call.
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/google/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state = extract_set_cookie(&start_resp, "drust_oauth_state").expect("state cookie set");
+    let pkce = extract_set_cookie(&start_resp, "drust_oauth_pkce").expect("pkce cookie set");
+
+    let cookie_hdr = format!("drust_oauth_state={state}; drust_oauth_pkce={pkce}");
+    let url = format!("/admin/oauth/google/callback?code=C&state={state}");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&url)
+                .header(header::COOKIE, cookie_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_redirect_contains(&resp, "oauth_error=oauth_provider_error");
 }
 
 // ---------- T18: happy path github ----------
