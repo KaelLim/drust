@@ -762,6 +762,61 @@ async fn tenant_oauth_auto_links_existing_email() {
 }
 
 #[tokio::test]
+async fn tenant_oauth_only_user_me_password_rejected() {
+    // After OAuth auto-create, POST /me/password with the issued user
+    // session bearer must 409 OAUTH_ONLY_NO_PASSWORD. Symmetric to the
+    // login-side rejection above — the production gate at
+    // auth_routes.rs:561-567 already exists; this closes the test coverage
+    // gap flagged in v1.12 review.
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "oauthonly@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-only".into(),
+        picture: "https://example.test/avatar.png".into(),
+    };
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    // 1. Drive OAuth to auto-create the sentinel-hash user + issue a
+    //    drust_user_* token in the 302 Location fragment.
+    let frontend = "https://app.example.com/auth/callback";
+    let cb_resp = drive_callback(&app, &tid, "google", frontend).await;
+    assert_eq!(cb_resp.status(), StatusCode::FOUND);
+    let loc = cb_resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    // Extract the drust_user_* token from `#access_token=<tok>&token_type=Bearer`.
+    let fragment = loc.split_once('#').expect("location has #fragment").1;
+    let token = fragment
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("access_token="))
+        .expect("access_token in fragment");
+    assert!(token.starts_with("drust_user_"), "got {token}");
+
+    // 2. POST /me/password with that bearer + a policy-compliant new password
+    //    (>= 8 chars). current_password is irrelevant — the sentinel-hash
+    //    gate fires before verify_password runs.
+    let body = serde_json::json!({
+        "current_password": "anything",
+        "new_password": "new-password-123",
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/me/password"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT, "must be 409");
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error_code"], "OAUTH_ONLY_NO_PASSWORD", "got {v}");
+}
+
+#[tokio::test]
 async fn tenant_oauth_only_user_password_login_rejected() {
     // After auto-create with the sentinel hash, POST /auth/login with any
     // password must return 401 INVALID_CREDENTIALS — NOT a 500 (argon2
