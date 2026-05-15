@@ -386,6 +386,212 @@ async fn tenant_oauth_missing_state_cookie_rejected() {
     );
 }
 
+// ---------- T23: provider/cookie/redirect negatives ----------
+
+/// Spin up a tenant whose Google adapter points at a `/token`-returns-400
+/// fake. Same as `spin_up_tenant_with_google_fake` otherwise.
+async fn spin_up_tenant_with_google_fake_400(
+    fake: &Arc<FakeProvider>,
+) -> (Router, TempDir, String, String, std::path::PathBuf) {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let log_dir = data_dir.join("audit");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let tenant_id = "blog".to_string();
+    let token = bootstrap_tenant_with_oauth(
+        &data_dir,
+        &tenant_id,
+        true,
+        "google",
+        &["https://app.example.com/auth/callback"],
+    )
+    .await;
+
+    let mut overrides: HashMap<String, Arc<dyn OauthProvider>> = HashMap::new();
+    overrides.insert(
+        "google".into(),
+        Arc::new(GoogleAdapter::new(
+            "test-client-id".into(),
+            "test-client-secret".into(),
+            format!("{}/authorize", fake.base_url),
+            format!("{}/token", fake.base_url),
+        )),
+    );
+    let state = build_tenant_state(&data_dir, &log_dir, overrides);
+    let app = build_router(state);
+    (app, dir, tenant_id, token, log_dir)
+}
+
+/// Drive the cookie roundtrip: hit /start, parse the three cookies, then
+/// hit /callback with them. Returns the callback response.
+async fn drive_callback(
+    app: &Router,
+    tid: &str,
+    provider: &str,
+    frontend: &str,
+) -> axum::http::Response<Body> {
+    let start_uri = format!(
+        "/t/{tid}/oauth/{provider}/start?redirect_uri={uri}",
+        uri = urlencoding::encode(frontend)
+    );
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state = extract_set_cookie(&start_resp, "drust_t_oauth_state").expect("state cookie");
+    let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce cookie");
+    let red = extract_set_cookie(&start_resp, "drust_t_oauth_redirect_uri")
+        .expect("redirect cookie");
+
+    let cb_uri = format!("/t/{tid}/oauth/{provider}/callback?code=C&state={state}");
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .uri(&cb_uri)
+                .header(
+                    header::COOKIE,
+                    format!(
+                        "drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}; drust_t_oauth_redirect_uri={red}"
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn tenant_oauth_provider_error_returns_typed_redirect() {
+    let fake = spawn_fake_google_returning_400().await;
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake_400(&fake).await;
+    let frontend = "https://app.example.com/auth/callback";
+    let resp = drive_callback(&app, &tid, "google", frontend).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(loc.starts_with(frontend), "loc={loc}");
+    assert!(
+        loc.contains("#error=oauth_provider_error"),
+        "missing provider_error fragment; loc={loc}"
+    );
+}
+
+#[tokio::test]
+async fn tenant_oauth_email_unverified_rejected() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "alice@example.com".into(),
+        email_verified: false,
+        provider_user_id: "sub-1".into(),
+    };
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+    let frontend = "https://app.example.com/auth/callback";
+    let resp = drive_callback(&app, &tid, "google", frontend).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(loc.starts_with(frontend), "loc={loc}");
+    assert!(loc.contains("#error=oauth_email_unverified"), "loc={loc}");
+}
+
+#[tokio::test]
+async fn tenant_oauth_invalid_redirect_at_start() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+    // redirect_uri not in allowlist → 400 plain-text "oauth_invalid_redirect".
+    let bad_uri = format!(
+        "/t/{tid}/oauth/google/start?redirect_uri={uri}",
+        uri = urlencoding::encode("https://attacker.com/cb")
+    );
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&bad_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains("oauth_invalid_redirect")
+    );
+}
+
+#[tokio::test]
+async fn tenant_oauth_toctou_invalid_redirect_at_callback() {
+    // 1. Start with allowlist = [frontend].
+    let fake = spawn_fake_google().await;
+    let frontend = "https://app.example.com/auth/callback";
+    let (app, dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    // 2. /start succeeds (cookie + frontend in allowlist).
+    let start_uri = format!(
+        "/t/{tid}/oauth/google/start?redirect_uri={uri}",
+        uri = urlencoding::encode(frontend)
+    );
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start_resp.status(), StatusCode::FOUND);
+    let state = extract_set_cookie(&start_resp, "drust_t_oauth_state").expect("state");
+    let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce");
+    let red = extract_set_cookie(&start_resp, "drust_t_oauth_redirect_uri").expect("red");
+
+    // 3. Admin shrinks the allowlist out from under the in-flight request.
+    let tconn = drust::storage::tenant_db::open_write(dir.path(), &tid).unwrap();
+    drust::tenant::oauth_config::upsert(
+        &tconn,
+        "google",
+        "test-client-id",
+        "test-client-secret",
+        &["https://other.example.com/cb".to_string()],
+    )
+    .unwrap();
+    drop(tconn);
+
+    // 4. /callback must 400 with oauth_invalid_redirect — Step 4 fires
+    //    AFTER state+PKCE checks but BEFORE token exchange.
+    let cb_uri = format!("/t/{tid}/oauth/google/callback?code=C&state={state}");
+    let cb_resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&cb_uri)
+                .header(
+                    header::COOKIE,
+                    format!(
+                        "drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}; drust_t_oauth_redirect_uri={red}"
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cb_resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(cb_resp.into_body(), 1024).await.unwrap();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains("oauth_invalid_redirect")
+    );
+}
+
 // ---------- existing T21 smoke ----------
 
 #[tokio::test]
