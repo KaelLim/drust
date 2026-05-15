@@ -15,6 +15,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::Response;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 #[derive(serde::Deserialize)]
 pub(crate) struct CallbackQuery {
@@ -109,6 +110,20 @@ pub(crate) fn plain_text(status: StatusCode, body: &str) -> Response {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// Same as `plain_text` but also clears the three OAuth cookies. Used by
+/// `/callback` steps 1-4 (pre-validation failures) so a stale cookie
+/// triple isn't carried across browser retries.
+fn plain_text_clear_cookies(status: StatusCode, body: &str, tid: &str) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::SET_COOKIE, clear_cookie(STATE_COOKIE, tid))
+        .header(header::SET_COOKIE, clear_cookie(PKCE_COOKIE, tid))
+        .header(header::SET_COOKIE, clear_cookie(REDIRECT_URI_COOKIE, tid))
         .body(axum::body::Body::from(body.to_string()))
         .unwrap()
 }
@@ -280,6 +295,8 @@ fn find_or_create_user(
         return Ok(None);
     }
     let new_id = format!("u-{}", uuid::Uuid::new_v4());
+    // TODO(v1.12.x): also store picture from VerifiedUser once the trait
+    // carries it (spec §3.3). Adapters don't yet extract avatar URLs.
     let profile = serde_json::json!({
         "name": name.unwrap_or(""),
     })
@@ -331,7 +348,9 @@ pub(crate) async fn oauth_callback(
     // Step 1: provider exists.
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return plain_text(StatusCode::NOT_FOUND, "tenant not found"),
+        Err(_) => {
+            return plain_text_clear_cookies(StatusCode::NOT_FOUND, "tenant not found", &tid);
+        }
     };
     let provider_name_for_lookup = provider_name.clone();
     let cfg_opt = pool
@@ -339,20 +358,40 @@ pub(crate) async fn oauth_callback(
         .await;
     let cfg = match cfg_opt {
         Ok(Some(c)) => c,
-        Ok(None) => return plain_text(StatusCode::BAD_REQUEST, "oauth_misconfigured"),
-        Err(_) => return plain_text(StatusCode::INTERNAL_SERVER_ERROR, "db error"),
+        Ok(None) => {
+            return plain_text_clear_cookies(
+                StatusCode::BAD_REQUEST,
+                "oauth_misconfigured",
+                &tid,
+            );
+        }
+        Err(_) => {
+            return plain_text_clear_cookies(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "db error",
+                &tid,
+            );
+        }
     };
 
     // Step 2: state cookie matches query state (constant-time).
     let cookie_state = parse_cookie(&headers, STATE_COOKIE).unwrap_or_default();
     if !crate::oauth::state::verify_state(&cookie_state, &q.state) {
-        return plain_text(StatusCode::BAD_REQUEST, "oauth_state_mismatch");
+        return plain_text_clear_cookies(
+            StatusCode::BAD_REQUEST,
+            "oauth_state_mismatch",
+            &tid,
+        );
     }
 
     // Step 3: PKCE verifier present.
     let pkce_verifier = parse_cookie(&headers, PKCE_COOKIE).unwrap_or_default();
     if pkce_verifier.is_empty() {
-        return plain_text(StatusCode::BAD_REQUEST, "oauth_state_mismatch");
+        return plain_text_clear_cookies(
+            StatusCode::BAD_REQUEST,
+            "oauth_state_mismatch",
+            &tid,
+        );
     }
 
     // Step 4: frontend redirect_uri cookie present AND still in allowlist
@@ -364,16 +403,35 @@ pub(crate) async fn oauth_callback(
             .iter()
             .any(|u| u == &frontend_uri)
     {
-        return plain_text(StatusCode::BAD_REQUEST, "oauth_invalid_redirect");
+        return plain_text_clear_cookies(
+            StatusCode::BAD_REQUEST,
+            "oauth_invalid_redirect",
+            &tid,
+        );
     }
 
     // Step 5: exchange code+verifier with the provider.
+    // Mirror /start: refuse early when public URL isn't configured rather
+    // than letting the provider return an opaque oauth_provider_error.
     let public_url = std::env::var("DRUST_PUBLIC_URL").unwrap_or_default();
+    if public_url.is_empty() {
+        return plain_text_clear_cookies(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DRUST_PUBLIC_URL not set",
+            &tid,
+        );
+    }
     let drust_callback =
         format!("{public_url}/drust/t/{tid}/oauth/{provider_name}/callback");
     let adapter = match build_adapter(&cfg) {
         Some(a) => a,
-        None => return plain_text(StatusCode::BAD_REQUEST, "oauth_misconfigured"),
+        None => {
+            return plain_text_clear_cookies(
+                StatusCode::BAD_REQUEST,
+                "oauth_misconfigured",
+                &tid,
+            );
+        }
     };
     let user = match adapter.exchange(&q.code, &pkce_verifier, &drust_callback).await {
         Ok(u) => u,
@@ -424,20 +482,38 @@ pub(crate) async fn oauth_callback(
             return redirect_with_fragment_error(&frontend_uri, "oauth_session_error", &tid);
         }
     };
+    // Steps 7 + 8 in one writer pass: find/create the user row, then
+    // mint the session token. Single mutex acquisition prevents the race
+    // where two concurrent callbacks for the same email both observe
+    // "no row" → both INSERT → second hits UNIQUE.
+    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let ip_str = crate::safety::ip::client_ip(&headers, fallback_addr).to_string();
     let email_for_lookup = user.email.clone();
     let name_for_lookup = user.name.clone();
-    let user_id_res = pool
+    let ip_for_session = ip_str.clone();
+    let res: rusqlite::Result<Option<(String, String)>> = pool
         .with_writer(move |c| {
-            find_or_create_user(
+            match find_or_create_user(
                 c,
                 &email_for_lookup,
                 name_for_lookup.as_deref(),
                 allow_self_register,
-            )
+            )? {
+                None => Ok(None),
+                Some(uid) => {
+                    let token = crate::auth::user_session::create_session(
+                        c,
+                        &uid,
+                        Some(ip_for_session.as_str()),
+                        30,
+                    )?;
+                    Ok(Some((uid, token)))
+                }
+            }
         })
         .await;
-    let user_id = match user_id_res {
-        Ok(Some(uid)) => uid,
+    let (user_id, token) = match res {
+        Ok(Some(pair)) => pair,
         Ok(None) => {
             audit_oauth_failure(
                 &state,
@@ -453,35 +529,7 @@ pub(crate) async fn oauth_callback(
             tracing::error!(
                 tenant = %tid,
                 error = %e,
-                "user lookup/insert failed"
-            );
-            audit_oauth_failure(
-                &state,
-                &tid,
-                &provider_name,
-                Some(&user.email),
-                "oauth_session_error",
-            )
-            .await;
-            return redirect_with_fragment_error(&frontend_uri, "oauth_session_error", &tid);
-        }
-    };
-
-    // Step 8: session create (reuse the v1.9 user-session helper).
-    let user_id_for_session = user_id.clone();
-    let token_res = pool
-        .with_writer(move |c| {
-            crate::auth::user_session::create_session(c, &user_id_for_session, None, 30)
-        })
-        .await;
-    let token = match token_res {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!(
-                tenant = %tid,
-                user_id = %user_id,
-                error = %e,
-                "session insert failed"
+                "user create / session insert failed"
             );
             audit_oauth_failure(
                 &state,
