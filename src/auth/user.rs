@@ -53,8 +53,9 @@ mod tests {
 
     /// Spec S1: a verify against DUMMY_HASH must take comparable wall-clock to a real verify.
     /// We tolerate a 4× spread (real verify ~100ms; dummy verify must be > 25ms).
-    /// Run with `cargo test -- --ignored --nocapture` (NOT `--release` — LTO + 1 codegen-unit
-    /// make `--release` tests take 40+ minutes in this repo; see CLAUDE.md).
+    /// Runs under `cargo test --lib` in debug mode (the 4× spread tolerates debug-mode
+    /// argon2 timing). Do NOT use `--release` — LTO + 1 codegen-unit make `--release`
+    /// tests take 40+ minutes in this repo; see CLAUDE.md.
     #[test]
     fn dummy_hash_is_not_a_short_circuit() {
         let real_hash = hash_password("benchmarkpassword").unwrap();
