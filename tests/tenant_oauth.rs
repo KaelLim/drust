@@ -973,3 +973,106 @@ async fn tenant_oauth_spin_up_compiles_and_serves_start() {
     let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
     assert!(loc.contains("/authorize?"), "loc={loc}");
 }
+
+// ---------- T2: AuditExtra on admin REST PUT / DELETE ----------
+
+/// Poll a tenant audit dir for a JSONL row whose `op` equals `expected_op`.
+/// Mirrors `poll_for_audit_row` (which filters by `auth_method`) but for
+/// the admin-REST audit shape (no auth_method on plain bearer rows).
+async fn poll_for_audit_op(
+    log_dir: &std::path::Path,
+    expected_op: &str,
+    max_ms: u64,
+) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_ms);
+    loop {
+        if log_dir.exists() {
+            let entries: Vec<_> = std::fs::read_dir(log_dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("audit-") && n.ends_with(".jsonl"))
+                })
+                .collect();
+            for p in entries {
+                if let Ok(body) = std::fs::read_to_string(&p) {
+                    for line in body.lines() {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+                            && v["op"] == expected_op
+                        {
+                            return v;
+                        }
+                    }
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("audit row with op={expected_op} not written within {max_ms}ms");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn admin_put_oauth_provider_writes_audit_extra() {
+    // Spin up a tenant that already has a Google config (the spin-up seeds
+    // it). Hit PUT to replace and assert the JSONL row carries
+    // `provider` + `redirect_uris_count`.
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, service, log_dir) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let body = serde_json::json!({
+        "client_id": "cid-2",
+        "client_secret": "csec-2",
+        "allowed_redirect_uris": [
+            "https://app.example.com/auth/callback",
+            "https://app.example.com/auth/callback-2"
+        ],
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/t/{tid}/admin/oauth-providers/google"))
+                .header(header::AUTHORIZATION, format!("Bearer {service}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let row = poll_for_audit_op(&log_dir, "PUT /admin/oauth-providers/google", 500).await;
+    assert_eq!(row["status"], "ok");
+    assert_eq!(row["provider"], "google");
+    assert_eq!(row["redirect_uris_count"], 2);
+}
+
+#[tokio::test]
+async fn admin_delete_oauth_provider_writes_audit_extra() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, service, log_dir) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/t/{tid}/admin/oauth-providers/google"))
+                .header(header::AUTHORIZATION, format!("Bearer {service}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let row = poll_for_audit_op(&log_dir, "DELETE /admin/oauth-providers/google", 500).await;
+    assert_eq!(row["status"], "ok");
+    assert_eq!(row["provider"], "google");
+}
