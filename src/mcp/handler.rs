@@ -1042,6 +1042,22 @@ impl DrustMcpService {
             Err(e) => bail_mcp(e),
         }
     }
+
+    #[tool(description = "Delete the OAuth provider config for this tenant. \
+        `provider` must be 'google' or 'github'. Removes the row from \
+        `_system_oauth_providers`; in-flight OAuth callbacks for this \
+        provider will fail with PROVIDER_NOT_CONFIGURED. \
+        Returns {ok: true, provider, deleted: true}. \
+        Errors with NOT_FOUND if the provider was not configured.")]
+    async fn delete_oauth_provider(
+        &self,
+        Parameters(ProviderOnlyArgs { provider }): Parameters<ProviderOnlyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match oauth_tools::delete_oauth_provider(&self.state.inner().pool, provider).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
 }
 
 #[tool_handler]
