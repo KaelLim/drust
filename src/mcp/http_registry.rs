@@ -18,6 +18,13 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpService, session::local::LocalSessionManager,
 };
 use std::sync::Arc;
+use std::time::Duration;
+
+/// rmcp's default keep_alive is 5 minutes — way too aggressive for an
+/// interactive CC session that may go idle while the user reads code or
+/// runs a build. 24h survives a typical workday; CC restarts (1–2/day)
+/// give us a natural GC cycle, so zombie sessions don't accumulate.
+const SESSION_KEEP_ALIVE: Duration = Duration::from_secs(86_400);
 
 pub type TenantMcpService = StreamableHttpService<DrustMcpService, LocalSessionManager>;
 
@@ -43,9 +50,11 @@ impl McpHttpRegistry {
             return Ok(s.clone());
         }
         let state = self.mcp.get_or_create(tenant_id).await?;
+        let mut mgr = LocalSessionManager::default();
+        mgr.session_config.keep_alive = Some(SESSION_KEEP_ALIVE);
         let svc = Arc::new(StreamableHttpService::new(
             move || Ok(DrustMcpService::new(state.clone())),
-            Arc::new(LocalSessionManager::default()),
+            Arc::new(mgr),
             Default::default(),
         ));
         self.services.insert(tenant_id.to_string(), svc.clone());
