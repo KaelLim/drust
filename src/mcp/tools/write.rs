@@ -128,6 +128,7 @@ pub async fn insert_record(
         .map(|v| v.name.clone())
         .collect();
 
+    let webhooks = s.inner().webhooks.clone();
     let (id, record) = pool
         .with_writer(move |c| -> rusqlite::Result<(i64, serde_json::Value)> {
             let schema = describe_collection(c, &coll)?.ok_or_else(|| {
@@ -182,13 +183,9 @@ pub async fn insert_record(
             Ok((id, rec))
         })
         .await?;
-    bus.publish(
-        &tenant,
-        collection,
-        Event::Created {
-            record: record.clone(),
-        },
-    );
+    let ev = Event::Created { record: record.clone() };
+    bus.publish(&tenant, collection, ev.clone());
+    webhooks.dispatch(&tenant, collection, ev);
     Ok(json!({ "id": id, "record": record }))
 }
 
@@ -209,6 +206,7 @@ pub async fn update_record(
     let pool = s.inner().pool.clone();
     let tenant = s.inner().tenant_id.clone();
     let bus = s.inner().bus.clone();
+    let webhooks = s.inner().webhooks.clone();
 
     let coll_for_schema = coll.clone();
     let schema = pool
@@ -269,13 +267,9 @@ pub async fn update_record(
             read_record(c, &coll, id, &vector_names)
         })
         .await?;
-    bus.publish(
-        &tenant,
-        collection,
-        Event::Updated {
-            record: record.clone(),
-        },
-    );
+    let ev = Event::Updated { record: record.clone() };
+    bus.publish(&tenant, collection, ev.clone());
+    webhooks.dispatch(&tenant, collection, ev);
     Ok(json!({ "record": record }))
 }
 
@@ -288,6 +282,7 @@ pub async fn delete_record(
     let pool = s.inner().pool.clone();
     let tenant = s.inner().tenant_id.clone();
     let bus = s.inner().bus.clone();
+    let webhooks = s.inner().webhooks.clone();
     let n = pool
         .with_writer(move |c| {
             let sql = format!(
@@ -300,6 +295,8 @@ pub async fn delete_record(
     if n == 0 {
         return Ok(json!({ "ok": false, "error_code": "UNKNOWN_COLLECTION" }));
     }
-    bus.publish(&tenant, collection, Event::Deleted { id });
+    let ev = Event::Deleted { id };
+    bus.publish(&tenant, collection, ev.clone());
+    webhooks.dispatch(&tenant, collection, ev);
     Ok(json!({ "ok": true }))
 }

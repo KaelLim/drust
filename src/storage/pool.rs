@@ -85,6 +85,10 @@ impl TenantRegistry {
         }
     }
 
+    pub fn data_root(&self) -> &std::path::Path {
+        &self.data_root
+    }
+
     pub fn get_or_open(&self, tenant_id: &str) -> anyhow::Result<SharedTenantPool> {
         if let Some(p) = self.pools.get(tenant_id) {
             return Ok(p.clone());

@@ -10,7 +10,7 @@ use drust::safety::rate_limit_ip::IpRateLimit;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::{SharedTenantPool, TenantRegistry};
 use drust::tenant::router::TenantAuthState;
-use drust::tenant::{TenantStack, build_tenant_router, events::EventBus};
+use drust::tenant::{TenantStack, WebhookDispatcher, build_tenant_router, events::EventBus};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -40,6 +40,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    let webhooks = WebhookDispatcher::new(data.clone());
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: tenants.clone(),
@@ -57,6 +58,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         bus: bus.clone(),
         mcp: test_mcp_http(tenants, bus),
         files: None,
+        webhooks,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
@@ -92,6 +94,7 @@ pub async fn spin_up_tenant_with_role(
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    let webhooks = WebhookDispatcher::new(data.clone());
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: tenants.clone(),
@@ -109,6 +112,7 @@ pub async fn spin_up_tenant_with_role(
         bus: bus.clone(),
         mcp: test_mcp_http(tenants, bus),
         files: None,
+        webhooks,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
@@ -141,6 +145,7 @@ pub async fn spin_up_tenant_with_threshold(
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    let webhooks = WebhookDispatcher::new(data.clone());
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: tenants.clone(),
@@ -158,6 +163,7 @@ pub async fn spin_up_tenant_with_threshold(
         bus: bus.clone(),
         mcp: test_mcp_http(tenants, bus),
         files: None,
+        webhooks,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
