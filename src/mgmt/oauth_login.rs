@@ -158,13 +158,10 @@ pub async fn oauth_callback(
 
 async fn audit_oauth_success(s: &MgmtState, provider: &str, email: &str, admin_id: i64) {
     let op = format!("GET /admin/oauth/{provider}/callback");
-    let mut entry = crate::safety::audit::AuditEntry::success("-", "-", &op, 0);
+    let mut entry = crate::safety::audit::AuditEntry::success("-", "-", &op, 0)
+        .with_extra(serde_json::json!({ "admin_id": admin_id }));
     entry.auth_method = Some(format!("oauth_{provider}"));
     entry.oauth_email = Some(sanitize_email(email));
-    entry.extra.insert(
-        "admin_id".to_string(),
-        serde_json::Value::Number(admin_id.into()),
-    );
     crate::safety::audit::write_entry(&s.log_dir, &entry).await;
 }
 
