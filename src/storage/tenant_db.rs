@@ -117,6 +117,22 @@ CREATE TABLE IF NOT EXISTS "_system_oauth_providers" (
   updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- v1.13: outbound webhook subscriptions. One row per (collection, event-set,
+-- url) subscription; dispatcher fans out on record CRUD to active rows.
+CREATE TABLE IF NOT EXISTS "_system_webhooks" (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  collection           TEXT    NOT NULL,
+  events               TEXT    NOT NULL,
+  url                  TEXT    NOT NULL,
+  secret               TEXT    NOT NULL,
+  active               INTEGER NOT NULL DEFAULT 1,
+  last_failure_at      TEXT,
+  last_failure_reason  TEXT,
+  created_at           TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_system_webhooks_collection
+  ON "_system_webhooks"(collection) WHERE active = 1;
+
 COMMIT;
 "#;
 

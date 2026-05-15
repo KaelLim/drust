@@ -38,6 +38,22 @@ CREATE TABLE IF NOT EXISTS _system_oauth_providers (
 );
 "#;
 
+pub const SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS _system_webhooks (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  collection           TEXT    NOT NULL,
+  events               TEXT    NOT NULL,
+  url                  TEXT    NOT NULL,
+  secret               TEXT    NOT NULL,
+  active               INTEGER NOT NULL DEFAULT 1,
+  last_failure_at      TEXT,
+  last_failure_reason  TEXT,
+  created_at           TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_system_webhooks_collection
+  ON _system_webhooks(collection) WHERE active = 1;
+"#;
+
 pub fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -67,6 +83,7 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     tx.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS)?;
+    tx.execute_batch(SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS)?;
     add_column_if_missing(&tx, "_system_collection_meta", "owner_field", "TEXT")?;
     add_column_if_missing(&tx, "_system_collection_meta", "read_scope", "TEXT")?;
     add_column_if_missing(
