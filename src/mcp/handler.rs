@@ -237,6 +237,24 @@ pub struct SetSelfRegisterArgs {
     pub enabled: bool,
 }
 
+// --- v1.12: Per-tenant OAuth-provider admin parameter types ----------------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetOauthProviderArgs {
+    /// `"google"` or `"github"`.
+    pub provider: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// Non-empty list of allowed redirect URIs. Each must be https:// or a
+    /// localhost/127.0.0.1 URL (the same allowlist the start handler enforces).
+    pub allowed_redirect_uris: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProviderOnlyArgs {
+    pub provider: String,
+}
+
 // --- Handler -----------------------------------------------------------
 
 #[derive(Clone)]
@@ -993,6 +1011,33 @@ impl DrustMcpService {
         Parameters(_): Parameters<EmptyParams>,
     ) -> Result<CallToolResult, McpError> {
         match oauth_tools::list_oauth_providers(&self.state.inner().pool).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Upsert an OAuth provider config for this tenant's \
+        end-user login flow. `provider` must be 'google' or 'github'. \
+        `client_id` / `client_secret` are the OAuth app credentials from \
+        the provider's console. `allowed_redirect_uris` is a non-empty list \
+        of full URIs the frontend may pass to `/oauth/{provider}/start` — \
+        each must be https:// or a localhost/127.0.0.1 URL. \
+        Replaces any existing row for the same provider. \
+        Returns {ok: true, provider}. \
+        Errors with INVALID_OAUTH_CONFIG on validation failure.")]
+    async fn set_oauth_provider(
+        &self,
+        Parameters(SetOauthProviderArgs { provider, client_id, client_secret, allowed_redirect_uris }): Parameters<SetOauthProviderArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match oauth_tools::set_oauth_provider(
+            &self.state.inner().pool,
+            provider,
+            client_id,
+            client_secret,
+            allowed_redirect_uris,
+        )
+        .await
+        {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
