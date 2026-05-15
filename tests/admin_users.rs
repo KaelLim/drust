@@ -594,6 +594,7 @@ async fn mcp_set_self_register_tool() {
         index_large_table_rows: 1_000_000,
         register_rl: Arc::new(IpRateLimit::new(3, std::time::Duration::from_secs(60), 4096)),
         login_rl: Arc::new(IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        oauth_callback_rl: Arc::new(IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
     };
     let stack = TenantStack {
         auth: state,

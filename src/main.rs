@@ -188,6 +188,7 @@ async fn main() -> anyhow::Result<()> {
             index_large_table_rows: cfg.index_large_table_rows,
             register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
             login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+            oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         },
         bus: bus.clone(),
         mcp: mcp_http,

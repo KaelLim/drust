@@ -345,6 +345,16 @@ pub(crate) async fn oauth_callback(
         None => return plain_text(StatusCode::BAD_REQUEST, "missing provider"),
     };
 
+    // Rate-limit before any DB hit (5 / 60 s / IP). Defends the
+    // provider-exchange path from brute-force replay. Plain `plain_text`
+    // (no cookie clear) so retry from the same browser still has cookies.
+    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
+    if !state.oauth_callback_rl.check(ip) {
+        return plain_text(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let ip_str = ip.to_string();
+
     // Step 1: provider exists.
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
@@ -486,8 +496,6 @@ pub(crate) async fn oauth_callback(
     // mint the session token. Single mutex acquisition prevents the race
     // where two concurrent callbacks for the same email both observe
     // "no row" → both INSERT → second hits UNIQUE.
-    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let ip_str = crate::safety::ip::client_ip(&headers, fallback_addr).to_string();
     let email_for_lookup = user.email.clone();
     let name_for_lookup = user.name.clone();
     let ip_for_session = ip_str.clone();
