@@ -495,6 +495,47 @@ async fn oauth_provider_error_returns_typed_redirect() {
     assert_redirect_contains(&resp, "oauth_error=oauth_provider_error");
 }
 
+// ---------- T21: email unverified ----------
+
+#[tokio::test]
+async fn oauth_email_unverified_rejected() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "kael@example.com".into(),
+        email_verified: false,
+        provider_user_id: "sub-1".into(),
+    };
+    let (app, _dir, _log) = spin_up_admin_with_google_fake(&fake).await;
+
+    // Full /start → /callback with real state+pkce cookies.
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/google/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state = extract_set_cookie(&start_resp, "drust_oauth_state").expect("state cookie set");
+    let pkce = extract_set_cookie(&start_resp, "drust_oauth_pkce").expect("pkce cookie set");
+
+    let cookie_hdr = format!("drust_oauth_state={state}; drust_oauth_pkce={pkce}");
+    let url = format!("/admin/oauth/google/callback?code=C&state={state}");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&url)
+                .header(header::COOKIE, cookie_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_redirect_contains(&resp, "oauth_error=oauth_email_unverified");
+}
+
 // ---------- T18: happy path github ----------
 
 #[tokio::test]
