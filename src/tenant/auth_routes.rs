@@ -224,6 +224,22 @@ pub async fn login_handler(
         _ => (String::new(), crate::auth::user::dummy_hash().to_owned()),
     };
     let op = format!("POST /auth/login");
+    // v1.12: OAuth-only account — short-circuit BEFORE argon2 verify so
+    // an OAuth-only user attempting password login gets the SAME 401 +
+    // audit shape as wrong-password / unknown-email (timing/info-leak
+    // parity). Never leak existence of OAuth-only status.
+    if crate::auth::oauth_sentinel::is_oauth_only(&phc) {
+        state.audit.append(
+            AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_401", "").with_extra(
+                serde_json::json!({"email": email}),
+            ),
+        );
+        return err(
+            StatusCode::UNAUTHORIZED,
+            "INVALID_CREDENTIALS",
+            "invalid email or password",
+        );
+    }
     let ok = crate::auth::user::verify_password(&body.password, &phc).unwrap_or(false);
     if !ok || uid.is_empty() {
         // S6: log email for correlation but never the attempted password.
@@ -533,6 +549,16 @@ pub async fn me_password_handler(
         Ok(s) => s,
         Err(_) => return err(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", ""),
     };
+    // v1.12: OAuth-only account cannot rotate password — there is no
+    // current password to verify. Tell the caller explicitly (unlike the
+    // login path, the user is authenticated so existence is not a secret).
+    if crate::auth::oauth_sentinel::is_oauth_only(&phc) {
+        return err(
+            StatusCode::CONFLICT,
+            "OAUTH_ONLY_NO_PASSWORD",
+            "this account has no password; set up password recovery via your OAuth provider",
+        );
+    }
     if !crate::auth::user::verify_password(&body.current_password, &phc).unwrap_or(false) {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
