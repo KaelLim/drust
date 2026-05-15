@@ -27,6 +27,17 @@ CREATE INDEX IF NOT EXISTS idx_system_sessions_user ON _system_sessions(user_id)
 CREATE INDEX IF NOT EXISTS idx_system_sessions_expires ON _system_sessions(expires_at);
 "#;
 
+pub const SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS _system_oauth_providers (
+  provider              TEXT PRIMARY KEY,
+  client_id             TEXT NOT NULL,
+  client_secret         TEXT NOT NULL,
+  allowed_redirect_uris TEXT NOT NULL,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"#;
+
 pub fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -55,6 +66,7 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     let tx = conn.transaction()?;
     tx.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)?;
+    tx.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS)?;
     add_column_if_missing(&tx, "_system_collection_meta", "owner_field", "TEXT")?;
     add_column_if_missing(&tx, "_system_collection_meta", "read_scope", "TEXT")?;
     add_column_if_missing(
@@ -127,6 +139,17 @@ mod tests {
         c.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS).unwrap();
         let n: i64 = c.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_sessions'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn create_system_oauth_providers_idempotent() {
+        let c = fresh();
+        c.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS).unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS).unwrap();
+        let n: i64 = c.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_oauth_providers'",
             [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
     }

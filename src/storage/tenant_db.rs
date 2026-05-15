@@ -105,6 +105,18 @@ CREATE TABLE IF NOT EXISTS "_system_rpc" (
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- v1.12: per-tenant OAuth provider configuration. Tenants register their
+-- own client_id / client_secret pairs for Google / GitHub / etc.; v1.12
+-- routing reads this table to dispatch /t/<id>/oauth/<provider>/* flows.
+CREATE TABLE IF NOT EXISTS "_system_oauth_providers" (
+  provider              TEXT PRIMARY KEY,
+  client_id             TEXT NOT NULL,
+  client_secret         TEXT NOT NULL,
+  allowed_redirect_uris TEXT NOT NULL,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 COMMIT;
 "#;
 
