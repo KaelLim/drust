@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.12.0 - 2026-05-15
+
+### Added — Per-tenant OAuth for end users (Google + GitHub)
+
+- `/drust/t/<tid>/oauth/<provider>/{start,callback}` — end users sign in
+  with a tenant's Google/GitHub app and receive a `drust_user_*` bearer
+  token via URL fragment (Supabase / Auth0 pattern). The 10-step
+  callback chain: provider config / state CSRF / PKCE / redirect_uri
+  allowlist with TOCTOU re-check / token exchange / email_verified /
+  `allow_self_register` gate / auto-link by email / auto-create with
+  `password_hash="$oauth-only$"` sentinel / user-session create / audit /
+  302 to frontend `<cb>#access_token=...&token_type=Bearer&expires_in=2592000`
+  or `<cb>#error=<code>`.
+- `_system_oauth_providers` per-tenant table (idempotent migration in
+  `src/storage/sqlite.rs`; fresh-tenant schema in `SCHEMA_SQL` includes
+  it from the start). Columns: `provider`, `client_id`, `client_secret`
+  (plaintext at rest, mode-600 SQLite file), `allowed_redirect_uris`
+  (comma-separated, exact-match validation), `created_at`, `updated_at`.
+- Admin REST `GET/PUT/DELETE /drust/t/<tid>/admin/oauth-providers[/{provider}]`
+  (service-key only; `client_secret` always redacted as `"***"` on GET;
+  PUT validates provider name in `{google, github}`, URL scheme, length,
+  allowlist non-empty + each entry parses as `https?://`).
+- 3 MCP tools (service-key): `set_oauth_provider`, `list_oauth_providers`,
+  `delete_oauth_provider` — mirror the REST shape 1:1.
+- Admin UI virtual sidebar entry `🔐 _oauth_providers` per tenant at
+  `/drust/admin/tenants/<id>/_oauth_providers` (Askama template, two-pane
+  shell, secrets masked in the listing, single shared form for upsert).
+- Sentinel `password_hash="$oauth-only$"` for OAuth-only users:
+  `login_handler` returns `401 INVALID_CREDENTIALS` (same-timing dummy
+  verify against `DUMMY_HASH`); `set_self_password` returns
+  `409 OAUTH_ONLY_NO_PASSWORD`.
+- Audit rows on every OAuth callback enriched with
+  `auth_method=oauth_<provider>`, `oauth_email`, `oauth_error_code`,
+  `auth_user_id` (on success). Failure rows carry the same fields with
+  the corresponding error_code value.
+- Per-IP rate-limit on `/callback` (5 events / 60 s, XFF[-2] resolution,
+  reuses v1.9 `IpRateLimit`). `/start` is cheap, not throttled.
+- `tests/tenant_oauth.rs` — 17 integration tests: happy paths (Google +
+  GitHub), state/PKCE, invalid_redirect (at-start + TOCTOU at callback),
+  provider error, email_unverified, not_allowed / auto_create / auto_link,
+  sentinel-blocks-password, cross-tenant isolation (config + users),
+  audit enrichment.
+- `src/oauth/` library (v1.11 admin OAuth) reused unchanged.
+  `TenantAuthState` gained
+  `oauth_adapter_override: Arc<HashMap<String, Arc<dyn OauthProvider>>>`
+  for test-only injection (empty `HashMap` in production).
+
+### Compatibility
+
+- Zero breaking changes; tenants without `_system_oauth_providers` rows
+  behave exactly as v1.11. The migration runs once per tenant on first
+  v1.12 boot.
+- Existing password login + v1.9 user-auth flows unchanged.
+- v1.11 admin OAuth unchanged.
+- 230 tests passing (201 lib + 12 admin OAuth + 17 tenant OAuth).
+
+### Manual smoke (release gate)
+
+- Configure Google in tenant T1 admin UI → end user runs OAuth from a
+  test frontend → token fragment lands at frontend → API call with
+  `Authorization: Bearer drust_user_*` succeeds against `/me`.
+- Same with GitHub.
+- Audit row carries `tenant=<tid>`, `auth_method=oauth_google`,
+  `oauth_email=<the_email>`, `auth_user_id=<uuid>`.
+- Cross-tenant: T2's service key against `/t/<T1_id>/admin/oauth-providers`
+  → 403.
+
 ## 1.11.1 - 2026-05-15
 
 ### Fixed — Production-only OAuth bugs caught in T29 manual smoke
