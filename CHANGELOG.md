@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.11.0 - 2026-05-15
+
+### Added — Admin OAuth login (Google + GitHub)
+
+- `/drust/login` accepts Google and GitHub OAuth in addition to
+  username + password. Both providers gated by env config; buttons
+  render only when both `CLIENT_ID` and `CLIENT_SECRET` of a provider
+  are set (partial config logs `warn` and skips that provider).
+- `admins.email` nullable column added (idempotent migration; partial
+  unique index `idx_admins_email` enforces uniqueness when present).
+  Use `set_admin_password --username <u> --email <addr>` to populate.
+- Email allowlist enforced via `DRUST_ADMIN_OAUTH_ALLOWED_EMAILS`
+  (comma-separated, lowercased on parse). Email-verified flag from the
+  provider is required; unverified emails return
+  `oauth_email_unverified`.
+- PKCE (RFC 7636 S256) + CSRF state cookie (constant-time compare via
+  `subtle::ct_eq`); conformant to RFC 9700 (OAuth 2.0 Security BCP).
+- New `src/oauth/` actor-agnostic library: `OauthProvider` trait +
+  Google OIDC adapter + GitHub OAuth 2.0 adapter + `ProviderRegistry`
+  driven from env. v1.12 per-tenant OAuth will plug into the same
+  trait.
+- Audit log gains `auth_method`, `oauth_email`, `oauth_error_code`
+  fields on admin-login rows; `tenant` / `token_hint` are `"-"` for
+  admin-plane rows.
+- New `.env.example` annotated reference and `docs/oauth-setup.md`
+  provider-registration walkthrough for self-hosters.
+- 12 integration tests in `tests/admin_oauth.rs` cover the foundation
+  (fake provider HTTP server) + 2 happy paths + 9 negative paths.
+
+### Compatibility
+
+- **Zero breaking changes.** Self-hosters not setting OAuth env vars
+  see no UI or behavior change.
+- Existing password login flow unchanged.
+- No tenant-side impact.
+- 186 lib tests + all integration tests pass.
+
+### Manual smoke (release gate, T29 — owner sign-off)
+
+- Google login → /drust/admin/tenants
+- GitHub login → /drust/admin/tenants
+- Password login still works on /drust/login
+- `audit-*.jsonl` rows carry `auth_method = "oauth_<provider>"`
+
 ## 1.10.1 - 2026-05-14
 
 ### Fixed — Code-review follow-ups for v1.10 vector search
