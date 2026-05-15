@@ -49,6 +49,8 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
         login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        public_url: String::new(),
+        oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
     };
     let stack = TenantStack {
         auth: state,
@@ -99,6 +101,8 @@ pub async fn spin_up_tenant_with_role(
         register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
         login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        public_url: String::new(),
+        oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
     };
     let stack = TenantStack {
         auth: state,
@@ -146,6 +150,8 @@ pub async fn spin_up_tenant_with_threshold(
         register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
         login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        public_url: String::new(),
+        oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
     };
     let stack = TenantStack {
         auth: state,
