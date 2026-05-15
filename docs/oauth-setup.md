@@ -264,6 +264,7 @@ callback with `#error=<code>` instead of `#access_token=...`. Codes:
 | `oauth_provider_error` | Provider token endpoint failed (network / bad client_secret / etc.) |
 | `oauth_email_unverified` | Provider returned `email_verified=false` |
 | `oauth_not_allowed` | New user but `allow_self_register=0` |
+| `oauth_session_error` | User row create or session insert failed (DB-level error) — 5xx-class; retryable |
 
 The corresponding audit row in `/admin/tenants/<id>/_logs` carries
 `auth_method=oauth_<provider>`, `oauth_email=<addr>`,

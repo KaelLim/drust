@@ -237,7 +237,7 @@ generation, hybrid (FTS5 + vector) ranking, `hamming` metric (needs
 bit-packed vectors), opt-in `fields=` to surface vectors on read,
 per-user-token owner-scoped search integration tests.
 
-Spec: `docs/superpowers/specs/2026-05-13-drust-vector-search-design.md`.
+Spec: `../docs/superpowers/specs/2026-05-13-drust-vector-search-design.md`.
 
 ## 1.9.0 - 2026-05-12
 
@@ -247,7 +247,7 @@ Drust gains a real notion of "end user" on top of the existing anon /
 service tokens. Tenants can register users, issue session-backed bearer
 tokens, and scope rows per-user via a declarative `owner_field` —
 without giving up the BaaS-shaped REST/MCP surface. Spec:
-[`docs/superpowers/specs/2026-05-09-drust-user-auth-design.md`](docs/superpowers/specs/2026-05-09-drust-user-auth-design.md).
+[`../docs/superpowers/specs/2026-05-09-drust-user-auth-design.md`](../docs/superpowers/specs/2026-05-09-drust-user-auth-design.md).
 
 - **New per-tenant tables** (auto-migrated on startup, soft-delete safe):
   - `_system_users` — `(id, email UNIQUE NOCASE, password_hash, verified,
@@ -1126,7 +1126,7 @@ populated.
 ### Added
 
 - **Garage (S3-compatible) integration** (X+ scope per
-  `docs/superpowers/specs/2026-04-21-garage-object-store-integration.md`).
+  `../docs/superpowers/specs/2026-04-21-garage-object-store-integration.md`).
   Optional, activated by setting `GARAGE_S3_ENDPOINT` in `.env`; drust
   without those env vars behaves exactly as before.
 - **Admin UI at `/drust/admin/public-files`** — list + upload +
