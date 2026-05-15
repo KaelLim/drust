@@ -681,3 +681,206 @@ pub async fn tenant_files_admin_page(
     )
     .into_response()
 }
+
+// ─── v1.12: per-tenant OAuth providers admin UI ──────────────────────────────
+
+#[derive(Template)]
+#[template(path = "tenant_oauth_providers.html")]
+struct TenantOauthProvidersPage {
+    version: &'static str,
+    tenant_id: String,
+    tenant_name: String,
+    providers: Vec<TenantOauthProviderRow>,
+    /// Driver list for `_collection_sidebar.html`.
+    collections: Vec<crate::storage::schema::Collection>,
+    /// Always `"_oauth_providers"` here — sidebar `.on` matching.
+    active_coll: String,
+    /// Surfaced after a failed upsert (validation / DB error). `None`
+    /// on the plain GET render.
+    error: Option<String>,
+}
+
+struct TenantOauthProviderRow {
+    provider: String,
+    client_id: String,
+    /// First 12 chars + ellipsis when long enough; otherwise full id.
+    client_id_short: String,
+    allowed_redirect_uris: Vec<String>,
+    updated_at: String,
+}
+
+impl TenantOauthProviderRow {
+    fn from_config(cfg: crate::tenant::oauth_config::OauthProviderConfig) -> Self {
+        let client_id_short = if cfg.client_id.chars().count() > 16 {
+            let truncated: String = cfg.client_id.chars().take(12).collect();
+            format!("{truncated}…")
+        } else {
+            cfg.client_id.clone()
+        };
+        Self {
+            provider: cfg.provider,
+            client_id: cfg.client_id,
+            client_id_short,
+            allowed_redirect_uris: cfg.allowed_redirect_uris,
+            updated_at: cfg.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct OauthProviderUpsertForm {
+    pub provider: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// Newline-separated list — the handler splits + trims + drops empties.
+    pub allowed_redirect_uris: String,
+}
+
+/// Internal: resolve tenant name (404 if missing/deleted) and pull the
+/// collection list for the sidebar. Mirrors what `_api_keys` does.
+async fn load_tenant_shell(
+    state: &TenantsState,
+    tenant_id: &str,
+) -> Result<(String, Vec<crate::storage::schema::Collection>), Response> {
+    let tenant_name: Option<String> = {
+        let conn = state.session.meta.lock().await;
+        conn.query_row(
+            "SELECT name FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tenant_id],
+            |r| r.get(0),
+        )
+        .ok()
+    };
+    let tenant_name = match tenant_name {
+        Some(n) => n,
+        None => {
+            return Err((StatusCode::NOT_FOUND, "no such tenant").into_response());
+        }
+    };
+    let collections = open_read(&state.data_dir, tenant_id)
+        .ok()
+        .and_then(|c| crate::storage::schema::list_collections(&c).ok())
+        .unwrap_or_default();
+    Ok((tenant_name, collections))
+}
+
+/// Render the page. Internal helper so the upsert handler can surface an
+/// error inline without an extra round-trip.
+async fn render_oauth_providers_page(
+    state: &TenantsState,
+    tenant_id: String,
+    error: Option<String>,
+) -> Response {
+    let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+
+    // Read the providers via the shared pool's reader (consistent with the
+    // REST admin endpoints, and uses the same connection cache).
+    let providers: Vec<TenantOauthProviderRow> = match state.tenants.get_or_open(&tenant_id) {
+        Ok(pool) => match pool
+            .with_reader(|c| crate::tenant::oauth_config::list(c))
+            .await
+        {
+            Ok(rows) => rows.into_iter().map(TenantOauthProviderRow::from_config).collect(),
+            Err(_) => vec![],
+        },
+        Err(_) => vec![],
+    };
+
+    Html(
+        TenantOauthProvidersPage {
+            version: env!("CARGO_PKG_VERSION"),
+            tenant_id,
+            tenant_name,
+            providers,
+            collections,
+            active_coll: "_oauth_providers".to_string(),
+            error,
+        }
+        .render()
+        .unwrap(),
+    )
+    .into_response()
+}
+
+/// `GET /admin/tenants/{id}/_oauth_providers`
+pub async fn tenant_oauth_providers_page(
+    State(state): State<TenantsState>,
+    Path(tenant_id): Path<String>,
+) -> Response {
+    render_oauth_providers_page(&state, tenant_id, None).await
+}
+
+/// `POST /admin/tenants/{id}/_oauth_providers` — upsert. Splits the
+/// textarea on newline, trims, drops empties, then calls the same
+/// `oauth_config::upsert` helper the REST admin endpoint uses. On error
+/// re-renders the page with the validation message in the inline banner;
+/// on success 303s back to the GET so a refresh doesn't resubmit.
+pub async fn tenant_oauth_provider_upsert(
+    State(state): State<TenantsState>,
+    Path(tenant_id): Path<String>,
+    Form(form): Form<OauthProviderUpsertForm>,
+) -> Response {
+    let uris: Vec<String> = form
+        .allowed_redirect_uris
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Pre-validate so we can show the message inline without ever opening
+    // the writer mutex.
+    if let Err(e) = crate::tenant::oauth_config::validate_upsert(
+        &form.provider,
+        &form.client_id,
+        &form.client_secret,
+        &uris,
+    ) {
+        return render_oauth_providers_page(&state, tenant_id, Some(e.to_string())).await;
+    }
+
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+    };
+    let provider = form.provider.clone();
+    let client_id = form.client_id.clone();
+    let client_secret = form.client_secret.clone();
+    let uris_owned = uris.clone();
+    let res: Result<(), String> = pool
+        .with_writer(move |c| {
+            crate::tenant::oauth_config::upsert(c, &provider, &client_id, &client_secret, &uris_owned)
+                .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))
+        })
+        .await
+        .map_err(|e| e.to_string());
+
+    match res {
+        Ok(()) => Redirect::to(&format!(
+            "/drust/admin/tenants/{tenant_id}/_oauth_providers"
+        ))
+        .into_response(),
+        Err(msg) => render_oauth_providers_page(&state, tenant_id, Some(msg)).await,
+    }
+}
+
+/// `POST /admin/tenants/{id}/_oauth_providers/{provider}/delete` —
+/// idempotent delete. Always redirects back to the list (no error banner
+/// needed; the row simply disappears).
+pub async fn tenant_oauth_provider_delete(
+    State(state): State<TenantsState>,
+    Path((tenant_id, provider)): Path<(String, String)>,
+) -> Response {
+    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+        let provider2 = provider.clone();
+        let _ = pool
+            .with_writer(move |c| crate::tenant::oauth_config::delete(c, &provider2))
+            .await;
+    }
+    Redirect::to(&format!(
+        "/drust/admin/tenants/{tenant_id}/_oauth_providers"
+    ))
+    .into_response()
+}
