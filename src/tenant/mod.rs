@@ -3,6 +3,7 @@ pub mod auth_routes;
 pub mod collections;
 pub mod events;
 pub mod mcp_dispatch;
+pub mod oauth_config;
 pub mod owner_field;
 pub mod query_endpoint;
 pub mod records;
