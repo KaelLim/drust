@@ -8,11 +8,11 @@
 
 use axum::body::Body;
 use axum::extract::Form;
-use axum::http::{Response, StatusCode, header};
+use axum::http::{Request, Response, StatusCode, header};
 use axum::response::Json;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use drust::mgmt::routes::{MgmtState, build_mgmt_router};
+use drust::mgmt::routes::MgmtState;
 use drust::oauth::ProviderRegistry;
 use drust::oauth::github::GitHubAdapter;
 use drust::oauth::google::GoogleAdapter;
@@ -23,6 +23,7 @@ use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tower::ServiceExt;
 
 // ---------- Fake provider server ----------
 
@@ -204,6 +205,10 @@ fn bootstrap_meta_with_email(data_dir: &std::path::Path, email: &str) -> rusqlit
 /// Spin up a mgmt router whose `oauth_registry` contains a `google`
 /// provider pointed at `fake.base_url`. Returns the router, the data
 /// tempdir (kept alive so SQLite files survive), and the audit log dir.
+///
+/// We use `state.with_data_dir(...)` (not the minimal `build_mgmt_router`)
+/// so the public sub-router that mounts `/admin/oauth/{provider}/...` is
+/// present — the OAuth routes live there, not on the bare login router.
 pub async fn spin_up_admin_with_google_fake(
     fake: &Arc<FakeProvider>,
 ) -> (axum::Router, TempDir, std::path::PathBuf) {
@@ -224,8 +229,8 @@ pub async fn spin_up_admin_with_google_fake(
     let registry = ProviderRegistry::from_providers(providers);
 
     let allow: HashSet<String> = ["kael@example.com".to_string()].into_iter().collect();
-    let state = build_state(conn, data_dir, log_dir.clone(), registry, allow);
-    (build_mgmt_router(state), dir, log_dir)
+    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry, allow);
+    (state.with_data_dir(data_dir), dir, log_dir)
 }
 
 /// Spin up a mgmt router whose `oauth_registry` contains a `github`
@@ -251,8 +256,8 @@ pub async fn spin_up_admin_with_github_fake(
     let registry = ProviderRegistry::from_providers(providers);
 
     let allow: HashSet<String> = ["kael@example.com".to_string()].into_iter().collect();
-    let state = build_state(conn, data_dir, log_dir.clone(), registry, allow);
-    (build_mgmt_router(state), dir, log_dir)
+    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry, allow);
+    (state.with_data_dir(data_dir), dir, log_dir)
 }
 
 /// Spin up a mgmt router with no OAuth providers — for T23 button-hidden
@@ -266,8 +271,8 @@ pub async fn spin_up_admin_no_oauth() -> (axum::Router, TempDir, std::path::Path
 
     let registry = ProviderRegistry::from_env_empty();
     let allow: HashSet<String> = HashSet::new();
-    let state = build_state(conn, data_dir, log_dir.clone(), registry, allow);
-    (build_mgmt_router(state), dir, log_dir)
+    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry, allow);
+    (state.with_data_dir(data_dir), dir, log_dir)
 }
 
 // ---------- Response helpers ----------
@@ -321,4 +326,57 @@ async fn fake_google_server_responds() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(body["id_token"].as_str().unwrap().contains("."));
+}
+
+// ---------- T17: happy path google ----------
+
+#[tokio::test]
+async fn oauth_happy_path_google() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "kael@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-google-1".into(),
+    };
+    let (app, _dir, _log) = spin_up_admin_with_google_fake(&fake).await;
+
+    // 1) /start: 302 to provider auth_url, with state + pkce cookies.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/google/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let state = extract_set_cookie(&resp, "drust_oauth_state").expect("state cookie set");
+    let pkce = extract_set_cookie(&resp, "drust_oauth_pkce").expect("pkce cookie set");
+    assert!(!state.is_empty());
+    assert!(!pkce.is_empty());
+
+    // 2) /callback with the same state + pkce cookies → 302 to /drust/admin/tenants
+    //    with a fresh drust_session cookie.
+    let cookie_hdr = format!("drust_oauth_state={state}; drust_oauth_pkce={pkce}");
+    let url = format!("/admin/oauth/google/callback?code=CODE-G&state={state}");
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&url)
+                .header(header::COOKIE, cookie_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_redirect_contains(&resp, "/drust/admin/tenants");
+    let session = extract_set_cookie(&resp, "drust_session").expect("session cookie set");
+    assert!(!session.is_empty());
+
+    // Sanity-check: the fake provider observed our code.
+    let observed = fake.last_code.lock().await.clone();
+    assert_eq!(observed.as_deref(), Some("CODE-G"));
 }
