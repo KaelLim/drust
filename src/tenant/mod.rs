@@ -302,6 +302,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             "/t/{tenant}/oauth/{provider}/start",
             get(oauth_routes::oauth_start),
         )
+        .route(
+            "/t/{tenant}/oauth/{provider}/callback",
+            get(oauth_routes::oauth_callback),
+        )
         .with_state(auth_state);
 
     let merged = core.merge(files_router).merge(auth_router);
