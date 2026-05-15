@@ -758,6 +758,188 @@ async fn tenant_oauth_only_user_password_login_rejected() {
     assert_eq!(v["error_code"], "INVALID_CREDENTIALS");
 }
 
+// ---------- T25: cross-tenant isolation + audit-logged-on-success ----------
+
+#[tokio::test]
+async fn tenant_oauth_cross_tenant_config_isolation() {
+    // Tenant A has Google configured; Tenant B has none. Hitting B's
+    // /oauth/google/start must NOT return Tenant A's adapter URL — the
+    // handler reads `_system_oauth_providers` from B's data.sqlite and
+    // returns 400 `oauth_misconfigured`.
+    let fake = spawn_fake_google().await;
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let log_dir = data_dir.join("audit");
+    std::fs::create_dir_all(&log_dir).unwrap();
+
+    let _tok_a = bootstrap_tenant_with_oauth(
+        &data_dir,
+        "ta",
+        true,
+        "google",
+        &["https://app.example.com/auth/callback"],
+    )
+    .await;
+    // Bootstrap tenant B WITHOUT inserting an oauth_providers row.
+    {
+        let conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
+        drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
+        conn.execute(
+            "INSERT INTO tenants (id, name, allow_self_register) VALUES ('tb', 'tb', 1)",
+            [],
+        )
+        .unwrap();
+        let tb_tok = generate_token();
+        let tb_hash = hash_token(&tb_tok);
+        conn.execute(
+            "INSERT INTO tokens (tenant_id, token_hash, label) VALUES ('tb', ?1, 'service')",
+            rusqlite::params![tb_hash],
+        )
+        .unwrap();
+        let tconn = drust::storage::tenant_db::open_write(&data_dir, "tb").unwrap();
+        drop(tconn);
+    }
+
+    let mut overrides: HashMap<String, Arc<dyn OauthProvider>> = HashMap::new();
+    overrides.insert(
+        "google".into(),
+        Arc::new(GoogleAdapter::new(
+            "ta-cid".into(),
+            "ta-sec".into(),
+            format!("{}/authorize", fake.base_url),
+            format!("{}/token", fake.base_url),
+        )),
+    );
+    let state = build_tenant_state(&data_dir, &log_dir, overrides);
+    let app = build_router(state);
+
+    // Tenant B has no providers row → 400 oauth_misconfigured.
+    let resp_b = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/t/tb/oauth/google/start?redirect_uri={u}",
+                    u = urlencoding::encode("https://app.example.com/auth/callback")
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp_b.status(), StatusCode::BAD_REQUEST);
+    let body_b = axum::body::to_bytes(resp_b.into_body(), 1024).await.unwrap();
+    assert!(
+        std::str::from_utf8(&body_b)
+            .unwrap()
+            .contains("oauth_misconfigured")
+    );
+
+    // Tenant A's /start STILL works for sanity.
+    let resp_a = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/t/ta/oauth/google/start?redirect_uri={u}",
+                    u = urlencoding::encode("https://app.example.com/auth/callback")
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp_a.status(), StatusCode::FOUND);
+}
+
+#[tokio::test]
+async fn tenant_oauth_cross_tenant_user_isolation() {
+    // Both tenants configure Google with the SAME allowed_redirect_uris.
+    // OAuth callback at /t/ta/oauth/google/callback inserts a row in ta's
+    // _system_users; tb's _system_users stays empty.
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "alice@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-cross".into(),
+    };
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let log_dir = data_dir.join("audit");
+    std::fs::create_dir_all(&log_dir).unwrap();
+
+    let _ta = bootstrap_tenant_with_oauth(
+        &data_dir,
+        "ta",
+        true,
+        "google",
+        &["https://app.example.com/auth/callback"],
+    )
+    .await;
+    let _tb = bootstrap_tenant_with_oauth(
+        &data_dir,
+        "tb",
+        true,
+        "google",
+        &["https://app.example.com/auth/callback"],
+    )
+    .await;
+
+    let mut overrides: HashMap<String, Arc<dyn OauthProvider>> = HashMap::new();
+    overrides.insert(
+        "google".into(),
+        Arc::new(GoogleAdapter::new(
+            "test-cid".into(),
+            "test-sec".into(),
+            format!("{}/authorize", fake.base_url),
+            format!("{}/token", fake.base_url),
+        )),
+    );
+    let state = build_tenant_state(&data_dir, &log_dir, overrides);
+    let app = build_router(state);
+
+    // Drive OAuth at ta only.
+    let resp = drive_callback(&app, "ta", "google", "https://app.example.com/auth/callback").await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(loc.contains("#access_token=drust_user_"), "loc={loc}");
+
+    // ta has one row, tb has zero.
+    let ta_conn = drust::storage::tenant_db::open_write(&data_dir, "ta").unwrap();
+    let n_a: i64 = ta_conn
+        .query_row("SELECT COUNT(*) FROM _system_users", [], |r| r.get(0))
+        .unwrap();
+    drop(ta_conn);
+    let tb_conn = drust::storage::tenant_db::open_write(&data_dir, "tb").unwrap();
+    let n_b: i64 = tb_conn
+        .query_row("SELECT COUNT(*) FROM _system_users", [], |r| r.get(0))
+        .unwrap();
+    drop(tb_conn);
+    assert_eq!(n_a, 1, "ta got the OAuth user");
+    assert_eq!(n_b, 0, "tb's _system_users stays empty");
+}
+
+#[tokio::test]
+async fn tenant_oauth_audit_logged_on_success() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "alice@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-1".into(),
+    };
+    let (app, _dir, tid, _service, log_dir) = spin_up_tenant_with_google_fake(&fake).await;
+    let frontend = "https://app.example.com/auth/callback";
+    let resp = drive_callback(&app, &tid, "google", frontend).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+
+    // Poll for the success row written by audit_oauth_success — `write_entry`
+    // is async (tokio::fs) so we may need to wait a beat.
+    let row = poll_for_audit_row(&log_dir, "oauth_google", 500).await;
+    assert_eq!(row["tenant"], tid);
+    assert_eq!(row["oauth_email"], "alice@example.com");
+    assert!(row["auth_user_id"].is_string(), "auth_user_id missing");
+    assert_eq!(row["status"], "ok");
+}
+
 // ---------- existing T21 smoke ----------
 
 #[tokio::test]
