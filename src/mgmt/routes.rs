@@ -3,7 +3,7 @@ use crate::auth::middleware::{build_session_cookie, clear_session_cookie};
 use crate::auth::session::{create_session, revoke_session};
 use askama::Template;
 use axum::Router;
-use axum::extract::{Form, State};
+use axum::extract::{Form, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -67,6 +67,8 @@ pub struct MgmtState {
 struct LoginPage {
     error: Option<String>,
     version: &'static str,
+    oauth_providers: Vec<&'static str>,
+    oauth_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,11 +77,22 @@ struct LoginForm {
     password: String,
 }
 
-async fn login_page() -> Html<String> {
+#[derive(Debug, Default, Deserialize)]
+struct LoginPageQuery {
+    #[serde(default)]
+    oauth_error: Option<String>,
+}
+
+async fn login_page(
+    State(state): State<MgmtState>,
+    Query(q): Query<LoginPageQuery>,
+) -> Html<String> {
     Html(
         LoginPage {
             error: None,
             version: env!("CARGO_PKG_VERSION"),
+            oauth_providers: state.oauth_registry.enabled_names(),
+            oauth_error: q.oauth_error,
         }
         .render()
         .unwrap(),
@@ -98,9 +111,9 @@ async fn login_submit(State(state): State<MgmtState>, Form(form): Form<LoginForm
     let admin_id = match row {
         Some((id, hash)) => match verify_password(&hash, &form.password) {
             Ok(true) => id,
-            _ => return unauthorized("Invalid credentials"),
+            _ => return unauthorized("Invalid credentials", &state),
         },
-        None => return unauthorized("Invalid credentials"),
+        None => return unauthorized("Invalid credentials", &state),
     };
     let ttl_secs = (state.session_ttl_days * 86_400) as i64;
     let token = match create_session(&mut conn, admin_id, ttl_secs) {
@@ -135,10 +148,12 @@ async fn root_redirect() -> Redirect {
     Redirect::to("/drust/admin/tenants")
 }
 
-fn unauthorized(msg: &str) -> Response {
+fn unauthorized(msg: &str, state: &MgmtState) -> Response {
     let body = LoginPage {
         error: Some(msg.to_string()),
         version: env!("CARGO_PKG_VERSION"),
+        oauth_providers: state.oauth_registry.enabled_names(),
+        oauth_error: None,
     }
     .render()
     .unwrap();
