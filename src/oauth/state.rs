@@ -41,7 +41,7 @@ pub fn verify_state(cookie: &str, query: &str) -> bool {
 /// be derived from the request's `X-Forwarded-Proto` header.
 pub fn state_cookie(state: &str, secure: bool) -> Cookie<'static> {
     Cookie::build((STATE_COOKIE, state.to_string()))
-        .path("/admin")
+        .path("/drust/admin")
         .http_only(true)
         .same_site(SameSite::Lax)
         .secure(secure)
@@ -51,7 +51,7 @@ pub fn state_cookie(state: &str, secure: bool) -> Cookie<'static> {
 
 pub fn clear_state_cookie() -> Cookie<'static> {
     Cookie::build((STATE_COOKIE, String::new()))
-        .path("/admin")
+        .path("/drust/admin")
         .max_age(cookie::time::Duration::ZERO)
         .build()
 }
@@ -67,7 +67,7 @@ pub fn issue_pkce() -> (String, String) {
 
 pub fn pkce_cookie(verifier: &str, secure: bool) -> Cookie<'static> {
     Cookie::build((PKCE_COOKIE, verifier.to_string()))
-        .path("/admin")
+        .path("/drust/admin")
         .http_only(true)
         .same_site(SameSite::Lax)
         .secure(secure)
@@ -77,7 +77,7 @@ pub fn pkce_cookie(verifier: &str, secure: bool) -> Cookie<'static> {
 
 pub fn clear_pkce_cookie() -> Cookie<'static> {
     Cookie::build((PKCE_COOKIE, String::new()))
-        .path("/admin")
+        .path("/drust/admin")
         .max_age(cookie::time::Duration::ZERO)
         .build()
 }
@@ -137,5 +137,28 @@ mod tests {
         let (v, c) = issue_pkce();
         let want = URL_SAFE_NO_PAD.encode(Sha256::digest(v.as_bytes()));
         assert_eq!(c, want);
+    }
+
+    /// Path attribute must match the browser-facing URL prefix that Caddy
+    /// adds (`/drust/*` via `handle_path`). If this drifts back to `/admin`,
+    /// browsers stop sending the cookie on `/drust/admin/oauth/...` callback
+    /// requests and every login fails with `oauth_state_mismatch`.
+    /// Integration tests in `tests/admin_oauth.rs` bypass Caddy and won't
+    /// catch this — this unit test is the regression guard.
+    #[test]
+    fn cookie_paths_match_caddy_prefix() {
+        for cookie in [
+            state_cookie("s", true),
+            pkce_cookie("v", true),
+            clear_state_cookie(),
+            clear_pkce_cookie(),
+        ] {
+            assert_eq!(
+                cookie.path(),
+                Some("/drust/admin"),
+                "cookie {} has wrong Path",
+                cookie.name()
+            );
+        }
     }
 }
