@@ -156,7 +156,7 @@
             {% if let Some(m) = e.auth_method %}<dt>auth_method</dt><dd>{{ m }}</dd>{% endif %}
             {% if let Some(em) = e.oauth_email %}<dt>oauth_email</dt><dd>{{ em }}</dd>{% endif %}
             {% if let Some(ec) = e.oauth_error_code %}<dt>oauth_error_code</dt><dd><b style="color:var(--warn);">{{ ec }}</b></dd>{% endif %}
-            {% if let Some(xj) = e.extra_as_json() %}<dt>extra</dt><dd><pre class="audit-err">{{ xj }}</pre></dd>{% endif %}
+            {% if let Some(xj) = e.extra_as_json() %}<dt>extra</dt><dd><pre class="audit-extras">{{ xj }}</pre></dd>{% endif %}
           </dl>
         </details>
       </td></tr>
