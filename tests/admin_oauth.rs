@@ -381,6 +381,48 @@ async fn oauth_happy_path_google() {
     assert_eq!(observed.as_deref(), Some("CODE-G"));
 }
 
+// ---------- T19: state mismatch + missing state cookie ----------
+
+#[tokio::test]
+async fn oauth_state_mismatch_rejected() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, _log) = spin_up_admin_with_google_fake(&fake).await;
+
+    // Cookie says ORIGINAL, query says DIFFERENT.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/google/callback?code=C&state=DIFFERENT")
+                .header(
+                    header::COOKIE,
+                    "drust_oauth_state=ORIGINAL; drust_oauth_pkce=V",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_redirect_contains(&resp, "oauth_error=oauth_state_mismatch");
+}
+
+#[tokio::test]
+async fn oauth_missing_state_cookie_rejected() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, _log) = spin_up_admin_with_google_fake(&fake).await;
+
+    // No state cookie present → cookie value defaults to "" → verify_state fails.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/google/callback?code=C&state=ANYTHING")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_redirect_contains(&resp, "oauth_error=oauth_state_mismatch");
+}
+
 // ---------- T18: happy path github ----------
 
 #[tokio::test]
