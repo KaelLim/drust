@@ -172,6 +172,17 @@ mod tests {
     }
 
     #[test]
+    fn create_system_webhooks_idempotent() {
+        let c = fresh();
+        c.execute_batch(SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS).unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS).unwrap(); // second run is a no-op
+        let n: i64 = c.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_webhooks'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
     fn add_column_if_missing_adds_once() {
         let c = fresh();
         c.execute("CREATE TABLE t (a TEXT)", []).unwrap();
