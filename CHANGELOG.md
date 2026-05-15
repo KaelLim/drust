@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.12.3 - 2026-05-15
+
+Patch release: fix MCP HTTP idle-timeout that forced Claude Code clients to manually `/mcp` reconnect every few minutes.
+
+### Fixed
+
+- `src/mcp/http_registry.rs` now sets `LocalSessionManager::session_config.keep_alive = 24h` (was rmcp default 5 min). Interactive MCP clients (Claude Code) idle for >5 min would otherwise hit `HTTP 404 Session not found` on the next tool call and have no auto-recovery; a 24h window covers a typical workday while still letting CC's daily restart cycle GC zombie sessions naturally.
+
 ## 1.12.2 - 2026-05-15
 
 Patch release: auth-surface forensic hardening + doc drift fixes from the v1.9–v1.12 cross-version horizontal review. No schema or API changes.
