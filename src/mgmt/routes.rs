@@ -1,4 +1,4 @@
-use crate::auth::admin::verify_password;
+use crate::auth::admin::{dummy_hash, verify_password};
 use crate::auth::middleware::{build_session_cookie, clear_session_cookie};
 use crate::auth::session::{create_session, revoke_session};
 use askama::Template;
@@ -100,6 +100,7 @@ async fn login_page(
 }
 
 async fn login_submit(State(state): State<MgmtState>, Form(form): Form<LoginForm>) -> Response {
+    let op = "POST /login";
     let mut conn = state.meta.lock().await;
     let row: Option<(i64, String)> = conn
         .query_row(
@@ -108,19 +109,41 @@ async fn login_submit(State(state): State<MgmtState>, Form(form): Form<LoginForm
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok();
-    let admin_id = match row {
-        Some((id, hash)) => match verify_password(&hash, &form.password) {
-            Ok(true) => id,
-            _ => return unauthorized("Invalid credentials", &state),
-        },
-        None => return unauthorized("Invalid credentials", &state),
+    let (admin_id, phc) = match row {
+        Some((id, hash)) => (id, hash),
+        None => {
+            // S1: spend one argon2 verify so timing matches the wrong-password
+            // path — prevents admin username existence leaking via wall-clock.
+            let _ = verify_password(dummy_hash(), &form.password);
+            let mut entry =
+                crate::safety::audit::AuditEntry::failure("-", "-", op, 0, "HTTP_401", "");
+            entry.auth_method = Some("password".to_string());
+            entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
+            crate::safety::audit::write_entry(&state.log_dir, &entry).await;
+            return unauthorized("Invalid credentials", &state);
+        }
     };
+    match verify_password(&phc, &form.password) {
+        Ok(true) => {}
+        _ => {
+            let mut entry =
+                crate::safety::audit::AuditEntry::failure("-", "-", op, 0, "HTTP_401", "");
+            entry.auth_method = Some("password".to_string());
+            entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
+            crate::safety::audit::write_entry(&state.log_dir, &entry).await;
+            return unauthorized("Invalid credentials", &state);
+        }
+    }
     let ttl_secs = (state.session_ttl_days * 86_400) as i64;
     let token = match create_session(&mut conn, admin_id, ttl_secs) {
         Ok(t) => t,
         Err(e) => return internal(e.to_string()),
     };
     drop(conn);
+    let mut entry = crate::safety::audit::AuditEntry::success("-", "-", op, 0)
+        .with_extra(serde_json::json!({ "admin_id": admin_id, "auth_kind": "admin" }));
+    entry.auth_method = Some("password".to_string());
+    crate::safety::audit::write_entry(&state.log_dir, &entry).await;
     let cookie = build_session_cookie(&token, state.session_ttl_days * 86_400);
     let mut resp = Redirect::to("/drust/admin/tenants").into_response();
     resp.headers_mut()

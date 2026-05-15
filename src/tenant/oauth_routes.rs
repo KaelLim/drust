@@ -224,7 +224,7 @@ async fn audit_oauth_success(
 ) {
     let op = format!("GET /t/{tid}/oauth/{provider}/callback");
     let mut entry = crate::safety::audit::AuditEntry::success(tid, "-", &op, 0)
-        .with_extra(serde_json::json!({ "auth_user_id": user_id }));
+        .with_extra(serde_json::json!({ "auth_user_id": user_id, "auth_kind": "user" }));
     entry.auth_method = Some(format!("oauth_{provider}"));
     entry.oauth_email = Some(sanitize_email(email));
     crate::safety::audit::write_entry(state.audit.log_dir(), &entry).await;
@@ -239,7 +239,8 @@ async fn audit_oauth_failure(
 ) {
     let op = format!("GET /t/{tid}/oauth/{provider}/callback");
     let mut entry =
-        crate::safety::audit::AuditEntry::failure(tid, "-", &op, 0, "HTTP_400", "");
+        crate::safety::audit::AuditEntry::failure(tid, "-", &op, 0, "HTTP_400", "")
+            .with_extra(serde_json::json!({ "auth_kind": "user" }));
     entry.auth_method = Some(format!("oauth_{provider}"));
     entry.oauth_email = email.map(sanitize_email);
     entry.oauth_error_code = Some(error_code.to_string());

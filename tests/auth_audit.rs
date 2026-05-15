@@ -145,6 +145,81 @@ async fn authed_request_carries_auth_kind() {
     );
 }
 
+// ---------- T2/T3: auth_kind + auth_method on password flows ----------
+
+#[tokio::test]
+async fn register_success_carries_auth_kind_user_and_auth_method_password() {
+    let (app, tid, _svc, _anon, dir) =
+        helpers::spin_up_dual_role_self_register("t-aud5").await;
+    let _ = app
+        .oneshot(post_json(
+            &tid,
+            "/auth/register",
+            json!({"email": "reg5@x.com", "password": "longpassword"}),
+        ))
+        .await
+        .unwrap();
+    flush_audit().await;
+    let lines = read_audit_lines(dir.path());
+    let row = lines
+        .iter()
+        .find(|l| l["op"].as_str().unwrap_or("").contains("/auth/register"))
+        .expect("audit must record /auth/register");
+    assert_eq!(
+        row["auth_kind"].as_str().unwrap_or(""),
+        "user",
+        "register row must carry auth_kind=user: {row}"
+    );
+    assert_eq!(
+        row["auth_method"].as_str().unwrap_or(""),
+        "password",
+        "register row must carry auth_method=password: {row}"
+    );
+}
+
+#[tokio::test]
+async fn login_failure_carries_auth_kind_user_and_auth_method_password() {
+    let (app, tid, _svc, _anon, dir) =
+        helpers::spin_up_dual_role_self_register("t-aud6").await;
+    // Register first so we get a real user row, then fail with wrong pw.
+    let _ = app
+        .clone()
+        .oneshot(post_json(
+            &tid,
+            "/auth/register",
+            json!({"email": "fail6@x.com", "password": "longpassword"}),
+        ))
+        .await
+        .unwrap();
+    let _ = app
+        .oneshot(post_json(
+            &tid,
+            "/auth/login",
+            json!({"email": "fail6@x.com", "password": "WRONG-PASSWORD"}),
+        ))
+        .await
+        .unwrap();
+    flush_audit().await;
+    let lines = read_audit_lines(dir.path());
+    let row = lines
+        .iter()
+        .find(|l| {
+            l["op"].as_str().unwrap_or("").contains("/auth/login")
+                && l["status"] == "error"
+        })
+        .expect("audit must record a failed /auth/login");
+    assert_eq!(
+        row["auth_kind"].as_str().unwrap_or(""),
+        "user",
+        "login failure row must carry auth_kind=user: {row}"
+    );
+    assert_eq!(
+        row["auth_method"].as_str().unwrap_or(""),
+        "password",
+        "login failure row must carry auth_method=password: {row}"
+    );
+}
+
 #[tokio::test]
 async fn user_request_carries_auth_user_id() {
     let (app, tid, _svc, _anon, dir) =

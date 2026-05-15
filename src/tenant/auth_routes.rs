@@ -118,12 +118,14 @@ pub async fn register_handler(
     let op = format!("POST /auth/register");
     match inserted {
         Ok(_) => {
-            state.audit.append(
+            let mut entry =
                 AuditEntry::success(&tenant_id, "-", &op, 0).with_extra(serde_json::json!({
                     "email": email,
                     "auth_user_id": user_id,
-                })),
-            );
+                    "auth_kind": "user",
+                }));
+            entry.auth_method = Some("password".to_string());
+            state.audit.append(entry);
             (
                 StatusCode::CREATED,
                 Json(json!({"user_id": user_id, "email": email, "created_at": now})),
@@ -131,11 +133,12 @@ pub async fn register_handler(
                 .into_response()
         }
         Err(e) if e.to_string().contains("UNIQUE") => {
-            state.audit.append(
+            let mut entry =
                 AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_409", "").with_extra(
-                    serde_json::json!({"email": email}),
-                ),
-            );
+                    serde_json::json!({"email": email, "auth_kind": "user"}),
+                );
+            entry.auth_method = Some("password".to_string());
+            state.audit.append(entry);
             err(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already registered")
         }
         Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
@@ -235,11 +238,12 @@ pub async fn login_handler(
             &body.password,
             crate::auth::user::dummy_hash(),
         );
-        state.audit.append(
+        let mut entry =
             AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_401", "").with_extra(
-                serde_json::json!({"email": email}),
-            ),
-        );
+                serde_json::json!({"email": email, "auth_kind": "user"}),
+            );
+        entry.auth_method = Some("password".to_string());
+        state.audit.append(entry);
         return err(
             StatusCode::UNAUTHORIZED,
             "INVALID_CREDENTIALS",
@@ -249,11 +253,12 @@ pub async fn login_handler(
     let ok = crate::auth::user::verify_password(&body.password, &phc).unwrap_or(false);
     if !ok || uid.is_empty() {
         // S6: log email for correlation but never the attempted password.
-        state.audit.append(
+        let mut entry =
             AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_401", "").with_extra(
-                serde_json::json!({"email": email}),
-            ),
-        );
+                serde_json::json!({"email": email, "auth_kind": "user"}),
+            );
+        entry.auth_method = Some("password".to_string());
+        state.audit.append(entry);
         return err(
             StatusCode::UNAUTHORIZED,
             "INVALID_CREDENTIALS",
@@ -273,13 +278,15 @@ pub async fn login_handler(
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "SESSION_INSERT", ""),
     };
     let exp = chrono::Utc::now() + chrono::Duration::days(30);
-    state.audit.append(
+    let mut entry =
         AuditEntry::success(&tenant_id, "-", &op, 0).with_extra(serde_json::json!({
             "email": email,
             "auth_user_id": uid,
             "ip_at_login": ip.to_string(),
-        })),
-    );
+            "auth_kind": "user",
+        }));
+    entry.auth_method = Some("password".to_string());
+    state.audit.append(entry);
     (
         StatusCode::OK,
         Json(serde_json::json!({
