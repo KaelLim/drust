@@ -8,8 +8,10 @@
 //!
 //! Auth: service-only. The `bearer_auth_layer` attaches `AuthCtx` as a
 //! request extension; we gate on `AuthCtx::Service` here (mirrors
-//! `admin_user_routes`). Audit is handled by the bearer middleware — no
-//! per-handler audit wiring needed.
+//! `admin_user_routes`). Audit: the bearer middleware writes the base row
+//! (op + status); PUT and DELETE additionally attach `AuditExtra` —
+//! `{provider, redirect_uris_count}` on PUT, `{provider}` on DELETE — for
+//! forensic correlation, matching the v1.9 admin-user-route precedent.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -164,6 +166,8 @@ pub async fn put_oauth_provider_handler(
     let client_id = body.client_id;
     let client_secret = body.client_secret;
     let uris = body.allowed_redirect_uris;
+    // Capture before move into the writer closure — needed for AuditExtra.
+    let uris_count = uris.len();
     let res = pool
         .with_writer(move |c| {
             oauth_config::upsert(c, &provider2, &client_id, &client_secret, &uris)
@@ -179,11 +183,19 @@ pub async fn put_oauth_provider_handler(
         })
         .await;
     match res {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "ok": true, "provider": provider })),
-        )
-            .into_response(),
+        Ok(()) => {
+            let mut resp = (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "provider": &provider })),
+            )
+                .into_response();
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(json!({
+                    "provider": provider,
+                    "redirect_uris_count": uris_count,
+                })));
+            resp
+        }
         Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     }
 }
@@ -213,7 +225,14 @@ pub async fn delete_oauth_provider_handler(
         .with_writer(move |c| oauth_config::delete(c, &provider2))
         .await;
     match res {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            let mut resp = StatusCode::NO_CONTENT.into_response();
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(json!({
+                    "provider": provider,
+                })));
+            resp
+        }
         Ok(false) => err(
             StatusCode::NOT_FOUND,
             "NOT_FOUND",
