@@ -31,6 +31,17 @@ pub struct TenantAuthState {
     /// Defends the provider-exchange path (one DB write + one outbound HTTP) from
     /// brute-force replay of attacker-supplied `code` + `state` pairs.
     pub oauth_callback_rl: Arc<IpRateLimit>,
+    /// Public-facing base URL drust serves on, e.g. `https://drust.example.com`.
+    /// Read once at TenantStack construction (from `DRUST_PUBLIC_URL`) and
+    /// pinned here so OAuth handlers don't have to re-read env per request
+    /// — keeps integration tests free of env-var pollution.
+    pub public_url: String,
+    /// Test-only override for `build_adapter` in `oauth_routes`. Empty in
+    /// production (handlers fall back to `GoogleAdapter::production(...)` /
+    /// `GitHubAdapter::production(...)`). Tests populate this with fake
+    /// adapters pointed at a local `spawn_fake_google()` HTTP server.
+    pub oauth_adapter_override:
+        Arc<std::collections::HashMap<String, Arc<dyn crate::oauth::provider::OauthProvider>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

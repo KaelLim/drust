@@ -36,6 +36,8 @@ async fn app() -> (Router, String, tempfile::TempDir) {
         register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(3, Duration::from_secs(60), 4096)),
         login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        public_url: String::new(),
+        oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
     };
     // Need to seed tenant data file
     let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();

@@ -154,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
         mcp: mcp_http.clone(),
         bus: bus.clone(),
         index_large_table_rows: cfg.index_large_table_rows,
-        public_url,
+        public_url: public_url.clone(),
         oauth_registry,
         oauth_allowlist,
     };
@@ -189,6 +189,8 @@ async fn main() -> anyhow::Result<()> {
             register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
             login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
             oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+            public_url,
+            oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
         },
         bus: bus.clone(),
         mcp: mcp_http,

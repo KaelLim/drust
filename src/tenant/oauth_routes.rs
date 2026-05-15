@@ -90,15 +90,23 @@ pub(crate) fn secure_from_headers(h: &axum::http::HeaderMap) -> bool {
 /// name, but a stale row from a future drust release (or hand-edited
 /// SQL) could carry an unknown value — returning None instead of
 /// panicking keeps the request handler honest.
+///
+/// Tests inject fake adapters via `state.oauth_adapter_override`; in
+/// production that map is empty and we fall through to
+/// `GoogleAdapter::production` / `GitHubAdapter::production`.
 pub(crate) fn build_adapter(
+    state: &TenantAuthState,
     cfg: &oauth_config::OauthProviderConfig,
-) -> Option<Box<dyn OauthProvider>> {
+) -> Option<std::sync::Arc<dyn OauthProvider>> {
+    if let Some(over) = state.oauth_adapter_override.get(&cfg.provider) {
+        return Some(over.clone());
+    }
     match cfg.provider.as_str() {
-        "google" => Some(Box::new(GoogleAdapter::production(
+        "google" => Some(std::sync::Arc::new(GoogleAdapter::production(
             cfg.client_id.clone(),
             cfg.client_secret.clone(),
         ))),
-        "github" => Some(Box::new(GitHubAdapter::production(
+        "github" => Some(std::sync::Arc::new(GitHubAdapter::production(
             cfg.client_id.clone(),
             cfg.client_secret.clone(),
         ))),
@@ -172,17 +180,16 @@ pub(crate) async fn oauth_start(
     let csrf_state = oauth_state::issue_state();
     let (pkce_verifier, pkce_challenge) = oauth_state::issue_pkce();
 
-    let public_url = std::env::var("DRUST_PUBLIC_URL").unwrap_or_default();
-    if public_url.is_empty() {
+    if state.public_url.is_empty() {
         return plain_text(
             StatusCode::INTERNAL_SERVER_ERROR,
             "DRUST_PUBLIC_URL not set",
         );
     }
     let drust_callback =
-        format!("{public_url}/drust/t/{tid}/oauth/{provider_name}/callback");
+        format!("{pu}/drust/t/{tid}/oauth/{provider_name}/callback", pu = state.public_url);
 
-    let adapter = match build_adapter(&cfg) {
+    let adapter = match build_adapter(&state, &cfg) {
         Some(a) => a,
         None => return plain_text(StatusCode::BAD_REQUEST, "oauth_misconfigured"),
     };
@@ -423,8 +430,7 @@ pub(crate) async fn oauth_callback(
     // Step 5: exchange code+verifier with the provider.
     // Mirror /start: refuse early when public URL isn't configured rather
     // than letting the provider return an opaque oauth_provider_error.
-    let public_url = std::env::var("DRUST_PUBLIC_URL").unwrap_or_default();
-    if public_url.is_empty() {
+    if state.public_url.is_empty() {
         return plain_text_clear_cookies(
             StatusCode::INTERNAL_SERVER_ERROR,
             "DRUST_PUBLIC_URL not set",
@@ -432,8 +438,8 @@ pub(crate) async fn oauth_callback(
         );
     }
     let drust_callback =
-        format!("{public_url}/drust/t/{tid}/oauth/{provider_name}/callback");
-    let adapter = match build_adapter(&cfg) {
+        format!("{pu}/drust/t/{tid}/oauth/{provider_name}/callback", pu = state.public_url);
+    let adapter = match build_adapter(&state, &cfg) {
         Some(a) => a,
         None => {
             return plain_text_clear_cookies(
