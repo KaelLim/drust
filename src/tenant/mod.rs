@@ -298,6 +298,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     let auth_router = Router::new()
         .route("/t/{tenant}/auth/register", post(register_handler))
         .route("/t/{tenant}/auth/login", post(login_handler))
+        .route(
+            "/t/{tenant}/oauth/{provider}/start",
+            get(oauth_routes::oauth_start),
+        )
         .with_state(auth_state);
 
     let merged = core.merge(files_router).merge(auth_router);
