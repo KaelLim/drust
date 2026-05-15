@@ -252,7 +252,8 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         )
         .route(
             "/t/{tenant}/admin/oauth-providers/{provider}",
-            put(oauth_admin_routes::put_oauth_provider_handler),
+            put(oauth_admin_routes::put_oauth_provider_handler)
+                .delete(oauth_admin_routes::delete_oauth_provider_handler),
         )
         .route(
             "/t/{tenant}/mcp",

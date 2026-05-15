@@ -187,3 +187,38 @@ pub async fn put_oauth_provider_handler(
         Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     }
 }
+
+pub async fn delete_oauth_provider_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+) -> Response {
+    if let Some(r) = require_service_ctx(&ctx) {
+        return r;
+    }
+    let tid = match get_tid(&params) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let provider = match get_provider(&params) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let pool = match state.registry.get_or_open(&tid) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let provider2 = provider.clone();
+    let res = pool
+        .with_writer(move |c| oauth_config::delete(c, &provider2))
+        .await;
+    match res {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => err(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "provider not configured",
+        ),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+    }
+}
