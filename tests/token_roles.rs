@@ -63,6 +63,7 @@ async fn tenant_with_two_tokens(tenant: &str) -> (axum::Router, String, String, 
         index_large_table_rows: 1_000_000,
         register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(3, Duration::from_secs(60), 4096)),
         login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     let stack = TenantStack {
         auth: state,

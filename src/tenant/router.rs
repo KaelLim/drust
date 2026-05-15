@@ -27,6 +27,10 @@ pub struct TenantAuthState {
     pub register_rl: Arc<IpRateLimit>,
     /// Per-IP rate limiter for POST /auth/login. Default: 5 per 60 s.
     pub login_rl: Arc<IpRateLimit>,
+    /// Per-IP rate limiter for GET /oauth/{provider}/callback. Default: 5 per 60 s.
+    /// Defends the provider-exchange path (one DB write + one outbound HTTP) from
+    /// brute-force replay of attacker-supplied `code` + `state` pairs.
+    pub oauth_callback_rl: Arc<IpRateLimit>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

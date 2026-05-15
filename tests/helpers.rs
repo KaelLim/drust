@@ -48,6 +48,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         index_large_table_rows: 1_000_000,
         register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
         login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     let stack = TenantStack {
         auth: state,
@@ -97,6 +98,7 @@ pub async fn spin_up_tenant_with_role(
         index_large_table_rows: 1_000_000,
         register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
         login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     let stack = TenantStack {
         auth: state,
@@ -143,6 +145,7 @@ pub async fn spin_up_tenant_with_threshold(
         index_large_table_rows,
         register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
         login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
     let stack = TenantStack {
         auth: state,
