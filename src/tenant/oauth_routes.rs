@@ -16,6 +16,40 @@ use axum::http::{StatusCode, header};
 use axum::response::Response;
 use std::collections::HashMap;
 
+#[derive(serde::Deserialize)]
+pub(crate) struct CallbackQuery {
+    pub(crate) code: String,
+    pub(crate) state: String,
+}
+
+/// Redirect back to the validated frontend with `#error=<code>`. Caller
+/// MUST have validated `frontend_redirect_uri` against the allowlist
+/// before invoking — private helper.
+fn redirect_with_fragment_error(frontend: &str, code: &str, tid: &str) -> Response {
+    let loc = format!("{frontend}#error={code}");
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(header::LOCATION, loc)
+        .header(header::SET_COOKIE, clear_cookie(STATE_COOKIE, tid))
+        .header(header::SET_COOKIE, clear_cookie(PKCE_COOKIE, tid))
+        .header(header::SET_COOKIE, clear_cookie(REDIRECT_URI_COOKIE, tid))
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+fn parse_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    for kv in raw.split(';') {
+        let kv = kv.trim();
+        if let Some((k, v)) = kv.split_once('=')
+            && k == name
+        {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
 pub(crate) const STATE_COOKIE: &str = "drust_t_oauth_state";
 pub(crate) const PKCE_COOKIE: &str = "drust_t_oauth_pkce";
 pub(crate) const REDIRECT_URI_COOKIE: &str = "drust_t_oauth_redirect_uri";
@@ -40,7 +74,6 @@ pub(crate) fn set_cookie(name: &str, value: &str, tid: &str, secure: bool) -> St
     format!("{name}={value}; {attrs}", attrs = cookie_attrs(tid, secure))
 }
 
-#[allow(dead_code)]
 pub(crate) fn clear_cookie(name: &str, tid: &str) -> String {
     format!("{name}=; Path=/drust/t/{tid}/oauth/; Max-Age=0; HttpOnly; SameSite=Lax")
 }
@@ -158,6 +191,66 @@ pub(crate) async fn oauth_start(
         )
         .body(axum::body::Body::empty())
         .unwrap()
+}
+
+pub(crate) async fn oauth_callback(
+    Path(params): Path<HashMap<String, String>>,
+    State(state): State<TenantAuthState>,
+    Query(q): Query<CallbackQuery>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let tid = match params.get("tenant") {
+        Some(t) => t.clone(),
+        None => return plain_text(StatusCode::BAD_REQUEST, "missing tenant"),
+    };
+    let provider_name = match params.get("provider") {
+        Some(p) => p.clone(),
+        None => return plain_text(StatusCode::BAD_REQUEST, "missing provider"),
+    };
+
+    // Step 1: provider exists.
+    let pool = match state.registry.get_or_open(&tid) {
+        Ok(p) => p,
+        Err(_) => return plain_text(StatusCode::NOT_FOUND, "tenant not found"),
+    };
+    let provider_name_for_lookup = provider_name.clone();
+    let cfg_opt = pool
+        .with_reader(move |c| oauth_config::get(c, &provider_name_for_lookup))
+        .await;
+    let cfg = match cfg_opt {
+        Ok(Some(c)) => c,
+        Ok(None) => return plain_text(StatusCode::BAD_REQUEST, "oauth_misconfigured"),
+        Err(_) => return plain_text(StatusCode::INTERNAL_SERVER_ERROR, "db error"),
+    };
+
+    // Step 2: state cookie matches query state (constant-time).
+    let cookie_state = parse_cookie(&headers, STATE_COOKIE).unwrap_or_default();
+    if !crate::oauth::state::verify_state(&cookie_state, &q.state) {
+        return plain_text(StatusCode::BAD_REQUEST, "oauth_state_mismatch");
+    }
+
+    // Step 3: PKCE verifier present.
+    let pkce_verifier = parse_cookie(&headers, PKCE_COOKIE).unwrap_or_default();
+    if pkce_verifier.is_empty() {
+        return plain_text(StatusCode::BAD_REQUEST, "oauth_state_mismatch");
+    }
+
+    // Step 4: frontend redirect_uri cookie present AND still in allowlist
+    // (TOCTOU guard: admin may have shrunk allowlist between /start and /callback).
+    let frontend_uri = parse_cookie(&headers, REDIRECT_URI_COOKIE).unwrap_or_default();
+    if frontend_uri.is_empty()
+        || !cfg
+            .allowed_redirect_uris
+            .iter()
+            .any(|u| u == &frontend_uri)
+    {
+        return plain_text(StatusCode::BAD_REQUEST, "oauth_invalid_redirect");
+    }
+
+    // Steps 5–10 land in T8/T9. Return a placeholder for now.
+    // Note: keeps `cfg`, `pool`, `pkce_verifier`, `provider_name` in scope for T8 reuse.
+    let _ = (&cfg, &pool, &pkce_verifier, &provider_name, &q.code, &state);
+    redirect_with_fragment_error(&frontend_uri, "oauth_provider_error_TODO_T8", &tid)
 }
 
 #[cfg(test)]
