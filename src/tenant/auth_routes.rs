@@ -224,11 +224,17 @@ pub async fn login_handler(
         _ => (String::new(), crate::auth::user::dummy_hash().to_owned()),
     };
     let op = format!("POST /auth/login");
-    // v1.12: OAuth-only account — short-circuit BEFORE argon2 verify so
-    // an OAuth-only user attempting password login gets the SAME 401 +
-    // audit shape as wrong-password / unknown-email (timing/info-leak
-    // parity). Never leak existence of OAuth-only status.
+    // v1.12: OAuth-only account — short-circuit BEFORE argon2 verify on the
+    // real (sentinel) hash, but still spend one argon2 verify on DUMMY_HASH
+    // so latency matches the wrong-password / unknown-email paths above.
+    // Without this dummy call, an attacker can distinguish "this email is
+    // OAuth-only" from "wrong password" by timing alone (S1 invariant from
+    // v1.9 — same defense, new branch). Audit shape stays identical too.
     if crate::auth::oauth_sentinel::is_oauth_only(&phc) {
+        let _ = crate::auth::user::verify_password(
+            &body.password,
+            crate::auth::user::dummy_hash(),
+        );
         state.audit.append(
             AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_401", "").with_extra(
                 serde_json::json!({"email": email}),
