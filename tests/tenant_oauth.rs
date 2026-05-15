@@ -224,6 +224,170 @@ async fn tenant_oauth_fake_provider_smoke() {
     assert_eq!(resp.status(), 200);
 }
 
+// ---------- T22: happy paths + state-mismatch + missing-cookie ----------
+
+#[tokio::test]
+async fn tenant_oauth_happy_path_google() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "alice@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-1".into(),
+    };
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let frontend = "https://app.example.com/auth/callback";
+    let start_uri = format!(
+        "/t/{tid}/oauth/google/start?redirect_uri={uri}",
+        uri = urlencoding::encode(frontend)
+    );
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start_resp.status(), StatusCode::FOUND);
+    let state = extract_set_cookie(&start_resp, "drust_t_oauth_state").expect("state cookie");
+    let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce cookie");
+    let red = extract_set_cookie(&start_resp, "drust_t_oauth_redirect_uri")
+        .expect("redirect cookie");
+    assert_eq!(red, frontend);
+
+    let cb_uri = format!("/t/{tid}/oauth/google/callback?code=CODE-G&state={state}");
+    let cb_resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&cb_uri)
+                .header(
+                    header::COOKIE,
+                    format!(
+                        "drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}; drust_t_oauth_redirect_uri={red}"
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cb_resp.status(), StatusCode::FOUND);
+    let loc = cb_resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(loc.starts_with(frontend), "loc={loc}");
+    assert!(
+        loc.contains("#access_token=drust_user_"),
+        "missing access_token; loc={loc}"
+    );
+    assert!(loc.contains("&token_type=Bearer"), "loc={loc}");
+    // Fake provider observed our authorization code.
+    assert_eq!(fake.last_code.lock().await.as_deref(), Some("CODE-G"));
+}
+
+#[tokio::test]
+async fn tenant_oauth_happy_path_github() {
+    let fake = spawn_fake_github().await;
+    *fake.script.lock().await = FakeScript {
+        email: "alice@example.com".into(),
+        email_verified: true,
+        provider_user_id: "424242".into(),
+    };
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_github_fake(&fake).await;
+
+    let frontend = "https://app.example.com/auth/callback";
+    let start_uri = format!(
+        "/t/{tid}/oauth/github/start?redirect_uri={uri}",
+        uri = urlencoding::encode(frontend)
+    );
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start_resp.status(), StatusCode::FOUND);
+    let state = extract_set_cookie(&start_resp, "drust_t_oauth_state").expect("state cookie");
+    let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce cookie");
+    let red = extract_set_cookie(&start_resp, "drust_t_oauth_redirect_uri")
+        .expect("redirect cookie");
+
+    let cb_uri = format!("/t/{tid}/oauth/github/callback?code=CODE-H&state={state}");
+    let cb_resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&cb_uri)
+                .header(
+                    header::COOKIE,
+                    format!(
+                        "drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}; drust_t_oauth_redirect_uri={red}"
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cb_resp.status(), StatusCode::FOUND);
+    let loc = cb_resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(loc.starts_with(frontend), "loc={loc}");
+    assert!(loc.contains("#access_token=drust_user_"), "loc={loc}");
+    assert_eq!(fake.last_code.lock().await.as_deref(), Some("CODE-H"));
+}
+
+#[tokio::test]
+async fn tenant_oauth_state_mismatch_rejected() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+    let cb_uri = format!("/t/{tid}/oauth/google/callback?code=C&state=DIFFERENT");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&cb_uri)
+                .header(
+                    header::COOKIE,
+                    "drust_t_oauth_state=ORIGINAL; drust_t_oauth_pkce=V; drust_t_oauth_redirect_uri=https://app.example.com/auth/callback",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains("oauth_state_mismatch")
+    );
+}
+
+#[tokio::test]
+async fn tenant_oauth_missing_state_cookie_rejected() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+    // No cookies at all → cookie_state defaults to "" → verify_state(""," ANYTHING") fails.
+    let cb_uri = format!("/t/{tid}/oauth/google/callback?code=C&state=ANYTHING");
+    let resp = app
+        .oneshot(Request::builder().uri(&cb_uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains("oauth_state_mismatch")
+    );
+}
+
+// ---------- existing T21 smoke ----------
+
 #[tokio::test]
 async fn tenant_oauth_spin_up_compiles_and_serves_start() {
     // Sanity: the spin-up produces a router that answers `/start` with a
