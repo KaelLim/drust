@@ -54,6 +54,13 @@ impl ProviderRegistry {
         Self { providers: HashMap::new() }
     }
 
+    /// Build a registry from an explicit provider map. Used by integration
+    /// tests that wire fake adapters pointed at a local fake-provider
+    /// HTTP server.
+    pub fn from_providers(providers: HashMap<&'static str, Arc<dyn OauthProvider>>) -> Self {
+        Self { providers }
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn OauthProvider>> {
         self.providers.get(name).cloned()
     }
