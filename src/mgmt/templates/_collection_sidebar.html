@@ -1,7 +1,8 @@
 <!-- _collection_sidebar.html — left-side collection nav for the detail page.
      Parent scope must provide: tenant_id: String, collections: Vec<Collection>, active_coll: String.
      `active_coll` accepts collection names plus the virtual entries
-     `_api_keys`, `_rpc`, `_system_files`, and `_logs`. -->
+     `_api_keys`, `_rpc`, `_system_files`, `_system_users`,
+     `_oauth_providers`, and `_logs`. -->
 <aside class="sidebar">
   <div class="sidebar-head">
     <span>collections</span>
@@ -31,6 +32,12 @@
        title="_system_users (registered users)">
       <span class="arrow" style="opacity:.7;">👤</span>
       <span>_system_users</span>
+    </a>
+    <a class="col-item{% if active_coll == "_oauth_providers" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers"
+       title="_oauth_providers (per-tenant Google/GitHub OAuth configs)">
+      <span class="arrow" style="opacity:.7;">🔐</span>
+      <span>_oauth_providers</span>
     </a>
     <a class="col-item{% if active_coll == "_logs" %} on{% endif %}"
        href="/drust/admin/tenants/{{ tenant_id }}/_logs"
