@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.12.1 - 2026-05-15
+
+Patch release: review-deferred follow-ups for v1.12 per-tenant OAuth. No schema or API changes.
+
+### Fixed
+
+- Admin DELETE / upsert on `_oauth_providers` against a nonexistent tenant_id no longer materialises an empty `tenants/<bogus>/data.sqlite`. New `ensure_tenant_exists` helper guards both paths before any `get_or_open` call.
+- `_system_users.profile` for OAuth-auto-created rows now carries `picture` per spec §3.3 (extracted from Google `id_token.picture` and GitHub `/user.avatar_url`). v1.12.0 silently dropped this field.
+
+### Changed
+
+- Admin REST `PUT` / `DELETE` `/admin/oauth-providers` now attach `AuditExtra` (`{provider, redirect_uris_count}` on PUT, `{provider}` on DELETE) so the daily audit JSONL captures the mutation shape, matching the v1.9 admin-user-route precedent.
+- `_oauth_providers` upsert validation failures now return specific `error_code`s (`INVALID_PROVIDER`, `INVALID_REDIRECT_URI`, `EMPTY_REDIRECT_URIS`, `INVALID_CLIENT_ID`, `INVALID_CLIENT_SECRET`) instead of the umbrella `INVALID_OAUTH_CONFIG`. Mirrored in the `set_oauth_provider` MCP tool.
+
+### Tests
+
+- `/me/password` rejects OAuth-only sentinel users with `409 OAUTH_ONLY_NO_PASSWORD` — symmetric to the existing login-rejection test.
+- `/callback` rate-limit returns `429 rate_limited` after 5 requests in 60 s from the same `X-Forwarded-For[-2]` IP.
+- Two concurrent OAuth callbacks for the same fresh email both succeed with distinct session tokens; exactly one `_system_users` row created (regression guard for the v1.12 T7-T9 fix-up).
+
 ## 1.12.0 - 2026-05-15
 
 ### Added — Per-tenant OAuth for end users (Google + GitHub)
