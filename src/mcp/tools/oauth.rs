@@ -75,3 +75,20 @@ pub async fn set_oauth_provider(
     .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
     Ok(json!({ "ok": true, "provider": provider }))
 }
+
+// ─── delete ──────────────────────────────────────────────────────────────────
+
+pub async fn delete_oauth_provider(
+    pool: &SharedTenantPool,
+    provider: String,
+) -> anyhow::Result<serde_json::Value> {
+    let provider2 = provider.clone();
+    let existed = pool
+        .with_writer(move |c| oauth_config::delete(c, &provider2))
+        .await
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    if !existed {
+        return Err(anyhow::anyhow!("NOT_FOUND: provider not configured"));
+    }
+    Ok(json!({ "ok": true, "provider": provider, "deleted": true }))
+}
