@@ -657,6 +657,110 @@ async fn oauth_admin_email_missing_rejected() {
     assert_redirect_contains(&resp, "oauth_error=oauth_admin_email_missing");
 }
 
+// ---------- T23: button hidden + audit logged + password regression ----------
+
+#[tokio::test]
+async fn oauth_button_hidden_when_unconfigured() {
+    let (app, _dir, _log) = spin_up_admin_no_oauth().await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let html = std::str::from_utf8(&body).unwrap();
+    assert!(!html.contains("oauth-btn-google"), "google button leaked");
+    assert!(!html.contains("oauth-btn-github"), "github button leaked");
+}
+
+#[tokio::test]
+async fn oauth_audit_logged_on_success() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "kael@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-1".into(),
+    };
+    let (app, _dir, log_dir) = spin_up_admin_with_google_fake(&fake).await;
+
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/google/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state = extract_set_cookie(&start_resp, "drust_oauth_state").expect("state cookie set");
+    let pkce = extract_set_cookie(&start_resp, "drust_oauth_pkce").expect("pkce cookie set");
+
+    let cookie_hdr = format!("drust_oauth_state={state}; drust_oauth_pkce={pkce}");
+    let url = format!("/admin/oauth/google/callback?code=C&state={state}");
+    let _ = app
+        .oneshot(
+            Request::builder()
+                .uri(&url)
+                .header(header::COOKIE, cookie_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Brief sleep — `write_entry` uses tokio::fs::write (async).
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Find the latest audit-YYYY-MM-DD.jsonl in log_dir.
+    let latest_path = std::fs::read_dir(&log_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("audit-") && n.ends_with(".jsonl"))
+        })
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .expect("expected one audit file");
+
+    let body = std::fs::read_to_string(&latest_path).unwrap();
+    let row: serde_json::Value = body
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .find(|v: &serde_json::Value| v["auth_method"] == "oauth_google")
+        .expect("expected oauth_google success row");
+    assert_eq!(row["oauth_email"], "kael@example.com");
+    assert_eq!(row["admin_id"].as_i64().unwrap(), 1);
+    assert!(row["status"] == "ok" || row["status"] == "200");
+}
+
+#[tokio::test]
+async fn oauth_existing_password_login_unaffected() {
+    let (app, _dir, _log) = spin_up_admin_no_oauth().await;
+    // `bootstrap_meta_with_email` (inside spin_up_admin_no_oauth) creates
+    // admin "kael" with password "pass".
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("username=kael&password=pass"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert!(extract_set_cookie(&resp, "drust_session").is_some());
+}
+
 // ---------- T18: happy path github ----------
 
 #[tokio::test]
