@@ -1077,6 +1077,63 @@ async fn tenant_oauth_spin_up_compiles_and_serves_start() {
     assert!(loc.contains("/authorize?"), "loc={loc}");
 }
 
+// ---------- T6: rate-limit on /callback (5 / 60 s / IP) ----------
+
+#[tokio::test]
+async fn tenant_oauth_callback_rate_limit_returns_429() {
+    // The handler checks `oauth_callback_rl` BEFORE step 1 (provider
+    // lookup, state/PKCE validation, token exchange) — so the request can
+    // be totally bogus and still tick the bucket. Fire 6× sequential
+    // oneshots from a fixed IP via X-Forwarded-For; the sixth must come
+    // back 429 with body `rate_limited`.
+    //
+    // XFF semantics (src/safety/ip.rs): we send `<client>, 10.0.0.1` so
+    // parts.len() >= 2 and client_ip picks XFF[-2] = <client>. Without
+    // that, fallback is 127.0.0.1 and the per-IP bucket is shared across
+    // tests within the process — but `oauth_callback_rl` is a per-state
+    // instance (see TenantAuthState in build_tenant_state), so even the
+    // fallback path would work; we send XFF explicitly for clarity.
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+    let client_ip = "203.0.113.42";
+    let xff = format!("{client_ip}, 10.0.0.1");
+
+    let cb_uri = format!("/t/{tid}/oauth/google/callback?code=C&state=ANY");
+    let mut last_status = StatusCode::IM_A_TEAPOT;
+    let mut last_body = Vec::new();
+    for _ in 0..6 {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&cb_uri)
+                    .header("x-forwarded-for", &xff)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        last_status = resp.status();
+        last_body = axum::body::to_bytes(resp.into_body(), 1024)
+            .await
+            .unwrap()
+            .to_vec();
+    }
+    assert_eq!(
+        last_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "6th request must be rate-limited, body={:?}",
+        std::str::from_utf8(&last_body)
+    );
+    assert!(
+        std::str::from_utf8(&last_body)
+            .unwrap()
+            .contains("rate_limited"),
+        "body should contain rate_limited, got {:?}",
+        std::str::from_utf8(&last_body)
+    );
+}
+
 // ---------- T2: AuditExtra on admin REST PUT / DELETE ----------
 
 /// Poll a tenant audit dir for a JSONL row whose `op` equals `expected_op`.
