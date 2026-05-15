@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.12.2 - 2026-05-15
+
+Patch release: auth-surface forensic hardening + doc drift fixes from the v1.9–v1.12 cross-version horizontal review. No schema or API changes.
+
+### Fixed
+
+- `POST /drust/login` now equalises argon2 timing on the unknown-username branch via `dummy_hash()`, mirroring the v1.9 tenant `/auth/login` invariant (S1). Closes the wall-clock admin-username-existence oracle.
+- Admin audit UI no longer renders a broken `/admin/tenants/-/_logs` link for admin-plane rows (admin OAuth + admin password login). `tenant="-"` now displays as `"admin"` plain text.
+- `drust/CLAUDE.md` virtual sidebar entry count corrected from three to six (`_api_keys`, `_rpc`, `_system_files`, `_system_users`, `_oauth_providers`, `_logs`).
+- `docs/oauth-setup.md` per-tenant error table now lists `oauth_session_error` (5xx-class user-create / session-insert failure).
+- `CHANGELOG.md` spec-link paths fixed to `../docs/superpowers/...` so they resolve from inside `drust/`.
+- `src/auth/user.rs` timing-test docstring no longer says "Run with `cargo test --release`" — that's actively forbidden in this repo (LTO + 1 codegen-unit → 40+ min).
+
+### Changed
+
+- `register` / `login` / `oauth_callback` (tenant + admin) audit rows now carry `auth_kind` (`"user"` or `"admin"`) — the field was previously only injected by `bearer_auth_layer`, which these handlers run outside of. Failure rows carry the attempted kind so probing attempts surface in the same query.
+- Password authentication flows now set the typed `auth_method = "password"` audit field, matching the OAuth flows' `auth_method = "oauth_google"` / `"oauth_github"`.
+- Admin audit UI template now renders the typed `auth_method`, `oauth_email`, `oauth_error_code` fields plus the `extra` flatten map (`auth_user_id`, `index_name`, `redirect_uris_count`, etc.) — previously shipped to JSONL but invisible in the UI. Neutral metadata uses a new `audit-extras` CSS class so it doesn't inherit the error-red color of `audit-err`.
+
+### Tests
+
+- Admin login timing-spread test (`tests/admin_login_timing.rs`, `--ignored`).
+- `extra.auth_kind` assertions on register / login / OAuth callback rows (tenant + admin).
+- `entry.auth_method == "password"` assertions on password flows.
+- Audit UI HTML-shape assertions for typed OAuth fields + extra map + admin tenant-link guard.
+
 ## 1.12.1 - 2026-05-15
 
 Patch release: review-deferred follow-ups for v1.12 per-tenant OAuth. No schema or API changes.
