@@ -189,6 +189,7 @@ async fn fake_google_server_responds() {
         email: "test@x.com".into(),
         email_verified: true,
         provider_user_id: "sub-1".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let resp = reqwest::Client::new()
         .post(format!("{}/token", fake.base_url))
@@ -210,6 +211,7 @@ async fn oauth_happy_path_google() {
         email: "kael@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-google-1".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, _dir, _log) = spin_up_admin_with_google_fake(&fake).await;
 
@@ -342,6 +344,7 @@ async fn oauth_email_unverified_rejected() {
         email: "kael@example.com".into(),
         email_verified: false,
         provider_user_id: "sub-1".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, _dir, _log) = spin_up_admin_with_google_fake(&fake).await;
 
@@ -383,6 +386,7 @@ async fn oauth_not_in_allowlist_rejected() {
         email: "attacker@evil.com".into(),
         email_verified: true,
         provider_user_id: "sub-2".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     // `spin_up_admin_with_google_fake` sets allowlist = {"kael@example.com"},
     // so "attacker@evil.com" is NOT allowed → step 6 fails.
@@ -423,6 +427,7 @@ async fn oauth_admin_email_missing_rejected() {
         email: "kael@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-1".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     // Email IS in allowlist (step 6 passes) but no admin row matches —
     // admin row was created without an email column value.
@@ -484,6 +489,7 @@ async fn oauth_audit_logged_on_success() {
         email: "kael@example.com".into(),
         email_verified: true,
         provider_user_id: "sub-1".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, _dir, log_dir) = spin_up_admin_with_google_fake(&fake).await;
 
@@ -550,6 +556,7 @@ async fn oauth_happy_path_github() {
         email: "kael@example.com".into(),
         email_verified: true,
         provider_user_id: "424242".into(),
+        picture: "https://example.test/avatar.png".into(),
     };
     let (app, _dir, _log) = spin_up_admin_with_github_fake(&fake).await;
 

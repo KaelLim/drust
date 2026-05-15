@@ -279,12 +279,13 @@ fn redirect_with_fragment_success(
 /// a row when `allow_self_register` is true. Returns `Ok(None)` to signal the
 /// caller should render `oauth_not_allowed` (existing row absent, self-register
 /// disabled). OAuth-only users carry the sentinel password hash so the password
-/// login path short-circuits before reaching argon2. `name` lands in the
-/// `profile` JSON column under the conventional `"name"` key.
+/// login path short-circuits before reaching argon2. `name` and `picture` land
+/// in the `profile` JSON column under `"name"` / `"picture"` keys (spec §3.3).
 fn find_or_create_user(
     conn: &rusqlite::Connection,
     email: &str,
     name: Option<&str>,
+    picture: Option<&str>,
     allow_self_register: bool,
 ) -> rusqlite::Result<Option<String>> {
     use rusqlite::OptionalExtension;
@@ -302,10 +303,11 @@ fn find_or_create_user(
         return Ok(None);
     }
     let new_id = format!("u-{}", uuid::Uuid::new_v4());
-    // TODO(v1.12.x): also store picture from VerifiedUser once the trait
-    // carries it (spec §3.3). Adapters don't yet extract avatar URLs.
+    // Spec §3.3: profile carries `name` + `picture` (the latter as null
+    // when the provider didn't supply one).
     let profile = serde_json::json!({
         "name": name.unwrap_or(""),
+        "picture": picture,
     })
     .to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -504,6 +506,7 @@ pub(crate) async fn oauth_callback(
     // "no row" → both INSERT → second hits UNIQUE.
     let email_for_lookup = user.email.clone();
     let name_for_lookup = user.name.clone();
+    let picture_for_lookup = user.picture.clone();
     let ip_for_session = ip_str.clone();
     let res: rusqlite::Result<Option<(String, String)>> = pool
         .with_writer(move |c| {
@@ -511,6 +514,7 @@ pub(crate) async fn oauth_callback(
                 c,
                 &email_for_lookup,
                 name_for_lookup.as_deref(),
+                picture_for_lookup.as_deref(),
                 allow_self_register,
             )? {
                 None => Ok(None),

@@ -19,6 +19,14 @@ pub struct VerifiedUser {
     pub email: String,
     pub email_verified: bool,
     pub name: Option<String>,
+    /// Avatar URL extracted from the provider response. Google's id_token
+    /// usually carries `picture`; GitHub's `/user` returns `avatar_url`.
+    /// `None` when the provider omitted it. Tenant find-or-create writes
+    /// this into `_system_users.profile` JSON under the `"picture"` key
+    /// (spec §3.3). The admin OAuth flow currently ignores it (v1.11
+    /// admin schema has no profile column); a future v1.13 may surface
+    /// it.
+    pub picture: Option<String>,
 }
 
 impl VerifiedUser {
@@ -28,6 +36,7 @@ impl VerifiedUser {
         email: &str,
         email_verified: bool,
         name: Option<String>,
+        picture: Option<String>,
     ) -> Self {
         Self {
             provider,
@@ -35,6 +44,7 @@ impl VerifiedUser {
             email: email.to_lowercase(),
             email_verified,
             name,
+            picture,
         }
     }
 }
@@ -78,8 +88,25 @@ mod tests {
 
     #[test]
     fn verified_user_lowercases_email_on_construction() {
-        let u = VerifiedUser::new("google", "sub-1", "Kael@Example.COM", true, None);
+        let u = VerifiedUser::new("google", "sub-1", "Kael@Example.COM", true, None, None);
         assert_eq!(u.email, "kael@example.com");
+        assert!(u.picture.is_none());
+    }
+
+    #[test]
+    fn verified_user_carries_picture_when_supplied() {
+        let u = VerifiedUser::new(
+            "google",
+            "sub-2",
+            "x@y.com",
+            true,
+            Some("X".into()),
+            Some("https://lh3.googleusercontent.com/avatar".into()),
+        );
+        assert_eq!(
+            u.picture.as_deref(),
+            Some("https://lh3.googleusercontent.com/avatar")
+        );
     }
 
     #[test]

@@ -54,6 +54,11 @@ struct IdTokenClaims {
     email: String,
     email_verified: bool,
     name: Option<String>,
+    /// Standard OIDC profile claim — Google's id_token routinely carries
+    /// the user's avatar URL here. Optional because not every provider
+    /// (or every Google response shape) sets it.
+    #[serde(default)]
+    picture: Option<String>,
 }
 
 /// Decode id_token JWT (header.payload.signature). Trust the channel,
@@ -79,6 +84,7 @@ pub(crate) fn decode_id_token(jwt: &str) -> Result<VerifiedUser, OauthError> {
         &claims.email,
         claims.email_verified,
         claims.name,
+        claims.picture,
     ))
 }
 
@@ -166,6 +172,7 @@ mod tests {
             "email": "kael@example.com",
             "email_verified": true,
             "name": "Kael Lim",
+            "picture": "https://lh3.googleusercontent.com/a/AVATAR",
         });
         let b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
         let id_token = format!("header.{b64}.signature");
@@ -175,6 +182,25 @@ mod tests {
         assert!(user.email_verified);
         assert_eq!(user.provider_user_id, "1234");
         assert_eq!(user.name.as_deref(), Some("Kael Lim"));
+        assert_eq!(
+            user.picture.as_deref(),
+            Some("https://lh3.googleusercontent.com/a/AVATAR")
+        );
+    }
+
+    #[test]
+    fn decode_id_token_picture_optional() {
+        // No `picture` claim — VerifiedUser carries None instead of failing.
+        let payload = serde_json::json!({
+            "sub": "5678",
+            "email": "noavatar@example.com",
+            "email_verified": true,
+            "name": "X",
+        });
+        let b64 = URL_SAFE_NO_PAD.encode(payload.to_string());
+        let id_token = format!("header.{b64}.signature");
+        let user = decode_id_token(&id_token).unwrap();
+        assert!(user.picture.is_none());
     }
 
     #[test]
