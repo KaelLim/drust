@@ -1134,6 +1134,112 @@ async fn tenant_oauth_callback_rate_limit_returns_429() {
     );
 }
 
+// ---------- T7: concurrent callbacks for same fresh email ----------
+
+#[tokio::test]
+async fn tenant_oauth_concurrent_callbacks_same_email() {
+    // Two browsers / devices simultaneously complete OAuth for the SAME
+    // brand-new email on a freshly-provisioned tenant. After v1.12 T7-T9
+    // fix-up, find_or_create_user + create_session runs in one writer
+    // pass — both callbacks must succeed, both tokens must be distinct,
+    // and exactly ONE _system_users row must exist.
+    //
+    // The fake provider single-uses each `code` (overwrites `last_code`,
+    // but the script payload is static so calling /token twice with the
+    // same script returns the same id_token shape). So we run two full
+    // /start → /callback chains in parallel via tokio::join!; each chain
+    // gets its own state+pkce cookies. Both fake-provider calls go to the
+    // same fake server backing the GoogleAdapter override.
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "race@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-race".into(),
+        picture: "https://example.test/avatar.png".into(),
+    };
+    let (app, dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+    let frontend = "https://app.example.com/auth/callback";
+
+    // Two independent /start calls — each returns its own state/pkce.
+    let start_uri = format!(
+        "/t/{tid}/oauth/google/start?redirect_uri={uri}",
+        uri = urlencoding::encode(frontend)
+    );
+    let (start_a, start_b) = tokio::join!(
+        app.clone()
+            .oneshot(Request::builder().uri(&start_uri).body(Body::empty()).unwrap()),
+        app.clone()
+            .oneshot(Request::builder().uri(&start_uri).body(Body::empty()).unwrap()),
+    );
+    let start_a = start_a.unwrap();
+    let start_b = start_b.unwrap();
+    let (state_a, pkce_a, red_a) = (
+        extract_set_cookie(&start_a, "drust_t_oauth_state").unwrap(),
+        extract_set_cookie(&start_a, "drust_t_oauth_pkce").unwrap(),
+        extract_set_cookie(&start_a, "drust_t_oauth_redirect_uri").unwrap(),
+    );
+    let (state_b, pkce_b, red_b) = (
+        extract_set_cookie(&start_b, "drust_t_oauth_state").unwrap(),
+        extract_set_cookie(&start_b, "drust_t_oauth_pkce").unwrap(),
+        extract_set_cookie(&start_b, "drust_t_oauth_redirect_uri").unwrap(),
+    );
+
+    let cb_a = format!("/t/{tid}/oauth/google/callback?code=CODE-A&state={state_a}");
+    let cb_b = format!("/t/{tid}/oauth/google/callback?code=CODE-B&state={state_b}");
+    let req_a = Request::builder()
+        .uri(&cb_a)
+        .header(
+            header::COOKIE,
+            format!(
+                "drust_t_oauth_state={state_a}; drust_t_oauth_pkce={pkce_a}; drust_t_oauth_redirect_uri={red_a}"
+            ),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let req_b = Request::builder()
+        .uri(&cb_b)
+        .header(
+            header::COOKIE,
+            format!(
+                "drust_t_oauth_state={state_b}; drust_t_oauth_pkce={pkce_b}; drust_t_oauth_redirect_uri={red_b}"
+            ),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let (resp_a, resp_b) = tokio::join!(app.clone().oneshot(req_a), app.clone().oneshot(req_b));
+    let resp_a = resp_a.unwrap();
+    let resp_b = resp_b.unwrap();
+    assert_eq!(resp_a.status(), StatusCode::FOUND, "A must 302");
+    assert_eq!(resp_b.status(), StatusCode::FOUND, "B must 302");
+
+    let tok = |resp: &axum::http::Response<Body>| -> String {
+        let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+        let frag = loc.split_once('#').expect("fragment").1;
+        frag.split('&')
+            .find_map(|kv| kv.strip_prefix("access_token="))
+            .expect("access_token")
+            .to_string()
+    };
+    let tok_a = tok(&resp_a);
+    let tok_b = tok(&resp_b);
+    assert!(tok_a.starts_with("drust_user_"), "got {tok_a}");
+    assert!(tok_b.starts_with("drust_user_"), "got {tok_b}");
+    assert_ne!(tok_a, tok_b, "two callbacks must mint distinct sessions");
+
+    // Exactly one _system_users row for this email — the v1.12 T7-T9
+    // fix-up coalesces lookup + insert + session into one writer pass so
+    // the second callback re-uses the row inserted by the first.
+    let tconn = open_tenant_db(&dir, &tid);
+    let n: i64 = tconn
+        .query_row(
+            "SELECT COUNT(*) FROM _system_users WHERE email = ?1 COLLATE NOCASE",
+            ["race@example.com"],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "race must collapse to exactly one user row");
+}
+
 // ---------- T2: AuditExtra on admin REST PUT / DELETE ----------
 
 /// Poll a tenant audit dir for a JSONL row whose `op` equals `expected_op`.
