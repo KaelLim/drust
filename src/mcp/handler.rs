@@ -1075,7 +1075,8 @@ impl ServerHandler for DrustMcpService {
              `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, `call_rpc`, \
              `create_user`, `list_users`, `get_user`, `update_user`, `delete_user`, \
              `revoke_user_sessions`, `set_owner_field`, `clear_owner_field`, \
-             `set_self_register`. (Call `tools/list` for the canonical \
+             `set_self_register`, `list_oauth_providers`, `set_oauth_provider`, \
+             `delete_oauth_provider`. (Call `tools/list` for the canonical \
              schema-and-list.)\n\n\
              Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
              tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
