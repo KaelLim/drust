@@ -141,8 +141,9 @@ pub async fn put_oauth_provider_handler(
         Ok(p) => p,
         Err(r) => return r,
     };
-    // Validate up front so we return 400 INVALID_OAUTH_CONFIG without ever
-    // touching the writer mutex.
+    // Validate up front so we return a granular 400 (INVALID_PROVIDER /
+    // INVALID_REDIRECT_URI / EMPTY_REDIRECT_URIS / INVALID_CLIENT_ID /
+    // INVALID_CLIENT_SECRET) without ever touching the writer mutex.
     if let Err(e) = oauth_config::validate_upsert(
         &provider,
         &body.client_id,
@@ -152,7 +153,7 @@ pub async fn put_oauth_provider_handler(
         return (
             oauth_err_status(&e),
             Json(json!({
-                "error_code": "INVALID_OAUTH_CONFIG",
+                "error_code": e.error_code(),
                 "message": e.to_string(),
             })),
         )

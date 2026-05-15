@@ -34,6 +34,23 @@ pub enum OauthConfigError {
     Db(#[from] rusqlite::Error),
 }
 
+impl OauthConfigError {
+    /// Stable machine-readable code for REST + MCP responses. Lets clients
+    /// branch on the specific failure mode without parsing `.to_string()`.
+    /// `Db` keeps the umbrella `"DB"` (still 500) because it isn't a
+    /// validation outcome callers can correct on retry.
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            Self::InvalidProvider => "INVALID_PROVIDER",
+            Self::InvalidClientId => "INVALID_CLIENT_ID",
+            Self::InvalidClientSecret => "INVALID_CLIENT_SECRET",
+            Self::EmptyRedirectUris => "EMPTY_REDIRECT_URIS",
+            Self::InvalidRedirectUri(_) => "INVALID_REDIRECT_URI",
+            Self::Db(_) => "DB",
+        }
+    }
+}
+
 const ALLOWED_PROVIDERS: &[&str] = &["google", "github"];
 
 pub fn validate_provider(p: &str) -> Result<(), OauthConfigError> {
@@ -246,5 +263,27 @@ mod tests {
         upsert(&c, "google", "x", "y", &["https://z/cb".into()]).unwrap();
         assert!(delete(&c, "google").unwrap());
         assert!(!delete(&c, "google").unwrap());
+    }
+
+    #[test]
+    fn error_code_maps_each_variant() {
+        assert_eq!(OauthConfigError::InvalidProvider.error_code(), "INVALID_PROVIDER");
+        assert_eq!(OauthConfigError::InvalidClientId.error_code(), "INVALID_CLIENT_ID");
+        assert_eq!(
+            OauthConfigError::InvalidClientSecret.error_code(),
+            "INVALID_CLIENT_SECRET"
+        );
+        assert_eq!(
+            OauthConfigError::EmptyRedirectUris.error_code(),
+            "EMPTY_REDIRECT_URIS"
+        );
+        assert_eq!(
+            OauthConfigError::InvalidRedirectUri("http://bad".into()).error_code(),
+            "INVALID_REDIRECT_URI"
+        );
+        // Db is the umbrella for the 500-class — error_code is `DB`.
+        let db_err =
+            OauthConfigError::Db(rusqlite::Error::InvalidParameterName("x".into()));
+        assert_eq!(db_err.error_code(), "DB");
     }
 }

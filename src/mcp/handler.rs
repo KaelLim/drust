@@ -1024,7 +1024,9 @@ impl DrustMcpService {
         each must be https:// or a localhost/127.0.0.1 URL. \
         Replaces any existing row for the same provider. \
         Returns {ok: true, provider}. \
-        Errors with INVALID_OAUTH_CONFIG on validation failure.")]
+        Errors with a granular code on validation failure: \
+        INVALID_PROVIDER, INVALID_CLIENT_ID, INVALID_CLIENT_SECRET, \
+        EMPTY_REDIRECT_URIS, or INVALID_REDIRECT_URI.")]
     async fn set_oauth_provider(
         &self,
         Parameters(SetOauthProviderArgs { provider, client_id, client_secret, allowed_redirect_uris }): Parameters<SetOauthProviderArgs>,

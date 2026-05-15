@@ -1124,3 +1124,113 @@ async fn admin_delete_oauth_provider_writes_audit_extra() {
     assert_eq!(row["status"], "ok");
     assert_eq!(row["provider"], "google");
 }
+
+// ---------- T4: granular error_codes on admin REST PUT validation ----------
+
+async fn put_oauth_with_body(
+    app: &Router,
+    tid: &str,
+    provider: &str,
+    service: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/t/{tid}/admin/oauth-providers/{provider}"))
+                .header(header::AUTHORIZATION, format!("Bearer {service}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "expected 400");
+    let bytes = axum::body::to_bytes(resp.into_body(), 4096)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn admin_put_oauth_validation_emits_granular_codes() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    // INVALID_PROVIDER: provider in URL is not in the allowlist.
+    let v = put_oauth_with_body(
+        &app,
+        &tid,
+        "microsoft",
+        &service,
+        serde_json::json!({
+            "client_id": "cid",
+            "client_secret": "csec",
+            "allowed_redirect_uris": ["https://app.example.com/cb"],
+        }),
+    )
+    .await;
+    assert_eq!(v["error_code"], "INVALID_PROVIDER", "got {v}");
+
+    // EMPTY_REDIRECT_URIS: array is empty.
+    let v = put_oauth_with_body(
+        &app,
+        &tid,
+        "google",
+        &service,
+        serde_json::json!({
+            "client_id": "cid",
+            "client_secret": "csec",
+            "allowed_redirect_uris": [],
+        }),
+    )
+    .await;
+    assert_eq!(v["error_code"], "EMPTY_REDIRECT_URIS", "got {v}");
+
+    // INVALID_REDIRECT_URI: plain http (non-localhost) — validator rejects.
+    let v = put_oauth_with_body(
+        &app,
+        &tid,
+        "google",
+        &service,
+        serde_json::json!({
+            "client_id": "cid",
+            "client_secret": "csec",
+            "allowed_redirect_uris": ["http://attacker.com/cb"],
+        }),
+    )
+    .await;
+    assert_eq!(v["error_code"], "INVALID_REDIRECT_URI", "got {v}");
+
+    // INVALID_CLIENT_ID: empty client_id.
+    let v = put_oauth_with_body(
+        &app,
+        &tid,
+        "google",
+        &service,
+        serde_json::json!({
+            "client_id": "",
+            "client_secret": "csec",
+            "allowed_redirect_uris": ["https://app.example.com/cb"],
+        }),
+    )
+    .await;
+    assert_eq!(v["error_code"], "INVALID_CLIENT_ID", "got {v}");
+
+    // INVALID_CLIENT_SECRET: empty client_secret.
+    let v = put_oauth_with_body(
+        &app,
+        &tid,
+        "google",
+        &service,
+        serde_json::json!({
+            "client_id": "cid",
+            "client_secret": "",
+            "allowed_redirect_uris": ["https://app.example.com/cb"],
+        }),
+    )
+    .await;
+    assert_eq!(v["error_code"], "INVALID_CLIENT_SECRET", "got {v}");
+}
