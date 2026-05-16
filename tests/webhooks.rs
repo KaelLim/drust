@@ -757,3 +757,121 @@ async fn mcp_delete_webhook_succeeds_and_errors_on_missing_id() {
         "expected NOT_FOUND for update on missing id, got: {txt}"
     );
 }
+
+// ── Hardening tests (Task 9) ───────────────────────────────────────────────
+
+/// Cross-tenant isolation: a record CRUD event in tenant B must not fire
+/// webhooks registered in tenant A. Each `spin_up_tenant_with_role` call
+/// creates its own ephemeral data_root + WebhookDispatcher, so tenant A's
+/// dispatcher cannot see tenant B's `_system_webhooks` table. This test is
+/// a regression sanity check that nothing in the data_root plumbing ever
+/// leaks across pools.
+#[tokio::test]
+async fn webhook_does_not_fire_for_other_tenants() {
+    let hook = FakeHook::start().await;
+
+    // Tenant A: register a webhook on `notes` pointing at the FakeHook.
+    let tid_a = "t-isoA";
+    let (app_a, svc_a, _dir_a) = spin_up_tenant_with_role(tid_a, "service").await;
+    let (status_a, _) = create_webhook(
+        &app_a,
+        tid_a,
+        &svc_a,
+        serde_json::json!({
+            "collection": "notes",
+            "events": ["created"],
+            "url": hook.url(),
+        }),
+    )
+    .await;
+    assert_eq!(status_a, 201, "tenant A webhook must register");
+
+    // Tenant B: separate ephemeral dir → separate DB + dispatcher.
+    let tid_b = "t-isoB";
+    let (app_b, svc_b, dir_b) = spin_up_tenant_with_role(tid_b, "service").await;
+
+    // Create the `notes` collection on tenant B via direct SQL.
+    let pool_b = helpers::grab_pool(tid_b, &dir_b).await;
+    pool_b
+        .with_writer(|c| {
+            c.execute_batch(
+                "CREATE TABLE notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+        })
+        .await
+        .unwrap();
+
+    // POST a record on tenant B — must not reach tenant A's hook.
+    let resp = app_b
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid_b}/records/notes"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {svc_b}"))
+                .body(Body::from(
+                    serde_json::json!({"data": {"title": "x"}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 201, "tenant B record insert must succeed");
+
+    // Poll up to ~500 ms for any stray delivery; assert none happened.
+    for _ in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if !hook.requests().await.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(
+        hook.requests().await.len(),
+        0,
+        "tenant B's events must NEVER reach tenant A's subscriber",
+    );
+}
+
+/// GET /admin/webhooks/{id} must redact the secret (separate code path from
+/// the list handler, which is covered by
+/// `rest_create_returns_secret_once_and_lists_with_redacted_secret`).
+#[tokio::test]
+async fn rest_get_one_redacts_secret() {
+    let tid = "t-redact";
+    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    let (status, v) = create_webhook(
+        &app,
+        tid,
+        &svc,
+        serde_json::json!({
+            "collection": "notes",
+            "events": ["created"],
+            "url": "https://x.invalid/h",
+        }),
+    )
+    .await;
+    assert_eq!(status, 201, "webhook must create");
+    let id = v["id"].as_i64().expect("id present");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/t/{tid}/admin/webhooks/{id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["secret"].as_str(), Some("●●●●"));
+    assert_eq!(v["id"].as_i64(), Some(id));
+}
