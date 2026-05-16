@@ -92,7 +92,7 @@ pub async fn search_handler(
     {
         return json_error(
             StatusCode::FORBIDDEN,
-            "OWNER_SCOPE_ANON_DENIED",
+            "ANON_FORBIDDEN_OWNER_SCOPED",
             "anon cannot search owner-scoped collection with read_scope=own",
         );
     }

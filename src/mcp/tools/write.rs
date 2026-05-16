@@ -293,7 +293,7 @@ pub async fn delete_record(
         })
         .await?;
     if n == 0 {
-        return Ok(json!({ "ok": false, "error_code": "UNKNOWN_COLLECTION" }));
+        return Ok(json!({ "ok": false, "error_code": "COLLECTION_NOT_FOUND" }));
     }
     let ev = Event::Deleted { id };
     bus.publish(&tenant, collection, ev.clone());

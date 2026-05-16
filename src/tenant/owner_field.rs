@@ -70,7 +70,7 @@ pub async fn set_owner_field_handler(
         })
         .await;
     if res.is_err() {
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "WRITE_FAILED", "");
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", "");
     }
     pool.schema_cache.invalidate(&collection);
     (
@@ -107,7 +107,7 @@ pub async fn clear_owner_field_handler(
         })
         .await;
     if res.is_err() {
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "WRITE_FAILED", "");
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", "");
     }
     pool.schema_cache.invalidate(&collection);
     (StatusCode::OK, Json(json!({"cleared": true}))).into_response()

@@ -82,7 +82,7 @@ async fn require_dml_cap(
     {
         return Err(json_error(
             StatusCode::FORBIDDEN,
-            "ANON_FORBIDDEN_OWNER_SCOPED_READ",
+            "ANON_FORBIDDEN_OWNER_SCOPED",
             "anon cannot read owner-scoped collection with read_scope=own",
         ));
     }
@@ -240,7 +240,7 @@ pub async fn list_handler(
     if !exists {
         return json_error(
             StatusCode::NOT_FOUND,
-            "UNKNOWN_COLLECTION",
+            "COLLECTION_NOT_FOUND",
             "no such collection",
         );
     }
@@ -586,7 +586,7 @@ pub async fn create_handler(
             if msg.contains("InvalidQuery") {
                 json_error(
                     StatusCode::BAD_REQUEST,
-                    "UNKNOWN_FIELD",
+                    "FIELD_NOT_FOUND",
                     "unknown field or missing collection",
                 )
             } else {
@@ -753,7 +753,7 @@ pub async fn update_handler(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("InvalidQuery") {
-                json_error(StatusCode::BAD_REQUEST, "UNKNOWN_FIELD", "unknown field")
+                json_error(StatusCode::BAD_REQUEST, "FIELD_NOT_FOUND", "unknown field")
             } else {
                 (StatusCode::BAD_REQUEST, msg).into_response()
             }

@@ -109,7 +109,7 @@ pub async fn create_user_handler(
         Err(e) if e.to_string().contains("UNIQUE") => {
             json_error(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already in use")
         }
-        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }
 
@@ -288,7 +288,7 @@ pub async fn update_user_handler(
         Err(e) if e.to_string().contains("UNIQUE") => {
             json_error(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already in use")
         }
-        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }
 
@@ -368,7 +368,7 @@ pub async fn delete_user_handler(
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "user not found")
         }
-        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }
 

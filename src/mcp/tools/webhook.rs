@@ -46,7 +46,7 @@ pub async fn create_webhook(
             Ok::<_, rusqlite::Error>(c.last_insert_rowid())
         })
         .await
-        .map_err(|e| anyhow::anyhow!("INSERT_FAILED: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("DB_ERROR: {e}"))?;
 
     Ok(json!({
         "id": id,

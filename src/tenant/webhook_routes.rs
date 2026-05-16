@@ -196,7 +196,7 @@ pub async fn create_handler(
             })),
         )
             .into_response(),
-        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }
 
@@ -363,7 +363,7 @@ pub async fn patch_handler(
     match res {
         Ok(0) => json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
         Ok(_) => fetch_webhook_row(pool, id).await,
-        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }
 
@@ -391,6 +391,6 @@ pub async fn delete_handler(
     match res {
         Ok(0) => json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }
