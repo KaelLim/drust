@@ -11,7 +11,7 @@ use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::{
     exploration, files as file_tools, oauth as oauth_tools,
     owner_field as owner_field_tools, read, schema as schema_tools, user as user_tools,
-    vector as vector_tools, write as write_tools,
+    vector as vector_tools, webhook as webhook_tools, write as write_tools,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -253,6 +253,33 @@ pub struct SetOauthProviderArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ProviderOnlyArgs {
     pub provider: String,
+}
+
+// --- v1.13: Webhook subscription admin parameter types ---------------------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateWebhookArgs {
+    pub collection: String,
+    /// Non-empty subset of `["created", "updated", "deleted"]`.
+    pub events: Vec<String>,
+    /// Subscriber URL — must be `https://…` OR `http://` with a loopback host.
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateWebhookArgs {
+    pub id: i64,
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub events: Option<Vec<String>>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct WebhookIdArgs {
+    pub id: i64,
 }
 
 // --- Handler -----------------------------------------------------------
@@ -1060,6 +1087,67 @@ impl DrustMcpService {
             Err(e) => bail_mcp(e),
         }
     }
+
+    // ── v1.13: Webhook subscription tools (service-only) ───────────────────
+
+    #[tool(description = "Create an outbound webhook subscription for this tenant. \
+        `events` is a non-empty subset of {created, updated, deleted}. \
+        `url` must be https:// or http:// with a loopback host (127.0.0.1/localhost/::1). \
+        Returns {id, secret, collection, events, url, active, created_at}. \
+        The raw 64-hex `secret` is returned **once**; subsequent reads redact it to '●●●●'. \
+        Errors: INVALID_URL, INVALID_EVENTS, INSERT_FAILED.")]
+    async fn create_webhook(
+        &self,
+        Parameters(CreateWebhookArgs { collection, events, url }): Parameters<CreateWebhookArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match webhook_tools::create_webhook(&self.state.inner().pool, collection, events, url).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "List all webhook subscriptions for this tenant. \
+        Returns {webhooks: [{id, collection, events, url, secret, active, \
+        last_failure_at, last_failure_reason, created_at}]}. \
+        Secrets are always redacted to '●●●●'.")]
+    async fn list_webhooks(
+        &self,
+        Parameters(_): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match webhook_tools::list_webhooks(&self.state.inner().pool).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Update one or more fields of a webhook subscription. \
+        All fields except `id` are optional — only supplied fields are changed. \
+        `secret` cannot be rotated through this tool; delete + recreate instead. \
+        Returns {updated: true, id}. \
+        Errors: NOT_FOUND, INVALID_URL, INVALID_EVENTS.")]
+    async fn update_webhook(
+        &self,
+        Parameters(UpdateWebhookArgs { id, active, events, url }): Parameters<UpdateWebhookArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match webhook_tools::update_webhook(&self.state.inner().pool, id, active, events, url).await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Delete a webhook subscription. \
+        Returns {deleted: true, id}. \
+        Errors with NOT_FOUND if the id does not exist.")]
+    async fn delete_webhook(
+        &self,
+        Parameters(WebhookIdArgs { id }): Parameters<WebhookIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match webhook_tools::delete_webhook(&self.state.inner().pool, id).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
 }
 
 #[tool_handler]
@@ -1078,8 +1166,9 @@ impl ServerHandler for DrustMcpService {
              `create_user`, `list_users`, `get_user`, `update_user`, `delete_user`, \
              `revoke_user_sessions`, `set_owner_field`, `clear_owner_field`, \
              `set_self_register`, `list_oauth_providers`, `set_oauth_provider`, \
-             `delete_oauth_provider`. (Call `tools/list` for the canonical \
-             schema-and-list.)\n\n\
+             `delete_oauth_provider`, `create_webhook`, `list_webhooks`, \
+             `update_webhook`, `delete_webhook`. \
+             (Call `tools/list` for the canonical schema-and-list.)\n\n\
              Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
              tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
              endpoint instead:\n\n  \
