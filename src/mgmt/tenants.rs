@@ -923,3 +923,367 @@ pub async fn tenant_oauth_provider_delete(
     ))
     .into_response()
 }
+
+// ─── v1.13: outbound webhooks admin UI ────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "tenant_webhooks_admin.html")]
+struct TenantWebhooksPage {
+    version: &'static str,
+    tenant_id: String,
+    tenant_name: String,
+    webhooks: Vec<TenantWebhookRow>,
+    collections: Vec<crate::storage::schema::Collection>,
+    /// Always `"_webhooks"` here — sidebar `.on` matching.
+    active_coll: String,
+    /// Surfaced after a failed create (validation / DB error). `None` on the
+    /// plain GET render.
+    error: Option<String>,
+    /// Sticky form values to re-populate after a validation failure. Empty
+    /// strings on the plain GET render and after success.
+    form_collection: String,
+    form_events: String,
+    form_url: String,
+    /// Set once after a successful create — surfaces the raw secret in a
+    /// banner. Sourced from the `drust_webhook_secret_once` cookie and
+    /// cleared on the next response.
+    secret_once: Option<WebhookSecretBanner>,
+}
+
+struct TenantWebhookRow {
+    id: i64,
+    collection: String,
+    /// JSON-decoded from the DB `events` TEXT column.
+    events: Vec<String>,
+    url: String,
+    active: bool,
+    last_failure_at: Option<String>,
+    last_failure_reason: Option<String>,
+    created_at: String,
+}
+
+struct WebhookSecretBanner {
+    id: i64,
+    secret: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WebhookCreateForm {
+    pub collection: String,
+    /// Comma-separated event names (e.g. `created,updated`).
+    pub events: String,
+    pub url: String,
+}
+
+const WEBHOOK_SECRET_ONCE_COOKIE: &str = "drust_webhook_secret_once";
+
+/// Pull rows from the tenant's `_system_webhooks` table. Errors are swallowed
+/// — the page just renders an empty table rather than 500-ing on a missing
+/// fresh tenant DB.
+async fn load_webhook_rows(
+    state: &TenantsState,
+    tenant_id: &str,
+) -> Vec<TenantWebhookRow> {
+    let pool = match state.tenants.get_or_open(tenant_id) {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    pool.with_reader(|c| {
+        let mut stmt = c.prepare(
+            "SELECT id, collection, events, url, active, \
+                    last_failure_at, last_failure_reason, created_at \
+             FROM _system_webhooks \
+             ORDER BY id DESC",
+        )?;
+        let rows: Vec<TenantWebhookRow> = stmt
+            .query_map([], |r| {
+                let events_raw: String = r.get(2)?;
+                let events: Vec<String> =
+                    serde_json::from_str(&events_raw).unwrap_or_default();
+                Ok(TenantWebhookRow {
+                    id: r.get(0)?,
+                    collection: r.get(1)?,
+                    events,
+                    url: r.get(3)?,
+                    active: r.get::<_, i64>(4)? != 0,
+                    last_failure_at: r.get::<_, Option<String>>(5)?,
+                    last_failure_reason: r.get::<_, Option<String>>(6)?,
+                    created_at: r.get(7)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok::<_, rusqlite::Error>(rows)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Read the `drust_webhook_secret_once` cookie (set by the create handler)
+/// from the inbound request and parse it as `{"id": <i64>, "secret": "<hex>"}`.
+fn parse_secret_once_cookie(headers: &axum::http::HeaderMap) -> Option<WebhookSecretBanner> {
+    let raw = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    let value = raw.split(';').find_map(|p| {
+        let t = p.trim();
+        t.strip_prefix(&format!("{WEBHOOK_SECRET_ONCE_COOKIE}="))
+    })?;
+    // Cookie value is JSON URL-encoded; decode once.
+    let decoded = urlencoding::decode(value).ok()?.into_owned();
+    let parsed: serde_json::Value = serde_json::from_str(&decoded).ok()?;
+    let id = parsed.get("id")?.as_i64()?;
+    let secret = parsed.get("secret")?.as_str()?.to_string();
+    Some(WebhookSecretBanner { id, secret })
+}
+
+/// Build a `Set-Cookie` header value that clears the secret-once cookie
+/// (Max-Age=0). Path matches the create handler's set so the browser drops
+/// the right cookie.
+fn clear_secret_once_cookie() -> String {
+    format!(
+        "{WEBHOOK_SECRET_ONCE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+    )
+}
+
+/// Build a `Set-Cookie` header value for a fresh secret-once banner. Short
+/// TTL (120 s) so a refresh after the cookie expires stops showing the
+/// banner. `HttpOnly` keeps it out of JS (the page renders the value
+/// server-side); `SameSite=Lax` is fine since the request that sets the
+/// cookie is a same-origin POST.
+fn set_secret_once_cookie(id: i64, secret: &str) -> String {
+    let payload = serde_json::json!({"id": id, "secret": secret}).to_string();
+    let encoded = urlencoding::encode(&payload);
+    format!(
+        "{WEBHOOK_SECRET_ONCE_COOKIE}={encoded}; Path=/; Max-Age=120; HttpOnly; SameSite=Lax"
+    )
+}
+
+/// Internal page render. Reused by GET, by the upsert error path, and
+/// indirectly by the redirect target (which goes through GET on the next
+/// request — not a direct call here).
+async fn render_webhooks_page(
+    state: &TenantsState,
+    tenant_id: String,
+    error: Option<String>,
+    form_collection: String,
+    form_events: String,
+    form_url: String,
+    secret_once: Option<WebhookSecretBanner>,
+    extra_header: Option<(axum::http::HeaderName, String)>,
+) -> Response {
+    let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let webhooks = load_webhook_rows(state, &tenant_id).await;
+    let body = TenantWebhooksPage {
+        version: env!("CARGO_PKG_VERSION"),
+        tenant_id,
+        tenant_name,
+        webhooks,
+        collections,
+        active_coll: "_webhooks".to_string(),
+        error,
+        form_collection,
+        form_events,
+        form_url,
+        secret_once,
+    }
+    .render()
+    .unwrap();
+    let mut resp = Html(body).into_response();
+    if let Some((name, value)) = extra_header
+        && let Ok(v) = value.parse()
+    {
+        resp.headers_mut().append(name, v);
+    }
+    resp
+}
+
+/// `GET /admin/tenants/{id}/_webhooks` — render the management page.
+/// Pops the secret-once cookie (if present) into the banner + clears it on
+/// the response.
+pub async fn tenant_webhooks_page(
+    State(state): State<TenantsState>,
+    Path(tenant_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let secret_once = parse_secret_once_cookie(&headers);
+    let clear = secret_once
+        .as_ref()
+        .map(|_| (axum::http::header::SET_COOKIE, clear_secret_once_cookie()));
+    render_webhooks_page(
+        &state,
+        tenant_id,
+        None,
+        String::new(),
+        String::new(),
+        String::new(),
+        secret_once,
+        clear,
+    )
+    .await
+}
+
+/// `POST /admin/tenants/{id}/_webhooks` — form submit. Splits the events
+/// field on `,` + trims, validates via `webhook_routes::check_url` /
+/// `check_events`, inserts the row with a generated 64-hex secret, then
+/// 303s back to the GET with the secret in a short-lived `HttpOnly` cookie.
+/// Referrer-Policy is also set on the redirect so the secret cannot leak
+/// via `Referer` even though it never lives in the URL.
+pub async fn tenant_webhook_create_form(
+    State(state): State<TenantsState>,
+    Path(tenant_id): Path<String>,
+    Form(form): Form<WebhookCreateForm>,
+) -> Response {
+    // Guard FIRST so a missing tenant doesn't re-materialise its dir.
+    if let Some(r) = ensure_tenant_exists(&state, &tenant_id).await {
+        return r;
+    }
+    let events: Vec<String> = form
+        .events
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Validation — use the shared pure helpers from T7.
+    if let Err((_, msg)) = crate::tenant::webhook_routes::check_url(&form.url) {
+        return render_webhooks_page(
+            &state,
+            tenant_id,
+            Some(msg.to_string()),
+            form.collection,
+            form.events,
+            form.url,
+            None,
+            None,
+        )
+        .await;
+    }
+    if let Err((_, msg)) = crate::tenant::webhook_routes::check_events(&events) {
+        return render_webhooks_page(
+            &state,
+            tenant_id,
+            Some(msg.to_string()),
+            form.collection,
+            form.events,
+            form.url,
+            None,
+            None,
+        )
+        .await;
+    }
+    let collection_trim = form.collection.trim().to_string();
+    if collection_trim.is_empty() {
+        return render_webhooks_page(
+            &state,
+            tenant_id,
+            Some("collection must not be empty".to_string()),
+            form.collection,
+            form.events,
+            form.url,
+            None,
+            None,
+        )
+        .await;
+    }
+
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(_) => {
+            return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+        }
+    };
+    let events_json = match serde_json::to_string(&events) {
+        Ok(s) => s,
+        Err(_) => {
+            return render_webhooks_page(
+                &state,
+                tenant_id,
+                Some("failed to encode events".to_string()),
+                form.collection,
+                form.events,
+                form.url,
+                None,
+                None,
+            )
+            .await;
+        }
+    };
+    let secret = crate::tenant::webhook_routes::generate_secret();
+    let secret_for_db = secret.clone();
+    let url = form.url.clone();
+    let coll = collection_trim.clone();
+    let now = chrono::Utc::now().to_rfc3339();
+    let res: rusqlite::Result<i64> = pool
+        .with_writer(move |c| {
+            c.execute(
+                "INSERT INTO _system_webhooks \
+                 (collection, events, url, secret, active, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+                rusqlite::params![coll, events_json, url, secret_for_db, now],
+            )?;
+            Ok(c.last_insert_rowid())
+        })
+        .await;
+
+    match res {
+        Ok(id) => {
+            // 303 See Other so a refresh of the resulting page doesn't
+            // resubmit the form; carry the secret in a short-lived
+            // HttpOnly cookie (not the URL — query-params would leak via
+            // Referer + access logs).
+            let location = format!("/drust/admin/tenants/{tenant_id}/_webhooks");
+            let mut resp = Response::builder()
+                .status(StatusCode::SEE_OTHER)
+                .header(axum::http::header::LOCATION, &location)
+                .header(axum::http::header::REFERRER_POLICY, "no-referrer")
+                .header(
+                    axum::http::header::SET_COOKIE,
+                    set_secret_once_cookie(id, &secret),
+                )
+                .body(axum::body::Body::empty())
+                .unwrap();
+            // Stamp content-type for the empty body to keep clients happy.
+            resp.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                "text/html; charset=utf-8".parse().unwrap(),
+            );
+            resp
+        }
+        Err(e) => {
+            render_webhooks_page(
+                &state,
+                tenant_id,
+                Some(format!("insert failed: {e}")),
+                form.collection,
+                form.events,
+                form.url,
+                None,
+                None,
+            )
+            .await
+        }
+    }
+}
+
+/// `POST /admin/tenants/{id}/_webhooks/{wid}/delete` — idempotent delete +
+/// 303 back to the list.
+pub async fn tenant_webhook_delete_form(
+    State(state): State<TenantsState>,
+    Path((tenant_id, wid)): Path<(String, i64)>,
+) -> Response {
+    if let Some(r) = ensure_tenant_exists(&state, &tenant_id).await {
+        return r;
+    }
+    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+        let _ = pool
+            .with_writer(move |c| {
+                c.execute(
+                    "DELETE FROM _system_webhooks WHERE id = ?1",
+                    rusqlite::params![wid],
+                )
+            })
+            .await;
+    }
+    Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_webhooks")).into_response()
+}
