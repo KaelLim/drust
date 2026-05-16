@@ -29,6 +29,11 @@ struct RowsPage {
     active_coll: String,
     collections: Vec<Collection>,
     fields: Vec<Field>,
+    /// Per-field rows enriched with `is_indexed`; consumed only by the
+    /// schema tab to render PK / FK / IDX badge-mini chips. Built from
+    /// `fields` × `indices` in the handler so the template can stay
+    /// presentation-only.
+    fields_with_badges: Vec<FieldRow>,
     column_names: Vec<String>,
     rows: Vec<Vec<String>>,
     total_rows: i64,
@@ -40,20 +45,39 @@ struct RowsPage {
     sort_options: Vec<SortOption>,
     per_page_options: Vec<PerPageOption>,
     error: Option<String>,
-    /// Either `"data"` (default) or `"schema"`. Toggled by `?tab=…`.
+    /// `"rows"` (default) | `"schema"` | `"indexes"` | `"anon"` | `"explain"`.
+    /// The legacy `"data"` value is mapped to `"rows"` for back-compat with
+    /// bookmarks from before v1.14.
     active_tab: String,
-    /// Pre-built href for the Data tab — preserves filter/sort/per_page/page
-    /// so switching tabs doesn't lose the user's query state.
-    tab_data_url: String,
-    /// Pre-built href for the Schema tab — strips data-only params (filter,
-    /// sort, per_page, page) since they're meaningless in schema view.
+    /// Pre-built tab anchors. Only the rows URL preserves filter/sort/page
+    /// (the other four tabs ignore those params); each non-rows URL is
+    /// the canonical collection URL plus `?tab=<name>`.
+    tab_rows_url: String,
     tab_schema_url: String,
+    tab_indexes_url: String,
+    tab_anon_url: String,
+    tab_explain_url: String,
     /// Pairs of `(verb, currently_enabled)` for the four DML verbs in
-    /// canonical order. Drives the checkbox row in the Schema tab editor.
+    /// canonical order. Drives the checkbox row in the Anon tab editor.
     anon_cap_choices: Vec<(&'static str, bool)>,
-    /// Index list for the Schema tab's Indexes section.
+    /// Index list for the Indexes tab.
     indices: Vec<IndexInfo>,
     version: &'static str,
+}
+
+/// Field row enriched with badge flags, consumed by the schema tab.
+/// `is_indexed` is set when the field name appears in any explicit
+/// index on this collection (PK columns surface via `pk` instead, so
+/// `is_indexed` is only useful when the field is *also* covered by a
+/// non-PK explicit index — the template hides IDX when `pk` is true).
+struct FieldRow {
+    name: String,
+    sql_type: String,
+    nullable: bool,
+    pk: bool,
+    foreign_key: Option<String>,
+    default_value: Option<String>,
+    is_indexed: bool,
 }
 
 struct SortOption {
@@ -237,7 +261,12 @@ pub async fn collection_rows_page(
     let page = qs.page.unwrap_or(1).max(1);
     let active_tab = match qs.tab.as_deref() {
         Some("schema") => "schema".to_string(),
-        _ => "data".to_string(),
+        Some("indexes") => "indexes".to_string(),
+        Some("anon") => "anon".to_string(),
+        Some("explain") => "explain".to_string(),
+        // `"data"` is the pre-v1.14 alias for `"rows"`. Anything else
+        // (None, unknown) defaults to rows.
+        _ => "rows".to_string(),
     };
 
     let (sort_field, sort_dir) = if sort_val.is_empty() {
@@ -379,16 +408,40 @@ pub async fn collection_rows_page(
         })
         .collect();
 
-    // Build the two tab anchors. The Data link preserves any current
-    // filter/sort/page so toggling tabs doesn't lose query state. The
-    // Schema link strips data-only params — they're meaningless in
-    // schema view and would just clutter the URL.
-    let tab_data_url =
+    // Build the five tab anchors. Only the rows link preserves
+    // filter/sort/page state — the schema, indexes, anon, and explain
+    // tabs ignore those params, so their URLs are kept clean.
+    let tab_rows_url =
         build_page_url(&tenant_id, &coll_name, page, per_page, &filter_val, &sort_val);
-    let tab_schema_url = format!(
-        "/drust/admin/tenants/{}/collections/{}?tab=schema",
+    let coll_base = format!(
+        "/drust/admin/tenants/{}/collections/{}",
         tenant_id, coll_name
     );
+    let tab_schema_url = format!("{coll_base}?tab=schema");
+    let tab_indexes_url = format!("{coll_base}?tab=indexes");
+    let tab_anon_url = format!("{coll_base}?tab=anon");
+    let tab_explain_url = format!("{coll_base}?tab=explain");
+
+    // Cross-reference indices to mark fields that participate in any
+    // explicit index. Used by the schema tab to render an IDX badge.
+    let indexed_fields: std::collections::HashSet<String> = schema
+        .indices
+        .iter()
+        .flat_map(|idx| idx.fields.iter().cloned())
+        .collect();
+    let fields_with_badges: Vec<FieldRow> = schema
+        .fields
+        .iter()
+        .map(|f| FieldRow {
+            name: f.name.clone(),
+            sql_type: f.sql_type.clone(),
+            nullable: f.nullable,
+            pk: f.pk,
+            foreign_key: f.foreign_key.clone(),
+            default_value: f.default_value.clone(),
+            is_indexed: indexed_fields.contains(&f.name),
+        })
+        .collect();
 
     // Materialise the four DML verbs with their current on/off state so
     // the template can iterate without knowing about `BTreeSet<DmlVerb>`.
@@ -415,6 +468,7 @@ pub async fn collection_rows_page(
             coll_name,
             collections,
             fields: schema.fields,
+            fields_with_badges,
             indices: schema.indices,
             column_names,
             rows,
@@ -428,8 +482,11 @@ pub async fn collection_rows_page(
             per_page_options,
             error,
             active_tab,
-            tab_data_url,
+            tab_rows_url,
             tab_schema_url,
+            tab_indexes_url,
+            tab_anon_url,
+            tab_explain_url,
             anon_cap_choices,
             version: env!("CARGO_PKG_VERSION"),
         }
