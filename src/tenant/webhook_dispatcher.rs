@@ -1,7 +1,7 @@
 //! WebhookDispatcher — record-CRUD event → subscribed URLs.
 //!
 //! Public API:
-//!   WebhookDispatcher::new(tenants_root: PathBuf) -> Arc<Self>
+//!   WebhookDispatcher::new(data_root: PathBuf) -> Arc<Self>
 //!   WebhookDispatcher::dispatch(&self, tenant: &str, collection: &str, event: Event)
 //!
 //! Internal: pure helpers below (HMAC, payload, event filter) are
@@ -76,12 +76,12 @@ pub(crate) fn build_payload(
 
 #[derive(Clone)]
 pub struct WebhookDispatcher {
-    tenants_root: PathBuf,
+    data_root: PathBuf,
     http: reqwest::Client,
 }
 
 impl WebhookDispatcher {
-    pub fn new(tenants_root: PathBuf) -> Arc<Self> {
+    pub fn new(data_root: PathBuf) -> Arc<Self> {
         let http = reqwest::Client::builder()
             .pool_max_idle_per_host(8)
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -89,7 +89,7 @@ impl WebhookDispatcher {
             .user_agent("drust-webhook/1.13.0")
             .build()
             .expect("reqwest client builds");
-        Arc::new(Self { tenants_root, http })
+        Arc::new(Self { data_root, http })
     }
 
     /// Fan out `event` to every active subscriber for `(tenant, collection)`.
@@ -98,18 +98,24 @@ impl WebhookDispatcher {
     /// `record_failure`). Returns immediately — the callers are on the hot
     /// REST/MCP path and must not block.
     pub fn dispatch(&self, tenant: &str, collection: &str, event: Event) {
-        let tenants_root = self.tenants_root.clone();
+        let data_root = self.data_root.clone();
         let tenant = tenant.to_string();
         let collection = collection.to_string();
         let http = self.http.clone();
         tokio::spawn(async move {
-            let conn = match open_tenant_conn(&tenants_root, &tenant) {
+            let conn = match open_tenant_conn(&data_root, &tenant) {
                 Ok(c) => c,
-                Err(_) => return,
+                Err(e) => {
+                    tracing::warn!(error = ?e, tenant = %tenant, "webhook dispatch: open_tenant_conn failed");
+                    return;
+                }
             };
             let subs = match list_subscriptions(&conn, &collection) {
                 Ok(s) => s,
-                Err(_) => return,
+                Err(e) => {
+                    tracing::warn!(error = ?e, tenant = %tenant, collection = %collection, "webhook dispatch: list_subscriptions failed");
+                    return;
+                }
             };
             drop(conn); // release before spawning per-delivery tasks
             let event_name = event.name();
@@ -127,13 +133,16 @@ impl WebhookDispatcher {
                     &timestamp,
                 )) {
                     Ok(b) => b,
-                    Err(_) => continue,
+                    Err(e) => {
+                        tracing::warn!(error = ?e, tenant = %tenant, collection = %collection, "webhook dispatch: serialize payload failed");
+                        continue;
+                    }
                 };
                 let http2 = http.clone();
-                let root2 = tenants_root.clone();
+                let root2 = data_root.clone();
                 let tenant2 = tenant.clone();
                 tokio::spawn(async move {
-                    let _ = deliver(
+                    if let Err(e) = deliver(
                         &http2,
                         &sub,
                         body_bytes,
@@ -141,7 +150,10 @@ impl WebhookDispatcher {
                         &root2,
                         &tenant2,
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::warn!(error = ?e, tenant = %tenant2, webhook_id = %sub.id, "webhook deliver: final failure");
+                    }
                 });
             }
         });
@@ -152,10 +164,10 @@ impl WebhookDispatcher {
 /// dispatcher owns connections only for the duration of one subscription
 /// query — no pooling needed at v1.13 scale.
 pub(crate) fn open_tenant_conn(
-    tenants_root: &std::path::Path,
+    data_root: &std::path::Path,
     tenant: &str,
 ) -> rusqlite::Result<Connection> {
-    let p = tenants_root.join("tenants").join(tenant).join("data.sqlite");
+    let p = data_root.join("tenants").join(tenant).join("data.sqlite");
     Connection::open(p)
 }
 
@@ -251,12 +263,12 @@ pub(crate) async fn deliver(
     row: &WebhookRow,
     body_bytes: Vec<u8>,
     sched: DeliverySchedule,
-    tenants_root: &std::path::Path,
+    data_root: &std::path::Path,
     tenant_id: &str,
 ) -> Result<(), DeliveryError> {
     let outcome = deliver_for_test(http, row, body_bytes, sched).await;
     if let Err(ref e) = outcome {
-        if let Ok(conn) = open_tenant_conn(tenants_root, tenant_id) {
+        if let Ok(conn) = open_tenant_conn(data_root, tenant_id) {
             let _ = record_failure(&conn, row.id, &e.to_string());
         }
     }
