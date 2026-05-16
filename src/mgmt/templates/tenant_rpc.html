@@ -43,15 +43,32 @@
       <main class="main"><div class="page">
         <div class="pagehead">
           <div>
-            <h1>_rpc</h1>
-            <div class="meta">
-              <b>{{ rpcs.len() }}</b> stored functions
-            </div>
+            <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:22px;font-weight:400;letter-spacing:0;">/ _rpc</span></h1>
+            <div class="meta">stored functions · named SELECT queries callable from REST + MCP</div>
           </div>
           <div>
             <a class="btn btn-primary" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/new">+ new function</a>
           </div>
         </div>
+
+        {% if total_rpcs > 0 %}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:24px;">
+          <div class="stat-tile">
+            <div class="stat-tile-label">total</div>
+            <div class="stat-tile-value">{{ total_rpcs }}</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">anon-callable</div>
+            <div class="stat-tile-value">{{ total_anon_callable }}</div>
+            <div class="stat-tile-delta">REST + MCP via anon token</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">service-only</div>
+            <div class="stat-tile-value">{{ total_rpcs - total_anon_callable }}</div>
+            <div class="stat-tile-delta">service-key required</div>
+          </div>
+        </div>
+        {% endif %}
 
         {% if total_rpcs == 0 %}
         <div class="empty" style="padding:64px 24px;text-align:center;">
@@ -74,21 +91,23 @@
         {% for r in rpcs %}
         <div class="card" style="margin-bottom:14px;">
           <div class="card-head">
-            <span><b>{{ r.name }}</b>
-              {% if r.anon_callable %}<span class="chip ok"><i class="dot"></i>anon</span>{% else %}<span class="chip" style="opacity:.55;">service-only</span>{% endif %}
+            <span style="display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;text-transform:none;letter-spacing:0;">
+              <code style="font:600 14px/1 var(--mono);color:var(--text);">{{ r.name }}</code>
+              {% if r.anon_callable %}<span class="badge-mini accent">anon-callable</span>{% else %}<span class="badge-mini">service-only</span>{% endif %}
             </span>
-            <span class="meta">
-              anon <b>{{ r.anon_calls }}</b> · service <b>{{ r.service_calls }}</b>
-              {% if let Some(t) = r.last_called_at %} · last <span class="mono">{{ t }}</span>{% endif %}
+            <span style="font:400 12px/1.4 var(--sans);color:var(--muted);text-transform:none;letter-spacing:0;">
+              anon <b style="color:var(--text-soft);">{{ r.anon_calls }}</b> · service <b style="color:var(--text-soft);">{{ r.service_calls }}</b>
+              {% if let Some(t) = r.last_called_at %} · last <span style="font-family:var(--mono);">{{ t }}</span>{% endif %}
             </span>
           </div>
-          {% if let Some(d) = r.description %}<p style="padding:0 16px;margin:8px 0 0;color:var(--muted);">{{ d }}</p>{% endif %}
-          <pre class="code" style="margin:8px 0;padding:14px 16px;border-radius:6px;font-size:14px;">{{ r.sql }}</pre>
-          <div style="padding:8px 16px 14px;display:flex;gap:8px;">
+          {% if let Some(d) = r.description %}<p style="padding:0 18px;margin:10px 0 0;font:400 13px/1.5 var(--sans);color:var(--muted);">{{ d }}</p>{% endif %}
+          <pre class="code" style="margin:10px 0;padding:14px 18px;border-radius:0;font-size:13px;">{{ r.sql }}</pre>
+          <div style="padding:12px 18px 14px;display:flex;gap:8px;border-top:1px solid var(--line);">
             <a class="btn btn-sm" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/edit">edit</a>
             <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/delete" class="rpc-delete-form" data-rpc-name="{{ r.name }}" style="display:inline;">
               <button type="submit" class="btn btn-sm btn-danger">delete</button>
             </form>
+            <span style="flex:1;"></span>
             <a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/test">test call →</a>
           </div>
         </div>
