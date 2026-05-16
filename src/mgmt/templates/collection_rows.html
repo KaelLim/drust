@@ -24,7 +24,7 @@
         <span class="at">@</span>
         <span class="host">drust</span>
         <span class="colon">:</span>
-        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_name }}</a>/{{ coll_name }}</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>/{{ coll_name }}</span>
         <span class="caret"></span>
       </div>
       <div class="topbar-right">
@@ -49,58 +49,186 @@
           <div>
             <h1>{{ coll_name }}</h1>
             <div class="meta">
-              <b>{{ total_rows }}</b> records · <b>{{ fields.len() }}</b> fields
+              <b>{{ total_rows }}</b> records · <b>{{ fields.len() }}</b> fields · <b>{{ indices.len() }}</b> indexes
             </div>
           </div>
           <nav class="tabs" aria-label="Collection view">
-            <a class="tab{% if active_tab == "data" %} on{% endif %}"
-               href="{{ tab_data_url }}">Data</a>
-            <a class="tab{% if active_tab == "schema" %} on{% endif %}"
-               href="{{ tab_schema_url }}">Schema</a>
+            <a class="tab{% if active_tab == "rows" %} on{% endif %}"     href="{{ tab_rows_url }}">rows</a>
+            <a class="tab{% if active_tab == "schema" %} on{% endif %}"   href="{{ tab_schema_url }}">schema</a>
+            <a class="tab{% if active_tab == "indexes" %} on{% endif %}"  href="{{ tab_indexes_url }}">indexes</a>
+            <a class="tab{% if active_tab == "anon" %} on{% endif %}"     href="{{ tab_anon_url }}">anon access</a>
+            <a class="tab{% if active_tab == "explain" %} on{% endif %}"  href="{{ tab_explain_url }}">explain</a>
           </nav>
         </div>
 
-        {% if active_tab == "schema" %}
-        <div class="card" style="margin-bottom:14px;">
-          <div class="card-head">
-            <span>anon access · per-collection capability allowlist</span>
-          </div>
-          <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/anon-caps" style="padding:16px;display:flex;flex-wrap:wrap;gap:22px;align-items:center;">
-            {% for verb in anon_cap_choices %}
-            <label class="check">
-              <input type="checkbox" name="caps" value="{{ verb.0 }}"{% if verb.1 %} checked{% endif %}>
-              <span>{{ verb.0 }}</span>
-            </label>
-            {% endfor %}
-            <button class="btn btn-primary btn-sm" type="submit" style="margin-left:auto;">apply</button>
+        {# ============================== rows tab ============================== #}
+        {% if active_tab == "rows" %}
+        <div class="card">
+          <form method="get" class="toolbar">
+            <div class="field">
+              <label>filter · sql where fragment</label>
+              <div class="input-prefix">
+                <span class="prefix">WHERE</span>
+                <input class="input" type="text" name="filter" value="{{ filter_val }}" placeholder="e.g. created_at &gt; '2026-01-01'">
+              </div>
+            </div>
+            <div class="field">
+              <label>sort</label>
+              <select class="select" name="sort">
+                <option value="">— default (id desc) —</option>
+                {% for opt in sort_options %}
+                <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field">
+              <label>per page</label>
+              <select class="select" name="per_page">
+                {% for opt in per_page_options %}
+                <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="actions">
+              <button class="btn btn-primary" type="submit">Apply</button>
+              <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset</a>
+            </div>
           </form>
-          <div class="muted" style="padding:0 16px 14px;font-size:12px;line-height:1.5;">
-            ⚠️ This setting only governs the REST <code>/records/*</code> API.
-            Anon tokens can still read this collection through
-            <code>POST /t/&lt;tid&gt;/query</code> (free-form SELECT) regardless
-            of the capability allowlist above. To fully restrict anon read
-            access, revoke the anon token entirely.
+
+          {% if let Some(err) = error %}
+          <div style="padding:12px 16px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;">
+            <canvas class="pix" data-chonk="error" data-size="56"></canvas>
+            <div class="alert error">
+              <div class="icon">✕</div>
+              <div class="msg">{{ err }}</div>
+              <span></span>
+            </div>
           </div>
+          {% endif %}
+
+          <div class="meta-row">
+            <span><b>{{ total_rows }}</b> records</span>
+            <span style="color:var(--line);">│</span>
+            <span>page <b>{{ page }}</b> / {{ total_pages }}</span>
+            {% if !filter_val.is_empty() %}
+            <span style="color:var(--line);">│</span>
+            <span>filter <b>{{ filter_val }}</b></span>
+            {% endif %}
+            <span class="spacer"></span>
+          </div>
+
+          <div class="records-scroll">
+            {% if rows.is_empty() %}
+            <div class="empty" style="padding:56px 24px 40px;">
+              <div style="margin-bottom:18px;display:grid;place-items:center;">
+                <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
+              </div>
+              <h3>0 records</h3>
+              <p>{% if !filter_val.is_empty() %}Your filter returned no rows. Try loosening the predicate or reset.{% else %}This collection is empty.{% endif %}</p>
+              {% if !filter_val.is_empty() %}
+              <div class="suggest"><a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset filter</a></div>
+              {% endif %}
+            </div>
+            {% else %}
+            <table class="data">
+              <thead>
+                <tr>{% for col in column_names %}<th>{{ col }}</th>{% endfor %}</tr>
+              </thead>
+              <tbody>
+                {% for row in rows %}
+                <tr>
+                  {% for cell in row %}
+                  <td class="{% if cell == "NULL" %}null{% endif %} trunc" title="{{ cell }}">{% if cell == "NULL" %}NULL{% else %}{{ cell }}{% endif %}</td>
+                  {% endfor %}
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% endif %}
+          </div>
+
+          {% if !rows.is_empty() %}
+          <div class="pager">
+            <div class="page-of">
+              page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_rows }}</b> total
+            </div>
+            <div class="pager-group">
+              {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
+              <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
+              {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+            </div>
+          </div>
+          {% endif %}
         </div>
-        <div class="card" style="margin-bottom:14px;">
+        {% endif %}
+
+        {# ============================== schema tab ============================== #}
+        {% if active_tab == "schema" %}
+        <div class="card">
           <div class="card-head">
-            <span>indexes <span class="count">· {{ indices.len() }} defined</span></span>
+            <span>schema <span class="count">{{ fields.len() }} fields</span></span>
           </div>
-          <table class="data" style="width:100%;">
+          <table class="data schema-grid">
+            <thead>
+              <tr>
+                <th style="width:220px;">field</th>
+                <th style="width:140px;">type</th>
+                <th style="width:90px;">nullable</th>
+                <th>constraints</th>
+                <th>default</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in fields_with_badges %}
+              <tr>
+                <td>
+                  <span style="color:var(--text);font-weight:500;">{{ f.name }}</span>
+                </td>
+                <td class="type">{{ f.sql_type }}</td>
+                <td>
+                  {% if f.nullable %}
+                  <span class="badge-mini null">null</span>
+                  {% else %}
+                  <span style="color:var(--muted-2);font-family:var(--sans);font-size:11px;">not null</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <span style="display:inline-flex;gap:4px;flex-wrap:wrap;">
+                    {% if f.pk %}<span class="badge-mini pk">PK</span>{% endif %}
+                    {% if let Some(fk) = f.foreign_key %}<span class="badge-mini fk" title="references {{ fk }}">FK → {{ fk }}</span>{% endif %}
+                    {% if f.is_indexed && !f.pk %}<span class="badge-mini idx">IDX</span>{% endif %}
+                    {% if !f.pk && f.foreign_key.is_none() && !f.is_indexed %}<span style="color:var(--muted-2);">—</span>{% endif %}
+                  </span>
+                </td>
+                <td class="{% if let Some(d) = f.default_value %}mono-cell{% else %}null{% endif %}">{% if let Some(d) = f.default_value %}{{ d }}{% else %}NULL{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+
+        {# ============================== indexes tab ============================== #}
+        {% if active_tab == "indexes" %}
+        <div class="card">
+          <div class="card-head">
+            <span>indexes <span class="count">{{ indices.len() }} defined</span></span>
+          </div>
+          <table class="data">
             <thead>
               <tr>
                 <th>name</th>
                 <th>fields</th>
-                <th style="width:70px;">unique</th>
-                <th style="width:60px;"></th>
+                <th style="width:80px;">unique</th>
+                <th style="width:80px;"></th>
               </tr>
             </thead>
             <tbody>
               {% for idx in indices %}
               <tr>
-                <td><code>{{ idx.name }}</code></td>
-                <td>{% for f in idx.fields %}<code>{{ f }}</code>{% if !loop.last %},&nbsp;{% endif %}{% endfor %}</td>
-                <td>{% if idx.unique %}<span class="chip ok"><i class="dot"></i>yes</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
+                <td><code style="font-family:var(--mono);color:var(--accent);">{{ idx.name }}</code></td>
+                <td>{% for f in idx.fields %}<code style="font-family:var(--mono);">{{ f }}</code>{% if !loop.last %},&nbsp;{% endif %}{% endfor %}</td>
+                <td>{% if idx.unique %}<span class="badge-mini uniq">UNIQ</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
                 <td>
                   <button type="button"
                           class="btn btn-sm btn-ghost drop-idx-btn"
@@ -110,16 +238,17 @@
               {% endfor %}
               {% if indices.is_empty() %}
               <tr>
-                <td colspan="4" style="text-align:center;color:var(--muted);padding:14px;">
-                  No indexes yet
+                <td colspan="4" style="text-align:center;color:var(--muted-2);padding:24px;font-family:var(--sans);">
+                  No indexes yet — add one below.
                 </td>
               </tr>
               {% endif %}
             </tbody>
           </table>
-          <div class="card-body-tight">
-            <div class="muted" style="font-size:13px;margin-bottom:10px;">
-              fields — row order is the index column order (matters for composite indexes)
+          <div class="card-body-tight" style="border-top:1px solid var(--line);">
+            <div style="font:600 11px/1 var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">create index</div>
+            <div style="font:400 12px/1.5 var(--sans);color:var(--muted);margin-bottom:12px;">
+              Row order is the index column order (matters for composite indexes).
             </div>
             <div id="idx-rows" style="display:flex;flex-direction:column;gap:8px;">
               <div class="idx-row" style="display:flex;gap:8px;align-items:center;">
@@ -151,76 +280,6 @@
             </div>
             <pre id="create-idx-output" class="output is-error" hidden style="margin-top:10px;"></pre>
           </div>
-        </div>
-        <div class="card" style="margin-top:16px;">
-          <div class="card-head">Try SELECT (EXPLAIN QUERY PLAN)</div>
-          <div class="card-body-tight">
-            <textarea id="explain-sql"
-                      class="textarea"
-                      rows="3"
-                      placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
-            <button id="explain-run" type="button" class="btn btn-sm btn-primary" style="margin-top:8px;">Run plan</button>
-            <pre id="explain-output" class="output" hidden></pre>
-          </div>
-        </div>
-        <script>
-(function() {
-  var tenantId = '{{ tenant_id }}';
-  var collName = '{{ coll_name }}';
-  document.getElementById('explain-run').addEventListener('click', function() {
-    var sql = document.getElementById('explain-sql').value;
-    var out = document.getElementById('explain-output');
-    out.textContent = 'Running...';
-    out.hidden = false;
-    fetch(
-      '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_explain',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sql: sql })
-      }
-    ).then(function(r) {
-      return r.json().then(function(j) { return { ok: r.ok, j: j }; });
-    }).then(function(res) {
-      if (res.j.plan) {
-        out.textContent = res.j.plan.map(function(p) {
-          return (p.parent > 0 ? '  ' : '') + p.detail;
-        }).join('\n');
-      } else {
-        out.textContent = (res.j.error_code || 'ERROR') + ': ' + (res.j.message || '');
-      }
-    }).catch(function(e) {
-      out.textContent = String(e);
-    });
-  });
-})();
-        </script>
-        <div class="card">
-          <div class="card-head">
-            <span>schema <span class="count">· {{ fields.len() }} fields</span></span>
-          </div>
-          <table class="data schema-grid">
-            <thead>
-              <tr>
-                <th style="width:200px;">field</th>
-                <th style="width:140px;">type</th>
-                <th style="width:100px;">nullable</th>
-                <th style="width:80px;">pk</th>
-                <th>default</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for f in fields %}
-              <tr>
-                <td>{{ f.name }}</td>
-                <td class="type">{{ f.sql_type }}</td>
-                <td class="{% if !f.nullable %}muted-cell{% endif %}">{% if f.nullable %}yes{% else %}no{% endif %}</td>
-                <td>{% if f.pk %}<span class="chip ok"><i class="dot"></i>pk</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
-                <td class="{% if let Some(d) = f.default_value %}mono-cell{% else %}null{% endif %}">{% if let Some(d) = f.default_value %}{{ d }}{% else %}NULL{% endif %}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
         </div>
         <script>
 (function() {
@@ -337,106 +396,102 @@
   }
 })();
         </script>
-        {% else %}
+        {% endif %}
+
+        {# ============================== anon tab ============================== #}
+        {% if active_tab == "anon" %}
         <div class="card">
-          <form method="get" class="toolbar">
-            <input type="hidden" name="tab" value="data">
-            <div class="field">
-              <label>filter · sql where fragment</label>
-              <div class="input-prefix">
-                <span class="prefix">WHERE</span>
-                <input class="input" type="text" name="filter" value="{{ filter_val }}" placeholder="e.g. created_at &gt; '2026-01-01'">
-              </div>
-            </div>
-            <div class="field">
-              <label>sort</label>
-              <select class="select" name="sort">
-                <option value="">— default (id desc) —</option>
-                {% for opt in sort_options %}
-                <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.label }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="field">
-              <label>per page</label>
-              <select class="select" name="per_page">
-                {% for opt in per_page_options %}
-                <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="actions">
-              <button class="btn btn-primary" type="submit">Apply</button>
-              <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset</a>
-            </div>
+          <div class="card-head">
+            <span>anon access · per-collection capability allowlist</span>
+          </div>
+          <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/anon-caps" style="padding:18px 20px;display:flex;flex-wrap:wrap;gap:22px;align-items:center;border-bottom:1px solid var(--line);">
+            {% for verb in anon_cap_choices %}
+            <label class="check">
+              <input type="checkbox" name="caps" value="{{ verb.0 }}"{% if verb.1 %} checked{% endif %}>
+              <span>{{ verb.0 }}</span>
+            </label>
+            {% endfor %}
+            <button class="btn btn-primary btn-sm" type="submit" style="margin-left:auto;">apply</button>
           </form>
-
-          {% if let Some(err) = error %}
-          <div style="padding:12px 16px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;">
-            <canvas class="pix" data-chonk="error" data-size="56"></canvas>
-            <div class="alert error">
-              <div class="icon">✕</div>
-              <div class="msg">{{ err }}</div>
-              <span></span>
+          <div class="alert warn" style="border-radius:0;border:0;border-bottom:1px solid var(--warn-line);">
+            <span class="icon">!</span>
+            <div class="msg">
+              This setting only governs the REST <code>/records/*</code> API.
+              Anon tokens can still read this collection through
+              <code>POST /t/&lt;tid&gt;/query</code> (free-form SELECT) regardless
+              of the capability allowlist above. To fully restrict anon read
+              access, revoke the anon token entirely.
             </div>
+            <span></span>
           </div>
-          {% endif %}
-
-          <div class="meta-row">
-            <span><b>{{ total_rows }}</b> records</span>
-            <span style="color:var(--line);">│</span>
-            <span>page <b>{{ page }}</b> / {{ total_pages }}</span>
-            {% if !filter_val.is_empty() %}
-            <span style="color:var(--line);">│</span>
-            <span>filter <b>{{ filter_val }}</b></span>
-            {% endif %}
-            <span class="spacer"></span>
+          <div style="padding:18px 20px;font:400 13px/1.6 var(--sans);color:var(--text-soft);">
+            <div style="font:600 11px/1 var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">verbs</div>
+            <div><b>select</b> — read rows via <code>GET /records</code>, <code>GET /records/{id}</code></div>
+            <div><b>insert</b> — create rows via <code>POST /records</code></div>
+            <div><b>update</b> — modify rows via <code>PATCH /records/{id}</code></div>
+            <div><b>delete</b> — remove rows via <code>DELETE /records/{id}</code></div>
           </div>
-
-          <div class="records-scroll">
-            {% if rows.is_empty() %}
-            <div class="empty" style="padding:56px 24px 40px;">
-              <div style="margin-bottom:18px;display:grid;place-items:center;">
-                <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
-              </div>
-              <h3>0 records</h3>
-              <p>{% if !filter_val.is_empty() %}Your filter returned no rows. Try loosening the predicate or reset.{% else %}This collection is empty.{% endif %}</p>
-              {% if !filter_val.is_empty() %}
-              <div class="suggest"><a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset filter</a></div>
-              {% endif %}
-            </div>
-            {% else %}
-            <table class="data">
-              <thead>
-                <tr>{% for col in column_names %}<th>{{ col }}</th>{% endfor %}</tr>
-              </thead>
-              <tbody>
-                {% for row in rows %}
-                <tr>
-                  {% for cell in row %}
-                  <td class="{% if cell == "NULL" %}null{% endif %} trunc" title="{{ cell }}">{% if cell == "NULL" %}NULL{% else %}{{ cell }}{% endif %}</td>
-                  {% endfor %}
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-            {% endif %}
-          </div>
-
-          {% if !rows.is_empty() %}
-          <div class="pager">
-            <div class="page-of">
-              page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_rows }}</b> total
-            </div>
-            <div class="pager-group">
-              {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
-              <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
-              {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
-            </div>
-          </div>
-          {% endif %}
         </div>
         {% endif %}
+
+        {# ============================== explain tab ============================== #}
+        {% if active_tab == "explain" %}
+        <div class="card">
+          <div class="card-head">
+            <span>EXPLAIN QUERY PLAN</span>
+          </div>
+          <div class="card-body-tight" style="padding:18px 20px;">
+            <div class="field" style="margin-bottom:12px;">
+              <label>select statement <span class="hint">read-only authorizer</span></label>
+              <textarea id="explain-sql"
+                        class="textarea"
+                        rows="4"
+                        placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
+            </div>
+            <button id="explain-run" type="button" class="btn btn-primary btn-sm">Run plan</button>
+            <pre id="explain-output" class="output" hidden style="margin-top:14px;"></pre>
+          </div>
+          <div style="padding:16px 20px;border-top:1px solid var(--line);font:400 12px/1.5 var(--sans);color:var(--muted);">
+            EXPLAIN runs against the read-only connection — the same authorizer
+            that protects the public <code>POST /t/&lt;tid&gt;/query/explain</code>
+            endpoint. Output shows each step the SQLite planner will take
+            (table scan vs index lookup, join order, etc.).
+          </div>
+        </div>
+        <script>
+(function() {
+  var tenantId = '{{ tenant_id }}';
+  var collName = '{{ coll_name }}';
+  document.getElementById('explain-run').addEventListener('click', function() {
+    var sql = document.getElementById('explain-sql').value;
+    var out = document.getElementById('explain-output');
+    out.textContent = 'Running...';
+    out.hidden = false;
+    fetch(
+      '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_explain',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sql: sql })
+      }
+    ).then(function(r) {
+      return r.json().then(function(j) { return { ok: r.ok, j: j }; });
+    }).then(function(res) {
+      if (res.j.plan) {
+        out.textContent = res.j.plan.map(function(p) {
+          return (p.parent > 0 ? '  ' : '') + p.detail;
+        }).join('\n');
+      } else {
+        out.textContent = (res.j.error_code || 'ERROR') + ': ' + (res.j.message || '');
+      }
+    }).catch(function(e) {
+      out.textContent = String(e);
+    });
+  });
+})();
+        </script>
+        {% endif %}
+
       </div></main>
     </div>
   </div>
