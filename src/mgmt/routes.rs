@@ -67,16 +67,25 @@ pub struct MgmtState {
 struct LoginPage {
     error: Option<String>,
     version: &'static str,
-    oauth_providers: Vec<&'static str>,
+    oauth_providers: Vec<String>,
     oauth_error: Option<String>,
 }
 
 #[derive(Template)]
 #[template(path = "design.html")]
-struct DesignShowcase;
+struct DesignShowcase {
+    version: &'static str,
+}
 
 async fn design_showcase() -> Response {
-    Html(DesignShowcase {}.render().unwrap_or_default()).into_response()
+    Html(
+        DesignShowcase {
+            version: env!("CARGO_PKG_VERSION"),
+        }
+        .render()
+        .unwrap_or_default(),
+    )
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +108,7 @@ async fn login_page(
         LoginPage {
             error: None,
             version: env!("CARGO_PKG_VERSION"),
-            oauth_providers: state.oauth_registry.enabled_names(),
+            oauth_providers: state.oauth_registry.enabled_names().into_iter().map(String::from).collect(),
             oauth_error: q.oauth_error,
         }
         .render()
@@ -183,7 +192,7 @@ fn unauthorized(msg: &str, state: &MgmtState) -> Response {
     let body = LoginPage {
         error: Some(msg.to_string()),
         version: env!("CARGO_PKG_VERSION"),
-        oauth_providers: state.oauth_registry.enabled_names(),
+        oauth_providers: state.oauth_registry.enabled_names().into_iter().map(String::from).collect(),
         oauth_error: None,
     }
     .render()

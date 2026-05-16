@@ -7,98 +7,152 @@
 <meta name="description" content="Sign in to drust — multi-tenant SQLite BaaS admin console for the Tzu Chi Foundation.">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
+<style>
+  /* Login page is the one screen we render outside the macwin frame, so the
+     full-bleed radial background reads. Token-scoped — no literal colors. */
+  body.login-page {
+    padding: 0;
+    overflow: auto;
+    background:
+      radial-gradient(120% 80% at 50% 0%, oklch(0.30 0.04 50 / 0.6) 0%, transparent 60%),
+      var(--desktop);
+  }
+  body.login-page .macwin { display: none; }
+  .login-shell {
+    min-height: 100vh;
+    display: grid; place-items: center;
+    padding: 24px;
+  }
+  .login-card {
+    width: min(420px, 100%);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 32px 32px 24px;
+    box-shadow: 0 30px 100px -40px rgba(0,0,0,0.5), 0 1px 0 oklch(1 0 0 / 0.04) inset;
+  }
+  .login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+  .login-brand .brand-mark { width: 38px; height: 38px; border-radius: 12px; box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.12), 0 0 0 1px var(--accent-soft); display: grid; place-items: center; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+  .login-brand .brand-name { font: 500 22px/1 var(--serif); letter-spacing: -0.015em; color: var(--text); }
+  .login-brand .brand-meta { font: 500 10.5px/1.2 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-top: 3px; }
+  .login-title { font: 500 28px/1.1 var(--serif); letter-spacing: -0.018em; color: var(--text); margin: 0; }
+  .login-sub { color: var(--muted); font: 400 13px/1.5 var(--sans); margin-top: 6px; margin-bottom: 22px; }
+  .login-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .login-field label { font: 500 10.5px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .login-input {
+    height: 38px; padding: 0 12px; border-radius: 10px;
+    background: oklch(0.18 0.01 50); border: 1px solid var(--line);
+    color: var(--text); font: 400 13.5px/1 var(--sans); outline: 0;
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .login-input:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px oklch(var(--accent-l) var(--accent-c) var(--accent-h) / 0.25); }
+  .login-cta {
+    width: 100%; height: 40px; border-radius: 10px;
+    background: var(--accent); color: oklch(0.14 0.02 var(--accent-h));
+    font: 600 14px/1 var(--sans); letter-spacing: 0.01em;
+    border: 0; cursor: pointer; margin-top: 6px;
+    transition: background .12s;
+  }
+  .login-cta:hover { background: var(--accent-2); }
+  .login-divider {
+    display: grid; grid-template-columns: 1fr auto 1fr;
+    align-items: center; gap: 10px; margin: 18px 0 14px;
+    color: var(--muted-2);
+    font: 500 10px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+  }
+  .login-divider::before, .login-divider::after { content: ""; height: 1px; background: var(--line); }
+  .oauth-btn {
+    display: flex; align-items: center; justify-content: center; gap: 9px;
+    width: 100%; height: 40px; border-radius: 10px;
+    border: 1px solid var(--line); background: oklch(0.18 0.01 50);
+    color: var(--text); font: 500 13.5px/1 var(--sans); cursor: pointer;
+    text-decoration: none;
+    transition: border-color .12s, background .12s;
+  }
+  .oauth-btn + .oauth-btn { margin-top: 8px; }
+  .oauth-btn:hover { border-color: var(--line-2); background: var(--bg-2); }
+  .oauth-btn svg { width: 16px; height: 16px; }
+  .login-foot {
+    margin-top: 22px; padding-top: 16px;
+    border-top: 1px solid var(--line);
+    text-align: center; color: var(--muted-2); font: 500 11.5px/1 var(--sans);
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+</style>
 </head>
-<body>
-{% include "_icons.html" %}
-<div class="macwin">
-  <div class="macwin-title">
-    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">drust <span class="muted">— sign in</span></span>
-    <span></span>
-  </div>
-  <div class="macwin-body">
-    <div class="auth-shell">
-      <div class="auth-card">
-        <div class="auth-head">
-          <span class="dots"><i></i><i></i><i></i></span>
-          <span class="title">drust — sign in</span>
-        </div>
-        <div class="auth-body">
-          <div class="brand" style="display:flex;align-items:center;gap:14px;margin-bottom:6px;">
-            <canvas class="pix" data-chonk="awake" data-size="48"></canvas>
-            <div>
-              <span class="logo">drust</span>
-              <span class="tag">multi-tenant sqlite baas</span>
-            </div>
-          </div>
-          <h1>Sign in to continue</h1>
-          <div class="sub">internal tool · Tzu Chi Foundation</div>
-
-          {% if let Some(err) = error %}
-          <div style="margin-bottom:14px;">
-            <div class="alert error">
-              <div class="icon">✕</div>
-              <div class="msg">{{ err }}</div>
-              <span></span>
-            </div>
-          </div>
-          {% endif %}
-
-          {% if let Some(oerr) = oauth_error %}
-          <div style="margin-bottom:14px;">
-            <div class="alert error" role="alert">
-              <div class="icon">✕</div>
-              <div class="msg">
-                {% match oerr.as_str() %}
-                  {% when "oauth_state_mismatch" %}Login session expired. Please try again.
-                  {% when "oauth_provider_error" %}Provider error. Try again or use password.
-                  {% when "oauth_email_unverified" %}Your provider email is not verified.
-                  {% when "oauth_not_allowed" %}This email is not authorized.
-                  {% when "oauth_admin_email_missing" %}Your admin record has no email — run <code>drust_set_admin_password --email</code>.
-                  {% when "oauth_misconfigured" %}OAuth not configured.
-                  {% when _ %}Login failed.
-                {% endmatch %}
-              </div>
-              <span></span>
-            </div>
-          </div>
-          {% endif %}
-
-          <form method="post" action="/drust/login">
-            <div class="field">
-              <label>username</label>
-              <div class="input-prefix">
-                <span class="prefix">@</span>
-                <input class="input" name="username" placeholder="admin" required autofocus autocomplete="off">
-              </div>
-            </div>
-            <div class="field">
-              <label>password</label>
-              <input class="input" type="password" name="password" placeholder="••••••••••••" required autocomplete="off">
-            </div>
-            <div class="submit-row">
-              <span class="hint">press <span class="kbd-key">↵</span> to sign in</span>
-              <button class="btn btn-primary" type="submit">Sign in →</button>
-            </div>
-          </form>
-
-          {% if !oauth_providers.is_empty() %}
-          <div class="oauth-divider"><span></span><span>or continue with</span><span></span></div>
-          <div class="oauth-buttons">
-            {% for p in oauth_providers %}
-              <a class="oauth-btn oauth-btn-{{ p }}" href="/drust/admin/oauth/{{ p }}/start">
-                <span class="provider-mark" aria-hidden="true">▸</span>
-                <span>Continue with {{ p|capitalize }}</span>
-              </a>
-            {% endfor %}
-          </div>
-          {% endif %}
-        </div>
-        <div class="auth-foot">
-          <span>drust v{{ version }}</span>
-          <span>forgot password? ask admin</span>
-        </div>
+<body class="login-page">
+<div class="login-shell">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-mark"><canvas class="pix" data-chonk="awake" data-size="22"></canvas></div>
+      <div>
+        <div class="brand-name">drust</div>
+        <div class="brand-meta">multi-tenant sqlite · v{{ version }}</div>
       </div>
+    </div>
+    <h1 class="login-title">Welcome back.</h1>
+    <p class="login-sub">Sign in to manage tenants, OAuth, files, and stored RPCs — internal tool, Tzu Chi Foundation.</p>
+
+    {% if let Some(err) = error %}
+    <div class="banner danger" style="margin-bottom:14px;">
+      <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+      <div class="b-body"><div class="b-title">Sign-in failed</div><p>{{ err }}</p></div>
+    </div>
+    {% endif %}
+
+    {% if let Some(oerr) = oauth_error %}
+    <div class="banner danger" style="margin-bottom:14px;" role="alert">
+      <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+      <div class="b-body">
+        <div class="b-title">OAuth sign-in failed</div>
+        <p>
+          {% match oerr.as_str() %}
+            {% when "oauth_state_mismatch" %}Login session expired. Please try again.
+            {% when "oauth_provider_error" %}Provider returned an error. Try again or use password.
+            {% when "oauth_email_unverified" %}Your provider email is not verified.
+            {% when "oauth_not_allowed" %}This email is not on the admin allowlist.
+            {% when "oauth_admin_email_missing" %}Your admin record has no email — run <code>drust_set_admin_password --email</code>.
+            {% when "oauth_misconfigured" %}OAuth is not configured.
+            {% when _ %}Login failed.
+          {% endmatch %}
+        </p>
+      </div>
+    </div>
+    {% endif %}
+
+    <form method="post" action="/drust/login">
+      <div class="login-field">
+        <label>Username</label>
+        <input class="login-input" name="username" placeholder="admin" required autofocus autocomplete="username">
+      </div>
+      <div class="login-field">
+        <label>Password</label>
+        <input class="login-input" type="password" name="password" placeholder="••••••••••••" required autocomplete="current-password">
+      </div>
+      <button class="login-cta" type="submit">Sign in →</button>
+    </form>
+
+    {% if !oauth_providers.is_empty() %}
+    <div class="login-divider"><span></span><span>or continue with</span><span></span></div>
+    {% for p in oauth_providers %}
+    <a class="oauth-btn" href="/drust/admin/oauth/{{ p }}/start">
+      {% if p == "google" %}
+      <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.56c2.08-1.92 3.28-4.74 3.28-8.1Z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.65l-3.56-2.77c-.99.66-2.25 1.06-3.72 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23Z"/><path fill="#FBBC05" d="M5.84 14.11A6.6 6.6 0 0 1 5.5 12c0-.73.13-1.44.34-2.11V7.05H2.18A11 11 0 0 0 1 12c0 1.78.43 3.46 1.18 4.95l3.66-2.84Z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1A11 11 0 0 0 2.18 7.05l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38Z"/></svg>
+      {% else %}
+      <svg viewBox="0 0 24 24" fill="#f5ede2"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.93c.57.1.78-.25.78-.55v-2.07c-3.2.7-3.88-1.36-3.88-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.34.96.1-.74.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.78 0c2.21-1.5 3.18-1.18 3.18-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.4-5.25 5.69.41.35.78 1.05.78 2.13v3.16c0 .31.21.66.79.55A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+      {% endif %}
+      Continue with {{ p|capitalize }}
+    </a>
+    {% endfor %}
+    {% endif %}
+
+    <div class="login-foot">
+      <span style="display:inline-flex;align-items:center;gap:8px;">
+        <canvas class="pix" data-chonk="awake" data-size="14"></canvas>
+        LiveChonk on duty
+      </span>
+      <span style="opacity:0.5;">·</span>
+      <span>forgot password? ask admin</span>
     </div>
   </div>
 </div>

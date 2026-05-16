@@ -2,50 +2,58 @@
 
 {% if auto_refresh %}<meta http-equiv="refresh" content="30">{% endif %}
 
-<div class="tabs" style="display:flex;gap:6px;margin-bottom:18px;">
-  <a class="btn{% if tab == "overview" %} btn-primary{% endif %}" href="{{ overview_link }}">Overview</a>
-  <a class="btn{% if tab == "browse" %} btn-primary{% endif %}" href="{{ browse_link }}">Browse</a>
-</div>
-
-<div style="display:flex;gap:6px;margin-bottom:18px;align-items:center;">
-  <span class="muted" style="margin-right:8px;">window</span>
-  {% for w in window_choices %}
-  <a class="btn{% if w.active %} btn-primary{% endif %}" href="{{ w.href }}">{{ w.label }}</a>
-  {% endfor %}
-  <span style="flex:1;"></span>
-  <a class="btn" href="{{ refresh_link }}">Refresh</a>
-  <a class="btn{% if auto_refresh %} btn-primary{% endif %}" href="{{ auto_toggle_link }}">
-    {% if auto_refresh %}■ stop auto-refresh{% else %}□ auto-refresh 30s{% endif %}
-  </a>
+<div class="toolbar-v2" style="margin-bottom:14px;">
+  <div class="seg">
+    <a class="{% if tab == "overview" %}active{% endif %}" href="{{ overview_link }}">overview</a>
+    <a class="{% if tab == "browse" %}active{% endif %}" href="{{ browse_link }}">browse</a>
+  </div>
+  <span class="vsep"></span>
+  <div class="seg">
+    {% for w in window_choices %}
+    <a class="{% if w.active %}active{% endif %}" href="{{ w.href }}">{{ w.label }}</a>
+    {% endfor %}
+  </div>
+  <span class="right" style="display:inline-flex;gap:6px;">
+    <a class="btn sm ghost" href="{{ refresh_link }}">refresh</a>
+    <a class="btn sm{% if auto_refresh %} primary{% endif %}" href="{{ auto_toggle_link }}">
+      {% if auto_refresh %}stop auto-refresh{% else %}auto 30s{% endif %}
+    </a>
+  </span>
 </div>
 
 {% if tab == "overview" %}
 {% if let Some(ov) = overview %}
-<div class="audit-stats">
-  <div class="stat-tile">
-    <div class="stat-tile-label">total requests</div>
-    <div class="stat-tile-value">{{ ov.total }}</div>
+<div class="stat-grid" style="margin-bottom:18px;">
+  <div class="stat accent-edge">
+    <div class="label">Total requests</div>
+    <div class="val">{{ ov.total }}</div>
+    <div class="meta">window</div>
   </div>
-  <div class="stat-tile">
-    <div class="stat-tile-label">errors</div>
-    <div class="stat-tile-value" style="{% if ov.error_count > 0 %}color:var(--danger);{% endif %}">{{ ov.error_count }}</div>
-    <div class="stat-tile-delta{% if ov.error_count > 0 %} bad{% else %} ok{% endif %}">{{ "{:.1}"|format(ov.error_pct) }}% err</div>
+  <div class="stat">
+    <div class="label">Errors</div>
+    <div class="val" style="{% if ov.error_count > 0 %}color:var(--danger);{% endif %}">{{ ov.error_count }}</div>
+    <div class="meta">{% if ov.error_count > 0 %}<span class="down">{{ "{:.1}"|format(ov.error_pct) }}% err</span>{% else %}<span class="up">0% err</span>{% endif %}</div>
   </div>
-  <div class="stat-tile">
-    <div class="stat-tile-label">latency p50</div>
-    <div class="stat-tile-value">{{ ov.p50_ms }}<span style="font:500 13px/1 var(--sans);color:var(--muted);margin-left:4px;">ms</span></div>
-    <div class="stat-tile-delta">p99 {{ ov.p99_ms }}ms</div>
+  <div class="stat">
+    <div class="label">Latency p50</div>
+    <div class="val">{{ ov.p50_ms }} <span class="unit">ms</span></div>
+    <div class="meta">p99 {{ ov.p99_ms }} ms</div>
   </div>
-  <div class="stat-tile">
-    <div class="stat-tile-label">avg rps</div>
-    <div class="stat-tile-value">{{ "{:.2}"|format(ov.rps_avg) }}</div>
-    <div class="stat-tile-delta">req / sec</div>
+  <div class="stat">
+    <div class="label">Avg RPS</div>
+    <div class="val">{{ "{:.2}"|format(ov.rps_avg) }}</div>
+    <div class="meta">req / sec</div>
   </div>
 </div>
 
 {% if is_host_scope %}
 <div class="card" style="margin-bottom:18px;">
-  <div class="card-head">Top tenants</div>
+  <div class="card-head">
+    <div>
+      <div class="card-title">Top tenants</div>
+      <div class="card-sub">request volume + error rate, this window</div>
+    </div>
+  </div>
   {% if ov.top_tenants.is_empty() %}<div class="empty" style="padding:36px 24px;">no data</div>{% else %}
   <table class="data">
     <thead><tr><th>tenant</th><th class="num">count</th><th class="num">err%</th></tr></thead>
@@ -54,7 +62,7 @@
       <tr>
         <td>{% if t.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ t.tenant }}/_logs" title="drill into this tenant's audit">{{ t.tenant }}</a>{% endif %}</td>
         <td class="num">{{ t.count }}</td>
-        <td class="num">{{ "{:.1}"|format(t.error_pct) }}%</td>
+        <td class="num">{% if t.error_pct > 0.0 %}<span class="pill danger">{{ "{:.1}"|format(t.error_pct) }}%</span>{% else %}<span class="pill mint">{{ "{:.1}"|format(t.error_pct) }}%</span>{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -64,7 +72,12 @@
 {% endif %}
 
 <div class="card">
-  <div class="card-head">Top slowest ops</div>
+  <div class="card-head">
+    <div>
+      <div class="card-title">Top slowest ops</div>
+      <div class="card-sub">slowest individual requests in this window</div>
+    </div>
+  </div>
   {% if ov.top_slow_ops.is_empty() %}<div class="empty" style="padding:36px 24px;">no data</div>{% else %}
   <table class="data">
     <thead><tr>
@@ -76,10 +89,10 @@
     <tbody>
       {% for e in ov.top_slow_ops %}
       <tr>
-        <td>{{ e.ts }}</td>
+        <td class="muted-cell">{{ e.ts }}</td>
         {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs">{{ e.tenant }}</a>{% endif %}</td>{% endif %}
-        <td>{{ e.op }}</td>
-        <td class="num">{{ e.duration_ms }}</td>
+        <td class="mono-cell" style="font-size:12px;">{{ e.op }}</td>
+        <td class="num"><b>{{ e.duration_ms }}</b></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -89,93 +102,86 @@
 {% endif %}
 
 {% else %}
-<form method="get" style="display:flex;gap:8px;align-items:center;margin-bottom:18px;flex-wrap:wrap;">
+<form method="get" class="toolbar-v2" style="margin-bottom:18px;">
   <input type="hidden" name="tab" value="browse">
   <input type="hidden" name="window" value="{{ window_str }}">
   {% if is_host_scope %}
-  <label>tenant <input class="input" name="tenant" value="{% if let Some(t) = tenant_filter %}{{ t }}{% endif %}" placeholder="(any)" style="width:160px;"></label>
+  <input class="input" name="tenant" value="{% if let Some(t) = tenant_filter %}{{ t }}{% endif %}" placeholder="tenant…" style="min-width:0;width:160px;">
   {% endif %}
-  <label>op <input class="input" name="op" value="{% if let Some(o) = op_filter %}{{ o }}{% endif %}" placeholder="(any)" style="width:160px;"></label>
-  <label>status
-    <select class="input" name="status">
-      <option value="all"{% if status_filter == "all" %} selected{% endif %}>all</option>
-      <option value="ok"{% if status_filter == "ok" %} selected{% endif %}>ok</option>
-      <option value="error"{% if status_filter == "error" %} selected{% endif %}>error</option>
-    </select>
-  </label>
-  <button class="btn btn-primary" type="submit">Apply</button>
+  <input class="input" name="op" value="{% if let Some(o) = op_filter %}{{ o }}{% endif %}" placeholder="op…" style="min-width:0;width:160px;">
+  <div class="seg">
+    <a class="{% if status_filter == "all" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=all{% if let Some(t) = tenant_filter %}&tenant={{ t }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">all</a>
+    <a class="{% if status_filter == "ok" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=ok{% if let Some(t) = tenant_filter %}&tenant={{ t }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">ok</a>
+    <a class="{% if status_filter == "error" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=error{% if let Some(t) = tenant_filter %}&tenant={{ t }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">error</a>
+  </div>
+  <button class="btn sm primary" type="submit">apply</button>
+  <span class="right mono">{{ entries.len() }} shown{% if let Some(n) = truncated_from %} · truncated from {{ n }}{% endif %}</span>
 </form>
 
 <div class="card">
   <div class="card-head">
-    <span>Audit entries <span class="count">· {{ entries.len() }} shown</span></span>
+    <div>
+      <div class="card-title">Audit entries</div>
+      <div class="card-sub">{{ entries.len() }} shown · click a row for full detail</div>
+    </div>
   </div>
   {% if entries.is_empty() %}
   <div class="empty" style="padding:48px 24px;">no entries match.</div>
   {% else %}
-  <table class="data">
-    <thead><tr>
-      <th>timestamp</th>
-      {% if is_host_scope %}<th>tenant</th>{% endif %}
-      <th>operation</th>
-      <th>status</th>
-      <th class="num">ms</th>
-      <th>error_code</th>
-    </tr></thead>
-    <tbody>
+  <div class="card-body" style="padding:6px 18px;">
+    <div class="tl">
       {% for e in entries %}
-      <tr>
-        <td>{{ e.ts }}</td>
-        {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs" title="drill into this tenant's audit">{{ e.tenant }}</a>{% endif %}</td>{% endif %}
-        <td>{{ e.op }}</td>
-        <td>{% if e.status == "error" %}<span class="chip danger">error</span>{% else %}<span class="chip ok"><span class="dot"></span>ok</span>{% endif %}</td>
-        <td class="num">{{ e.duration_ms }}</td>
-        <td>{% if let Some(c) = e.error_code %}<code style="font-family:var(--mono);font-size:12px;color:var(--danger);">{{ c }}</code>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
-      </tr>
-      <tr class="audit-detail-row"><td colspan="{% if is_host_scope %}6{% else %}5{% endif %}" style="padding:0;border:0;background:transparent;">
-        <details style="margin:0;padding:0 var(--cell-x) 8px;">
-          <summary class="muted" style="cursor:pointer;font-size:12px;">details</summary>
-          <dl class="audit-detail">
-            <dt>timestamp</dt><dd>{{ e.ts }}</dd>
-            <dt>tenant</dt><dd>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}{{ e.tenant }}{% endif %}</dd>
-            <dt>token_hint</dt><dd>{{ e.token_hint }}</dd>
-            <dt>operation</dt><dd>{{ e.op }}</dd>
-            <dt>status</dt><dd>{% if e.status == "error" %}<b style="color:var(--warn);">{{ e.status }}</b>{% else %}{{ e.status }}{% endif %}</dd>
-            <dt>duration_ms</dt><dd>{{ e.duration_ms }}</dd>
-            {% if let Some(c) = e.collection %}<dt>collection</dt><dd><a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/collections/{{ c }}">{{ c }}</a></dd>{% endif %}
-            {% if let Some(h) = e.sql_hash %}<dt>sql_hash</dt><dd>{{ h }}</dd>{% endif %}
-            {% if let Some(id) = e.record_id %}<dt>record_id</dt><dd>{{ id }}</dd>{% endif %}
-            {% if let Some(c) = e.error_code %}<dt>error_code</dt><dd><b style="color:var(--warn);">{{ c }}</b></dd>{% endif %}
-            {% if let Some(m) = e.error_message %}<dt>error_message</dt><dd><pre class="audit-err">{{ m }}</pre></dd>{% endif %}
-            {% if let Some(m) = e.auth_method %}<dt>auth_method</dt><dd>{{ m }}</dd>{% endif %}
-            {% if let Some(em) = e.oauth_email %}<dt>oauth_email</dt><dd>{{ em }}</dd>{% endif %}
-            {% if let Some(ec) = e.oauth_error_code %}<dt>oauth_error_code</dt><dd><b style="color:var(--warn);">{{ ec }}</b></dd>{% endif %}
-            {% if let Some(xj) = e.extra_as_json() %}<dt>extra</dt><dd><pre class="audit-extras">{{ xj }}</pre></dd>{% endif %}
-          </dl>
-        </details>
-      </td></tr>
+      <div class="tl-row">
+        <div class="tl-time">{{ e.ts }}</div>
+        <div class="tl-glyph{% if e.status == "error" %} fail{% else %} ok{% endif %}">{% if e.status == "error" %}✕{% else %}✓{% endif %}</div>
+        <div class="tl-body">
+          {% if is_host_scope %}
+          {% if e.tenant == "-" %}<span class="pill lilac">admin</span>{% else %}<a class="pill info" href="/drust/admin/tenants/{{ e.tenant }}/_logs">{{ e.tenant }}</a>{% endif %}
+          {% endif %}
+          <code>{{ e.op }}</code>
+          {% if let Some(c) = e.error_code %} · <span style="color:var(--danger);font-family:var(--mono);">{{ c }}</span>{% endif %}
+          <details style="margin-top:6px;">
+            <summary style="font:500 11px/1 var(--mono);color:var(--muted);cursor:pointer;letter-spacing:0.08em;text-transform:uppercase;">details</summary>
+            <dl class="audit-detail">
+              <dt>timestamp</dt><dd>{{ e.ts }}</dd>
+              <dt>tenant</dt><dd>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}{{ e.tenant }}{% endif %}</dd>
+              <dt>token_hint</dt><dd>{{ e.token_hint }}</dd>
+              <dt>operation</dt><dd>{{ e.op }}</dd>
+              <dt>status</dt><dd>{% if e.status == "error" %}<b style="color:var(--danger);">{{ e.status }}</b>{% else %}{{ e.status }}{% endif %}</dd>
+              <dt>duration_ms</dt><dd>{{ e.duration_ms }}</dd>
+              {% if let Some(c) = e.collection %}<dt>collection</dt><dd><a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/collections/{{ c }}">{{ c }}</a></dd>{% endif %}
+              {% if let Some(h) = e.sql_hash %}<dt>sql_hash</dt><dd>{{ h }}</dd>{% endif %}
+              {% if let Some(id) = e.record_id %}<dt>record_id</dt><dd>{{ id }}</dd>{% endif %}
+              {% if let Some(c) = e.error_code %}<dt>error_code</dt><dd><b style="color:var(--danger);">{{ c }}</b></dd>{% endif %}
+              {% if let Some(m) = e.error_message %}<dt>error_message</dt><dd><pre class="audit-err">{{ m }}</pre></dd>{% endif %}
+              {% if let Some(m) = e.auth_method %}<dt>auth_method</dt><dd>{{ m }}</dd>{% endif %}
+              {% if let Some(em) = e.oauth_email %}<dt>oauth_email</dt><dd>{{ em }}</dd>{% endif %}
+              {% if let Some(ec) = e.oauth_error_code %}<dt>oauth_error_code</dt><dd><b style="color:var(--danger);">{{ ec }}</b></dd>{% endif %}
+              {% if let Some(xj) = e.extra_as_json() %}<dt>extra</dt><dd><pre class="audit-extras">{{ xj }}</pre></dd>{% endif %}
+            </dl>
+          </details>
+        </div>
+        <div class="tl-meta">{{ e.duration_ms }} ms</div>
+      </div>
       {% endfor %}
-    </tbody>
-  </table>
-  <div class="pager">
-    <div class="page-of">
-      <b>{{ entries.len() }}</b> entries shown
-      {% if let Some(n) = truncated_from %} · truncated from <b>{{ n }}</b>{% endif %}
     </div>
-    <div class="pager-group">
+  </div>
+  <div class="card-foot">
+    <span class="mono">{{ entries.len() }} entries{% if let Some(n) = truncated_from %} · truncated from {{ n }}{% endif %}</span>
+    <span class="right">
       {% if let Some(href) = next_page_link %}
-      <a class="btn btn-sm btn-ghost" href="{{ href }}">next page →</a>
+      <a class="btn sm ghost" href="{{ href }}">next page →</a>
       {% else %}
-      <span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next page →</span>
+      <span class="btn sm ghost" style="opacity:0.4;cursor:default;">next page →</span>
       {% endif %}
-    </div>
+    </span>
   </div>
   {% endif %}
 </div>
 {% endif %}
 
 {% if parse_errors > 0 || !archive_errors.is_empty() %}
-<div class="muted" style="margin-top:14px;font-size:12px;">
+<div class="muted" style="margin-top:14px;font:500 11px/1.4 var(--mono);letter-spacing:0.04em;">
   {% if parse_errors > 0 %}{{ parse_errors }} unparseable lines skipped. {% endif %}
   {% if !archive_errors.is_empty() %}{{ archive_errors.len() }} corrupt archive(s) skipped: {{ archive_errors|join(", ") }}.{% endif %}
 </div>

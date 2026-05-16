@@ -17,58 +17,54 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
+      <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
         <span class="here">files</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="display:inline;">
-          <button type="submit">logout ↵</button>
-        </form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
 
     <div class="shell">
       {% include "_collection_sidebar.html" %}
 
       <main class="main"><div class="page page-wide">
-      <div class="pagehead">
-        <div>
-          <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:22px;font-weight:400;letter-spacing:0;">/ files</span></h1>
-          <div class="meta">tenant-scoped storage · public + private buckets</div>
+
+      <div class="view-head">
+        <div class="grow">
+          <div class="eyebrow">Tenant · backend</div>
+          <h1 class="view-title">Storage</h1>
+          <p class="view-sub">Two Garage buckets per tenant — <code>tenant-{{ tenant_id }}-pub</code> served at <code>/public/&lt;key&gt;</code>, <code>tenant-{{ tenant_id }}-prv</code> requires signed URLs.</p>
         </div>
       </div>
 
       {% if disk.free_pct < 20.0 %}
-      <div class="disk-banner low" style="margin-bottom:14px;">
-        <span>⚠ Host disk at <b>{{ disk.free_pct_display }}%</b> free — uploads paused (&lt; 20% free)</span>
+      <div class="banner danger" style="margin-bottom:14px;">
+        <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg></span>
+        <div class="b-body">
+          <div class="b-title">Host disk at {{ disk.free_pct_display }}% free — uploads paused</div>
+          <p>Free up <code>/var/lib/garage</code> on the host or scale the disk.</p>
+        </div>
       </div>
       {% endif %}
 
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:24px;">
-        <div class="stat-tile">
-          <div class="stat-tile-label">files</div>
-          <div class="stat-tile-value">{{ total_files }}</div>
+      <div class="stat-grid" style="margin-bottom:24px;">
+        <div class="stat accent-edge">
+          <div class="label">Files</div>
+          <div class="val">{{ total_files }}</div>
+          <div class="meta">_system_files rows</div>
         </div>
-        <div class="stat-tile">
-          <div class="stat-tile-label">total size</div>
-          <div class="stat-tile-value">{{ used_mb_display }}</div>
-          <div class="stat-tile-delta">_system_files SUM(size_bytes)</div>
+        <div class="stat">
+          <div class="label">Total size</div>
+          <div class="val">{{ used_mb_display }}</div>
+          <div class="meta">SUM(size_bytes)</div>
         </div>
-        <div class="stat-tile">
-          <div class="stat-tile-label">host disk free</div>
-          <div class="stat-tile-value" style="{% if disk.free_pct < 20.0 %}color:var(--danger);{% endif %}">{{ disk.free_pct_display }}<span style="font:500 13px/1 var(--sans);color:var(--muted);margin-left:6px;">%</span></div>
-          <div class="stat-tile-delta{% if disk.free_pct < 20.0 %} bad{% else %} ok{% endif %}">{% if disk.free_pct < 20.0 %}uploads paused{% else %}healthy{% endif %}</div>
+        <div class="stat">
+          <div class="label">Host disk free</div>
+          <div class="val" style="{% if disk.free_pct < 20.0 %}color:var(--danger);{% endif %}">{{ disk.free_pct_display }} <span class="unit">%</span></div>
+          <div class="meta">{% if disk.free_pct < 20.0 %}<span class="down">uploads paused</span>{% else %}<span class="up">healthy</span>{% endif %}</div>
         </div>
       </div>
 

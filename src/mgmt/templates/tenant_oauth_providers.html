@@ -18,107 +18,101 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
+      <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <span class="here">oauth providers</span>
+        <span class="here">OAuth providers</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="display:inline;">
-          <button type="submit">logout ↵</button>
-        </form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
 
     <div class="shell">
       {% include "_collection_sidebar.html" %}
 
       <main class="main"><div class="page page-wide">
-        <div class="pagehead">
-          <div>
-            <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:22px;font-weight:400;letter-spacing:0;">/ _oauth_providers</span></h1>
-            <div class="meta" style="max-width:72ch;">
-              Per-tenant Google / GitHub OAuth apps. End users sign in via
-              <code style="font-family:var(--mono);color:var(--accent);">/drust/t/{{ tenant_id }}/oauth/&lt;provider&gt;/start?redirect_uri=&lt;frontend&gt;</code>.
-            </div>
+
+        <div class="view-head">
+          <div class="grow">
+            <div class="eyebrow">Tenant · backend</div>
+            <h1 class="view-title">OAuth providers</h1>
+            <p class="view-sub">End-users can sign in to this tenant via Google or GitHub. Each provider has its own client credentials and callback URL — host admin OAuth is configured separately.</p>
+          </div>
+        </div>
+
+        <div class="banner info" style="margin-bottom:18px;">
+          <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
+          <div class="b-body">
+            <div class="b-title">Callback URL is fixed per tenant</div>
+            <p><code>/drust/t/<b style="color:var(--accent);">{{ tenant_id }}</b>/oauth/&lt;provider&gt;/callback</code> — copy this into your provider console exactly.</p>
           </div>
         </div>
 
         {% if let Some(msg) = error %}
-        <div class="alert error" style="margin-bottom:18px;">
-          <span class="icon">✕</span>
-          <div class="msg">{{ msg }}</div>
-          <span></span>
+        <div class="banner danger" style="margin-bottom:18px;">
+          <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+          <div class="b-body">
+            <div class="b-title">Save failed</div>
+            <p>{{ msg }}</p>
+          </div>
         </div>
         {% endif %}
 
+        {% if providers.is_empty() %}
         <div class="card">
-          <div class="card-head">
-            <span>Configured providers <span class="count">{{ providers.len() }}</span></span>
-            <span class="card-head-actions">end-user sign-in</span>
-          </div>
-          <div class="card-body">
-            {% if providers.is_empty() %}
-            <div class="empty" style="padding:42px 24px 28px;">
-              <div style="margin-bottom:14px;display:grid;place-items:center;">
-                <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
-              </div>
-              <h3>No OAuth providers configured</h3>
-              <p>Add one below to enable end-user sign-in.</p>
+          <div class="empty" style="padding:42px 24px 28px;">
+            <div style="margin-bottom:14px;display:grid;place-items:center;">
+              <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
             </div>
-            {% else %}
-            <table class="data">
-              <thead>
-                <tr>
-                  <th>provider</th>
-                  <th>client_id</th>
-                  <th>secret</th>
-                  <th>allowed_redirect_uris</th>
-                  <th>updated_at</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-              {% for p in providers %}
-                <tr>
-                  <td><b>{{ p.provider }}</b></td>
-                  <td title="{{ p.client_id }}"><code>{{ p.client_id_short }}</code></td>
-                  <td><code>●●●●</code></td>
-                  <td>
-                    <ul style="margin:0;padding-left:1em;list-style:disc;">
-                      {% for u in p.allowed_redirect_uris %}<li><code style="font-size:13px;">{{ u }}</code></li>{% endfor %}
-                    </ul>
-                  </td>
-                  <td class="muted" style="font-family:var(--mono);font-size:13px;">{{ p.updated_at }}</td>
-                  <td>
-                    <form method="post"
-                          action="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers/{{ p.provider }}/delete"
-                          onsubmit="return confirm('Delete the {{ p.provider }} OAuth config? End users will no longer be able to sign in via {{ p.provider }} on this tenant.');"
-                          style="margin:0;">
-                      <button type="submit" class="btn btn-sm btn-danger">delete</button>
-                    </form>
-                  </td>
-                </tr>
-              {% endfor %}
-              </tbody>
-            </table>
-            {% endif %}
+            <h3>No OAuth providers configured</h3>
+            <p>Add one below to enable end-user sign-in.</p>
           </div>
         </div>
+        {% else %}
+        {% for p in providers %}
+        <div class="prov-card on">
+          <div class="prov-icon">
+            {% if p.provider == "google" %}
+            <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.56c2.08-1.92 3.28-4.74 3.28-8.1Z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.65l-3.56-2.77c-.99.66-2.25 1.06-3.72 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23Z"/><path fill="#FBBC05" d="M5.84 14.11A6.6 6.6 0 0 1 5.5 12c0-.73.13-1.44.34-2.11V7.05H2.18A11 11 0 0 0 1 12c0 1.78.43 3.46 1.18 4.95l3.66-2.84Z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1A11 11 0 0 0 2.18 7.05l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38Z"/></svg>
+            {% else %}
+            <svg viewBox="0 0 24 24" fill="#f5ede2"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.93c.57.1.78-.25.78-.55v-2.07c-3.2.7-3.88-1.36-3.88-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.34.96.1-.74.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.78 0c2.21-1.5 3.18-1.18 3.18-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.4-5.25 5.69.41.35.78 1.05.78 2.13v3.16c0 .31.21.66.79.55A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+            {% endif %}
+          </div>
+          <div class="prov-body">
+            <div class="prov-title">{{ p.provider|capitalize }} <span class="pill mint"><span class="dot"></span>enabled</span></div>
+            <div class="prov-meta">updated {{ p.updated_at }}</div>
+            <div class="prov-fields">
+              <div class="lbl">Client ID</div>
+              <div class="val" title="{{ p.client_id }}">{{ p.client_id_short }}</div>
+              <div class="lbl">Client secret</div>
+              <div class="val" style="color:var(--muted-2);">●●●●●●●●●●●●●●●●●●●●  (rotate by submitting form below)</div>
+              <div class="lbl">Callback</div>
+              <div class="val">/drust/t/{{ tenant_id }}/oauth/{{ p.provider }}/callback</div>
+              <div class="lbl">Allow redirects</div>
+              <div class="val">
+                {% for u in p.allowed_redirect_uris %}{{ u }}{% if !loop.last %} · {% endif %}{% endfor %}
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
+            <form method="post"
+                  action="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers/{{ p.provider }}/delete"
+                  onsubmit="return confirm('Delete the {{ p.provider }} OAuth config? End users will no longer be able to sign in via {{ p.provider }} on this tenant.');"
+                  style="margin:0;">
+              <button type="submit" class="btn sm danger">disable</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+        {% endif %}
 
         <div class="card" style="margin-top:24px;">
           <div class="card-head">
-            <span>Add / update provider</span>
-            <span class="card-head-actions">upsert — submitting an existing provider overwrites it</span>
+            <div>
+              <div class="card-title">Add / update provider</div>
+              <div class="card-sub">Upsert — submitting an existing provider overwrites it</div>
+            </div>
           </div>
           <div class="card-body">
             <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers"
@@ -148,7 +142,7 @@
                           placeholder="https://app.example.com/auth/callback&#10;http://localhost:5173/auth/callback"></textarea>
               </div>
               <div>
-                <button type="submit" class="btn btn-primary">save provider</button>
+                <button type="submit" class="btn primary">save provider</button>
               </div>
             </form>
           </div>

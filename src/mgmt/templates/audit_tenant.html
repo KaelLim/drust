@@ -18,37 +18,25 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
+      <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
         <span class="here">logs</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="display:inline;">
-          <button type="submit">logout ↵</button>
-        </form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
 
     <div class="shell">
       {% include "_collection_sidebar.html" %}
 
       <main class="main"><div class="page page-wide">
-        <div class="pagehead">
-          <div>
-            <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:22px;font-weight:400;letter-spacing:0;">/ _logs</span></h1>
-            <div class="meta">
-              <span class="muted">audit log · scoped to this tenant</span>
-            </div>
+        <div class="view-head">
+          <div class="grow">
+            <div class="eyebrow">Tenant · governance</div>
+            <h1 class="view-title">Audit log</h1>
+            <p class="view-sub">Scoped to <span style="color:var(--accent);">{{ tenant_name }}</span> — every REST, MCP, and SSE request, plus all denials. Host-wide events live in Admin · audit.</p>
           </div>
         </div>
         {% include "_audit_body.html" %}

@@ -1,55 +1,40 @@
-{% macro api_key_card(role, scopes, info, tenant_id) %}
-<div style="border:1px solid var(--line);border-radius:var(--radius-lg);padding:20px 22px;background:var(--bg-2);{% if role == "service" %}border-color:var(--warn-line);{% endif %}">
-  <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:12px;flex-wrap:wrap;">
-    <span class="role-badge {{ role }}">{{ role }}</span>
-    <span style="font:400 12px/1.4 var(--sans);color:var(--muted);text-align:right;">{{ scopes }}</span>
-  </div>
-  {% if role == "service" %}
-  <div class="alert warn" style="margin-bottom:14px;">
-    <span class="icon">!</span>
-    <div class="msg">
-      <b>Master key — never embed in browser JS or public repos.</b>
-      Anyone holding this token can drop tables, delete every row, and alter the schema on this tenant.
-      For browser apps, keep this key on a backend that proxies scoped endpoints to the frontend; or use the
-      <span class="role-badge anon">anon</span> key (read-only) above for direct fetch.
-    </div>
-    <span></span>
-  </div>
-  {% endif %}
-  {% if let Some(info) = info %}
-  {% if let Some(pt) = info.plaintext %}
-  <div class="key-row">
-    <code class="key" id="key-{{ role }}" data-plain="{{ pt }}" data-revealed="0">••••••••••••••••••••••••••••••••</code>
-    <button class="key-act" type="button" onclick="toggleKey('key-{{ role }}', this)" title="show / hide" aria-label="show or hide key"><svg class="icon"><use href="#i-eye"/></svg></button>
-    <button class="key-act" type="button" onclick="copyKey('key-{{ role }}', this)" title="copy to clipboard" aria-label="copy key"><svg class="icon"><use href="#i-copy"/></svg></button>
-    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" onsubmit="return confirm('Reroll {{ role }} key? The current key will be invalidated immediately.');" style="margin:0;">
-      <button class="key-act key-act-danger" type="submit" title="reroll {{ role }} key" aria-label="reroll {{ role }} key"><svg class="icon"><use href="#i-refresh"/></svg></button>
-    </form>
-  </div>
-  {% else %}
-  <div class="key-row">
-    <code class="key muted">key not stored — created before v1.1c</code>
-    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" onsubmit="return confirm('Reroll {{ role }} key? The current key will be invalidated immediately.');" style="margin:0;">
-      <button class="key-act key-act-danger" type="submit" title="reroll to generate a new key" aria-label="reroll {{ role }} key"><svg class="icon"><use href="#i-refresh"/></svg></button>
-    </form>
-  </div>
-  {% endif %}
-  <div style="font:400 13px/1.4 var(--sans);color:var(--text-soft);margin:14px 0 0;">
-    Last rotated <b style="color:var(--text);font-family:var(--mono);">{{ info.created_at }}</b>
-    {% if info.legacy_siblings > 0 %}
-    <div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-      <span class="chip warn"><span class="dot"></span>{{ info.legacy_siblings }} legacy key(s) still active</span>
-      <span style="font:400 12px/1.4 var(--sans);color:var(--muted);">A reroll will revoke them all.</span>
-    </div>
+{% macro api_key_card(role, label, scopes, info, tenant_id) %}
+<div class="key-row" id="key-row-{{ role }}">
+  <div class="key-icon" style="{% if role == "service" %}color:var(--accent);{% endif %}">
+    {% if role == "anon" %}
+    <svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l3 3"/></svg>
+    {% else %}
+    <svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6z"/></svg>
     {% endif %}
   </div>
-  {% else %}
-  <div class="key-row">
-    <code class="key muted">no {{ role }} key yet</code>
-    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" style="margin:0;">
-      <button class="key-act" type="submit" title="generate {{ role }} key" aria-label="generate {{ role }} key"><svg class="icon"><use href="#i-refresh"/></svg></button>
+  <div class="key-info">
+    <div class="key-name">
+      {{ label }}
+      {% if role == "service" %}<span class="pill accent"><span class="dot"></span>server-only</span>{% else %}<span class="pill mint"><span class="dot"></span>public</span>{% endif %}
+    </div>
+    <div class="key-desc">{{ scopes }}</div>
+  </div>
+  {% if let Some(info) = info %}
+    {% if let Some(pt) = info.plaintext %}
+  <code class="key-val" id="key-{{ role }}" data-plain="{{ pt }}" data-revealed="0">••••••••••••••••••••••••••••••••</code>
+  <div class="row" style="gap:6px;">
+    <button class="btn sm ghost" type="button" onclick="toggleKey('key-{{ role }}', this)" title="show / hide">show</button>
+    <button class="btn sm" type="button" onclick="copyKey('key-{{ role }}', this)">copy</button>
+    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="Reroll {{ role }} key? The current key will be invalidated immediately." class="reroll-form" style="margin:0;display:inline;">
+      <button class="btn sm danger" type="submit">reroll</button>
     </form>
   </div>
+    {% else %}
+  <code class="key-val muted">key not stored — created before v1.1c</code>
+  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="Reroll {{ role }} key? The current key will be invalidated immediately." class="reroll-form" style="margin:0;">
+    <button class="btn sm danger" type="submit">reroll</button>
+  </form>
+    {% endif %}
+  {% else %}
+  <code class="key-val muted">no {{ role }} key yet</code>
+  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" style="margin:0;">
+    <button class="btn sm" type="submit">generate</button>
+  </form>
   {% endif %}
 </div>
 {% endmacro %}
@@ -73,123 +58,107 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
+      <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <span class="here">api keys</span>
+        <span class="here">API keys</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="display:inline;">
-          <button type="submit">logout ↵</button>
-        </form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
 
     <div class="shell">
       {% include "_collection_sidebar.html" %}
 
       <main class="main"><div class="page page-wide">
-        <div class="pagehead">
-          <div>
-            <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:22px;font-weight:400;letter-spacing:0;">/ _api_keys</span></h1>
-            <div class="meta" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-              <span style="font-family:var(--mono);font-size:12px;color:var(--muted-2);">{{ tenant_id }}</span>
-              <button type="button" class="btn btn-sm btn-ghost" style="padding:0 8px;height:22px;font-size:11px;" data-copy-text="{{ tenant_id }}" title="copy full id">copy</button>
-              <span style="color:var(--muted-2);">·</span>
-              <span>created {{ created_at }}</span>
+
+        <div class="view-head">
+          <div class="grow">
+            <div class="eyebrow">Tenant · connect</div>
+            <h1 class="view-title">API keys</h1>
+            <p class="view-sub">Two personalities for this tenant — pick whichever matches the surface you're integrating with. Reroll clears the previous bearer immediately. Tenant <code>{{ tenant_id }}</code> · created {{ created_at }}.</p>
+          </div>
+        </div>
+
+        <div class="banner danger" style="margin-bottom:18px;">
+          <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
+          <div class="b-body">
+            <div class="b-title">Service token is full admin of this tenant.</div>
+            <p>Treat it like a database root password. Use the <b>anon</b> token for browser-visible surfaces; service stays on your server.</p>
+          </div>
+        </div>
+
+        {% call api_key_card("anon", "Anon key", "For browser SDKs · subject to per-collection anon_caps", anon, tenant_id) %}
+        {% call api_key_card("service", "Service key", "Bypasses anon_caps and owner-field · use only in trusted backends", service, tenant_id) %}
+
+        <div class="key-row" style="margin-top:10px;">
+          <div class="key-icon" style="color:var(--lilac);">
+            <svg viewBox="0 0 24 24"><path d="M4 4l8 4 8-4M4 12l8 4 8-4M4 20l8-4 8 4" stroke-linejoin="round" stroke-linecap="round"/></svg>
+          </div>
+          <div class="key-info">
+            <div class="key-name">MCP endpoint <span class="pill lilac"><span class="dot"></span>42 tools</span></div>
+            <div class="key-desc">Streamable HTTP · authenticated via service token</div>
+          </div>
+          <code class="key-val" id="mcp-url" data-tenant="{{ tenant_id }}">/drust/t/{{ tenant_id }}/mcp</code>
+          <div class="row" style="gap:6px;">
+            <button class="btn sm ghost" type="button" onclick="copyMcpUrl(this)">copy URL</button>
+            <button class="btn sm" type="button" onclick="copyMcpCommand(this)">copy mcp.json</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:22px;">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Self-registration</div>
+              <div class="card-sub">When enabled, unauthenticated users can <code>POST /t/{{ tenant_id }}/auth/register</code></div>
             </div>
-          </div>
-        </div>
-        <script>
-          document.querySelectorAll('[data-copy-text]').forEach(function (b) {
-            b.addEventListener('click', function () {
-              navigator.clipboard.writeText(b.getAttribute('data-copy-text')).then(function () {
-                var orig = b.textContent; b.textContent = 'copied ✓';
-                if (window.chonkReact) window.chonkReact('happy');
-                setTimeout(function () { b.textContent = orig; }, 1200);
-              });
-            });
-          });
-        </script>
-
-        <div class="card">
-          <div class="card-head">
-            <span>API keys <span class="count">2 roles</span></span>
-            <span class="card-head-actions">bearer tokens</span>
-          </div>
-          <div class="card-body" style="display:grid;grid-template-columns:1fr;gap:22px;">
-            {% call api_key_card("anon", "read · list · subscribe · SELECT", anon, tenant_id) %}
-            {% call api_key_card("service", "full · create · update · delete · schema", service, tenant_id) %}
-          </div>
-        </div>
-
-        <div class="card" style="margin-top:24px;">
-          <div class="card-head">
-            <span>Self-registration {% if allow_self_register %}<span class="chip ok"><span class="dot"></span>on</span>{% else %}<span class="chip mute">off</span>{% endif %}</span>
-            <span class="card-head-actions">end-user auth</span>
+            {% if allow_self_register %}<span class="pill mint"><span class="dot"></span>enabled</span>{% else %}<span class="pill muted">disabled</span>{% endif %}
           </div>
           <div class="card-body">
             <label class="check">
-              <input type="checkbox" id="self-reg-toggle"
-                onchange="toggleSelfRegister(this)"
-                {% if allow_self_register %}checked{% endif %}>
-              <span>Allow self-registration (<code style="font-family:var(--mono);color:var(--accent);">POST /t/{{ tenant_id }}/auth/register</code>)</span>
+              <input type="checkbox" id="self-reg-toggle" onchange="toggleSelfRegister(this)" {% if allow_self_register %}checked{% endif %}>
+              <span>Allow end-users to register without admin approval</span>
             </label>
-            <div style="font:400 13px/1.5 var(--sans);color:var(--muted);margin-top:10px;">
-              When enabled, unauthenticated users can create accounts. Disable to lock down registration.
-            </div>
           </div>
         </div>
 
-        <div class="card" style="margin-top:24px;">
+        <div class="card" style="margin-top:22px;">
           <div class="card-head">
-            <span><svg class="icon" style="width:0.95em;height:0.95em;vertical-align:-2px;margin-right:6px;"><use href="#i-braces"/></svg>MCP server</span>
-            <span class="card-head-actions">claude code</span>
+            <div>
+              <div class="card-title">Claude Code · ready-to-paste</div>
+              <div class="card-sub">Adds this tenant's MCP server to your Claude Code config</div>
+            </div>
+            <span class="pill accent right">claude mcp add-json</span>
           </div>
           <div class="card-body">
             {% if let Some(svc) = service %}
               {% if let Some(_pt) = svc.plaintext %}
-            <div style="font:400 13px/1.5 var(--sans);color:var(--text-soft);margin:0 0 8px;">
-              Register — copy &amp; run once in terminal:
-            </div>
-            <div class="key-row">
-              <code class="key" id="mcp-cmd-preview" data-tenant="{{ tenant_id }}" style="font-size:16px;">loading…</code>
-              <button class="key-act" type="button" onclick="copyMcpCommand(this)" title="copy `claude mcp add-json` command" aria-label="copy claude mcp add-json command"><svg class="icon"><use href="#i-copy"/></svg></button>
-            </div>
-            <details style="margin-top:18px;">
-              <summary style="font:500 13px/1 var(--sans);color:var(--muted);cursor:pointer;">Remove command…</summary>
-              <div class="key-row" style="margin-top:8px;">
-                <code class="key" id="mcp-remove-preview" style="font-size:14px;">claude mcp remove drust-{{ tenant_id }}</code>
-                <button class="key-act" type="button" onclick="copyMcpRemove(this)" title="copy `claude mcp remove` command" aria-label="copy claude mcp remove command"><svg class="icon"><use href="#i-copy"/></svg></button>
+              <pre class="sql-block" id="mcp-cmd-preview" data-tenant="{{ tenant_id }}"><span class="c"># add this tenant as an MCP server</span>
+loading…</pre>
+              <div class="row" style="margin-top:12px;gap:8px;">
+                <button class="btn primary" onclick="copyMcpCommand(this)">copy command</button>
+                <details style="margin-left:auto;">
+                  <summary style="font:500 12px/1 var(--sans);color:var(--muted);cursor:pointer;">remove command…</summary>
+                  <code class="key-val" id="mcp-remove-preview" style="margin-top:8px;">claude mcp remove drust-{{ tenant_id }}</code>
+                </details>
               </div>
-            </details>
-            <div style="font:400 13px/1.5 var(--sans);color:var(--muted);margin-top:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span>After register, Claude Code exposes</span>
-              <span class="badge-mini accent">42 tools</span>
-              <span>under server name</span>
-              <code style="font-family:var(--mono);font-size:12px;color:var(--accent);">drust-{{ tenant_id }}</code>
-            </div>
               {% else %}
-            <div class="alert info">
-              <span class="icon">i</span>
-              <div class="msg">Legacy service key — plaintext not stored, so the one-click command can't be generated. Reroll the service key above to enable MCP setup.</div>
-              <span></span>
-            </div>
+              <div class="banner info">
+                <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
+                <div class="b-body">
+                  <div class="b-title">Legacy service key</div>
+                  <p>Plaintext not stored, so the one-click command can't be generated. Reroll the service key above to enable MCP setup.</p>
+                </div>
+              </div>
               {% endif %}
             {% else %}
-            <div class="alert info">
-              <span class="icon">i</span>
-              <div class="msg">No service key yet. Generate one in the card above to enable MCP access.</div>
-              <span></span>
+            <div class="banner info">
+              <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
+              <div class="b-body">
+                <div class="b-title">No service key yet</div>
+                <p>Generate one in the card above to enable MCP access.</p>
+              </div>
             </div>
             {% endif %}
           </div>
@@ -200,57 +169,34 @@
 </div>
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
-<style>
-  .key-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:6px 0 4px; }
-  .key { font-family:var(--mono); font-size:18px; padding:10px 14px; background:var(--bg-1); border:1px solid var(--line); border-radius:6px; color:var(--text); user-select:all; word-break:break-all; flex:1 1 auto; min-width:0; }
-  .key.muted { color:var(--muted); font-style:italic; }
-  .key-act {
-    display:inline-flex; align-items:center; justify-content:center;
-    width:42px; height:42px; padding:0;
-    background:var(--bg-1); color:var(--text-soft);
-    border:1px solid var(--line); border-radius:6px;
-    cursor:pointer; flex-shrink:0;
-    transition:color .12s, border-color .12s, background .12s;
-  }
-  .key-act:hover { color:var(--text); border-color:var(--muted-2); background:var(--bg-2); }
-  .key-act:focus-visible { outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent); }
-  .key-act .icon { width:1.25em; height:1.25em; }
-  .key-act-danger { color:var(--danger); border-color:var(--danger-line); }
-  .key-act-danger:hover { color:oklch(0.95 0.05 27); border-color:var(--danger); background:var(--danger-soft); }
-  .key-act.is-ok { color:var(--ok, #6ee7b7); border-color:var(--ok, #6ee7b7); }
-</style>
+{% include "_modal.html" %}
 <script>
-  function _setIcon(btn, id) {
-    var u = btn.querySelector('use');
-    if (u) u.setAttribute('href', '#' + id);
+  function _setOk(btn) {
+    var orig = btn.textContent;
+    btn.textContent = 'copied ✓';
+    if (window.chonkReact) window.chonkReact('happy');
+    setTimeout(function () { btn.textContent = orig; }, 1500);
   }
   function toggleKey(id, btn) {
     var el = document.getElementById(id);
     var revealed = el.getAttribute('data-revealed') === '1';
     if (revealed) {
       el.textContent = '••••••••••••••••••••••••••••••••';
-      el.setAttribute('data-revealed', '0');
-      _setIcon(btn, 'i-eye');
-      btn.title = 'show';
+      el.setAttribute('data-revealed', '0'); btn.textContent = 'show';
     } else {
       el.textContent = el.getAttribute('data-plain');
-      el.setAttribute('data-revealed', '1');
-      _setIcon(btn, 'i-eye-off');
-      btn.title = 'hide';
+      el.setAttribute('data-revealed', '1'); btn.textContent = 'hide';
       if (window.chonkReact) window.chonkReact('curious', 700);
     }
   }
   function copyKey(id, btn) {
     var el = document.getElementById(id);
-    navigator.clipboard.writeText(el.getAttribute('data-plain')).then(function () {
-      _setIcon(btn, 'i-check');
-      btn.classList.add('is-ok');
-      if (window.chonkReact) window.chonkReact('happy');
-      setTimeout(function () {
-        _setIcon(btn, 'i-copy');
-        btn.classList.remove('is-ok');
-      }, 1500);
-    });
+    navigator.clipboard.writeText(el.getAttribute('data-plain')).then(function () { _setOk(btn); });
+  }
+  function copyMcpUrl(btn) {
+    var el = document.getElementById('mcp-url');
+    var url = window.location.origin + el.textContent.trim();
+    navigator.clipboard.writeText(url).then(function () { _setOk(btn); });
   }
   function _buildMcpCommand(tenantId, maskToken) {
     var keyEl = document.getElementById('key-service');
@@ -258,14 +204,8 @@
     var token = keyEl.getAttribute('data-plain');
     if (!token) return null;
     var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
-    var bearer = maskToken
-      ? token.slice(0, 16) + '••••••••••••••••'
-      : token;
-    var serverCfg = {
-      type: 'http',
-      url: url,
-      headers: { Authorization: 'Bearer ' + bearer }
-    };
+    var bearer = maskToken ? token.slice(0, 16) + '••••••••••••••••' : token;
+    var serverCfg = { type:'http', url:url, headers:{ Authorization:'Bearer ' + bearer } };
     return "claude mcp add-json drust-" + tenantId + " '" + JSON.stringify(serverCfg) + "'";
   }
   function initMcpCard() {
@@ -273,7 +213,8 @@
     if (!preview) return;
     var tenantId = preview.getAttribute('data-tenant');
     var masked = _buildMcpCommand(tenantId, true);
-    if (masked) preview.textContent = masked;
+    if (!masked) return;
+    preview.innerHTML = '<span class="c"># add this tenant as an MCP server</span>\n' + masked;
   }
   function copyMcpCommand(btn) {
     var preview = document.getElementById('mcp-cmd-preview');
@@ -281,51 +222,32 @@
     var tenantId = preview.getAttribute('data-tenant');
     var cmd = _buildMcpCommand(tenantId, false);
     if (!cmd) return;
-    navigator.clipboard.writeText(cmd).then(function () {
-      _setIcon(btn, 'i-check');
-      btn.classList.add('is-ok');
-      if (window.chonkReact) window.chonkReact('happy', 1100);
-      setTimeout(function () {
-        _setIcon(btn, 'i-copy');
-        btn.classList.remove('is-ok');
-      }, 1500);
-    });
-  }
-  function copyMcpRemove(btn) {
-    var preview = document.getElementById('mcp-remove-preview');
-    if (!preview) return;
-    navigator.clipboard.writeText(preview.textContent.trim()).then(function () {
-      _setIcon(btn, 'i-check');
-      btn.classList.add('is-ok');
-      if (window.chonkReact) window.chonkReact('happy');
-      setTimeout(function () {
-        _setIcon(btn, 'i-copy');
-        btn.classList.remove('is-ok');
-      }, 1500);
-    });
+    navigator.clipboard.writeText(cmd).then(function () { _setOk(btn); });
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initMcpCard);
-  } else {
-    initMcpCard();
-  }
+  } else { initMcpCard(); }
   function toggleSelfRegister(cb) {
     fetch('/drust/admin/tenants/{{ tenant_id }}/allow-self-register', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({enabled: cb.checked})
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled: cb.checked})
     }).then(function(r) {
-      if (!r.ok) {
-        cb.checked = !cb.checked; // revert on failure
-        alert('Failed to update self-registration setting.');
-      } else if (window.chonkReact) {
-        window.chonkReact('happy', 600);
-      }
-    }).catch(function() {
-      cb.checked = !cb.checked;
-      alert('Failed to update self-registration setting.');
-    });
+      if (!r.ok) { cb.checked = !cb.checked; alert('Failed to update self-registration setting.'); }
+      else if (window.chonkReact) { window.chonkReact('happy', 600); }
+    }).catch(function() { cb.checked = !cb.checked; alert('Failed to update self-registration setting.'); });
   }
+  document.querySelectorAll('form.reroll-form').forEach(function (f) {
+    f.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var ok = await drustUI.confirm({
+        title:'Reroll key',
+        body: f.getAttribute('data-confirm-text') || 'Reroll the key? The previous key will be invalidated immediately.',
+        okText:'Reroll', danger:true
+      });
+      if (ok) f.submit();
+    });
+  });
 </script>
 </body>
 </html>

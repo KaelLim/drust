@@ -17,7 +17,7 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
+      <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
@@ -26,24 +26,26 @@
         <span class="sep">/</span>
         <span class="here">{% if editing %}{{ existing_name }}{% else %}new{% endif %}</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="display:inline;">
-          <button type="submit">logout ↵</button>
-        </form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
     <div class="shell">
       {% include "_collection_sidebar.html" %}
       <main class="main"><div class="page">
-        <h1>{% if editing %}edit {{ existing_name }}{% else %}new function{% endif %}</h1>
-        {% if let Some(err) = error %}<div class="alert error" style="margin-bottom:12px;"><div class="msg">{{ err }}</div></div>{% endif %}
+        <div class="view-head">
+          <div class="grow">
+            <div class="eyebrow">Tenant · stored functions · {% if editing %}edit{% else %}new{% endif %}</div>
+            <h1 class="view-title">{% if editing %}{{ existing_name }}{% else %}New function{% endif %}</h1>
+            <p class="view-sub">{% if editing %}Edit a stored SELECT function. Service-only authoring; persisted in <code>_system_rpc</code>.{% else %}Create a stored SELECT function callable by REST + MCP. Service-only authoring; optional anon access via the <code>allow_anon_callers</code> flag.{% endif %}</p>
+          </div>
+          <a class="btn ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">← back to rpc</a>
+        </div>
+        {% if let Some(err) = error %}
+        <div class="alert error" style="margin-bottom:14px;">
+          <div class="icon">✕</div>
+          <div class="msg">{{ err }}</div>
+          <span></span>
+        </div>
+        {% endif %}
         <form method="post" action="{% if editing %}/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/save{% else %}/drust/admin/tenants/{{ tenant_id }}/_rpc/new{% endif %}" class="card" style="padding:18px;display:grid;gap:14px;">
           {% if !editing %}
           <div class="field">
