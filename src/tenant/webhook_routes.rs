@@ -133,10 +133,11 @@ pub struct CreateBody {
     pub url: String,
 }
 
-/// PATCH body — `secret` is intentionally absent. If the client sends a
-/// `secret` field, serde stashes it in `extra`; the handler then rejects with
-/// 422 INVALID_PATCH so secrets cannot be rotated through the REST surface.
-/// All present fields are applied; absent ones are untouched.
+/// PATCH body — `secret` is explicitly listed so the handler can reject it
+/// with 422 INVALID_PATCH (secrets cannot be rotated through the REST
+/// surface; delete + recreate instead). Unknown fields are accepted and
+/// ignored, matching the rest of drust REST (no `deny_unknown_fields`).
+/// All present known fields are applied; absent ones are untouched.
 #[derive(Deserialize)]
 pub struct PatchBody {
     #[serde(default)]
@@ -145,10 +146,9 @@ pub struct PatchBody {
     pub events: Option<Vec<String>>,
     #[serde(default)]
     pub url: Option<String>,
-    /// Any field not in the allow-list lands here — used to reject `secret`
-    /// (and any other unexpected key) with INVALID_PATCH.
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
+    /// Forbidden — explicit error to discourage clients from trying.
+    #[serde(default)]
+    pub secret: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -344,13 +344,12 @@ pub async fn patch_handler(
     if let Some(r) = require_service(&ctx) {
         return r;
     }
-    // Reject any field not in {active, events, url} — most notably `secret`.
-    if !body.extra.is_empty() {
-        let keys: Vec<&String> = body.extra.keys().collect();
+    // Reject attempts to rotate the secret via PATCH — delete + recreate.
+    if body.secret.is_some() {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
             "INVALID_PATCH",
-            &format!("unsupported field(s): {:?}", keys),
+            "secret cannot be updated via PATCH; rotate = delete+create",
         );
     }
     let tid = match get_tid(&params) {
