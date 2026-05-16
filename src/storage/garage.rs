@@ -13,7 +13,6 @@ use std::sync::Arc;
 pub struct GarageClient {
     // S3 object store backend
     store: Arc<dyn ObjectStore>,
-    bucket: String,
     // Admin API HTTP client — scaffolded in Task 5, used from Task 6 onwards.
     admin: reqwest::Client,
     admin_endpoint: String,
@@ -29,17 +28,6 @@ pub struct BucketInfo {
     pub id: String,
     pub name: String,
     pub website_enabled: bool,
-}
-
-/// Live usage stats from `GET /v1/bucket?globalAlias=<name>`. `bytes` covers
-/// committed objects only; `multipart_orphan_bytes` is what's tied up in
-/// unfinished multipart uploads (visible to admin but not via S3 listing).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct BucketUsage {
-    pub objects: u64,
-    pub bytes: u64,
-    pub multipart_orphan_objects: u64,
-    pub multipart_orphan_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +79,6 @@ impl GarageClient {
             .context("failed to build admin HTTP client")?;
         Ok(Self {
             store: Arc::new(store),
-            bucket: cfg.public_bucket.clone(),
             admin,
             admin_endpoint: cfg.admin_endpoint.clone(),
             admin_token: cfg.admin_token.clone(),
@@ -104,10 +91,9 @@ impl GarageClient {
 
     /// Construct from an arbitrary backend (for tests or alternate impls).
     /// Admin fields are intentionally empty — only object-store methods work.
-    pub fn from_store(store: Arc<dyn ObjectStore>, bucket: &str) -> Self {
+    pub fn from_store(store: Arc<dyn ObjectStore>, _bucket: &str) -> Self {
         Self {
             store,
-            bucket: bucket.to_string(),
             admin: reqwest::Client::new(),
             admin_endpoint: String::new(),
             admin_token: String::new(),
@@ -124,7 +110,6 @@ impl GarageClient {
         use object_store::memory::InMemory;
         Self {
             store: Arc::new(InMemory::new()),
-            bucket: "mock".into(),
             admin: reqwest::Client::new(),
             admin_endpoint: base.to_string(),
             admin_token: token.to_string(),
@@ -133,10 +118,6 @@ impl GarageClient {
             secret_access_key: String::new(),
             region: "garage".into(),
         }
-    }
-
-    pub fn bucket(&self) -> &str {
-        &self.bucket
     }
 
     /// Health check. Lists at most one object; an empty bucket is a valid
@@ -262,39 +243,6 @@ impl GarageClient {
             anyhow::bail!("garage delete_bucket({bucket_id}) -> {status}: {body}");
         }
         Ok(())
-    }
-
-    /// Live usage for a bucket by global alias. Returns `Ok(None)` when the
-     /// bucket doesn't exist (404). Other errors propagate. Used by the
-     /// admin UI's disk-usage cards.
-    pub async fn bucket_usage(&self, name: &str) -> anyhow::Result<Option<BucketUsage>> {
-        let resp = self
-            .admin
-            .get(self.admin_url("/v1/bucket"))
-            .query(&[("globalAlias", name)])
-            .bearer_auth(&self.admin_token)
-            .send()
-            .await?;
-        if resp.status().as_u16() == 404 {
-            return Ok(None);
-        }
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            anyhow::bail!("garage bucket_usage({name}) -> {status}: {body}");
-        }
-        let v: serde_json::Value = serde_json::from_str(&body)?;
-        let u64_field = |k: &str| -> u64 {
-            v.get(k)
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0)
-        };
-        Ok(Some(BucketUsage {
-            objects: u64_field("objects"),
-            bytes: u64_field("bytes"),
-            multipart_orphan_objects: u64_field("unfinishedMultipartUploads"),
-            multipart_orphan_bytes: u64_field("unfinishedMultipartUploadBytes"),
-        }))
     }
 
     pub async fn lookup_bucket(&self, name: &str) -> anyhow::Result<Option<BucketInfo>> {

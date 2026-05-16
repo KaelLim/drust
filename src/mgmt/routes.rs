@@ -280,7 +280,7 @@ impl MgmtState {
             data_dir: data_dir.clone(),
         };
 
-        // TODO(v1.12): rate-limit oauth callback
+        // TODO: rate-limit admin oauth callback
         let public = Router::new()
             .route("/", get(root_redirect))
             .route("/login", get(login_page).post(login_submit))

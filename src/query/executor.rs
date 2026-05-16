@@ -1,7 +1,6 @@
 use rusqlite::{Connection, types::ValueRef};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Serialize)]
@@ -230,29 +229,6 @@ fn classify(err: rusqlite::Error) -> ExecError {
         return ExecError::Forbidden(err.to_string());
     }
     ExecError::Sql(err.to_string())
-}
-
-/// Spawn a task that interrupts the connection if a deadline passes.
-/// Caller drops the returned guard to cancel. This is used in the axum
-/// handler where the `conn` is moved into `spawn_blocking`.
-pub struct InterruptGuard {
-    cancel: tokio::sync::oneshot::Sender<()>,
-}
-
-impl InterruptGuard {
-    pub fn arm(handle: rusqlite::InterruptHandle, timeout: Duration) -> Self {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            tokio::select! {
-                _ = tokio::time::sleep(timeout) => handle.interrupt(),
-                _ = rx => {}
-            }
-        });
-        Self { cancel: tx }
-    }
-    pub fn disarm(self) {
-        let _ = self.cancel.send(());
-    }
 }
 
 #[cfg(test)]

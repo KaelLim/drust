@@ -13,18 +13,12 @@ pub enum ConfigError {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: SocketAddr,
-    pub url_prefix: String,
     pub public_base_url: String,
     pub data_dir: PathBuf,
     pub log_dir: PathBuf,
     pub init_admin: Option<(String, String)>,
-    pub query_timeout_secs: u64,
-    pub query_row_cap: usize,
-    pub query_max_sql_bytes: usize,
     pub rate_limit_per_token: u32,
     pub rate_limit_window_secs: u64,
-    pub rate_limit_anon_per_ip: u32,
-    pub rate_limit_anon_window_secs: u64,
     /// Hard upper bound on the rate-limiter's bucket map size. Prevents
     /// memory DoS from a flood of distinct random bearer tokens.
     pub rate_limit_map_cap: usize,
@@ -114,7 +108,6 @@ impl Config {
                 ConfigError::Invalid("DRUST_BIND", e.to_string())
             })?;
 
-        let url_prefix = opt("DRUST_URL_PREFIX").unwrap_or_else(|| "/drust".to_string());
         let public_base_url =
             opt("DRUST_PUBLIC_BASE_URL").unwrap_or_else(|| "http://localhost:8793".to_string());
         let data_dir: PathBuf = req("DRUST_DATA_DIR")?.into();
@@ -132,18 +125,12 @@ impl Config {
 
         Ok(Self {
             bind,
-            url_prefix,
             public_base_url,
             data_dir,
             log_dir,
             init_admin,
-            query_timeout_secs: parse_num("DRUST_QUERY_TIMEOUT_SECS", 5)?,
-            query_row_cap: parse_num("DRUST_QUERY_ROW_CAP", 10_000)?,
-            query_max_sql_bytes: parse_num("DRUST_QUERY_MAX_SQL_BYTES", 16_384)?,
             rate_limit_per_token: parse_num("DRUST_RATE_LIMIT_PER_TOKEN", 60)?,
             rate_limit_window_secs: parse_num("DRUST_RATE_LIMIT_WINDOW_SECS", 10)?,
-            rate_limit_anon_per_ip: parse_num("DRUST_RATE_LIMIT_ANON_PER_IP", 30)?,
-            rate_limit_anon_window_secs: parse_num("DRUST_RATE_LIMIT_ANON_WINDOW_SECS", 60)?,
             rate_limit_map_cap: parse_num("DRUST_RATE_LIMIT_MAP_CAP", 10_000)?,
             rate_limit_cleanup_interval_secs: parse_num(
                 "DRUST_RATE_LIMIT_CLEANUP_INTERVAL_SECS",
