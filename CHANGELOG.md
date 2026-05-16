@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.13.0 - 2026-05-16
+
+Minor release: outbound webhooks for record CRUD events.
+
+### Added
+
+- New per-tenant `_system_webhooks` table (idempotent migration; fresh tenants get it via `SCHEMA_SQL`): `collection`, `events` (JSON subset of `["created","updated","deleted"]`), `url` (`https://` only, with `http://localhost` dev exception), `secret` (drust-generated 32-byte hex), `active`, `last_failure_at`, `last_failure_reason`.
+- `WebhookDispatcher` in `src/tenant/webhook_dispatcher.rs`: hooks every record-CRUD `EventBus::publish` call site (3 in `records.rs`, 3 in `mcp/tools/write.rs`); fans out one `tokio::spawn` per matching subscription; delivery does 4 inline attempts at +0s/+1s/+5s/+30s with 10s per-attempt timeout; classifies 5xx/network/timeout as retryable and 4xx as terminal; on full failure updates the webhook row's `last_failure_at` / `last_failure_reason`.
+- HMAC-SHA256 body signing — `X-Drust-Signature: sha256=<hex>` header (GitHub convention). `X-Drust-Delivery-Id` (uuid v4) + `X-Drust-Timestamp` (RFC3339) headers also repeat in the JSON body so recipients can dedupe across retries.
+- Service-only REST: `POST/GET/PATCH/DELETE /t/<id>/admin/webhooks[/<wid>]`. `POST` returns the plaintext secret exactly once; all other reads redact as `●●●●`. `PATCH` cannot rotate the secret (rotate = delete + create).
+- Service-only MCP tools: `create_webhook` / `list_webhooks` / `update_webhook` / `delete_webhook`. Same redaction rule.
+- Admin UI virtual sidebar entry `🔔 _webhooks` (7th virtual entry, after `_oauth_providers`). Page lists subscriptions with `last_failure_at` tooltip, inline create form, per-row delete button. Raw secret surfaced once via short-lived HttpOnly cookie + `Referrer-Policy: no-referrer` redirect (no query-param leak).
+
+### Out of scope (deferred to v1.14+)
+
+- Durable outbox + dedicated worker process (events fired while drust is crashed mid-POST are lost).
+- Per-delivery audit-log rows (`webhook.delivered` / `webhook.failed`). Failure state is captured only in `_system_webhooks.last_failure_at` / `last_failure_reason`; the existing `tracing::warn!` on dispatch errors provides operational visibility.
+- Wildcard collection / event subscription (`collection = "*"`).
+- Non-CRUD event types (user-auth, DDL, file).
+- `previous` (before) state on UPDATE / DELETE payloads.
+- Auto-disable on consecutive failures + tenant-admin notification.
+- Webhook replay UI (manual re-fire from audit row).
+
+Spec: [`../docs/superpowers/specs/2026-05-15-drust-outbound-webhook-design.md`](../docs/superpowers/specs/2026-05-15-drust-outbound-webhook-design.md). Plan: [`../docs/superpowers/plans/2026-05-15-drust-outbound-webhook.md`](../docs/superpowers/plans/2026-05-15-drust-outbound-webhook.md).
+
 ## 1.12.3 - 2026-05-15
 
 Patch release: fix MCP HTTP idle-timeout that forced Claude Code clients to manually `/mcp` reconnect every few minutes.
