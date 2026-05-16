@@ -22,30 +22,24 @@
 {% if tab == "overview" %}
 {% if let Some(ov) = overview %}
 <div class="audit-stats">
-  <div class="card">
-    <div class="card-head">Total requests</div>
-    <div class="card-body"><span class="stat-num">{{ ov.total }}</span></div>
+  <div class="stat-tile">
+    <div class="stat-tile-label">total requests</div>
+    <div class="stat-tile-value">{{ ov.total }}</div>
   </div>
-  <div class="card">
-    <div class="card-head">Errors</div>
-    <div class="card-body">
-      <span class="stat-num">{{ ov.error_count }}</span>
-      <span class="stat-suffix">{{ "{:.1}"|format(ov.error_pct) }}% err</span>
-    </div>
+  <div class="stat-tile">
+    <div class="stat-tile-label">errors</div>
+    <div class="stat-tile-value" style="{% if ov.error_count > 0 %}color:var(--danger);{% endif %}">{{ ov.error_count }}</div>
+    <div class="stat-tile-delta{% if ov.error_count > 0 %} bad{% else %} ok{% endif %}">{{ "{:.1}"|format(ov.error_pct) }}% err</div>
   </div>
-  <div class="card">
-    <div class="card-head">Latency</div>
-    <div class="card-body">
-      <span class="stat-num">{{ ov.p50_ms }}ms</span>
-      <span class="stat-suffix">p50 · {{ ov.p99_ms }}ms p99</span>
-    </div>
+  <div class="stat-tile">
+    <div class="stat-tile-label">latency p50</div>
+    <div class="stat-tile-value">{{ ov.p50_ms }}<span style="font:500 13px/1 var(--sans);color:var(--muted);margin-left:4px;">ms</span></div>
+    <div class="stat-tile-delta">p99 {{ ov.p99_ms }}ms</div>
   </div>
-  <div class="card">
-    <div class="card-head">Avg RPS</div>
-    <div class="card-body">
-      <span class="stat-num">{{ "{:.2}"|format(ov.rps_avg) }}</span>
-      <span class="stat-suffix">req/s</span>
-    </div>
+  <div class="stat-tile">
+    <div class="stat-tile-label">avg rps</div>
+    <div class="stat-tile-value">{{ "{:.2}"|format(ov.rps_avg) }}</div>
+    <div class="stat-tile-delta">req / sec</div>
   </div>
 </div>
 
@@ -134,9 +128,9 @@
         <td>{{ e.ts }}</td>
         {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs" title="drill into this tenant's audit">{{ e.tenant }}</a>{% endif %}</td>{% endif %}
         <td>{{ e.op }}</td>
-        <td>{% if e.status == "error" %}<b style="color:var(--warn);">ERROR</b>{% else %}{{ e.status }}{% endif %}</td>
+        <td>{% if e.status == "error" %}<span class="chip danger">error</span>{% else %}<span class="chip ok"><span class="dot"></span>ok</span>{% endif %}</td>
         <td class="num">{{ e.duration_ms }}</td>
-        <td>{% if let Some(c) = e.error_code %}{{ c }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
+        <td>{% if let Some(c) = e.error_code %}<code style="font-family:var(--mono);font-size:12px;color:var(--danger);">{{ c }}</code>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
       </tr>
       <tr class="audit-detail-row"><td colspan="{% if is_host_scope %}6{% else %}5{% endif %}" style="padding:0;border:0;background:transparent;">
         <details style="margin:0;padding:0 var(--cell-x) 8px;">

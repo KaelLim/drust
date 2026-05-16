@@ -44,16 +44,32 @@
       <main class="main"><div class="page page-wide">
       <div class="pagehead">
         <div>
-          <h1>{{ tenant_name }} — files</h1>
-          <div class="meta">
-            <b>{{ total_files }}</b> files · <b>{{ used_mb_display }}</b> total
-          </div>
+          <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:22px;font-weight:400;letter-spacing:0;">/ files</span></h1>
+          <div class="meta">tenant-scoped storage · public + private buckets</div>
         </div>
       </div>
 
-      <div class="disk-banner{% if disk.free_pct < 20.0 %} low{% endif %}">
-        <span>Disk: <b>{{ disk.used_gb }}</b> GB used / {{ disk.total_gb }} GB total ({{ disk.free_pct_display }}% free)</span>
-        {% if disk.free_pct < 20.0 %}<span class="warn">⚠ uploads paused (&lt; 20% free)</span>{% endif %}
+      {% if disk.free_pct < 20.0 %}
+      <div class="disk-banner low" style="margin-bottom:14px;">
+        <span>⚠ Host disk at <b>{{ disk.free_pct_display }}%</b> free — uploads paused (&lt; 20% free)</span>
+      </div>
+      {% endif %}
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:24px;">
+        <div class="stat-tile">
+          <div class="stat-tile-label">files</div>
+          <div class="stat-tile-value">{{ total_files }}</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-tile-label">total size</div>
+          <div class="stat-tile-value">{{ used_mb_display }}</div>
+          <div class="stat-tile-delta">_system_files SUM(size_bytes)</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-tile-label">host disk free</div>
+          <div class="stat-tile-value" style="{% if disk.free_pct < 20.0 %}color:var(--danger);{% endif %}">{{ disk.free_pct_display }}<span style="font:500 13px/1 var(--sans);color:var(--muted);margin-left:6px;">%</span></div>
+          <div class="stat-tile-delta{% if disk.free_pct < 20.0 %} bad{% else %} ok{% endif %}">{% if disk.free_pct < 20.0 %}uploads paused{% else %}healthy{% endif %}</div>
+        </div>
       </div>
 
       {% if storage_available %}
