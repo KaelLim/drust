@@ -238,8 +238,8 @@ impl MgmtState {
             TenantsState, create_tenant_form, create_tenant_json, list_page_axum,
             soft_delete_tenant, soft_delete_tenant_form, tenant_files_admin_page,
             tenant_oauth_provider_delete, tenant_oauth_provider_upsert,
-            tenant_oauth_providers_page, tenant_webhook_create_form, tenant_webhook_delete_form,
-            tenant_webhooks_page, toggle_self_register,
+            tenant_oauth_providers_page, tenant_overview_page, tenant_webhook_create_form,
+            tenant_webhook_delete_form, tenant_webhooks_page, toggle_self_register,
         };
         use axum::extract::DefaultBodyLimit;
 
@@ -335,6 +335,10 @@ impl MgmtState {
             )
             .route("/admin/tenants/{id}/delete", post(soft_delete_tenant_form))
             .route("/admin/tenants/{id}", get(super::tokens::detail_redirect))
+            .route(
+                "/admin/tenants/{id}/_overview",
+                get(tenant_overview_page),
+            )
             .route(
                 "/admin/tenants/{id}/_api_keys",
                 get(super::tokens::api_keys_page),

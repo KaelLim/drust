@@ -498,6 +498,207 @@ pub struct TenantFilesListQs {
     pub per_page: Option<u32>,
 }
 
+// ===== Overview page (v1.14, virtual sidebar entry `⌂ _overview`) =====
+
+#[derive(Template)]
+#[template(path = "tenant_overview.html")]
+struct TenantOverviewPage {
+    tenant_id: String,
+    tenant_name: String,
+    created_at: String,
+    version: &'static str,
+    collections: Vec<crate::storage::schema::Collection>,
+    active_coll: String,
+    collection_count: usize,
+    total_records: i64,
+    db_size_display: String,
+    user_count: i64,
+    rpc_count: i64,
+    webhook_active_count: i64,
+    webhook_total_count: i64,
+    oauth_count: i64,
+    token_count: i64,
+    webhook_failures: Vec<WebhookFailureRow>,
+    recent_audit: Vec<RecentAuditRow>,
+}
+
+struct WebhookFailureRow {
+    #[allow(dead_code)]
+    id: i64,
+    collection: String,
+    url: String,
+    events: String,
+    last_failure_at: String,
+    last_failure_reason: String,
+}
+
+struct RecentAuditRow {
+    ts: String,
+    op: String,
+    status: String,
+    /// Empty when status is `ok`; otherwise the canonical error code so
+    /// the chip renders the failure mode rather than the generic word
+    /// "error".
+    error_code: String,
+    actor: String,
+    duration_ms: u64,
+}
+
+/// `GET /admin/tenants/{id}/_overview` — virtual sidebar entry that summarises
+/// the tenant's data plane: collection counts, storage size, end-users,
+/// stored RPCs, OAuth providers, recent audit, and webhook failures within
+/// the last 24h. New landing page (the legacy redirect target
+/// `/_api_keys` is still reachable but no longer the default).
+pub async fn tenant_overview_page(
+    State(state): State<TenantsState>,
+    Path(tenant_id): Path<String>,
+) -> Response {
+    if validate_tenant_id(&tenant_id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid tenant id").into_response();
+    }
+
+    // Tenant metadata + active-token count from meta.sqlite.
+    let (tenant_name, created_at, token_count) = {
+        let conn = state.session.meta.lock().await;
+        let row: Option<(String, String)> = conn
+            .query_row(
+                "SELECT name, created_at FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+                rusqlite::params![tenant_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let (name, created_at) = match row {
+            Some(t) => t,
+            None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
+        };
+        let token_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tokens WHERE tenant_id = ?1 AND revoked_at IS NULL",
+                rusqlite::params![tenant_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        (name, created_at, token_count)
+    };
+
+    // data.sqlite file size.
+    let db_path = tenant_dir(&state.data_dir, &tenant_id).join("data.sqlite");
+    let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+    let db_size_display = humanize_bytes(db_size);
+
+    // Tenant data-plane queries. A failure to open the data db (fresh
+    // tenant pre-write, or trashed) yields zeroes — the page still renders
+    // with the meta info above.
+    let mut collections: Vec<crate::storage::schema::Collection> = Vec::new();
+    let mut total_records: i64 = 0;
+    let mut user_count: i64 = 0;
+    let mut rpc_count: i64 = 0;
+    let mut webhook_active_count: i64 = 0;
+    let mut webhook_total_count: i64 = 0;
+    let mut oauth_count: i64 = 0;
+    let mut webhook_failures: Vec<WebhookFailureRow> = Vec::new();
+
+    if let Ok(conn) = open_read(&state.data_dir, &tenant_id) {
+        collections = crate::storage::schema::list_collections(&conn).unwrap_or_default();
+        total_records = collections.iter().map(|c| c.row_count).sum();
+        user_count = conn
+            .query_row("SELECT COUNT(*) FROM _system_users", [], |r| r.get(0))
+            .unwrap_or(0);
+        rpc_count = conn
+            .query_row("SELECT COUNT(*) FROM _system_rpc", [], |r| r.get(0))
+            .unwrap_or(0);
+        webhook_active_count = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _system_webhooks WHERE active = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        webhook_total_count = conn
+            .query_row("SELECT COUNT(*) FROM _system_webhooks", [], |r| r.get(0))
+            .unwrap_or(0);
+        oauth_count = conn
+            .query_row("SELECT COUNT(*) FROM _system_oauth_providers", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        // Recent webhook failures (last 24h). Best-effort: any column-shape
+        // mismatch on older tenants is suppressed and the card stays hidden.
+        let cutoff_str = (Utc::now() - chrono::Duration::hours(24))
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT id, collection, url, events, last_failure_at, \
+                COALESCE(last_failure_reason, '') \
+             FROM _system_webhooks \
+             WHERE last_failure_at IS NOT NULL AND last_failure_at >= ?1 \
+             ORDER BY last_failure_at DESC LIMIT 5",
+        ) && let Ok(rows) = stmt.query_map(rusqlite::params![cutoff_str], |r| {
+            Ok(WebhookFailureRow {
+                id: r.get(0)?,
+                collection: r.get(1)?,
+                url: r.get(2)?,
+                events: r.get(3)?,
+                last_failure_at: r.get(4)?,
+                last_failure_reason: r.get(5)?,
+            })
+        }) {
+            webhook_failures.extend(rows.flatten());
+        }
+    }
+
+    // Recent audit entries for this tenant (last 24h, newest first, capped 10).
+    let scan = crate::mgmt::audit::scan_window(
+        &state.log_dir,
+        crate::mgmt::audit::Window::H24,
+        Utc::now(),
+    );
+    let mut recent_audit: Vec<RecentAuditRow> = scan
+        .entries
+        .into_iter()
+        .filter(|e| e.tenant == tenant_id)
+        .map(|e| RecentAuditRow {
+            ts: e.ts,
+            op: e.op,
+            status: e.status,
+            error_code: e.error_code.unwrap_or_default(),
+            actor: if e.token_hint.is_empty() {
+                "-".to_string()
+            } else {
+                e.token_hint
+            },
+            duration_ms: e.duration_ms,
+        })
+        .collect();
+    recent_audit.reverse();
+    recent_audit.truncate(10);
+
+    let collection_count = collections.len();
+    Html(
+        TenantOverviewPage {
+            tenant_id: tenant_id.clone(),
+            tenant_name,
+            created_at,
+            version: env!("CARGO_PKG_VERSION"),
+            collections,
+            active_coll: "_overview".to_string(),
+            collection_count,
+            total_records,
+            db_size_display,
+            user_count,
+            rpc_count,
+            webhook_active_count,
+            webhook_total_count,
+            oauth_count,
+            token_count,
+            webhook_failures,
+            recent_audit,
+        }
+        .render()
+        .unwrap(),
+    )
+    .into_response()
+}
+
 /// GET /admin/tenants/{id}/files
 /// Renders the tenant's _system_files with upload form + per-row actions.
 /// Admin uploads go to the tenant's own buckets (tenant-{id}-{pub,prv}).

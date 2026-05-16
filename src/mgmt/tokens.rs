@@ -172,12 +172,12 @@ fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option
     })
 }
 
-/// `GET /admin/tenants/{id}` — preserved as a 302 to `/_api_keys`. The old
-/// stand-alone detail page was folded into the 2-pane collection shell so the
-/// admin UI is now two pages instead of three.
+/// `GET /admin/tenants/{id}` — redirect to the tenant Overview (v1.14+).
+/// Before v1.14 this redirected to `_api_keys`, which is still reachable
+/// via the sidebar.
 pub async fn detail_redirect(Path(tenant_id): Path<String>) -> Response {
     Redirect::to(&format!(
-        "/drust/admin/tenants/{}/_api_keys",
+        "/drust/admin/tenants/{}/_overview",
         tenant_id
     ))
     .into_response()
