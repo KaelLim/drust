@@ -58,15 +58,11 @@
   }
 </style>
 </head>
-<body>
+<body data-section="design">
 {% include "_icons.html" %}
-<div class="macwin">
-  <div class="macwin-title">
-    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">drust <span class="muted">— design system</span></span>
-    <span></span>
-  </div>
-  <div class="macwin-body">
+<div class="app-shell">
+  {% include "_admin_sidebar.html" %}
+  <main class="main">
     <header class="topbar">
       <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
@@ -76,7 +72,6 @@
       {% include "_topbar_right.html" %}
     </header>
 
-    <div class="main">
       <div class="page page-wide ds-page">
         <nav class="ds-toc">
           <div class="ds-toc-head">on this page</div>
@@ -442,8 +437,7 @@
           </section>
         </div>
       </div>
-    </div>
-  </div>
+  </main>
 </div>
 
 {% include "_mascot.html" %}

@@ -8,15 +8,11 @@
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
-<body>
+<body data-section="docs">
 {% include "_icons.html" %}
-<div class="macwin">
-  <div class="macwin-title">
-    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">drust <span class="muted">— _docs/{{ active }}</span></span>
-    <span></span>
-  </div>
-  <div class="macwin-body">
+<div class="app-shell">
+  {% include "_admin_sidebar.html" %}
+  <main class="main">
     <header class="topbar">
       <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
@@ -28,8 +24,7 @@
       {% include "_topbar_right.html" %}
     </header>
 
-    <main class="main">
-      <div class="docs-shell">
+    <div class="docs-shell">
         <aside class="docs-toc">
           <div class="docs-toc-head">on this page <span class="count">{{ nav.len() }}</span></div>
           <nav class="docs-toc-list">
@@ -56,9 +51,7 @@
           </div>
         </div>
       </div>
-    </main>
-
-  </div>
+  </main>
 </div>
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}

@@ -9,13 +9,9 @@
 </head>
 <body>
 {% include "_icons.html" %}
-<div class="macwin">
-  <div class="macwin-title">
-    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">drust <span class="muted">— tenants/{{ tenant_name }}/_rpc/{{ existing_name }}/test</span></span>
-    <span></span>
-  </div>
-  <div class="macwin-body">
+<div class="app-shell">
+  {% include "_collection_sidebar.html" %}
+  <main class="main">
     <header class="topbar">
       <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
@@ -31,10 +27,7 @@
       {% include "_topbar_right.html" %}
     </header>
 
-    <div class="shell">
-      {% include "_collection_sidebar.html" %}
-
-      <main class="main"><div class="page page-wide">
+    <div class="page page-wide">
         <div class="view-head">
           <div class="grow">
             <div class="eyebrow">Tenant · stored functions · playground</div>
@@ -71,7 +64,7 @@
               <label for="p_{{ p.name }}" style="font-family:var(--mono);">
                 {{ p.name }}{% if p.required %} <span style="color:var(--danger);">*</span>{% endif %}
               </label>
-              <span class="chip mute" style="font-size:11px;">{{ p.ty }}</span>
+              <span class="pill muted" style="font-size:10px;">{{ p.ty }}</span>
               <input id="p_{{ p.name }}" class="input" name="p_{{ p.name }}" value="{{ p.value }}"
                      placeholder="{% if !p.default_display.is_empty() %}default: {{ p.default_display }}{% else %}{% if p.required %}required{% else %}optional · null{% endif %}{% endif %}"
                      data-type="{{ p.ty }}">
@@ -89,10 +82,9 @@
           </div>
 
           {% if let Some(err) = o.error %}
-          <div class="alert error" style="margin:14px 18px;">
-            <div class="icon">✕</div>
-            <div class="msg" style="white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:13px;">{{ err }}</div>
-            <span></span>
+          <div class="banner danger" style="margin:14px 18px;">
+            <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+            <div class="b-body"><div class="b-title">Query error</div><p style="white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:13px;">{{ err }}</p></div>
           </div>
           {% endif %}
 
@@ -100,7 +92,7 @@
           <div style="padding:0 18px 14px;display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--muted);">
             <span><b style="color:var(--text);">{{ r.row_count }}</b> rows</span>
             <span><b style="color:var(--text);">{{ r.column_names.len() }}</b> columns</span>
-            {% if r.truncated %}<span class="chip warn"><i class="dot"></i>truncated</span>{% endif %}
+            {% if r.truncated %}<span class="pill warn"><span class="dot"></span>truncated</span>{% endif %}
           </div>
           <div class="records-scroll" style="max-height:480px;">
             <table class="data">
@@ -140,9 +132,8 @@
         </details>
         {% endif %}
         {% endif %}
-      </div></main>
-    </div>
-  </div>
+      </div>
+  </main>
 </div>
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
