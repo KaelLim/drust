@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust — design system</title>
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+<style>
+  /* Page-scoped: the section grid + swatch grid only used here.
+     If the same patterns are needed on a real page, promote to
+     _styles.html under a more generic name. */
+  .ds-page { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 32px; }
+  .ds-toc { position: sticky; top: 24px; align-self: start; }
+  .ds-toc-head { font: 600 11px/1 var(--mono); color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.10em; padding: 0 8px 10px; }
+  .ds-toc a { display: block; padding: 6px 10px; font: 500 13px/1.4 var(--sans); color: var(--text-soft); text-decoration: none; border-left: 2px solid transparent; border-radius: 3px; }
+  .ds-toc a:hover { color: var(--text); background: var(--bg-2); border-left-color: var(--muted-2); }
+
+  .ds-section { margin-bottom: 56px; scroll-margin-top: 32px; }
+  .ds-section > h2 { font: 500 22px/1.25 var(--serif); margin: 0 0 6px; color: var(--text); letter-spacing: -0.005em; }
+  .ds-section > .ds-section-desc { font: 400 14px/1.5 var(--sans); color: var(--muted); margin: 0 0 18px; max-width: 64ch; }
+
+  .swatch-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;
+  }
+  .swatch {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .swatch-chip { height: 56px; display: block; }
+  .swatch-meta { padding: 8px 10px 10px; font: 500 11px/1.3 var(--mono); color: var(--text-soft); }
+  .swatch-meta .name { color: var(--text); }
+  .swatch-meta .val  { color: var(--muted-2); margin-top: 2px; word-break: break-all; }
+
+  .ds-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+  .ds-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .ds-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 900px) {
+    .ds-page { grid-template-columns: 1fr; }
+    .ds-toc { position: static; }
+    .ds-grid-2, .ds-grid-3 { grid-template-columns: 1fr; }
+  }
+
+  /* tenant-sidebar demo box */
+  .ds-sidebar-demo {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    height: 480px;
+    background: var(--bg);
+    display: grid;
+    grid-template-columns: 280px 1fr;
+  }
+  .ds-sidebar-demo .placeholder {
+    display: grid; place-items: center;
+    color: var(--muted-2); font: 500 14px/1.4 var(--sans);
+    padding: 20px;
+  }
+</style>
+</head>
+<body>
+{% include "_icons.html" %}
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">drust <span class="muted">— design system</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <div class="topbar">
+      <div class="prompt">
+        <span class="dollar">▸</span>
+        <span class="user">design</span>
+        <span class="at">@</span>
+        <span class="host">drust</span>
+        <span class="colon">:</span>
+        <span class="path">~/_design</span>
+        <span class="caret"></span>
+      </div>
+      <div class="topbar-right">
+        <span class="role-badge admin">admin</span>
+        <span class="sep">·</span>
+        <a href="/drust/admin/tenants">tenants</a>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="page page-wide ds-page">
+        <nav class="ds-toc">
+          <div class="ds-toc-head">on this page</div>
+          <a href="#tokens">color tokens</a>
+          <a href="#type">typography</a>
+          <a href="#buttons">buttons</a>
+          <a href="#inputs">inputs</a>
+          <a href="#cards-tables">cards &amp; tables</a>
+          <a href="#chips">chips &amp; pills</a>
+          <a href="#role-badges">role badges</a>
+          <a href="#plane-pills">plane pills</a>
+          <a href="#stat-tiles">stat tiles</a>
+          <a href="#badge-minis">field badges</a>
+          <a href="#meters">meters</a>
+          <a href="#alerts">alerts</a>
+          <a href="#toasts">toasts</a>
+          <a href="#cmdk">command palette</a>
+          <a href="#modal">modal</a>
+          <a href="#sidebar">tenant sidebar</a>
+          <a href="#mascot">mascot</a>
+        </nav>
+
+        <div>
+          <header style="margin-bottom: 36px">
+            <h1 class="display-serif-h1">drust design system</h1>
+            <p style="font:400 16px/1.5 var(--sans); color: var(--muted); margin: 8px 0 0; max-width: 64ch;">
+              Cozy-dark palette · apricot accent (hue 50) · Newsreader / Inter / JetBrains Mono.
+              All tokens defined in <code style="font-family: var(--mono); color: var(--accent);">_styles.html</code>.
+              New components are additive — existing pages re-theme automatically through token swap.
+            </p>
+          </header>
+
+          <!-- ============================== -->
+          <section id="tokens" class="ds-section">
+            <h2>Color tokens</h2>
+            <p class="ds-section-desc">Surfaces, ink, and status families. All values are OKLCH, so chroma and lightness move predictably under hue shift. Background hue is ~50 (warm apricot family); accents hold their own hues.</p>
+
+            <h3 style="font:500 13px/1 var(--mono); color: var(--muted); margin: 0 0 10px; text-transform: lowercase; letter-spacing: 0.04em;">surface &amp; ink</h3>
+            <div class="swatch-grid" style="margin-bottom: 24px;">
+              <div class="swatch"><span class="swatch-chip" style="background: var(--desktop)"></span><div class="swatch-meta"><div class="name">--desktop</div><div class="val">oklch(0.18 .012 50)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--bg)"></span><div class="swatch-meta"><div class="name">--bg</div><div class="val">oklch(0.22 .010 50)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--bg-2)"></span><div class="swatch-meta"><div class="name">--bg-2</div><div class="val">oklch(0.26 .012 55)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--bg-3)"></span><div class="swatch-meta"><div class="name">--bg-3</div><div class="val">oklch(0.30 .013 55)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--surface)"></span><div class="swatch-meta"><div class="name">--surface</div><div class="val">oklch(0.235 .011 50)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--line)"></span><div class="swatch-meta"><div class="name">--line</div><div class="val">oklch(0.34 .013 55)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--line-2)"></span><div class="swatch-meta"><div class="name">--line-2</div><div class="val">oklch(0.40 .014 55)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--muted)"></span><div class="swatch-meta"><div class="name">--muted</div><div class="val">oklch(0.58 .014 55)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--text-dim)"></span><div class="swatch-meta"><div class="name">--text-dim</div><div class="val">oklch(0.65 .022 65)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--text-soft)"></span><div class="swatch-meta"><div class="name">--text-soft</div><div class="val">oklch(0.82 .022 65)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--text)"></span><div class="swatch-meta"><div class="name">--text</div><div class="val">oklch(0.93 .020 65)</div></div></div>
+            </div>
+
+            <h3 style="font:500 13px/1 var(--mono); color: var(--muted); margin: 0 0 10px;">accent &amp; status</h3>
+            <div class="swatch-grid">
+              <div class="swatch"><span class="swatch-chip" style="background: var(--accent)"></span><div class="swatch-meta"><div class="name">--accent</div><div class="val">apricot · hue 50</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--accent-2)"></span><div class="swatch-meta"><div class="name">--accent-2</div><div class="val">peach hover</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--accent-soft)"></span><div class="swatch-meta"><div class="name">--accent-soft</div><div class="val">tinted bg</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--ok)"></span><div class="swatch-meta"><div class="name">--ok</div><div class="val">sage · hue 130</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--warn)"></span><div class="swatch-meta"><div class="name">--warn</div><div class="val">mustard · hue 85</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--danger)"></span><div class="swatch-meta"><div class="name">--danger</div><div class="val">terra · hue 30</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--info)"></span><div class="swatch-meta"><div class="name">--info</div><div class="val">dusty blue · 230</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--lilac)"></span><div class="swatch-meta"><div class="name">--lilac</div><div class="val">lilac · 305</div></div></div>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="type" class="ds-section">
+            <h2>Typography</h2>
+            <p class="ds-section-desc">Three families: serif for display headings, sans for UI chrome, mono for data &amp; code. Existing pages still use mono everywhere; new pages can opt into <code style="font-family:var(--mono);color:var(--accent);">var(--serif)</code> / <code style="font-family:var(--mono);color:var(--accent);">var(--sans)</code> directly.</p>
+            <div class="card" style="background: var(--surface); padding: 28px 32px;">
+              <div class="display-serif-h1">Newsreader · 36/1.15</div>
+              <div class="display-serif-h2" style="margin-top: 16px;">Newsreader · 26/1.25</div>
+              <div style="font:500 22px/1.3 var(--serif); margin-top: 14px; color: var(--text);">Newsreader · 22/1.3</div>
+              <div style="font:500 22px/1.3 var(--serif); font-style: italic; color: var(--text-soft); margin-top: 4px;">Newsreader italic · 22/1.3</div>
+              <hr style="border:0; border-top: 1px solid var(--line); margin: 22px 0;">
+              <div style="font:600 18px/1.4 var(--sans); color: var(--text);">Inter Semibold · 18/1.4 — UI labels</div>
+              <div style="font:500 14px/1.4 var(--sans); color: var(--text-soft); margin-top: 4px;">Inter Medium · 14/1.4 — body</div>
+              <div style="font:400 14px/1.5 var(--sans); color: var(--muted); margin-top: 4px;">Inter Regular · 14/1.5 — secondary</div>
+              <hr style="border:0; border-top: 1px solid var(--line); margin: 22px 0;">
+              <div style="font:500 14px/1.4 var(--mono); color: var(--text);">JetBrains Mono · 14/1.4 — code &amp; data</div>
+              <div style="font:400 13px/1.5 var(--mono); color: var(--text-soft); margin-top: 4px;">SELECT * FROM tenants WHERE active = 1 ORDER BY created_at DESC;</div>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="buttons" class="ds-section">
+            <h2>Buttons</h2>
+            <p class="ds-section-desc">Primary, default, ghost, and danger × default / sm. The focus ring is the apricot accent at 25% chroma — tab-able from any input.</p>
+            <div class="ds-row" style="margin-bottom: 14px;">
+              <button class="btn btn-primary" type="button">Save changes</button>
+              <button class="btn" type="button">Cancel</button>
+              <button class="btn btn-ghost" type="button">Cancel</button>
+              <button class="btn btn-danger" type="button">Delete tenant</button>
+            </div>
+            <div class="ds-row">
+              <button class="btn btn-primary btn-sm" type="button">Save</button>
+              <button class="btn btn-sm" type="button">Reset</button>
+              <button class="btn btn-ghost btn-sm" type="button">Cancel</button>
+              <button class="btn btn-danger btn-sm" type="button">Drop</button>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="inputs" class="ds-section">
+            <h2>Inputs</h2>
+            <p class="ds-section-desc">Text, select, textarea, checkbox, segmented pill toggle.</p>
+            <div class="ds-grid-2">
+              <div class="field">
+                <label>tenant name <span class="hint">required</span></label>
+                <input class="input" type="text" placeholder="acme-corp" value="">
+              </div>
+              <div class="field">
+                <label>region</label>
+                <select class="select">
+                  <option>asia-east-1</option>
+                  <option>europe-west-1</option>
+                  <option>us-east-2</option>
+                </select>
+              </div>
+            </div>
+            <div class="field" style="margin-top: 18px;">
+              <label>signed url <span class="hint">prefix locked</span></label>
+              <div class="input-prefix">
+                <span class="prefix">https://tool.tzuchi-org.tw/s/t/</span>
+                <input class="input" type="text" value="acme/avatar.png">
+              </div>
+            </div>
+            <div class="field" style="margin-top: 18px;">
+              <label>sql</label>
+              <textarea class="textarea" rows="3">SELECT id, name, anon_caps FROM _system_collection_meta;</textarea>
+            </div>
+            <div class="ds-row" style="margin-top: 18px;">
+              <label class="check"><input type="checkbox" checked> allow self-register</label>
+              <label class="check"><input type="checkbox"> require email verification</label>
+              <label class="check"><input type="checkbox"> read-only mode</label>
+            </div>
+            <div class="pill-toggle" style="margin-top: 18px;">
+              <input type="radio" name="ds-pt" id="ds-pt-1" checked><label for="ds-pt-1">cosine</label>
+              <input type="radio" name="ds-pt" id="ds-pt-2"><label for="ds-pt-2">L2</label>
+              <input type="radio" name="ds-pt" id="ds-pt-3"><label for="ds-pt-3">L1</label>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="cards-tables" class="ds-section">
+            <h2>Cards &amp; tables</h2>
+            <p class="ds-section-desc">Card has its own head, body, and tight-body variants. Tables under <code style="font-family:var(--mono);color:var(--accent);">table.data</code> have sticky thead and ellipsis-truncation by default.</p>
+            <div class="card">
+              <div class="card-head">
+                <span>recent tenants <span class="count">3</span></span>
+                <div class="card-head-actions"><a href="#">view all</a></div>
+              </div>
+              <table class="data">
+                <thead>
+                  <tr><th>tenant</th><th>id</th><th>collections</th><th class="num">size</th><th>created</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>acme-corp</td><td class="mono-cell">3a4e…b801</td><td>12</td><td class="num">48.3 MB</td><td class="muted-cell">2026-05-09</td></tr>
+                  <tr><td>nile-co</td><td class="mono-cell">7b21…e44a</td><td>6</td><td class="num">8.1 MB</td><td class="muted-cell">2026-05-12</td></tr>
+                  <tr><td>orinoco</td><td class="mono-cell">f088…1209</td><td>21</td><td class="num">112.5 MB</td><td class="muted-cell">2026-05-15</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="chips" class="ds-section">
+            <h2>Chips &amp; pills</h2>
+            <p class="ds-section-desc">Six tonal variants. Chips are the universal small label; pill-toggle is a segmented control variant.</p>
+            <div class="ds-row">
+              <span class="chip">default</span>
+              <span class="chip ok"><span class="dot"></span>active</span>
+              <span class="chip warn">pending</span>
+              <span class="chip danger">revoked</span>
+              <span class="chip info">scheduled</span>
+              <span class="chip lilac">vector</span>
+              <span class="chip accent">primary</span>
+              <span class="chip mute">muted</span>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="role-badges" class="ds-section">
+            <h2>Role badges</h2>
+            <p class="ds-section-desc">Anchors next to the account dropdown so the user always knows which token is in play. Four roles; service is info-blue, anon is grey, user is sage, admin is apricot.</p>
+            <div class="ds-row">
+              <span class="role-badge admin">admin</span>
+              <span class="role-badge service">service</span>
+              <span class="role-badge anon">anon</span>
+              <span class="role-badge user">user</span>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="plane-pills" class="ds-section">
+            <h2>Plane pills</h2>
+            <p class="ds-section-desc">Sidebar header indicator showing which plane (host-level admin vs per-tenant studio) the user is in. Apricot for admin, lilac for tenant.</p>
+            <div class="ds-row">
+              <div class="plane-pill admin">plane · admin</div>
+              <div class="plane-pill tenant">plane · tenant</div>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="stat-tiles" class="ds-section">
+            <h2>Stat tiles</h2>
+            <p class="ds-section-desc">Large serif numeral + mono label. Used for overview dashboards (host or tenant).</p>
+            <div class="ds-grid-3">
+              <div class="stat-tile">
+                <div class="stat-tile-label">tenants</div>
+                <div class="stat-tile-value">12</div>
+                <div class="stat-tile-delta ok">+1 this week</div>
+              </div>
+              <div class="stat-tile">
+                <div class="stat-tile-label">collections</div>
+                <div class="stat-tile-value">87</div>
+                <div class="stat-tile-delta">·</div>
+              </div>
+              <div class="stat-tile">
+                <div class="stat-tile-label">storage</div>
+                <div class="stat-tile-value">1.4 GB</div>
+                <div class="stat-tile-delta bad">+220 MB</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="badge-minis" class="ds-section">
+            <h2>Field badges</h2>
+            <p class="ds-section-desc">Schema annotations rendered alongside field names in the rows view. Seven variants: PK · FK · JSON · UNIQ · IDX · VEC · NULL.</p>
+            <div class="ds-row">
+              <span class="badge-mini pk">PK</span>
+              <span class="badge-mini fk">FK</span>
+              <span class="badge-mini json">JSON</span>
+              <span class="badge-mini uniq">UNIQ</span>
+              <span class="badge-mini idx">IDX</span>
+              <span class="badge-mini vec">VEC</span>
+              <span class="badge-mini null">null</span>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="meters" class="ds-section">
+            <h2>Meter bars</h2>
+            <p class="ds-section-desc">Thin progress / fill indicators for dashboards.</p>
+            <div style="max-width: 480px; display: flex; flex-direction: column; gap: 12px;">
+              <div><div style="font:500 12px/1 var(--mono); color: var(--muted); margin-bottom: 6px;">disk usage · 64%</div><div class="meter"><i style="width: 64%"></i></div></div>
+              <div><div style="font:500 12px/1 var(--mono); color: var(--muted); margin-bottom: 6px;">queries today · 28%</div><div class="meter ok"><i style="width: 28%"></i></div></div>
+              <div><div style="font:500 12px/1 var(--mono); color: var(--muted); margin-bottom: 6px;">webhook errors · 82%</div><div class="meter warn"><i style="width: 82%"></i></div></div>
+              <div><div style="font:500 12px/1 var(--mono); color: var(--muted); margin-bottom: 6px;">free space · 8%</div><div class="meter danger"><i style="width: 8%"></i></div></div>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="alerts" class="ds-section">
+            <h2>Alerts</h2>
+            <p class="ds-section-desc">Page-level banners with a coloured left border + tinted background.</p>
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+              <div class="alert info"><span class="icon">i</span><span class="msg">Backups run nightly at 02:00 UTC. Last snapshot: <b>2026-05-15 02:00:14</b>.</span><span></span></div>
+              <div class="alert ok"><span class="icon">✓</span><span class="msg">Tenant <b>acme-corp</b> created and OAuth providers configured.</span><span></span></div>
+              <div class="alert warn"><span class="icon">!</span><span class="msg">Disk at 82% — uploads will be refused at 80% free (configurable via <code>DRUST_DISK_MIN_FREE_PCT</code>).</span><span></span></div>
+              <div class="alert error"><span class="icon">×</span><span class="msg">Failed to reach Garage at <code>127.0.0.1:47831</code> — storage tab disabled.</span><span></span></div>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="toasts" class="ds-section">
+            <h2>Toasts</h2>
+            <p class="ds-section-desc">Ephemeral bottom-right notifications. Four tones — neutral, ok, warn, danger, info.</p>
+            <div class="ds-row">
+              <button class="btn btn-sm" onclick="dsToast('ok','Tenant saved.')">show ok</button>
+              <button class="btn btn-sm" onclick="dsToast('warn','Disk above 80%.')">show warn</button>
+              <button class="btn btn-sm" onclick="dsToast('danger','DB_ERROR — write rejected.')">show danger</button>
+              <button class="btn btn-sm" onclick="dsToast('info','Snapshot scheduled for 02:00 UTC.')">show info</button>
+            </div>
+            <div class="toast-stack" id="ds-toasts"></div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="cmdk" class="ds-section">
+            <h2>Command palette</h2>
+            <p class="ds-section-desc">Press <span class="kbd">⌘ K</span> (or <span class="kbd">Ctrl K</span>) to open. Anchors to top-center; backdrop blur; arrow keys + enter to navigate.</p>
+            <button class="btn" onclick="dsCmdkShow()">open palette</button>
+            <div class="cmdk-overlay" id="ds-cmdk" hidden onclick="if (event.target === this) dsCmdkHide()">
+              <div class="cmdk">
+                <input class="cmdk-input" id="ds-cmdk-input" placeholder="Find tenant or command…" oninput="dsCmdkFilter()">
+                <div class="cmdk-list" id="ds-cmdk-list"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="modal" class="ds-section">
+            <h2>Modal</h2>
+            <p class="ds-section-desc">Used for confirmations and "secret-once" reveals. Inline preview below — wiring lives in <code style="font-family:var(--mono);color:var(--accent);">_modal.html</code>.</p>
+            <div class="modal-overlay" style="position: relative; inset: auto; padding: 24px; background: oklch(0 0 0 / 0.25); border-radius: var(--radius-lg); border: 1px solid var(--line); place-items: center; min-height: 280px;">
+              <div class="modal">
+                <h3 class="modal-title">Rotate service token?</h3>
+                <p class="modal-body">The current service token will be invalidated immediately. Any clients using it must be reconfigured with the new value. This action cannot be undone.</p>
+                <div class="modal-actions">
+                  <button type="button" class="btn">Cancel</button>
+                  <button type="button" class="btn btn-danger">Rotate</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="sidebar" class="ds-section">
+            <h2>Tenant sidebar</h2>
+            <p class="ds-section-desc">Per-tenant nav: mascot + name header, plane pill, sectioned list (system entries first, then collections). Distinct from collection rows' simpler sidebar.</p>
+            <div class="ds-sidebar-demo">
+              <div class="tenant-sidebar">
+                <div class="tenant-sidebar-head">
+                  <div class="tenant-sidebar-brand">
+                    <canvas class="pix" data-chonk="happy" data-size="32"></canvas>
+                    <div>
+                      <div class="name">acme-corp</div>
+                      <div class="id">3a4e…b801</div>
+                    </div>
+                  </div>
+                  <div class="plane-pill tenant">plane · tenant</div>
+                </div>
+                <div class="tenant-sidebar-list">
+                  <div class="tenant-sidebar-section">
+                    <div class="tenant-sidebar-section-head">system</div>
+                    <a class="tenant-nav-item on" href="#"><span class="nav-icon">⌂</span><span>Overview</span><span></span></a>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">🔑</span><span>API keys</span><span></span></a>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">⚡</span><span>RPC</span><span class="nav-tag">5</span></a>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">📁</span><span>Files</span><span></span></a>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">👤</span><span>Users</span><span class="nav-tag">280</span></a>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">🔐</span><span>OAuth</span><span></span></a>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">🔔</span><span>Webhooks</span><span class="nav-tag">3</span></a>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">📋</span><span>Logs</span><span></span></a>
+                  </div>
+                  <div class="tenant-sidebar-section">
+                    <div class="tenant-sidebar-section-head">collections</div>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">▸</span><span>orders</span><span class="nav-tag">14k</span></a>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">▸</span><span>customers</span><span class="nav-tag">812</span></a>
+                    <a class="tenant-nav-item" href="#"><span class="nav-icon">▸</span><span>products</span><span class="nav-tag">42</span></a>
+                  </div>
+                </div>
+                <div class="tenant-sidebar-foot">
+                  <span>v1.13.0</span>
+                  <span class="role-badge admin">admin</span>
+                </div>
+              </div>
+              <div class="placeholder">main content area</div>
+            </div>
+          </section>
+
+          <!-- ============================== -->
+          <section id="mascot" class="ds-section">
+            <h2>LiveChonk mascot</h2>
+            <p class="ds-section-desc">Apricot pixel cat. Sizes by usage: 18 in topbar · 32 in sidebar header · 48 on login · 96 on empty states. Moods: awake (tracks mouse) · happy · sleep · working · curious · error.</p>
+            <div class="ds-row" style="align-items: flex-end; gap: 32px;">
+              <div style="text-align: center;"><canvas class="pix" data-chonk="awake" data-size="18"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">18 · topbar</div></div>
+              <div style="text-align: center;"><canvas class="pix" data-chonk="happy" data-size="32"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">32 · sidebar</div></div>
+              <div style="text-align: center;"><canvas class="pix" data-chonk="awake" data-size="48"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">48 · login</div></div>
+              <div style="text-align: center;"><canvas class="pix" data-chonk="curious" data-size="56"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">56 · error</div></div>
+              <div style="text-align: center;"><canvas class="pix" data-chonk="sleep" data-size="96"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">96 · empty</div></div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% include "_mascot.html" %}
+
+<script>
+  // ---- toast demo ----
+  function dsToast(tone, msg) {
+    var stack = document.getElementById('ds-toasts');
+    var el = document.createElement('div');
+    el.className = 'toast ' + tone;
+    el.textContent = msg;
+    stack.appendChild(el);
+    setTimeout(function () { el.style.opacity = '0'; el.style.transition = 'opacity .25s'; }, 2600);
+    setTimeout(function () { stack.removeChild(el); }, 2900);
+  }
+
+  // ---- cmdk demo ----
+  var DS_CMDK_ITEMS = [
+    { icon: '🏠', label: 'switch to tenant <b>acme-corp</b>', hint: '↵' },
+    { icon: '🏠', label: 'switch to tenant <b>nile-co</b>',    hint: '↵' },
+    { icon: '🏠', label: 'switch to tenant <b>orinoco</b>',    hint: '↵' },
+    { icon: '+',  label: 'create new tenant',                    hint: 'C' },
+    { icon: '🔑', label: 'rotate service token',                 hint: 'R' },
+    { icon: '📋', label: 'open host audit log',                  hint: 'A' },
+    { icon: '💾', label: 'list snapshots',                       hint: 'S' },
+  ];
+  var dsCmdkSelIx = 0;
+  function dsCmdkShow() {
+    document.getElementById('ds-cmdk').hidden = false;
+    dsCmdkSelIx = 0;
+    dsCmdkFilter();
+    setTimeout(function () { document.getElementById('ds-cmdk-input').focus(); }, 20);
+  }
+  function dsCmdkHide() {
+    document.getElementById('ds-cmdk').hidden = true;
+    document.getElementById('ds-cmdk-input').value = '';
+  }
+  function dsCmdkFilter() {
+    var q = (document.getElementById('ds-cmdk-input').value || '').toLowerCase();
+    var list = document.getElementById('ds-cmdk-list');
+    var html = '';
+    DS_CMDK_ITEMS.forEach(function (it, ix) {
+      if (q && it.label.toLowerCase().indexOf(q) < 0) return;
+      var on = ix === dsCmdkSelIx ? ' on' : '';
+      html += '<a class="cmdk-item' + on + '" href="#"><span class="cmdk-icon">' + it.icon + '</span><span class="cmdk-label">' + it.label + '</span><span class="cmdk-hint">' + it.hint + '</span></a>';
+    });
+    list.innerHTML = html || '<div style="padding:18px;color:var(--muted-2);font:400 14px/1 var(--sans);">no matches</div>';
+  }
+  document.addEventListener('keydown', function (e) {
+    var open = !document.getElementById('ds-cmdk').hidden;
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      open ? dsCmdkHide() : dsCmdkShow();
+      return;
+    }
+    if (open && e.key === 'Escape') { e.preventDefault(); dsCmdkHide(); }
+  });
+</script>
+</body>
+</html>

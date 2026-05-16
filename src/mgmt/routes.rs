@@ -71,6 +71,14 @@ struct LoginPage {
     oauth_error: Option<String>,
 }
 
+#[derive(Template)]
+#[template(path = "design.html")]
+struct DesignShowcase;
+
+async fn design_showcase() -> Response {
+    Html(DesignShowcase {}.render().unwrap_or_default()).into_response()
+}
+
 #[derive(Debug, Deserialize)]
 struct LoginForm {
     username: String,
@@ -230,8 +238,8 @@ impl MgmtState {
             TenantsState, create_tenant_form, create_tenant_json, list_page_axum,
             soft_delete_tenant, soft_delete_tenant_form, tenant_files_admin_page,
             tenant_oauth_provider_delete, tenant_oauth_provider_upsert,
-            tenant_oauth_providers_page, tenant_webhook_create_form,
-            tenant_webhook_delete_form, tenant_webhooks_page, toggle_self_register,
+            tenant_oauth_providers_page, tenant_webhook_create_form, tenant_webhook_delete_form,
+            tenant_webhooks_page, toggle_self_register,
         };
         use axum::extract::DefaultBodyLimit;
 
@@ -331,10 +339,7 @@ impl MgmtState {
                 "/admin/tenants/{id}/_api_keys",
                 get(super::tokens::api_keys_page),
             )
-            .route(
-                "/admin/tenants/{id}/_rpc",
-                get(super::rpc_admin::rpc_index),
-            )
+            .route("/admin/tenants/{id}/_rpc", get(super::rpc_admin::rpc_index))
             .route(
                 "/admin/tenants/{id}/_rpc/new",
                 get(super::rpc_admin::rpc_new_form).post(super::rpc_admin::rpc_save),
@@ -368,10 +373,7 @@ impl MgmtState {
                 post(super::tokens::reroll_token_form),
             )
             .route("/admin/tenants/{id}/files", get(tenant_files_admin_page))
-            .route(
-                "/admin/_docs/changelog",
-                get(super::docs::changelog_page),
-            )
+            .route("/admin/_docs/changelog", get(super::docs::changelog_page))
             .route(
                 "/admin/tenants/{id}/collections",
                 get(super::browse::collections_page),
@@ -396,10 +398,7 @@ impl MgmtState {
                 "/admin/tenants/{id}/collections/{coll}/_explain",
                 post(super::browse::explain_admin),
             )
-            .route(
-                "/admin/audit",
-                get(super::audit::audit_host_page),
-            )
+            .route("/admin/audit", get(super::audit::audit_host_page))
             .route(
                 "/admin/tenants/{id}/_logs",
                 get(super::audit::audit_tenant_page),
@@ -491,10 +490,16 @@ impl MgmtState {
             .route("/admin/tenants/{id}/files/{key}/bytes", get(tfiles_stream))
             .with_state(tenant_files_state);
 
+        // Internal design-system showcase. Renders every component class
+        // from _styles.html in isolation. Admin-gated so it doesn't leak
+        // into public crawl, but otherwise stateless.
+        let design_router = Router::new().route("/admin/_design", get(design_showcase));
+
         let protected = tenants_router
             .merge(public_files_router)
             .merge(admin_tenant_files_router)
             .merge(backups_router)
+            .merge(design_router)
             .layer(axum::middleware::from_fn_with_state(
                 session,
                 admin_session_layer,
