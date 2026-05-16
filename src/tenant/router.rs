@@ -1,5 +1,6 @@
 use crate::auth::bearer::{hash_token, token_hint};
 use crate::auth::middleware::AuthCtx;
+use crate::error::json_error;
 use crate::safety::audit::{AuditEntry, AuditLog, DefaultAuditExtra};
 use crate::safety::rate_limit::RateLimiter;
 use crate::safety::rate_limit_ip::IpRateLimit;
@@ -336,9 +337,3 @@ fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
     raw.strip_prefix("Bearer ").map(|s| s.to_string())
 }
 
-fn json_error(status: StatusCode, code: &str, msg: &str) -> Response {
-    let body = serde_json::json!({ "error_code": code, "message": msg });
-    let mut r = axum::Json(body).into_response();
-    *r.status_mut() = status;
-    r
-}

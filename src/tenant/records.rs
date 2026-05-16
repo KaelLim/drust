@@ -1,4 +1,5 @@
 use crate::auth::middleware::AuthCtx;
+use crate::error::json_error;
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
@@ -28,12 +29,6 @@ pub struct ListQs {
     pub page: Option<u32>,
     #[serde(default)]
     pub per_page: Option<u32>,
-}
-
-fn json_error(status: StatusCode, code: &str, msg: &str) -> Response {
-    let mut r = Json(json!({ "error_code": code, "message": msg })).into_response();
-    *r.status_mut() = status;
-    r
 }
 
 /// Resolve the cached schema for `coll`, then gate the caller's role

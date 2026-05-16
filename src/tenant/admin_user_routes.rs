@@ -17,17 +17,14 @@ use serde_json::json;
 use std::collections::HashMap;
 
 use crate::auth::middleware::AuthCtx;
+use crate::error::json_error;
 use crate::tenant::router::TenantAuthState;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-fn err(s: StatusCode, code: &str, msg: &str) -> Response {
-    (s, Json(json!({"error_code": code, "message": msg}))).into_response()
-}
-
 fn require_service_ctx(ctx: &AuthCtx) -> Option<Response> {
     if !matches!(ctx, AuthCtx::Service) {
-        return Some(err(
+        return Some(json_error(
             StatusCode::FORBIDDEN,
             "SERVICE_ONLY",
             "service token required",
@@ -40,14 +37,14 @@ fn get_tid(params: &HashMap<String, String>) -> Result<String, Response> {
     params
         .get("tenant")
         .cloned()
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
+        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
 }
 
 fn get_uid(params: &HashMap<String, String>) -> Result<String, Response> {
     params
         .get("uid")
         .cloned()
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing uid"))
+        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing uid"))
 }
 
 // ─── request bodies ───────────────────────────────────────────────────────────
@@ -105,12 +102,12 @@ pub async fn create_user_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let email = body.email.trim().to_string();
     let hash = match crate::auth::user::hash_password(&body.password) {
         Ok(h) => h,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
     };
     let uid = format!("u-{}", uuid::Uuid::new_v4());
     let now = chrono::Utc::now().to_rfc3339();
@@ -136,9 +133,9 @@ pub async fn create_user_handler(
         )
             .into_response(),
         Err(e) if e.to_string().contains("UNIQUE") => {
-            err(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already in use")
+            json_error(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already in use")
         }
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
     }
 }
 
@@ -157,7 +154,7 @@ pub async fn list_users_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let pat = format!("%{}%", q.q.as_deref().unwrap_or(""));
     let limit = q.limit;
@@ -222,7 +219,7 @@ pub async fn get_user_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     fetch_user_row(pool, uid).await
 }
@@ -255,7 +252,7 @@ async fn fetch_user_row(
         .await;
     match row {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
-        Err(_) => err(StatusCode::NOT_FOUND, "NOT_FOUND", "user not found"),
+        Err(_) => json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "user not found"),
     }
 }
 
@@ -278,13 +275,13 @@ pub async fn update_user_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     // Pre-hash password outside the writer closure (argon2 is slow but sync).
     let new_hash = if let Some(ref pw) = body.password {
         match crate::auth::user::hash_password(pw) {
             Ok(h) => Some(h),
-            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
+            Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
         }
     } else {
         None
@@ -334,12 +331,12 @@ pub async fn update_user_handler(
         })
         .await;
     match res {
-        Ok(0) => err(StatusCode::NOT_FOUND, "NOT_FOUND", "user not found"),
+        Ok(0) => json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "user not found"),
         Ok(_) => fetch_user_row(pool, uid).await,
         Err(e) if e.to_string().contains("UNIQUE") => {
-            err(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already in use")
+            json_error(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already in use")
         }
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     }
 }
 
@@ -361,7 +358,7 @@ pub async fn delete_user_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let uid2 = uid.clone();
     let res = pool
@@ -424,9 +421,9 @@ pub async fn delete_user_handler(
             resp
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => {
-            err(StatusCode::NOT_FOUND, "NOT_FOUND", "user not found")
+            json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "user not found")
         }
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     }
 }
 
@@ -448,7 +445,7 @@ pub async fn revoke_sessions_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let n = pool
         .with_writer(move |c| crate::auth::user_session::revoke_all_sessions(c, &uid))
