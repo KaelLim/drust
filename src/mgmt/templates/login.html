@@ -7,13 +7,6 @@
 <meta name="description" content="Sign in to drust — multi-tenant SQLite BaaS admin console for the Tzu Chi Foundation.">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
-<style>
-  .oauth-error-banner { background: #fee; color: #900; padding: 8px; margin: 0 0 14px; border-radius: 4px; }
-  .oauth-divider { text-align: center; color: var(--muted); margin: 16px 0; font-size: 0.9em; }
-  .oauth-buttons { display: flex; flex-direction: column; gap: 8px; }
-  .oauth-btn { display: block; padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px; text-align: center; text-decoration: none; color: var(--text); }
-  .oauth-btn:hover { background: var(--bg-2); }
-</style>
 </head>
 <body>
 {% include "_icons.html" %}
@@ -52,16 +45,22 @@
           {% endif %}
 
           {% if let Some(oerr) = oauth_error %}
-          <div class="oauth-error-banner" role="alert">
-            {% match oerr.as_str() %}
-              {% when "oauth_state_mismatch" %}Login session expired. Please try again.
-              {% when "oauth_provider_error" %}Provider error. Try again or use password.
-              {% when "oauth_email_unverified" %}Your provider email is not verified.
-              {% when "oauth_not_allowed" %}This email is not authorized.
-              {% when "oauth_admin_email_missing" %}Your admin record has no email — run drust_set_admin_password --email.
-              {% when "oauth_misconfigured" %}OAuth not configured.
-              {% when _ %}Login failed.
-            {% endmatch %}
+          <div style="margin-bottom:14px;">
+            <div class="alert error" role="alert">
+              <div class="icon">✕</div>
+              <div class="msg">
+                {% match oerr.as_str() %}
+                  {% when "oauth_state_mismatch" %}Login session expired. Please try again.
+                  {% when "oauth_provider_error" %}Provider error. Try again or use password.
+                  {% when "oauth_email_unverified" %}Your provider email is not verified.
+                  {% when "oauth_not_allowed" %}This email is not authorized.
+                  {% when "oauth_admin_email_missing" %}Your admin record has no email — run <code>drust_set_admin_password --email</code>.
+                  {% when "oauth_misconfigured" %}OAuth not configured.
+                  {% when _ %}Login failed.
+                {% endmatch %}
+              </div>
+              <span></span>
+            </div>
           </div>
           {% endif %}
 
@@ -84,11 +83,12 @@
           </form>
 
           {% if !oauth_providers.is_empty() %}
-          <div class="oauth-divider">Or continue with</div>
+          <div class="oauth-divider"><span></span><span>or continue with</span><span></span></div>
           <div class="oauth-buttons">
             {% for p in oauth_providers %}
               <a class="oauth-btn oauth-btn-{{ p }}" href="/drust/admin/oauth/{{ p }}/start">
-                Continue with {{ p|capitalize }}
+                <span class="provider-mark" aria-hidden="true">▸</span>
+                <span>Continue with {{ p|capitalize }}</span>
               </a>
             {% endfor %}
           </div>
