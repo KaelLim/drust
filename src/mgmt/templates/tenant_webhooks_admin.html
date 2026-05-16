@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>drust admin — {{ tenant_name }} / _webhooks</title>
+<meta name="description" content="drust admin — tenant {{ tenant_name }}: outbound webhook subscriptions. Each row fans out on record CRUD to the subscriber URL.">
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+</head>
+<body>
+{% include "_icons.html" %}
+<div class="macwin">
+  <div class="macwin-title">
+    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
+    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_name }}/_webhooks</span></span>
+    <span></span>
+  </div>
+  <div class="macwin-body">
+    <header class="topbar">
+      <div class="prompt">
+        <span class="dollar">$</span>
+        <span class="user">admin</span>
+        <span class="at">@</span>
+        <span class="host">drust</span>
+        <span class="colon">:</span>
+        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_name }}</a>/_webhooks</span>
+        <span class="caret"></span>
+      </div>
+      <div class="topbar-right">
+        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
+        <span class="sep">│</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;">
+          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
+          <span class="who"><b>admin</b></span>
+        </span>
+        <span class="sep">│</span>
+        <form method="post" action="/drust/logout" style="display:inline;">
+          <button type="submit">logout ↵</button>
+        </form>
+      </div>
+    </header>
+
+    <div class="shell">
+      {% include "_collection_sidebar.html" %}
+
+      <main class="main"><div class="page page-wide">
+        <div class="pagehead">
+          <div>
+            <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:18px;font-weight:400;">/ _webhooks</span></h1>
+            <div class="meta" style="font-family:var(--mono);font-size:15px;color:var(--muted);">
+              Outbound webhook subscriptions. On record <code>created</code> / <code>updated</code> / <code>deleted</code> in the subscribed collection, drust POSTs the payload to the URL with an <code>X-Drust-Signature</code> HMAC-SHA256 header.
+            </div>
+          </div>
+        </div>
+
+        {% if let Some(msg) = error %}
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;margin-bottom:18px;background:var(--danger-soft);border:1px solid var(--danger-line);border-radius:var(--radius);font-family:var(--mono);font-size:14px;line-height:1.5;color:var(--text-soft);">
+          <span style="color:var(--danger);font-size:16px;line-height:1.3;flex-shrink:0;">⚠</span>
+          <div><b style="color:var(--danger);">{{ msg }}</b></div>
+        </div>
+        {% endif %}
+
+        {% if let Some(s) = secret_once %}
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;margin-bottom:18px;background:var(--warn-soft);border:1px solid var(--warn-line);border-radius:var(--radius);font-family:var(--mono);font-size:14px;line-height:1.5;color:var(--text-soft);">
+          <span style="color:var(--warn);font-size:18px;line-height:1.3;flex-shrink:0;">🔑</span>
+          <div style="flex:1;min-width:0;">
+            <b style="color:var(--warn);">Webhook secret (id {{ s.id }}) — copy now, you will not see it again.</b>
+            <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+              <code id="webhook-secret-once" style="flex:1;min-width:0;overflow-x:auto;background:var(--bg-2);padding:8px 10px;border-radius:6px;border:1px solid var(--line);user-select:all;">{{ s.secret }}</code>
+              <button type="button" class="btn btn-sm" onclick="(function(){var t=document.getElementById('webhook-secret-once').innerText;navigator.clipboard.writeText(t);})();">copy</button>
+            </div>
+            <div class="muted" style="margin-top:6px;font-size:13px;">Use this value to verify the <code>X-Drust-Signature</code> header on incoming deliveries. drust never stores it in cleartext after this page render.</div>
+          </div>
+        </div>
+        {% endif %}
+
+        <div class="card">
+          <div class="card-head">
+            <span>Webhook subscriptions</span>
+            <span class="card-head-actions">{{ webhooks.len() }} row(s)</span>
+          </div>
+          <div class="card-body">
+            {% if webhooks.is_empty() %}
+            <div class="empty" style="padding:42px 24px 28px;">
+              <div style="margin-bottom:14px;display:grid;place-items:center;">
+                <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
+              </div>
+              <h3>No webhooks configured</h3>
+              <p>Add one below to start receiving record-CRUD notifications.</p>
+            </div>
+            {% else %}
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>id</th>
+                  <th>collection</th>
+                  <th>events</th>
+                  <th>url</th>
+                  <th>active</th>
+                  <th>last_failure</th>
+                  <th>created_at</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+              {% for r in webhooks %}
+                <tr>
+                  <td><code>{{ r.id }}</code></td>
+                  <td><b>{{ r.collection }}</b></td>
+                  <td>
+                    {% for ev in r.events %}<span class="chip"><i class="dot"></i>{{ ev }}</span> {% endfor %}
+                  </td>
+                  <td title="{{ r.url }}"><code style="font-size:13px;">{{ r.url }}</code></td>
+                  <td>
+                    {% if r.active %}<span class="chip ok"><i class="dot"></i>on</span>{% else %}<span class="chip muted"><i class="dot"></i>off</span>{% endif %}
+                  </td>
+                  <td>
+                    {% if let Some(at) = r.last_failure_at %}
+                    <span style="color:var(--danger);">{{ at }}</span>
+                    {% if let Some(reason) = r.last_failure_reason %}<div class="muted" style="font-size:12px;">{{ reason }}</div>{% endif %}
+                    {% else %}<span class="muted-cell">—</span>{% endif %}
+                  </td>
+                  <td class="muted" style="font-family:var(--mono);font-size:13px;">{{ r.created_at }}</td>
+                  <td>
+                    <form method="post"
+                          action="/drust/admin/tenants/{{ tenant_id }}/_webhooks/{{ r.id }}/delete"
+                          onsubmit="return confirm('Delete webhook {{ r.id }} ({{ r.collection }} → {{ r.url }})? Further record CRUD events will not be delivered.');"
+                          style="margin:0;">
+                      <button type="submit" class="btn btn-sm btn-danger">delete</button>
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:24px;">
+          <div class="card-head">
+            <span>Add webhook</span>
+            <span class="card-head-actions">a random 64-hex secret is minted on save and shown ONCE</span>
+          </div>
+          <div class="card-body">
+            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_webhooks"
+                  style="display:grid;grid-template-columns:1fr;gap:14px;">
+              <label style="display:grid;gap:6px;">
+                <span style="font-family:var(--mono);font-size:14px;color:var(--text-soft);">collection</span>
+                <input class="input" name="collection" required maxlength="64"
+                       autocomplete="off" spellcheck="false"
+                       value="{{ form_collection }}"
+                       style="height:36px;font-family:var(--mono);"
+                       placeholder="e.g. notes">
+              </label>
+              <label style="display:grid;gap:6px;">
+                <span style="font-family:var(--mono);font-size:14px;color:var(--text-soft);">
+                  events
+                  <span class="muted" style="font-weight:normal;">— comma-separated subset of <code>created</code>, <code>updated</code>, <code>deleted</code></span>
+                </span>
+                <input class="input" name="events" required maxlength="64"
+                       autocomplete="off" spellcheck="false"
+                       value="{{ form_events }}"
+                       style="height:36px;font-family:var(--mono);"
+                       placeholder="created,updated,deleted">
+              </label>
+              <label style="display:grid;gap:6px;">
+                <span style="font-family:var(--mono);font-size:14px;color:var(--text-soft);">
+                  url
+                  <span class="muted" style="font-weight:normal;">— must be <code>https://</code> or <code>http://</code> loopback</span>
+                </span>
+                <input class="input" name="url" required maxlength="2048" type="url"
+                       autocomplete="off" spellcheck="false"
+                       value="{{ form_url }}"
+                       style="height:36px;font-family:var(--mono);"
+                       placeholder="https://hooks.example.com/drust">
+              </label>
+              <div>
+                <button type="submit" class="btn btn-primary">save webhook</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+      </div></main>
+    </div>
+  </div>
+</div>
+{% include "_mascot.html" %}
+</body>
+</html>
