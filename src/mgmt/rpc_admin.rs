@@ -29,6 +29,10 @@ struct RpcPage {
     page: u32,
     total_pages: u32,
     total_rpcs: usize,
+    /// Count over the FULL list (pre-pagination) of RPCs marked
+    /// `anon_callable=true`. Drives the stat-tile row at the top of
+    /// the page.
+    total_anon_callable: usize,
     prev_url: Option<String>,
     next_url: Option<String>,
     per_page_options: Vec<RpcPerPageOption>,
@@ -93,6 +97,7 @@ pub async fn rpc_index(
         .filter(|n| RPC_PER_PAGE_OPTIONS.contains(n))
         .unwrap_or(RPC_DEFAULT_PER_PAGE);
     let total_rpcs = all_rpcs.len();
+    let total_anon_callable = all_rpcs.iter().filter(|r| r.anon_callable).count();
     let total_pages = if total_rpcs == 0 {
         1
     } else {
@@ -131,6 +136,7 @@ pub async fn rpc_index(
             page,
             total_pages,
             total_rpcs,
+            total_anon_callable,
             prev_url,
             next_url,
             per_page_options,

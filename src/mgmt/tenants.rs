@@ -1167,6 +1167,9 @@ struct TenantWebhooksPage {
     tenant_id: String,
     tenant_name: String,
     webhooks: Vec<TenantWebhookRow>,
+    /// Pre-computed counts for the stat-tile row.
+    total_active: usize,
+    total_with_failure: usize,
     collections: Vec<crate::storage::schema::Collection>,
     /// Always `"_webhooks"` here — sidebar `.on` matching.
     active_coll: String,
@@ -1319,11 +1322,18 @@ async fn render_webhooks_page(
         Err(r) => return r,
     };
     let webhooks = load_webhook_rows(state, &tenant_id).await;
+    let total_active = webhooks.iter().filter(|w| w.active).count();
+    let total_with_failure = webhooks
+        .iter()
+        .filter(|w| w.last_failure_at.is_some())
+        .count();
     let body = TenantWebhooksPage {
         version: env!("CARGO_PKG_VERSION"),
         tenant_id,
         tenant_name,
         webhooks,
+        total_active,
+        total_with_failure,
         collections,
         active_coll: "_webhooks".to_string(),
         error: ctx.error,
