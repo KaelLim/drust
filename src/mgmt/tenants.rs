@@ -498,6 +498,39 @@ pub struct TenantFilesListQs {
     pub per_page: Option<u32>,
 }
 
+// ===== Cmd-K palette JSON endpoint (v1.14) =====
+// Lightweight tenant list for the global ⌘K palette. Service-only? No —
+// admin-session gated (same as the rest of /admin/*). Returns 0 rows
+// rather than an error when no tenants exist so the palette renders
+// "no matches" gracefully.
+
+#[derive(Serialize)]
+struct CmdkTenant {
+    id: String,
+    name: String,
+}
+
+/// `GET /admin/api/cmdk/tenants` — JSON `[{id, name}, ...]` used by the
+/// cmd-K overlay to populate the tenant picker. Sorted by name (case-
+/// insensitive). Excludes soft-deleted tenants.
+pub async fn cmdk_tenants_json(State(state): State<TenantsState>) -> Response {
+    let conn = state.session.meta.lock().await;
+    let mut out: Vec<CmdkTenant> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, name FROM tenants WHERE deleted_at IS NULL \
+         ORDER BY name COLLATE NOCASE",
+    ) && let Ok(rows) = stmt.query_map([], |r| {
+        Ok(CmdkTenant {
+            id: r.get(0)?,
+            name: r.get(1)?,
+        })
+    }) {
+        out.extend(rows.flatten());
+    }
+    drop(conn);
+    Json(out).into_response()
+}
+
 // ===== Overview page (v1.14, virtual sidebar entry `⌂ _overview`) =====
 
 #[derive(Template)]

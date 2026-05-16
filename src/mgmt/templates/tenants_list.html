@@ -36,7 +36,7 @@
         <span class="sep">│</span>
         <span style="display:inline-flex;align-items:center;gap:8px;">
           <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="who"><b>admin</b></span>
+          <span class="role-badge admin">admin</span>
         </span>
         <span class="sep">│</span>
         <form method="post" action="/drust/logout" style="display:inline;">
@@ -57,9 +57,27 @@
         </div>
       </div>
 
-      <div class="disk-banner{% if disk.free_pct < 20.0 %} low{% endif %}">
-        <span>Disk: <b>{{ disk.used_gb }}</b> GB used / {{ disk.total_gb }} GB total ({{ disk.free_pct_display }}% free)</span>
-        {% if disk.free_pct < 20.0 %}<span class="warn">⚠ uploads paused (&lt; 20% free)</span>{% endif %}
+      {% if disk.free_pct < 20.0 %}
+      <div class="disk-banner low" style="margin-bottom:14px;">
+        <span>⚠ Disk at <b>{{ disk.free_pct_display }}%</b> free — uploads paused (&lt; 20% free)</span>
+      </div>
+      {% endif %}
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:24px;">
+        <div class="stat-tile">
+          <div class="stat-tile-label">tenants</div>
+          <div class="stat-tile-value">{{ tenants.len() }}</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-tile-label">disk used</div>
+          <div class="stat-tile-value">{{ disk.used_gb }}<span style="font:500 13px/1 var(--sans);color:var(--muted);margin-left:6px;">GB</span></div>
+          <div class="stat-tile-delta">of {{ disk.total_gb }} GB</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-tile-label">disk free</div>
+          <div class="stat-tile-value" style="{% if disk.free_pct < 20.0 %}color:var(--danger);{% endif %}">{{ disk.free_pct_display }}<span style="font:500 13px/1 var(--sans);color:var(--muted);margin-left:6px;">%</span></div>
+          <div class="stat-tile-delta{% if disk.free_pct < 20.0 %} bad{% else %} ok{% endif %}">{% if disk.free_pct < 20.0 %}uploads paused{% else %}healthy{% endif %}</div>
+        </div>
       </div>
 
       <div class="card" style="margin-bottom:20px;">
@@ -221,6 +239,7 @@
   </div>
 </div>
 {% include "_mascot.html" %}
+{% include "_cmdk.html" %}
 {% include "_modal.html" %}
 </body>
 </html>
