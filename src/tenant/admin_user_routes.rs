@@ -11,34 +11,16 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::{Extension, Json};
+use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 
-use crate::auth::middleware::AuthCtx;
+use crate::auth::middleware::ServiceTid;
 use crate::error::json_error;
 use crate::tenant::router::TenantAuthState;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
-
-fn require_service_ctx(ctx: &AuthCtx) -> Option<Response> {
-    if !matches!(ctx, AuthCtx::Service) {
-        return Some(json_error(
-            StatusCode::FORBIDDEN,
-            "SERVICE_ONLY",
-            "service token required",
-        ));
-    }
-    None
-}
-
-fn get_tid(params: &HashMap<String, String>) -> Result<String, Response> {
-    params
-        .get("tenant")
-        .cloned()
-        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
-}
 
 fn get_uid(params: &HashMap<String, String>) -> Result<String, Response> {
     params
@@ -89,17 +71,9 @@ fn default_limit() -> i64 {
 
 pub async fn create_user_handler(
     State(state): State<TenantAuthState>,
-    Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
+    ServiceTid(tid): ServiceTid,
     Json(body): Json<CreateUserBody>,
 ) -> Response {
-    if let Some(r) = require_service_ctx(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
@@ -141,17 +115,9 @@ pub async fn create_user_handler(
 
 pub async fn list_users_handler(
     State(state): State<TenantAuthState>,
-    Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
+    ServiceTid(tid): ServiceTid,
     Query(q): Query<ListQuery>,
 ) -> Response {
-    if let Some(r) = require_service_ctx(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
@@ -203,16 +169,9 @@ pub async fn list_users_handler(
 
 pub async fn get_user_handler(
     State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
     Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
 ) -> Response {
-    if let Some(r) = require_service_ctx(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let uid = match get_uid(&params) {
         Ok(u) => u,
         Err(r) => return r,
@@ -258,17 +217,10 @@ async fn fetch_user_row(
 
 pub async fn update_user_handler(
     State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
     Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
     Json(body): Json<UpdateUserBody>,
 ) -> Response {
-    if let Some(r) = require_service_ctx(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let uid = match get_uid(&params) {
         Ok(u) => u,
         Err(r) => return r,
@@ -342,16 +294,9 @@ pub async fn update_user_handler(
 
 pub async fn delete_user_handler(
     State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
     Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
 ) -> Response {
-    if let Some(r) = require_service_ctx(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let uid = match get_uid(&params) {
         Ok(u) => u,
         Err(r) => return r,
@@ -429,16 +374,9 @@ pub async fn delete_user_handler(
 
 pub async fn revoke_sessions_handler(
     State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
     Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
 ) -> Response {
-    if let Some(r) = require_service_ctx(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let uid = match get_uid(&params) {
         Ok(u) => u,
         Err(r) => return r,

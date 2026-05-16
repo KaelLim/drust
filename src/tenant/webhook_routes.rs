@@ -16,35 +16,17 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::{Extension, Json};
+use axum::Json;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 
-use crate::auth::middleware::AuthCtx;
+use crate::auth::middleware::ServiceTid;
 use crate::error::json_error;
 use crate::tenant::router::TenantAuthState;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
-
-fn require_service(ctx: &AuthCtx) -> Option<Response> {
-    if !matches!(ctx, AuthCtx::Service) {
-        return Some(json_error(
-            StatusCode::FORBIDDEN,
-            "SERVICE_ONLY",
-            "service token required",
-        ));
-    }
-    None
-}
-
-fn get_tid(params: &HashMap<String, String>) -> Result<String, Response> {
-    params
-        .get("tenant")
-        .cloned()
-        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
-}
 
 fn get_id(params: &HashMap<String, String>) -> Result<i64, Response> {
     let raw = params
@@ -166,17 +148,9 @@ pub struct WebhookOut {
 
 pub async fn create_handler(
     State(state): State<TenantAuthState>,
-    Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
+    ServiceTid(tid): ServiceTid,
     Json(body): Json<CreateBody>,
 ) -> Response {
-    if let Some(r) = require_service(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     if let Err(r) = validate_url(&body.url) {
         return r;
     }
@@ -228,16 +202,8 @@ pub async fn create_handler(
 
 pub async fn list_handler(
     State(state): State<TenantAuthState>,
-    Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
+    ServiceTid(tid): ServiceTid,
 ) -> Response {
-    if let Some(r) = require_service(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
@@ -277,16 +243,9 @@ pub async fn list_handler(
 
 pub async fn get_handler(
     State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
     Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
 ) -> Response {
-    if let Some(r) = require_service(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let id = match get_id(&params) {
         Ok(i) => i,
         Err(r) => return r,
@@ -333,13 +292,10 @@ async fn fetch_webhook_row(pool: crate::storage::pool::SharedTenantPool, id: i64
 
 pub async fn patch_handler(
     State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
     Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
     Json(body): Json<PatchBody>,
 ) -> Response {
-    if let Some(r) = require_service(&ctx) {
-        return r;
-    }
     // Reject attempts to rotate the secret via PATCH — delete + recreate.
     if body.secret.is_some() {
         return json_error(
@@ -348,10 +304,6 @@ pub async fn patch_handler(
             "secret cannot be updated via PATCH; rotate = delete+create",
         );
     }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let id = match get_id(&params) {
         Ok(i) => i,
         Err(r) => return r,
@@ -417,16 +369,9 @@ pub async fn patch_handler(
 
 pub async fn delete_handler(
     State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
     Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
 ) -> Response {
-    if let Some(r) = require_service(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let id = match get_id(&params) {
         Ok(i) => i,
         Err(r) => return r,
