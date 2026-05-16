@@ -23,17 +23,14 @@ use serde_json::json;
 use std::collections::HashMap;
 
 use crate::auth::middleware::AuthCtx;
+use crate::error::json_error;
 use crate::tenant::router::TenantAuthState;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-fn err(s: StatusCode, code: &str, msg: &str) -> Response {
-    (s, Json(json!({"error_code": code, "message": msg}))).into_response()
-}
-
 fn require_service(ctx: &AuthCtx) -> Option<Response> {
     if !matches!(ctx, AuthCtx::Service) {
-        return Some(err(
+        return Some(json_error(
             StatusCode::FORBIDDEN,
             "SERVICE_ONLY",
             "service token required",
@@ -46,15 +43,15 @@ fn get_tid(params: &HashMap<String, String>) -> Result<String, Response> {
     params
         .get("tenant")
         .cloned()
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
+        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
 }
 
 fn get_id(params: &HashMap<String, String>) -> Result<i64, Response> {
     let raw = params
         .get("id")
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing id"))?;
+        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing id"))?;
     raw.parse::<i64>()
-        .map_err(|_| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "id must be integer"))
+        .map_err(|_| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "id must be integer"))
 }
 
 /// Pure validation for the subscriber URL — returns either `Ok(())` or a
@@ -101,12 +98,12 @@ pub(crate) fn check_events(events: &[String]) -> Result<(), (&'static str, &'sta
 
 /// REST adapter: pure check → 422 Response.
 fn validate_url(raw: &str) -> Result<(), Response> {
-    check_url(raw).map_err(|(code, msg)| err(StatusCode::UNPROCESSABLE_ENTITY, code, msg))
+    check_url(raw).map_err(|(code, msg)| json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg))
 }
 
 /// REST adapter: pure check → 422 Response.
 fn validate_events(events: &[String]) -> Result<(), Response> {
-    check_events(events).map_err(|(code, msg)| err(StatusCode::UNPROCESSABLE_ENTITY, code, msg))
+    check_events(events).map_err(|(code, msg)| json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg))
 }
 
 /// Generate a 64-char hex-encoded random secret (32 bytes from `OsRng` via
@@ -188,12 +185,12 @@ pub async fn create_handler(
     }
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let collection = body.collection.clone();
     let events_json = match serde_json::to_string(&body.events) {
         Ok(s) => s,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "ENCODE_FAILED", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "ENCODE_FAILED", ""),
     };
     let url = body.url.clone();
     let secret = generate_secret();
@@ -225,7 +222,7 @@ pub async fn create_handler(
             })),
         )
             .into_response(),
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
     }
 }
 
@@ -243,7 +240,7 @@ pub async fn list_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let rows: Vec<WebhookOut> = pool
         .with_reader(|c| {
@@ -296,7 +293,7 @@ pub async fn get_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     fetch_webhook_row(pool, id).await
 }
@@ -330,7 +327,7 @@ async fn fetch_webhook_row(pool: crate::storage::pool::SharedTenantPool, id: i64
         .await;
     match row {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
-        Err(_) => err(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
+        Err(_) => json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
     }
 }
 
@@ -345,7 +342,7 @@ pub async fn patch_handler(
     }
     // Reject attempts to rotate the secret via PATCH — delete + recreate.
     if body.secret.is_some() {
-        return err(
+        return json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "INVALID_PATCH",
             "secret cannot be updated via PATCH; rotate = delete+create",
@@ -371,12 +368,12 @@ pub async fn patch_handler(
     }
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let new_active = body.active.map(|b| if b { 1i64 } else { 0i64 });
     let new_events_json = match body.events.as_ref().map(serde_json::to_string).transpose() {
         Ok(v) => v,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "ENCODE_FAILED", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "ENCODE_FAILED", ""),
     };
     let new_url = body.url.clone();
     let res = pool
@@ -412,9 +409,9 @@ pub async fn patch_handler(
         })
         .await;
     match res {
-        Ok(0) => err(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
+        Ok(0) => json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
         Ok(_) => fetch_webhook_row(pool, id).await,
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     }
 }
 
@@ -436,7 +433,7 @@ pub async fn delete_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let res = pool
         .with_writer(move |c| {
@@ -447,8 +444,8 @@ pub async fn delete_handler(
         })
         .await;
     match res {
-        Ok(0) => err(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
+        Ok(0) => json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     }
 }

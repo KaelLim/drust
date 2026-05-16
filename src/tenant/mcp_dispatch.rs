@@ -5,6 +5,7 @@
 //! extensions and the token has already been validated, rate-limited,
 //! and audited.
 
+use crate::error::json_error;
 use crate::mcp::http_registry::McpHttpRegistry;
 use crate::tenant::router::{TenantRef, TokenRole};
 use axum::Extension;
@@ -14,13 +15,6 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use std::sync::Arc;
 use tower::ServiceExt;
-
-fn json_err(status: StatusCode, code: &str, msg: &str) -> Response {
-    let body = serde_json::json!({ "error_code": code, "message": msg });
-    let mut r = axum::Json(body).into_response();
-    *r.status_mut() = status;
-    r
-}
 
 pub async fn dispatch(
     registry: Arc<McpHttpRegistry>,
@@ -33,14 +27,14 @@ pub async fn dispatch(
     // without a clear use case.
     match tenant_ref.role {
         TokenRole::User => {
-            return json_err(
+            return json_error(
                 StatusCode::FORBIDDEN,
                 "MCP_USER_DENIED",
                 "user tokens cannot access MCP; use a service key",
             );
         }
         TokenRole::Anon => {
-            return json_err(
+            return json_error(
                 StatusCode::FORBIDDEN,
                 "WRITE_DENIED",
                 "MCP requires a service key; anon keys cannot open an MCP session",
@@ -51,13 +45,13 @@ pub async fn dispatch(
 
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
-        None => return json_err(StatusCode::BAD_REQUEST, "INTERNAL", "missing tenant param"),
+        None => return json_error(StatusCode::BAD_REQUEST, "INTERNAL", "missing tenant param"),
     };
 
     let svc = match registry.get_or_create(&tenant_id).await {
         Ok(s) => s,
         Err(e) => {
-            return json_err(
+            return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL",
                 &format!("mcp service init failed: {e}"),
@@ -70,7 +64,7 @@ pub async fn dispatch(
     let owned = (*svc).clone();
     match owned.oneshot(req).await {
         Ok(resp) => resp.into_response(),
-        Err(_infallible) => json_err(
+        Err(_infallible) => json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "INTERNAL",
             "mcp transport error",

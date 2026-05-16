@@ -22,18 +22,15 @@ use serde_json::json;
 use std::collections::HashMap;
 
 use crate::auth::middleware::AuthCtx;
+use crate::error::json_error;
 use crate::tenant::oauth_config::{self, OauthConfigError};
 use crate::tenant::router::TenantAuthState;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-fn err(s: StatusCode, code: &str, msg: &str) -> Response {
-    (s, Json(json!({"error_code": code, "message": msg}))).into_response()
-}
-
 fn require_service_ctx(ctx: &AuthCtx) -> Option<Response> {
     if !matches!(ctx, AuthCtx::Service) {
-        return Some(err(
+        return Some(json_error(
             StatusCode::FORBIDDEN,
             "SERVICE_ONLY",
             "service token required",
@@ -46,14 +43,14 @@ fn get_tid(params: &HashMap<String, String>) -> Result<String, Response> {
     params
         .get("tenant")
         .cloned()
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
+        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
 }
 
 fn get_provider(params: &HashMap<String, String>) -> Result<String, Response> {
     params
         .get("provider")
         .cloned()
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing provider"))
+        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing provider"))
 }
 
 // ─── response shape ──────────────────────────────────────────────────────────
@@ -85,14 +82,14 @@ pub async fn list_oauth_providers_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let rows = match pool
         .with_reader(move |c| oauth_config::list(c))
         .await
     {
         Ok(v) => v,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     };
     let resp: Vec<OauthProviderListItem> = rows
         .into_iter()
@@ -161,7 +158,7 @@ pub async fn put_oauth_provider_handler(
     }
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let provider2 = provider.clone();
     let client_id = body.client_id;
@@ -197,7 +194,7 @@ pub async fn put_oauth_provider_handler(
                 })));
             resp
         }
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     }
 }
 
@@ -219,7 +216,7 @@ pub async fn delete_oauth_provider_handler(
     };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let provider2 = provider.clone();
     let res = pool
@@ -234,11 +231,11 @@ pub async fn delete_oauth_provider_handler(
                 })));
             resp
         }
-        Ok(false) => err(
+        Ok(false) => json_error(
             StatusCode::NOT_FOUND,
             "NOT_FOUND",
             "provider not configured",
         ),
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
     }
 }

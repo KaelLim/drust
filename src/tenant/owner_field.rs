@@ -1,4 +1,5 @@
 use crate::auth::middleware::AuthCtx;
+use crate::error::json_error;
 use crate::tenant::router::TenantRef;
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -27,14 +28,14 @@ pub async fn set_owner_field_handler(
     Json(body): Json<SetOwnerFieldBody>,
 ) -> Response {
     if !matches!(ctx, AuthCtx::Service) {
-        return err(
+        return json_error(
             StatusCode::FORBIDDEN,
             "SERVICE_ONLY",
             "service key required",
         );
     }
     if body.read_scope != "own" && body.read_scope != "all" {
-        return err(
+        return json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "INVALID_READ_SCOPE",
             "read_scope must be 'own' or 'all'",
@@ -42,7 +43,7 @@ pub async fn set_owner_field_handler(
     }
     let collection = match params.get("coll") {
         Some(c) => c.clone(),
-        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing collection"),
+        None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing collection"),
     };
     let pool = t.pool.clone();
     let coll_for_val = collection.clone();
@@ -52,8 +53,8 @@ pub async fn set_owner_field_handler(
         .await;
     match validation {
         Ok(Ok(())) => {}
-        Ok(Err(code)) => return err(StatusCode::CONFLICT, code, ""),
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
+        Ok(Err(code)) => return json_error(StatusCode::CONFLICT, code, ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
     let coll_for_set = collection.clone();
     let field_for_set = body.field.clone();
@@ -69,7 +70,7 @@ pub async fn set_owner_field_handler(
         })
         .await;
     if res.is_err() {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "WRITE_FAILED", "");
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "WRITE_FAILED", "");
     }
     pool.schema_cache.invalidate(&collection);
     (
@@ -88,7 +89,7 @@ pub async fn clear_owner_field_handler(
     Extension(t): Extension<TenantRef>,
 ) -> Response {
     if !matches!(ctx, AuthCtx::Service) {
-        return err(
+        return json_error(
             StatusCode::FORBIDDEN,
             "SERVICE_ONLY",
             "service key required",
@@ -96,7 +97,7 @@ pub async fn clear_owner_field_handler(
     }
     let collection = match params.get("coll") {
         Some(c) => c.clone(),
-        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing collection"),
+        None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing collection"),
     };
     let pool = t.pool.clone();
     let coll_for_clear = collection.clone();
@@ -106,7 +107,7 @@ pub async fn clear_owner_field_handler(
         })
         .await;
     if res.is_err() {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "WRITE_FAILED", "");
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "WRITE_FAILED", "");
     }
     pool.schema_cache.invalidate(&collection);
     (StatusCode::OK, Json(json!({"cleared": true}))).into_response()
@@ -155,6 +156,3 @@ fn validate_owner_column(
     Ok(Ok(()))
 }
 
-fn err(status: StatusCode, code: &str, msg: &str) -> Response {
-    (status, Json(json!({"error_code": code, "message": msg}))).into_response()
-}

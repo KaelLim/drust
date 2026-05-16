@@ -1,4 +1,5 @@
 use crate::auth::middleware::AuthCtx;
+use crate::error::json_error;
 use crate::query::executor::{ExecError, execute_read_query};
 use crate::tenant::router::TenantRef;
 use axum::http::StatusCode;
@@ -18,11 +19,11 @@ pub async fn query_handler(
     Json(body): Json<QueryBody>,
 ) -> Response {
     if matches!(ctx, AuthCtx::User { .. }) {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
-            json_err("QUERY_USER_DENIED", "user token cannot use /query"),
-        )
-            .into_response();
+            "QUERY_USER_DENIED",
+            "user token cannot use /query",
+        );
     }
     const ROW_CAP: usize = 10_000;
     const MAX_SQL: usize = 16_384;
@@ -51,32 +52,24 @@ pub async fn query_handler(
         Err(e) => {
             let m = e.to_string();
             if m.contains("too_large") {
-                (
+                json_error(
                     StatusCode::PAYLOAD_TOO_LARGE,
-                    json_err("QUERY_TOO_LARGE", "sql too large"),
+                    "QUERY_TOO_LARGE",
+                    "sql too large",
                 )
-                    .into_response()
             } else if m.contains("forbidden") {
-                (
+                json_error(
                     StatusCode::FORBIDDEN,
-                    json_err("QUERY_FORBIDDEN", "denied by authorizer"),
+                    "QUERY_FORBIDDEN",
+                    "denied by authorizer",
                 )
-                    .into_response()
             } else if m.contains("timeout") {
-                (
-                    StatusCode::REQUEST_TIMEOUT,
-                    json_err("QUERY_TIMEOUT", "timed out"),
-                )
-                    .into_response()
+                json_error(StatusCode::REQUEST_TIMEOUT, "QUERY_TIMEOUT", "timed out")
             } else {
-                (StatusCode::BAD_REQUEST, json_err("INTERNAL", &m)).into_response()
+                json_error(StatusCode::BAD_REQUEST, "INTERNAL", &m)
             }
         }
     }
-}
-
-fn json_err(code: &str, msg: &str) -> Json<serde_json::Value> {
-    Json(json!({ "error_code": code, "message": msg }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,11 +83,11 @@ pub async fn explain_handler(
     Json(body): Json<ExplainBody>,
 ) -> Response {
     if matches!(ctx, AuthCtx::User { .. }) {
-        return (
+        return json_error(
             StatusCode::FORBIDDEN,
-            json_err("QUERY_USER_DENIED", "user token cannot use /query/explain"),
-        )
-            .into_response();
+            "QUERY_USER_DENIED",
+            "user token cannot use /query/explain",
+        );
     }
     match crate::mcp::tools::index::explain_select(&t.pool, &body.sql).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),

@@ -6,6 +6,7 @@
 //! /query but allowed on /search" for rationale.
 
 use crate::auth::middleware::AuthCtx;
+use crate::error::json_error;
 use crate::query::vector_codec;
 use crate::query::vector_filter::{self, FilterAst, FilterError};
 use crate::storage::schema::DmlVerb;
@@ -33,12 +34,6 @@ pub struct SearchBody {
 
 fn default_metric() -> String {
     "cosine".to_string()
-}
-
-fn json_error(status: StatusCode, code: &str, msg: &str) -> Response {
-    let mut r = Json(json!({ "error_code": code, "message": msg })).into_response();
-    *r.status_mut() = status;
-    r
 }
 
 pub async fn search_handler(

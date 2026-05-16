@@ -8,6 +8,7 @@
 //! so the response isn't blocked on the writer mutex.
 
 use crate::auth::middleware::AuthCtx;
+use crate::error::json_error;
 use crate::query::executor::{
     ExecError, QueryResult, execute_read_query_with_named,
 };
@@ -228,8 +229,3 @@ pub async fn call_rpc(
     }
 }
 
-fn json_error(status: StatusCode, code: &str, msg: &str) -> Response {
-    let mut r = Json(json!({ "error_code": code, "message": msg })).into_response();
-    *r.status_mut() = status;
-    r
-}

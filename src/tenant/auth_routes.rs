@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 
 use crate::auth::middleware::AuthCtx;
 use crate::auth::user::hash_password;
+use crate::error::json_error;
 use crate::safety::audit::AuditEntry;
 use crate::tenant::router::TenantAuthState;
 
@@ -33,7 +34,7 @@ pub async fn register_handler(
 ) -> Response {
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
-        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+        None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
     // ConnectInfo is unavailable with oneshot (no make_service_with_connect_info).
     // In production, client IP always comes from X-Forwarded-For (S3 spec).
@@ -41,17 +42,17 @@ pub async fn register_handler(
     let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
     let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.register_rl.check(ip) {
-        return err(StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED_IP", "rate limited");
+        return json_error(StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED_IP", "rate limited");
     }
     if body.password.len() < PASSWORD_MIN {
-        return err(
+        return json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "PASSWORD_TOO_SHORT",
             "password too short",
         );
     }
     if body.password.len() > PASSWORD_MAX {
-        return err(
+        return json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "PASSWORD_TOO_LONG",
             "password too long",
@@ -63,13 +64,13 @@ pub async fn register_handler(
     // whitespace-aware.
     let email = body.email.trim().to_string();
     if !email_looks_valid(&email) {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, "EMAIL_INVALID", "invalid email");
+        return json_error(StatusCode::UNPROCESSABLE_ENTITY, "EMAIL_INVALID", "invalid email");
     }
     let profile_str = crate::auth::profile::encode(body.profile.as_ref());
     if let Some(s) = &profile_str
         && s.len() > PROFILE_MAX_BYTES
     {
-        return err(
+        return json_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             "PROFILE_TOO_LARGE",
             "profile JSON exceeds 64 KB",
@@ -86,7 +87,7 @@ pub async fn register_handler(
             != 0
     };
     if !allow {
-        return err(
+        return json_error(
             StatusCode::FORBIDDEN,
             "SELF_REGISTER_DISABLED",
             "self-registration disabled for this tenant",
@@ -94,11 +95,11 @@ pub async fn register_handler(
     }
     let pool = match state.registry.get_or_open(&tenant_id) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let hash = match hash_password(&body.password) {
         Ok(h) => h,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
     };
     let now = chrono::Utc::now().to_rfc3339();
     let user_id = format!("u-{}", uuid::Uuid::new_v4());
@@ -139,9 +140,9 @@ pub async fn register_handler(
                 );
             entry.auth_method = Some("password".to_string());
             state.audit.append(entry);
-            err(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already registered")
+            json_error(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already registered")
         }
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
     }
 }
 
@@ -159,13 +160,13 @@ pub async fn login_handler(
 ) -> Response {
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
-        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+        None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
     // ConnectInfo unavailable with oneshot — use XFF header, fall back to loopback.
     let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
     let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.login_rl.check(ip) {
-        return err(StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED_IP", "rate limited");
+        return json_error(StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED_IP", "rate limited");
     }
     let email = body.email.trim().to_string();
 
@@ -184,7 +185,7 @@ pub async fn login_handler(
     if !tenant_exists {
         // S1: still spend an argon2 verify so timing matches the legit path.
         let _ = crate::auth::user::verify_password(&body.password, crate::auth::user::dummy_hash());
-        return err(
+        return json_error(
             StatusCode::UNAUTHORIZED,
             "INVALID_CREDENTIALS",
             "invalid email or password",
@@ -197,7 +198,7 @@ pub async fn login_handler(
                 &body.password,
                 crate::auth::user::dummy_hash(),
             );
-            return err(
+            return json_error(
                 StatusCode::UNAUTHORIZED,
                 "INVALID_CREDENTIALS",
                 "invalid email or password",
@@ -244,7 +245,7 @@ pub async fn login_handler(
             );
         entry.auth_method = Some("password".to_string());
         state.audit.append(entry);
-        return err(
+        return json_error(
             StatusCode::UNAUTHORIZED,
             "INVALID_CREDENTIALS",
             "invalid email or password",
@@ -259,7 +260,7 @@ pub async fn login_handler(
             );
         entry.auth_method = Some("password".to_string());
         state.audit.append(entry);
-        return err(
+        return json_error(
             StatusCode::UNAUTHORIZED,
             "INVALID_CREDENTIALS",
             "invalid email or password",
@@ -275,7 +276,7 @@ pub async fn login_handler(
         .await
     {
         Ok(t) => t,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "SESSION_INSERT", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "SESSION_INSERT", ""),
     };
     let exp = chrono::Utc::now() + chrono::Duration::days(30);
     let mut entry =
@@ -325,15 +326,15 @@ pub async fn logout_handler(
 ) -> Response {
     let token_hash = match &ctx {
         AuthCtx::User { token_hash, .. } => token_hash.clone(),
-        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "logout requires user token"),
+        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "logout requires user token"),
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
-        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+        None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
     let pool = match state.registry.get_or_open(&tenant_id) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let _ = pool
         .with_writer(move |c| {
@@ -350,15 +351,15 @@ pub async fn logout_all_handler(
 ) -> Response {
     let user_id = match &ctx {
         AuthCtx::User { user_id, .. } => user_id.clone(),
-        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "logout-all requires user token"),
+        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "logout-all requires user token"),
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
-        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+        None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
     let pool = match state.registry.get_or_open(&tenant_id) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let n = pool
         .with_writer(move |c| {
@@ -367,10 +368,6 @@ pub async fn logout_all_handler(
         .await
         .unwrap_or(0);
     (StatusCode::OK, Json(json!({"revoked": n}))).into_response()
-}
-
-fn err(status: StatusCode, code: &str, msg: &str) -> Response {
-    (status, Json(json!({"error_code": code, "message": msg}))).into_response()
 }
 
 // ── helpers shared by GET /me and PATCH /me ──────────────────────────────────
@@ -432,21 +429,21 @@ pub async fn me_get_handler(
 ) -> Response {
     let user_id = match &ctx {
         AuthCtx::User { user_id, .. } => user_id.clone(),
-        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
+        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
-        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+        None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
     let pool = match state.registry.get_or_open(&tenant_id) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     match fetch_me_row(&pool, &user_id).await {
         Ok((id, email, verified, profile, ca, ua)) => {
             me_row_to_response(id, email, verified, profile, ca, ua)
         }
-        Err(_) => err(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", "user no longer exists"),
+        Err(_) => json_error(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", "user no longer exists"),
     }
 }
 
@@ -465,16 +462,16 @@ pub async fn me_patch_handler(
 ) -> Response {
     let user_id = match &ctx {
         AuthCtx::User { user_id, .. } => user_id.clone(),
-        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
+        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
-        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+        None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
     let profile_str = crate::auth::profile::encode(Some(&body.profile))
         .unwrap_or_default();
     if profile_str.len() > PROFILE_MAX_BYTES {
-        return err(
+        return json_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             "PROFILE_TOO_LARGE",
             "profile JSON exceeds 64 KB",
@@ -482,7 +479,7 @@ pub async fn me_patch_handler(
     }
     let pool = match state.registry.get_or_open(&tenant_id) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let now = chrono::Utc::now().to_rfc3339();
     let uid_for_update = user_id.clone();
@@ -496,13 +493,13 @@ pub async fn me_patch_handler(
         .await
         .is_err()
     {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "UPDATE_FAILED", "");
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "UPDATE_FAILED", "");
     }
     match fetch_me_row(&pool, &user_id).await {
         Ok((id, email, verified, profile, ca, ua)) => {
             me_row_to_response(id, email, verified, profile, ca, ua)
         }
-        Err(_) => err(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", "user no longer exists"),
+        Err(_) => json_error(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", "user no longer exists"),
     }
 }
 
@@ -523,21 +520,21 @@ pub async fn me_password_handler(
 ) -> Response {
     let user_id = match &ctx {
         AuthCtx::User { user_id, .. } => user_id.clone(),
-        _ => return err(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
+        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
-        None => return err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
+        None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
     if body.new_password.len() < PASSWORD_MIN {
-        return err(
+        return json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "PASSWORD_TOO_SHORT",
             "password too short",
         );
     }
     if body.new_password.len() > PASSWORD_MAX {
-        return err(
+        return json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "PASSWORD_TOO_LONG",
             "password too long",
@@ -545,7 +542,7 @@ pub async fn me_password_handler(
     }
     let pool = match state.registry.get_or_open(&tenant_id) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     // Fetch current password hash for verification
     let uid_for_read = user_id.clone();
@@ -560,20 +557,20 @@ pub async fn me_password_handler(
         .await
     {
         Ok(s) => s,
-        Err(_) => return err(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", ""),
+        Err(_) => return json_error(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", ""),
     };
     // v1.12: OAuth-only account cannot rotate password — there is no
     // current password to verify. Tell the caller explicitly (unlike the
     // login path, the user is authenticated so existence is not a secret).
     if crate::auth::oauth_sentinel::is_oauth_only(&phc) {
-        return err(
+        return json_error(
             StatusCode::CONFLICT,
             "OAUTH_ONLY_NO_PASSWORD",
             "this account has no password; set up password recovery via your OAuth provider",
         );
     }
     if !crate::auth::user::verify_password(&body.current_password, &phc).unwrap_or(false) {
-        return err(
+        return json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "WRONG_CURRENT_PASSWORD",
             "current password is incorrect",
@@ -581,7 +578,7 @@ pub async fn me_password_handler(
     }
     let new_hash = match hash_password(&body.new_password) {
         Ok(h) => h,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
     };
     let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
     let ip = crate::safety::ip::client_ip(&headers, fallback_addr).to_string();
@@ -607,7 +604,7 @@ pub async fn me_password_handler(
         .await
     {
         Ok(t) => t,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "TX_FAILED", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "TX_FAILED", ""),
     };
     let exp = chrono::Utc::now() + chrono::Duration::days(30);
     (
