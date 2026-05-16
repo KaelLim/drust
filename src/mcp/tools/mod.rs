@@ -7,4 +7,5 @@ pub mod read;
 pub mod schema;
 pub mod user;
 pub mod vector;
+pub mod webhook;
 pub mod write;

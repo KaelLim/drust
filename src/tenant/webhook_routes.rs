@@ -57,20 +57,15 @@ fn get_id(params: &HashMap<String, String>) -> Result<i64, Response> {
         .map_err(|_| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "id must be integer"))
 }
 
-/// Validate the subscriber URL. Allow:
+/// Pure validation for the subscriber URL — returns either `Ok(())` or a
+/// `(error_code, message)` pair so callers (REST + MCP) can map to their
+/// preferred error shape. Allow:
 ///   - any `https://…`
 ///   - `http://` ONLY when host is loopback (`127.0.0.1`, `localhost`, `::1`).
-/// Anything else → 422 INVALID_URL.
-fn validate_url(raw: &str) -> Result<(), Response> {
+pub(crate) fn check_url(raw: &str) -> Result<(), (&'static str, &'static str)> {
     let parsed = match reqwest::Url::parse(raw) {
         Ok(u) => u,
-        Err(_) => {
-            return Err(err(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "INVALID_URL",
-                "url failed to parse",
-            ));
-        }
+        Err(_) => return Err(("INVALID_URL", "url failed to parse")),
     };
     let scheme = parsed.scheme();
     if scheme == "https" {
@@ -82,26 +77,20 @@ fn validate_url(raw: &str) -> Result<(), Response> {
             return Ok(());
         }
     }
-    Err(err(
-        StatusCode::UNPROCESSABLE_ENTITY,
+    Err((
         "INVALID_URL",
         "url must be https://, or http:// with loopback host",
     ))
 }
 
-/// Validate the event-name array — non-empty, each ∈ {created, updated, deleted}.
-fn validate_events(events: &[String]) -> Result<(), Response> {
+/// Pure validation for the event-name array.
+pub(crate) fn check_events(events: &[String]) -> Result<(), (&'static str, &'static str)> {
     if events.is_empty() {
-        return Err(err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "INVALID_EVENTS",
-            "events array must be non-empty",
-        ));
+        return Err(("INVALID_EVENTS", "events array must be non-empty"));
     }
     for ev in events {
         if !matches!(ev.as_str(), "created" | "updated" | "deleted") {
-            return Err(err(
-                StatusCode::UNPROCESSABLE_ENTITY,
+            return Err((
                 "INVALID_EVENTS",
                 "events must be subset of {created,updated,deleted}",
             ));
@@ -110,9 +99,19 @@ fn validate_events(events: &[String]) -> Result<(), Response> {
     Ok(())
 }
 
+/// REST adapter: pure check → 422 Response.
+fn validate_url(raw: &str) -> Result<(), Response> {
+    check_url(raw).map_err(|(code, msg)| err(StatusCode::UNPROCESSABLE_ENTITY, code, msg))
+}
+
+/// REST adapter: pure check → 422 Response.
+fn validate_events(events: &[String]) -> Result<(), Response> {
+    check_events(events).map_err(|(code, msg)| err(StatusCode::UNPROCESSABLE_ENTITY, code, msg))
+}
+
 /// Generate a 64-char hex-encoded random secret (32 bytes from `OsRng` via
 /// `rand::thread_rng`, matching the bearer-token pattern in `auth/bearer.rs`).
-fn generate_secret() -> String {
+pub(crate) fn generate_secret() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     let mut out = String::with_capacity(bytes.len() * 2);
