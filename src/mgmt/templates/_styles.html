@@ -709,8 +709,10 @@
 
   a { color: var(--accent); }
 
-  /* ============ 2-col shell (collection detail page) ============ */
-  :root { --sidebar-w: 260px; }
+  /* ============ 2-col shell (collection detail page) ============
+     Bumped from 260 → 280 in v1.14 to fit the new .tenant-sidebar
+     density (mascot + tenant-id + section heads + row-count tags). */
+  :root { --sidebar-w: 280px; }
   .shell {
     display: grid;
     grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
@@ -719,7 +721,7 @@
     overflow: hidden;
   }
   @media (max-width: 960px) {
-    :root { --sidebar-w: 200px; }
+    :root { --sidebar-w: 220px; }
   }
 
   /* When the page lives inside .shell, the right grid track is the actual
