@@ -13,20 +13,18 @@
 <div class="macwin">
   <div class="macwin-title">
     <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">admin@drust <span class="muted">— ~/tenants/{{ tenant_name }}/_oauth_providers</span></span>
+    <span class="title-text">drust <span class="muted">— tenants/{{ tenant_name }}/_oauth_providers</span></span>
     <span></span>
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <div class="prompt">
-        <span class="dollar">$</span>
-        <span class="user">admin</span>
-        <span class="at">@</span>
-        <span class="host">drust</span>
-        <span class="colon">:</span>
-        <span class="path">~/<a href="/drust/admin/tenants">tenants</a>/<a href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">{{ tenant_name }}</a>/_oauth_providers</span>
-        <span class="caret"></span>
-      </div>
+      <nav class="topbar-crumbs">
+        <a href="/drust/admin/tenants">tenants</a>
+        <span class="sep">/</span>
+        <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
+        <span class="sep">/</span>
+        <span class="here">oauth providers</span>
+      </nav>
       <div class="topbar-right">
         <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
         <span class="sep">│</span>

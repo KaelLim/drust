@@ -140,36 +140,54 @@
   .macwin-title .title-text .muted { color: var(--muted); }
   .macwin-body { background: var(--bg); display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
-  /* topbar */
+  /* topbar — v1.14: clean breadcrumb instead of legacy terminal prompt.
+     Sticky 56-px strip; left column scrolls horizontally for very deep
+     paths via the `.topbar-crumbs` overflow rule; right column hosts
+     the version link / mascot + role-badge / logout. */
   .topbar {
     position: sticky; top: 0; z-index: 40;
-    display: grid; grid-template-columns: 1fr auto; align-items: center;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
     gap: 20px;
     padding: 0 24px;
     height: 56px;
     flex-shrink: 0;
     background: oklch(0.235 0.012 55);
     border-bottom: 1px solid var(--line-2);
-    font-family: var(--mono);
-    font-size: 18px;
+    font-family: var(--sans);
+    font-size: 14px;
   }
-  .prompt { display: inline-flex; align-items: center; gap: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .prompt .dollar { color: var(--accent); margin-right: 10px; font-weight: 600; }
-  .prompt .user   { color: var(--text); }
-  .prompt .at     { color: var(--muted); }
-  .prompt .host   { color: var(--text); }
-  .prompt .colon  { color: var(--muted); margin: 0 3px; }
-  .prompt .path   { color: var(--accent); }
-  .prompt .path a { color: inherit; text-decoration: none; border-bottom: 1px dotted transparent; transition: border-color .12s; }
-  .prompt .path a:hover { border-bottom-color: var(--accent); }
-  .prompt .caret  {
-    display: inline-block; width: 9px; height: 20px;
-    background: var(--text); margin-left: 10px; vertical-align: text-bottom;
-    animation: blink 1.1s steps(1) infinite;
-  }
-  @keyframes blink { 50% { background: transparent; } }
 
-  .topbar-right { display: inline-flex; align-items: center; gap: 18px; color: var(--muted); font-size: 18px; }
+  /* Breadcrumb left side. Last segment carries `.here` and stays the
+     brightest; earlier segments are links (or plain text if no parent
+     page exists for them). Separator chosen as a small `/` glyph for
+     a code-aesthetic without going full terminal. */
+  .topbar-crumbs {
+    display: inline-flex; align-items: center; gap: 10px;
+    min-width: 0; overflow: hidden;
+    font: 500 14px/1 var(--sans);
+    color: var(--muted);
+  }
+  .topbar-crumbs a {
+    color: var(--text-soft); text-decoration: none;
+    transition: color .12s;
+    white-space: nowrap;
+  }
+  .topbar-crumbs a:hover { color: var(--text); }
+  .topbar-crumbs .sep { color: var(--muted-2); font-size: 13px; }
+  .topbar-crumbs .here {
+    color: var(--text); font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .topbar-crumbs .root {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px;
+    color: var(--accent);
+    border-radius: 4px;
+  }
+  .topbar-crumbs .root:hover { background: var(--accent-soft); color: var(--accent-2); }
+
+  .topbar-right { display: inline-flex; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
   .topbar-right .who { color: var(--text-soft); }
   .topbar-right .who b { color: var(--text); font-weight: 500; }
   .topbar-right a.who {
