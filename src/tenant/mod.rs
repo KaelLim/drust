@@ -14,6 +14,7 @@ pub mod records;
 pub mod router;
 pub mod sse;
 pub mod vector_search;
+pub mod webhook_routes;
 
 use crate::mcp::http_registry::McpHttpRegistry;
 use crate::mgmt::tenant_files::TenantFilesState;
@@ -261,6 +262,17 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             "/t/{tenant}/admin/oauth-providers/{provider}",
             put(oauth_admin_routes::put_oauth_provider_handler)
                 .delete(oauth_admin_routes::delete_oauth_provider_handler),
+        )
+        // ── Admin webhook subscriptions (service-only) ────────────────────
+        .route(
+            "/t/{tenant}/admin/webhooks",
+            post(webhook_routes::create_handler).get(webhook_routes::list_handler),
+        )
+        .route(
+            "/t/{tenant}/admin/webhooks/{id}",
+            get(webhook_routes::get_handler)
+                .patch(webhook_routes::patch_handler)
+                .delete(webhook_routes::delete_handler),
         )
         .route(
             "/t/{tenant}/mcp",
