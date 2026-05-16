@@ -8,15 +8,11 @@
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
-<body>
+<body data-section="tenants">
 {% include "_icons.html" %}
-<div class="macwin">
-  <div class="macwin-title">
-    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">drust <span class="muted">— tenants</span></span>
-    <span></span>
-  </div>
-  <div class="macwin-body">
+<div class="app-shell">
+  {% include "_admin_sidebar.html" %}
+  <main class="main">
     <header class="topbar">
       <nav class="crumbs">
         <span class="here">Tenants</span>
@@ -24,7 +20,7 @@
       {% include "_topbar_right.html" %}
     </header>
 
-    <main class="main"><div class="page">
+    <div class="page">
 
       <div class="view-head">
         <div class="grow">
@@ -206,8 +202,8 @@
         </script>
         {% endif %}
       </div>
-    </div></main>
-  </div>
+    </div>
+  </main>
 </div>
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}

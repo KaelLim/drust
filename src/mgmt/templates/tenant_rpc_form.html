@@ -9,13 +9,9 @@
 </head>
 <body>
 {% include "_icons.html" %}
-<div class="macwin">
-  <div class="macwin-title">
-    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">drust <span class="muted">— tenants/{{ tenant_name }}/_rpc/{% if editing %}{{ existing_name }}{% else %}new{% endif %}</span></span>
-    <span></span>
-  </div>
-  <div class="macwin-body">
+<div class="app-shell">
+  {% include "_collection_sidebar.html" %}
+  <main class="main">
     <header class="topbar">
       <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
@@ -28,9 +24,7 @@
       </nav>
       {% include "_topbar_right.html" %}
     </header>
-    <div class="shell">
-      {% include "_collection_sidebar.html" %}
-      <main class="main"><div class="page">
+    <div class="page">
         <div class="view-head">
           <div class="grow">
             <div class="eyebrow">Tenant · stored functions · {% if editing %}edit{% else %}new{% endif %}</div>
@@ -40,10 +34,9 @@
           <a class="btn ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">← back to rpc</a>
         </div>
         {% if let Some(err) = error %}
-        <div class="alert error" style="margin-bottom:14px;">
-          <div class="icon">✕</div>
-          <div class="msg">{{ err }}</div>
-          <span></span>
+        <div class="banner danger" style="margin-bottom:14px;">
+          <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+          <div class="b-body"><div class="b-title">Save failed</div><p>{{ err }}</p></div>
         </div>
         {% endif %}
         <form method="post" action="{% if editing %}/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/save{% else %}/drust/admin/tenants/{{ tenant_id }}/_rpc/new{% endif %}" class="card" style="padding:18px;display:grid;gap:14px;">
@@ -75,9 +68,8 @@
             <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">cancel</a>
           </div>
         </form>
-      </div></main>
-    </div>
-  </div>
+      </div>
+  </main>
 </div>
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}

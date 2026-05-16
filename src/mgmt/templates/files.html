@@ -8,15 +8,11 @@
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
-<body>
+<body data-section="files">
 {% include "_icons.html" %}
-<div class="macwin">
-  <div class="macwin-title">
-    <span class="macwin-traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
-    <span class="title-text">drust <span class="muted">— system/files</span></span>
-    <span></span>
-  </div>
-  <div class="macwin-body">
+<div class="app-shell">
+  {% include "_admin_sidebar.html" %}
+  <main class="main">
     <header class="topbar">
       <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
@@ -26,7 +22,7 @@
       {% include "_topbar_right.html" %}
     </header>
 
-    <main class="main"><div class="page">
+    <div class="page">
       <div class="view-head">
         <div class="grow">
           <div class="eyebrow">Admin · storage</div>
@@ -167,7 +163,7 @@
                 <td class="cell-name" title="{{ f.original_name }} ({{ f.key }})">
                   <div class="trunc-inner"><a href="{{ f.public_url }}" target="_blank" rel="noopener">{{ f.original_name }}</a></div>
                 </td>
-                <td class="cell-vis"><span class="chip chip-vis-{{ f.visibility }}">{{ f.visibility }}</span></td>
+                <td class="cell-vis"><span class="pill {% if f.visibility == "public" %}mint{% else %}warn{% endif %}"><span class="dot"></span>{{ f.visibility }}</span></td>
                 <td class="cell-type type" title="{{ f.content_type }}"><div class="trunc-inner">{{ f.content_type }}</div></td>
                 <td class="cell-size">{{ f.size_human }}</td>
                 <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
@@ -222,8 +218,8 @@
         </div>
       </div>
       {% endif %}
-    </div></main>
-  </div>
+    </div>
+  </main>
 </div>
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}

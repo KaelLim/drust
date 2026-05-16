@@ -79,66 +79,48 @@
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0;
-    background: var(--desktop); color: var(--text);
-    height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    height: 100%;
   }
   body {
     font-family: var(--sans);
-    font-size: 18px;
-    line-height: 1.55;
+    font-size: 13.5px;
+    line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    background:
-      radial-gradient(1200px 600px at 30% -10%, oklch(0.32 0.03 60), transparent 60%),
-      radial-gradient(900px 500px at 100% 100%, oklch(0.28 0.04 30), transparent 60%),
-      var(--desktop);
-    padding: 20px;
-    display: grid;
-    grid-template-rows: 1fr;
+    background: var(--bg);
+    min-height: 100vh;
+    overflow: hidden;
   }
 
-  /* macOS window frame */
-  .macwin {
-    max-width: 1480px; width: 100%;
-    margin: 0 auto;
-    background: var(--bg);
-    border-radius: 10px;
-    border: 1px solid oklch(0.14 0.01 55);
-    box-shadow:
-      0 0 0 1px oklch(0.40 0.012 55 / 0.35),
-      0 30px 60px -20px rgba(0,0,0,0.55),
-      0 10px 20px -10px rgba(0,0,0,0.4);
+  /* mockup-aligned full-bleed app shell. Two columns: 248px sidebar + 1fr main.
+     Replaces the legacy .macwin macOS-window frame (dropped 2026-05-17). */
+  .app-shell {
+    display: grid;
+    grid-template-columns: 248px minmax(0, 1fr);
+    height: 100vh;
     overflow: hidden;
+  }
+  @media (max-width: 960px) {
+    .app-shell { grid-template-columns: 220px minmax(0, 1fr); }
+  }
+
+  /* Legacy .macwin classes — kept as no-ops so any stale include doesn't 500
+     while we sweep templates. Once every page uses .app-shell, these will
+     be removed in a cleanup pass. */
+  .macwin, .macwin-body { display: contents; }
+  .macwin-title { display: none; }
+
+  /* Shared sidebar shell — both .sidebar-admin (host) and .sidebar-tenant
+     (per-tenant, aka .tenant-sidebar) opt into this base. */
+  .sidebar, .tenant-sidebar {
+    background: oklch(0.205 0.011 50);
+    border-right: 1px solid var(--line-2);
     display: flex; flex-direction: column;
-    min-height: 0;
+    min-height: 0; height: 100vh;
+    overflow: hidden;
+    position: sticky; top: 0;
   }
-  .macwin-title {
-    position: relative;
-    height: 32px;
-    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
-    padding: 0 12px;
-    background: linear-gradient(oklch(0.36 0.012 55), oklch(0.30 0.012 55));
-    border-bottom: 1px solid oklch(0.18 0.01 55);
-    user-select: none;
-  }
-  .macwin-traffic { display: inline-flex; gap: 8px; align-items: center; }
-  .macwin-traffic i {
-    width: 13px; height: 13px; border-radius: 50%;
-    display: inline-block;
-    box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.35);
-  }
-  .macwin-traffic i.r { background: var(--tl-red); }
-  .macwin-traffic i.y { background: var(--tl-yellow); }
-  .macwin-traffic i.g { background: var(--tl-green); }
-  .macwin-title .title-text {
-    grid-column: 2;
-    font: 500 18px/1 var(--sans);
-    color: var(--text-soft);
-    white-space: nowrap;
-    text-align: center;
-  }
-  .macwin-title .title-text .muted { color: var(--muted); }
-  .macwin-body { background: var(--bg); display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
   /* topbar — v1.14: clean breadcrumb instead of legacy terminal prompt.
      Sticky 56-px strip; left column scrolls horizontally for very deep
