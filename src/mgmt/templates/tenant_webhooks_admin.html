@@ -18,88 +18,79 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
+      <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <span class="here">webhooks</span>
+        <span class="here">Webhooks</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="display:inline;">
-          <button type="submit">logout ↵</button>
-        </form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
 
     <div class="shell">
       {% include "_collection_sidebar.html" %}
 
       <main class="main"><div class="page page-wide">
-        <div class="pagehead">
-          <div>
-            <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:22px;font-weight:400;letter-spacing:0;">/ _webhooks</span></h1>
-            <div class="meta" style="max-width:72ch;">
-              Outbound webhook subscriptions. On record <code style="font-family:var(--mono);color:var(--accent);">created</code> / <code style="font-family:var(--mono);color:var(--accent);">updated</code> / <code style="font-family:var(--mono);color:var(--accent);">deleted</code> in the subscribed collection, drust POSTs the payload to the URL with an <code style="font-family:var(--mono);color:var(--accent);">X-Drust-Signature</code> HMAC-SHA256 header.
-            </div>
+
+        <div class="view-head">
+          <div class="grow">
+            <div class="eyebrow">Tenant · backend</div>
+            <h1 class="view-title">Webhooks</h1>
+            <p class="view-sub">Outbound notifications on record <code>created</code> / <code>updated</code> / <code>deleted</code>. Signed with HMAC-SHA256 in the <code>X-Drust-Signature</code> header. Retried up to 4× inline (0s / 1s / 5s / 30s).</p>
           </div>
+          <a class="btn primary" href="#new-webhook">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            New subscription
+          </a>
         </div>
 
-        {% if webhooks.len() > 0 %}
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:24px;">
-          <div class="stat-tile">
-            <div class="stat-tile-label">subscriptions</div>
-            <div class="stat-tile-value">{{ webhooks.len() }}</div>
-          </div>
-          <div class="stat-tile">
-            <div class="stat-tile-label">active</div>
-            <div class="stat-tile-value">{{ total_active }}</div>
-            <div class="stat-tile-delta">{% if webhooks.len() > total_active %}{{ webhooks.len() - total_active }} paused{% else %}all on{% endif %}</div>
-          </div>
-          <div class="stat-tile">
-            <div class="stat-tile-label">with failure</div>
-            <div class="stat-tile-value" style="{% if total_with_failure > 0 %}color:var(--danger);{% endif %}">{{ total_with_failure }}</div>
-            <div class="stat-tile-delta{% if total_with_failure > 0 %} bad{% else %} ok{% endif %}">{% if total_with_failure > 0 %}needs attention{% else %}all clear{% endif %}</div>
+        {% if let Some(s) = secret_once %}
+        <div class="banner warn" style="margin-bottom:18px;">
+          <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.86a2 2 0 0 1 3.4 0l8.5 14.7a2 2 0 0 1-1.7 3H3.5a2 2 0 0 1-1.7-3z"/></svg></span>
+          <div class="b-body">
+            <div class="b-title">Webhook secret (id {{ s.id }}) — copy now, you will not see it again.</div>
+            <p>Use this value to verify the <code>X-Drust-Signature</code> header on incoming deliveries. drust never stores it in cleartext after this render.</p>
+            <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+              <code id="webhook-secret-once" style="flex:1;min-width:0;overflow-x:auto;background:var(--bg-2);padding:8px 10px;border-radius:6px;border:1px solid var(--line);font:500 13px/1 var(--mono);color:var(--text);user-select:all;letter-spacing:0.03em;">{{ s.secret }}</code>
+              <button type="button" class="btn sm" onclick="(function(){var t=document.getElementById('webhook-secret-once').innerText;navigator.clipboard.writeText(t);})();">copy</button>
+            </div>
           </div>
         </div>
         {% endif %}
 
         {% if let Some(msg) = error %}
-        <div class="alert error" style="margin-bottom:18px;">
-          <span class="icon">✕</span>
-          <div class="msg">{{ msg }}</div>
-          <span></span>
-        </div>
-        {% endif %}
-
-        {% if let Some(s) = secret_once %}
-        <div class="alert warn" style="margin-bottom:18px;align-items:flex-start;">
-          <span class="icon" style="line-height:1.4;">🔑</span>
-          <div class="msg" style="line-height:1.5;">
-            <b>Webhook secret (id {{ s.id }}) — copy now, you will not see it again.</b>
-            <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
-              <code id="webhook-secret-once" style="flex:1;min-width:0;overflow-x:auto;background:var(--bg-2);padding:8px 10px;border-radius:6px;border:1px solid var(--line);font-family:var(--mono);font-size:13px;color:var(--text);user-select:all;">{{ s.secret }}</code>
-              <button type="button" class="btn btn-sm" onclick="(function(){var t=document.getElementById('webhook-secret-once').innerText;navigator.clipboard.writeText(t);})();">copy</button>
-            </div>
-            <div style="margin-top:8px;font:400 12px/1.5 var(--sans);color:var(--muted);">Use this value to verify the <code style="font-family:var(--mono);">X-Drust-Signature</code> header on incoming deliveries. drust never stores it in cleartext after this page render.</div>
+        <div class="banner danger" style="margin-bottom:18px;">
+          <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+          <div class="b-body">
+            <div class="b-title">Save failed</div>
+            <p>{{ msg }}</p>
           </div>
-          <span></span>
         </div>
         {% endif %}
 
+        {% if webhooks.len() > 0 %}
+        <div class="stat-grid" style="margin-bottom:18px;">
+          <div class="stat accent-edge">
+            <div class="label">Subscriptions</div>
+            <div class="val">{{ webhooks.len() }}</div>
+            <div class="meta">total · this tenant</div>
+          </div>
+          <div class="stat">
+            <div class="label">Active</div>
+            <div class="val">{{ total_active }}</div>
+            <div class="meta">{% if webhooks.len() > total_active %}{{ webhooks.len() - total_active }} paused{% else %}all on{% endif %}</div>
+          </div>
+          <div class="stat">
+            <div class="label">With failure</div>
+            <div class="val" style="{% if total_with_failure > 0 %}color:var(--danger);{% endif %}">{{ total_with_failure }}</div>
+            <div class="meta">{% if total_with_failure > 0 %}<span class="down">needs attention</span>{% else %}<span class="up">all clear</span>{% endif %}</div>
+          </div>
+        </div>
+        {% endif %}
+
+        {% if webhooks.is_empty() %}
         <div class="card">
-          <div class="card-head">
-            <span>Webhook subscriptions <span class="count">{{ webhooks.len() }}</span></span>
-            <span class="card-head-actions">HMAC-SHA256 signed</span>
-          </div>
-          {% if webhooks.is_empty() %}
           <div class="empty" style="padding:42px 24px 28px;">
             <div style="margin-bottom:14px;display:grid;place-items:center;">
               <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
@@ -107,60 +98,45 @@
             <h3>No webhooks configured</h3>
             <p>Add one below to start receiving record-CRUD notifications.</p>
           </div>
-          {% else %}
-          <table class="data">
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>collection</th>
-                <th>events</th>
-                <th>url</th>
-                <th>state</th>
-                <th>last_failure</th>
-                <th>created_at</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-            {% for r in webhooks %}
-              <tr>
-                <td><code style="font-family:var(--mono);color:var(--muted);">{{ r.id }}</code></td>
-                <td><b>{{ r.collection }}</b></td>
-                <td>
-                  <span style="display:inline-flex;gap:4px;flex-wrap:wrap;">
-                    {% for ev in r.events %}<span class="badge-mini">{{ ev }}</span>{% endfor %}
-                  </span>
-                </td>
-                <td title="{{ r.url }}"><code style="font-family:var(--mono);font-size:12px;">{{ r.url }}</code></td>
-                <td>
-                  {% if r.active %}<span class="chip ok"><span class="dot"></span>on</span>{% else %}<span class="chip mute">off</span>{% endif %}
-                </td>
-                <td>
-                  {% if let Some(at) = r.last_failure_at %}
-                  <span class="chip danger" title="{% if let Some(reason) = r.last_failure_reason %}{{ reason }}{% endif %}">{{ at }}</span>
-                  {% if let Some(reason) = r.last_failure_reason %}<div style="font:400 11px/1.4 var(--sans);color:var(--muted);margin-top:4px;max-width:32ch;">{{ reason }}</div>{% endif %}
-                  {% else %}<span style="color:var(--muted-2);">—</span>{% endif %}
-                </td>
-                <td class="muted-cell">{{ r.created_at }}</td>
-                <td>
-                  <form method="post"
-                        action="/drust/admin/tenants/{{ tenant_id }}/_webhooks/{{ r.id }}/delete"
-                        onsubmit="return confirm('Delete webhook {{ r.id }} ({{ r.collection }} → {{ r.url }})? Further record CRUD events will not be delivered.');"
-                        style="margin:0;">
-                    <button type="submit" class="btn btn-sm btn-danger">delete</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-          {% endif %}
         </div>
+        {% else %}
+        {% for r in webhooks %}
+        <div class="hk-row">
+          <div class="hk-glyph"><svg viewBox="0 0 24 24"><path d="M15 17l2 4 5-12-10 5 3 3-3 3z"/><path d="M3 11l8-3"/></svg></div>
+          <div>
+            <div class="hk-name">
+              <b>{{ r.collection }}</b>
+              {% if r.active %}<span class="pill mint"><span class="dot"></span>on</span>{% else %}<span class="pill muted">off</span>{% endif %}
+              {% if let Some(at) = r.last_failure_at %}<span class="pill danger" title="{% if let Some(reason) = r.last_failure_reason %}{{ reason }}{% endif %}"><span class="dot"></span>last fail {{ at }}</span>{% endif %}
+            </div>
+            <div class="hk-url" title="{{ r.url }}">{{ r.url }}</div>
+            <div class="hk-tags">
+              {% for ev in r.events %}<span class="pill accent">{{ ev }}</span>{% endfor %}
+              <span class="pill muted">id {{ r.id }}</span>
+            </div>
+            {% if let Some(reason) = r.last_failure_reason %}<div style="margin-top:6px;font:500 11px/1.4 var(--mono);color:var(--danger);max-width:60ch;word-break:break-word;">{{ reason }}</div>{% endif %}
+          </div>
+          <div class="hk-rate">
+            <div class="meta">{{ r.created_at }}</div>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <form method="post"
+                  action="/drust/admin/tenants/{{ tenant_id }}/_webhooks/{{ r.id }}/delete"
+                  onsubmit="return confirm('Delete webhook {{ r.id }} ({{ r.collection }} → {{ r.url }})? Further record CRUD events will not be delivered.');"
+                  style="margin:0;">
+              <button type="submit" class="btn sm danger">delete</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+        {% endif %}
 
-        <div class="card" style="margin-top:24px;">
+        <div class="card" id="new-webhook" style="margin-top:24px;">
           <div class="card-head">
-            <span>Add webhook</span>
-            <span class="card-head-actions">64-hex secret minted on save · shown once</span>
+            <div>
+              <div class="card-title">Add webhook</div>
+              <div class="card-sub">64-hex secret minted on save · shown once</div>
+            </div>
           </div>
           <div class="card-body">
             <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_webhooks"
@@ -187,7 +163,7 @@
                        placeholder="https://hooks.example.com/drust">
               </div>
               <div>
-                <button type="submit" class="btn btn-primary">save webhook</button>
+                <button type="submit" class="btn primary">save webhook</button>
               </div>
             </form>
           </div>

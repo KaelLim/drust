@@ -17,89 +17,77 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
+      <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
         <span class="sep">/</span>
         <a href="/drust/admin/backups">backups</a>
         <span class="sep">/</span>
-        <span class="here">{{ filename }}</span>
+        <span class="here">inspect</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/audit" title="audit log">audit</a>
-        <span class="sep">│</span>
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="display:inline;">
-          <button type="submit">logout ↵</button>
-        </form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
 
     <main class="main"><div class="page">
-      <div class="pagehead">
-        <div>
-          <h1>{{ filename }}</h1>
-          <div class="meta">
-            <b>{{ snapshot_size_human }}</b> · <span class="muted">{{ snapshot_ts }}</span>
-            <span style="margin:0 10px;color:var(--muted-2);">·</span>
-            <a href="/drust/admin/backups/{{ filename }}/download" download="{{ filename }}" style="color:var(--accent);text-decoration:none;">download .tar.zst</a>
-          </div>
+
+      <div class="view-head">
+        <div class="grow">
+          <div class="eyebrow">Admin · backup snapshot</div>
+          <h1 class="view-title">{{ filename }}</h1>
+          <p class="view-sub"><b>{{ snapshot_size_human }}</b> · {{ snapshot_ts }} · listing every tenant whose <code>data.sqlite</code> is inside this archive.</p>
         </div>
-        <div>
-          <a class="btn btn-ghost" href="/drust/admin/backups">← all snapshots</a>
+        <div style="display:flex;gap:8px;">
+          <a class="btn sm ghost" href="/drust/admin/backups">← all snapshots</a>
+          <a class="btn sm" href="/drust/admin/backups/{{ filename }}/download" download="{{ filename }}">download .tar.zst</a>
         </div>
       </div>
 
       {% if let Some(f) = flash %}
-      <div class="alert ok" style="margin-bottom:18px;">
-        <div class="icon">✓</div>
-        <div class="msg">
-          Restored tenant <code>{{ f.tenant_id }}</code> to:<br>
-          <code style="word-break:break-all;">{{ f.destination }}</code><br>
-          <span class="muted-cell" style="font-size:13px;">Inspect, then <code>mv</code> the <code>data.sqlite</code> back into <code>tenants/&lt;id&gt;/</code> when you're ready. The current live database is untouched.</span>
+      <div class="banner success" style="margin-bottom:18px;">
+        <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/></svg></span>
+        <div class="b-body">
+          <div class="b-title">Tenant {{ f.tenant_id }} restored</div>
+          <p>Extracted to <code>{{ f.destination }}</code>. Inspect, then <code>mv</code> the <code>data.sqlite</code> back into <code>tenants/&lt;id&gt;/</code> when you're ready. The current live database is untouched.</p>
         </div>
-        <span></span>
       </div>
       {% endif %}
 
       {% if let Some(err) = error %}
-      <div class="alert error" style="margin-bottom:18px;">
-        <div class="icon">✕</div>
-        <div class="msg" style="white-space:pre-wrap;word-break:break-word;">{{ err }}</div>
-        <span></span>
+      <div class="banner danger" style="margin-bottom:18px;">
+        <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+        <div class="b-body">
+          <div class="b-title">Restore failed</div>
+          <p style="white-space:pre-wrap;word-break:break-word;">{{ err }}</p>
+        </div>
       </div>
       {% endif %}
 
-      <div class="alert info" style="margin-bottom:18px;">
-        <div class="icon">ℹ</div>
-        <div class="msg">
-          Restore extracts the selected tenant's <code>data.sqlite</code> (and <code>meta.json</code> if present) to
-          <code>&lt;data_dir&gt;/_trash/&lt;tenant_id&gt;-restored-&lt;ts&gt;/</code>.
-          It does <b>not</b> overwrite the live tenant directory — review the file, then <code>mv</code> manually.
+      <div class="banner info" style="margin-bottom:18px;">
+        <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
+        <div class="b-body">
+          <div class="b-title">How restore works</div>
+          <p>The selected tenant's <code>data.sqlite</code> extracts to <code>_trash/&lt;id&gt;-restored-&lt;ts&gt;/</code> — the live tenant is <b>not</b> overwritten. Review, then <code>mv</code> manually.</p>
         </div>
-        <span></span>
       </div>
 
       <div class="card">
         <div class="card-head">
-          <span>tenants in snapshot <span class="count">· {{ tenants.len() }} rows</span></span>
+          <div>
+            <div class="card-title">Tenants in snapshot</div>
+            <div class="card-sub">{{ tenants.len() }} active tenants when this snapshot was taken</div>
+          </div>
         </div>
         {% if tenants.is_empty() %}
         <div class="empty" style="padding:48px 24px;">
-          <p>{% if let Some(_) = error %}meta.sqlite couldn't be parsed; see error above.{% else %}No active tenants in this snapshot.{% endif %}</p>
+          <h3>{% if let Some(_) = error %}meta.sqlite couldn't be parsed{% else %}No active tenants in this snapshot{% endif %}</h3>
+          <p>{% if let Some(_) = error %}See error above.{% else %}This archive may be empty or from before the first tenant was provisioned.{% endif %}</p>
         </div>
         {% else %}
         <table class="data">
           <thead>
             <tr>
-              <th>name</th>
+              <th>tenant</th>
               <th style="width:200px;">created</th>
-              <th class="num" style="width:130px;">db size in archive</th>
+              <th class="num" style="width:140px;">db size in archive</th>
               <th class="actions" style="width:140px;"></th>
             </tr>
           </thead>
@@ -107,8 +95,10 @@
             {% for t in tenants %}
             <tr>
               <td>
-                <span style="color:var(--text);font-weight:500;">{{ t.name }}</span>
-                <div class="mono-cell" style="font-size:12px;color:var(--muted);margin-top:2px;">{{ t.id }}</div>
+                <span class="ten-cell">
+                  <span class="ten-avatar av-{{ loop.index0 % 6 + 1 }}">{{ t.name|truncate(2) }}</span>
+                  <span class="ten-meta"><span class="ten-name">{{ t.name }}</span><span class="ten-id">{{ t.id }}</span></span>
+                </span>
               </td>
               <td class="muted-cell">{{ t.created_at }}</td>
               <td class="num">{% if t.db_present %}{{ t.db_size_human }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
@@ -116,10 +106,10 @@
                 {% if t.db_present %}
                 <form method="post" action="/drust/admin/backups/{{ filename }}/restore" class="restore-form" data-tenant-name="{{ t.name }}" data-tenant-id="{{ t.id }}" style="display:inline;">
                   <input type="hidden" name="tenant_id" value="{{ t.id }}">
-                  <button class="btn btn-sm" type="submit">restore →</button>
+                  <button class="btn sm" type="submit">restore →</button>
                 </form>
                 {% else %}
-                <span class="muted-cell" style="font-size:12px;">no db in archive</span>
+                <span class="muted-cell" style="font:500 11px/1 var(--mono);">no db in archive</span>
                 {% endif %}
               </td>
             </tr>

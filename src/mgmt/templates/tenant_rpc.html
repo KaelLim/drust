@@ -17,110 +17,111 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
+      <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <span class="here">rpc</span>
+        <span class="here">Stored RPC</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="display:inline;">
-          <button type="submit">logout ↵</button>
-        </form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
 
     <div class="shell">
       {% include "_collection_sidebar.html" %}
 
       <main class="main"><div class="page">
-        <div class="pagehead">
-          <div>
-            <h1>{{ tenant_name }} <span class="muted" style="font-family:var(--mono);font-size:22px;font-weight:400;letter-spacing:0;">/ _rpc</span></h1>
-            <div class="meta">stored functions · named SELECT queries callable from REST + MCP</div>
+
+        <div class="view-head">
+          <div class="grow">
+            <div class="eyebrow">Tenant · stored functions</div>
+            <h1 class="view-title">Stored RPC</h1>
+            <p class="view-sub">Named SELECT-only functions, callable by service tokens — and by anon if <code>anon_callable=1</code>. Open one to test in the playground.</p>
           </div>
-          <div>
-            <a class="btn btn-primary" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/new">+ new function</a>
-          </div>
+          <a class="btn primary" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/new">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            New RPC
+          </a>
         </div>
 
         {% if total_rpcs > 0 %}
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:24px;">
-          <div class="stat-tile">
-            <div class="stat-tile-label">total</div>
-            <div class="stat-tile-value">{{ total_rpcs }}</div>
+        <div class="stat-grid" style="margin-bottom:24px;">
+          <div class="stat accent-edge">
+            <div class="label">Total</div>
+            <div class="val">{{ total_rpcs }}</div>
+            <div class="meta">named functions</div>
           </div>
-          <div class="stat-tile">
-            <div class="stat-tile-label">anon-callable</div>
-            <div class="stat-tile-value">{{ total_anon_callable }}</div>
-            <div class="stat-tile-delta">REST + MCP via anon token</div>
+          <div class="stat">
+            <div class="label">Anon-callable</div>
+            <div class="val">{{ total_anon_callable }}</div>
+            <div class="meta">REST + MCP via anon token</div>
           </div>
-          <div class="stat-tile">
-            <div class="stat-tile-label">service-only</div>
-            <div class="stat-tile-value">{{ total_rpcs - total_anon_callable }}</div>
-            <div class="stat-tile-delta">service-key required</div>
+          <div class="stat">
+            <div class="label">Service-only</div>
+            <div class="val">{{ total_rpcs - total_anon_callable }}</div>
+            <div class="meta">service-key required</div>
           </div>
         </div>
         {% endif %}
 
         {% if total_rpcs == 0 %}
-        <div class="empty" style="padding:64px 24px;text-align:center;">
-          <div style="margin-bottom:18px;display:grid;place-items:center;">
-            <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
+        <div class="card">
+          <div class="empty" style="padding:64px 24px;text-align:center;">
+            <div style="margin-bottom:18px;display:grid;place-items:center;">
+              <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
+            </div>
+            <h3>No functions yet</h3>
+            <p>Stored RPCs are named <code>SELECT</code> queries that frontends and MCP clients call by name. Click <b>New RPC</b> to create one.</p>
           </div>
-          <h3>no functions yet</h3>
-          <p>Stored RPCs are named <code>SELECT</code> queries that frontends and MCP clients call by name. Click <b>+ new function</b> to create one.</p>
         </div>
         {% else %}
-        <form method="get" style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
-          <span class="muted">per page</span>
-          <select class="input" name="per_page" onchange="this.form.submit()" style="width:90px;">
+        <form method="get" class="toolbar-v2">
+          <span class="mono">per page</span>
+          <select class="input" name="per_page" onchange="this.form.submit()" style="min-width:0;width:90px;">
             {% for opt in per_page_options %}
             <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
             {% endfor %}
           </select>
-          <span class="muted" style="margin-left:auto;"><b>{{ total_rpcs }}</b> total · page <b>{{ page }}</b> / {{ total_pages }}</span>
+          <span class="right mono">{{ total_rpcs }} total · page {{ page }} / {{ total_pages }}</span>
         </form>
-        {% for r in rpcs %}
-        <div class="card" style="margin-bottom:14px;">
-          <div class="card-head">
-            <span style="display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;text-transform:none;letter-spacing:0;">
-              <code style="font:600 14px/1 var(--mono);color:var(--text);">{{ r.name }}</code>
-              {% if r.anon_callable %}<span class="badge-mini accent">anon-callable</span>{% else %}<span class="badge-mini">service-only</span>{% endif %}
-            </span>
-            <span style="font:400 12px/1.4 var(--sans);color:var(--muted);text-transform:none;letter-spacing:0;">
-              anon <b style="color:var(--text-soft);">{{ r.anon_calls }}</b> · service <b style="color:var(--text-soft);">{{ r.service_calls }}</b>
-              {% if let Some(t) = r.last_called_at %} · last <span style="font-family:var(--mono);">{{ t }}</span>{% endif %}
-            </span>
-          </div>
-          {% if let Some(d) = r.description %}<p style="padding:0 18px;margin:10px 0 0;font:400 13px/1.5 var(--sans);color:var(--muted);">{{ d }}</p>{% endif %}
-          <pre class="code" style="margin:10px 0;padding:14px 18px;border-radius:0;font-size:13px;">{{ r.sql }}</pre>
-          <div style="padding:12px 18px 14px;display:flex;gap:8px;border-top:1px solid var(--line);">
-            <a class="btn btn-sm" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/edit">edit</a>
-            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/delete" class="rpc-delete-form" data-rpc-name="{{ r.name }}" style="display:inline;">
-              <button type="submit" class="btn btn-sm btn-danger">delete</button>
-            </form>
-            <span style="flex:1;"></span>
-            <a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/test">test call →</a>
-          </div>
-        </div>
-        {% endfor %}
-        <div class="card" style="margin-top:14px;">
-          <div class="pager">
-            <div class="page-of">page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_rpcs }}</b> total</div>
-            <div class="pager-group">
-              {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
-              <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
-              {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+
+        <div class="rpc-list">
+          {% for r in rpcs %}
+          <div class="rpc-card">
+            <div class="rpc-glyph">
+              <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17 14l4 3-4 3"/></svg>
             </div>
+            <div class="rpc-info">
+              <div class="rpc-name">{{ r.name }}</div>
+              {% if let Some(d) = r.description %}<div class="rpc-desc">{{ d }}</div>{% endif %}
+              <div class="rpc-tags">
+                {% if r.anon_callable %}<span class="pill accent"><span class="dot"></span>ANON OK</span>{% else %}<span class="pill muted">service-only</span>{% endif %}
+              </div>
+              <pre class="sql-block" style="margin-top:10px;font-size:11.5px;">{{ r.sql }}</pre>
+              <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+                <a class="btn sm" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/edit">edit</a>
+                <a class="btn sm ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/test">test call →</a>
+                <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/delete" class="rpc-delete-form" data-rpc-name="{{ r.name }}" style="display:inline;margin-left:auto;">
+                  <button type="submit" class="btn sm danger">delete</button>
+                </form>
+              </div>
+            </div>
+            <div class="rpc-meta">
+              <b>{{ r.anon_calls }}</b> anon<br>
+              <b>{{ r.service_calls }}</b> service
+              {% if let Some(t) = r.last_called_at %}<br><span style="color:var(--muted-2);">last {{ t }}</span>{% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="card" style="margin-top:14px;">
+          <div class="card-foot">
+            <span class="mono">page {{ page }} of {{ total_pages }} · {{ total_rpcs }} total</span>
+            <span class="right" style="display:inline-flex;gap:6px;">
+              {% if let Some(url) = prev_url %}<a class="btn sm ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
+              {% if let Some(url) = next_url %}<a class="btn sm ghost" href="{{ url }}">next →</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+            </span>
           </div>
         </div>
         {% endif %}
@@ -137,10 +138,9 @@
       e.preventDefault();
       var name = f.getAttribute('data-rpc-name') || 'this RPC';
       var ok = await drustUI.confirm({
-        title: 'Delete RPC',
-        body: 'Delete RPC "' + name + '"? This cannot be undone.',
-        okText: 'Delete',
-        danger: true,
+        title:'Delete RPC',
+        body:'Delete RPC "' + name + '"? This cannot be undone.',
+        okText:'Delete', danger:true,
       });
       if (ok) f.submit();
     });

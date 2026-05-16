@@ -18,65 +18,65 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
-        <span class="here">tenants</span>
+      <nav class="crumbs">
+        <span class="here">Tenants</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/audit" title="audit log">audit</a>
-        <span class="sep">│</span>
-        <a class="who" href="/drust/admin/backups" title="backup snapshots">backups</a>
-        <span class="sep">│</span>
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="display:inline;">
-          <button type="submit">logout ↵</button>
-        </form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
 
     <main class="main"><div class="page">
-      <div class="pagehead">
-        <div>
-          <h1>Tenants</h1>
-          <div class="meta">
-            <b>{{ tenants.len() }}</b> tenants
-            <span style="margin:0 10px;color:var(--muted-2);">·</span>
-            <a href="/drust/admin/files" style="color:var(--muted);"><svg class="icon" aria-hidden="true" style="width:0.95em;height:0.95em;vertical-align:-2px;margin-right:4px;"><use href="#i-db"/></svg>system / public bucket →</a>
-          </div>
+
+      <div class="view-head">
+        <div class="grow">
+          <div class="eyebrow">Admin · platform</div>
+          <h1 class="view-title">All tenants</h1>
+          <p class="view-sub">Each tenant gets its own SQLite database, S3 bucket pair, OAuth registrations, anon &amp; service keys, and MCP endpoint. Click a row to enter the tenant studio.</p>
         </div>
+        <a class="btn primary" href="#create-tenant">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          New tenant
+        </a>
       </div>
 
       {% if disk.free_pct < 20.0 %}
-      <div class="disk-banner low" style="margin-bottom:14px;">
-        <span>⚠ Disk at <b>{{ disk.free_pct_display }}%</b> free — uploads paused (&lt; 20% free)</span>
+      <div class="banner danger" style="margin-bottom:16px;">
+        <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg></span>
+        <div class="b-body">
+          <div class="b-title">Disk at {{ disk.free_pct_display }}% free — uploads paused</div>
+          <p>Garage object uploads are blocked below 20% free space. Free up <code>/var/lib/garage</code> or scale the disk.</p>
+        </div>
       </div>
       {% endif %}
 
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:24px;">
-        <div class="stat-tile">
-          <div class="stat-tile-label">tenants</div>
-          <div class="stat-tile-value">{{ tenants.len() }}</div>
+      <div class="ten-grid">
+        <div class="ten-pulse">
+          <div class="head"><span>Active</span><span class="pill mint"><span class="dot"></span>{{ tenants.len() }} healthy</span></div>
+          <div class="body">{{ tenants.len() }} <span class="unit">tenants</span></div>
+          <div class="meta">multi-tenant SQLite BaaS</div>
         </div>
-        <div class="stat-tile">
-          <div class="stat-tile-label">disk used</div>
-          <div class="stat-tile-value">{{ disk.used_gb }}<span style="font:500 13px/1 var(--sans);color:var(--muted);margin-left:6px;">GB</span></div>
-          <div class="stat-tile-delta">of {{ disk.total_gb }} GB</div>
+        <div class="ten-pulse">
+          <div class="head"><span>Storage</span>{% if disk.free_pct < 20.0 %}<span class="pill danger">low</span>{% else %}<span class="pill mint">healthy</span>{% endif %}</div>
+          <div class="body">{{ disk.used_gb }} <span class="unit">GB · used</span></div>
+          <div class="meta">of {{ disk.total_gb }} GB on /var/lib/garage</div>
         </div>
-        <div class="stat-tile">
-          <div class="stat-tile-label">disk free</div>
-          <div class="stat-tile-value" style="{% if disk.free_pct < 20.0 %}color:var(--danger);{% endif %}">{{ disk.free_pct_display }}<span style="font:500 13px/1 var(--sans);color:var(--muted);margin-left:6px;">%</span></div>
-          <div class="stat-tile-delta{% if disk.free_pct < 20.0 %} bad{% else %} ok{% endif %}">{% if disk.free_pct < 20.0 %}uploads paused{% else %}healthy{% endif %}</div>
+        <div class="ten-pulse">
+          <div class="head"><span>Disk free</span></div>
+          <div class="body" style="{% if disk.free_pct < 20.0 %}color:var(--danger);{% endif %}">{{ disk.free_pct_display }} <span class="unit">%</span></div>
+          <div class="meta">{% if disk.free_pct < 20.0 %}uploads paused (&lt; 20% threshold){% else %}well above 20% threshold{% endif %}</div>
+        </div>
+        <div class="ten-pulse">
+          <div class="head"><span>Resources</span></div>
+          <div class="body">2 <span class="unit">planes</span></div>
+          <div class="meta">admin host · per-tenant studio</div>
         </div>
       </div>
 
-      <div class="card" style="margin-bottom:20px;">
+      <div class="card" id="create-tenant" style="margin-bottom:20px;">
         <div class="card-head">
-          <span>+ create tenant</span>
+          <div>
+            <div class="card-title">Create a tenant</div>
+            <div class="card-sub">Provisions data.sqlite + per-tenant S3 buckets + anon/service tokens</div>
+          </div>
         </div>
         <div class="card-body">
           <form method="post" action="/drust/admin/tenants/new" class="form-inline">
@@ -84,25 +84,17 @@
               <label>display name</label>
               <input class="input" name="name" placeholder="Event Registration" style="width:320px;" required autofocus>
             </div>
-            <button class="btn btn-primary" type="submit">Create <span class="kbd">↵</span></button>
+            <button class="btn primary" type="submit">Create <span class="kbd">↵</span></button>
           </form>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-head">
-          <span>tenants <span class="count" id="tenants-count">· {{ tenants.len() }} rows</span></span>
-          <div class="card-head-actions" style="flex:1;display:flex;justify-content:flex-end;">
-            <input
-              type="search"
-              class="input"
-              id="tenants-search"
-              placeholder="search name or id…  ( / to focus )"
-              autocomplete="off"
-              spellcheck="false"
-              style="max-width:320px;height:32px;font-size:13px;">
-          </div>
-        </div>
+      <div class="toolbar-v2">
+        <input class="input" id="tenants-search" type="search" placeholder="search name or id…  ( / to focus )" autocomplete="off" spellcheck="false">
+        <span class="right mono" id="tenants-count">{{ tenants.len() }} tenants</span>
+      </div>
+
+      <div class="card" style="overflow:hidden;">
         {% if tenants.is_empty() %}
         <div class="empty" style="padding:56px 24px 40px;">
           <div style="margin-bottom:18px;display:grid;place-items:center;">
@@ -115,31 +107,34 @@
         <table class="data">
           <thead>
             <tr>
-              <th>name</th>
+              <th>Tenant</th>
               <th style="width:180px;">created</th>
               <th class="num" style="width:100px;" title="data.sqlite file size">db</th>
               <th class="num" style="width:100px;" title="_system_files SUM(size_bytes)">files</th>
               <th class="num" style="width:100px;" title="db + files combined">total</th>
-              <th class="actions" style="width:120px;"></th>
+              <th class="actions" style="width:140px;"></th>
             </tr>
           </thead>
           <tbody id="tenants-tbody">
             {% for t in tenants %}
             <tr class="tenant-row" data-name="{{ t.name }}" data-id="{{ t.id }}">
               <td>
-                <a class="cell-link" href="/drust/admin/tenants/{{ t.id }}">{{ t.name }}</a>
-                <div class="mono-cell" style="font-size:12px;color:var(--muted);margin-top:2px;" title="{{ t.id }}">
-                  <span>#{{ t.id_short }}</span>
-                  <button type="button" class="btn btn-sm btn-ghost" style="padding:0 4px;height:auto;font-size:11px;" data-copy-id="{{ t.id }}" title="copy full id">copy id</button>
-                </div>
+                <a class="ten-cell" href="/drust/admin/tenants/{{ t.id }}" style="text-decoration:none;color:inherit;">
+                  <span class="ten-avatar av-{{ loop.index0 % 6 + 1 }}">{{ t.name|truncate(2) }}</span>
+                  <span class="ten-meta">
+                    <span class="ten-name">{{ t.name }}</span>
+                    <span class="ten-id">#{{ t.id_short }}</span>
+                  </span>
+                </a>
               </td>
               <td class="muted-cell">{{ t.created_at }}</td>
               <td class="num">{{ t.db_display }}</td>
               <td class="num"><a href="/drust/admin/tenants/{{ t.id }}/files" style="color:inherit;">{{ t.files_display }}</a></td>
               <td class="num"><b>{{ t.total_display }}</b></td>
               <td class="actions">
+                <button type="button" class="btn sm ghost" data-copy-id="{{ t.id }}" title="copy full id">copy id</button>
                 <form method="post" action="/drust/admin/tenants/{{ t.id }}/delete" class="tenant-delete-form" style="display:inline;" data-name="{{ t.name }}">
-                  <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+                  <button class="btn sm danger" type="submit">Delete</button>
                 </form>
               </td>
             </tr>
@@ -166,7 +161,7 @@
             f.addEventListener('submit', async function (e) {
               e.preventDefault();
               var name = f.getAttribute('data-name') || 'this tenant';
-              var ok = await drustUI.confirm({title: 'Delete tenant', body: 'Delete "' + name + '"? This removes its database, tokens, and any stored files.', okText: 'Delete', danger: true});
+              var ok = await drustUI.confirm({title:'Delete tenant', body:'Delete "' + name + '"? This removes its database, tokens, and any stored files.', okText:'Delete', danger:true});
               if (ok) f.submit();
             });
           });
@@ -178,52 +173,34 @@
             var countEl = document.getElementById('tenants-count');
             var totalRows = rows.length;
             if (!input || !rows.length) return;
-
             function applyFilter() {
               var q = input.value.trim().toLowerCase();
               var visible = 0;
               rows.forEach(function (tr) {
-                if (!q) {
-                  tr.hidden = false;
-                  visible++;
-                  return;
-                }
+                if (!q) { tr.hidden = false; visible++; return; }
                 var name = (tr.getAttribute('data-name') || '').toLowerCase();
                 var id = (tr.getAttribute('data-id') || '').toLowerCase();
                 var hit = name.indexOf(q) !== -1 || id.indexOf(q) !== -1;
                 tr.hidden = !hit;
                 if (hit) visible++;
               });
-              if (visible === 0 && q) {
-                emptyRow.hidden = false;
-                emptyQ.textContent = q;
-              } else {
-                emptyRow.hidden = true;
-              }
+              if (visible === 0 && q) { emptyRow.hidden = false; emptyQ.textContent = q; }
+              else { emptyRow.hidden = true; }
               if (countEl) {
                 countEl.textContent = q
-                  ? '· ' + visible + ' / ' + totalRows + ' rows'
-                  : '· ' + totalRows + ' rows';
+                  ? visible + ' / ' + totalRows + ' tenants'
+                  : totalRows + ' tenants';
               }
             }
             input.addEventListener('input', applyFilter);
             input.addEventListener('keydown', function (e) {
-              if (e.key === 'Escape') {
-                input.value = '';
-                applyFilter();
-                input.blur();
-              }
+              if (e.key === 'Escape') { input.value = ''; applyFilter(); input.blur(); }
             });
-            // `/` focuses the search box from anywhere on the page (skip when
-            // the user is already typing into another input).
             document.addEventListener('keydown', function (e) {
               if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
-              var t = e.target;
-              var tag = t && t.tagName;
+              var t = e.target; var tag = t && t.tagName;
               if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
-              e.preventDefault();
-              input.focus();
-              input.select();
+              e.preventDefault(); input.focus(); input.select();
             });
           })();
         </script>

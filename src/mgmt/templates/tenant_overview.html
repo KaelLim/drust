@@ -7,67 +7,6 @@
 <meta name="description" content="drust admin — tenant {{ tenant_name }} overview: collections, records, storage, recent activity.">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
-<style>
-  /* Page-scoped — promotes to _styles.html if a second page needs it. */
-  .ov-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 14px;
-    margin-bottom: 28px;
-  }
-  .ov-grid.secondary { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 36px; }
-  .ov-grid.secondary .stat-tile-value { font-size: 24px; }
-
-  .ov-coll-row {
-    display: grid;
-    grid-template-columns: 1fr 90px auto;
-    gap: 14px;
-    align-items: center;
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--line-2);
-    font: 500 14px/1.3 var(--sans);
-    color: var(--text-soft);
-    text-decoration: none;
-  }
-  .ov-coll-row:last-child { border-bottom: 0; }
-  .ov-coll-row:hover { background: var(--bg-2); color: var(--text); }
-  .ov-coll-row .name { font-family: var(--mono); color: var(--text); }
-  .ov-coll-row .count { font-family: var(--mono); color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
-  .ov-coll-row .caps { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
-
-  .ov-audit-row td {
-    padding: 10px var(--cell-x);
-    font: 400 13px/1.3 var(--sans);
-    border-bottom: 1px solid var(--line-2);
-    vertical-align: middle;
-  }
-  .ov-audit-row:last-child td { border-bottom: 0; }
-  .ov-audit-row td.ts { font-family: var(--mono); color: var(--muted-2); white-space: nowrap; }
-  .ov-audit-row td.op { font-family: var(--mono); color: var(--text); }
-  .ov-audit-row td.status .chip { height: 20px; padding: 0 8px; font-size: 10px; }
-  .ov-audit-row td.actor { font-family: var(--mono); color: var(--muted); }
-  .ov-audit-row td.dur { font-family: var(--mono); color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
-
-  .ov-failure-row {
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--line-2);
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 14px;
-    align-items: start;
-  }
-  .ov-failure-row:last-child { border-bottom: 0; }
-  .ov-failure-row .url { font-family: var(--mono); font-size: 13px; color: var(--text); word-break: break-all; }
-  .ov-failure-row .meta { font: 400 12px/1.4 var(--sans); color: var(--muted); margin-top: 4px; }
-  .ov-failure-row .reason { font-family: var(--mono); font-size: 12px; color: var(--danger); margin-top: 6px; word-break: break-word; }
-  .ov-failure-row .ts { font: 500 11px/1 var(--mono); color: var(--muted-2); white-space: nowrap; }
-
-  .ov-empty {
-    padding: 32px 18px; text-align: center;
-    color: var(--muted-2);
-    font: 400 13px/1.5 var(--sans);
-  }
-</style>
 </head>
 <body>
 {% include "_icons.html" %}
@@ -79,154 +18,160 @@
   </div>
   <div class="macwin-body">
     <header class="topbar">
-      <nav class="topbar-crumbs">
+      <nav class="crumbs">
         <a href="/drust/admin/tenants">tenants</a>
         <span class="sep">/</span>
         <span class="here">{{ tenant_name }}</span>
       </nav>
-      <div class="topbar-right">
-        <a class="who" href="/drust/admin/_docs/changelog" title="changelog">v{{ version }}</a>
-        <span class="sep">│</span>
-        <span style="display:inline-flex;align-items:center;gap:8px;">
-          <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="role-badge admin">admin</span>
-        </span>
-        <span class="sep">│</span>
-        <form method="post" action="/drust/logout" style="margin:0;"><button type="submit">logout</button></form>
-      </div>
+      {% include "_topbar_right.html" %}
     </header>
     <div class="shell">
       {% include "_collection_sidebar.html" %}
-      <main class="main">
-        <div class="page">
-          <div class="pagehead">
-            <div>
-              <h1>{{ tenant_name }}</h1>
-              <div class="meta"><span style="font-family:var(--mono);">{{ tenant_id }}</span> · created <b>{{ created_at }}</b></div>
-            </div>
-            <div class="actions">
-              <a class="btn btn-sm" href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">API keys →</a>
-              <a class="btn btn-sm" href="/drust/admin/tenants/{{ tenant_id }}/_logs">audit log →</a>
-            </div>
-          </div>
+      <main class="main"><div class="page">
 
-          <!-- Primary stats -->
-          <div class="ov-grid">
-            <div class="stat-tile">
-              <div class="stat-tile-label">collections</div>
-              <div class="stat-tile-value">{{ collection_count }}</div>
-            </div>
-            <div class="stat-tile">
-              <div class="stat-tile-label">records</div>
-              <div class="stat-tile-value">{{ total_records }}</div>
-            </div>
-            <div class="stat-tile">
-              <div class="stat-tile-label">storage</div>
-              <div class="stat-tile-value">{{ db_size_display }}</div>
-              <div class="stat-tile-delta">data.sqlite</div>
-            </div>
-            <div class="stat-tile">
-              <div class="stat-tile-label">end users</div>
-              <div class="stat-tile-value">{{ user_count }}</div>
-            </div>
+        <div class="view-head">
+          <div class="grow">
+            <div class="eyebrow">Tenant · home</div>
+            <h1 class="view-title">{{ tenant_name }}</h1>
+            <p class="view-sub">A snapshot of every surface this tenant has — collections, traffic, auth, storage, backups. Tenant id <code>{{ tenant_id }}</code> · created {{ created_at }}.</p>
           </div>
+          <span class="pill mint"><span class="dot"></span>healthy</span>
+        </div>
 
-          <!-- Secondary stats -->
-          <div class="ov-grid secondary">
-            <div class="stat-tile">
-              <div class="stat-tile-label">stored rpcs</div>
-              <div class="stat-tile-value">{{ rpc_count }}</div>
-            </div>
-            <div class="stat-tile">
-              <div class="stat-tile-label">webhooks</div>
-              <div class="stat-tile-value">{{ webhook_active_count }}{% if webhook_total_count > webhook_active_count %}<span style="font:500 13px/1 var(--mono); color: var(--muted); margin-left:8px;">/ {{ webhook_total_count }} total</span>{% endif %}</div>
-            </div>
-            <div class="stat-tile">
-              <div class="stat-tile-label">oauth providers</div>
-              <div class="stat-tile-value">{{ oauth_count }}</div>
-            </div>
-            <div class="stat-tile">
-              <div class="stat-tile-label">api tokens</div>
-              <div class="stat-tile-value">{{ token_count }}</div>
-              <div class="stat-tile-delta">anon + service</div>
-            </div>
+        <div class="stat-grid" style="margin-bottom:18px;">
+          <div class="stat accent-edge">
+            <div class="label">Collections</div>
+            <div class="val">{{ collection_count }} <span class="unit">tables</span></div>
+            <div class="meta">user collections in this tenant</div>
           </div>
+          <div class="stat">
+            <div class="label">Total rows</div>
+            <div class="val">{{ total_records }}</div>
+            <div class="meta">across every collection</div>
+          </div>
+          <div class="stat">
+            <div class="label">Storage</div>
+            <div class="val">{{ db_size_display }}</div>
+            <div class="meta">data.sqlite on disk</div>
+          </div>
+          <div class="stat">
+            <div class="label">End-users</div>
+            <div class="val">{{ user_count }}</div>
+            <div class="meta">_system_users rows</div>
+          </div>
+        </div>
 
-          <!-- Webhook failures (only shown if any in last 24h) -->
-          {% if webhook_failures.len() > 0 %}
-          <div class="card" style="margin-bottom: 28px; border-color: var(--danger-line);">
-            <div class="card-head" style="background: var(--danger-soft); color: var(--danger);">
-              <span>webhook failures · last 24h <span class="count" style="color: var(--danger);">{{ webhook_failures.len() }}</span></span>
-              <div class="card-head-actions"><a href="/drust/admin/tenants/{{ tenant_id }}/_webhooks">manage →</a></div>
-            </div>
-            <div>
+        <div class="stat-grid" style="margin-bottom:24px;">
+          <div class="stat">
+            <div class="label">Stored RPCs</div>
+            <div class="val">{{ rpc_count }}</div>
+            <div class="meta">named SELECT functions</div>
+          </div>
+          <div class="stat">
+            <div class="label">Webhooks</div>
+            <div class="val">{{ webhook_active_count }}{% if webhook_total_count > webhook_active_count %} <span class="unit">/ {{ webhook_total_count }} total</span>{% endif %}</div>
+            <div class="meta">active subscriptions</div>
+          </div>
+          <div class="stat">
+            <div class="label">OAuth providers</div>
+            <div class="val">{{ oauth_count }}</div>
+            <div class="meta">per-tenant Google · GitHub</div>
+          </div>
+          <div class="stat">
+            <div class="label">API tokens</div>
+            <div class="val">{{ token_count }}</div>
+            <div class="meta">anon + service</div>
+          </div>
+        </div>
+
+        {% if webhook_failures.len() > 0 %}
+        <div class="banner danger" style="margin-bottom:18px;">
+          <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
+          <div class="b-body">
+            <div class="b-title">Webhook failures · last 24h ({{ webhook_failures.len() }})</div>
+            <p>One or more outbound webhook subscriptions failed recently. Check the URL, secret, and target response.</p>
+            <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
               {% for f in webhook_failures %}
-              <div class="ov-failure-row">
-                <div>
-                  <div class="url">{{ f.url }}</div>
-                  <div class="meta"><b>{{ f.collection }}</b> · events: {{ f.events }}</div>
-                  <div class="reason">{{ f.last_failure_reason }}</div>
+              <div style="background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:500 11.5px/1.4 var(--mono);color:var(--text-soft);">
+                <div style="display:flex;justify-content:space-between;gap:14px;align-items:start;">
+                  <div style="word-break:break-all;color:var(--text);">{{ f.url }}</div>
+                  <div style="white-space:nowrap;color:var(--muted-2);font-size:10.5px;">{{ f.last_failure_at }}</div>
                 </div>
-                <div class="ts">{{ f.last_failure_at }}</div>
+                <div style="margin-top:4px;color:var(--muted);font:400 12px/1.4 var(--sans);"><b style="color:var(--text-soft);">{{ f.collection }}</b> · {{ f.events }}</div>
+                <div style="margin-top:6px;color:var(--danger);word-break:break-word;">{{ f.last_failure_reason }}</div>
               </div>
               {% endfor %}
             </div>
+            <div class="b-actions"><a class="btn sm" href="/drust/admin/tenants/{{ tenant_id }}/_webhooks">Manage webhooks →</a></div>
           </div>
-          {% endif %}
+        </div>
+        {% endif %}
 
+        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:14px;">
           <!-- Collections card -->
-          <div class="card" style="margin-bottom: 28px;">
+          <div class="card">
             <div class="card-head">
-              <span>collections <span class="count">{{ collection_count }}</span></span>
+              <div>
+                <div class="card-title">Collections</div>
+                <div class="card-sub">{{ collection_count }} tables · click to open the editor</div>
+              </div>
               <div class="card-head-actions"><a href="/drust/admin/tenants/{{ tenant_id }}/collections">view all →</a></div>
             </div>
             {% if collections.len() > 0 %}
-            <div>
+            <div style="padding:0;">
               {% for c in collections %}
-              <a class="ov-coll-row" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}">
-                <span class="name">{{ c.name }}</span>
+              <a class="nav-collection" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}"
+                 style="border-bottom:1px solid var(--line-2);padding:11px 18px;border-radius:0;">
+                <span class="dot"></span>
+                <span>{{ c.name }}</span>
                 <span class="count">{{ c.row_count }} rows</span>
-                <span style="color: var(--muted-2); font-size: 13px;">→</span>
               </a>
               {% endfor %}
             </div>
             {% else %}
-            <div class="ov-empty">No user collections yet. Use the MCP <code style="font-family:var(--mono);color:var(--accent);">create_collection</code> tool or the REST API to add one.</div>
+            <div class="card-body">
+              <div class="empty" style="padding:32px 12px;">
+                <h3>No user collections yet</h3>
+                <p>Use the MCP <code>create_collection</code> tool or the REST API to add one.</p>
+              </div>
+            </div>
             {% endif %}
           </div>
 
           <!-- Recent activity card -->
           <div class="card">
             <div class="card-head">
-              <span>recent activity · last 24h <span class="count">{{ recent_audit.len() }}</span></span>
+              <div>
+                <div class="card-title">Recent activity</div>
+                <div class="card-sub">last 24h · scoped to this tenant</div>
+              </div>
               <div class="card-head-actions"><a href="/drust/admin/tenants/{{ tenant_id }}/_logs">view all →</a></div>
             </div>
             {% if recent_audit.len() > 0 %}
-            <table style="width:100%; border-collapse: collapse;">
-              <tbody>
+            <div class="card-body" style="padding:6px 18px;">
+              <div class="tl">
                 {% for e in recent_audit %}
-                <tr class="ov-audit-row">
-                  <td class="ts">{{ e.ts }}</td>
-                  <td class="op">{{ e.op }}</td>
-                  <td class="status">
-                    {% if e.status == "ok" %}
-                    <span class="chip ok"><span class="dot"></span>ok</span>
-                    {% else %}
-                    <span class="chip danger">{% if e.error_code.len() > 0 %}{{ e.error_code }}{% else %}{{ e.status }}{% endif %}</span>
-                    {% endif %}
-                  </td>
-                  <td class="actor">{{ e.actor }}</td>
-                  <td class="dur">{{ e.duration_ms }}ms</td>
-                </tr>
+                <div class="tl-row">
+                  <div class="tl-time">{{ e.ts }}</div>
+                  <div class="tl-glyph{% if e.status == "ok" %} ok{% else %} fail{% endif %}">{% if e.status == "ok" %}✓{% else %}✕{% endif %}</div>
+                  <div class="tl-body"><b>{{ e.actor }}</b> · <code>{{ e.op }}</code>{% if e.status != "ok" %} <span style="color:var(--danger);">· {% if e.error_code.len() > 0 %}{{ e.error_code }}{% else %}{{ e.status }}{% endif %}</span>{% endif %}</div>
+                  <div class="tl-meta">{{ e.duration_ms }}ms</div>
+                </div>
                 {% endfor %}
-              </tbody>
-            </table>
+              </div>
+            </div>
             {% else %}
-            <div class="ov-empty">No requests in the last 24h.</div>
+            <div class="card-body">
+              <div class="empty" style="padding:32px 12px;">
+                <h3>No requests in the last 24h</h3>
+                <p>This tenant is idle — no REST or MCP traffic.</p>
+              </div>
+            </div>
             {% endif %}
           </div>
         </div>
-      </main>
+
+      </div></main>
     </div>
   </div>
 </div>

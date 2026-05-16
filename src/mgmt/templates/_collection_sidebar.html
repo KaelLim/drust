@@ -1,104 +1,111 @@
-<!-- _collection_sidebar.html — tenant sidebar (v1.14 redesign).
+<!-- _collection_sidebar.html — tenant sidebar (2026-05-17 mockup overhaul).
      Parent scope must provide:
        tenant_id: String
        tenant_name: String
-       collections: Vec<Collection>
-       active_coll: String
+       collections: Vec<Collection>     // { name, row_count }
+       active_coll: String              // virtual id (_overview, _api_keys, …) or coll name
        version: &'static str
-     `active_coll` accepts collection names plus the virtual entries
-     `_overview`, `_api_keys`, `_rpc`, `_system_files`, `_system_users`,
-     `_oauth_providers`, `_webhooks`, and `_logs`. -->
+
+     Virtual entries: _overview, _api_keys, _rpc, _system_files,
+                      _system_users, _oauth_providers, _webhooks, _logs.
+-->
 <aside class="tenant-sidebar">
-  <div class="tenant-sidebar-head">
-    <div class="tenant-sidebar-brand">
-      <canvas class="pix" data-chonk="happy" data-size="32"></canvas>
-      <div style="min-width:0;">
-        <div class="name" title="{{ tenant_name }}">{{ tenant_name }}</div>
-        <div class="id" title="{{ tenant_id }}">{{ tenant_id }}</div>
-      </div>
+  <div class="brand">
+    <div class="brand-mark">
+      <canvas class="pix" data-chonk="happy" data-size="22"></canvas>
     </div>
-    <div class="plane-pill tenant">plane · tenant</div>
+    <div class="brand-text">
+      <div class="brand-name">drust</div>
+      <div class="brand-meta">tenant studio</div>
+    </div>
+    <div class="brand-ver">v{{ version }}</div>
   </div>
-  <div class="tenant-sidebar-list">
-    <div class="tenant-sidebar-section">
-      <div class="tenant-sidebar-section-head">system</div>
-      <a class="tenant-nav-item{% if active_coll == "_overview" %} on{% endif %}"
-         href="/drust/admin/tenants/{{ tenant_id }}/_overview"
-         title="_overview (tenant summary · stats · recent activity)">
-        <span class="nav-icon">⌂</span>
-        <span>_overview</span>
-        <span></span>
-      </a>
-      <a class="tenant-nav-item{% if active_coll == "_api_keys" %} on{% endif %}"
-         href="/drust/admin/tenants/{{ tenant_id }}/_api_keys"
-         title="_api_keys (anon · service · MCP)">
-        <span class="nav-icon">🔑</span>
-        <span>_api_keys</span>
-        <span></span>
-      </a>
-      <a class="tenant-nav-item{% if active_coll == "_rpc" %} on{% endif %}"
-         href="/drust/admin/tenants/{{ tenant_id }}/_rpc"
-         title="_rpc (stored functions · Supabase-style)">
-        <span class="nav-icon">⚡</span>
-        <span>_rpc</span>
-        <span></span>
-      </a>
-      <a class="tenant-nav-item{% if active_coll == "_system_files" %} on{% endif %}"
-         href="/drust/admin/tenants/{{ tenant_id }}/files"
-         title="_system_files (file storage)">
-        <span class="nav-icon">🔒</span>
-        <span>_system_files</span>
-        <span></span>
-      </a>
-      <a class="tenant-nav-item{% if active_coll == "_system_users" %} on{% endif %}"
-         href="/drust/admin/tenants/{{ tenant_id }}/collections/_system_users"
-         title="_system_users (registered users)">
-        <span class="nav-icon">👤</span>
-        <span>_system_users</span>
-        <span></span>
-      </a>
-      <a class="tenant-nav-item{% if active_coll == "_oauth_providers" %} on{% endif %}"
-         href="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers"
-         title="_oauth_providers (per-tenant Google/GitHub OAuth configs)">
-        <span class="nav-icon">🔐</span>
-        <span>_oauth_providers</span>
-        <span></span>
-      </a>
-      <a class="tenant-nav-item{% if active_coll == "_webhooks" %} on{% endif %}"
-         href="/drust/admin/tenants/{{ tenant_id }}/_webhooks"
-         title="_webhooks (outbound webhook subscriptions)">
-        <span class="nav-icon">🔔</span>
-        <span>_webhooks</span>
-        <span></span>
-      </a>
-      <a class="tenant-nav-item{% if active_coll == "_logs" %} on{% endif %}"
-         href="/drust/admin/tenants/{{ tenant_id }}/_logs"
-         title="_logs (audit · request history)">
-        <span class="nav-icon">📋</span>
-        <span>_logs</span>
-        <span></span>
-      </a>
+
+  <a class="back-strip" href="/drust/admin/tenants">
+    <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+    Back to all tenants
+  </a>
+
+  <button type="button" class="plane-pill tenant clickable" onclick="if(window.drustCmdK)drustCmdK.open();" title="switch tenant (⌘K)">
+    <span class="dot"></span>
+    <div class="body">
+      <div class="label">plane · tenant</div>
+      <div class="name" title="{{ tenant_name }}">{{ tenant_name }}</div>
+      <div class="id" title="{{ tenant_id }}">{{ tenant_id }}</div>
     </div>
+    <span class="chev"><svg viewBox="0 0 24 24"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg></span>
+  </button>
+
+  <nav class="nav">
+    <div class="nav-section"><span>Home</span></div>
+    <a class="nav-item{% if active_coll == "_overview" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_overview" title="overview · stats · recent activity">
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg></span>
+      Overview
+    </a>
+
+    <div class="nav-section"><span>Connect</span></div>
+    <a class="nav-item{% if active_coll == "_api_keys" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_api_keys" title="anon · service · MCP keys">
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l3 3"/></svg></span>
+      API keys
+    </a>
+    <a class="nav-item{% if active_coll == "_rpc" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_rpc" title="stored functions">
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17 14l4 3-4 3"/></svg></span>
+      Stored RPC
+    </a>
+
+    <div class="nav-section"><span>Backend</span></div>
+    <a class="nav-item{% if active_coll == "_system_files" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/files" title="file storage (S3)">
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 7l2-2h5l2 2h9v12H3z"/></svg></span>
+      Files
+    </a>
+    <a class="nav-item{% if active_coll == "_system_users" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/collections/_system_users" title="registered end-users">
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 19c0-3.5 3.2-6 7-6s7 2.5 7 6"/></svg></span>
+      End-users
+    </a>
+    <a class="nav-item{% if active_coll == "_oauth_providers" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers" title="per-tenant Google/GitHub OAuth">
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6z"/></svg></span>
+      OAuth providers
+    </a>
+    <a class="nav-item{% if active_coll == "_webhooks" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_webhooks" title="outbound webhook subscriptions">
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M15 17l2 4 5-12-10 5 3 3-3 3z"/><path d="M3 11l8-3"/></svg></span>
+      Webhooks
+    </a>
+    <a class="nav-item{% if active_coll == "_logs" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_logs" title="audit · request history">
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h6"/></svg></span>
+      Logs
+    </a>
+
     {% if collections.len() > 0 %}
-    <div class="tenant-sidebar-section">
-      <div class="tenant-sidebar-section-head">
-        collections
-        <span style="margin-left:6px;color:var(--muted-2);font-weight:400;text-transform:none;letter-spacing:0;">{{ collections.len() }}</span>
-      </div>
-      {% for c in collections %}
-      <a class="tenant-nav-item{% if c.name == active_coll %} on{% endif %}"
-         href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}"
-         title="{{ c.name }} · {{ c.row_count }} rows">
-        <span class="nav-icon">▸</span>
-        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ c.name }}</span>
-        <span class="nav-tag">{{ c.row_count }}</span>
-      </a>
-      {% endfor %}
+    <div class="nav-section">
+      <span>Collections</span>
+      <span class="count">{{ collections.len() }}</span>
     </div>
+    {% for c in collections %}
+    <a class="nav-collection{% if c.name == active_coll %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}"
+       title="{{ c.name }} · {{ c.row_count }} rows">
+      <span class="dot"></span>
+      <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ c.name }}</span>
+      <span class="count">{{ c.row_count }}</span>
+    </a>
+    {% endfor %}
     {% endif %}
-  </div>
-  <div class="tenant-sidebar-foot">
-    <span>v{{ version }}</span>
-    <span class="role-badge admin">admin</span>
+  </nav>
+
+  <div class="sidebar-foot">
+    <div class="who-av">AK</div>
+    <div class="who">
+      <div class="who-name">admin</div>
+      <div class="who-mail">scope: this tenant</div>
+    </div>
+    <span class="status-pulse" title="tenant healthy"></span>
   </div>
 </aside>

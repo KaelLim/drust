@@ -1,25 +1,32 @@
-<!-- _cmdk.html — global cmd-K palette (v1.14).
+<!-- _cmdk.html — global cmd-K palette (2026-05-17 mockup).
      Include near end of body on every admin page. ⌘K / Ctrl+K toggles
      the overlay; ESC closes; ↑/↓ navigate; ↵ activates the highlighted
-     item. CSS lives in _styles.html (.cmdk-overlay, .cmdk, .cmdk-*).
+     item. CSS in _styles.html (.cmdk-overlay, .cmdk, .cmdk-*).
 
      Tenant list is fetched lazily on first open from
      /drust/admin/api/cmdk/tenants and cached for the rest of the
-     session. Static actions are inlined below. -->
-<div class="cmdk-overlay" id="cmdk-overlay" hidden onclick="if(event.target===this)window.cmdkHide()">
+     session. Static actions are inlined below.
+
+     Exposes: window.drustCmdK = { open(), close() }. -->
+<div class="cmdk-overlay" id="cmdk-overlay" hidden onclick="if(event.target===this)drustCmdK.close()">
   <div class="cmdk">
-    <input class="cmdk-input" id="cmdk-input" placeholder="Find tenant or command…" autocomplete="off">
+    <input class="cmdk-input" id="cmdk-input" placeholder="Jump to tenant, command…" autocomplete="off">
     <div class="cmdk-list" id="cmdk-list"></div>
+    <div style="padding:8px 16px;border-top:1px solid var(--line);font:500 10.5px/1 var(--mono);color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;display:flex;gap:14px;align-items:center;">
+      <span><span class="kbd" style="height:18px;min-width:0;padding:0 5px;font-size:10.5px;">↑↓</span> navigate</span>
+      <span><span class="kbd" style="height:18px;min-width:0;padding:0 5px;font-size:10.5px;">↵</span> open</span>
+      <span style="margin-left:auto;">⌘K from anywhere</span>
+    </div>
   </div>
 </div>
 <script>
 (function() {
   var STATIC_ACTIONS = [
-    { icon: '🏠', label: 'all tenants',     href: '/drust/admin/tenants' },
-    { icon: '📋', label: 'host audit log',  href: '/drust/admin/audit' },
-    { icon: '💾', label: 'backups',         href: '/drust/admin/backups' },
-    { icon: '📁', label: 'host files',      href: '/drust/admin/files' },
-    { icon: '📖', label: 'changelog',       href: '/drust/admin/_docs/changelog' }
+    { kind:'cmd', label:'All tenants',    href:'/drust/admin/tenants',                  icon:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/></svg>' },
+    { kind:'cmd', label:'Host audit log', href:'/drust/admin/audit',                    icon:'<svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h6"/></svg>' },
+    { kind:'cmd', label:'Backups',        href:'/drust/admin/backups',                  icon:'<svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/></svg>' },
+    { kind:'cmd', label:'Host files',     href:'/drust/admin/files',                    icon:'<svg viewBox="0 0 24 24"><path d="M3 7l2-2h5l2 2h9v12H3z"/></svg>' },
+    { kind:'cmd', label:'Changelog',      href:'/drust/admin/_docs/changelog',          icon:'<svg viewBox="0 0 24 24"><path d="M4 4h12l4 4v12H4z"/><path d="M16 4v4h4"/></svg>' }
   ];
   var tenantCache = null;
   var allItems = STATIC_ACTIONS.slice();
@@ -27,19 +34,21 @@
   var selIx = 0;
 
   function $(id) { return document.getElementById(id); }
-  function escapeHtml(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function av(name) {
+    // map first char of slug to 1..6
+    var ix = (name.charCodeAt(0) || 0) % 6 + 1;
+    return ix;
   }
 
   function fetchTenants() {
     if (tenantCache) return Promise.resolve(tenantCache);
-    return fetch('/drust/admin/api/cmdk/tenants', { credentials: 'same-origin' })
+    return fetch('/drust/admin/api/cmdk/tenants', { credentials:'same-origin' })
       .then(function(r) { return r.ok ? r.json() : []; })
       .then(function(arr) {
         tenantCache = arr.map(function(t) {
-          return { icon: '🏠', label: 'tenant: ' + t.name,
-                   href: '/drust/admin/tenants/' + t.id + '/_overview' };
+          return { kind:'tenant', name:t.name, id:t.id, av:av(t.name),
+                   href:'/drust/admin/tenants/' + t.id + '/_overview' };
         });
         return tenantCache;
       })
@@ -47,9 +56,11 @@
   }
 
   function applyFilter() {
-    var q = ($('cmdk-input').value || '').toLowerCase();
+    var q = ($('cmdk-input').value || '').toLowerCase().trim();
     filtered = allItems.filter(function(it) {
-      return !q || it.label.toLowerCase().indexOf(q) >= 0;
+      if (!q) return true;
+      var hay = (it.label || it.name || '') + ' ' + (it.id || '');
+      return hay.toLowerCase().indexOf(q) >= 0;
     });
     selIx = 0;
     render();
@@ -58,29 +69,38 @@
   function render() {
     var list = $('cmdk-list');
     if (filtered.length === 0) {
-      list.innerHTML = '<div style="padding:18px;color:var(--muted-2);font:400 14px/1 var(--sans);">no matches</div>';
+      list.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center;font:400 13px/1 var(--sans);">no matches</div>';
       return;
     }
     var html = '';
     filtered.forEach(function(it, ix) {
       var on = ix === selIx ? ' on' : '';
-      html += '<a class="cmdk-item' + on + '" href="' + it.href + '" data-ix="' + ix + '">'
-        + '<span class="cmdk-icon">' + it.icon + '</span>'
-        + '<span class="cmdk-label">' + escapeHtml(it.label) + '</span>'
-        + '<span class="cmdk-hint">↵</span></a>';
+      if (it.kind === 'tenant') {
+        var initials = (it.name || 'TN').slice(0, 2).toUpperCase();
+        html += '<a class="cmdk-item' + on + '" href="' + it.href + '" data-ix="' + ix + '">'
+          + '<span class="ten-avatar av-' + it.av + '" style="width:24px;height:24px;border-radius:7px;font-size:9.5px;">' + esc(initials) + '</span>'
+          + '<span class="cmdk-label" style="display:flex;flex-direction:column;gap:1px;min-width:0;">'
+            + '<span style="font:500 13px/1.2 var(--sans);color:var(--text);">' + esc(it.name) + '</span>'
+            + '<span style="font:500 10.5px/1 var(--mono);color:var(--muted);letter-spacing:0.04em;">' + esc(it.id) + '</span>'
+          + '</span>'
+          + '<span class="cmdk-hint">↵</span></a>';
+      } else {
+        html += '<a class="cmdk-item' + on + '" href="' + it.href + '" data-ix="' + ix + '">'
+          + '<span class="cmdk-icon" style="display:grid;place-items:center;color:var(--accent);">' + it.icon + '</span>'
+          + '<span class="cmdk-label" style="font:500 13px/1 var(--sans);color:var(--text-soft);">' + esc(it.label) + '</span>'
+          + '<span class="cmdk-hint">↵</span></a>';
+      }
     });
     list.innerHTML = html;
     Array.from(list.querySelectorAll('.cmdk-item')).forEach(function(el) {
       el.addEventListener('mouseenter', function() {
         selIx = parseInt(el.dataset.ix, 10);
-        Array.from(list.querySelectorAll('.cmdk-item')).forEach(function(x, i) {
-          x.classList.toggle('on', i === selIx);
-        });
+        Array.from(list.querySelectorAll('.cmdk-item')).forEach(function(x, i) { x.classList.toggle('on', i === selIx); });
       });
     });
   }
 
-  function show() {
+  function open() {
     $('cmdk-overlay').hidden = false;
     setTimeout(function() { $('cmdk-input').focus(); }, 20);
     fetchTenants().then(function(tenants) {
@@ -88,21 +108,23 @@
       applyFilter();
     });
   }
-  function hide() {
+  function close() {
     $('cmdk-overlay').hidden = true;
     $('cmdk-input').value = '';
   }
-  window.cmdkHide = hide;
+
+  window.drustCmdK = { open: open, close: close };
+  window.cmdkHide = close;   // legacy alias
 
   document.addEventListener('keydown', function(e) {
-    var open = !$('cmdk-overlay').hidden;
+    var isOpen = !$('cmdk-overlay').hidden;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
-      open ? hide() : show();
+      isOpen ? close() : open();
       return;
     }
-    if (!open) return;
-    if (e.key === 'Escape') { e.preventDefault(); hide(); return; }
+    if (!isOpen) return;
+    if (e.key === 'Escape') { e.preventDefault(); close(); return; }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       selIx = Math.min(selIx + 1, Math.max(0, filtered.length - 1));
