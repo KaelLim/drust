@@ -48,10 +48,10 @@
       <main class="main"><div class="page page-wide">
         <div class="pagehead">
           <div>
-            <h1>test {{ existing_name }}</h1>
-            <div class="meta">
-              {% if anon_callable %}<span class="chip ok"><i class="dot"></i>anon-callable</span>{% else %}<span class="chip" style="opacity:.55;">service-only</span>{% endif %}
-              {% if let Some(d) = description %} · <span>{{ d }}</span>{% endif %}
+            <h1>{{ existing_name }} <span class="muted" style="font-family:var(--mono);font-size:22px;font-weight:400;letter-spacing:0;">/ test</span></h1>
+            <div class="meta" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              {% if anon_callable %}<span class="badge-mini accent">anon-callable</span>{% else %}<span class="badge-mini">service-only</span>{% endif %}
+              {% if let Some(d) = description %}<span style="color:var(--muted-2);">·</span><span>{{ d }}</span>{% endif %}
             </div>
           </div>
           <div>
