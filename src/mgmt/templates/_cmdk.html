@@ -1,0 +1,122 @@
+<!-- _cmdk.html — global cmd-K palette (v1.14).
+     Include near end of body on every admin page. ⌘K / Ctrl+K toggles
+     the overlay; ESC closes; ↑/↓ navigate; ↵ activates the highlighted
+     item. CSS lives in _styles.html (.cmdk-overlay, .cmdk, .cmdk-*).
+
+     Tenant list is fetched lazily on first open from
+     /drust/admin/api/cmdk/tenants and cached for the rest of the
+     session. Static actions are inlined below. -->
+<div class="cmdk-overlay" id="cmdk-overlay" hidden onclick="if(event.target===this)window.cmdkHide()">
+  <div class="cmdk">
+    <input class="cmdk-input" id="cmdk-input" placeholder="Find tenant or command…" autocomplete="off">
+    <div class="cmdk-list" id="cmdk-list"></div>
+  </div>
+</div>
+<script>
+(function() {
+  var STATIC_ACTIONS = [
+    { icon: '🏠', label: 'all tenants',     href: '/drust/admin/tenants' },
+    { icon: '📋', label: 'host audit log',  href: '/drust/admin/audit' },
+    { icon: '💾', label: 'backups',         href: '/drust/admin/backups' },
+    { icon: '📁', label: 'host files',      href: '/drust/admin/files' },
+    { icon: '📖', label: 'changelog',       href: '/drust/admin/_docs/changelog' }
+  ];
+  var tenantCache = null;
+  var allItems = STATIC_ACTIONS.slice();
+  var filtered = allItems.slice();
+  var selIx = 0;
+
+  function $(id) { return document.getElementById(id); }
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function fetchTenants() {
+    if (tenantCache) return Promise.resolve(tenantCache);
+    return fetch('/drust/admin/api/cmdk/tenants', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : []; })
+      .then(function(arr) {
+        tenantCache = arr.map(function(t) {
+          return { icon: '🏠', label: 'tenant: ' + t.name,
+                   href: '/drust/admin/tenants/' + t.id + '/_overview' };
+        });
+        return tenantCache;
+      })
+      .catch(function() { return []; });
+  }
+
+  function applyFilter() {
+    var q = ($('cmdk-input').value || '').toLowerCase();
+    filtered = allItems.filter(function(it) {
+      return !q || it.label.toLowerCase().indexOf(q) >= 0;
+    });
+    selIx = 0;
+    render();
+  }
+
+  function render() {
+    var list = $('cmdk-list');
+    if (filtered.length === 0) {
+      list.innerHTML = '<div style="padding:18px;color:var(--muted-2);font:400 14px/1 var(--sans);">no matches</div>';
+      return;
+    }
+    var html = '';
+    filtered.forEach(function(it, ix) {
+      var on = ix === selIx ? ' on' : '';
+      html += '<a class="cmdk-item' + on + '" href="' + it.href + '" data-ix="' + ix + '">'
+        + '<span class="cmdk-icon">' + it.icon + '</span>'
+        + '<span class="cmdk-label">' + escapeHtml(it.label) + '</span>'
+        + '<span class="cmdk-hint">↵</span></a>';
+    });
+    list.innerHTML = html;
+    Array.from(list.querySelectorAll('.cmdk-item')).forEach(function(el) {
+      el.addEventListener('mouseenter', function() {
+        selIx = parseInt(el.dataset.ix, 10);
+        Array.from(list.querySelectorAll('.cmdk-item')).forEach(function(x, i) {
+          x.classList.toggle('on', i === selIx);
+        });
+      });
+    });
+  }
+
+  function show() {
+    $('cmdk-overlay').hidden = false;
+    setTimeout(function() { $('cmdk-input').focus(); }, 20);
+    fetchTenants().then(function(tenants) {
+      allItems = STATIC_ACTIONS.concat(tenants);
+      applyFilter();
+    });
+  }
+  function hide() {
+    $('cmdk-overlay').hidden = true;
+    $('cmdk-input').value = '';
+  }
+  window.cmdkHide = hide;
+
+  document.addEventListener('keydown', function(e) {
+    var open = !$('cmdk-overlay').hidden;
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      open ? hide() : show();
+      return;
+    }
+    if (!open) return;
+    if (e.key === 'Escape') { e.preventDefault(); hide(); return; }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selIx = Math.min(selIx + 1, Math.max(0, filtered.length - 1));
+      render();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selIx = Math.max(selIx - 1, 0);
+      render();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filtered[selIx]) { window.location.href = filtered[selIx].href; }
+    }
+  });
+
+  $('cmdk-input').addEventListener('input', applyFilter);
+})();
+</script>

@@ -28,7 +28,7 @@
         <span class="sep">│</span>
         <span style="display:inline-flex;align-items:center;gap:8px;">
           <canvas class="pix" data-chonk="awake" data-size="18"></canvas>
-          <span class="who"><b>admin</b></span>
+          <span class="role-badge admin">admin</span>
         </span>
         <span class="sep">│</span>
         <form method="post" action="/drust/logout" style="display:inline;">
@@ -75,6 +75,7 @@
   </div>
 </div>
 {% include "_mascot.html" %}
+{% include "_cmdk.html" %}
 {% include "_modal.html" %}
 <script>
   // Confirm "allow anon callers" toggle (matches the drustUI pattern used in tenant_rpc.html).
