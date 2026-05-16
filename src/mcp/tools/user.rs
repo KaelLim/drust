@@ -40,7 +40,7 @@ pub async fn create_user(
         if e.to_string().contains("UNIQUE") {
             anyhow::anyhow!("EMAIL_EXISTS: email already in use")
         } else {
-            anyhow::anyhow!("INSERT_FAILED: {e}")
+            anyhow::anyhow!("DB_ERROR: {e}")
         }
     })?;
 

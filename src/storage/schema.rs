@@ -606,9 +606,9 @@ mod meta_io_tests {
 /// anon_caps. Missing schema (cache miss + DB error) yields `false` — fail
 /// closed.
 ///
-/// Note: anon-on-owner-scoped (ANON_FORBIDDEN_OWNER_SCOPED for writes,
-/// ANON_FORBIDDEN_OWNER_SCOPED_READ for reads under read_scope=own) is
-/// enforced at the handler level *before* this gate.
+/// Note: anon-on-owner-scoped (ANON_FORBIDDEN_OWNER_SCOPED for both
+/// reads under read_scope=own and writes) is enforced at the handler
+/// level *before* this gate.
 pub fn has_dml_cap(
     role: crate::tenant::router::TokenRole,
     verb: DmlVerb,

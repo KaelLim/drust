@@ -332,7 +332,7 @@ impl DrustMcpService {
 
     #[tool(description = "Return the full schema for one collection: all fields \
         (name, sql_type, nullable, pk, default, foreign_key), all indices, and row count. \
-        Returns {\"error_code\": \"UNKNOWN_COLLECTION\"} if the collection does not exist.")]
+        Returns {\"error_code\": \"COLLECTION_NOT_FOUND\"} if the collection does not exist.")]
     async fn describe_collection(
         &self,
         Parameters(DescribeCollectionArgs { collection }): Parameters<DescribeCollectionArgs>,
@@ -1095,7 +1095,7 @@ impl DrustMcpService {
         `url` must be https:// or http:// with a loopback host (127.0.0.1/localhost/::1). \
         Returns {id, secret, collection, events, url, active, created_at}. \
         The raw 64-hex `secret` is returned **once**; subsequent reads redact it to '●●●●'. \
-        Errors: INVALID_URL, INVALID_EVENTS, INSERT_FAILED.")]
+        Errors: INVALID_URL, INVALID_EVENTS, DB_ERROR.")]
     async fn create_webhook(
         &self,
         Parameters(CreateWebhookArgs { collection, events, url }): Parameters<CreateWebhookArgs>,

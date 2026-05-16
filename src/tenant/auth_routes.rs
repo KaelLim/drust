@@ -142,7 +142,7 @@ pub async fn register_handler(
             state.audit.append(entry);
             json_error(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already registered")
         }
-        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }
 
@@ -276,7 +276,7 @@ pub async fn login_handler(
         .await
     {
         Ok(t) => t,
-        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "SESSION_INSERT", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     };
     let exp = chrono::Utc::now() + chrono::Duration::days(30);
     let mut entry =
@@ -493,7 +493,7 @@ pub async fn me_patch_handler(
         .await
         .is_err()
     {
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "UPDATE_FAILED", "");
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", "");
     }
     match fetch_me_row(&pool, &user_id).await {
         Ok((id, email, verified, profile, ca, ua)) => {
@@ -604,7 +604,7 @@ pub async fn me_password_handler(
         .await
     {
         Ok(t) => t,
-        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "TX_FAILED", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     };
     let exp = chrono::Utc::now() + chrono::Duration::days(30);
     (

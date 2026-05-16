@@ -42,7 +42,7 @@ pub async fn set_owner_field(
         )
     })
     .await
-    .map_err(|e| anyhow::anyhow!("WRITE_FAILED: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("DB_ERROR: {e}"))?;
     pool.schema_cache.invalidate(&collection);
 
     Ok(json!({"owner_field": field, "read_scope": read_scope}))
@@ -60,7 +60,7 @@ pub async fn clear_owner_field(
         crate::storage::schema::set_owner_field(c, &coll_for_clear, None, None)
     })
     .await
-    .map_err(|e| anyhow::anyhow!("WRITE_FAILED: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("DB_ERROR: {e}"))?;
     pool.schema_cache.invalidate(&collection);
     Ok(json!({"cleared": true}))
 }

@@ -63,7 +63,7 @@ pub async fn list_oauth_providers_handler(
         .await
     {
         Ok(v) => v,
-        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     };
     let resp: Vec<OauthProviderListItem> = rows
         .into_iter()
@@ -161,7 +161,7 @@ pub async fn put_oauth_provider_handler(
                 })));
             resp
         }
-        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }
 
@@ -196,6 +196,6 @@ pub async fn delete_oauth_provider_handler(
             "NOT_FOUND",
             "provider not configured",
         ),
-        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }

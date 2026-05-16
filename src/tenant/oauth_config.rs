@@ -37,8 +37,8 @@ pub enum OauthConfigError {
 impl OauthConfigError {
     /// Stable machine-readable code for REST + MCP responses. Lets clients
     /// branch on the specific failure mode without parsing `.to_string()`.
-    /// `Db` keeps the umbrella `"DB"` (still 500) because it isn't a
-    /// validation outcome callers can correct on retry.
+    /// `Db` maps to the umbrella `"DB_ERROR"` (still 500) because it isn't
+    /// a validation outcome callers can correct on retry.
     pub fn error_code(&self) -> &'static str {
         match self {
             Self::InvalidProvider => "INVALID_PROVIDER",
@@ -46,7 +46,7 @@ impl OauthConfigError {
             Self::InvalidClientSecret => "INVALID_CLIENT_SECRET",
             Self::EmptyRedirectUris => "EMPTY_REDIRECT_URIS",
             Self::InvalidRedirectUri(_) => "INVALID_REDIRECT_URI",
-            Self::Db(_) => "DB",
+            Self::Db(_) => "DB_ERROR",
         }
     }
 }
@@ -281,9 +281,9 @@ mod tests {
             OauthConfigError::InvalidRedirectUri("http://bad".into()).error_code(),
             "INVALID_REDIRECT_URI"
         );
-        // Db is the umbrella for the 500-class — error_code is `DB`.
+        // Db is the umbrella for the 500-class — error_code is `DB_ERROR`.
         let db_err =
             OauthConfigError::Db(rusqlite::Error::InvalidParameterName("x".into()));
-        assert_eq!(db_err.error_code(), "DB");
+        assert_eq!(db_err.error_code(), "DB_ERROR");
     }
 }

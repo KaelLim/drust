@@ -444,7 +444,7 @@ async fn anon_blocked_from_owner_scoped_read_when_scope_own() {
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     let bytes = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
     assert!(
-        String::from_utf8_lossy(&bytes).contains("ANON_FORBIDDEN_OWNER_SCOPED_READ"),
+        String::from_utf8_lossy(&bytes).contains("ANON_FORBIDDEN_OWNER_SCOPED"),
         "wrong error code: {}",
         String::from_utf8_lossy(&bytes)
     );
