@@ -1,9 +1,12 @@
 use crate::auth::session::validate_session;
-use axum::extract::State;
+use crate::error::json_error;
+use axum::extract::{FromRequestParts, Path, State};
+use axum::http::request::Parts;
 use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -99,6 +102,64 @@ pub fn clear_session_cookie() -> String {
 impl IntoResponse for AdminId {
     fn into_response(self) -> Response {
         Response::new(axum::body::Body::from(self.0.to_string()))
+    }
+}
+
+/// Path-extracted tenant id, gated by a service-role bearer check.
+///
+/// Use as a handler parameter when the route shape is
+/// `/t/{tenant}/admin/...` AND the handler is service-key-only.
+/// Combines the two-line preamble (service-role check + path
+/// extraction) into one extractor.
+///
+/// Rejection responses:
+/// - 500 AUTH_CTX_MISSING — bearer_auth_layer ordering bug; should
+///   never fire in production (the layer is mounted before any handler).
+/// - 403 SERVICE_ONLY — bearer token is anon or user, not service.
+/// - 400 BAD_REQUEST — `{tenant}` path parameter missing.
+pub struct ServiceTid(pub String);
+
+impl<S: Send + Sync> FromRequestParts<S> for ServiceTid {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        // 1. AuthCtx must already be in extensions (bearer_auth_layer runs
+        //    before every handler). If absent, that's an internal bug.
+        let ctx = parts.extensions.get::<AuthCtx>().ok_or_else(|| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "AUTH_CTX_MISSING",
+                "AuthCtx not populated; bearer_auth_layer order bug",
+            )
+        })?;
+
+        // 2. Service role only.
+        if !matches!(ctx, AuthCtx::Service) {
+            return Err(json_error(
+                StatusCode::FORBIDDEN,
+                "SERVICE_ONLY",
+                "service token required",
+            ));
+        }
+
+        // 3. Extract `tenant` from path params via the inner Path extractor.
+        let Path(params): Path<HashMap<String, String>> =
+            Path::from_request_parts(parts, state).await.map_err(|_| {
+                json_error(
+                    StatusCode::BAD_REQUEST,
+                    "BAD_REQUEST",
+                    "missing or malformed path params",
+                )
+            })?;
+        let tid = params.get("tenant").cloned().ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "BAD_REQUEST",
+                "missing tenant in path",
+            )
+        })?;
+
+        Ok(ServiceTid(tid))
     }
 }
 

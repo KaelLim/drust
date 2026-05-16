@@ -16,35 +16,17 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::{Extension, Json};
+use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 
-use crate::auth::middleware::AuthCtx;
+use crate::auth::middleware::ServiceTid;
 use crate::error::json_error;
 use crate::tenant::oauth_config::{self, OauthConfigError};
 use crate::tenant::router::TenantAuthState;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
-
-fn require_service_ctx(ctx: &AuthCtx) -> Option<Response> {
-    if !matches!(ctx, AuthCtx::Service) {
-        return Some(json_error(
-            StatusCode::FORBIDDEN,
-            "SERVICE_ONLY",
-            "service token required",
-        ));
-    }
-    None
-}
-
-fn get_tid(params: &HashMap<String, String>) -> Result<String, Response> {
-    params
-        .get("tenant")
-        .cloned()
-        .ok_or_else(|| json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
-}
 
 fn get_provider(params: &HashMap<String, String>) -> Result<String, Response> {
     params
@@ -70,16 +52,8 @@ pub struct OauthProviderListItem {
 
 pub async fn list_oauth_providers_handler(
     State(state): State<TenantAuthState>,
-    Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
+    ServiceTid(tid): ServiceTid,
 ) -> Response {
-    if let Some(r) = require_service_ctx(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
@@ -123,17 +97,10 @@ fn oauth_err_status(e: &OauthConfigError) -> StatusCode {
 
 pub async fn put_oauth_provider_handler(
     State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
     Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
     Json(body): Json<UpsertBody>,
 ) -> Response {
-    if let Some(r) = require_service_ctx(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let provider = match get_provider(&params) {
         Ok(p) => p,
         Err(r) => return r,
@@ -200,16 +167,9 @@ pub async fn put_oauth_provider_handler(
 
 pub async fn delete_oauth_provider_handler(
     State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
     Path(params): Path<HashMap<String, String>>,
-    Extension(ctx): Extension<AuthCtx>,
 ) -> Response {
-    if let Some(r) = require_service_ctx(&ctx) {
-        return r;
-    }
-    let tid = match get_tid(&params) {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
     let provider = match get_provider(&params) {
         Ok(p) => p,
         Err(r) => return r,
