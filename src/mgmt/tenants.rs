@@ -1037,10 +1037,13 @@ fn parse_secret_once_cookie(headers: &axum::http::HeaderMap) -> Option<WebhookSe
 /// Build a `Set-Cookie` header value that clears the secret-once cookie
 /// (Max-Age=0). Path matches the create handler's set so the browser drops
 /// the right cookie.
-fn clear_secret_once_cookie() -> String {
-    format!(
-        "{WEBHOOK_SECRET_ONCE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
-    )
+fn clear_secret_once_cookie() -> axum::http::HeaderValue {
+    // Body is static at compile time (only `const &str` interpolated), so we
+    // can hand back a `HeaderValue::from_static` and skip the runtime parse.
+    axum::http::HeaderValue::from_static(concat!(
+        "drust_webhook_secret_once",
+        "=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+    ))
 }
 
 /// Build a `Set-Cookie` header value for a fresh secret-once banner. Short
@@ -1056,18 +1059,26 @@ fn set_secret_once_cookie(id: i64, secret: &str) -> String {
     )
 }
 
+/// Context bundle for `render_webhooks_page`. Defaults are all `None` /
+/// empty so the GET path can spell out only what it has (typically just
+/// `secret_once`), and the POST error paths construct the full set.
+#[derive(Default)]
+struct WebhookPageContext {
+    error: Option<String>,
+    form_collection: String,
+    form_events: String,
+    form_url: String,
+    secret_once: Option<WebhookSecretBanner>,
+}
+
 /// Internal page render. Reused by GET, by the upsert error path, and
 /// indirectly by the redirect target (which goes through GET on the next
 /// request — not a direct call here).
 async fn render_webhooks_page(
     state: &TenantsState,
     tenant_id: String,
-    error: Option<String>,
-    form_collection: String,
-    form_events: String,
-    form_url: String,
-    secret_once: Option<WebhookSecretBanner>,
-    extra_header: Option<(axum::http::HeaderName, String)>,
+    ctx: WebhookPageContext,
+    extra_header: Option<(axum::http::HeaderName, axum::http::HeaderValue)>,
 ) -> Response {
     let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
         Ok(t) => t,
@@ -1081,19 +1092,17 @@ async fn render_webhooks_page(
         webhooks,
         collections,
         active_coll: "_webhooks".to_string(),
-        error,
-        form_collection,
-        form_events,
-        form_url,
-        secret_once,
+        error: ctx.error,
+        form_collection: ctx.form_collection,
+        form_events: ctx.form_events,
+        form_url: ctx.form_url,
+        secret_once: ctx.secret_once,
     }
     .render()
     .unwrap();
     let mut resp = Html(body).into_response();
-    if let Some((name, value)) = extra_header
-        && let Ok(v) = value.parse()
-    {
-        resp.headers_mut().append(name, v);
+    if let Some((name, value)) = extra_header {
+        resp.headers_mut().append(name, value);
     }
     resp
 }
@@ -1113,11 +1122,10 @@ pub async fn tenant_webhooks_page(
     render_webhooks_page(
         &state,
         tenant_id,
-        None,
-        String::new(),
-        String::new(),
-        String::new(),
-        secret_once,
+        WebhookPageContext {
+            secret_once,
+            ..Default::default()
+        },
         clear,
     )
     .await
@@ -1150,11 +1158,13 @@ pub async fn tenant_webhook_create_form(
         return render_webhooks_page(
             &state,
             tenant_id,
-            Some(msg.to_string()),
-            form.collection,
-            form.events,
-            form.url,
-            None,
+            WebhookPageContext {
+                error: Some(msg.to_string()),
+                form_collection: form.collection,
+                form_events: form.events,
+                form_url: form.url,
+                secret_once: None,
+            },
             None,
         )
         .await;
@@ -1163,11 +1173,13 @@ pub async fn tenant_webhook_create_form(
         return render_webhooks_page(
             &state,
             tenant_id,
-            Some(msg.to_string()),
-            form.collection,
-            form.events,
-            form.url,
-            None,
+            WebhookPageContext {
+                error: Some(msg.to_string()),
+                form_collection: form.collection,
+                form_events: form.events,
+                form_url: form.url,
+                secret_once: None,
+            },
             None,
         )
         .await;
@@ -1177,11 +1189,13 @@ pub async fn tenant_webhook_create_form(
         return render_webhooks_page(
             &state,
             tenant_id,
-            Some("collection must not be empty".to_string()),
-            form.collection,
-            form.events,
-            form.url,
-            None,
+            WebhookPageContext {
+                error: Some("collection must not be empty".to_string()),
+                form_collection: form.collection,
+                form_events: form.events,
+                form_url: form.url,
+                secret_once: None,
+            },
             None,
         )
         .await;
@@ -1199,11 +1213,13 @@ pub async fn tenant_webhook_create_form(
             return render_webhooks_page(
                 &state,
                 tenant_id,
-                Some("failed to encode events".to_string()),
-                form.collection,
-                form.events,
-                form.url,
-                None,
+                WebhookPageContext {
+                    error: Some("failed to encode events".to_string()),
+                    form_collection: form.collection,
+                    form_events: form.events,
+                    form_url: form.url,
+                    secret_once: None,
+                },
                 None,
             )
             .await;
@@ -1254,11 +1270,13 @@ pub async fn tenant_webhook_create_form(
             render_webhooks_page(
                 &state,
                 tenant_id,
-                Some(format!("insert failed: {e}")),
-                form.collection,
-                form.events,
-                form.url,
-                None,
+                WebhookPageContext {
+                    error: Some(format!("insert failed: {e}")),
+                    form_collection: form.collection,
+                    form_events: form.events,
+                    form_url: form.url,
+                    secret_once: None,
+                },
                 None,
             )
             .await
