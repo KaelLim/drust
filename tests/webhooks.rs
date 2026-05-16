@@ -253,3 +253,177 @@ async fn deliver_records_failure_on_4xx_via_production_path() {
         "reason should mention '4xx', got: {reason}"
     );
 }
+
+// ── REST CRUD tests for /admin/webhooks/* (Task 6) ─────────────────────────
+
+async fn create_webhook(
+    app: &axum::Router,
+    tid: &str,
+    svc: &str,
+    body: serde_json::Value,
+) -> (u16, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/admin/webhooks"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, v)
+}
+
+#[tokio::test]
+async fn rest_create_returns_secret_once_and_lists_with_redacted_secret() {
+    let tid = "t-rest1";
+    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    let body = serde_json::json!({
+        "collection": "notes",
+        "events": ["created"],
+        "url": "https://hooks.example.com/x",
+    });
+    let (status, v) = create_webhook(&app, tid, &svc, body).await;
+    assert_eq!(status, 201, "expected 201 Created, got {status}: {v}");
+    let secret = v["secret"].as_str().expect("secret must be present");
+    assert!(
+        secret.len() >= 64,
+        "secret should be at least 64 chars, got {} chars",
+        secret.len()
+    );
+    let id = v["id"].as_i64().expect("id present");
+    assert!(id > 0, "id should be positive");
+
+    // GET list — secret should be redacted
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/t/{tid}/admin/webhooks"))
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let items = v["webhooks"].as_array().expect("webhooks array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["secret"].as_str(), Some("●●●●"));
+}
+
+#[tokio::test]
+async fn rest_create_rejects_http_url() {
+    let tid = "t-rest2";
+    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    let body = serde_json::json!({
+        "collection": "notes",
+        "events": ["created"],
+        "url": "http://attacker.example",
+    });
+    let (status, v) = create_webhook(&app, tid, &svc, body).await;
+    assert_eq!(status, 422, "expected 422, got {status}: {v}");
+    assert_eq!(v["error_code"].as_str(), Some("INVALID_URL"));
+}
+
+#[tokio::test]
+async fn rest_create_allows_http_localhost_for_dev() {
+    let tid = "t-rest3";
+    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    let body = serde_json::json!({
+        "collection": "notes",
+        "events": ["created"],
+        "url": "http://127.0.0.1:1234/h",
+    });
+    let (status, v) = create_webhook(&app, tid, &svc, body).await;
+    assert_eq!(status, 201, "expected 201, got {status}: {v}");
+}
+
+#[tokio::test]
+async fn rest_patch_can_toggle_active_and_update_events_but_not_secret() {
+    let tid = "t-rest4";
+    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    let (status, v) = create_webhook(
+        &app,
+        tid,
+        &svc,
+        serde_json::json!({
+            "collection": "notes",
+            "events": ["created"],
+            "url": "https://hooks.example.com/y",
+        }),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let id = v["id"].as_i64().unwrap();
+
+    // Valid PATCH: toggle active off + update events
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/t/{tid}/admin/webhooks/{id}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::from(
+                    serde_json::json!({"active": false, "events": ["updated"]}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["active"].as_bool(), Some(false));
+    let events = v["events"].as_array().expect("events array");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].as_str(), Some("updated"));
+
+    // Invalid PATCH: secret rejected
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/t/{tid}/admin/webhooks/{id}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::from(
+                    serde_json::json!({"secret": "hacked"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 422);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error_code"].as_str(), Some("INVALID_PATCH"));
+}
+
+#[tokio::test]
+async fn rest_anon_token_rejected_with_403_service_only() {
+    let tid = "t-rest5";
+    let (app, anon, _dir) = spin_up_tenant_with_role(tid, "anon").await;
+    let body = serde_json::json!({
+        "collection": "notes",
+        "events": ["created"],
+        "url": "https://hooks.example.com/z",
+    });
+    let (status, v) = create_webhook(&app, tid, &anon, body).await;
+    assert_eq!(status, 403, "expected 403, got {status}: {v}");
+    assert_eq!(v["error_code"].as_str(), Some("SERVICE_ONLY"));
+}

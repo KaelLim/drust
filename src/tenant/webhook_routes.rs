@@ -1,0 +1,456 @@
+//! Service-only admin endpoints for managing this tenant's outbound webhook
+//! subscriptions (the `_system_webhooks` table).
+//!
+//! Routes (all service-key-only):
+//!   POST   /t/{tenant}/admin/webhooks         — create (returns secret once)
+//!   GET    /t/{tenant}/admin/webhooks         — list (secrets redacted)
+//!   GET    /t/{tenant}/admin/webhooks/{id}    — one (secret redacted)
+//!   PATCH  /t/{tenant}/admin/webhooks/{id}    — update active/events/url
+//!   DELETE /t/{tenant}/admin/webhooks/{id}    — remove
+//!
+//! Auth: service-only. `bearer_auth_layer` attaches `AuthCtx` as a request
+//! extension; we gate on `AuthCtx::Service` here (mirrors `admin_user_routes`
+//! and `oauth_admin_routes`). Secrets are returned **once** in the 201
+//! response body of POST; every subsequent read redacts them to `●●●●`.
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::HashMap;
+
+use crate::auth::middleware::AuthCtx;
+use crate::tenant::router::TenantAuthState;
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+fn err(s: StatusCode, code: &str, msg: &str) -> Response {
+    (s, Json(json!({"error_code": code, "message": msg}))).into_response()
+}
+
+fn require_service(ctx: &AuthCtx) -> Option<Response> {
+    if !matches!(ctx, AuthCtx::Service) {
+        return Some(err(
+            StatusCode::FORBIDDEN,
+            "SERVICE_ONLY",
+            "service token required",
+        ));
+    }
+    None
+}
+
+fn get_tid(params: &HashMap<String, String>) -> Result<String, Response> {
+    params
+        .get("tenant")
+        .cloned()
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"))
+}
+
+fn get_id(params: &HashMap<String, String>) -> Result<i64, Response> {
+    let raw = params
+        .get("id")
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing id"))?;
+    raw.parse::<i64>()
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "BAD_REQUEST", "id must be integer"))
+}
+
+/// Validate the subscriber URL. Allow:
+///   - any `https://…`
+///   - `http://` ONLY when host is loopback (`127.0.0.1`, `localhost`, `::1`).
+/// Anything else → 422 INVALID_URL.
+fn validate_url(raw: &str) -> Result<(), Response> {
+    let parsed = match reqwest::Url::parse(raw) {
+        Ok(u) => u,
+        Err(_) => {
+            return Err(err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INVALID_URL",
+                "url failed to parse",
+            ));
+        }
+    };
+    let scheme = parsed.scheme();
+    if scheme == "https" {
+        return Ok(());
+    }
+    if scheme == "http" {
+        let host = parsed.host_str().unwrap_or("");
+        if matches!(host, "127.0.0.1" | "localhost" | "::1") {
+            return Ok(());
+        }
+    }
+    Err(err(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "INVALID_URL",
+        "url must be https://, or http:// with loopback host",
+    ))
+}
+
+/// Validate the event-name array — non-empty, each ∈ {created, updated, deleted}.
+fn validate_events(events: &[String]) -> Result<(), Response> {
+    if events.is_empty() {
+        return Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_EVENTS",
+            "events array must be non-empty",
+        ));
+    }
+    for ev in events {
+        if !matches!(ev.as_str(), "created" | "updated" | "deleted") {
+            return Err(err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INVALID_EVENTS",
+                "events must be subset of {created,updated,deleted}",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Generate a 64-char hex-encoded random secret (32 bytes from `OsRng` via
+/// `rand::thread_rng`, matching the bearer-token pattern in `auth/bearer.rs`).
+fn generate_secret() -> String {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let mut out = String::with_capacity(bytes.len() * 2);
+    const HEX: &[u8] = b"0123456789abcdef";
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+// ─── request / response shapes ───────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct CreateBody {
+    pub collection: String,
+    pub events: Vec<String>,
+    pub url: String,
+}
+
+/// PATCH body — `secret` is intentionally absent. If the client sends a
+/// `secret` field, serde stashes it in `extra`; the handler then rejects with
+/// 422 INVALID_PATCH so secrets cannot be rotated through the REST surface.
+/// All present fields are applied; absent ones are untouched.
+#[derive(Deserialize)]
+pub struct PatchBody {
+    #[serde(default)]
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub events: Option<Vec<String>>,
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Any field not in the allow-list lands here — used to reject `secret`
+    /// (and any other unexpected key) with INVALID_PATCH.
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct WebhookOut {
+    pub id: i64,
+    pub collection: String,
+    pub events: Vec<String>,
+    pub url: String,
+    /// Always `"●●●●"` on read paths; only the POST 201 response returns the
+    /// raw secret (in a separate `CreateOut` shape — see `create_handler`).
+    pub secret: &'static str,
+    pub active: bool,
+    pub last_failure_at: Option<String>,
+    pub last_failure_reason: Option<String>,
+    pub created_at: String,
+}
+
+// ─── handlers ────────────────────────────────────────────────────────────────
+
+pub async fn create_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Json(body): Json<CreateBody>,
+) -> Response {
+    if let Some(r) = require_service(&ctx) {
+        return r;
+    }
+    let tid = match get_tid(&params) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    if let Err(r) = validate_url(&body.url) {
+        return r;
+    }
+    if let Err(r) = validate_events(&body.events) {
+        return r;
+    }
+    let pool = match state.registry.get_or_open(&tid) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let collection = body.collection.clone();
+    let events_json = match serde_json::to_string(&body.events) {
+        Ok(s) => s,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "ENCODE_FAILED", ""),
+    };
+    let url = body.url.clone();
+    let secret = generate_secret();
+    let secret_for_db = secret.clone();
+    let now = chrono::Utc::now().to_rfc3339();
+    let now2 = now.clone();
+    let res: rusqlite::Result<i64> = pool
+        .with_writer(move |c| {
+            c.execute(
+                "INSERT INTO _system_webhooks \
+                 (collection, events, url, secret, active, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+                rusqlite::params![collection, events_json, url, secret_for_db, now2],
+            )?;
+            Ok(c.last_insert_rowid())
+        })
+        .await;
+    match res {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "id": id,
+                "collection": body.collection,
+                "events": body.events,
+                "url": body.url,
+                "secret": secret,
+                "active": true,
+                "created_at": now,
+            })),
+        )
+            .into_response(),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "INSERT_FAILED", ""),
+    }
+}
+
+pub async fn list_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+) -> Response {
+    if let Some(r) = require_service(&ctx) {
+        return r;
+    }
+    let tid = match get_tid(&params) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let pool = match state.registry.get_or_open(&tid) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let rows: Vec<WebhookOut> = pool
+        .with_reader(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, collection, events, url, active, \
+                        last_failure_at, last_failure_reason, created_at \
+                 FROM _system_webhooks \
+                 ORDER BY id DESC",
+            )?;
+            let rows: Vec<WebhookOut> = stmt
+                .query_map([], |r| {
+                    let events_raw: String = r.get(2)?;
+                    let events: Vec<String> =
+                        serde_json::from_str(&events_raw).unwrap_or_default();
+                    Ok(WebhookOut {
+                        id: r.get(0)?,
+                        collection: r.get(1)?,
+                        events,
+                        url: r.get(3)?,
+                        secret: "●●●●",
+                        active: r.get::<_, i64>(4)? != 0,
+                        last_failure_at: r.get::<_, Option<String>>(5)?,
+                        last_failure_reason: r.get::<_, Option<String>>(6)?,
+                        created_at: r.get(7)?,
+                    })
+                })?
+                .collect::<Result<_, _>>()?;
+            Ok::<_, rusqlite::Error>(rows)
+        })
+        .await
+        .unwrap_or_default();
+    (StatusCode::OK, Json(json!({"webhooks": rows}))).into_response()
+}
+
+pub async fn get_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+) -> Response {
+    if let Some(r) = require_service(&ctx) {
+        return r;
+    }
+    let tid = match get_tid(&params) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let id = match get_id(&params) {
+        Ok(i) => i,
+        Err(r) => return r,
+    };
+    let pool = match state.registry.get_or_open(&tid) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    fetch_webhook_row(pool, id).await
+}
+
+async fn fetch_webhook_row(pool: crate::storage::pool::SharedTenantPool, id: i64) -> Response {
+    let row = pool
+        .with_reader(move |c| {
+            c.query_row(
+                "SELECT id, collection, events, url, active, \
+                        last_failure_at, last_failure_reason, created_at \
+                 FROM _system_webhooks WHERE id = ?1",
+                rusqlite::params![id],
+                |r| {
+                    let events_raw: String = r.get(2)?;
+                    let events: Vec<String> =
+                        serde_json::from_str(&events_raw).unwrap_or_default();
+                    Ok(WebhookOut {
+                        id: r.get(0)?,
+                        collection: r.get(1)?,
+                        events,
+                        url: r.get(3)?,
+                        secret: "●●●●",
+                        active: r.get::<_, i64>(4)? != 0,
+                        last_failure_at: r.get::<_, Option<String>>(5)?,
+                        last_failure_reason: r.get::<_, Option<String>>(6)?,
+                        created_at: r.get(7)?,
+                    })
+                },
+            )
+        })
+        .await;
+    match row {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(_) => err(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
+    }
+}
+
+pub async fn patch_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Json(body): Json<PatchBody>,
+) -> Response {
+    if let Some(r) = require_service(&ctx) {
+        return r;
+    }
+    // Reject any field not in {active, events, url} — most notably `secret`.
+    if !body.extra.is_empty() {
+        let keys: Vec<&String> = body.extra.keys().collect();
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_PATCH",
+            &format!("unsupported field(s): {:?}", keys),
+        );
+    }
+    let tid = match get_tid(&params) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let id = match get_id(&params) {
+        Ok(i) => i,
+        Err(r) => return r,
+    };
+    if let Some(ref u) = body.url {
+        if let Err(r) = validate_url(u) {
+            return r;
+        }
+    }
+    if let Some(ref evs) = body.events {
+        if let Err(r) = validate_events(evs) {
+            return r;
+        }
+    }
+    let pool = match state.registry.get_or_open(&tid) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let new_active = body.active.map(|b| if b { 1i64 } else { 0i64 });
+    let new_events_json = match body.events.as_ref().map(serde_json::to_string).transpose() {
+        Ok(v) => v,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "ENCODE_FAILED", ""),
+    };
+    let new_url = body.url.clone();
+    let res = pool
+        .with_writer(move |c| -> rusqlite::Result<usize> {
+            let tx = c.transaction()?;
+            if let Some(v) = new_active {
+                tx.execute(
+                    "UPDATE _system_webhooks SET active = ?1 WHERE id = ?2",
+                    rusqlite::params![v, id],
+                )?;
+            }
+            if let Some(ref e) = new_events_json {
+                tx.execute(
+                    "UPDATE _system_webhooks SET events = ?1 WHERE id = ?2",
+                    rusqlite::params![e, id],
+                )?;
+            }
+            if let Some(ref u) = new_url {
+                tx.execute(
+                    "UPDATE _system_webhooks SET url = ?1 WHERE id = ?2",
+                    rusqlite::params![u, id],
+                )?;
+            }
+            // Check the row exists — partial UPDATEs above silently no-op on
+            // a missing id, so consult the row count explicitly.
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM _system_webhooks WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )?;
+            tx.commit()?;
+            Ok(count as usize)
+        })
+        .await;
+    match res {
+        Ok(0) => err(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
+        Ok(_) => fetch_webhook_row(pool, id).await,
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+    }
+}
+
+pub async fn delete_handler(
+    State(state): State<TenantAuthState>,
+    Path(params): Path<HashMap<String, String>>,
+    Extension(ctx): Extension<AuthCtx>,
+) -> Response {
+    if let Some(r) = require_service(&ctx) {
+        return r;
+    }
+    let tid = match get_tid(&params) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let id = match get_id(&params) {
+        Ok(i) => i,
+        Err(r) => return r,
+    };
+    let pool = match state.registry.get_or_open(&tid) {
+        Ok(p) => p,
+        Err(_) => return err(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let res = pool
+        .with_writer(move |c| {
+            c.execute(
+                "DELETE FROM _system_webhooks WHERE id = ?1",
+                rusqlite::params![id],
+            )
+        })
+        .await;
+    match res {
+        Ok(0) => err(StatusCode::NOT_FOUND, "NOT_FOUND", "webhook not found"),
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "DB", ""),
+    }
+}
