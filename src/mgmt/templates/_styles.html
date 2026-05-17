@@ -880,4 +880,38 @@
 
   /* inline <form> (e.g. delete button) inside actions cell or anywhere flex */
   .delete-form{display:inline-flex;margin:0}
+
+  /* ---------------- stored RPC (tenant_rpc.html) ---------------- */
+  .rpc-list{display:flex;flex-direction:column;gap:12px}
+  .rpc-card{
+    background:var(--surface);border:1px solid var(--border-mid);
+    border-radius:var(--r-lg);padding:16px 18px;
+    display:flex;align-items:flex-start;gap:14px;
+    transition:border-color .12s,background .12s;
+  }
+  .rpc-card:hover{border-color:var(--border-strong)}
+  .rpc-card.open{border-color:var(--accent-border);background:var(--surface-2)}
+  .rpc-glyph{
+    width:34px;height:34px;border-radius:10px;
+    background:var(--bg-deep);border:1px solid var(--border-mid);
+    display:grid;place-items:center;color:var(--accent);flex-shrink:0;
+  }
+  .rpc-glyph svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8}
+  .rpc-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:0}
+  .rpc-name{font-family:var(--font-mono);font-size:13.5px;color:var(--fg);letter-spacing:0.2px;font-weight:500}
+  .rpc-desc{font-size:12.5px;color:var(--muted);margin-top:4px;line-height:1.5}
+  .rpc-tags{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  .rpc-meta{
+    font-family:var(--font-mono);font-size:10.5px;color:var(--muted);
+    text-align:right;flex-shrink:0;line-height:1.6;
+    padding-left:12px;border-left:1px solid var(--border);
+  }
+  .rpc-meta b{color:var(--fg-2);font-weight:500}
+  .rpc-delete-form{display:inline-flex;margin:0}
+
+  /* "+ New function" entry / empty-state in rpc list */
+  .rpc-list .empty{padding:36px 18px}
+
+  /* test playground (tenant_rpc_test.html) — runs through standard
+     .field / .input / .textarea / .card already; nothing extra needed. */
 </style>
