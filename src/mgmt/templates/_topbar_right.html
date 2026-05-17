@@ -1,32 +1,10 @@
-<!-- _topbar_right.html — constant right-side cluster of the topbar.
-     Parent scope must provide:
-       version: &'static str
-     Renders: role badge → ⌘K search trigger → notifications/changelog →
-              version badge → bouncing chonk → logout. -->
+<!-- _topbar_right.html — minimal right cluster: role badge + mascot only.
+     Earlier ⌘K trigger / audit / changelog / logout icon buttons were
+     removed (keyboard shortcut + sidebar links + … cover those affordances). -->
 <div class="topbar-right">
   <span class="role-badge admin" title="signed in as host admin — visible across all tenants">admin</span>
-
-  <button type="button" class="top-search" onclick="if(window.drustCmdK)drustCmdK.open();" title="jump (⌘K)">
-    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg>
-    <input id="top-search-input" placeholder="Jump to tenant…" readonly>
-    <span class="kbd">⌘K</span>
-  </button>
-
-  <a class="top-icon" href="/drust/admin/audit" title="audit log">
-    <svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>
-  </a>
-
-  <a class="top-icon" href="/drust/admin/_docs/changelog" title="changelog v{{ version }}">
-    <svg viewBox="0 0 24 24"><path d="M4 4h12l4 4v12H4z"/><path d="M16 4v4h4"/></svg>
-  </a>
 
   <span class="top-mascot bounce" title="LiveChonk on duty">
     <canvas class="pix" data-chonk="awake" data-size="22"></canvas>
   </span>
-
-  <form method="post" action="/drust/logout" style="margin:0;">
-    <button type="submit" class="top-icon" title="logout">
-      <svg viewBox="0 0 24 24"><path d="M9 5H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
-    </button>
-  </form>
 </div>

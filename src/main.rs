@@ -49,6 +49,26 @@ async fn main() -> anyhow::Result<()> {
     }
     let meta = Arc::new(Mutex::new(meta));
 
+    // v1.15.0 stats sampler — denormalizes per-tenant db_bytes + files_bytes
+    // into meta.sqlite so /admin/tenants doesn't open per-tenant SQLite
+    // on every request. Background task, default 5 min interval.
+    let stats_interval_secs: u64 = std::env::var("DRUST_STATS_SAMPLE_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    {
+        let meta_for_sampler = meta.clone();
+        let data_root_for_sampler = cfg.data_dir.clone();
+        tokio::spawn(async move {
+            drust::mgmt::stats::run_stats_sampler(
+                meta_for_sampler,
+                data_root_for_sampler,
+                stats_interval_secs,
+            )
+            .await;
+        });
+    }
+
     let tenants = Arc::new(TenantRegistry::new(
         cfg.data_dir.clone(),
         cfg.tenant_read_pool_size,
