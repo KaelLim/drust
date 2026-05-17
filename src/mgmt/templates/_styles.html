@@ -46,7 +46,10 @@
 
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);font-size:13.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
-  body{height:100vh;overflow:hidden}
+  /* body scrolls naturally; sidebar/topbar use position:sticky to stay in
+     view. Earlier overflow:hidden + .main { overflow-y:auto } trapped long
+     pages because the grid row's intrinsic min-height grew with content. */
+  body{min-height:100vh}
   a{color:inherit;text-decoration:none}
   button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
   ::selection{background:var(--accent-soft);color:var(--fg)}
@@ -58,7 +61,8 @@
   .kbd{font-family:var(--font-mono);font-size:10.5px;border:1px solid var(--border-strong);padding:1px 6px;border-radius:6px;color:var(--fg-2);background:var(--bg-deep)}
 
   /* ---------------- app shell ---------------- */
-  .app-shell{display:grid;grid-template-columns:248px minmax(0,1fr);height:100vh;overflow:hidden}
+  /* min-height so it can grow with content; let body do the scrolling. */
+  .app-shell{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}
 
   /* legacy macwin wrappers — neutralised so any stale include is a no-op */
   .macwin,.macwin-body{display:contents}
@@ -75,12 +79,22 @@
   @keyframes chonk-bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
 
   /* ---------------- sidebar (shared) ---------------- */
-  .sidebar{
+  /* Three class shapes used across templates:
+       .sidebar              (mockup base)
+       .sidebar.sidebar-admin (host admin pages, _admin_sidebar.html)
+       .tenant-sidebar       (per-tenant pages, _collection_sidebar.html)
+     All three get the same shell: flex-column, 100vh, sticky to body scroll,
+     align-self:start so the grid item doesn't stretch and kill sticky. */
+  .sidebar,.sidebar-admin,.tenant-sidebar{
     background:var(--bg-deep);
     border-right:1px solid var(--border);
     display:flex;flex-direction:column;
-    position:sticky;top:0;height:100vh;min-height:0;overflow:hidden;
+    position:sticky;top:0;height:100vh;min-height:0;
+    align-self:start;
   }
+  /* Direct children stay at intrinsic height; only .nav grows + scrolls. */
+  .sidebar > *,.sidebar-admin > *,.tenant-sidebar > *{flex-shrink:0}
+  .sidebar > .nav,.sidebar-admin > .nav,.tenant-sidebar > .nav{flex:1 1 0;min-height:0;overflow-y:auto}
   .brand{
     display:flex;align-items:center;gap:10px;
     padding:14px 16px 12px;
@@ -175,7 +189,8 @@
   @keyframes pulse{0%{transform:scale(.6);opacity:.5}100%{transform:scale(2.2);opacity:0}}
 
   /* ---------------- main + topbar ---------------- */
-  .main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg);overflow-y:auto}
+  /* no overflow; body scrolls. min-width:0 so grid can shrink below content. */
+  .main{display:flex;flex-direction:column;min-width:0;background:var(--bg)}
   .topbar{
     height:50px;
     border-bottom:1px solid var(--border);
@@ -752,4 +767,117 @@
 
   /* icon util used by SVG <use> sprite */
   .icon{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7}
+
+  /* ---------------- files page (host + per-tenant + reconcile) ---------------- */
+  /* drag-and-drop upload region */
+  .dropzone{
+    position:relative;border:1.5px dashed var(--border-mid);border-radius:var(--r-lg);
+    background:var(--bg-deep);padding:24px 18px;text-align:center;
+    transition:border-color .15s,background .15s;
+  }
+  .dropzone:hover,.dropzone.is-over{border-color:var(--accent-border);background:var(--accent-soft)}
+  .dropzone-inner{display:flex;flex-direction:column;gap:10px;align-items:center;pointer-events:none}
+  .dropzone-prompt{display:inline-flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;pointer-events:auto}
+  .dz-arrow{display:inline-grid;place-items:center;width:24px;height:24px;border:1px solid var(--border-mid);border-radius:8px;background:var(--surface);color:var(--accent);font-family:var(--font-mono);font-size:13px}
+  .dz-text{font-size:13px}
+  .dz-or{font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted-2)}
+  .filepick-btn{
+    display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 12px;
+    border:1px solid var(--border-mid);background:var(--surface);color:var(--fg);
+    border-radius:8px;font-size:12.5px;font-weight:500;cursor:pointer;
+    transition:background .12s,border-color .12s;pointer-events:auto;
+  }
+  .filepick-btn:hover{background:var(--surface-2);border-color:var(--border-strong)}
+  .filepick-input{
+    /* visually hidden but accessible */
+    position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+    clip:rect(0,0,0,0);white-space:nowrap;border:0;
+  }
+  .dropzone-name{font-family:var(--font-mono);font-size:11.5px;color:var(--fg-2);margin-top:6px;letter-spacing:0.3px;word-break:break-all}
+  .dropzone-name[data-empty="1"]{color:var(--muted-2)}
+
+  /* upload form layout below the dropzone — fields side-by-side */
+  .upload-fields{display:flex;flex-direction:row;flex-wrap:wrap;gap:20px 28px;margin-top:14px}
+  .upload-fields .field{flex:0 1 auto;min-width:0}
+  .upload-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:14px}
+  .upload-row .upload-hint{flex:1}
+  .upload-hint{font-size:11.5px;color:var(--muted)}
+  .field-label{font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.3px;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:6px}
+
+  /* pill-toggle: radio group rendered as a segmented control. The native
+     radios are visually hidden; clicking the label toggles them. */
+  .pill-toggle{
+    display:inline-flex;gap:2px;padding:4px;
+    border:1px solid var(--border-mid);background:var(--bg-deep);
+    border-radius:var(--r-md);
+  }
+  .pill-toggle input[type="radio"]{
+    position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+    clip:rect(0,0,0,0);white-space:nowrap;border:0;
+  }
+  .pill-toggle label{
+    padding:6px 14px;border-radius:8px;font-size:12.5px;
+    color:var(--muted);cursor:pointer;letter-spacing:0.2px;
+    transition:background .12s,color .12s,box-shadow .12s;
+    user-select:none;
+  }
+  .pill-toggle label:hover{color:var(--fg-2)}
+  .pill-toggle input[type="radio"]:checked + label{
+    background:var(--accent-soft);color:var(--accent);
+    box-shadow:inset 0 0 0 1px var(--accent-border);
+  }
+  .pill-toggle input[type="radio"]:focus-visible + label{
+    outline:2px solid var(--accent-border);outline-offset:1px;
+  }
+
+  /* files data table column widths + cell flavors */
+  table.data .col-name,table.data-table .col-name{width:auto}
+  table.data .col-vis,table.data-table .col-vis{width:90px}
+  table.data .col-type,table.data-table .col-type{width:140px}
+  table.data .col-size,table.data-table .col-size{width:90px;text-align:right}
+  table.data .col-time,table.data-table .col-time{width:160px}
+  table.data .col-actions,table.data-table .col-actions{width:180px;text-align:right}
+  table.data .cell-name,table.data-table .cell-name{max-width:0;overflow:hidden}
+  table.data .cell-name a,table.data-table .cell-name a{color:var(--fg);text-decoration:none}
+  table.data .cell-name a:hover,table.data-table .cell-name a:hover{color:var(--accent);text-decoration:underline}
+  table.data .cell-size,table.data-table .cell-size{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--font-mono);font-size:12px;color:var(--fg-2)}
+  table.data .cell-time,table.data-table .cell-time{font-family:var(--font-mono);font-size:11.5px;color:var(--muted);letter-spacing:0.2px}
+  table.data .cell-type,table.data-table .cell-type{max-width:0;overflow:hidden}
+  table.data .cell-type .trunc-inner,table.data-table .cell-type .trunc-inner{font-family:var(--font-mono);font-size:11.5px;color:var(--muted)}
+  table.data .cell-actions,table.data-table .cell-actions{text-align:right;white-space:nowrap}
+  table.data .cell-actions > *,table.data-table .cell-actions > *{display:inline-flex;vertical-align:middle;margin:0}
+  table.data .cell-actions > * + *,table.data-table .cell-actions > * + *{margin-left:6px}
+  table.data .cell-actions form.delete-form,table.data-table .cell-actions form.delete-form{display:inline-flex;margin:0}
+  .trunc-inner{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* visibility filter tabs (public / private / all) */
+  .vis-tabs{
+    display:inline-flex;gap:2px;padding:4px;border:1px solid var(--border-mid);
+    background:var(--surface);border-radius:var(--r-md);
+  }
+  .vis-tab{
+    padding:6px 14px;border-radius:8px;font-size:12.5px;color:var(--muted);
+    text-decoration:none;display:inline-flex;align-items:center;gap:7px;letter-spacing:0.2px;
+    transition:background .12s,color .12s;
+  }
+  .vis-tab:hover{color:var(--fg-2)}
+  .vis-tab.active,.vis-tab.on{background:var(--surface-2);color:var(--fg);box-shadow:inset 0 0 0 1px var(--border-mid)}
+  .pill-toggle{cursor:pointer}
+
+  /* horizontal scroll wrapper around the files table */
+  .pub-scroll{overflow-x:auto;border-radius:var(--r-md)}
+  .pub-files{width:100%}
+
+  /* pager (page size + page nav, used on files page) */
+  .pager-form{display:inline-flex;align-items:center;gap:8px}
+  .pager-label{font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.3px;color:var(--muted);text-transform:uppercase}
+  .pager-select{
+    height:28px;padding:0 8px;background:var(--bg-deep);border:1px solid var(--border-mid);
+    color:var(--fg);font:inherit;font-size:12px;border-radius:8px;outline:0;
+  }
+  .pager-select:focus{border-color:var(--accent-border)}
+  .page-of{font-family:var(--font-mono);font-size:11px;color:var(--muted);letter-spacing:0.3px}
+
+  /* inline <form> (e.g. delete button) inside actions cell or anywhere flex */
+  .delete-form{display:inline-flex;margin:0}
 </style>
