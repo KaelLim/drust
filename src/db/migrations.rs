@@ -110,6 +110,12 @@ pub fn run_migrations(
 
     add_column_if_missing(meta, "tenants", "allow_self_register",
         "INTEGER NOT NULL DEFAULT 0")?;
+    // v1.15.0 — denormalized dashboard stats sampled in background.
+    add_column_if_missing(meta, "tenants", "db_bytes",
+        "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(meta, "tenants", "files_bytes",
+        "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(meta, "tenants", "stats_updated_at", "TEXT")?;
     report.meta_done = true;
 
     let mut stmt = meta.prepare("SELECT id FROM tenants")?;

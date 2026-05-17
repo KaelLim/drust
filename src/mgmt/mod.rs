@@ -8,6 +8,7 @@ pub mod public_files;
 pub mod routes;
 pub mod rpc_admin;
 pub mod signed_bytes;
+pub mod stats;
 pub mod tenant_files;
 pub mod tenants;
 pub mod tokens;

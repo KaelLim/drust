@@ -116,46 +116,6 @@
           </div>
         </div>
 
-        <div class="card" style="margin-top:22px;">
-          <div class="card-head">
-            <div>
-              <div class="card-title">Claude Code · ready-to-paste</div>
-              <div class="card-sub">Adds this tenant's MCP server to your Claude Code config</div>
-            </div>
-            <span class="pill accent right">claude mcp add-json</span>
-          </div>
-          <div class="card-body">
-            {% if let Some(svc) = service %}
-              {% if let Some(_pt) = svc.plaintext %}
-              <pre class="sql-block" id="mcp-cmd-preview" data-tenant="{{ tenant_id }}"><span class="c"># add this tenant as an MCP server</span>
-loading…</pre>
-              <div class="row" style="margin-top:12px;gap:8px;">
-                <button class="btn primary" onclick="copyMcpCommand(this)">copy command</button>
-                <details style="margin-left:auto;">
-                  <summary style="font:500 12px/1 var(--sans);color:var(--muted);cursor:pointer;">remove command…</summary>
-                  <code class="key-val" id="mcp-remove-preview" style="margin-top:8px;">claude mcp remove drust-{{ tenant_id }}</code>
-                </details>
-              </div>
-              {% else %}
-              <div class="banner info">
-                <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
-                <div class="b-body">
-                  <div class="b-title">Legacy service key</div>
-                  <p>Plaintext not stored, so the one-click command can't be generated. Reroll the service key above to enable MCP setup.</p>
-                </div>
-              </div>
-              {% endif %}
-            {% else %}
-            <div class="banner info">
-              <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
-              <div class="b-body">
-                <div class="b-title">No service key yet</div>
-                <p>Generate one in the card above to enable MCP access.</p>
-              </div>
-            </div>
-            {% endif %}
-          </div>
-        </div>
       </div>
   </main>
 </div>
@@ -190,35 +150,20 @@ loading…</pre>
     var url = window.location.origin + el.textContent.trim();
     navigator.clipboard.writeText(url).then(function () { _setOk(btn); });
   }
-  function _buildMcpCommand(tenantId, maskToken) {
-    var keyEl = document.getElementById('key-service');
-    if (!keyEl) return null;
-    var token = keyEl.getAttribute('data-plain');
-    if (!token) return null;
-    var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
-    var bearer = maskToken ? token.slice(0, 16) + '••••••••••••••••' : token;
-    var serverCfg = { type:'http', url:url, headers:{ Authorization:'Bearer ' + bearer } };
-    return "claude mcp add-json drust-" + tenantId + " '" + JSON.stringify(serverCfg) + "'";
-  }
-  function initMcpCard() {
-    var preview = document.getElementById('mcp-cmd-preview');
-    if (!preview) return;
-    var tenantId = preview.getAttribute('data-tenant');
-    var masked = _buildMcpCommand(tenantId, true);
-    if (!masked) return;
-    preview.innerHTML = '<span class="c"># add this tenant as an MCP server</span>\n' + masked;
-  }
   function copyMcpCommand(btn) {
-    var preview = document.getElementById('mcp-cmd-preview');
-    if (!preview) return;
-    var tenantId = preview.getAttribute('data-tenant');
-    var cmd = _buildMcpCommand(tenantId, false);
-    if (!cmd) return;
+    var urlEl = document.getElementById('mcp-url');
+    var keyEl = document.getElementById('key-service');
+    var tenantId = urlEl && urlEl.getAttribute('data-tenant');
+    var token = keyEl && keyEl.getAttribute('data-plain');
+    if (!tenantId || !token) {
+      drustUI.alert({title:'Service key required', body:'Reroll or generate the service key above to enable the one-click MCP command.'});
+      return;
+    }
+    var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
+    var serverCfg = { type:'http', url:url, headers:{ Authorization:'Bearer ' + token } };
+    var cmd = "claude mcp add-json drust-" + tenantId + " '" + JSON.stringify(serverCfg) + "'";
     navigator.clipboard.writeText(cmd).then(function () { _setOk(btn); });
   }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initMcpCard);
-  } else { initMcpCard(); }
   function toggleSelfRegister(cb) {
     fetch('/drust/admin/tenants/{{ tenant_id }}/allow-self-register', {
       method:'POST',

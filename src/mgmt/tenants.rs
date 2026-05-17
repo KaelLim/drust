@@ -50,6 +50,12 @@ struct TenantsListPage {
     tenants: Vec<TenantRow>,
     version: &'static str,
     disk: crate::mgmt::public_files::DiskView,
+    /// Sampler refresh interval, displayed in the footer as "refresh every N min".
+    stats_interval_min: u64,
+    /// Human "N min ago" for the most recently re-sampled row in this batch
+    /// (sampler iterates ORDER BY id, so `tenants[0]` is the most recent).
+    /// Empty when no sampler tick has run yet on this boot.
+    stats_age_display: String,
 }
 
 struct TenantRow {
@@ -57,6 +63,8 @@ struct TenantRow {
     /// Short display of id (e.g. first 8 chars + "…" + last 4) for UI cells.
     id_short: String,
     name: String,
+    /// First grapheme of name, uppercased — used as the avatar glyph.
+    initial: String,
     created_at: String,
     /// Humanised data.sqlite size (e.g. "1.3 MB", "742 KB").
     db_display: String,
@@ -133,60 +141,96 @@ pub fn valid_slug(s: &str) -> bool {
 }
 
 pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
-    let conn = state.session.meta.lock().await;
-    let mut stmt = conn
-        .prepare("SELECT id, name, created_at FROM tenants WHERE deleted_at IS NULL ORDER BY id")
-        .unwrap();
-    let rows: Vec<TenantRow> = stmt
-        .query_map([], |r| {
+    // v1.15.0 — reads denormalized stats columns. Zero per-tenant SQLite
+    // opens on the request path; the background sampler keeps them fresh.
+    let mut latest_sample: Option<String> = None;
+    let rows: Vec<TenantRow> = {
+        let conn = state.session.meta.lock().await;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, created_at, db_bytes, files_bytes, stats_updated_at \
+                 FROM tenants WHERE deleted_at IS NULL ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })
         .unwrap()
         .filter_map(Result::ok)
-        .map(|(id, name, created_at)| {
-            let db_path = tenant_dir(&state.data_dir, &id).join("data.sqlite");
-            let db_bytes: u64 = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
-            // Compute files usage from the tenant's _system_files table.
-            // Gracefully degrades to 0 if the tenant predates the per-tenant
-            // files feature or the DB doesn't exist yet.
-            let files_bytes: u64 = crate::storage::tenant_db::open_read(&state.data_dir, &id)
-                .ok()
-                .and_then(|conn| {
-                    conn.query_row(
-                        "SELECT COALESCE(SUM(size_bytes), 0) FROM _system_files",
-                        [],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .ok()
-                })
-                .map(|b| b.max(0) as u64)
-                .unwrap_or(0);
+        .map(|(id, name, created_at, db_bytes, files_bytes, stats_at)| {
+            // Track the freshest sample timestamp across the batch for the
+            // footer; sampler updates each row at slightly different instants.
+            if let Some(ref s) = stats_at {
+                if latest_sample.as_deref().map_or(true, |cur| s.as_str() > cur) {
+                    latest_sample = Some(s.clone());
+                }
+            }
+            let initial = name
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let db = db_bytes.max(0) as u64;
+            let files = files_bytes.max(0) as u64;
             TenantRow {
                 id_short: short_id(&id),
                 id,
+                initial,
                 name,
                 created_at,
-                db_display: humanize_bytes(db_bytes),
-                files_display: humanize_bytes(files_bytes),
-                total_display: humanize_bytes(db_bytes + files_bytes),
+                db_display: humanize_bytes(db),
+                files_display: humanize_bytes(files),
+                total_display: humanize_bytes(db + files),
             }
         })
-        .collect();
+        .collect()
+    };
     let disk = crate::mgmt::public_files::build_disk_view();
+    let stats_interval_min: u64 = std::env::var("DRUST_STATS_SAMPLE_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(300)
+        / 60;
+    let stats_age_display = humanize_age(latest_sample.as_deref());
     Html(
         TenantsListPage {
             tenants: rows,
             version: env!("CARGO_PKG_VERSION"),
             disk,
+            stats_interval_min,
+            stats_age_display,
         }
         .render()
         .unwrap(),
     )
     .into_response()
+}
+
+/// Render an ISO-8601 timestamp as a coarse "N units ago" string for UI
+/// footers. Returns empty string when input is `None` or unparseable.
+fn humanize_age(iso: Option<&str>) -> String {
+    let Some(s) = iso else {
+        return String::new();
+    };
+    let Ok(then) = chrono::DateTime::parse_from_rfc3339(s) else {
+        return String::new();
+    };
+    let secs = (chrono::Utc::now() - then.with_timezone(&chrono::Utc))
+        .num_seconds()
+        .max(0);
+    match secs {
+        0..=59 => format!("{}s ago", secs),
+        60..=3599 => format!("{} min ago", secs / 60),
+        3600..=86399 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86400),
+    }
 }
 
 fn make_tenant_inner(
@@ -309,6 +353,10 @@ pub async fn create_tenant_json(
     };
     drop(conn);
 
+    // v1.15.0 — immediate stats sample so the new row renders with real
+    // numbers on the next dashboard load, without waiting for a sampler tick.
+    crate::mgmt::stats::sample_one(&state.session.meta, &state.data_dir, &id).await;
+
     // Storage is fully shared (two buckets host-wide: `public` + `private`);
     // per-tenant bucket provisioning is no longer needed. The new tenant's
     // files will live under `<tenant-id>/<key>` inside those buckets.
@@ -326,7 +374,11 @@ pub async fn create_tenant_form(
     drop(conn);
 
     match created {
-        Ok(_) => Redirect::to("/drust/admin/tenants").into_response(),
+        Ok(_) => {
+            // v1.15.0 immediate sample so the new row renders with stats next load.
+            crate::mgmt::stats::sample_one(&state.session.meta, &state.data_dir, &id).await;
+            Redirect::to("/drust/admin/tenants").into_response()
+        }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }

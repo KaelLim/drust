@@ -28,10 +28,10 @@
           <h1 class="view-title">All tenants</h1>
           <p class="view-sub">Each tenant gets its own SQLite database, S3 bucket pair, OAuth registrations, anon &amp; service keys, and MCP endpoint. Click a row to enter the tenant studio.</p>
         </div>
-        <a class="btn primary" href="#create-tenant">
+        <button type="button" class="btn primary" id="new-tenant-btn">
           <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
           New tenant
-        </a>
+        </button>
       </div>
 
       {% if disk.free_pct < 20.0 %}
@@ -67,23 +67,9 @@
         </div>
       </div>
 
-      <div class="card" id="create-tenant" style="margin-bottom:20px;">
-        <div class="card-head">
-          <div>
-            <div class="card-title">Create a tenant</div>
-            <div class="card-sub">Provisions data.sqlite + per-tenant S3 buckets + anon/service tokens</div>
-          </div>
-        </div>
-        <div class="card-body">
-          <form method="post" action="/drust/admin/tenants/new" class="form-inline">
-            <div class="field">
-              <label>display name</label>
-              <input class="input" name="name" placeholder="Event Registration" style="width:320px;" required autofocus>
-            </div>
-            <button class="btn primary" type="submit">Create <span class="kbd">↵</span></button>
-          </form>
-        </div>
-      </div>
+      <form method="post" action="/drust/admin/tenants/new" id="new-tenant-form" style="display:none;">
+        <input type="text" name="name" id="new-tenant-name" required>
+      </form>
 
       <div class="toolbar-v2">
         <input class="input" id="tenants-search" type="search" placeholder="search name or id…  ( / to focus )" autocomplete="off" spellcheck="false">
@@ -97,7 +83,7 @@
             <canvas class="pix" data-chonk="working" data-size="96"></canvas>
           </div>
           <h3>No tenants yet</h3>
-          <p>Create one with the form above.</p>
+          <p>Click <b>New tenant</b> above to create one.</p>
         </div>
         {% else %}
         <table class="data">
@@ -108,7 +94,7 @@
               <th class="num" style="width:100px;" title="data.sqlite file size">db</th>
               <th class="num" style="width:100px;" title="_system_files SUM(size_bytes)">files</th>
               <th class="num" style="width:100px;" title="db + files combined">total</th>
-              <th class="actions" style="width:140px;"></th>
+              <th class="actions" style="width:170px;"></th>
             </tr>
           </thead>
           <tbody id="tenants-tbody">
@@ -116,7 +102,7 @@
             <tr class="tenant-row" data-name="{{ t.name }}" data-id="{{ t.id }}">
               <td>
                 <a class="ten-cell" href="/drust/admin/tenants/{{ t.id }}" style="text-decoration:none;color:inherit;">
-                  <span class="ten-avatar av-{{ loop.index0 % 6 + 1 }}">{{ t.name|truncate(2) }}</span>
+                  <span class="ten-avatar av-{{ loop.index0 % 6 + 1 }}">{{ t.initial }}</span>
                   <span class="ten-meta">
                     <span class="ten-name">{{ t.name }}</span>
                     <span class="ten-id">#{{ t.id_short }}</span>
@@ -142,6 +128,10 @@
             </tr>
           </tbody>
         </table>
+        <div class="card-foot mono" style="justify-content:flex-end;gap:14px;">
+          {% if !stats_age_display.is_empty() %}<span>stats sampled {{ stats_age_display }}</span>{% endif %}
+          <span>refresh every {{ stats_interval_min }} min</span>
+        </div>
         <script>
           document.querySelectorAll('[data-copy-id]').forEach(function (b) {
             b.addEventListener('click', function () {
@@ -203,6 +193,27 @@
         {% endif %}
       </div>
     </div>
+    <script>
+      (function () {
+        var btn = document.getElementById('new-tenant-btn');
+        var form = document.getElementById('new-tenant-form');
+        var nameInput = document.getElementById('new-tenant-name');
+        if (!btn || !form || !nameInput) return;
+        btn.addEventListener('click', async function () {
+          var name = await drustUI.prompt({
+            title: 'Create a tenant',
+            body: 'Provisions data.sqlite + per-tenant S3 buckets + anon/service tokens. Choose a display name.',
+            placeholder: 'Event Registration',
+            okText: 'Create',
+          });
+          if (name === null) return;
+          name = name.trim();
+          if (!name) return;
+          nameInput.value = name;
+          form.submit();
+        });
+      })();
+    </script>
   </main>
 </div>
 {% include "_mascot.html" %}
