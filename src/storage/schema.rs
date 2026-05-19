@@ -184,6 +184,11 @@ pub struct CollectionSchema {
     /// `_system_collection_meta.vector_fields_json`.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub vector_fields: Vec<VectorField>,
+    /// Whether SSE realtime broadcast is enabled for this collection.
+    /// Defaults to `true` for legacy collections (no meta row) and for
+    /// rows present before v1.16 (column default 1). New collections
+    /// created from v1.16+ start at `false` via `create_collection`.
+    pub realtime_enabled: bool,
 }
 
 fn user_tables(conn: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -235,6 +240,23 @@ fn read_anon_caps(
     Ok(row
         .map(|j| parse_anon_caps_json(&j))
         .unwrap_or_else(default_anon_caps))
+}
+
+/// Read the realtime flag for a single collection. Missing rows yield
+/// `true` (matches `read_anon_caps`'s default-allow fallback so legacy
+/// collections pre-dating v1.16 keep their existing SSE behaviour).
+fn read_realtime_enabled(
+    conn: &Connection,
+    coll: &str,
+) -> rusqlite::Result<bool> {
+    let row: Option<i64> = conn
+        .query_row(
+            "SELECT realtime_enabled FROM _system_collection_meta WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| r.get::<_, i64>(0),
+        )
+        .ok();
+    Ok(row.map(|n| n != 0).unwrap_or(true))
 }
 
 pub fn describe_collection(
@@ -318,6 +340,7 @@ pub fn describe_collection(
     let anon_caps = read_anon_caps(conn, name)?;
     let (owner_field, read_scope) = read_owner_field(conn, name)?;
     let vector_fields = read_vector_fields(conn, name)?;
+    let realtime_enabled = read_realtime_enabled(conn, name)?;
     Ok(Some(CollectionSchema {
         name: name.to_string(),
         fields,
@@ -327,6 +350,7 @@ pub fn describe_collection(
         owner_field,
         read_scope,
         vector_fields,
+        realtime_enabled,
     }))
 }
 
@@ -385,6 +409,27 @@ pub fn write_anon_caps(
               anon_caps_json = excluded.anon_caps_json,
               updated_at     = excluded.updated_at",
         rusqlite::params![coll, json],
+    )?;
+    Ok(())
+}
+
+/// Upsert the realtime flag. Mirrors `write_anon_caps`'s upsert shape so
+/// legacy collections without a meta row get one created with default
+/// `anon_caps = [select]` (never silently dropping the write).
+pub fn write_realtime_enabled(
+    conn: &Connection,
+    coll: &str,
+    enabled: bool,
+) -> rusqlite::Result<()> {
+    let v: i64 = if enabled { 1 } else { 0 };
+    conn.execute(
+        "INSERT INTO _system_collection_meta \
+              (collection_name, anon_caps_json, realtime_enabled, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              realtime_enabled = excluded.realtime_enabled, \
+              updated_at       = excluded.updated_at",
+        rusqlite::params![coll, v],
     )?;
     Ok(())
 }
@@ -499,11 +544,12 @@ mod meta_io_tests {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "CREATE TABLE _system_collection_meta (
-                collection_name TEXT PRIMARY KEY,
-                anon_caps_json  TEXT NOT NULL,
-                updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                owner_field     TEXT,
-                read_scope      TEXT
+                collection_name   TEXT PRIMARY KEY,
+                anon_caps_json    TEXT NOT NULL,
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                owner_field       TEXT,
+                read_scope        TEXT,
+                realtime_enabled  INTEGER NOT NULL DEFAULT 1
             );",
         ).unwrap();
         (tmp, conn)
@@ -595,6 +641,36 @@ mod meta_io_tests {
         // not inadvertently locked down.
         assert_eq!(read_anon_caps(&conn, "legacy").unwrap(), default_anon_caps());
     }
+
+    #[test]
+    fn read_realtime_enabled_defaults_true_when_no_row() {
+        let (_t, conn) = fresh();
+        assert!(read_realtime_enabled(&conn, "posts").unwrap());
+    }
+
+    #[test]
+    fn write_realtime_then_read_roundtrips_both_values() {
+        let (_t, conn) = fresh();
+        write_realtime_enabled(&conn, "posts", false).unwrap();
+        assert!(!read_realtime_enabled(&conn, "posts").unwrap());
+        write_realtime_enabled(&conn, "posts", true).unwrap();
+        assert!(read_realtime_enabled(&conn, "posts").unwrap());
+    }
+
+    #[test]
+    fn write_realtime_preserves_existing_anon_caps() {
+        // Legacy collection: anon_caps row exists, realtime upsert must not
+        // wipe anon_caps_json. This is the same upsert-preserves-other-cols
+        // invariant tested for owner_field.
+        let (_t, conn) = fresh();
+        let mut caps = BTreeSet::new();
+        caps.insert(DmlVerb::Insert);
+        caps.insert(DmlVerb::Update);
+        write_anon_caps(&conn, "posts", &caps).unwrap();
+        write_realtime_enabled(&conn, "posts", false).unwrap();
+        assert_eq!(read_anon_caps(&conn, "posts").unwrap(), caps);
+        assert!(!read_realtime_enabled(&conn, "posts").unwrap());
+    }
 }
 
 /// Returns true if the caller's role is permitted to perform `verb` on
@@ -640,6 +716,7 @@ mod cap_gate_tests {
             owner_field: None,
             read_scope: None,
             vector_fields: vec![],
+            realtime_enabled: true,
         }
     }
 
