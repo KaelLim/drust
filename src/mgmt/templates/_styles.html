@@ -262,8 +262,11 @@
   .top-icon svg{fill:none;stroke:currentColor;stroke-width:1.7}
 
   /* ---------------- view container ---------------- */
-  .view,.page{padding:28px 32px 80px;max-width:1380px}
-  .page-wide{max-width:1580px}
+  /* .page fills the viewport width. Pages that need a narrower reading
+     measure (forms-heavy single-column) opt in via .page-narrow.
+     .page-wide is retained as a no-op alias for callers that explicitly
+     declared "this is a wide page" — it no longer changes width. */
+  .view,.page{padding:28px 32px 80px}
   .page-narrow{max-width:1080px}
   .view-head{margin-bottom:24px;display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap}
   .view-head > .grow{flex:1;min-width:0}
@@ -354,11 +357,16 @@
 
   /* ---------------- table (mockup .data-table + drust .data alias) ---------------- */
   table.data-table,table.data{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums}
+  /* sticky thead pinned to its scroll container's top. Most .data tables live
+     inside a .card (overflow:hidden) or .records-scroll (overflow:auto), both
+     of which become the sticky ancestor — so top:0 is correct. The old
+     top:50px (meant to clear the 50px sticky topbar in a body-scroll layout)
+     left a 50px gap above the thead inside every card-wrapped table. */
   table.data-table thead th,table.data thead th{
     text-align:left;font-family:var(--font-mono);font-size:10px;letter-spacing:1.3px;text-transform:uppercase;
     color:var(--muted);font-weight:500;
     padding:10px 14px;border-bottom:1px solid var(--border-mid);background:var(--surface);
-    position:sticky;top:50px;z-index:2;
+    position:sticky;top:0;z-index:2;
   }
   table.data-table thead th.num,table.data thead th.num{text-align:right}
   table.data-table tbody td,table.data tbody td{padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
@@ -507,11 +515,15 @@
     border-radius:var(--r-md);
     flex-wrap:wrap;
   }
-  .seg{display:flex;border:1px solid var(--border-mid);border-radius:9px;overflow:hidden}
-  .seg button{padding:5px 11px;font-size:12px;color:var(--muted);background:transparent;border:0;border-right:1px solid var(--border-mid);cursor:pointer;font-family:var(--font-mono);letter-spacing:0.3px}
-  .seg button:last-child{border-right:0}
-  .seg button.active{background:var(--surface-2);color:var(--accent)}
-  .seg button:hover:not(.active){color:var(--fg-2);background:var(--surface-2)}
+  .seg{display:inline-flex;border:1px solid var(--border-mid);border-radius:9px;overflow:hidden;align-self:center}
+  .seg > button,
+  .seg > a{padding:6px 11px;font-size:12px;line-height:1.2;color:var(--muted);background:transparent;border:0;border-right:1px solid var(--border-mid);cursor:pointer;font-family:var(--font-mono);letter-spacing:0.3px;text-decoration:none;display:inline-flex;align-items:center}
+  .seg > button:last-child,
+  .seg > a:last-child{border-right:0}
+  .seg > button.active,
+  .seg > a.active{background:var(--surface-2);color:var(--accent)}
+  .seg > button:hover:not(.active),
+  .seg > a:hover:not(.active){color:var(--fg-2);background:var(--surface-2)}
 
   /* ---------------- forms ---------------- */
   .field{display:flex;flex-direction:column;gap:6px;margin-bottom:0}
@@ -554,17 +566,44 @@
 
   /* ---------------- timeline (audit) ---------------- */
   .tl{display:flex;flex-direction:column;gap:0}
-  .tl-row{display:grid;grid-template-columns:80px 22px 1fr auto;align-items:flex-start;gap:12px;padding:10px 0;position:relative}
+  .tl-row{display:grid;grid-template-columns:78px 22px 1fr auto;align-items:center;gap:12px;padding:10px 0;position:relative}
   .tl-row + .tl-row{border-top:1px dashed var(--border)}
-  .tl-row .tl-time{font-family:var(--font-mono);font-size:11px;color:var(--muted);text-align:right;padding-top:2px;letter-spacing:0.2px}
+  .tl-row .tl-time{font-family:var(--font-mono);font-size:11px;color:var(--muted);text-align:left;letter-spacing:0.2px;white-space:nowrap}
   .tl-row .tl-glyph{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;background:var(--bg-deep);border:1px solid var(--border-mid);color:var(--muted);font-family:var(--font-mono);font-size:10px}
   .tl-row .tl-glyph.ok{color:var(--mint);border-color:var(--mint-border);background:var(--mint-soft)}
   .tl-row .tl-glyph.warn{color:var(--warn);border-color:var(--warn-border);background:var(--warn-soft)}
   .tl-row .tl-glyph.fail{color:var(--danger);border-color:var(--danger-border);background:var(--danger-soft)}
-  .tl-row .tl-body{font-size:13px;color:var(--fg-2);min-width:0}
-  .tl-row .tl-body b{color:var(--fg);font-weight:500}
-  .tl-row .tl-body code{font-family:var(--font-mono);font-size:11.5px;color:var(--fg);background:var(--bg-deep);padding:1px 6px;border-radius:6px;border:1px solid var(--border)}
+  .tl-row .tl-body{font-size:13px;color:var(--fg-2);min-width:0;display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
   .tl-row .tl-meta{font-family:var(--font-mono);font-size:10.5px;color:var(--muted);text-align:right}
+
+  /* method/path/actor chips inside .tl-body. The method is the most
+     scan-able anchor; tinted per verb so eyes catch reads vs writes at a
+     glance. Path is the natural-language part. Actor is muted (it's
+     metadata, not the story). */
+  .op-method{
+    display:inline-flex;align-items:center;
+    font-family:var(--font-mono);font-size:10px;font-weight:600;
+    letter-spacing:1.2px;padding:2px 7px;border-radius:6px;
+    border:1px solid var(--border-mid);background:var(--bg-deep);color:var(--muted);
+  }
+  .op-method.op-get   {color:var(--info);  border-color:var(--info-border);  background:var(--info-soft)}
+  .op-method.op-post  {color:var(--mint);  border-color:var(--mint-border);  background:var(--mint-soft)}
+  .op-method.op-patch,
+  .op-method.op-put   {color:var(--warn);  border-color:var(--warn-border);  background:var(--warn-soft)}
+  .op-method.op-delete{color:var(--danger);border-color:var(--danger-border);background:var(--danger-soft)}
+  .op-path{
+    font-family:var(--font-mono);font-size:12px;color:var(--fg);
+    min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .op-actor{
+    font-family:var(--font-mono);font-size:10px;letter-spacing:1.1px;text-transform:uppercase;
+    color:var(--muted-2);padding:1px 6px;border-radius:5px;border:1px solid var(--border);
+  }
+  .op-err{
+    font-family:var(--font-mono);font-size:10px;letter-spacing:0.8px;
+    color:var(--danger);background:var(--danger-soft);border:1px solid var(--danger-border);
+    padding:1px 6px;border-radius:5px;
+  }
 
   /* ---------------- backup / webhook / file rows (mockup) ---------------- */
   .bk-row{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:14px;padding:13px 16px;border:1px solid var(--border-mid);border-radius:var(--r-md);background:var(--surface)}
@@ -598,7 +637,8 @@
     transition:background .12s,color .12s;text-decoration:none;
   }
   .col-tab:hover,.tab:hover{color:var(--fg-2)}
-  .col-tab.active,.tab.active{background:var(--surface-2);color:var(--fg);box-shadow:inset 0 0 0 1px var(--border-mid)}
+  .col-tab.active,.col-tab.on,
+  .tab.active,.tab.on{background:var(--surface-2);color:var(--fg);box-shadow:inset 0 0 0 1px var(--border-mid)}
   .col-tab .mono,.tab .mono{font-size:10px;color:var(--muted-2)}
 
   /* ---------------- pager ---------------- */
@@ -611,13 +651,78 @@
   /* ---------------- records-scroll (collection rows wide tables) ---------------- */
   .records-scroll{overflow:auto;max-height:600px;border-radius:var(--r-md);border:1px solid var(--border-mid)}
 
+  /* ---------------- collection_rows toolbar layout ---------------- */
+  /* .toolbar wraps a <form> with .field cards + .actions. Each .field is
+     label-on-top, control below; align them flush at the bottom so the
+     buttons in .actions sit on the same baseline as the inputs. */
+  .toolbar > .field{align-self:flex-end;min-width:180px}
+  .toolbar > .field:first-child{flex:1 1 240px}
+  .toolbar > .actions{display:inline-flex;align-items:center;gap:6px;align-self:flex-end;margin-left:auto}
+
+  /* WHERE prefix box: a small chip glued to the left of the input. */
+  .input-prefix{display:inline-flex;align-items:stretch;border:1px solid var(--border-mid);border-radius:10px;overflow:hidden;background:var(--bg-deep);min-width:240px}
+  .input-prefix:focus-within{border-color:var(--accent-border);box-shadow:0 0 0 3px var(--accent-soft)}
+  .input-prefix > .prefix{
+    display:inline-flex;align-items:center;padding:0 10px;
+    font-family:var(--font-mono);font-size:11px;letter-spacing:1px;
+    color:var(--accent);background:var(--surface-2);
+    border-right:1px solid var(--border-mid);text-transform:uppercase;
+  }
+  .input-prefix > .input{border:0;background:transparent;border-radius:0;min-width:0;flex:1}
+  .input-prefix > .input:focus{border:0;box-shadow:none}
+
+  /* Counts row above the records table. */
+  .meta-row{
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    font-family:var(--font-mono);font-size:11.5px;color:var(--muted);letter-spacing:0.2px;
+    padding:10px 14px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);
+    background:var(--surface);
+  }
+  .meta-row b{color:var(--fg);font-weight:600}
+  .meta-row .spacer,.spacer{flex:1;min-width:0}
+
+  /* Cell truncation: applied per-<td> with class="trunc". Without max-width:0
+     the cell stretches with content; together with overflow:hidden and
+     text-overflow:ellipsis the row stays bounded. Hover/title shows full value. */
+  table.data td.trunc,table.data-table td.trunc{
+    max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  table.data td.null,table.data-table td.null{color:var(--muted-2);font-style:italic}
+
+  /* Empty-state CTA below "0 records". */
+  .suggest{margin-top:18px}
+
+  /* ---------------- schema-row (collection schema tab) ---------------- */
+  /* 7-column grid matching the head row: drag · field · type · null · default · desc · trailing */
+  .schema-row{
+    display:grid;
+    grid-template-columns:28px minmax(160px,1.4fr) minmax(120px,0.8fr) 60px minmax(80px,0.8fr) minmax(120px,1.2fr) 28px;
+    gap:14px;align-items:center;
+    padding:10px 18px;border-bottom:1px solid var(--border);
+    font-size:13px;
+  }
+  .schema-row:last-child{border-bottom:0}
+  .schema-row.head{
+    background:var(--surface);
+    font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.3px;color:var(--muted);
+    text-transform:uppercase;
+  }
+  .schema-row .drag{color:var(--muted-2);cursor:grab;font-family:var(--font-mono);font-size:12px;text-align:center;user-select:none}
+  .schema-row .fld-name{display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:12.5px;color:var(--fg);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .schema-row .fld-type{font-family:var(--font-mono);font-size:12px;color:var(--accent);letter-spacing:0.3px}
+  .schema-row .fld-null{font-family:var(--font-mono);font-size:13px;text-align:center}
+  .schema-row .fld-null.yes{color:var(--mint)}
+  .schema-row .fld-null.no{color:var(--muted-2)}
+  .schema-row .fld-default{font-family:var(--font-mono);font-size:12px;color:var(--fg-2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .schema-row .fld-desc{font-size:12px;color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
   /* ---------------- output / error block ---------------- */
   .output{
     background:var(--bg-deep);border:1px solid var(--border);border-radius:10px;
     padding:10px 12px;font-family:var(--font-mono);font-size:12px;color:var(--fg-2);
     white-space:pre-wrap;word-break:break-word;margin-top:10px;
   }
-  .output.error{color:var(--danger);background:var(--danger-soft);border-color:var(--danger-border)}
+  .output.error,.output.is-error{color:var(--danger);background:var(--danger-soft);border-color:var(--danger-border)}
 
   /* ---------------- muted helpers ---------------- */
   .muted{color:var(--muted)}

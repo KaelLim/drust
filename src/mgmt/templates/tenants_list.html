@@ -53,17 +53,12 @@
         <div class="ten-pulse">
           <div class="head"><span>Storage</span>{% if disk.free_pct < 20.0 %}<span class="pill danger">low</span>{% else %}<span class="pill mint">healthy</span>{% endif %}</div>
           <div class="body">{{ disk.used_gb }} <span class="unit">GB · used</span></div>
-          <div class="meta">of {{ disk.total_gb }} GB on /var/lib/garage</div>
+          <div class="meta">of {{ disk.total_gb }} GB total</div>
         </div>
         <div class="ten-pulse">
           <div class="head"><span>Disk free</span></div>
           <div class="body" style="{% if disk.free_pct < 20.0 %}color:var(--danger);{% endif %}">{{ disk.free_pct_display }} <span class="unit">%</span></div>
           <div class="meta">{% if disk.free_pct < 20.0 %}uploads paused (&lt; 20% threshold){% else %}well above 20% threshold{% endif %}</div>
-        </div>
-        <div class="ten-pulse">
-          <div class="head"><span>Resources</span></div>
-          <div class="body">2 <span class="unit">planes</span></div>
-          <div class="meta">admin host · per-tenant studio</div>
         </div>
       </div>
 

@@ -41,16 +41,19 @@
     .ds-grid-2, .ds-grid-3 { grid-template-columns: 1fr; }
   }
 
-  /* tenant-sidebar demo box */
+  /* tenant-sidebar demo box — mirror real .app-shell grid + height. */
   .ds-sidebar-demo {
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     overflow: hidden;
-    height: 480px;
+    height: 560px;
     background: var(--bg);
     display: grid;
-    grid-template-columns: 280px 1fr;
+    grid-template-columns: 260px minmax(0, 1fr);
   }
+  /* Inside the demo box the sidebar can't be sticky (no scroll container).
+     Let it fill the grid track and use internal flex scroll on .nav. */
+  .ds-sidebar-demo .tenant-sidebar { height: 100%; }
   .ds-sidebar-demo .placeholder {
     display: grid; place-items: center;
     color: var(--muted-2); font: 500 14px/1.4 var(--sans);
@@ -382,43 +385,92 @@
           <!-- ============================== -->
           <section id="sidebar" class="ds-section">
             <h2>Tenant sidebar</h2>
-            <p class="ds-section-desc">Per-tenant nav: mascot + name header, plane pill, sectioned list (system entries first, then collections). Distinct from collection rows' simpler sidebar.</p>
+            <p class="ds-section-desc">Per-tenant nav. Markup is a drop-in copy of <code style="font-family:var(--mono);color:var(--accent);">_collection_sidebar.html</code> — brand block, back-strip, plane pill, sectioned nav (Home / Connect / Backend / Collections), and a sticky <code style="font-family:var(--mono);color:var(--accent);">.sidebar-foot</code>. The nav itself scrolls when content overflows; the strip + foot stay pinned.</p>
             <div class="ds-sidebar-demo">
-              <div class="tenant-sidebar">
-                <div class="tenant-sidebar-head">
-                  <div class="tenant-sidebar-brand">
-                    <canvas class="pix" data-chonk="happy" data-size="32"></canvas>
-                    <div>
-                      <div class="name">acme-corp</div>
-                      <div class="id">3a4e…b801</div>
-                    </div>
+              <aside class="tenant-sidebar" style="position:static;height:auto">
+                <div class="brand">
+                  <div class="brand-mark">
+                    <canvas class="pix" data-chonk="happy" data-size="22"></canvas>
                   </div>
-                  <div class="plane-pill tenant">plane · tenant</div>
-                </div>
-                <div class="tenant-sidebar-list">
-                  <div class="tenant-sidebar-section">
-                    <div class="tenant-sidebar-section-head">system</div>
-                    <a class="tenant-nav-item on" href="#"><span class="nav-icon">⌂</span><span>Overview</span><span></span></a>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">🔑</span><span>API keys</span><span></span></a>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">⚡</span><span>RPC</span><span class="nav-tag">5</span></a>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">📁</span><span>Files</span><span></span></a>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">👤</span><span>Users</span><span class="nav-tag">280</span></a>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">🔐</span><span>OAuth</span><span></span></a>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">🔔</span><span>Webhooks</span><span class="nav-tag">3</span></a>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">📋</span><span>Logs</span><span></span></a>
+                  <div class="brand-text">
+                    <div class="brand-name">drust</div>
+                    <div class="brand-meta">tenant studio</div>
                   </div>
-                  <div class="tenant-sidebar-section">
-                    <div class="tenant-sidebar-section-head">collections</div>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">▸</span><span>orders</span><span class="nav-tag">14k</span></a>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">▸</span><span>customers</span><span class="nav-tag">812</span></a>
-                    <a class="tenant-nav-item" href="#"><span class="nav-icon">▸</span><span>products</span><span class="nav-tag">42</span></a>
+                  <div class="brand-ver">v1.15.0</div>
+                </div>
+
+                <a class="back-strip" href="#">
+                  <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+                  Back to all tenants
+                </a>
+
+                <button type="button" class="plane-pill tenant clickable" title="switch tenant (⌘K)">
+                  <span class="dot"></span>
+                  <div class="body">
+                    <div class="label">plane · tenant</div>
+                    <div class="name">acme-corp</div>
+                    <div class="id">3a4e…b801</div>
                   </div>
+                  <span class="chev"><svg viewBox="0 0 24 24"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg></span>
+                </button>
+
+                <nav class="nav">
+                  <div class="nav-section"><span>Home</span></div>
+                  <a class="nav-item on" href="#">
+                    <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg></span>
+                    Overview
+                  </a>
+
+                  <div class="nav-section"><span>Connect</span></div>
+                  <a class="nav-item" href="#">
+                    <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l3 3"/></svg></span>
+                    API keys
+                  </a>
+                  <a class="nav-item" href="#">
+                    <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17 14l4 3-4 3"/></svg></span>
+                    Stored RPC
+                  </a>
+
+                  <div class="nav-section"><span>Backend</span></div>
+                  <a class="nav-item" href="#">
+                    <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 7l2-2h5l2 2h9v12H3z"/></svg></span>
+                    Files
+                  </a>
+                  <a class="nav-item" href="#">
+                    <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 19c0-3.5 3.2-6 7-6s7 2.5 7 6"/></svg></span>
+                    End-users
+                  </a>
+                  <a class="nav-item" href="#">
+                    <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6z"/></svg></span>
+                    OAuth providers
+                  </a>
+                  <a class="nav-item" href="#">
+                    <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M15 17l2 4 5-12-10 5 3 3-3 3z"/><path d="M3 11l8-3"/></svg></span>
+                    Webhooks
+                  </a>
+                  <a class="nav-item" href="#">
+                    <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h6"/></svg></span>
+                    Logs
+                  </a>
+
+                  <div class="nav-section">
+                    <span>Collections</span>
+                    <span class="count">3</span>
+                  </div>
+                  <a class="nav-collection" href="#"><span class="dot"></span><span>orders</span><span class="count">14k</span></a>
+                  <a class="nav-collection" href="#"><span class="dot"></span><span>customers</span><span class="count">812</span></a>
+                  <a class="nav-collection" href="#"><span class="dot"></span><span>products</span><span class="count">42</span></a>
+                </nav>
+
+                <div class="sidebar-foot">
+                  <div class="who-av">AK</div>
+                  <div class="who">
+                    <div class="who-name">admin</div>
+                    <div class="who-mail">scope: this tenant</div>
+                  </div>
+                  <span class="status-pulse" title="tenant healthy"></span>
                 </div>
-                <div class="tenant-sidebar-foot">
-                  <span>v1.13.0</span>
-                  <span class="role-badge admin">admin</span>
-                </div>
-              </div>
+              </aside>
               <div class="placeholder">main content area</div>
             </div>
           </section>
