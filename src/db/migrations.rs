@@ -92,6 +92,12 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         "vector_fields_json",
         "TEXT NOT NULL DEFAULT '[]'",
     )?;
+    add_column_if_missing(
+        &tx,
+        "_system_collection_meta",
+        "realtime_enabled",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
     tx.commit()
 }
 
@@ -266,6 +272,53 @@ mod tests {
             cols.contains(&"vector_fields_json".to_string()),
             "vector_fields_json column missing after migration; cols = {cols:?}"
         );
+    }
+
+    #[test]
+    fn migrate_tenant_db_adds_realtime_enabled_defaulting_to_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-rt");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        // v1.15-shape meta table: no realtime_enabled column, one row present.
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (
+                    collection_name TEXT PRIMARY KEY,
+                    anon_caps_json  TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL);
+                 INSERT INTO _system_collection_meta
+                    (collection_name, anon_caps_json, updated_at)
+                    VALUES ('legacy', '[\"select\"]', '2026-01-01');",
+            )
+            .unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-rt").unwrap();
+        migrate_tenant_db(dir.path(), "t-rt").unwrap(); // idempotent
+
+        let c = Connection::open(&p).unwrap();
+        // Column exists.
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(_system_collection_meta)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"realtime_enabled".to_string()),
+            "realtime_enabled column missing after migration; cols = {cols:?}"
+        );
+        // Existing row backfilled to 1 by the column DEFAULT.
+        let v: i64 = c
+            .query_row(
+                "SELECT realtime_enabled FROM _system_collection_meta WHERE collection_name = 'legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, 1, "existing row should preserve current SSE behaviour (= 1)");
     }
 
     #[test]
