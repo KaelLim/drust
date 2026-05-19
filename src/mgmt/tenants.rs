@@ -618,15 +618,40 @@ struct WebhookFailureRow {
 }
 
 struct RecentAuditRow {
-    ts: String,
-    op: String,
+    /// "3m ago" / "Just now" / "14:32" — formatted for human reading.
+    /// Raw ISO `ts` is dropped; we render the same row in the audit log
+    /// page with the full timestamp, this is just the overview card.
+    time_display: String,
+    /// HTTP verb extracted from `op` ("POST /records/foo" → "POST").
+    /// Empty when the op doesn't follow that shape.
+    method: String,
+    /// Path part of `op` minus the leading slash ("records/foo").
+    path_display: String,
     status: String,
     /// Empty when status is `ok`; otherwise the canonical error code so
     /// the chip renders the failure mode rather than the generic word
     /// "error".
     error_code: String,
-    actor: String,
+    /// "service" / "anon" / "user" — read from `extra.auth_kind`.
+    /// Token-hint hashes are dropped (not human readable).
+    auth_kind: String,
     duration_ms: u64,
+}
+
+fn humanize_audit_ts(ts: &str) -> String {
+    let Ok(then) = chrono::DateTime::parse_from_rfc3339(ts) else {
+        return ts.to_string();
+    };
+    let secs = (Utc::now() - then.with_timezone(&Utc))
+        .num_seconds()
+        .max(0);
+    match secs {
+        0..=10 => "just now".to_string(),
+        11..=59 => format!("{}s ago", secs),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86399 => format!("{}h ago", secs / 3600),
+        _ => then.format("%Y-%m-%d %H:%M").to_string(),
+    }
 }
 
 /// `GET /admin/tenants/{id}/_overview` — virtual sidebar entry that summarises
@@ -741,17 +766,26 @@ pub async fn tenant_overview_page(
         .entries
         .into_iter()
         .filter(|e| e.tenant == tenant_id)
-        .map(|e| RecentAuditRow {
-            ts: e.ts,
-            op: e.op,
-            status: e.status,
-            error_code: e.error_code.unwrap_or_default(),
-            actor: if e.token_hint.is_empty() {
-                "-".to_string()
-            } else {
-                e.token_hint
-            },
-            duration_ms: e.duration_ms,
+        .map(|e| {
+            let (method, path_display) = match e.op.split_once(' ') {
+                Some((m, p)) => (m.to_string(), p.trim_start_matches('/').to_string()),
+                None => (String::new(), e.op.clone()),
+            };
+            let auth_kind = e
+                .extra
+                .get("auth_kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            RecentAuditRow {
+                time_display: humanize_audit_ts(&e.ts),
+                method,
+                path_display,
+                status: e.status,
+                error_code: e.error_code.unwrap_or_default(),
+                auth_kind,
+                duration_ms: e.duration_ms,
+            }
         })
         .collect();
     recent_audit.reverse();

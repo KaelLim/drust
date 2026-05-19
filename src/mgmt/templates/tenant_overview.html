@@ -146,9 +146,14 @@
               <div class="tl">
                 {% for e in recent_audit %}
                 <div class="tl-row">
-                  <div class="tl-time">{{ e.ts }}</div>
+                  <div class="tl-time">{{ e.time_display }}</div>
                   <div class="tl-glyph{% if e.status == "ok" %} ok{% else %} fail{% endif %}">{% if e.status == "ok" %}✓{% else %}✕{% endif %}</div>
-                  <div class="tl-body"><b>{{ e.actor }}</b> · <code>{{ e.op }}</code>{% if e.status != "ok" %} <span style="color:var(--danger);">· {% if e.error_code.len() > 0 %}{{ e.error_code }}{% else %}{{ e.status }}{% endif %}</span>{% endif %}</div>
+                  <div class="tl-body">
+                    {% if !e.method.is_empty() %}<span class="op-method op-{{ e.method|lower }}">{{ e.method }}</span>{% endif %}
+                    <span class="op-path">{{ e.path_display }}</span>
+                    {% if !e.auth_kind.is_empty() %}<span class="op-actor">{{ e.auth_kind }}</span>{% endif %}
+                    {% if e.status != "ok" %}<span class="op-err">{% if e.error_code.len() > 0 %}{{ e.error_code }}{% else %}{{ e.status }}{% endif %}</span>{% endif %}
+                  </div>
                   <div class="tl-meta">{{ e.duration_ms }}ms</div>
                 </div>
                 {% endfor %}
