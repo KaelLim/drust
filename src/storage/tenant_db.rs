@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
   updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
   owner_field          TEXT,
   read_scope           TEXT,
-  vector_fields_json   TEXT NOT NULL DEFAULT '[]'
+  vector_fields_json   TEXT NOT NULL DEFAULT '[]',
+  realtime_enabled     INTEGER NOT NULL DEFAULT 1
 );
 
 -- v1.6: stored RPC functions (Supabase-style named SELECTs).

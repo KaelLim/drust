@@ -216,6 +216,7 @@ mod tests {
                     dim: *d,
                 })
                 .collect(),
+            realtime_enabled: true,
         }
     }
 
