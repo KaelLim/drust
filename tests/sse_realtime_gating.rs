@@ -200,3 +200,190 @@ async fn system_collection_subscribe_returns_404() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn put_realtime_enable_then_disable_round_trip() {
+    let (app, tok, d) = spin_up_tenant("rt-put").await;
+    seed_with_realtime(&d, "rt-put", false).await;
+    // 0 → 1
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/t/rt-put/collections/posts/realtime")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"enabled":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["realtime_enabled"], true);
+
+    // Subscribe now succeeds.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/t/rt-put/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn put_realtime_disable_evicts_existing_subscribers() {
+    let (app, tok, d) = spin_up_tenant("rt-evict").await;
+    seed_with_realtime(&d, "rt-evict", true).await;
+
+    // Open SSE first.
+    let sub = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/t/rt-evict/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::ACCEPT, "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sub.status(), StatusCode::OK);
+    let mut stream = sub.into_body().into_data_stream();
+
+    // Toggle off.
+    let off = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/t/rt-evict/collections/posts/realtime")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"enabled":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(off.status(), StatusCode::OK);
+
+    // Stream must terminate (next chunk returns None) within 1s.
+    let done = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        use futures::StreamExt;
+        loop {
+            match stream.next().await {
+                None => return true,
+                Some(Err(_)) => return true,
+                Some(Ok(_)) => continue, // keep-alive comment, ignore
+            }
+        }
+    })
+    .await;
+    assert!(done.is_ok(), "stream did not terminate within 1s of evict");
+}
+
+#[tokio::test]
+async fn put_realtime_rejects_anon() {
+    let (app, _tid, _svc, anon, d) = spin_up_dual_role_self_register("rt-anon-rej").await;
+    seed_with_realtime(&d, "rt-anon-rej", false).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/t/rt-anon-rej/collections/posts/realtime")
+                .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"enabled":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["error_code"], "WRITE_DENIED");
+}
+
+#[tokio::test]
+async fn put_realtime_rejects_protected_collection() {
+    let (app, tok, _d) = spin_up_tenant("rt-prot").await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/t/rt-prot/collections/_system_users/realtime")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"enabled":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["error_code"], "PROTECTED_COLLECTION");
+}
+
+#[tokio::test]
+async fn put_realtime_unknown_collection_404() {
+    let (app, tok, _d) = spin_up_tenant("rt-ghost").await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/t/rt-ghost/collections/ghost/realtime")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"enabled":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let v: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["error_code"], "UNKNOWN_COLLECTION");
+}
+
+#[tokio::test]
+async fn user_token_denied_regardless_of_toggle() {
+    use tests_helpers::register_and_login_via_app;
+    let (app, tid, _svc, _anon, d) = spin_up_dual_role_self_register("rt-user").await;
+    seed_with_realtime(&d, "rt-user", true).await;
+    let user_tok = register_and_login_via_app(&app, &tid, "u@e.com", "passpass").await;
+    // realtime_enabled=true should still 403 user
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/t/rt-user/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {user_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["error_code"], "SSE_USER_DENIED");
+}
