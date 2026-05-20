@@ -94,6 +94,78 @@ pub fn stacked_area_chart(buckets: &[TimeBucket]) -> String {
     )
 }
 
+/// Render horizontal bars: one row per item, each row a label (left),
+/// a filled rect (middle), and the count (right). Used by both Top
+/// error codes and Top tenants charts — the page handler converts
+/// its typed input into `Vec<(String, u32)>` before calling.
+///
+/// If `items.len() > 10`, displays the first 10 and appends an
+/// "+N more not shown" row to keep the chart legible.
+pub fn horizontal_bars(items: &[(String, u32)]) -> String {
+    if items.is_empty() {
+        return no_data_svg();
+    }
+    let truncated = items.len() > 10;
+    let shown: &[(String, u32)] = if truncated { &items[..10] } else { items };
+    let max_count = shown.iter().map(|(_, c)| *c).max().unwrap_or(1).max(1);
+
+    // Layout:
+    // label column: 0..240 px (30%)
+    // bar area:    250..720 px (~59%)
+    // count column: 730..800 px (right-aligned)
+    let label_x = 8;
+    let bar_x = 250;
+    let bar_max_w: f64 = 470.0;
+    let count_x = VIEWBOX_W - 8;
+    let row_h: f64 = if truncated {
+        // 10 bars + 1 "more" row = 11 rows total
+        VIEWBOX_H as f64 / 11.0
+    } else {
+        VIEWBOX_H as f64 / shown.len() as f64
+    };
+    let bar_h = row_h * 0.6;
+
+    let mut body = String::new();
+    for (i, (label, count)) in shown.iter().enumerate() {
+        let row_top = (i as f64) * row_h;
+        let row_mid = row_top + row_h / 2.0;
+        let bar_y = row_top + (row_h - bar_h) / 2.0;
+        let bar_w = (*count as f64) / (max_count as f64) * bar_max_w;
+        body.push_str(&format!(
+            r#"<text x="{label_x}" y="{row_mid:.1}" dominant-baseline="middle" fill="{COLOR_MUTED}" font-family="sans-serif" font-size="13">{label}</text>"#,
+            label = xml_escape(label),
+        ));
+        body.push_str(&format!(
+            r#"<rect x="{bar_x}" y="{bar_y:.1}" width="{bar_w:.2}" height="{bar_h:.1}" fill="{COLOR_ACCENT}" rx="2" />"#,
+        ));
+        body.push_str(&format!(
+            r#"<text x="{count_x}" y="{row_mid:.1}" text-anchor="end" dominant-baseline="middle" fill="{COLOR_MUTED}" font-family="sans-serif" font-size="13">{count}</text>"#,
+        ));
+    }
+    if truncated {
+        let extra = items.len() - 10;
+        let row_top = 10.0 * row_h;
+        let row_mid = row_top + row_h / 2.0;
+        body.push_str(&format!(
+            r#"<text x="{label_x}" y="{row_mid:.1}" dominant-baseline="middle" fill="{COLOR_MUTED}" font-family="sans-serif" font-size="12" font-style="italic">+{extra} more not shown</text>"#,
+        ));
+    }
+
+    format!(
+        r#"<svg viewBox="0 0 {VIEWBOX_W} {VIEWBOX_H}" xmlns="http://www.w3.org/2000/svg" class="chart">{body}</svg>"#,
+    )
+}
+
+/// XML-escape a label so user-supplied data (error_code strings,
+/// tenant IDs) cannot break the SVG markup.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +218,48 @@ mod tests {
         assert!(svg.contains(COLOR_2XX), "2xx color missing");
         assert!(svg.contains(COLOR_4XX), "4xx color missing");
         assert!(svg.contains(COLOR_5XX), "5xx color missing");
+    }
+
+    #[test]
+    fn horizontal_bars_empty_renders_placeholder() {
+        let svg = horizontal_bars(&[]);
+        assert!(svg.contains("no data"));
+    }
+
+    #[test]
+    fn horizontal_bars_truncates_at_10() {
+        let items: Vec<(String, u32)> = (0..15)
+            .map(|i| (format!("code-{i:02}"), 1))
+            .collect();
+        let svg = horizontal_bars(&items);
+        assert!(
+            svg.contains("+5 more not shown"),
+            "expected truncation marker, got SVG:\n{svg}"
+        );
+    }
+
+    #[test]
+    fn horizontal_bars_rect_widths_proportional() {
+        let items = vec![("a".to_string(), 100), ("b".to_string(), 50)];
+        let svg = horizontal_bars(&items);
+        // Both rects should appear; "a" should have ~2× the width of "b".
+        // We grep for two rect elements and inspect their `width="..."`.
+        let mut widths: Vec<f64> = Vec::new();
+        for cap in svg.split("<rect").skip(1) {
+            // Find width="..."
+            let after = match cap.split_once(r#"width=""#) {
+                Some(x) => x.1,
+                None => continue,
+            };
+            let end = after.find('"').unwrap();
+            let w: f64 = after[..end].parse().unwrap();
+            widths.push(w);
+        }
+        assert_eq!(widths.len(), 2, "expected 2 rect widths, got {widths:?}");
+        let ratio = widths[0] / widths[1];
+        assert!(
+            (ratio - 2.0).abs() < 0.01,
+            "expected ratio ~2.0, got {ratio} from widths {widths:?}"
+        );
     }
 }
