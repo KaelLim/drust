@@ -4,6 +4,7 @@ pub mod index;
 pub mod oauth;
 pub mod owner_field;
 pub mod read;
+pub mod realtime;
 pub mod schema;
 pub mod user;
 pub mod vector;
