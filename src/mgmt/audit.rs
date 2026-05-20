@@ -185,6 +185,29 @@ pub fn latency_histogram(entries: &[AuditEntry]) -> LatencyHistogram {
     }
 }
 
+/// v1.17 — group entries by `tenant`, sort by count desc with
+/// lexicographic tie-break, return top `n`. The `"-"` sentinel
+/// (admin-plane operations with no tenant) is skipped.
+pub fn tenant_request_bars(entries: &[AuditEntry], n: usize) -> Vec<TenantBar> {
+    let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for e in entries {
+        if e.tenant == "-" {
+            continue;
+        }
+        *counts.entry(e.tenant.as_str()).or_insert(0) += 1;
+    }
+    let mut bars: Vec<TenantBar> = counts
+        .into_iter()
+        .map(|(tenant, count)| TenantBar {
+            tenant: tenant.to_string(),
+            count,
+        })
+        .collect();
+    bars.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tenant.cmp(&b.tenant)));
+    bars.truncate(n);
+    bars
+}
+
 #[derive(Debug, Clone)]
 pub enum AuditScope {
     Host,
@@ -1506,5 +1529,39 @@ mod tests {
         assert_eq!(hist.p50_ms, percentile(&sorted, 50));
         assert_eq!(hist.p95_ms, percentile(&sorted, 95));
         assert_eq!(hist.p99_ms, percentile(&sorted, 99));
+    }
+
+    #[test]
+    fn tenant_request_bars_top_n_descending() {
+        let mut entries = Vec::new();
+        for (i, name) in ["alpha", "beta", "gamma", "delta", "epsilon"].iter().enumerate() {
+            for _ in 0..(i + 1) {
+                entries.push(mk_entry_with_code(
+                    "2026-05-20T12:00:00.000Z",
+                    name,
+                    "op",
+                    "ok",
+                    None,
+                    1,
+                ));
+            }
+        }
+        let bars = tenant_request_bars(&entries, 3);
+        assert_eq!(bars.len(), 3);
+        assert_eq!(bars[0].tenant, "epsilon");
+        assert_eq!(bars[0].count, 5);
+        assert_eq!(bars[1].tenant, "delta");
+        assert_eq!(bars[2].tenant, "gamma");
+    }
+
+    #[test]
+    fn tenant_request_bars_skips_dash_sentinel() {
+        let entries = vec![
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "-", "op", "ok", None, 1),
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "real", "op", "ok", None, 1),
+        ];
+        let bars = tenant_request_bars(&entries, 10);
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].tenant, "real");
     }
 }
