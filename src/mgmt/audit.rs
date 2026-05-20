@@ -691,25 +691,14 @@ fn url_with(
 
 /// v1.17 — bundle the four SVG strings + the show-tenant-chart flag
 /// so `build_body_ctx` can build them once in the overview branch
-/// and zero them out in the browse branch.
+/// and zero them out in the browse branch via `Default::default()`.
+#[derive(Default)]
 struct ChartCtx {
     show_tenant_chart: bool,
     time_series_svg: String,
     error_codes_svg: String,
     latency_svg: String,
     tenant_bars_svg: Option<String>,
-}
-
-impl ChartCtx {
-    fn empty() -> Self {
-        Self {
-            show_tenant_chart: false,
-            time_series_svg: String::new(),
-            error_codes_svg: String::new(),
-            latency_svg: String::new(),
-            tenant_bars_svg: None,
-        }
-    }
 }
 
 pub fn build_body_ctx(
@@ -744,6 +733,10 @@ pub fn build_body_ctx(
     };
 
     let (overview, entries, next_cursor, chart_ctx) = if tab == "overview" {
+        // Clone so the optional tenant-filter `retain` doesn't mutate
+        // the cached `scan.entries` (the browse branch may need them
+        // unfiltered on a subsequent request — though we don't keep
+        // them across requests, clarity here trumps the tiny copy).
         let mut for_overview = scan.entries.clone();
         if let Some(t) = &tenant_filter_effective {
             for_overview.retain(|e| &e.tenant == t);
@@ -797,7 +790,7 @@ pub fn build_body_ctx(
         } else {
             None
         };
-        (None, page, next, ChartCtx::empty())
+        (None, page, next, ChartCtx::default())
     };
 
     let base = base_link(&scope);
