@@ -55,13 +55,13 @@ async fn create_collection_defaults_realtime_enabled_to_zero() {
     );
 }
 
+#[path = "helpers.rs"]
+mod tests_helpers;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tests_helpers::{grab_pool, spin_up_dual_role_self_register, spin_up_tenant};
 use tower::ServiceExt;
-
-#[path = "helpers.rs"]
-mod tests_helpers;
 
 async fn seed_with_realtime(dir: &tempfile::TempDir, tenant: &str, enabled: bool) {
     let pool = grab_pool(tenant, dir).await;
@@ -156,6 +156,9 @@ async fn anon_blocked_without_select_cap() {
     let (app, _tid, _svc, anon, d) = spin_up_dual_role_self_register("anon-nosel").await;
     seed_with_realtime(&d, "anon-nosel", true).await;
     // Strip the default select cap so the composed gate fails on caps.
+    // Note: bypasses the production DDL path, which would call
+    // schema_cache.invalidate. Safe here because the schema cache for
+    // `posts` is still cold — no prior subscribe has populated it.
     let pool = grab_pool("anon-nosel", &d).await;
     pool.with_writer(|c| {
         drust::storage::schema::write_anon_caps(

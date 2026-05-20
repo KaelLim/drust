@@ -85,7 +85,6 @@ pub async fn subscribe_handler(
     }
 
     // Pass — open the stream.
-    let _ = &t;
     let rx = bus.subscribe(&tenant, &coll);
     let stream = BroadcastStream::new(rx)
         .filter_map(|r| r.ok())
