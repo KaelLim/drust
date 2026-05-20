@@ -19,12 +19,12 @@
     <h3>Latency distribution</h3>
     {{ latency_svg|safe }}
   </div>
-  {% if show_tenant_chart %}
+  {# tenant_bars_svg is Some(...) only when scope is Host; the handler
+     gates it there, so a single guard is enough. #}
   {% if let Some(svg) = tenant_bars_svg %}
   <div class="chart-card">
     <h3>Top tenants</h3>
     {{ svg|safe }}
   </div>
-  {% endif %}
   {% endif %}
 </section>
