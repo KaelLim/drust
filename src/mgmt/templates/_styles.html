@@ -1019,4 +1019,16 @@
 
   /* test playground (tenant_rpc_test.html) — runs through standard
      .field / .input / .textarea / .card already; nothing extra needed. */
+
+  /* v1.17 — audit log chart cards. */
+  .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 24px; }
+  @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+  .chart-card { background: var(--card-bg, #161b22); border: 1px solid var(--border, #30363d); border-radius: var(--radius, 6px); padding: 16px; }
+  .chart-card h3 { margin: 0 0 12px; font: 600 14px/1.4 var(--sans, system-ui); color: var(--muted, #7d8590); }
+  .chart-card svg.chart { width: 100%; height: auto; display: block; }
+  .chart-legend { display: flex; gap: 12px; margin-top: 8px; font: 400 12px/1.4 var(--sans, system-ui); color: var(--muted, #7d8590); }
+  .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  .legend-swatch.ok { background: var(--ok, #2ea043); }
+  .legend-swatch.warn { background: var(--warn, #d29922); }
+  .legend-swatch.err { background: var(--err, #f85149); }
 </style>

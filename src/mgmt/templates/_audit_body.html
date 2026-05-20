@@ -22,6 +22,7 @@
 </div>
 
 {% if tab == "overview" %}
+{% include "_audit_charts.html" %}
 {% if let Some(ov) = overview %}
 <div class="stat-grid" style="margin-bottom:18px;">
   <div class="stat accent-edge">

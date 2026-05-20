@@ -626,6 +626,11 @@ pub struct BodyCtx {
     pub tenant_filter: Option<String>,
     pub op_filter: Option<String>,
     pub status_filter: &'static str,
+    pub show_tenant_chart: bool,
+    pub time_series_svg: String,
+    pub error_codes_svg: String,
+    pub latency_svg: String,
+    pub tenant_bars_svg: Option<String>,
 }
 
 #[derive(Template)]
@@ -650,6 +655,11 @@ struct AuditHostPage {
     tenant_filter: Option<String>,
     op_filter: Option<String>,
     status_filter: &'static str,
+    show_tenant_chart: bool,
+    time_series_svg: String,
+    error_codes_svg: String,
+    latency_svg: String,
+    tenant_bars_svg: Option<String>,
 }
 
 fn base_link(scope: &AuditScope) -> String {
@@ -677,6 +687,29 @@ fn url_with(
         s.push_str("&auto=1");
     }
     s
+}
+
+/// v1.17 — bundle the four SVG strings + the show-tenant-chart flag
+/// so `build_body_ctx` can build them once in the overview branch
+/// and zero them out in the browse branch.
+struct ChartCtx {
+    show_tenant_chart: bool,
+    time_series_svg: String,
+    error_codes_svg: String,
+    latency_svg: String,
+    tenant_bars_svg: Option<String>,
+}
+
+impl ChartCtx {
+    fn empty() -> Self {
+        Self {
+            show_tenant_chart: false,
+            time_series_svg: String::new(),
+            error_codes_svg: String::new(),
+            latency_svg: String::new(),
+            tenant_bars_svg: None,
+        }
+    }
 }
 
 pub fn build_body_ctx(
@@ -710,12 +743,46 @@ pub fn build_body_ctx(
         _ => None,
     };
 
-    let (overview, entries, next_cursor) = if tab == "overview" {
+    let (overview, entries, next_cursor, chart_ctx) = if tab == "overview" {
         let mut for_overview = scan.entries.clone();
         if let Some(t) = &tenant_filter_effective {
             for_overview.retain(|e| &e.tenant == t);
         }
-        (Some(aggregate(&for_overview, window)), Vec::new(), None)
+        let time_series = time_series_buckets(&for_overview, window, now);
+        let err_codes = top_error_codes(&for_overview, 10);
+        let latency = latency_histogram(&for_overview);
+        let show_tenant_chart = matches!(&scope, AuditScope::Host);
+        let tenant_bars = if show_tenant_chart {
+            Some(tenant_request_bars(&for_overview, 10))
+        } else {
+            None
+        };
+
+        let time_series_svg = crate::mgmt::svg_charts::stacked_area_chart(&time_series);
+        let error_codes_svg = crate::mgmt::svg_charts::horizontal_bars(
+            &err_codes
+                .iter()
+                .map(|e| (e.code.clone(), e.count))
+                .collect::<Vec<_>>(),
+        );
+        let latency_svg = crate::mgmt::svg_charts::histogram_with_percentiles(&latency);
+        let tenant_bars_svg = tenant_bars.map(|bars| {
+            crate::mgmt::svg_charts::horizontal_bars(
+                &bars
+                    .into_iter()
+                    .map(|b| (b.tenant, b.count))
+                    .collect::<Vec<_>>(),
+            )
+        });
+
+        let chart_ctx = ChartCtx {
+            show_tenant_chart,
+            time_series_svg,
+            error_codes_svg,
+            latency_svg,
+            tenant_bars_svg,
+        };
+        (Some(aggregate(&for_overview, window)), Vec::new(), None, chart_ctx)
     } else {
         let spec = FilterSpec {
             tenant: tenant_filter_effective.clone(),
@@ -730,7 +797,7 @@ pub fn build_body_ctx(
         } else {
             None
         };
-        (None, page, next)
+        (None, page, next, ChartCtx::empty())
     };
 
     let base = base_link(&scope);
@@ -787,6 +854,11 @@ pub fn build_body_ctx(
         tenant_filter: tenant_filter_for_render,
         op_filter: op_filter_effective,
         status_filter,
+        show_tenant_chart: chart_ctx.show_tenant_chart,
+        time_series_svg: chart_ctx.time_series_svg,
+        error_codes_svg: chart_ctx.error_codes_svg,
+        latency_svg: chart_ctx.latency_svg,
+        tenant_bars_svg: chart_ctx.tenant_bars_svg,
     }
 }
 
@@ -815,6 +887,11 @@ pub async fn audit_host_page(
         tenant_filter: body.tenant_filter,
         op_filter: body.op_filter,
         status_filter: body.status_filter,
+        show_tenant_chart: body.show_tenant_chart,
+        time_series_svg: body.time_series_svg,
+        error_codes_svg: body.error_codes_svg,
+        latency_svg: body.latency_svg,
+        tenant_bars_svg: body.tenant_bars_svg,
     };
     Html(page.render().unwrap()).into_response()
 }
@@ -845,6 +922,11 @@ struct AuditTenantPage {
     tenant_filter: Option<String>,
     op_filter: Option<String>,
     status_filter: &'static str,
+    show_tenant_chart: bool,
+    time_series_svg: String,
+    error_codes_svg: String,
+    latency_svg: String,
+    tenant_bars_svg: Option<String>,
 }
 
 pub async fn audit_tenant_page(
@@ -899,6 +981,11 @@ pub async fn audit_tenant_page(
         tenant_filter: body.tenant_filter,
         op_filter: body.op_filter,
         status_filter: body.status_filter,
+        show_tenant_chart: body.show_tenant_chart,
+        time_series_svg: body.time_series_svg,
+        error_codes_svg: body.error_codes_svg,
+        latency_svg: body.latency_svg,
+        tenant_bars_svg: body.tenant_bars_svg,
     };
     Html(tpl.render().unwrap()).into_response()
 }
