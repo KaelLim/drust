@@ -41,6 +41,22 @@ impl Window {
     }
 }
 
+/// v1.17 — pick a time-series bucket size so each chart has 60–200
+/// buckets regardless of window. Returns bucket size in seconds.
+///
+/// | window | seconds | buckets |
+/// |--------|---------|---------|
+/// | 1h     | 60      | 60      |
+/// | 24h    | 600     | 144     |
+/// | 7d     | 3600    | 168     |
+pub fn adaptive_bucket_seconds(window: Window) -> i64 {
+    match window {
+        Window::H1 => 60,
+        Window::H24 => 600,
+        Window::D7 => 3600,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AuditScope {
     Host,
@@ -1149,5 +1165,12 @@ mod tests {
             timestamps,
             vec!["2026-05-05T01:00:01.000Z", "2026-05-05T01:00:00.000Z"]
         );
+    }
+
+    #[test]
+    fn adaptive_bucket_seconds_matches_table() {
+        assert_eq!(adaptive_bucket_seconds(Window::H1), 60);
+        assert_eq!(adaptive_bucket_seconds(Window::H24), 600);
+        assert_eq!(adaptive_bucket_seconds(Window::D7), 3600);
     }
 }
