@@ -289,6 +289,9 @@ pub async fn create_collection(
         // Seed the anon_caps row so REST / cache lookups don't have to
         // fall back to defaults the first time around.
         write_anon_caps(c, &meta_name, &default_anon_caps())?;
+        // v1.16: opt-in posture. Existing collections were backfilled to
+        // 1 by the migration; brand-new collections start at 0.
+        crate::storage::schema::write_realtime_enabled(c, &meta_name, false)?;
         if !vfields_for_writer.is_empty() {
             crate::storage::schema::write_vector_fields(
                 c,
