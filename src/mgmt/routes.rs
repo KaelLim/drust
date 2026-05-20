@@ -402,6 +402,10 @@ impl MgmtState {
                 post(super::browse::update_anon_caps),
             )
             .route(
+                "/admin/tenants/{id}/collections/{coll}/realtime",
+                post(super::browse::update_realtime),
+            )
+            .route(
                 "/admin/tenants/{id}/collections/{coll}/_indexes",
                 post(super::browse::create_index_admin),
             )

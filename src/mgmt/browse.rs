@@ -45,21 +45,25 @@ struct RowsPage {
     sort_options: Vec<SortOption>,
     per_page_options: Vec<PerPageOption>,
     error: Option<String>,
-    /// `"rows"` (default) | `"schema"` | `"indexes"` | `"anon"` | `"explain"`.
+    /// `"rows"` (default) | `"schema"` | `"indexes"` | `"anon"` | `"realtime"` | `"explain"`.
     /// The legacy `"data"` value is mapped to `"rows"` for back-compat with
     /// bookmarks from before v1.14.
     active_tab: String,
     /// Pre-built tab anchors. Only the rows URL preserves filter/sort/page
-    /// (the other four tabs ignore those params); each non-rows URL is
+    /// (the other tabs ignore those params); each non-rows URL is
     /// the canonical collection URL plus `?tab=<name>`.
     tab_rows_url: String,
     tab_schema_url: String,
     tab_indexes_url: String,
     tab_anon_url: String,
+    tab_realtime_url: String,
     tab_explain_url: String,
     /// Pairs of `(verb, currently_enabled)` for the four DML verbs in
     /// canonical order. Drives the checkbox row in the Anon tab editor.
     anon_cap_choices: Vec<(&'static str, bool)>,
+    /// v1.16 — whether SSE broadcast is enabled for this collection. Drives
+    /// the Realtime tab's single toggle.
+    realtime_enabled: bool,
     /// Index list for the Indexes tab.
     indices: Vec<IndexInfo>,
     version: &'static str,
@@ -263,6 +267,7 @@ pub async fn collection_rows_page(
         Some("schema") => "schema".to_string(),
         Some("indexes") => "indexes".to_string(),
         Some("anon") => "anon".to_string(),
+        Some("realtime") => "realtime".to_string(),
         Some("explain") => "explain".to_string(),
         // `"data"` is the pre-v1.14 alias for `"rows"`. Anything else
         // (None, unknown) defaults to rows.
@@ -420,7 +425,12 @@ pub async fn collection_rows_page(
     let tab_schema_url = format!("{coll_base}?tab=schema");
     let tab_indexes_url = format!("{coll_base}?tab=indexes");
     let tab_anon_url = format!("{coll_base}?tab=anon");
+    let tab_realtime_url = format!("{coll_base}?tab=realtime");
     let tab_explain_url = format!("{coll_base}?tab=explain");
+    // v1.16 — pull the current SSE broadcast flag off the same schema row
+    // we already loaded above. `describe_collection` falls back to true
+    // when no `_system_collection_meta` row exists yet.
+    let realtime_enabled = schema.realtime_enabled;
 
     // Cross-reference indices to mark fields that participate in any
     // explicit index. Used by the schema tab to render an IDX badge.
@@ -486,8 +496,10 @@ pub async fn collection_rows_page(
             tab_schema_url,
             tab_indexes_url,
             tab_anon_url,
+            tab_realtime_url,
             tab_explain_url,
             anon_cap_choices,
+            realtime_enabled,
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()
@@ -562,6 +574,57 @@ pub async fn update_anon_caps(
 
     Redirect::to(&format!(
         "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
+    ))
+    .into_response()
+}
+
+/// Form payload for the Realtime tab toggle.
+///
+/// Browser checkbox semantics: a checked box submits `enabled=1`; an
+/// unchecked box omits the field entirely. We map "field present" → on,
+/// "field absent" → off.
+#[derive(serde::Deserialize)]
+pub struct RealtimeForm {
+    #[serde(default)]
+    pub enabled: Option<String>,
+}
+
+/// POST `/admin/tenants/{tenant}/collections/{coll}/realtime`.
+///
+/// Form submit from the Realtime tab. Flips the flag, invalidates the
+/// schema cache, and evicts the broadcast channel on disable so any
+/// in-flight SSE connection terminates immediately.
+pub async fn update_realtime(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name)): Path<(String, String)>,
+    axum_extra::extract::Form(form): axum_extra::extract::Form<RealtimeForm>,
+) -> Response {
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    let enabled = form.enabled.is_some();
+    let writer = match open_write(&state.data_dir, &tenant_id) {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if let Err(e) = crate::storage::schema::write_realtime_enabled(&writer, &coll_name, enabled) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    drop(writer);
+
+    // Cache invalidate BEFORE bus evict — mirrors the REST handler's
+    // ordering so any subscriber racing in between reads fresh schema.
+    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+        pool.schema_cache.invalidate(&coll_name);
+    }
+    if !enabled {
+        state.bus.evict_collection(&tenant_id, &coll_name);
+    }
+    Redirect::to(&format!(
+        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=realtime"
     ))
     .into_response()
 }

@@ -39,6 +39,7 @@
           <a class="col-tab{% if active_tab == "schema" %} on{% endif %}"   href="{{ tab_schema_url }}">Schema <span class="mono">{{ fields.len() }}</span></a>
           <a class="col-tab{% if active_tab == "indexes" %} on{% endif %}"  href="{{ tab_indexes_url }}">Indexes <span class="mono">{{ indices.len() }}</span></a>
           <a class="col-tab{% if active_tab == "anon" %} on{% endif %}"     href="{{ tab_anon_url }}">Anon access</a>
+          <a class="col-tab{% if active_tab == "realtime" %} on{% endif %}" href="{{ tab_realtime_url }}">Realtime</a>
           <a class="col-tab{% if active_tab == "explain" %} on{% endif %}"  href="{{ tab_explain_url }}">Explain</a>
         </nav>
 
@@ -410,6 +411,46 @@
         <script>
           // make .cap-tile clickable: toggle .on + checkbox state
           document.querySelectorAll('.cap-tile').forEach(function (tile) {
+            tile.addEventListener('click', function (e) {
+              if (e.target.tagName === 'INPUT') return;
+              var cb = tile.querySelector('input[type="checkbox"]');
+              if (!cb) return;
+              cb.checked = !cb.checked;
+              tile.classList.toggle('on', cb.checked);
+            });
+          });
+        </script>
+        {% endif %}
+
+        {# ============================== realtime tab ============================== #}
+        {% if active_tab == "realtime" %}
+        <div class="banner info" style="margin-bottom:18px;">
+          <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg></span>
+          <div class="b-body">
+            <div class="b-title">SSE realtime broadcast</div>
+            <p>When enabled, <code>GET /drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</code> streams created / updated / deleted events. Anon callers additionally need <code>select</code> in this collection's anon capabilities. When disabled, existing connections are dropped immediately and the endpoint returns <code>403 REALTIME_DISABLED</code>.</p>
+          </div>
+        </div>
+
+        <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
+          <label class="cap-tile{% if realtime_enabled %} on{% endif %}" style="max-width:380px;">
+            <input type="checkbox" name="enabled" value="1"{% if realtime_enabled %} checked{% endif %} style="display:none;">
+            <span class="cap-glyph">SSE</span>
+            <div>
+              <div class="cap-name">Broadcast row changes</div>
+              <div class="cap-desc">events: created · updated · deleted</div>
+            </div>
+            <span class="cap-switch"></span>
+          </label>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:14px;">
+            <button class="btn primary" type="submit">apply changes</button>
+            <span style="color:var(--muted);font:400 12px/1.4 var(--sans);">tip: click the tile to toggle</span>
+          </div>
+        </form>
+        <script>
+          // Mirror the anon-tab script for the realtime tile (each tab body
+          // is mutually exclusive, so we need the binding inside this block).
+          document.querySelectorAll('form[action$="/realtime"] .cap-tile').forEach(function (tile) {
             tile.addEventListener('click', function (e) {
               if (e.target.tagName === 'INPUT') return;
               var cb = tile.querySelector('input[type="checkbox"]');
