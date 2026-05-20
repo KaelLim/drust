@@ -131,6 +131,29 @@ pub fn time_series_buckets(
     buckets
 }
 
+/// v1.17 — group entries by `error_code`, sort by count desc with
+/// lexicographic tie-break, return top `n`. Entries with `error_code
+/// = None` are skipped (they're successes, not errors).
+pub fn top_error_codes(entries: &[AuditEntry], n: usize) -> Vec<ErrorCodeCount> {
+    let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for e in entries {
+        if let Some(code) = e.error_code.as_deref() {
+            *counts.entry(code).or_insert(0) += 1;
+        }
+    }
+    let mut pairs: Vec<ErrorCodeCount> = counts
+        .into_iter()
+        .map(|(code, count)| ErrorCodeCount {
+            code: code.to_string(),
+            count,
+        })
+        .collect();
+    // Sort by count desc, then code asc (lexicographic tie-break).
+    pairs.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.code.cmp(&b.code)));
+    pairs.truncate(n);
+    pairs
+}
+
 #[derive(Debug, Clone)]
 pub enum AuditScope {
     Host,
@@ -1342,5 +1365,69 @@ mod tests {
         let buckets = time_series_buckets(&entries, Window::H1, now);
         let total: u32 = buckets.iter().map(|b| b.count_2xx).sum();
         assert_eq!(total, 1, "only the in-window entry should appear");
+    }
+
+    #[test]
+    fn top_error_codes_descending_with_n_cap() {
+        let mut entries = Vec::new();
+        // 15 distinct codes with counts 1, 2, 3, ... 15
+        for (i, name) in [
+            "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let count = i as u64 + 1;
+            for _ in 0..count {
+                entries.push(mk_entry_with_code(
+                    "2026-05-20T12:00:00.000Z",
+                    "t",
+                    "op",
+                    "error",
+                    Some(name),
+                    1,
+                ));
+            }
+        }
+        let top = top_error_codes(&entries, 10);
+        assert_eq!(top.len(), 10);
+        // Highest first: O (15), N (14), M (13), ...
+        assert_eq!(top[0].code, "O");
+        assert_eq!(top[0].count, 15);
+        assert_eq!(top[9].code, "F");
+        assert_eq!(top[9].count, 6);
+    }
+
+    #[test]
+    fn top_error_codes_skips_entries_without_code() {
+        // `error_code = None` means "no error" and must not appear.
+        let entries = vec![
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 1),
+            mk_entry_with_code(
+                "2026-05-20T12:00:00.000Z",
+                "t",
+                "op",
+                "error",
+                Some("REAL_ERR"),
+                1,
+            ),
+        ];
+        let top = top_error_codes(&entries, 10);
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].code, "REAL_ERR");
+    }
+
+    #[test]
+    fn top_error_codes_ties_break_lexicographically() {
+        let entries = vec![
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "error", Some("ZZZ"), 1),
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "error", Some("AAA"), 1),
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "error", Some("MMM"), 1),
+        ];
+        let top = top_error_codes(&entries, 10);
+        assert_eq!(top.len(), 3);
+        assert_eq!(top[0].code, "AAA");
+        assert_eq!(top[1].code, "MMM");
+        assert_eq!(top[2].code, "ZZZ");
     }
 }
