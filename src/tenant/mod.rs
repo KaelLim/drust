@@ -10,6 +10,7 @@ pub mod oauth_config;
 pub mod oauth_routes;
 pub mod owner_field;
 pub mod query_endpoint;
+pub mod realtime_routes;
 pub mod records;
 pub mod router;
 pub mod sse;
@@ -191,6 +192,15 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .route(
             "/t/{tenant}/collections/{coll}/search",
             post(vector_search::search_handler),
+        )
+        .route(
+            "/t/{tenant}/collections/{coll}/realtime",
+            put({
+                let b = bus.clone();
+                move |ext, path, body| {
+                    realtime_routes::put_realtime_handler(ext, path, body, b.clone())
+                }
+            }),
         )
         .route(
             "/t/{tenant}/records/{coll}",
