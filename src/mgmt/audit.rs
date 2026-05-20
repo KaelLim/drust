@@ -82,6 +82,43 @@ pub struct TopTenant {
     pub error_pct: f64,
 }
 
+/// v1.17 — one bucket of the requests-over-time chart.
+/// `ts_unix` is the bucket's left edge in seconds since UNIX epoch.
+/// Counts are by HTTP status class.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TimeBucket {
+    pub ts_unix: i64,
+    pub count_2xx: u32,
+    pub count_4xx: u32,
+    pub count_5xx: u32,
+}
+
+/// v1.17 — one row of the top-error-codes chart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorCodeCount {
+    pub code: String,
+    pub count: u32,
+}
+
+/// v1.17 — log-scale duration histogram with the three percentile cuts
+/// pre-computed. Fixed-shape buckets at indices:
+/// 0: 0–10ms, 1: 10–50, 2: 50–200, 3: 200–1000, 4: 1000–5000, 5: 5000+ ms.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LatencyHistogram {
+    pub buckets: [u32; 6],
+    pub p50_ms: u64,
+    pub p95_ms: u64,
+    pub p99_ms: u64,
+}
+
+/// v1.17 — one bar of the top-tenants-by-request-count chart
+/// (host scope only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantBar {
+    pub tenant: String,
+    pub count: u32,
+}
+
 /// Hard cap on entries returned per scan_window call.
 pub const MAX_ENTRIES: usize = 50_000;
 
