@@ -626,7 +626,6 @@ pub struct BodyCtx {
     pub tenant_filter: Option<String>,
     pub op_filter: Option<String>,
     pub status_filter: &'static str,
-    pub show_tenant_chart: bool,
     pub time_series_svg: String,
     pub error_codes_svg: String,
     pub latency_svg: String,
@@ -655,7 +654,6 @@ struct AuditHostPage {
     tenant_filter: Option<String>,
     op_filter: Option<String>,
     status_filter: &'static str,
-    show_tenant_chart: bool,
     time_series_svg: String,
     error_codes_svg: String,
     latency_svg: String,
@@ -694,7 +692,6 @@ fn url_with(
 /// and zero them out in the browse branch via `Default::default()`.
 #[derive(Default)]
 struct ChartCtx {
-    show_tenant_chart: bool,
     time_series_svg: String,
     error_codes_svg: String,
     latency_svg: String,
@@ -744,8 +741,7 @@ pub fn build_body_ctx(
         let time_series = time_series_buckets(&for_overview, window, now);
         let err_codes = top_error_codes(&for_overview, 10);
         let latency = latency_histogram(&for_overview);
-        let show_tenant_chart = matches!(&scope, AuditScope::Host);
-        let tenant_bars = if show_tenant_chart {
+        let tenant_bars = if matches!(&scope, AuditScope::Host) {
             Some(tenant_request_bars(&for_overview, 10))
         } else {
             None
@@ -769,7 +765,6 @@ pub fn build_body_ctx(
         });
 
         let chart_ctx = ChartCtx {
-            show_tenant_chart,
             time_series_svg,
             error_codes_svg,
             latency_svg,
@@ -847,7 +842,6 @@ pub fn build_body_ctx(
         tenant_filter: tenant_filter_for_render,
         op_filter: op_filter_effective,
         status_filter,
-        show_tenant_chart: chart_ctx.show_tenant_chart,
         time_series_svg: chart_ctx.time_series_svg,
         error_codes_svg: chart_ctx.error_codes_svg,
         latency_svg: chart_ctx.latency_svg,
@@ -880,7 +874,6 @@ pub async fn audit_host_page(
         tenant_filter: body.tenant_filter,
         op_filter: body.op_filter,
         status_filter: body.status_filter,
-        show_tenant_chart: body.show_tenant_chart,
         time_series_svg: body.time_series_svg,
         error_codes_svg: body.error_codes_svg,
         latency_svg: body.latency_svg,
@@ -915,7 +908,6 @@ struct AuditTenantPage {
     tenant_filter: Option<String>,
     op_filter: Option<String>,
     status_filter: &'static str,
-    show_tenant_chart: bool,
     time_series_svg: String,
     error_codes_svg: String,
     latency_svg: String,
@@ -974,7 +966,6 @@ pub async fn audit_tenant_page(
         tenant_filter: body.tenant_filter,
         op_filter: body.op_filter,
         status_filter: body.status_filter,
-        show_tenant_chart: body.show_tenant_chart,
         time_series_svg: body.time_series_svg,
         error_codes_svg: body.error_codes_svg,
         latency_svg: body.latency_svg,
