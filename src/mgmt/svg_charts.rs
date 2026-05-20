@@ -6,7 +6,6 @@
 //! CSS custom properties (`var(--ok)` etc) with hex fallbacks; this
 //! lets the admin design tokens drive theming without recompilation.
 
-#[allow(unused_imports)]
 use crate::mgmt::audit::{LatencyHistogram, TimeBucket};
 
 pub(crate) const VIEWBOX_W: i32 = 800;
@@ -166,6 +165,99 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// Render the 6-bucket latency histogram with p50/p95/p99 marker
+/// lines. Bars colored by band: first three (≤200 ms) green, fourth
+/// (200–1000) amber, fifth and sixth (1s+) red. X-axis labels show
+/// upper bound of each band.
+pub fn histogram_with_percentiles(hist: &LatencyHistogram) -> String {
+    let total: u32 = hist.buckets.iter().sum();
+    if total == 0 {
+        return no_data_svg();
+    }
+    let max_count = *hist.buckets.iter().max().unwrap_or(&1).max(&1);
+
+    // Reserve top 10% for percentile labels, bottom 18% for x-axis
+    // labels. Bars live in the middle ~72%.
+    let top_pad = (VIEWBOX_H as f64) * 0.10;
+    let bottom_pad = (VIEWBOX_H as f64) * 0.18;
+    let plot_h = VIEWBOX_H as f64 - top_pad - bottom_pad;
+    let baseline = VIEWBOX_H as f64 - bottom_pad;
+
+    let band_w = (VIEWBOX_W as f64) / 6.0;
+    let bar_w = band_w * 0.7;
+    let bar_pad = (band_w - bar_w) / 2.0;
+
+    let band_colors = [
+        COLOR_2XX, COLOR_2XX, COLOR_2XX, COLOR_4XX, COLOR_5XX, COLOR_5XX,
+    ];
+    let band_labels = ["10ms", "50ms", "200ms", "1s", "5s", "∞"];
+
+    let mut body = String::new();
+
+    // Bars
+    for (i, &count) in hist.buckets.iter().enumerate() {
+        let h = if max_count > 0 {
+            (count as f64) / (max_count as f64) * plot_h
+        } else {
+            0.0
+        };
+        let x = (i as f64) * band_w + bar_pad;
+        let y = baseline - h;
+        body.push_str(&format!(
+            r#"<rect x="{x:.2}" y="{y:.2}" width="{bar_w:.2}" height="{h:.2}" fill="{c}" rx="2" />"#,
+            c = band_colors[i],
+        ));
+        // Band upper-bound label
+        body.push_str(&format!(
+            r#"<text x="{lx:.1}" y="{ly:.1}" text-anchor="middle" fill="{COLOR_MUTED}" font-family="sans-serif" font-size="11">{lbl}</text>"#,
+            lx = (i as f64) * band_w + band_w / 2.0,
+            ly = baseline + 14.0,
+            lbl = band_labels[i],
+        ));
+    }
+
+    // Percentile marker lines. Convert ms → x by mapping into the
+    // log-scale axis: each band covers one ×~5 multiplier
+    // (10→50→200→1000→5000), so an evenly-spaced log scale aligns
+    // band edges to multiples of band_w.
+    let x_for_ms = |ms: u64| -> f64 {
+        let edges_ms: [u64; 7] = [0, 10, 50, 200, 1000, 5000, u64::MAX];
+        for i in 0..6 {
+            let lo = edges_ms[i];
+            let hi = edges_ms[i + 1];
+            if ms <= hi {
+                let base = (i as f64) * band_w;
+                if hi == u64::MAX {
+                    return base + band_w / 2.0; // can't interpolate ∞
+                }
+                let span = (hi - lo) as f64;
+                let frac = if span > 0.0 {
+                    (ms.saturating_sub(lo) as f64) / span
+                } else {
+                    0.0
+                };
+                return base + frac * band_w;
+            }
+        }
+        VIEWBOX_W as f64
+    };
+
+    for (label, ms) in [("p50", hist.p50_ms), ("p95", hist.p95_ms), ("p99", hist.p99_ms)] {
+        let x = x_for_ms(ms);
+        body.push_str(&format!(
+            r#"<line x1="{x:.1}" y1="{top_pad:.1}" x2="{x:.1}" y2="{baseline:.1}" stroke="{COLOR_MUTED}" stroke-width="1" stroke-dasharray="4 3" />"#,
+        ));
+        body.push_str(&format!(
+            r#"<text x="{x:.1}" y="{ly:.1}" text-anchor="middle" fill="{COLOR_MUTED}" font-family="sans-serif" font-size="10">{label}</text>"#,
+            ly = top_pad - 4.0,
+        ));
+    }
+
+    format!(
+        r#"<svg viewBox="0 0 {VIEWBOX_W} {VIEWBOX_H}" xmlns="http://www.w3.org/2000/svg" class="chart">{body}</svg>"#,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +353,38 @@ mod tests {
             (ratio - 2.0).abs() < 0.01,
             "expected ratio ~2.0, got {ratio} from widths {widths:?}"
         );
+    }
+
+    #[test]
+    fn histogram_with_percentiles_renders_six_bars() {
+        let hist = LatencyHistogram {
+            buckets: [5, 10, 15, 3, 1, 0],
+            p50_ms: 30,
+            p95_ms: 800,
+            p99_ms: 3000,
+        };
+        let svg = histogram_with_percentiles(&hist);
+        let rect_count = svg.matches("<rect").count();
+        assert_eq!(rect_count, 6, "expected 6 bars, got SVG:\n{svg}");
+    }
+
+    #[test]
+    fn histogram_with_percentiles_shows_three_marker_lines() {
+        let hist = LatencyHistogram {
+            buckets: [1, 1, 1, 1, 1, 1],
+            p50_ms: 30,
+            p95_ms: 800,
+            p99_ms: 3000,
+        };
+        let svg = histogram_with_percentiles(&hist);
+        let dash_count = svg.matches("stroke-dasharray").count();
+        assert_eq!(dash_count, 3, "expected 3 dashed percentile lines");
+    }
+
+    #[test]
+    fn histogram_with_percentiles_empty_renders_placeholder() {
+        let hist = LatencyHistogram::default();
+        let svg = histogram_with_percentiles(&hist);
+        assert!(svg.contains("no data"));
     }
 }
