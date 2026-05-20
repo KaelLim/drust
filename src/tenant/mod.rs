@@ -218,7 +218,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             "/t/{tenant}/records/{coll}/subscribe",
             get({
                 let b = bus.clone();
-                move |ext, path| sse::subscribe_handler(b.clone(), ext, path)
+                move |ext, ctx, path| sse::subscribe_handler(b.clone(), ext, ctx, path)
             }),
         )
         .route("/t/{tenant}/query", post(query_endpoint::query_handler))

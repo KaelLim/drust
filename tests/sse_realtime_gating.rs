@@ -54,3 +54,146 @@ async fn create_collection_defaults_realtime_enabled_to_zero() {
         "new collections should be opt-in (realtime_enabled=0)"
     );
 }
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use tests_helpers::{grab_pool, spin_up_dual_role_self_register, spin_up_tenant};
+use tower::ServiceExt;
+
+#[path = "helpers.rs"]
+mod tests_helpers;
+
+async fn seed_with_realtime(dir: &tempfile::TempDir, tenant: &str, enabled: bool) {
+    let pool = grab_pool(tenant, dir).await;
+    pool.with_writer(move |c| {
+        c.execute_batch(
+            "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT);",
+        )?;
+        drust::storage::schema::write_realtime_enabled(c, "posts", enabled)?;
+        Ok::<_, rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn service_subscribes_when_realtime_enabled() {
+    let (app, tok, d) = spin_up_tenant("svc-on").await;
+    seed_with_realtime(&d, "svc-on", true).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/t/svc-on/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::ACCEPT, "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn service_blocked_when_realtime_disabled() {
+    let (app, tok, d) = spin_up_tenant("svc-off").await;
+    seed_with_realtime(&d, "svc-off", false).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/t/svc-off/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "REALTIME_DISABLED");
+}
+
+#[tokio::test]
+async fn anon_subscribes_when_enabled_and_can_select() {
+    let (app, _tid, _svc, anon, d) = spin_up_dual_role_self_register("anon-ok").await;
+    seed_with_realtime(&d, "anon-ok", true).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/t/anon-ok/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn anon_blocked_when_realtime_disabled() {
+    let (app, _tid, _svc, anon, d) = spin_up_dual_role_self_register("anon-off").await;
+    seed_with_realtime(&d, "anon-off", false).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/t/anon-off/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "REALTIME_DISABLED");
+}
+
+#[tokio::test]
+async fn anon_blocked_without_select_cap() {
+    let (app, _tid, _svc, anon, d) = spin_up_dual_role_self_register("anon-nosel").await;
+    seed_with_realtime(&d, "anon-nosel", true).await;
+    // Strip the default select cap so the composed gate fails on caps.
+    let pool = grab_pool("anon-nosel", &d).await;
+    pool.with_writer(|c| {
+        drust::storage::schema::write_anon_caps(
+            c,
+            "posts",
+            &std::collections::BTreeSet::new(),
+        )
+    })
+    .await
+    .unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/t/anon-nosel/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "REALTIME_ANON_DENIED");
+}
+
+#[tokio::test]
+async fn system_collection_subscribe_returns_404() {
+    let (app, tok, _d) = spin_up_tenant("sys-coll").await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/t/sys-coll/records/_system_users/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
