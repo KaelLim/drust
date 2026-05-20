@@ -1,4 +1,5 @@
 use axum::{Router, routing::get};
+use axum::http::{HeaderName, HeaderValue};
 use drust::config::Config;
 use drust::mcp::http_registry::McpHttpRegistry;
 use drust::mcp::server::McpRegistry;
@@ -13,6 +14,7 @@ use drust::tenant::{TenantStack, build_tenant_router, events::EventBus, router::
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -225,7 +227,11 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .merge(mgmt_router)
-        .merge(tenant_router);
+        .merge(tenant_router)
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-drust-version"),
+            HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
+        ));
 
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     tracing::info!(addr = %cfg.bind, "drust listening");
