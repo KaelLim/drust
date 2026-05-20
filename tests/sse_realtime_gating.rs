@@ -239,6 +239,45 @@ async fn put_realtime_enable_then_disable_round_trip() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+
+    // 1 → 0
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/t/rt-put/collections/posts/realtime")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"enabled":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["realtime_enabled"], false);
+
+    // Fresh subscribe now 403's — the disable half landed in the cache.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/t/rt-put/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let v: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["error_code"], "REALTIME_DISABLED");
 }
 
 #[tokio::test]
@@ -359,7 +398,7 @@ async fn put_realtime_unknown_collection_404() {
         &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
     )
     .unwrap();
-    assert_eq!(v["error_code"], "UNKNOWN_COLLECTION");
+    assert_eq!(v["error_code"], "COLLECTION_NOT_FOUND");
 }
 
 #[tokio::test]

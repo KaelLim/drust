@@ -57,7 +57,7 @@ pub async fn put_realtime_handler(
         Ok(false) => {
             return json_error(
                 StatusCode::NOT_FOUND,
-                "UNKNOWN_COLLECTION",
+                "COLLECTION_NOT_FOUND",
                 "no such collection",
             )
             .into_response();
