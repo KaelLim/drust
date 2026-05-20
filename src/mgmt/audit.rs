@@ -57,6 +57,80 @@ pub fn adaptive_bucket_seconds(window: Window) -> i64 {
     }
 }
 
+/// v1.17 — derive HTTP status class from an AuditEntry. The audit
+/// pipeline stores `status: String` as "ok"/"error" (text, NOT an HTTP
+/// code) and `error_code: Option<String>` carrying either `HTTP_<code>`
+/// for transport-level failures or a typed code (`WRITE_DENIED`,
+/// `COLLECTION_NOT_FOUND`, ...) for application-level denials.
+///
+/// Returns one of `2xx | 4xx | 5xx` for the stacking chart. Typed
+/// codes that aren't `HTTP_<n>` default to `4xx`, because in drust
+/// they're virtually all 4xx denials.
+fn status_class(entry: &AuditEntry) -> StatusClass {
+    match entry.error_code.as_deref() {
+        None => StatusClass::Ok,
+        Some(c) if c.starts_with("HTTP_5") => StatusClass::Server,
+        Some(c) if c.starts_with("HTTP_4") => StatusClass::Client,
+        Some(_) => StatusClass::Client, // typed denial → 4xx
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusClass {
+    Ok,
+    Client,
+    Server,
+}
+
+/// v1.17 — bucket entries by `adaptive_bucket_seconds(window)`-wide
+/// time windows, counting by HTTP status class. Returns buckets in
+/// chronological order from `now - window` to `now`, zero-filled
+/// across gaps so the SVG chart x-axis is contiguous.
+///
+/// `now` is parameterised (not `Utc::now()`) so tests can inject
+/// deterministic time.
+pub fn time_series_buckets(
+    entries: &[AuditEntry],
+    window: Window,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<TimeBucket> {
+    let bucket_secs = adaptive_bucket_seconds(window);
+    let window_secs = window.seconds();
+    let bucket_count: usize = (window_secs / bucket_secs) as usize;
+    let window_start = now.timestamp() - window_secs;
+    // Align window_start down to its bucket boundary so bucket[0]
+    // begins at a stable edge.
+    let aligned_start = (window_start / bucket_secs) * bucket_secs;
+
+    let mut buckets: Vec<TimeBucket> = (0..bucket_count)
+        .map(|i| TimeBucket {
+            ts_unix: aligned_start + (i as i64) * bucket_secs,
+            ..Default::default()
+        })
+        .collect();
+
+    for e in entries {
+        let ts = match chrono::DateTime::parse_from_rfc3339(&e.ts) {
+            Ok(t) => t.with_timezone(&chrono::Utc),
+            Err(_) => continue, // malformed timestamp — skip silently
+        };
+        let secs = ts.timestamp();
+        if secs < aligned_start || secs >= aligned_start + (bucket_count as i64) * bucket_secs {
+            continue;
+        }
+        let idx = ((secs - aligned_start) / bucket_secs) as usize;
+        // Defensive clamp: floating off-by-one near the right edge.
+        let idx = idx.min(bucket_count - 1);
+        let b = &mut buckets[idx];
+        match status_class(e) {
+            StatusClass::Ok => b.count_2xx += 1,
+            StatusClass::Client => b.count_4xx += 1,
+            StatusClass::Server => b.count_5xx += 1,
+        }
+    }
+    buckets
+}
+
 #[derive(Debug, Clone)]
 pub enum AuditScope {
     Host,
@@ -1172,5 +1246,101 @@ mod tests {
         assert_eq!(adaptive_bucket_seconds(Window::H1), 60);
         assert_eq!(adaptive_bucket_seconds(Window::H24), 600);
         assert_eq!(adaptive_bucket_seconds(Window::D7), 3600);
+    }
+
+    fn mk_entry_with_code(
+        ts: &str,
+        tenant: &str,
+        op: &str,
+        status_text: &str,
+        error_code: Option<&str>,
+        ms: u64,
+    ) -> AuditEntry {
+        let err_part = match error_code {
+            Some(c) => format!(r#","error_code":"{c}""#),
+            None => String::new(),
+        };
+        let line = format!(
+            r#"{{"ts":"{ts}","tenant":"{tenant}","token_hint":"hash0001","op":"{op}","status":"{status_text}","duration_ms":{ms}{err_part}}}"#
+        );
+        parse_jsonl_line(&line).unwrap()
+    }
+
+    #[test]
+    fn time_series_buckets_zero_fills_empty_intervals() {
+        // 24h window → 600s bucket → 144 buckets total. Insert entries at
+        // bucket 0 and bucket 5 only; everything else must be zeroed.
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-20T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let bucket_0_ts = "2026-05-19T12:00:00.000Z";
+        let bucket_5_ts = "2026-05-19T12:50:00.000Z"; // 5 * 600s = 3000s later
+        let entries = vec![
+            mk_entry_with_code(bucket_0_ts, "t", "GET /x", "ok", None, 10),
+            mk_entry_with_code(bucket_5_ts, "t", "GET /x", "ok", None, 10),
+        ];
+        let buckets = time_series_buckets(&entries, Window::H24, now);
+        assert_eq!(buckets.len(), 144, "24h / 600s = 144 buckets");
+        assert_eq!(buckets[0].count_2xx, 1);
+        for b in &buckets[1..5] {
+            assert_eq!(b.count_2xx + b.count_4xx + b.count_5xx, 0);
+        }
+        assert_eq!(buckets[5].count_2xx, 1);
+    }
+
+    #[test]
+    fn time_series_buckets_status_class_correctness() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-20T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let ts = "2026-05-20T11:59:30.000Z"; // bucket 0 of 1h window
+        let entries = vec![
+            mk_entry_with_code(ts, "t", "op", "ok", None, 1),
+            mk_entry_with_code(ts, "t", "op", "error", Some("HTTP_404"), 1),
+            mk_entry_with_code(ts, "t", "op", "error", Some("HTTP_500"), 1),
+            // Typed denial code: maps to 4xx (default for non-HTTP_5xx error codes).
+            mk_entry_with_code(ts, "t", "op", "error", Some("WRITE_DENIED"), 1),
+        ];
+        let buckets = time_series_buckets(&entries, Window::H1, now);
+        // Last bucket = "now" bucket. Look for our entries there.
+        let last = buckets.last().unwrap();
+        assert_eq!(last.count_2xx, 1);
+        assert_eq!(last.count_4xx, 2); // HTTP_404 + WRITE_DENIED
+        assert_eq!(last.count_5xx, 1);
+    }
+
+    #[test]
+    fn time_series_buckets_deterministic_with_injected_now() {
+        let now1 = chrono::DateTime::parse_from_rfc3339("2026-05-20T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let now2 = now1;
+        let entries = vec![mk_entry_with_code(
+            "2026-05-20T11:30:00.000Z",
+            "t",
+            "op",
+            "ok",
+            None,
+            1,
+        )];
+        let b1 = time_series_buckets(&entries, Window::H1, now1);
+        let b2 = time_series_buckets(&entries, Window::H1, now2);
+        assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn time_series_buckets_drops_entries_outside_window() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-20T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let entries = vec![
+            // Way outside the 1h window
+            mk_entry_with_code("2026-05-19T12:00:00.000Z", "t", "op", "ok", None, 1),
+            // Inside
+            mk_entry_with_code("2026-05-20T11:45:00.000Z", "t", "op", "ok", None, 1),
+        ];
+        let buckets = time_series_buckets(&entries, Window::H1, now);
+        let total: u32 = buckets.iter().map(|b| b.count_2xx).sum();
+        assert_eq!(total, 1, "only the in-window entry should appear");
     }
 }
