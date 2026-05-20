@@ -108,6 +108,12 @@ pub struct SetAnonCapsArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetRealtimeArgs {
+    pub collection: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct InsertRecordArgs {
     pub collection: String,
     /// JSON object mapping field name → value for the new row.
@@ -515,6 +521,21 @@ impl DrustMcpService {
         Parameters(SetAnonCapsArgs { collection, caps }): Parameters<SetAnonCapsArgs>,
     ) -> Result<CallToolResult, McpError> {
         match schema_tools::set_anon_caps(&self.state, &collection, &caps).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Toggle SSE realtime broadcast for one collection. \
+        When enabled, clients can subscribe to GET /records/<coll>/subscribe; \
+        anon callers additionally need anon_caps containing 'select'. When \
+        disabled, existing in-flight SSE connections are dropped within ~1s. \
+        Refuses `_system_*` collections.")]
+    async fn set_realtime(
+        &self,
+        Parameters(SetRealtimeArgs { collection, enabled }): Parameters<SetRealtimeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::realtime::set_realtime(&self.state, &collection, enabled).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -1160,7 +1181,7 @@ impl ServerHandler for DrustMcpService {
              Tools: `whoami`, `list_collections`, `describe_collection`, `sample_rows`, \
              `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
-             `drop_collection`, `set_anon_caps`, `create_index`, `drop_index`, \
+             `drop_collection`, `set_anon_caps`, `set_realtime`, `create_index`, `drop_index`, \
              `search_collection`, `list_files`, `delete_file`, `get_file_url`, \
              `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, `call_rpc`, \
              `create_user`, `list_users`, `get_user`, `update_user`, `delete_user`, \
