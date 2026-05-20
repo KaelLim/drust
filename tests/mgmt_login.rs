@@ -53,7 +53,9 @@ async fn login_page_renders() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+    // 256 KB cap — login page is ~80 KB post-v1.15 design overhaul
+    // (mascot SVG + design tokens). Headroom for future polish.
+    let body = axum::body::to_bytes(resp.into_body(), 256 * 1024)
         .await
         .unwrap();
     let s = std::str::from_utf8(&body).unwrap();

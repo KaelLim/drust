@@ -117,9 +117,12 @@ async fn sidebar_includes_webhooks_entry() {
         "sidebar must contain '_webhooks' entry; body excerpt:\n{}",
         &body.chars().take(800).collect::<String>()
     );
+    // The 🔔 emoji icon was replaced by an inline SVG during the v1.15
+    // design overhaul. Anchor on the link's title attribute instead — it
+    // is the stable semantic identifier for this sidebar entry.
     assert!(
-        body.contains("🔔"),
-        "sidebar must contain '🔔' icon for the _webhooks entry"
+        body.contains("outbound webhook subscriptions"),
+        "sidebar must carry the _webhooks entry's title attribute"
     );
 }
 

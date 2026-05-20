@@ -476,7 +476,10 @@ async fn oauth_button_hidden_when_unconfigured() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    // 256 KB cap: the rendered login page is currently ~80 KB after the
+    // v1.15 design overhaul (mascot SVG + design tokens). Give plenty of
+    // headroom so a future UI polish doesn't silently retrip this.
+    let body = axum::body::to_bytes(resp.into_body(), 256 * 1024).await.unwrap();
     let html = std::str::from_utf8(&body).unwrap();
     assert!(!html.contains("oauth-btn-google"), "google button leaked");
     assert!(!html.contains("oauth-btn-github"), "github button leaked");
