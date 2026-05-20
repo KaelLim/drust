@@ -154,6 +154,37 @@ pub fn top_error_codes(entries: &[AuditEntry], n: usize) -> Vec<ErrorCodeCount> 
     pairs
 }
 
+/// v1.17 — log-scale duration histogram with p50/p95/p99 cuts.
+/// Bucket boundaries (ms, inclusive lower, exclusive upper):
+/// `[0, 10), [10, 50), [50, 200), [200, 1000), [1000, 5000), [5000, ∞)`.
+/// Entries with `duration_ms = 0` (denied at auth layer before timing
+/// kicks in) land in the first bucket; they're counted in the
+/// percentile distribution too.
+pub fn latency_histogram(entries: &[AuditEntry]) -> LatencyHistogram {
+    let mut buckets = [0u32; 6];
+    let mut all_ms: Vec<u64> = Vec::with_capacity(entries.len());
+    for e in entries {
+        let ms = e.duration_ms;
+        let idx = match ms {
+            0..=9 => 0,
+            10..=49 => 1,
+            50..=199 => 2,
+            200..=999 => 3,
+            1000..=4999 => 4,
+            _ => 5,
+        };
+        buckets[idx] += 1;
+        all_ms.push(ms);
+    }
+    all_ms.sort_unstable();
+    LatencyHistogram {
+        buckets,
+        p50_ms: percentile(&all_ms, 50),
+        p95_ms: percentile(&all_ms, 95),
+        p99_ms: percentile(&all_ms, 99),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AuditScope {
     Host,
@@ -1429,5 +1460,51 @@ mod tests {
         assert_eq!(top[0].code, "AAA");
         assert_eq!(top[1].code, "MMM");
         assert_eq!(top[2].code, "ZZZ");
+    }
+
+    #[test]
+    fn latency_histogram_buckets_sum_to_total() {
+        let entries = vec![
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 5),
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 30),
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 150),
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 700),
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 3000),
+            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 10_000),
+        ];
+        let hist = latency_histogram(&entries);
+        let total: u32 = hist.buckets.iter().sum();
+        assert_eq!(total, 6);
+        // One entry per bucket
+        assert_eq!(hist.buckets, [1, 1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn latency_histogram_zero_duration_lands_in_first_bucket() {
+        let entries = vec![mk_entry_with_code(
+            "2026-05-20T12:00:00.000Z",
+            "t",
+            "op",
+            "ok",
+            None,
+            0,
+        )];
+        let hist = latency_histogram(&entries);
+        assert_eq!(hist.buckets[0], 1);
+        assert_eq!(hist.buckets[1..].iter().sum::<u32>(), 0);
+    }
+
+    #[test]
+    fn latency_histogram_percentiles_match_existing_helper() {
+        let entries: Vec<AuditEntry> = (1..=100)
+            .map(|i| mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, i))
+            .collect();
+        let hist = latency_histogram(&entries);
+        // Compare against direct call to existing private percentile fn.
+        let mut sorted: Vec<u64> = entries.iter().map(|e| e.duration_ms).collect();
+        sorted.sort_unstable();
+        assert_eq!(hist.p50_ms, percentile(&sorted, 50));
+        assert_eq!(hist.p95_ms, percentile(&sorted, 95));
+        assert_eq!(hist.p99_ms, percentile(&sorted, 99));
     }
 }
