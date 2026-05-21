@@ -31,6 +31,7 @@ async fn create_insert_update_delete_roundtrip() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -62,6 +63,7 @@ async fn add_field_adds_column() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -77,6 +79,7 @@ async fn add_field_adds_column() {
             default_value: Some(serde_json::json!(0)),
             foreign_key: None,
             dim: None,
+            description: None,
         },
     )
     .await
@@ -103,6 +106,7 @@ async fn sql_default_datetime_now_is_applied() {
                 default_value: None,
                 foreign_key: None,
                 dim: None,
+                description: None,
             },
             FieldSpec {
                 name: "scheduled_at".into(),
@@ -112,6 +116,7 @@ async fn sql_default_datetime_now_is_applied() {
                 default_value: Some(serde_json::json!({"sql": "datetime('now')"})),
                 foreign_key: None,
                 dim: None,
+                description: None,
             },
         ],
     )
@@ -151,6 +156,7 @@ async fn sql_default_allowlist_covers_all_entries() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -170,6 +176,7 @@ async fn sql_default_allowlist_covers_all_entries() {
                 default_value: Some(serde_json::json!({"sql": expr})),
                 foreign_key: None,
                 dim: None,
+                description: None,
             },
         )
         .await
@@ -193,6 +200,7 @@ async fn foreign_key_field_is_reported_in_describe() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -209,6 +217,7 @@ async fn foreign_key_field_is_reported_in_describe() {
                 default_value: None,
                 foreign_key: None,
                 dim: None,
+                description: None,
             },
             FieldSpec {
                 name: "author_id".into(),
@@ -218,6 +227,7 @@ async fn foreign_key_field_is_reported_in_describe() {
                 default_value: None,
                 foreign_key: Some("authors".into()),
                 dim: None,
+                description: None,
             },
         ],
     )
@@ -248,6 +258,7 @@ async fn foreign_key_rejected_when_target_missing() {
             default_value: None,
             foreign_key: Some("nonexistent".into()),
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -273,6 +284,7 @@ async fn foreign_key_constraint_is_enforced_on_insert() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -288,6 +300,7 @@ async fn foreign_key_constraint_is_enforced_on_insert() {
             default_value: None,
             foreign_key: Some("authors".into()),
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -318,6 +331,7 @@ async fn foreign_key_restrict_blocks_parent_delete_while_children_exist() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -333,6 +347,7 @@ async fn foreign_key_restrict_blocks_parent_delete_while_children_exist() {
             default_value: None,
             foreign_key: Some("authors".into()),
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -369,6 +384,7 @@ async fn sql_default_rejects_non_allowlisted() {
             default_value: Some(serde_json::json!({"sql": "(SELECT password FROM admins)"})),
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -395,6 +411,7 @@ async fn drop_field_removes_column() {
                 default_value: None,
                 foreign_key: None,
                 dim: None,
+                description: None,
             },
             FieldSpec {
                 name: "draft".into(),
@@ -404,6 +421,7 @@ async fn drop_field_removes_column() {
                 default_value: Some(serde_json::json!(1)),
                 foreign_key: None,
                 dim: None,
+                description: None,
             },
         ],
     )
@@ -446,6 +464,7 @@ async fn drop_field_rejects_system_columns() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -475,6 +494,7 @@ async fn drop_field_rejects_unknown() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -506,6 +526,7 @@ async fn drop_collection_removes_table_and_trigger() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -554,6 +575,7 @@ async fn drop_collection_rejects_when_fk_referrers_exist() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -569,6 +591,7 @@ async fn drop_collection_rejects_when_fk_referrers_exist() {
             default_value: None,
             foreign_key: Some("authors".into()),
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -629,6 +652,7 @@ async fn set_anon_caps_round_trip_and_describe_reflects_it() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await

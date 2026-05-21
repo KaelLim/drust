@@ -29,6 +29,7 @@ async fn mcp_set_realtime_round_trip() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await

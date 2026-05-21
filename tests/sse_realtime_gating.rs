@@ -30,6 +30,7 @@ async fn create_collection_defaults_realtime_enabled_to_zero() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
