@@ -627,6 +627,7 @@ pub async fn set_collection_description(
         write_collection_description(c, &coll_for_write, value_for_write.as_deref())
     })
     .await?;
+    pool.schema_cache.invalidate(collection);
     let coll_for_read = collection.to_string();
     let final_value = pool
         .with_reader(move |c| read_collection_description(c, &coll_for_read))
@@ -669,6 +670,7 @@ pub async fn set_field_description(
         write_field_description(c, &coll_for_write, &field_for_write, value.as_deref())
     })
     .await?;
+    pool.schema_cache.invalidate(collection);
     Ok(json!({
         "collection": collection,
         "field": field,
@@ -710,6 +712,7 @@ pub async fn set_index_description(
         write_index_description(c, &coll_for_write, &idx_for_write, value.as_deref())
     })
     .await?;
+    pool.schema_cache.invalidate(collection);
     Ok(json!({
         "collection": collection,
         "index_name": index_name,

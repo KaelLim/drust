@@ -174,6 +174,7 @@ pub async fn put_collection_description_handler(
     ).await {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
     }
+    t.pool.schema_cache.invalidate(&coll);
     Json(serde_json::json!({ "collection": coll, "description": value })).into_response()
 }
 
@@ -221,6 +222,7 @@ pub async fn put_field_description_handler(
     ).await {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
     }
+    t.pool.schema_cache.invalidate(&coll);
     Json(serde_json::json!({ "collection": coll, "field": field, "description": value })).into_response()
 }
 
@@ -268,6 +270,7 @@ pub async fn put_index_description_handler(
     ).await {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
     }
+    t.pool.schema_cache.invalidate(&coll);
     Json(serde_json::json!({ "collection": coll, "index_name": index_name, "description": value })).into_response()
 }
 
@@ -294,7 +297,7 @@ pub async fn get_schema_overview_handler(
         Ok::<_, rusqlite::Error>(out)
     }).await {
         Ok(v) => v,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
     };
     let rpcs = match t.pool.with_reader(|c| {
         crate::rpc::registry::list(c).map_err(|e| {
@@ -305,7 +308,7 @@ pub async fn get_schema_overview_handler(
         })
     }).await {
         Ok(v) => v,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
     };
     let tenant_id = t.tenant_id.clone();
     Json(serde_json::json!({
