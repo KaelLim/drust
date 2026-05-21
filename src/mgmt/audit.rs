@@ -930,7 +930,14 @@ pub fn build_body_ctx(
             .map(|e| AuditEntryView::from_entry(e, &resolve_tenant_name(&tenant_name_map, &e.tenant)))
             .collect();
         let distinct_ops = distinct_ops_capped(&filtered, 200);
-        let entries_json = serde_json::to_string(&page_view).unwrap_or_else(|_| "[]".to_string());
+        // Inline-JSON-in-HTML safety: escape forward slashes preceded by `<` so
+        // a literal `</script>` inside any string value (e.g. a hostile URI in
+        // the `op` field) cannot prematurely close the surrounding
+        // <script id="audit-entries"> element. The `\/` form is legal JSON per
+        // RFC 8259 §7 and JSON.parse decodes it identically.
+        let entries_json = serde_json::to_string(&page_view)
+            .unwrap_or_else(|_| "[]".to_string())
+            .replace("</", "<\\/");
         let next = if filtered.len() > PAGE_SIZE {
             page.last().map(|e| e.ts.clone())
         } else {
@@ -1878,5 +1885,30 @@ mod tests {
         let v = tenant_summaries(&map);
         let names: Vec<&str> = v.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["Alpha", "Bravo", "Charlie"]);
+    }
+
+    #[test]
+    fn entries_json_escapes_script_closer_in_op() {
+        // Hostile op containing `</script>` must not break out of the inline
+        // <script type="application/json"> blob when embedded into HTML.
+        let mut e = mk_entry(
+            "2026-05-20T12:00:00.000Z",
+            "acme",
+            "GET /records/</script><script>x</script>",
+            "ok",
+            5,
+        );
+        e.extra.insert("k".into(), serde_json::json!("v"));
+        let view = AuditEntryView::from_entry(&e, "Acme Inc");
+        let raw = serde_json::to_string(&[view]).unwrap();
+        // Direct serde output contains the literal `</`.
+        assert!(raw.contains("</script>"), "baseline assumption: serde does not escape `</`");
+        // Apply the same .replace the production code applies.
+        let safe = raw.replace("</", "<\\/");
+        assert!(!safe.contains("</script>"), "after escape, `</script>` must be gone");
+        assert!(safe.contains("<\\/script>"), "the slash escape must be visible");
+        // And the result must still round-trip back to the same logical content via JSON.parse-equivalent.
+        let parsed: serde_json::Value = serde_json::from_str(&safe).unwrap();
+        assert_eq!(parsed[0]["op"], "GET /records/</script><script>x</script>");
     }
 }
