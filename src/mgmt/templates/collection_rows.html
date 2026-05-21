@@ -159,6 +159,17 @@
 
         {# ============================== schema tab ============================== #}
         {% if active_tab == "schema" %}
+        {% if let Some(err) = desc_error %}
+        <div style="margin:0 0 12px 0;padding:10px 14px;background:#fde7e7;border:1px solid #f5a3a3;border-radius:6px;color:#7d1f1f;font-size:13px;">
+          {% if err == "DESCRIPTION_TOO_LONG" %}
+            Description exceeds the 2048-byte limit. Edit and resubmit.
+          {% else if err == "DESCRIPTION_INVALID" %}
+            Description contains an invalid character (NUL byte) and was rejected.
+          {% else %}
+            Description rejected: {{ err }}
+          {% endif %}
+        </div>
+        {% endif %}
         <div class="card" style="overflow:hidden;">
           <div class="card-head">
             <div>
@@ -207,6 +218,17 @@
 
         {# ============================== indexes tab ============================== #}
         {% if active_tab == "indexes" %}
+        {% if let Some(err) = desc_error %}
+        <div style="margin:0 0 12px 0;padding:10px 14px;background:#fde7e7;border:1px solid #f5a3a3;border-radius:6px;color:#7d1f1f;font-size:13px;">
+          {% if err == "DESCRIPTION_TOO_LONG" %}
+            Description exceeds the 2048-byte limit. Edit and resubmit.
+          {% else if err == "DESCRIPTION_INVALID" %}
+            Description contains an invalid character (NUL byte) and was rejected.
+          {% else %}
+            Description rejected: {{ err }}
+          {% endif %}
+        </div>
+        {% endif %}
         <div class="card" style="overflow:hidden;">
           <div class="card-head">
             <div>
@@ -583,14 +605,31 @@ function editDesc(kind, tenant, coll, extra) {
   var p = body.querySelector('p');
   var current = p ? p.innerText : '';
   body.innerHTML = '<form method="post" action="' + url + '" style="margin:0;">'
-                 + '<textarea name="description" rows="3" maxlength="2048" style="width:100%;font-family:var(--font-mono);background:var(--bg-deep);color:var(--fg);border:1px solid var(--border-mid);border-radius:6px;padding:6px 8px;box-sizing:border-box;">'
+                 + '<textarea name="description" rows="3" maxlength="4096" style="width:100%;font-family:var(--font-mono);background:var(--bg-deep);color:var(--fg);border:1px solid var(--border-mid);border-radius:6px;padding:6px 8px;box-sizing:border-box;">'
                  + current.replace(/[<>&"]/g, function(c){return '&#'+c.charCodeAt(0)+';';})
                  + '</textarea>'
-                 + '<div style="margin-top:6px;display:flex;gap:6px;">'
-                 + '<button type="submit" class="btn sm">save</button>'
+                 + '<div style="margin-top:6px;display:flex;gap:8px;align-items:center;">'
+                 + '<button type="submit" class="btn sm desc-save">save</button>'
                  + '<button type="button" class="btn sm ghost" onclick="location.reload()">cancel</button>'
+                 + '<span class="desc-bytes muted" style="font-size:11px;font-family:var(--font-mono);"></span>'
                  + '</div></form>';
-  body.querySelector('textarea').focus();
+  var ta = body.querySelector('textarea');
+  var saveBtn = body.querySelector('.desc-save');
+  var bytesEl = body.querySelector('.desc-bytes');
+  function updateBytes() {
+    var n = new Blob([ta.value]).size;     // UTF-8 byte count
+    bytesEl.textContent = n + ' / 2048 bytes';
+    if (n > 2048) {
+      bytesEl.style.color = 'var(--danger, #d33)';
+      saveBtn.disabled = true;
+    } else {
+      bytesEl.style.color = '';
+      saveBtn.disabled = false;
+    }
+  }
+  ta.addEventListener('input', updateBytes);
+  updateBytes();
+  ta.focus();
 }
 </script>
 </body>
