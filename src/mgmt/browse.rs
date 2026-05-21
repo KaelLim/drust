@@ -69,6 +69,9 @@ struct RowsPage {
     indices: Vec<IndexInfo>,
     /// v1.19 — collection-level description for the description tile.
     collection_description: Option<String>,
+    /// v1.19.1 — error code surfaced when the description form bounced off
+    /// the server-side validator. `None` on the plain GET render.
+    desc_error: Option<String>,
     version: &'static str,
 }
 
@@ -113,6 +116,11 @@ pub struct BrowseQs {
     /// `data` (default) or `schema`. Anything else falls back to `data`.
     #[serde(default)]
     pub tab: Option<String>,
+    /// v1.19.1 — surfaced after a server-side description validator failure
+    /// (e.g. NUL byte slipped past the JS hint). Rendered as an inline
+    /// error banner on the schema/indexes tab.
+    #[serde(default)]
+    pub desc_error: Option<String>,
 }
 
 fn tenant_active(conn: &rusqlite::Connection, tenant_id: &str) -> bool {
@@ -509,6 +517,7 @@ pub async fn collection_rows_page(
             anon_cap_choices,
             realtime_enabled,
             collection_description: schema.description,
+            desc_error: qs.desc_error.clone(),
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()
@@ -806,8 +815,11 @@ pub async fn admin_update_collection_description(
 
     let validated = match check_description(&form.description) {
         Ok(v) => v,
-        Err((_, msg)) => {
-            return (StatusCode::BAD_REQUEST, msg).into_response();
+        Err((code, _)) => {
+            return Redirect::to(&format!(
+                "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema&desc_error={code}"
+            ))
+            .into_response();
         }
     };
     let value: Option<String> = if validated.is_empty() { None } else { Some(validated) };
@@ -870,8 +882,11 @@ pub async fn admin_update_field_description(
 
     let validated = match check_description(&form.description) {
         Ok(v) => v,
-        Err((_, msg)) => {
-            return (StatusCode::BAD_REQUEST, msg).into_response();
+        Err((code, _)) => {
+            return Redirect::to(&format!(
+                "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema&desc_error={code}"
+            ))
+            .into_response();
         }
     };
     let value: Option<String> = if validated.is_empty() { None } else { Some(validated) };
@@ -936,8 +951,11 @@ pub async fn admin_update_index_description(
 
     let validated = match check_description(&form.description) {
         Ok(v) => v,
-        Err((_, msg)) => {
-            return (StatusCode::BAD_REQUEST, msg).into_response();
+        Err((code, _)) => {
+            return Redirect::to(&format!(
+                "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=indexes&desc_error={code}"
+            ))
+            .into_response();
         }
     };
     let value: Option<String> = if validated.is_empty() { None } else { Some(validated) };
