@@ -86,7 +86,12 @@ impl WebhookDispatcher {
             .pool_max_idle_per_host(8)
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(10))
-            .user_agent("drust-webhook/1.13.0")
+            .user_agent("drust-webhook/1.19.2")
+            // v1.19.2 — SSRF defense: don't follow redirects. A subscriber
+            // that 302s to an internal endpoint (RFC1918 / link-local /
+            // loopback) would let an attacker pivot inward even though
+            // check_url rejected the original host.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client builds");
         Arc::new(Self { data_root, http })
