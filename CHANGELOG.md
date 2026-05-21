@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.19.2] — 2026-05-21
+
+### Security
+- **/records/* SQL injection bypass on owner_field**: a user-token holder on a collection with `owner_field` + `read_scope=own` could send `?filter=1=1) -- ` to comment out the auto-appended `AND "owner_field" = '<user_id>'` clause and read other users' rows. Reject with 400 `USER_FILTER_DENIED_ON_OWNER_SCOPED` when user + owner-scoped + filter|sort. Service/anon paths and non-owner-scoped user calls unchanged.
+- **Admin login + admin OAuth callback now rate-limited per-IP** (5/min, LRU 4096-bucket) via `IpRateLimit`. Closes parallel-thread argon2 grind window — admin password is no longer susceptible to brute-force from a single IP.
+- **Webhook SSRF defense**: reqwest client now refuses to follow redirects (`Policy::none()`); `check_url` resolves the registered host to all IPs and rejects if any falls in private/loopback/link-local ranges (RFC1918, 127/8, 169.254/16, IPv6 ::1 / fc00::/7 / fe80::/10). Dev-mode `http://localhost` carve-out preserved. Residual DNS-rebinding window (host resolves public at register, changes to private later) queued for v1.21.
+
+### Plan
+- [`docs/superpowers/plans/2026-05-21-drust-v1192-v120-patch.md`](docs/superpowers/plans/2026-05-21-drust-v1192-v120-patch.md) (combined v1.19.2 + v1.20 plan)
+
 ## [1.19.1] — 2026-05-21
 
 ### Fixed
