@@ -231,6 +231,26 @@ pub async fn list_handler(
         Ok(s) => s,
         Err(r) => return r,
     };
+    // v1.19.2 — User tokens on owner-scoped collections cannot pass raw
+    // `?filter=` or `?sort=` because those interpolate verbatim into SQL
+    // (see src/query/filter.rs::build_list_sql) and a `--` comment can
+    // void the row-level owner clause. Reject explicitly with a typed
+    // code pointing to the safe alternatives. FilterAst integration on
+    // /records/* is queued for v1.21.
+    if matches!(ctx, AuthCtx::User { .. })
+        && schema.owner_field.is_some()
+        && schema.read_scope.as_deref() == Some("own")
+        && (qs.filter.is_some() || qs.sort.is_some())
+    {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "USER_FILTER_DENIED_ON_OWNER_SCOPED",
+            "user-token filter/sort on owner-scoped collections is unsupported \
+             (raw filter strings can bypass row-level owner enforcement). \
+             Use POST /collections/<c>/search with a structured Filter AST, \
+             or expose a stored RPC that binds :user_id internally.",
+        );
+    }
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let exists = pool
