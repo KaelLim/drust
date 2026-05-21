@@ -406,6 +406,18 @@ impl MgmtState {
                 post(super::browse::update_realtime),
             )
             .route(
+                "/admin/tenants/{id}/collections/{coll}/description",
+                post(super::browse::admin_update_collection_description),
+            )
+            .route(
+                "/admin/tenants/{id}/collections/{coll}/fields/{field}/description",
+                post(super::browse::admin_update_field_description),
+            )
+            .route(
+                "/admin/tenants/{id}/collections/{coll}/indexes/{index_name}/description",
+                post(super::browse::admin_update_index_description),
+            )
+            .route(
                 "/admin/tenants/{id}/collections/{coll}/_indexes",
                 post(super::browse::create_index_admin),
             )
