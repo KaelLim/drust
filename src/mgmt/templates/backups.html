@@ -74,7 +74,7 @@
       {% for b in backups %}
       <div class="bk-row">
         <div class="bk-glyph">
-          <svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
+          <svg class="icon" aria-hidden="true" style="width:18px;height:18px;"><use href="#i-db"/></svg>
         </div>
         <div>
           <div class="bk-name">{{ b.filename }}</div>
@@ -82,8 +82,12 @@
         </div>
         <div class="bk-size">{{ b.size_human }}</div>
         <div class="bk-actions">
-          <a class="btn sm ghost" href="/drust/admin/backups/{{ b.filename }}/inspect" title="inspect tenants in snapshot">inspect</a>
-          <a class="btn sm" href="/drust/admin/backups/{{ b.filename }}/download" download="{{ b.filename }}" title="download .tar.zst">download</a>
+          <a class="btn sm ghost" href="/drust/admin/backups/{{ b.filename }}/inspect" title="inspect tenants in snapshot">
+            <svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>inspect
+          </a>
+          <a class="btn sm" href="/drust/admin/backups/{{ b.filename }}/download" download="{{ b.filename }}" title="download .tar.zst">
+            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>download
+          </a>
         </div>
       </div>
       {% endfor %}
