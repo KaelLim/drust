@@ -81,13 +81,16 @@ CREATE INDEX IF NOT EXISTS idx_system_files_visibility
 -- collection with no row defaults to ["select"] (status quo for legacy
 -- collections that pre-date this table).
 CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
-  collection_name      TEXT PRIMARY KEY,
-  anon_caps_json       TEXT NOT NULL DEFAULT '["select"]',
-  updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
-  owner_field          TEXT,
-  read_scope           TEXT,
-  vector_fields_json   TEXT NOT NULL DEFAULT '[]',
-  realtime_enabled     INTEGER NOT NULL DEFAULT 1
+  collection_name          TEXT PRIMARY KEY,
+  anon_caps_json           TEXT NOT NULL DEFAULT '["select"]',
+  updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
+  owner_field              TEXT,
+  read_scope               TEXT,
+  vector_fields_json       TEXT NOT NULL DEFAULT '[]',
+  realtime_enabled         INTEGER NOT NULL DEFAULT 1,
+  description              TEXT,
+  field_descriptions_json  TEXT NOT NULL DEFAULT '{}',
+  index_descriptions_json  TEXT NOT NULL DEFAULT '{}'
 );
 
 -- v1.6: stored RPC functions (Supabase-style named SELECTs).
@@ -251,5 +254,24 @@ mod schema_tests {
             "_system_collection_meta missing"
         );
         assert!(exists("_system_rpc"), "_system_rpc missing");
+    }
+
+    #[test]
+    fn new_tenant_meta_has_description_columns() {
+        let tmp = TempDir::new().unwrap();
+        let conn = open_write(tmp.path(), "newtenant").unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(_system_collection_meta)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(cols.contains(&"description".to_string()),
+            "fresh tenant missing description; cols = {cols:?}");
+        assert!(cols.contains(&"field_descriptions_json".to_string()),
+            "fresh tenant missing field_descriptions_json; cols = {cols:?}");
+        assert!(cols.contains(&"index_descriptions_json".to_string()),
+            "fresh tenant missing index_descriptions_json; cols = {cols:?}");
     }
 }
