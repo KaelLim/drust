@@ -566,14 +566,14 @@
 
   /* ---------------- timeline (audit) ---------------- */
   .tl{display:flex;flex-direction:column;gap:0}
-  .tl-row{display:grid;grid-template-columns:78px 22px 1fr auto;align-items:center;gap:12px;padding:10px 0;position:relative}
+  .tl-row{display:grid;grid-template-columns:104px 22px 1fr auto;align-items:baseline;gap:12px;padding:10px 0;position:relative}
   .tl-row + .tl-row{border-top:1px dashed var(--border)}
   .tl-row .tl-time{font-family:var(--font-mono);font-size:11px;color:var(--muted);text-align:left;letter-spacing:0.2px;white-space:nowrap}
   .tl-row .tl-glyph{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;background:var(--bg-deep);border:1px solid var(--border-mid);color:var(--muted);font-family:var(--font-mono);font-size:10px}
   .tl-row .tl-glyph.ok{color:var(--mint);border-color:var(--mint-border);background:var(--mint-soft)}
   .tl-row .tl-glyph.warn{color:var(--warn);border-color:var(--warn-border);background:var(--warn-soft)}
   .tl-row .tl-glyph.fail{color:var(--danger);border-color:var(--danger-border);background:var(--danger-soft)}
-  .tl-row .tl-body{font-size:13px;color:var(--fg-2);min-width:0;display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .tl-row .tl-body{font-size:13px;color:var(--fg-2);min-width:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;line-height:1.6}
   .tl-row .tl-meta{font-family:var(--font-mono);font-size:10.5px;color:var(--muted);text-align:right}
 
   /* method/path/actor chips inside .tl-body. The method is the most
@@ -1021,17 +1021,6 @@
      .field / .input / .textarea / .card already; nothing extra needed. */
 
   /* v1.17 — audit log chart cards. */
-  .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 24px; }
-  @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
-  .chart-card { background: var(--card-bg, #161b22); border: 1px solid var(--border, #30363d); border-radius: var(--radius, 6px); padding: 16px; }
-  .chart-card h3 { margin: 0 0 12px; font: 600 14px/1.4 var(--sans, system-ui); color: var(--muted, #7d8590); }
-  .chart-card svg.chart { width: 100%; height: auto; display: block; }
-  .chart-legend { display: flex; gap: 12px; margin-top: 8px; font: 400 12px/1.4 var(--sans, system-ui); color: var(--muted, #7d8590); }
-  .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
-  .legend-swatch.ok { background: var(--ok, #2ea043); }
-  .legend-swatch.warn { background: var(--warn, #d29922); }
-  .legend-swatch.err { background: var(--err, #f85149); }
-
   /* v1.17.1 — modal detail grid (drustUI.detail) */
   .modal-detail-grid{display:grid;grid-template-columns:120px 1fr;gap:8px 16px;margin:0}
   .modal-detail-grid dt{font:500 11px/1.4 var(--font-mono);color:var(--muted);text-transform:uppercase;letter-spacing:0.08em}

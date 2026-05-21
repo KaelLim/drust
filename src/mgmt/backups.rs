@@ -62,6 +62,10 @@ struct BackupInspectPage {
 
 pub struct RestoreFlash {
     pub tenant_id: String,
+    /// Resolved from the snapshot's tenant list; falls back to the
+    /// raw id if the snapshot's meta no longer carries that tenant
+    /// (rare — only if meta.sqlite inside the archive is unreadable).
+    pub tenant_name: String,
     pub destination: String,
 }
 
@@ -307,10 +311,18 @@ pub async fn inspect(
     };
 
     let flash = match (qs.restored, qs.dest) {
-        (Some(tenant_id), Some(destination)) => Some(RestoreFlash {
-            tenant_id,
-            destination,
-        }),
+        (Some(tenant_id), Some(destination)) => {
+            let tenant_name = tenants
+                .iter()
+                .find(|t| t.id == tenant_id)
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| tenant_id.clone());
+            Some(RestoreFlash {
+                tenant_id,
+                tenant_name,
+                destination,
+            })
+        }
         _ => None,
     };
 

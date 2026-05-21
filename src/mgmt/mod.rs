@@ -1,5 +1,4 @@
 pub mod audit;
-pub mod svg_charts;
 pub mod backups;
 pub mod browse;
 pub mod docs;

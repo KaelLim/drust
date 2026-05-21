@@ -41,173 +41,6 @@ impl Window {
     }
 }
 
-/// v1.17 — pick a time-series bucket size so each chart has 60–200
-/// buckets regardless of window. Returns bucket size in seconds.
-///
-/// | window | seconds | buckets |
-/// |--------|---------|---------|
-/// | 1h     | 60      | 60      |
-/// | 24h    | 600     | 144     |
-/// | 7d     | 3600    | 168     |
-pub fn adaptive_bucket_seconds(window: Window) -> i64 {
-    match window {
-        Window::H1 => 60,
-        Window::H24 => 600,
-        Window::D7 => 3600,
-    }
-}
-
-/// v1.17 — derive HTTP status class from an AuditEntry. The audit
-/// pipeline stores `status: String` as "ok"/"error" (text, NOT an HTTP
-/// code) and `error_code: Option<String>` carrying either `HTTP_<code>`
-/// for transport-level failures or a typed code (`WRITE_DENIED`,
-/// `COLLECTION_NOT_FOUND`, ...) for application-level denials.
-///
-/// Returns one of `2xx | 4xx | 5xx` for the stacking chart. Typed
-/// codes that aren't `HTTP_<n>` default to `4xx`, because in drust
-/// they're virtually all 4xx denials.
-fn status_class(entry: &AuditEntry) -> StatusClass {
-    match entry.error_code.as_deref() {
-        None => StatusClass::Ok,
-        Some(c) if c.starts_with("HTTP_5") => StatusClass::Server,
-        Some(c) if c.starts_with("HTTP_4") => StatusClass::Client,
-        Some(_) => StatusClass::Client, // typed denial → 4xx
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatusClass {
-    Ok,
-    Client,
-    Server,
-}
-
-/// v1.17 — bucket entries by `adaptive_bucket_seconds(window)`-wide
-/// time windows, counting by HTTP status class. Returns buckets in
-/// chronological order from `now - window` to `now`, zero-filled
-/// across gaps so the SVG chart x-axis is contiguous.
-///
-/// `now` is parameterised (not `Utc::now()`) so tests can inject
-/// deterministic time.
-pub fn time_series_buckets(
-    entries: &[AuditEntry],
-    window: Window,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Vec<TimeBucket> {
-    let bucket_secs = adaptive_bucket_seconds(window);
-    let window_secs = window.seconds();
-    let bucket_count: usize = (window_secs / bucket_secs) as usize;
-    let window_start = now.timestamp() - window_secs;
-    // Align window_start down to its bucket boundary so bucket[0]
-    // begins at a stable edge.
-    let aligned_start = (window_start / bucket_secs) * bucket_secs;
-
-    let mut buckets: Vec<TimeBucket> = (0..bucket_count)
-        .map(|i| TimeBucket {
-            ts_unix: aligned_start + (i as i64) * bucket_secs,
-            ..Default::default()
-        })
-        .collect();
-
-    for e in entries {
-        let ts = match chrono::DateTime::parse_from_rfc3339(&e.ts) {
-            Ok(t) => t.with_timezone(&chrono::Utc),
-            Err(_) => continue, // malformed timestamp — skip silently
-        };
-        let secs = ts.timestamp();
-        if secs < aligned_start || secs >= aligned_start + (bucket_count as i64) * bucket_secs {
-            continue;
-        }
-        let idx = ((secs - aligned_start) / bucket_secs) as usize;
-        // Defensive clamp: floating off-by-one near the right edge.
-        let idx = idx.min(bucket_count - 1);
-        let b = &mut buckets[idx];
-        match status_class(e) {
-            StatusClass::Ok => b.count_2xx += 1,
-            StatusClass::Client => b.count_4xx += 1,
-            StatusClass::Server => b.count_5xx += 1,
-        }
-    }
-    buckets
-}
-
-/// v1.17 — group entries by `error_code`, sort by count desc with
-/// lexicographic tie-break, return top `n`. Entries with `error_code
-/// = None` are skipped (they're successes, not errors).
-pub fn top_error_codes(entries: &[AuditEntry], n: usize) -> Vec<ErrorCodeCount> {
-    let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    for e in entries {
-        if let Some(code) = e.error_code.as_deref() {
-            *counts.entry(code).or_insert(0) += 1;
-        }
-    }
-    let mut pairs: Vec<ErrorCodeCount> = counts
-        .into_iter()
-        .map(|(code, count)| ErrorCodeCount {
-            code: code.to_string(),
-            count,
-        })
-        .collect();
-    // Sort by count desc, then code asc (lexicographic tie-break).
-    pairs.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.code.cmp(&b.code)));
-    pairs.truncate(n);
-    pairs
-}
-
-/// v1.17 — log-scale duration histogram with p50/p95/p99 cuts.
-/// Bucket boundaries (ms, inclusive lower, exclusive upper):
-/// `[0, 10), [10, 50), [50, 200), [200, 1000), [1000, 5000), [5000, ∞)`.
-/// Entries with `duration_ms = 0` (denied at auth layer before timing
-/// kicks in) land in the first bucket; they're counted in the
-/// percentile distribution too.
-pub fn latency_histogram(entries: &[AuditEntry]) -> LatencyHistogram {
-    let mut buckets = [0u32; 6];
-    let mut all_ms: Vec<u64> = Vec::with_capacity(entries.len());
-    for e in entries {
-        let ms = e.duration_ms;
-        let idx = match ms {
-            0..=9 => 0,
-            10..=49 => 1,
-            50..=199 => 2,
-            200..=999 => 3,
-            1000..=4999 => 4,
-            _ => 5,
-        };
-        buckets[idx] += 1;
-        all_ms.push(ms);
-    }
-    all_ms.sort_unstable();
-    LatencyHistogram {
-        buckets,
-        p50_ms: percentile(&all_ms, 50),
-        p95_ms: percentile(&all_ms, 95),
-        p99_ms: percentile(&all_ms, 99),
-    }
-}
-
-/// v1.17 — group entries by `tenant`, sort by count desc with
-/// lexicographic tie-break, return top `n`. The `"-"` sentinel
-/// (admin-plane operations with no tenant) is skipped.
-pub fn tenant_request_bars(entries: &[AuditEntry], n: usize) -> Vec<TenantBar> {
-    let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    for e in entries {
-        if e.tenant == "-" {
-            continue;
-        }
-        *counts.entry(e.tenant.as_str()).or_insert(0) += 1;
-    }
-    let mut bars: Vec<TenantBar> = counts
-        .into_iter()
-        .map(|(tenant, count)| TenantBar {
-            tenant: tenant.to_string(),
-            count,
-        })
-        .collect();
-    bars.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tenant.cmp(&b.tenant)));
-    bars.truncate(n);
-    bars
-}
-
 #[derive(Debug, Clone)]
 pub enum AuditScope {
     Host,
@@ -245,6 +78,9 @@ pub struct Overview {
 #[derive(Debug, Clone)]
 pub struct TopTenant {
     pub tenant: String,
+    /// Resolved display name. Empty when produced by `aggregate` alone;
+    /// filled by `build_body_ctx` after a `tenants` meta lookup.
+    pub tenant_name: String,
     pub count: u64,
     pub error_pct: f64,
 }
@@ -256,6 +92,10 @@ pub struct TopTenant {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AuditEntryView {
     pub ts: String,
+    /// `ts` reformatted as `MM-DD HH:MM:SS` for compact display in the
+    /// audit timeline. Falls back to the raw RFC3339 string if parsing
+    /// fails (malformed audit row).
+    pub ts_display: String,
     pub tenant: String,
     pub tenant_name: String,
     pub token_hint: String,
@@ -286,6 +126,7 @@ impl AuditEntryView {
     pub fn from_entry(e: &AuditEntry, tenant_name: &str) -> Self {
         Self {
             ts: e.ts.clone(),
+            ts_display: format_ts_display(&e.ts),
             tenant: e.tenant.clone(),
             tenant_name: tenant_name.to_string(),
             token_hint: e.token_hint.clone(),
@@ -303,6 +144,15 @@ impl AuditEntryView {
             extra: e.extra.clone(),
         }
     }
+}
+
+/// v1.17.2 — reformat an RFC3339 timestamp to `MM-DD HH:MM:SS` for
+/// compact audit-row display. Falls back to the raw input on parse
+/// failure so a malformed row still surfaces something useful.
+pub fn format_ts_display(ts: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .map(|t| t.format("%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|_| ts.to_string())
 }
 
 /// v1.17.1 — resolve a raw audit tenant id to a display name. Handles
@@ -369,43 +219,6 @@ pub fn tenant_summaries(map: &std::collections::HashMap<String, String>) -> Vec<
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
-}
-
-/// v1.17 — one bucket of the requests-over-time chart.
-/// `ts_unix` is the bucket's left edge in seconds since UNIX epoch.
-/// Counts are by HTTP status class.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TimeBucket {
-    pub ts_unix: i64,
-    pub count_2xx: u32,
-    pub count_4xx: u32,
-    pub count_5xx: u32,
-}
-
-/// v1.17 — one row of the top-error-codes chart.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ErrorCodeCount {
-    pub code: String,
-    pub count: u32,
-}
-
-/// v1.17 — log-scale duration histogram with the three percentile cuts
-/// pre-computed. Fixed-shape buckets at indices:
-/// 0: 0–10ms, 1: 10–50, 2: 50–200, 3: 200–1000, 4: 1000–5000, 5: 5000+ ms.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LatencyHistogram {
-    pub buckets: [u32; 6],
-    pub p50_ms: u64,
-    pub p95_ms: u64,
-    pub p99_ms: u64,
-}
-
-/// v1.17 — one bar of the top-tenants-by-request-count chart
-/// (host scope only).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TenantBar {
-    pub tenant: String,
-    pub count: u32,
 }
 
 /// Hard cap on entries returned per scan_window call.
@@ -646,6 +459,7 @@ fn compute_top_tenants(entries: &[AuditEntry]) -> Vec<TopTenant> {
         .into_iter()
         .map(|(name, (total, errs))| TopTenant {
             tenant: name.to_string(),
+            tenant_name: String::new(),
             count: total,
             error_pct: if total == 0 {
                 0.0
@@ -748,14 +562,14 @@ pub struct BodyCtx {
     pub tenant_filter: Option<String>,
     pub op_filter: Option<String>,
     pub status_filter: &'static str,
-    pub time_series_svg: String,
-    pub error_codes_svg: String,
-    pub latency_svg: String,
-    pub tenant_bars_svg: Option<String>,
     pub tenants: Vec<TenantSummary>,
     pub distinct_ops: Vec<String>,
     pub entries_view: Vec<AuditEntryView>,
     pub entries_json: String,
+    /// Overview-tab "Top slow ops" projected through `AuditEntryView`
+    /// so the template can read `e.tenant_name`. Parallel to
+    /// `overview.top_slow_ops`. Empty in the browse tab.
+    pub top_slow_ops_view: Vec<AuditEntryView>,
 }
 
 #[derive(Template)]
@@ -780,14 +594,11 @@ struct AuditHostPage {
     tenant_filter: Option<String>,
     op_filter: Option<String>,
     status_filter: &'static str,
-    time_series_svg: String,
-    error_codes_svg: String,
-    latency_svg: String,
-    tenant_bars_svg: Option<String>,
     tenants: Vec<TenantSummary>,
     distinct_ops: Vec<String>,
     entries_view: Vec<AuditEntryView>,
     entries_json: String,
+    top_slow_ops_view: Vec<AuditEntryView>,
 }
 
 fn base_link(scope: &AuditScope) -> String {
@@ -815,17 +626,6 @@ fn url_with(
         s.push_str("&auto=1");
     }
     s
-}
-
-/// v1.17 — bundle the four SVG strings + the show-tenant-chart flag
-/// so `build_body_ctx` can build them once in the overview branch
-/// and zero them out in the browse branch via `Default::default()`.
-#[derive(Default)]
-struct ChartCtx {
-    time_series_svg: String,
-    error_codes_svg: String,
-    latency_svg: String,
-    tenant_bars_svg: Option<String>,
 }
 
 pub fn build_body_ctx(
@@ -866,7 +666,7 @@ pub fn build_body_ctx(
         _ => None,
     };
 
-    let (overview, entries, entries_view, distinct_ops, entries_json, next_cursor, chart_ctx) = if tab == "overview" {
+    let (overview, entries, entries_view, distinct_ops, entries_json, next_cursor, top_slow_ops_view) = if tab == "overview" {
         // Clone so the optional tenant-filter `retain` doesn't mutate
         // the cached `scan.entries` (the browse branch may need them
         // unfiltered on a subsequent request — though we don't keep
@@ -875,46 +675,27 @@ pub fn build_body_ctx(
         if let Some(t) = &tenant_filter_effective {
             for_overview.retain(|e| &e.tenant == t);
         }
-        let time_series = time_series_buckets(&for_overview, window, now);
-        let err_codes = top_error_codes(&for_overview, 10);
-        let latency = latency_histogram(&for_overview);
-        let tenant_bars = if matches!(&scope, AuditScope::Host) {
-            Some(tenant_request_bars(&for_overview, 10))
-        } else {
-            None
-        };
-
-        let time_series_svg = crate::mgmt::svg_charts::stacked_area_chart(&time_series);
-        let error_codes_svg = crate::mgmt::svg_charts::horizontal_bars(
-            &err_codes
-                .iter()
-                .map(|e| (e.code.clone(), e.count))
-                .collect::<Vec<_>>(),
-        );
-        let latency_svg = crate::mgmt::svg_charts::histogram_with_percentiles(&latency);
-        let tenant_bars_svg = tenant_bars.map(|bars| {
-            crate::mgmt::svg_charts::horizontal_bars(
-                &bars
-                    .into_iter()
-                    .map(|b| (b.tenant, b.count))
-                    .collect::<Vec<_>>(),
-            )
-        });
-
-        let chart_ctx = ChartCtx {
-            time_series_svg,
-            error_codes_svg,
-            latency_svg,
-            tenant_bars_svg,
-        };
+        let mut ov = aggregate(&for_overview, window);
+        // Resolve tenant_name on TopTenant rows (compute_top_tenants
+        // leaves them blank because `aggregate` doesn't carry the map).
+        for t in &mut ov.top_tenants {
+            t.tenant_name = resolve_tenant_name(&tenant_name_map, &t.tenant);
+        }
+        // Build the view-projection for Top slow ops so the template
+        // can read `e.tenant_name` instead of the raw id.
+        let slow_view: Vec<AuditEntryView> = ov
+            .top_slow_ops
+            .iter()
+            .map(|e| AuditEntryView::from_entry(e, &resolve_tenant_name(&tenant_name_map, &e.tenant)))
+            .collect();
         (
-            Some(aggregate(&for_overview, window)),
+            Some(ov),
             Vec::new(),
             Vec::new(),
             Vec::new(),
             String::from("[]"),
             None,
-            chart_ctx,
+            slow_view,
         )
     } else {
         let spec = FilterSpec {
@@ -943,7 +724,7 @@ pub fn build_body_ctx(
         } else {
             None
         };
-        (None, page, page_view, distinct_ops, entries_json, next, ChartCtx::default())
+        (None, page, page_view, distinct_ops, entries_json, next, Vec::new())
     };
 
     let base = base_link(&scope);
@@ -1000,14 +781,11 @@ pub fn build_body_ctx(
         tenant_filter: tenant_filter_for_render,
         op_filter: op_filter_effective,
         status_filter,
-        time_series_svg: chart_ctx.time_series_svg,
-        error_codes_svg: chart_ctx.error_codes_svg,
-        latency_svg: chart_ctx.latency_svg,
-        tenant_bars_svg: chart_ctx.tenant_bars_svg,
         tenants: tenants_for_dropdown,
         distinct_ops,
         entries_view,
         entries_json,
+        top_slow_ops_view,
     }
 }
 
@@ -1038,14 +816,11 @@ pub async fn audit_host_page(
         tenant_filter: body.tenant_filter,
         op_filter: body.op_filter,
         status_filter: body.status_filter,
-        time_series_svg: body.time_series_svg,
-        error_codes_svg: body.error_codes_svg,
-        latency_svg: body.latency_svg,
-        tenant_bars_svg: body.tenant_bars_svg,
         tenants: body.tenants,
         distinct_ops: body.distinct_ops,
         entries_view: body.entries_view,
         entries_json: body.entries_json,
+        top_slow_ops_view: body.top_slow_ops_view,
     };
     Html(page.render().unwrap()).into_response()
 }
@@ -1076,14 +851,11 @@ struct AuditTenantPage {
     tenant_filter: Option<String>,
     op_filter: Option<String>,
     status_filter: &'static str,
-    time_series_svg: String,
-    error_codes_svg: String,
-    latency_svg: String,
-    tenant_bars_svg: Option<String>,
     tenants: Vec<TenantSummary>,
     distinct_ops: Vec<String>,
     entries_view: Vec<AuditEntryView>,
     entries_json: String,
+    top_slow_ops_view: Vec<AuditEntryView>,
 }
 
 pub async fn audit_tenant_page(
@@ -1143,14 +915,11 @@ pub async fn audit_tenant_page(
         tenant_filter: body.tenant_filter,
         op_filter: body.op_filter,
         status_filter: body.status_filter,
-        time_series_svg: body.time_series_svg,
-        error_codes_svg: body.error_codes_svg,
-        latency_svg: body.latency_svg,
-        tenant_bars_svg: body.tenant_bars_svg,
         tenants: body.tenants,
         distinct_ops: body.distinct_ops,
         entries_view: body.entries_view,
         entries_json: body.entries_json,
+        top_slow_ops_view: body.top_slow_ops_view,
     };
     Html(tpl.render().unwrap()).into_response()
 }
@@ -1570,252 +1339,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn adaptive_bucket_seconds_matches_table() {
-        assert_eq!(adaptive_bucket_seconds(Window::H1), 60);
-        assert_eq!(adaptive_bucket_seconds(Window::H24), 600);
-        assert_eq!(adaptive_bucket_seconds(Window::D7), 3600);
-    }
-
-    fn mk_entry_with_code(
-        ts: &str,
-        tenant: &str,
-        op: &str,
-        status_text: &str,
-        error_code: Option<&str>,
-        ms: u64,
-    ) -> AuditEntry {
-        let err_part = match error_code {
-            Some(c) => format!(r#","error_code":"{c}""#),
-            None => String::new(),
-        };
-        let line = format!(
-            r#"{{"ts":"{ts}","tenant":"{tenant}","token_hint":"hash0001","op":"{op}","status":"{status_text}","duration_ms":{ms}{err_part}}}"#
-        );
-        parse_jsonl_line(&line).unwrap()
-    }
-
-    #[test]
-    fn time_series_buckets_zero_fills_empty_intervals() {
-        // 24h window → 600s bucket → 144 buckets total. Insert entries at
-        // bucket 0 and bucket 5 only; everything else must be zeroed.
-        let now = chrono::DateTime::parse_from_rfc3339("2026-05-20T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let bucket_0_ts = "2026-05-19T12:00:00.000Z";
-        let bucket_5_ts = "2026-05-19T12:50:00.000Z"; // 5 * 600s = 3000s later
-        let entries = vec![
-            mk_entry_with_code(bucket_0_ts, "t", "GET /x", "ok", None, 10),
-            mk_entry_with_code(bucket_5_ts, "t", "GET /x", "ok", None, 10),
-        ];
-        let buckets = time_series_buckets(&entries, Window::H24, now);
-        assert_eq!(buckets.len(), 144, "24h / 600s = 144 buckets");
-        assert_eq!(buckets[0].count_2xx, 1);
-        for b in &buckets[1..5] {
-            assert_eq!(b.count_2xx + b.count_4xx + b.count_5xx, 0);
-        }
-        assert_eq!(buckets[5].count_2xx, 1);
-    }
-
-    #[test]
-    fn time_series_buckets_status_class_correctness() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-05-20T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let ts = "2026-05-20T11:59:30.000Z"; // bucket 0 of 1h window
-        let entries = vec![
-            mk_entry_with_code(ts, "t", "op", "ok", None, 1),
-            mk_entry_with_code(ts, "t", "op", "error", Some("HTTP_404"), 1),
-            mk_entry_with_code(ts, "t", "op", "error", Some("HTTP_500"), 1),
-            // Typed denial code: maps to 4xx (default for non-HTTP_5xx error codes).
-            mk_entry_with_code(ts, "t", "op", "error", Some("WRITE_DENIED"), 1),
-        ];
-        let buckets = time_series_buckets(&entries, Window::H1, now);
-        // Last bucket = "now" bucket. Look for our entries there.
-        let last = buckets.last().unwrap();
-        assert_eq!(last.count_2xx, 1);
-        assert_eq!(last.count_4xx, 2); // HTTP_404 + WRITE_DENIED
-        assert_eq!(last.count_5xx, 1);
-    }
-
-    #[test]
-    fn time_series_buckets_deterministic_with_injected_now() {
-        let now1 = chrono::DateTime::parse_from_rfc3339("2026-05-20T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let now2 = now1;
-        let entries = vec![mk_entry_with_code(
-            "2026-05-20T11:30:00.000Z",
-            "t",
-            "op",
-            "ok",
-            None,
-            1,
-        )];
-        let b1 = time_series_buckets(&entries, Window::H1, now1);
-        let b2 = time_series_buckets(&entries, Window::H1, now2);
-        assert_eq!(b1, b2);
-    }
-
-    #[test]
-    fn time_series_buckets_drops_entries_outside_window() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-05-20T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let entries = vec![
-            // Way outside the 1h window
-            mk_entry_with_code("2026-05-19T12:00:00.000Z", "t", "op", "ok", None, 1),
-            // Inside
-            mk_entry_with_code("2026-05-20T11:45:00.000Z", "t", "op", "ok", None, 1),
-        ];
-        let buckets = time_series_buckets(&entries, Window::H1, now);
-        let total: u32 = buckets.iter().map(|b| b.count_2xx).sum();
-        assert_eq!(total, 1, "only the in-window entry should appear");
-    }
-
-    #[test]
-    fn top_error_codes_descending_with_n_cap() {
-        let mut entries = Vec::new();
-        // 15 distinct codes with counts 1, 2, 3, ... 15
-        for (i, name) in [
-            "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O",
-        ]
-        .iter()
-        .enumerate()
-        {
-            let count = i as u64 + 1;
-            for _ in 0..count {
-                entries.push(mk_entry_with_code(
-                    "2026-05-20T12:00:00.000Z",
-                    "t",
-                    "op",
-                    "error",
-                    Some(name),
-                    1,
-                ));
-            }
-        }
-        let top = top_error_codes(&entries, 10);
-        assert_eq!(top.len(), 10);
-        // Highest first: O (15), N (14), M (13), ...
-        assert_eq!(top[0].code, "O");
-        assert_eq!(top[0].count, 15);
-        assert_eq!(top[9].code, "F");
-        assert_eq!(top[9].count, 6);
-    }
-
-    #[test]
-    fn top_error_codes_skips_entries_without_code() {
-        // `error_code = None` means "no error" and must not appear.
-        let entries = vec![
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 1),
-            mk_entry_with_code(
-                "2026-05-20T12:00:00.000Z",
-                "t",
-                "op",
-                "error",
-                Some("REAL_ERR"),
-                1,
-            ),
-        ];
-        let top = top_error_codes(&entries, 10);
-        assert_eq!(top.len(), 1);
-        assert_eq!(top[0].code, "REAL_ERR");
-    }
-
-    #[test]
-    fn top_error_codes_ties_break_lexicographically() {
-        let entries = vec![
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "error", Some("ZZZ"), 1),
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "error", Some("AAA"), 1),
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "error", Some("MMM"), 1),
-        ];
-        let top = top_error_codes(&entries, 10);
-        assert_eq!(top.len(), 3);
-        assert_eq!(top[0].code, "AAA");
-        assert_eq!(top[1].code, "MMM");
-        assert_eq!(top[2].code, "ZZZ");
-    }
-
-    #[test]
-    fn latency_histogram_buckets_sum_to_total() {
-        let entries = vec![
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 5),
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 30),
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 150),
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 700),
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 3000),
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, 10_000),
-        ];
-        let hist = latency_histogram(&entries);
-        let total: u32 = hist.buckets.iter().sum();
-        assert_eq!(total, 6);
-        // One entry per bucket
-        assert_eq!(hist.buckets, [1, 1, 1, 1, 1, 1]);
-    }
-
-    #[test]
-    fn latency_histogram_zero_duration_lands_in_first_bucket() {
-        let entries = vec![mk_entry_with_code(
-            "2026-05-20T12:00:00.000Z",
-            "t",
-            "op",
-            "ok",
-            None,
-            0,
-        )];
-        let hist = latency_histogram(&entries);
-        assert_eq!(hist.buckets[0], 1);
-        assert_eq!(hist.buckets[1..].iter().sum::<u32>(), 0);
-    }
-
-    #[test]
-    fn latency_histogram_percentiles_match_existing_helper() {
-        let entries: Vec<AuditEntry> = (1..=100)
-            .map(|i| mk_entry_with_code("2026-05-20T12:00:00.000Z", "t", "op", "ok", None, i))
-            .collect();
-        let hist = latency_histogram(&entries);
-        // Compare against direct call to existing private percentile fn.
-        let mut sorted: Vec<u64> = entries.iter().map(|e| e.duration_ms).collect();
-        sorted.sort_unstable();
-        assert_eq!(hist.p50_ms, percentile(&sorted, 50));
-        assert_eq!(hist.p95_ms, percentile(&sorted, 95));
-        assert_eq!(hist.p99_ms, percentile(&sorted, 99));
-    }
-
-    #[test]
-    fn tenant_request_bars_top_n_descending() {
-        let mut entries = Vec::new();
-        for (i, name) in ["alpha", "beta", "gamma", "delta", "epsilon"].iter().enumerate() {
-            for _ in 0..(i + 1) {
-                entries.push(mk_entry_with_code(
-                    "2026-05-20T12:00:00.000Z",
-                    name,
-                    "op",
-                    "ok",
-                    None,
-                    1,
-                ));
-            }
-        }
-        let bars = tenant_request_bars(&entries, 3);
-        assert_eq!(bars.len(), 3);
-        assert_eq!(bars[0].tenant, "epsilon");
-        assert_eq!(bars[0].count, 5);
-        assert_eq!(bars[1].tenant, "delta");
-        assert_eq!(bars[2].tenant, "gamma");
-    }
-
-    #[test]
-    fn tenant_request_bars_skips_dash_sentinel() {
-        let entries = vec![
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "-", "op", "ok", None, 1),
-            mk_entry_with_code("2026-05-20T12:00:00.000Z", "real", "op", "ok", None, 1),
-        ];
-        let bars = tenant_request_bars(&entries, 10);
-        assert_eq!(bars.len(), 1);
-        assert_eq!(bars[0].tenant, "real");
-    }
 
     #[test]
     fn audit_entry_view_serializes_extra_as_nested_object() {
