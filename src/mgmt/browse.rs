@@ -5,7 +5,7 @@ use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql,
 use crate::storage::schema::{
     Collection, CollectionSchema, Field, IndexInfo, describe_collection, list_collections,
 };
-use crate::storage::tenant_db::{open_read, open_write};
+use crate::storage::tenant_db::open_read;
 use askama::Template;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -574,21 +574,23 @@ pub async fn update_anon_caps(
             _ => {}
         }
     }
-    let writer = match open_write(&state.data_dir, &tenant_id) {
-        Ok(w) => w,
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    if let Err(e) = write_anon_caps(&writer, &coll_name, &caps) {
+    let coll_for_writer = coll_name.clone();
+    let caps_for_writer = caps.clone();
+    if let Err(e) = pool
+        .with_writer(move |c| write_anon_caps(c, &coll_for_writer, &caps_for_writer))
+        .await
+    {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    drop(writer);
 
     // Invalidate the per-tenant schema cache for this collection so the
     // next REST/MCP request through the tenant router sees the new gate
     // immediately, not after the next DDL or process restart.
-    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
-        pool.schema_cache.invalidate(&coll_name);
-    }
+    pool.schema_cache.invalidate(&coll_name);
 
     Redirect::to(&format!(
         "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
@@ -624,20 +626,23 @@ pub async fn update_realtime(
     drop(meta);
 
     let enabled = form.enabled.is_some();
-    let writer = match open_write(&state.data_dir, &tenant_id) {
-        Ok(w) => w,
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    if let Err(e) = crate::storage::schema::write_realtime_enabled(&writer, &coll_name, enabled) {
+    let coll_for_writer = coll_name.clone();
+    if let Err(e) = pool
+        .with_writer(move |c| {
+            crate::storage::schema::write_realtime_enabled(c, &coll_for_writer, enabled)
+        })
+        .await
+    {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    drop(writer);
 
     // Cache invalidate BEFORE bus evict — mirrors the REST handler's
     // ordering so any subscriber racing in between reads fresh schema.
-    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
-        pool.schema_cache.invalidate(&coll_name);
-    }
+    pool.schema_cache.invalidate(&coll_name);
     if !enabled {
         state.bus.evict_collection(&tenant_id, &coll_name);
     }
