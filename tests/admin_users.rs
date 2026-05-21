@@ -575,7 +575,7 @@ async fn mcp_set_self_register_tool() {
 
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
-    let webhooks = drust::tenant::WebhookDispatcher::new(data.clone());
+    let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone());
     let meta_arc = Arc::new(Mutex::new(conn));
     let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
         tenants.clone(),

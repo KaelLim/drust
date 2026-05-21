@@ -114,11 +114,11 @@ pub struct McpRegistry {
 
 impl McpRegistry {
     pub fn new(tenants: Arc<TenantRegistry>) -> Self {
-        let data_root = tenants.data_root().to_path_buf();
+        let webhooks = WebhookDispatcher::new(tenants.clone());
         Self {
             tenants,
             bus: EventBus::new(),
-            webhooks: WebhookDispatcher::new(data_root),
+            webhooks,
             garage: None,
             public_base_url: String::new(),
             url_sign_secret: Arc::new([0u8; 32]),
@@ -129,11 +129,11 @@ impl McpRegistry {
         }
     }
     pub fn with_bus(tenants: Arc<TenantRegistry>, bus: EventBus) -> Self {
-        let data_root = tenants.data_root().to_path_buf();
+        let webhooks = WebhookDispatcher::new(tenants.clone());
         Self {
             tenants,
             bus,
-            webhooks: WebhookDispatcher::new(data_root),
+            webhooks,
             garage: None,
             public_base_url: String::new(),
             url_sign_secret: Arc::new([0u8; 32]),
