@@ -98,6 +98,19 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         "realtime_enabled",
         "INTEGER NOT NULL DEFAULT 1",
     )?;
+    add_column_if_missing(&tx, "_system_collection_meta", "description", "TEXT")?;
+    add_column_if_missing(
+        &tx,
+        "_system_collection_meta",
+        "field_descriptions_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
+    add_column_if_missing(
+        &tx,
+        "_system_collection_meta",
+        "index_descriptions_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
     tx.commit()
 }
 
@@ -319,6 +332,57 @@ mod tests {
             )
             .unwrap();
         assert_eq!(v, 1, "existing row should preserve current SSE behaviour (= 1)");
+    }
+
+    #[test]
+    fn migrate_tenant_db_adds_description_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-desc");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        // v1.16-shape meta table: has owner_field/read_scope/vector_fields_json/realtime_enabled
+        // but no description / field_descriptions_json / index_descriptions_json.
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (
+                    collection_name     TEXT PRIMARY KEY,
+                    anon_caps_json      TEXT NOT NULL,
+                    updated_at          TEXT NOT NULL,
+                    owner_field         TEXT,
+                    read_scope          TEXT,
+                    vector_fields_json  TEXT NOT NULL DEFAULT '[]',
+                    realtime_enabled    INTEGER NOT NULL DEFAULT 1);
+                 INSERT INTO _system_collection_meta
+                    (collection_name, anon_caps_json, updated_at)
+                    VALUES ('legacy', '[\"select\"]', '2026-01-01');",
+            ).unwrap();
+        }
+
+        migrate_tenant_db(dir.path(), "t-desc").unwrap();
+        migrate_tenant_db(dir.path(), "t-desc").unwrap(); // idempotent
+
+        let c = Connection::open(&p).unwrap();
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(_system_collection_meta)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert!(cols.contains(&"description".to_string()),
+            "description column missing; cols = {cols:?}");
+        assert!(cols.contains(&"field_descriptions_json".to_string()),
+            "field_descriptions_json column missing; cols = {cols:?}");
+        assert!(cols.contains(&"index_descriptions_json".to_string()),
+            "index_descriptions_json column missing; cols = {cols:?}");
+
+        // Existing row defaults: description NULL, both JSON blobs '{}'.
+        let (d, fd, id): (Option<String>, String, String) = c.query_row(
+            "SELECT description, field_descriptions_json, index_descriptions_json
+               FROM _system_collection_meta WHERE collection_name='legacy'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        ).unwrap();
+        assert!(d.is_none(), "legacy row description should default to NULL");
+        assert_eq!(fd, "{}", "legacy row field_descriptions_json should default to {{}}");
+        assert_eq!(id, "{}", "legacy row index_descriptions_json should default to {{}}");
     }
 
     #[test]
