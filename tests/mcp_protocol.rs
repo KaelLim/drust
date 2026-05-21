@@ -19,13 +19,11 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use drust::auth::bearer::{generate_token, hash_token};
 use drust::safety::audit::AuditLog;
-use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::{TenantStack, build_tenant_router, events::EventBus, router::TenantAuthState};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
@@ -57,18 +55,12 @@ async fn mcp_stack(tenant: &str) -> (axum::Router, String, String, tempfile::Tem
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone());
-    let state = TenantAuthState {
-        meta: Arc::new(Mutex::new(conn)),
-        registry: tenants.clone(),
-        limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
-        audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
-        index_large_table_rows: 1_000_000,
-        register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(3, Duration::from_secs(60), 4096)),
-        login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
-        oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
-        public_url: String::new(),
-        oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
-    };
+    let meta = Arc::new(Mutex::new(conn));
+    let state = TenantAuthState::test_default(
+        meta,
+        tenants.clone(),
+        Arc::new(AuditLog::new(dir.path().join("audit"))),
+    );
     let app = build_tenant_router(TenantStack {
         auth: state,
         bus: bus.clone(),

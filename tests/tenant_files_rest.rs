@@ -60,17 +60,14 @@ async fn stream_bytes_returns_404_when_row_missing() {
         .unwrap();
     }
 
-    let state = TenantFilesState {
-        garage: None, // no Garage needed — handler returns 503 before DB if garage is None...
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 20,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let state = TenantFilesState::test_default(
+        None, // no Garage needed — handler returns 503 before DB if garage is None
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
 
     // Call stream_bytes with a key that doesn't exist in the DB.
     // Because garage is None, the handler short-circuits at the garage check
@@ -153,17 +150,14 @@ async fn sign_url_returns_400_for_zero_ttl() {
         GarageClient::from_store(Arc::new(object_store::memory::InMemory::new()), "unused");
     garage.configure_s3_signing("http://127.0.0.1:47830", "GKkey", "secret", "garage");
 
-    let state = TenantFilesState {
-        garage: Some(Arc::new(garage)),
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 20,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let state = TenantFilesState::test_default(
+        Some(Arc::new(garage)),
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
 
     let req = SignRequest {
         expires_in: Some(0),
@@ -217,17 +211,14 @@ async fn sign_url_returns_400_for_ttl_over_7days() {
         GarageClient::from_store(Arc::new(object_store::memory::InMemory::new()), "unused");
     garage.configure_s3_signing("http://127.0.0.1:47830", "GKkey", "secret", "garage");
 
-    let state = TenantFilesState {
-        garage: Some(Arc::new(garage)),
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 20,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let state = TenantFilesState::test_default(
+        Some(Arc::new(garage)),
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
 
     let req = SignRequest {
         expires_in: Some(604_801),
@@ -289,17 +280,14 @@ async fn sign_url_private_row_returns_signed_url() {
         GarageClient::from_store(Arc::new(object_store::memory::InMemory::new()), "unused");
     garage.configure_s3_signing("http://127.0.0.1:47830", "GKkey", "secret", "garage");
 
-    let state = TenantFilesState {
-        garage: Some(Arc::new(garage)),
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 20,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let state = TenantFilesState::test_default(
+        Some(Arc::new(garage)),
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
 
     let req = SignRequest {
         expires_in: Some(3600),
@@ -374,17 +362,16 @@ async fn sign_url_public_row_returns_stable_url() {
         GarageClient::from_store(Arc::new(object_store::memory::InMemory::new()), "unused");
     garage.configure_s3_signing("http://127.0.0.1:47830", "GKkey", "secret", "garage");
 
-    let state = TenantFilesState {
-        garage: Some(Arc::new(garage)),
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 20,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://example.com".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let mut state = TenantFilesState::test_default(
+        Some(Arc::new(garage)),
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
+    // This test asserts the returned URL domain — override the default base.
+    state.public_base_url = "http://example.com".into();
 
     let req = SignRequest {
         expires_in: None,
@@ -454,17 +441,14 @@ async fn stream_bytes_returns_not_found_when_row_absent_with_garage() {
         "dummy-token",
     ));
 
-    let state = TenantFilesState {
-        garage: Some(mock_garage),
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 20,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let state = TenantFilesState::test_default(
+        Some(mock_garage),
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
 
     let result = stream_bytes(
         State(state),
@@ -523,17 +507,16 @@ async fn upload_rejects_oversize_via_content_length_pre_check() {
         "unused",
     ));
 
-    let state = TenantFilesState {
-        garage: Some(garage),
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 0, // skip disk check
-        max_upload_bytes: 1024,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let mut state = TenantFilesState::test_default(
+        Some(garage),
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
+    state.disk_min_free_pct = 0; // skip disk check for this test
+    state.max_upload_bytes = 1024;
 
     // Build a real router and send a POST request with Content-Length: 9999
     // (over the 1024 limit).  The Content-Length pre-check runs BEFORE any
@@ -570,17 +553,15 @@ async fn list_returns_empty_for_fresh_tenant() {
     let tenant_id = "test-tenant-list-empty";
     make_tenant_db(&dir, tenant_id);
 
-    let state = TenantFilesState {
-        garage: None,
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 0,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let mut state = TenantFilesState::test_default(
+        None,
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
+    state.disk_min_free_pct = 0;
 
     let response = list(State(state), Path(tenant_id.to_string())).await;
 
@@ -605,17 +586,15 @@ async fn get_one_returns_404_for_missing_key() {
     let tenant_id = "test-tenant-get-missing";
     make_tenant_db(&dir, tenant_id);
 
-    let state = TenantFilesState {
-        garage: None,
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 0,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let mut state = TenantFilesState::test_default(
+        None,
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
+    state.disk_min_free_pct = 0;
 
     let response = get_one(
         State(state),
@@ -647,17 +626,15 @@ async fn delete_one_returns_404_for_missing_key() {
         "unused",
     ));
 
-    let state = TenantFilesState {
-        garage: Some(garage),
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 0,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let mut state = TenantFilesState::test_default(
+        Some(garage),
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
+    state.disk_min_free_pct = 0;
 
     let response = delete_one(
         State(state),
@@ -699,17 +676,15 @@ async fn get_one_returns_row_when_key_exists() {
         .unwrap();
     }
 
-    let state = TenantFilesState {
-        garage: None,
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 0,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let mut state = TenantFilesState::test_default(
+        None,
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
+    state.disk_min_free_pct = 0;
 
     let response = get_one(
         State(state),
@@ -754,17 +729,15 @@ async fn list_returns_rows_when_files_exist() {
         .unwrap();
     }
 
-    let state = TenantFilesState {
-        garage: None,
-        data_root: dir.path().to_path_buf(),
-        disk_min_free_pct: 0,
-        max_upload_bytes: 52_428_800,
-        public_base_url: "http://localhost".into(),
-        url_sign_secret: std::sync::Arc::new([0u8; 32]),
-        tenants: std::sync::Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        ),
-    };
+    let mut state = TenantFilesState::test_default(
+        None,
+        dir.path().to_path_buf(),
+        std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        )),
+    );
+    state.disk_min_free_pct = 0;
 
     let response = list(State(state), Path(tenant_id.to_string())).await;
 

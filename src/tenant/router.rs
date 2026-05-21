@@ -45,6 +45,49 @@ pub struct TenantAuthState {
         Arc<std::collections::HashMap<String, Arc<dyn crate::oauth::provider::OauthProvider>>>,
 }
 
+/// Test-only constructor available in debug builds (integration tests run
+/// debug by default; the factory is excluded from `cargo build --release`
+/// because release builds have `debug_assertions = false`).
+///
+/// Fills all secondary fields with safe, non-trivial defaults that mirror
+/// production values:
+/// - `limiter`: 10 000 req / 1 s (effectively unlimited for tests)
+/// - `index_large_table_rows`: 1 000 000 (production default)
+/// - `register_rl`: 3 / 60 s (production default)
+/// - `login_rl`: 5 / 60 s (production default)
+/// - `oauth_callback_rl`: 5 / 60 s (production default)
+/// - `public_url`: `""` (OAuth start/callback use a fake adapter in tests)
+/// - `oauth_adapter_override`: empty (no fake providers wired)
+///
+/// For tests that need a custom `limiter` (e.g. rate-limit threshold tests),
+/// build with `test_default` then overwrite the field:
+/// ```ignore
+/// let mut state = TenantAuthState::test_default(meta, registry, audit);
+/// state.limiter = Arc::new(RateLimiter::new(budget, window));
+/// ```
+#[cfg(any(test, debug_assertions))]
+impl TenantAuthState {
+    pub fn test_default(
+        meta: Arc<Mutex<Connection>>,
+        registry: Arc<TenantRegistry>,
+        audit: Arc<AuditLog>,
+    ) -> Self {
+        use std::time::Duration;
+        Self {
+            meta,
+            registry,
+            limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
+            audit,
+            index_large_table_rows: 1_000_000,
+            register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
+            login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+            oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+            public_url: String::new(),
+            oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenRole {
     Anon,

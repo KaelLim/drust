@@ -11,7 +11,6 @@ use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::routing::post;
 use axum::Router;
-use drust::auth::middleware::AdminSessionState;
 use drust::mgmt::browse::{
     admin_update_collection_description, admin_update_field_description,
     admin_update_index_description,
@@ -45,21 +44,7 @@ async fn build_app(tenant_id: &str) -> (Router, std::path::PathBuf, tempfile::Te
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
     )));
-    let session = AdminSessionState { meta: meta.clone() };
-    let state = TenantsState {
-        session,
-        data_dir: data_dir.clone(),
-        garage: None,
-        garage_client_key_id: String::new(),
-        max_upload_bytes: 1024 * 1024,
-        disk_min_free_pct: 20,
-        public_base_url: "http://localhost".to_string(),
-        tenants,
-        mcp,
-        bus,
-        log_dir: data_dir.join("logs"),
-        index_large_table_rows: 1_000_000,
-    };
+    let state = TenantsState::test_default(meta, data_dir.clone(), tenants, mcp, bus);
     let app = Router::new()
         .route(
             "/admin/tenants/{id}/collections/{coll}/description",

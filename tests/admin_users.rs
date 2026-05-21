@@ -545,8 +545,6 @@ async fn mcp_set_self_register_tool() {
     use drust::mcp::http_registry::McpHttpRegistry;
     use drust::mcp::server::McpRegistry;
     use drust::safety::audit::AuditLog;
-    use drust::safety::rate_limit::RateLimiter;
-    use drust::safety::rate_limit_ip::IpRateLimit;
     use drust::storage::meta::open_meta;
     use drust::storage::pool::TenantRegistry;
     use drust::tenant::router::TenantAuthState;
@@ -588,18 +586,11 @@ async fn mcp_set_self_register_tool() {
         52_428_800,
         1_000_000,
     ));
-    let state = TenantAuthState {
-        meta: meta_arc.clone(),
-        registry: tenants.clone(),
-        limiter: Arc::new(RateLimiter::new(10_000, std::time::Duration::from_secs(1))),
-        audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
-        index_large_table_rows: 1_000_000,
-        register_rl: Arc::new(IpRateLimit::new(3, std::time::Duration::from_secs(60), 4096)),
-        login_rl: Arc::new(IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
-        oauth_callback_rl: Arc::new(IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
-        public_url: String::new(),
-        oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
-    };
+    let state = TenantAuthState::test_default(
+        meta_arc.clone(),
+        tenants.clone(),
+        Arc::new(AuditLog::new(dir.path().join("audit"))),
+    );
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),

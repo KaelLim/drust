@@ -24,8 +24,6 @@ use drust::oauth::github::GitHubAdapter;
 use drust::oauth::google::GoogleAdapter;
 use drust::oauth::provider::OauthProvider;
 use drust::safety::audit::AuditLog;
-use drust::safety::rate_limit::RateLimiter;
-use drust::safety::rate_limit_ip::IpRateLimit;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::events::EventBus;
@@ -33,7 +31,6 @@ use drust::tenant::router::TenantAuthState;
 use drust::tenant::{TenantStack, build_tenant_router};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::{TempDir, tempdir};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
@@ -95,18 +92,15 @@ fn build_tenant_state(
     let meta_path = data_dir.join("meta.sqlite");
     let conn = open_meta(&meta_path).unwrap();
     drust::db::migrations::run_migrations(&conn, data_dir).unwrap();
-    TenantAuthState {
-        meta: Arc::new(Mutex::new(conn)),
-        registry: Arc::new(TenantRegistry::new(data_dir.to_path_buf(), 2)),
-        limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
-        audit: Arc::new(AuditLog::new(audit_log_dir.to_path_buf())),
-        index_large_table_rows: 1_000_000,
-        register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
-        login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
-        oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
-        public_url: "http://test".to_string(),
-        oauth_adapter_override: Arc::new(overrides),
-    }
+    let mut state = TenantAuthState::test_default(
+        Arc::new(Mutex::new(conn)),
+        Arc::new(TenantRegistry::new(data_dir.to_path_buf(), 2)),
+        Arc::new(AuditLog::new(audit_log_dir.to_path_buf())),
+    );
+    // Override the two test-specific fields that differ from the factory defaults.
+    state.public_url = "http://test".to_string();
+    state.oauth_adapter_override = Arc::new(overrides);
+    state
 }
 
 fn build_router(state: TenantAuthState) -> Router {

@@ -44,6 +44,35 @@ pub struct TenantFilesState {
     pub tenants: std::sync::Arc<crate::storage::pool::TenantRegistry>,
 }
 
+/// Test-only constructor available in debug builds.
+///
+/// Defaults:
+/// - `disk_min_free_pct`: 20
+/// - `max_upload_bytes`: 52 428 800 (50 MiB, matches integration-test default)
+/// - `public_base_url`: `"http://localhost"`
+/// - `url_sign_secret`: `[0u8; 32]` (zeros — acceptable for tests, never used in prod)
+///
+/// Pass `garage: None` for handlers that short-circuit before the S3 call,
+/// or `garage: Some(Arc::new(mock_garage))` for tests that need a Garage client.
+#[cfg(any(test, debug_assertions))]
+impl TenantFilesState {
+    pub fn test_default(
+        garage: Option<std::sync::Arc<GarageClient>>,
+        data_root: std::path::PathBuf,
+        tenants: std::sync::Arc<crate::storage::pool::TenantRegistry>,
+    ) -> Self {
+        Self {
+            garage,
+            data_root,
+            disk_min_free_pct: 20,
+            max_upload_bytes: 52_428_800,
+            public_base_url: "http://localhost".into(),
+            url_sign_secret: std::sync::Arc::new([0u8; 32]),
+            tenants,
+        }
+    }
+}
+
 /// GET /drust/t/<tenant>/files/<key>/bytes
 /// Streams the file body. Auth via bearer_auth_layer (must be a service token
 /// for the tenant — anon tokens will be 403 by the dispatch layer for any
