@@ -39,6 +39,9 @@ pub struct TenantFilesState {
     pub public_base_url: String,
     /// HMAC secret for mint-and-verify of drust-served signed URLs.
     pub url_sign_secret: Arc<[u8; 32]>,
+    /// v1.20 — per-tenant pool registry so admin file writes go through
+    /// the writer mutex.
+    pub tenants: std::sync::Arc<crate::storage::pool::TenantRegistry>,
 }
 
 /// GET /drust/t/<tenant>/files/<key>/bytes
@@ -302,37 +305,46 @@ pub async fn upload(
     let key = format!("{}.{}", uuid::Uuid::new_v4(), ext);
     let object_key = crate::storage::files::compose_key(&Owner::Tenant(tenant_id.clone()), &key);
 
-    // SQLite-first INSERT into tenant DB.
+    // SQLite-first INSERT into tenant DB — through the writer mutex.
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "tenant pool open failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("tenant db: {e}"))
+                .into_response();
+        }
+    };
     {
-        let conn =
-            crate::storage::tenant_db::open_write(&state.data_root, &tenant_id).map_err(|e| {
-                tracing::error!(error = %e, "tenant db open failed");
-                e
-            });
-        let conn = match conn {
-            Ok(c) => c,
-            Err(e) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("tenant db: {e}"))
-                    .into_response();
-            }
-        };
-        if let Err(e) = conn.execute(
-            "INSERT INTO _system_files
-             (key, original_name, content_type, size_bytes, content_disposition,
-              visibility, cache_control, meta_json, uploader)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                &key,
-                &original_name,
-                &sniffed_ct,
-                size,
-                disp_mode,
-                vis_str,
-                &cache_control,
-                &meta_json,
-                "service",
-            ],
-        ) {
+        let key_w = key.clone();
+        let original_name_w = original_name.clone();
+        let sniffed_ct_w = sniffed_ct.clone();
+        let cache_control_w = cache_control.clone();
+        let meta_json_w = meta_json.clone();
+        let disp_mode_w = disp_mode;
+        let vis_str_w = vis_str;
+        if let Err(e) = pool
+            .with_writer(move |c| {
+                c.execute(
+                    "INSERT INTO _system_files
+                     (key, original_name, content_type, size_bytes, content_disposition,
+                      visibility, cache_control, meta_json, uploader)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        &key_w,
+                        &original_name_w,
+                        &sniffed_ct_w,
+                        size,
+                        disp_mode_w,
+                        vis_str_w,
+                        &cache_control_w,
+                        &meta_json_w,
+                        "service",
+                    ],
+                )
+                .map(|_| ())
+            })
+            .await
+        {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("db insert: {e}")).into_response();
         }
     }
@@ -357,12 +369,18 @@ pub async fn upload(
             error = format!("{e:#}"),
             "garage put_object_in failed — rolling back metadata row"
         );
-        // Compensating delete.
-        if let Ok(conn) = crate::storage::tenant_db::open_write(&state.data_root, &tenant_id) {
-            let _ = conn.execute(
-                "DELETE FROM _system_files WHERE key = ?1",
-                rusqlite::params![&key],
-            );
+        // Compensating delete — through the writer mutex.
+        let key_comp = key.clone();
+        if let Ok(pool_comp) = state.tenants.get_or_open(&tenant_id) {
+            let _ = pool_comp
+                .with_writer(move |c| {
+                    c.execute(
+                        "DELETE FROM _system_files WHERE key = ?1",
+                        rusqlite::params![&key_comp],
+                    )
+                    .map(|_| ())
+                })
+                .await;
         }
         return (StatusCode::BAD_GATEWAY, format!("garage put: {e:#}")).into_response();
     }
@@ -505,17 +523,23 @@ pub async fn delete_one(
         return (StatusCode::BAD_GATEWAY, format!("garage delete: {e:#}")).into_response();
     }
 
-    // Delete the DB row.
-    let conn = match crate::storage::tenant_db::open_write(&state.data_root, &tenant_id) {
-        Ok(c) => c,
+    // Delete the DB row — through the writer mutex.
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("db open: {e}")).into_response();
         }
     };
-    if let Err(e) = conn.execute(
-        "DELETE FROM _system_files WHERE key = ?1",
-        rusqlite::params![key],
-    ) {
+    if let Err(e) = pool
+        .with_writer(move |c| {
+            c.execute(
+                "DELETE FROM _system_files WHERE key = ?1",
+                rusqlite::params![key],
+            )
+            .map(|_| ())
+        })
+        .await
+    {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("db delete: {e}")).into_response();
     }
 

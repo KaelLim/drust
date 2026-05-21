@@ -317,6 +317,7 @@ impl MgmtState {
             max_upload_bytes: self.max_upload_bytes,
             public_base_url: self.public_base_url.clone(),
             url_sign_secret: self.url_sign_secret.clone(),
+            tenants: self.tenants.clone(),
         };
         let signed_bytes_state = crate::mgmt::signed_bytes::SignedBytesState {
             meta: self.meta.clone(),

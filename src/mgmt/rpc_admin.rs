@@ -8,7 +8,7 @@
 use crate::mgmt::tenants::TenantsState;
 use crate::rpc::registry;
 use crate::storage::schema::{Collection, list_collections};
-use crate::storage::tenant_db::{open_read, open_write};
+use crate::storage::tenant_db::open_read;
 use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -283,49 +283,89 @@ pub async fn rpc_save(
     Path(tenant_id): Path<String>,
     axum::Form(form): axum::Form<RpcFormBody>,
 ) -> Response {
-    let writer = match open_write(&state.data_dir, &tenant_id) {
-        Ok(w) => w,
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    let anon_callable = form.anon_callable.is_some();
 
-    // Validate params_json parses.
     let tenant_name = lookup_tenant_name(&state, &tenant_id)
         .await
         .unwrap_or_else(|| tenant_id.clone());
+
+    // Pre-validate params_json before taking the writer lock (no DB needed).
     if let Err(e) = crate::rpc::params::parse_params_json(&form.params_json) {
-        let exists_now = registry::lookup(&writer, &form.name).ok().flatten().is_some();
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
-    }
-    // Validate SQL through the read-only authorizer.
-    if let Err(e) = crate::rpc::prepare::validate_rpc_sql(&writer, &form.sql) {
-        let exists_now = registry::lookup(&writer, &form.name).ok().flatten().is_some();
+        let name_for_lookup = form.name.clone();
+        let exists_now = pool
+            .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
+            .await
+            .unwrap_or(false);
         return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
     }
 
-    let exists_now = registry::lookup(&writer, &form.name).ok().flatten().is_some();
-    let res = if exists_now {
-        registry::update(
-            &writer,
-            &form.name,
-            Some(&form.sql),
-            Some(&form.params_json),
-            Some(form.description.as_deref()),
-            Some(anon_callable),
-        )
-    } else {
-        registry::create(
-            &writer,
-            &form.name,
-            &form.sql,
-            &form.params_json,
-            form.description.as_deref(),
-            anon_callable,
-        )
-    };
-    if let Err(e) = res {
+    // Validate SQL through the read-only authorizer (uses a reader connection
+    // so the authorizer is never attached to the writer).
+    let sql_for_validate = form.sql.clone();
+    let validate_res = pool
+        .with_reader(move |c| {
+            crate::rpc::prepare::validate_rpc_sql(c, &sql_for_validate)
+                .map_err(|e| rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(e.to_string()),
+                ))
+        })
+        .await;
+    if let Err(e) = validate_res {
+        let name_for_lookup = form.name.clone();
+        let exists_now = pool
+            .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
+            .await
+            .unwrap_or(false);
         return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
     }
+
+    // Single writer transaction: lookup existence + create-or-update.
+    let form_for_writer = form.clone();
+    let writer_res = pool
+        .with_writer(move |c| -> rusqlite::Result<bool> {
+            let exists_now = registry::lookup(c, &form_for_writer.name)
+                .ok()
+                .flatten()
+                .is_some();
+            let anon_callable = form_for_writer.anon_callable.is_some();
+            let result = if exists_now {
+                registry::update(
+                    c,
+                    &form_for_writer.name,
+                    Some(&form_for_writer.sql),
+                    Some(&form_for_writer.params_json),
+                    Some(form_for_writer.description.as_deref()),
+                    Some(anon_callable),
+                )
+            } else {
+                registry::create(
+                    c,
+                    &form_for_writer.name,
+                    &form_for_writer.sql,
+                    &form_for_writer.params_json,
+                    form_for_writer.description.as_deref(),
+                    anon_callable,
+                )
+            };
+            result.map(|_| exists_now).map_err(|e| rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(e.to_string()),
+            ))
+        })
+        .await;
+    if let Err(e) = writer_res {
+        let name_for_lookup = form.name.clone();
+        let exists_now = pool
+            .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
+            .await
+            .unwrap_or(false);
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
+    }
+
     Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_rpc")).into_response()
 }
 
@@ -739,13 +779,25 @@ pub async fn rpc_delete(
         return (StatusCode::NOT_FOUND, "tenant not found").into_response();
     }
 
-    let writer = match open_write(&state.data_dir, &tenant_id) {
-        Ok(c) => c,
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    match registry::delete(&writer, &name) {
-        Ok(()) | Err(registry::RegistryError::NotFound(_)) => {}
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    let name_for_writer = name.clone();
+    let delete_res: Result<(), String> = pool
+        .with_writer(move |c| {
+            match registry::delete(c, &name_for_writer) {
+                Ok(()) | Err(registry::RegistryError::NotFound(_)) => Ok(()),
+                Err(e) => Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(e.to_string()),
+                )),
+            }
+        })
+        .await
+        .map_err(|e| e.to_string());
+    if let Err(msg) = delete_res {
+        return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
     }
 
     Redirect::to(&format!("/drust/admin/tenants/{}/_rpc", tenant_id)).into_response()

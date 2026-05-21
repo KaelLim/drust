@@ -203,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
         max_upload_bytes,
         public_base_url: cfg.public_base_url.clone(),
         url_sign_secret: url_sign_secret.clone(),
+        tenants: tenants.clone(),
     });
 
     let tenant_stack = TenantStack {
