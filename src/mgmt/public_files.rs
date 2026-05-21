@@ -108,6 +108,10 @@ pub struct ListQs {
 
 pub struct PendingRevokeRow {
     pub tenant_id: String,
+    /// Resolved tenant name. Falls back to the raw id when the tenant
+    /// row was hard-deleted (rare; reconcile rows usually point at
+    /// soft-deleted-but-still-in-meta tenants).
+    pub tenant_name: String,
     pub detected_at: String,
     pub last_error: Option<String>,
 }
@@ -598,17 +602,25 @@ pub async fn reconcile_page(State(state): State<PublicFilesState>) -> Response {
 
     let pending_revokes: Vec<PendingRevokeRow> = {
         let conn = state.meta.lock().await;
+        // LEFT JOIN tenants so soft-deleted-then-hard-deleted rows still
+        // surface (name comes back NULL → fallback to id below).
         let mut stmt = match conn.prepare(
-            "SELECT tenant_id, detected_at, last_error FROM _trash_pending_revokes ORDER BY detected_at",
+            "SELECT r.tenant_id, t.name, r.detected_at, r.last_error \
+             FROM _trash_pending_revokes r \
+             LEFT JOIN tenants t ON t.id = r.tenant_id \
+             ORDER BY r.detected_at",
         ) {
             Ok(s) => s,
             Err(e) => return internal(format!("db prepare pending: {e}")),
         };
         match stmt.query_map([], |r| {
+            let tenant_id: String = r.get(0)?;
+            let tenant_name: Option<String> = r.get(1)?;
             Ok(PendingRevokeRow {
-                tenant_id: r.get(0)?,
-                detected_at: r.get(1)?,
-                last_error: r.get::<_, Option<String>>(2)?,
+                tenant_name: tenant_name.unwrap_or_else(|| tenant_id.clone()),
+                tenant_id,
+                detected_at: r.get(2)?,
+                last_error: r.get::<_, Option<String>>(3)?,
             })
         }) {
             Ok(it) => it.filter_map(|r| r.ok()).collect(),

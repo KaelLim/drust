@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## 1.17.2 - 2026-05-21
+
+Patch release: admin UI polish round 2 — chart removal, tenant name everywhere, audit row format.
+
+### Removed
+
+- **Audit overview SVG chart grid** (v1.17.0 feature). The four server-side inline-SVG charts (requests-over-time / top error codes / latency distribution / top tenants) and their supporting CSS used the wrong design tokens (`--card-bg` / `--sans` / `--radius` / `--ok` / `--warn` / `--err` instead of drust's real `--surface` / `--font-sans` / `--mint` / `--danger`), falling back to GitHub-style cold-blue colors that clashed with drust's warm palette. User-decided removal. Deleted:
+  - `src/mgmt/svg_charts.rs` (390 LOC SVG renderer)
+  - `src/mgmt/templates/_audit_charts.html` (chart layout partial)
+  - `tests/audit_chart_render.rs` (3 integration tests)
+  - Chart compute helpers in `src/mgmt/audit.rs`: `adaptive_bucket_seconds`, `status_class`/`StatusClass`, `time_series_buckets`, `top_error_codes`, `latency_histogram`, `tenant_request_bars`, and the 13 lib tests covering them.
+  - Chart-related view-model structs: `TimeBucket`, `ErrorCodeCount`, `LatencyHistogram`, `TenantBar`, `ChartCtx`.
+  - 4 SVG-string fields on `BodyCtx` / `AuditHostPage` / `AuditTenantPage`.
+  - Chart-grid / chart-card / chart-legend / legend-swatch CSS in `_styles.html`.
+
+### Changed
+
+- **Tenant name resolution on overview-tab tables.** `/admin/audit?tab=overview` Top tenants and Top slow ops tables now show the resolved `tenant_name` instead of the raw UUID. UUID surfaced via `title=` hover. Implementation: `TopTenant` gains a `tenant_name` field (populated by `build_body_ctx` after a `tenants` meta lookup; `aggregate()` itself leaves it blank because it doesn't carry the map); Top slow ops is rendered from a new parallel `top_slow_ops_view: Vec<AuditEntryView>` field on `BodyCtx`.
+- **Tenant name in 4 other surfaces:**
+  - `backup_inspect.html` post-restore flash now shows tenant name (lookup from the snapshot's own tenant list). `RestoreFlash` gains a `tenant_name` field.
+  - `collections.html` (empty-tenant page) title + meta + breadcrumb now show name. `CollectionsPage` gains `tenant_name`; handler calls `tenant_name_lookup`.
+  - `files_reconcile.html` pending-revokes row now shows tenant name. `PendingRevokeRow` gains `tenant_name`; the underlying SQL does a `LEFT JOIN tenants` so soft-deleted rows still surface (name comes back NULL → falls back to id in the row builder).
+  - `tenant_api_keys.html` sub-header changes "Tenant <code>id</code>" to "Tenant <b>name</b> <code>id</code>" (name primary, id secondary).
+- **Audit timeline timestamp format.** Browse-tab row + Top slow ops cell now show `MM-DD HH:MM:SS` (15 chars) instead of the full RFC3339 string (24 chars). Implemented as a new `ts_display: String` field on `AuditEntryView` populated by `format_ts_display()`. Raw RFC3339 still surfaces on hover via `title=`.
+- **Audit timeline grid + body wrapping.** `.tl-row` time column widened 78px → 104px to fit the new format with margin. `align-items: center` → `align-items: baseline` so wrapped body content (pill + op + error_code) lines up cleanly on its first row instead of vertically centering the variable-height block. `.tl-row .tl-body` switched from `display:inline-flex` to `display:flex` with explicit `line-height: 1.6` for predictable multi-line spacing.
+
+### Internal
+
+- `format_ts_display(ts: &str) -> String` helper in `src/mgmt/audit.rs` (chrono parse + format, falls back to raw on parse error).
+- Kept `mk_entry_with_code` test helper (marked `#[allow(dead_code)]` for now — its callers were the deleted chart tests; reused only if a future test needs the `error_code` injection shape).
+
+### Out of scope (deferred)
+
+- Other admin pages where tenant id is shown but intentionally labeled as identifier (`tenant_overview.html` "Tenant id <code>...</code>", `_collection_sidebar.html` plane pill id-under-name, code-style URL examples) — kept as id since the operational context makes id the right choice.
+- CHANGELOG backfill for v1.14 / v1.15 / v1.16 / v1.17.0 — see gap note above.
+
 ## 1.17.1 - 2026-05-21
 
 Patch release: admin UI refresh + `X-Drust-Version` response header. No schema or public API change.

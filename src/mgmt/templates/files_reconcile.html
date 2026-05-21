@@ -79,7 +79,7 @@
           <div class="records-scroll">
             <table class="data"><thead><tr><th style="width:40px;">✓</th><th>tenant</th><th>detected</th><th>last error</th></tr></thead><tbody>
               {% for r in pending_revokes %}
-              <tr><td><input type="checkbox" name="retry_pending_revokes" value="{{ r.tenant_id }}"></td><td>{{ r.tenant_id }}</td><td>{{ r.detected_at }}</td><td class="muted">{{ r.last_error.as_deref().unwrap_or("") }}</td></tr>
+              <tr><td><input type="checkbox" name="retry_pending_revokes" value="{{ r.tenant_id }}"></td><td title="{{ r.tenant_id }}">{{ r.tenant_name }}</td><td>{{ r.detected_at }}</td><td class="muted">{{ r.last_error.as_deref().unwrap_or("") }}</td></tr>
               {% endfor %}
             </tbody></table>
           </div>

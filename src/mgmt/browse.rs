@@ -17,6 +17,7 @@ use serde::Deserialize;
 #[template(path = "collections.html")]
 struct CollectionsPage {
     tenant_id: String,
+    tenant_name: String,
     version: &'static str,
 }
 
@@ -137,6 +138,7 @@ pub async fn collections_page(
     if !tenant_active(&meta, &tenant_id) {
         return (StatusCode::NOT_FOUND, "no such tenant").into_response();
     }
+    let tenant_name = tenant_name_lookup(&meta, &tenant_id).unwrap_or_else(|| tenant_id.clone());
     drop(meta);
 
     let conn = match open_read(&state.data_dir, &tenant_id) {
@@ -159,6 +161,7 @@ pub async fn collections_page(
     Html(
         CollectionsPage {
             tenant_id,
+            tenant_name,
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()

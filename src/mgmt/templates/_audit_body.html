@@ -22,7 +22,6 @@
 </div>
 
 {% if tab == "overview" %}
-{% include "_audit_charts.html" %}
 {% if let Some(ov) = overview %}
 <div class="stat-grid" style="margin-bottom:18px;">
   <div class="stat accent-edge">
@@ -61,7 +60,7 @@
     <tbody>
       {% for t in ov.top_tenants %}
       <tr>
-        <td>{% if t.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ t.tenant }}/_logs" title="drill into this tenant's audit">{{ t.tenant }}</a>{% endif %}</td>
+        <td>{% if t.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ t.tenant }}/_logs" title="{{ t.tenant }}">{{ t.tenant_name }}</a>{% endif %}</td>
         <td class="num">{{ t.count }}</td>
         <td class="num">{% if t.error_pct > 0.0 %}<span class="pill danger">{{ "{:.1}"|format(t.error_pct) }}%</span>{% else %}<span class="pill mint">{{ "{:.1}"|format(t.error_pct) }}%</span>{% endif %}</td>
       </tr>
@@ -79,7 +78,7 @@
       <div class="card-sub">slowest individual requests in this window</div>
     </div>
   </div>
-  {% if ov.top_slow_ops.is_empty() %}<div class="empty" style="padding:36px 24px;">no data</div>{% else %}
+  {% if top_slow_ops_view.is_empty() %}<div class="empty" style="padding:36px 24px;">no data</div>{% else %}
   <table class="data">
     <thead><tr>
       <th>timestamp</th>
@@ -88,10 +87,10 @@
       <th class="num">ms</th>
     </tr></thead>
     <tbody>
-      {% for e in ov.top_slow_ops %}
+      {% for e in top_slow_ops_view %}
       <tr>
-        <td class="muted-cell">{{ e.ts }}</td>
-        {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs">{{ e.tenant }}</a>{% endif %}</td>{% endif %}
+        <td class="muted-cell">{{ e.ts_display }}</td>
+        {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs" title="{{ e.tenant }}">{{ e.tenant_name }}</a>{% endif %}</td>{% endif %}
         <td class="mono-cell" style="font-size:12px;">{{ e.op }}</td>
         <td class="num"><b>{{ e.duration_ms }}</b></td>
       </tr>
@@ -158,7 +157,7 @@
       {% for e in entries_view %}
       <div class="tl-row" data-idx="{{ loop.index0 }}" tabindex="0" role="button"
            aria-label="show details for {{ e.op }}">
-        <div class="tl-time">{{ e.ts }}</div>
+        <div class="tl-time" title="{{ e.ts }}">{{ e.ts_display }}</div>
         <div class="tl-glyph{% if e.status == "error" %} fail{% else %} ok{% endif %}">{% if e.status == "error" %}✕{% else %}✓{% endif %}</div>
         <div class="tl-body">
           {% if is_host_scope %}
