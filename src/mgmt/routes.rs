@@ -60,6 +60,14 @@ pub struct MgmtState {
     /// `DRUST_ADMIN_OAUTH_ALLOWED_EMAILS` (comma-separated). Empty when
     /// unset, which disables OAuth login.
     pub oauth_allowlist: std::sync::Arc<std::collections::HashSet<String>>,
+    /// Per-IP rate limiter for POST /drust/login admin password attempts.
+    /// Default: 5 per 60 s. Same shape as tenant `login_rl` in
+    /// `TenantAuthState`. Defends against parallel-thread argon2 grind.
+    pub admin_login_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
+    /// Per-IP rate limiter for GET /drust/admin/oauth/{provider}/callback.
+    /// Default: 5 per 60 s. Defends the provider-exchange path from being
+    /// flooded with attacker-supplied (code, state) pairs.
+    pub admin_oauth_callback_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
 }
 
 #[derive(Template)]
@@ -116,8 +124,30 @@ async fn login_page(
     )
 }
 
-async fn login_submit(State(state): State<MgmtState>, Form(form): Form<LoginForm>) -> Response {
+async fn login_submit(
+    State(state): State<MgmtState>,
+    headers: axum::http::HeaderMap,
+    Form(form): Form<LoginForm>,
+) -> Response {
     let op = "POST /login";
+    // v1.19.2 — per-IP rate limit. Same shape as tenant login_handler.
+    let fallback_addr: std::net::SocketAddr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
+    if !state.admin_login_rl.check(ip) {
+        let mut entry = crate::safety::audit::AuditEntry::failure(
+            "-", "-", op, 0, "HTTP_429", "rate limited",
+        );
+        entry.auth_method = Some("password".to_string());
+        entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
+        crate::safety::audit::write_entry(&state.log_dir, &entry).await;
+        let mut resp = axum::Json(serde_json::json!({
+            "error_code": "RATE_LIMITED_IP",
+            "message": "rate limited",
+        }))
+        .into_response();
+        *resp.status_mut() = axum::http::StatusCode::TOO_MANY_REQUESTS;
+        return resp;
+    }
     let mut conn = state.meta.lock().await;
     let row: Option<(i64, String)> = conn
         .query_row(
@@ -298,7 +328,6 @@ impl MgmtState {
             data_dir: data_dir.clone(),
         };
 
-        // TODO: rate-limit admin oauth callback
         let public = Router::new()
             .route("/", get(root_redirect))
             .route("/login", get(login_page).post(login_submit))

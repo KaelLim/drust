@@ -74,6 +74,8 @@ async fn admin_app_with_tenant() -> (axum::Router, String, String, tempfile::Tem
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
         oauth_allowlist: Arc::new(std::collections::HashSet::new()),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
     };
     let router = state.with_data_dir(data_dir);
     (router, TENANT.to_string(), svc_tok, dir)
@@ -237,6 +239,8 @@ async fn password_hash_is_masked_in_system_users_page() {
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
         oauth_allowlist: Arc::new(std::collections::HashSet::new()),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
     };
     let router = state.with_data_dir(data_dir);
     let cookie = login_cookie(&router).await;
