@@ -790,12 +790,19 @@ pub async fn admin_update_collection_description(
     Path((tenant_id, coll_name)): Path<(String, String)>,
     axum::extract::Form(form): axum::extract::Form<DescriptionForm>,
 ) -> Response {
-    use crate::storage::schema::{check_description, write_collection_description};
+    use crate::storage::schema::{
+        check_description, collection_exists, is_protected_collection,
+        write_collection_description,
+    };
     let meta = state.session.meta.lock().await;
     if !tenant_active(&meta, &tenant_id) {
         return (StatusCode::NOT_FOUND, "no such tenant").into_response();
     }
     drop(meta);
+
+    if is_protected_collection(&coll_name) {
+        return (StatusCode::FORBIDDEN, "cannot set description on a _system_* collection").into_response();
+    }
 
     let validated = match check_description(&form.description) {
         Ok(v) => v,
@@ -803,23 +810,38 @@ pub async fn admin_update_collection_description(
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
     };
-    let value: Option<&str> = if validated.is_empty() {
-        None
-    } else {
-        Some(&validated)
-    };
-    let writer = match crate::storage::tenant_db::open_write(&state.data_dir, &tenant_id) {
-        Ok(w) => w,
+    let value: Option<String> = if validated.is_empty() { None } else { Some(validated) };
+
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    if let Err(e) = write_collection_description(&writer, &coll_name, value) {
+    // Existence check before any write.
+    let coll_for_check = coll_name.clone();
+    let exists = match pool
+        .with_reader(move |c| collection_exists(c, &coll_for_check))
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if !exists {
+        return (StatusCode::NOT_FOUND, "no such collection").into_response();
+    }
+
+    let coll_for_writer = coll_name.clone();
+    let value_for_writer = value.clone();
+    if let Err(e) = pool
+        .with_writer(move |c| {
+            write_collection_description(c, &coll_for_writer, value_for_writer.as_deref())
+        })
+        .await
+    {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    drop(writer);
 
-    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
-        pool.schema_cache.invalidate(&coll_name);
-    }
+    pool.schema_cache.invalidate(&coll_name);
+
     Redirect::to(&format!(
         "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
     ))
@@ -832,12 +854,19 @@ pub async fn admin_update_field_description(
     Path((tenant_id, coll_name, field_name)): Path<(String, String, String)>,
     axum::extract::Form(form): axum::extract::Form<DescriptionForm>,
 ) -> Response {
-    use crate::storage::schema::{check_description, write_field_description};
+    use crate::storage::schema::{
+        check_description, describe_collection, is_protected_collection,
+        write_field_description,
+    };
     let meta = state.session.meta.lock().await;
     if !tenant_active(&meta, &tenant_id) {
         return (StatusCode::NOT_FOUND, "no such tenant").into_response();
     }
     drop(meta);
+
+    if is_protected_collection(&coll_name) {
+        return (StatusCode::FORBIDDEN, "cannot set description on a _system_* collection").into_response();
+    }
 
     let validated = match check_description(&form.description) {
         Ok(v) => v,
@@ -845,23 +874,40 @@ pub async fn admin_update_field_description(
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
     };
-    let value: Option<&str> = if validated.is_empty() {
-        None
-    } else {
-        Some(&validated)
-    };
-    let writer = match crate::storage::tenant_db::open_write(&state.data_dir, &tenant_id) {
-        Ok(w) => w,
+    let value: Option<String> = if validated.is_empty() { None } else { Some(validated) };
+
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    if let Err(e) = write_field_description(&writer, &coll_name, &field_name, value) {
+    // Existence: collection + field both must exist.
+    let coll_for_check = coll_name.clone();
+    let cs = match pool
+        .with_reader(move |c| describe_collection(c, &coll_for_check))
+        .await
+    {
+        Ok(Some(c)) => c,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such collection").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if !cs.fields.iter().any(|f| f.name == field_name) {
+        return (StatusCode::NOT_FOUND, "no such field").into_response();
+    }
+
+    let coll_for_writer = coll_name.clone();
+    let field_for_writer = field_name.clone();
+    let value_for_writer = value.clone();
+    if let Err(e) = pool
+        .with_writer(move |c| {
+            write_field_description(c, &coll_for_writer, &field_for_writer, value_for_writer.as_deref())
+        })
+        .await
+    {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    drop(writer);
 
-    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
-        pool.schema_cache.invalidate(&coll_name);
-    }
+    pool.schema_cache.invalidate(&coll_name);
+
     Redirect::to(&format!(
         "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
     ))
@@ -874,12 +920,19 @@ pub async fn admin_update_index_description(
     Path((tenant_id, coll_name, index_name)): Path<(String, String, String)>,
     axum::extract::Form(form): axum::extract::Form<DescriptionForm>,
 ) -> Response {
-    use crate::storage::schema::{check_description, write_index_description};
+    use crate::storage::schema::{
+        check_description, describe_collection, is_protected_collection,
+        write_index_description,
+    };
     let meta = state.session.meta.lock().await;
     if !tenant_active(&meta, &tenant_id) {
         return (StatusCode::NOT_FOUND, "no such tenant").into_response();
     }
     drop(meta);
+
+    if is_protected_collection(&coll_name) {
+        return (StatusCode::FORBIDDEN, "cannot set description on a _system_* collection").into_response();
+    }
 
     let validated = match check_description(&form.description) {
         Ok(v) => v,
@@ -887,23 +940,40 @@ pub async fn admin_update_index_description(
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
     };
-    let value: Option<&str> = if validated.is_empty() {
-        None
-    } else {
-        Some(&validated)
-    };
-    let writer = match crate::storage::tenant_db::open_write(&state.data_dir, &tenant_id) {
-        Ok(w) => w,
+    let value: Option<String> = if validated.is_empty() { None } else { Some(validated) };
+
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    if let Err(e) = write_index_description(&writer, &coll_name, &index_name, value) {
+    // Existence: collection + index both must exist.
+    let coll_for_check = coll_name.clone();
+    let cs = match pool
+        .with_reader(move |c| describe_collection(c, &coll_for_check))
+        .await
+    {
+        Ok(Some(c)) => c,
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such collection").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if !cs.indices.iter().any(|i| i.name == index_name) {
+        return (StatusCode::NOT_FOUND, "no such index").into_response();
+    }
+
+    let coll_for_writer = coll_name.clone();
+    let idx_for_writer = index_name.clone();
+    let value_for_writer = value.clone();
+    if let Err(e) = pool
+        .with_writer(move |c| {
+            write_index_description(c, &coll_for_writer, &idx_for_writer, value_for_writer.as_deref())
+        })
+        .await
+    {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    drop(writer);
 
-    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
-        pool.schema_cache.invalidate(&coll_name);
-    }
+    pool.schema_cache.invalidate(&coll_name);
+
     Redirect::to(&format!(
         "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=indexes"
     ))
