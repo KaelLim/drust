@@ -159,6 +159,62 @@ mod description_validator_tests {
 }
 
 #[cfg(test)]
+mod description_read_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Build an in-memory DB with a minimal `_system_collection_meta` table
+    /// and one row for `posts` whose `field_descriptions_json` is the
+    /// supplied raw JSON. Returns the open connection.
+    fn meta_with_field_descs(raw: &str) -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE _system_collection_meta ( \
+                collection_name        TEXT PRIMARY KEY, \
+                anon_caps_json         TEXT NOT NULL DEFAULT '[\"select\"]', \
+                field_descriptions_json TEXT NOT NULL DEFAULT '{}', \
+                index_descriptions_json TEXT NOT NULL DEFAULT '{}', \
+                updated_at             TEXT NOT NULL DEFAULT '' \
+            );",
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO _system_collection_meta \
+                  (collection_name, anon_caps_json, field_descriptions_json) \
+                  VALUES ('posts', '[\"select\"]', ?1)",
+            rusqlite::params![raw],
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn mixed_value_types_partial_decode() {
+        // One good string value, one numeric. Partial decode keeps the
+        // good one, drops the bad one (vs. the old behaviour of dropping
+        // everything).
+        let c = meta_with_field_descs(r#"{"good_field": "kept", "bad_field": 42}"#);
+        let m = read_field_descriptions(&c, "posts").unwrap();
+        assert_eq!(m.get("good_field"), Some(&"kept".to_string()));
+        assert!(!m.contains_key("bad_field"));
+    }
+
+    #[test]
+    fn malformed_outer_json_falls_back_to_empty() {
+        let c = meta_with_field_descs("not json at all");
+        let m = read_field_descriptions(&c, "posts").unwrap();
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn empty_blob_yields_empty_map() {
+        let c = meta_with_field_descs("{}");
+        let m = read_field_descriptions(&c, "posts").unwrap();
+        assert!(m.is_empty());
+    }
+}
+
+#[cfg(test)]
 mod anon_caps_tests {
     use super::*;
 
@@ -379,9 +435,17 @@ pub fn read_field_descriptions(
             |r| r.get(0),
         )
         .ok();
-    Ok(raw
-        .and_then(|j| serde_json::from_str::<BTreeMap<String, String>>(&j).ok())
-        .unwrap_or_default())
+    // v1.19.1: forgiving parse — decode into BTreeMap<String, Value> and
+    // keep only entries whose value is a string. A single bad value no
+    // longer wipes the whole map.
+    let parsed: BTreeMap<String, serde_json::Value> = raw
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    Ok(parsed
+        .into_iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+        .collect())
 }
 
 /// Read the per-index description map. Same semantics as
@@ -398,9 +462,15 @@ pub fn read_index_descriptions(
             |r| r.get(0),
         )
         .ok();
-    Ok(raw
-        .and_then(|j| serde_json::from_str::<BTreeMap<String, String>>(&j).ok())
-        .unwrap_or_default())
+    // v1.19.1: forgiving parse — see read_field_descriptions for rationale.
+    let parsed: BTreeMap<String, serde_json::Value> = raw
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    Ok(parsed
+        .into_iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+        .collect())
 }
 
 /// Set / clear the collection-level description. `None` or `Some("")`
@@ -412,6 +482,11 @@ pub fn write_collection_description(
     coll: &str,
     description: Option<&str>,
 ) -> rusqlite::Result<()> {
+    debug_assert!(
+        description.map_or(true, |d| check_description(d).is_ok()),
+        "write_collection_description called with unvalidated description; \
+         callers must run check_description first"
+    );
     let value: Option<&str> = description.filter(|s| !s.is_empty());
     conn.execute(
         "INSERT INTO _system_collection_meta \
@@ -434,6 +509,11 @@ pub fn write_field_description(
     field: &str,
     description: Option<&str>,
 ) -> rusqlite::Result<()> {
+    debug_assert!(
+        description.map_or(true, |d| check_description(d).is_ok()),
+        "write_field_description called with unvalidated description; \
+         callers must run check_description first"
+    );
     let mut map = read_field_descriptions(conn, coll)?;
     match description.filter(|s| !s.is_empty()) {
         Some(text) => { map.insert(field.to_string(), text.to_string()); }
@@ -461,6 +541,11 @@ pub fn write_index_description(
     index_name: &str,
     description: Option<&str>,
 ) -> rusqlite::Result<()> {
+    debug_assert!(
+        description.map_or(true, |d| check_description(d).is_ok()),
+        "write_index_description called with unvalidated description; \
+         callers must run check_description first"
+    );
     let mut map = read_index_descriptions(conn, coll)?;
     match description.filter(|s| !s.is_empty()) {
         Some(text) => { map.insert(index_name.to_string(), text.to_string()); }
