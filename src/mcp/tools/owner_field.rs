@@ -19,21 +19,35 @@ pub async fn set_owner_field(
         anyhow::bail!("INVALID_READ_SCOPE: read_scope must be 'own' or 'all'");
     }
 
-    // Validate column + FK on read connection.
+    // v1.20 TOCTOU fix: fold the existence + FK validation AND the write into a
+    // single writer closure so a concurrent drop_collection between the two
+    // cannot leave an orphan _system_collection_meta row.
     let pool = pool.clone();
-    let coll_for_val = collection.clone();
-    let field_for_val = field.clone();
-    let validation = pool
-        .with_reader(move |c| validate_owner_column(c, &coll_for_val, &field_for_val))
-        .await
-        .map_err(|e| anyhow::anyhow!("DB_ERROR: {e}"))?;
-    validation.map_err(|code| anyhow::anyhow!("{code}"))?;
-
-    // Persist.
     let coll_for_set = collection.clone();
     let field_for_set = field.clone();
     let scope_for_set = read_scope.clone();
     pool.with_writer(move |c| {
+        // 1) Check collection exists.
+        let tbl_count: i64 = c.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            rusqlite::params![coll_for_set],
+            |r| r.get(0),
+        )?;
+        if tbl_count == 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!("COLLECTION_NOT_FOUND: {coll_for_set}")),
+            ));
+        }
+        // 2) Validate the column + FK inside the writer (PRAGMAs are read-only).
+        let validation = validate_owner_column(c, &coll_for_set, &field_for_set)?;
+        if let Err(code) = validation {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(code.to_string()),
+            ));
+        }
+        // 3) Persist.
         crate::storage::schema::set_owner_field(
             c,
             &coll_for_set,
@@ -42,7 +56,10 @@ pub async fn set_owner_field(
         )
     })
     .await
-    .map_err(|e| anyhow::anyhow!("DB_ERROR: {e}"))?;
+    .map_err(|e| {
+        let msg = e.to_string();
+        anyhow::anyhow!("{msg}")
+    })?;
     pool.schema_cache.invalidate(&collection);
 
     Ok(json!({"owner_field": field, "read_scope": read_scope}))

@@ -19,16 +19,27 @@ pub async fn set_realtime(
         );
     }
     let pool = s.inner().pool.clone();
-    let name_check = collection.to_string();
-    let exists = pool
-        .with_reader(move |c| collection_exists(c, &name_check))
-        .await?;
-    if !exists {
-        anyhow::bail!("unknown collection: {collection}");
-    }
     let coll = collection.to_string();
-    pool.with_writer(move |c| write_realtime_enabled(c, &coll, enabled))
-        .await?;
+    // v1.20 TOCTOU fix: fold existence check inside the writer closure so a
+    // concurrent drop_collection cannot leave an orphan _system_collection_meta row.
+    pool.with_writer(move |c| {
+        if !collection_exists(c, &coll)? {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!("COLLECTION_NOT_FOUND: {coll}")),
+            ));
+        }
+        write_realtime_enabled(c, &coll, enabled)
+    })
+    .await
+    .map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("COLLECTION_NOT_FOUND") {
+            anyhow::anyhow!("unknown collection: {}", msg.splitn(2, ": ").nth(1).unwrap_or(&msg))
+        } else {
+            anyhow::anyhow!("{e}")
+        }
+    })?;
     pool.schema_cache.invalidate(collection);
     if !enabled {
         // Mirror the REST handler: cache invalidate BEFORE eviction so any
