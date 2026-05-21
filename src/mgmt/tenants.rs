@@ -44,6 +44,46 @@ pub struct TenantsState {
     pub index_large_table_rows: u64,
 }
 
+/// Test-only constructor available in debug builds.
+///
+/// Defaults:
+/// - `garage`: `None` (no S3 client)
+/// - `garage_client_key_id`: `""`
+/// - `max_upload_bytes`: 1 MiB (1 048 576)
+/// - `disk_min_free_pct`: 20
+/// - `public_base_url`: `"http://localhost"`
+/// - `log_dir`: `data_dir.join("logs")`
+/// - `index_large_table_rows`: 1 000 000
+///
+/// `session` is derived from `meta` directly.
+#[cfg(any(test, debug_assertions))]
+impl TenantsState {
+    pub fn test_default(
+        meta: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+        data_dir: PathBuf,
+        tenants: std::sync::Arc<crate::storage::pool::TenantRegistry>,
+        mcp: std::sync::Arc<crate::mcp::http_registry::McpHttpRegistry>,
+        bus: crate::tenant::events::EventBus,
+    ) -> Self {
+        use crate::auth::middleware::AdminSessionState;
+        let log_dir = data_dir.join("logs");
+        Self {
+            session: AdminSessionState { meta: meta.clone() },
+            data_dir,
+            garage: None,
+            garage_client_key_id: String::new(),
+            max_upload_bytes: 1024 * 1024,
+            disk_min_free_pct: 20,
+            public_base_url: "http://localhost".to_string(),
+            tenants,
+            mcp,
+            bus,
+            log_dir,
+            index_large_table_rows: 1_000_000,
+        }
+    }
+}
+
 #[derive(Template)]
 #[template(path = "tenants_list.html")]
 struct TenantsListPage {

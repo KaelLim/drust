@@ -4,12 +4,10 @@ use axum::http::{Request, StatusCode, header};
 use axum::routing::get;
 use drust::auth::bearer::{generate_token, hash_token};
 use drust::safety::audit::AuditLog;
-use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::router::{TenantAuthState, TenantRef, bearer_auth_layer};
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::tempdir;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
@@ -27,18 +25,11 @@ async fn app() -> (Router, String, tempfile::TempDir) {
         rusqlite::params![hash],
     )
     .unwrap();
-    let state = TenantAuthState {
-        meta: Arc::new(Mutex::new(conn)),
-        registry: Arc::new(TenantRegistry::new(data.clone(), 2)),
-        limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
-        audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
-        index_large_table_rows: 1_000_000,
-        register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(3, Duration::from_secs(60), 4096)),
-        login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
-        oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
-        public_url: String::new(),
-        oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
-    };
+    let state = TenantAuthState::test_default(
+        Arc::new(Mutex::new(conn)),
+        Arc::new(TenantRegistry::new(data.clone(), 2)),
+        Arc::new(AuditLog::new(dir.path().join("audit"))),
+    );
     // Need to seed tenant data file
     let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();
     let app =

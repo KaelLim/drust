@@ -38,18 +38,14 @@ async fn app_with_limiter(
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone());
-    let state = TenantAuthState {
-        meta: Arc::new(Mutex::new(conn)),
-        registry: tenants.clone(),
-        limiter: Arc::new(RateLimiter::new(budget, window)),
-        audit: Arc::new(AuditLog::new(dir.path().join("audit"))),
-        index_large_table_rows: 1_000_000,
-        register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(3, Duration::from_secs(60), 4096)),
-        login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
-        oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, Duration::from_secs(60), 4096)),
-        public_url: String::new(),
-        oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
-    };
+    let meta = Arc::new(Mutex::new(conn));
+    let mut state = TenantAuthState::test_default(
+        meta,
+        tenants.clone(),
+        Arc::new(AuditLog::new(dir.path().join("audit"))),
+    );
+    // Override the default limiter with the test-specific budget + window.
+    state.limiter = Arc::new(RateLimiter::new(budget, window));
     let app = build_tenant_router(TenantStack {
         auth: state,
         bus: bus.clone(),
