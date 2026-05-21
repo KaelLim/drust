@@ -106,10 +106,34 @@
 <form method="get" class="toolbar-v2" style="margin-bottom:18px;">
   <input type="hidden" name="tab" value="browse">
   <input type="hidden" name="window" value="{{ window_str }}">
+
   {% if is_host_scope %}
-  <input class="input" name="tenant" value="{% if let Some(t) = tenant_filter %}{{ t }}{% endif %}" placeholder="tenant…" style="min-width:0;width:160px;">
+  <div class="field-group">
+    <label class="field-label">Tenant</label>
+    <input class="input" list="tenant-list" name="tenant"
+           placeholder="all tenants"
+           value="{% if let Some(t) = tenant_filter %}{{ t }}{% endif %}"
+           style="min-width:0;width:200px;">
+    <datalist id="tenant-list">
+      {% for t in tenants %}
+      <option value="{{ t.id }}">{{ t.name }}</option>
+      {% endfor %}
+    </datalist>
+  </div>
   {% endif %}
-  <input class="input" name="op" value="{% if let Some(o) = op_filter %}{{ o }}{% endif %}" placeholder="op…" style="min-width:0;width:160px;">
+
+  <div class="field-group">
+    <label class="field-label">Operation</label>
+    <input class="input" list="op-list" name="op"
+           placeholder="e.g. POST /records/posts"
+           value="{% if let Some(o) = op_filter %}{{ o }}{% endif %}"
+           title="HTTP method + path"
+           style="min-width:0;width:240px;">
+    <datalist id="op-list">
+      {% for op in distinct_ops %}<option value="{{ op }}"></option>{% endfor %}
+    </datalist>
+  </div>
+
   <div class="seg">
     <a class="{% if status_filter == "all" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=all{% if let Some(t) = tenant_filter %}&tenant={{ t }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">all</a>
     <a class="{% if status_filter == "ok" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=ok{% if let Some(t) = tenant_filter %}&tenant={{ t }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">ok</a>
@@ -131,41 +155,78 @@
   {% else %}
   <div class="card-body" style="padding:6px 18px;">
     <div class="tl">
-      {% for e in entries %}
-      <div class="tl-row">
+      {% for e in entries_view %}
+      <div class="tl-row" data-idx="{{ loop.index0 }}" tabindex="0" role="button"
+           aria-label="show details for {{ e.op }}">
         <div class="tl-time">{{ e.ts }}</div>
         <div class="tl-glyph{% if e.status == "error" %} fail{% else %} ok{% endif %}">{% if e.status == "error" %}✕{% else %}✓{% endif %}</div>
         <div class="tl-body">
           {% if is_host_scope %}
-          {% if e.tenant == "-" %}<span class="pill lilac">admin</span>{% else %}<a class="pill info" href="/drust/admin/tenants/{{ e.tenant }}/_logs">{{ e.tenant }}</a>{% endif %}
+            {% if e.tenant == "-" %}
+              <span class="pill lilac">admin</span>
+            {% else %}
+              <a class="pill info" href="/drust/admin/tenants/{{ e.tenant }}/_logs"
+                 title="{{ e.tenant }}"
+                 onclick="event.stopPropagation()">{{ e.tenant_name }}</a>
+            {% endif %}
           {% endif %}
           <code>{{ e.op }}</code>
-          {% if let Some(c) = e.error_code %} · <span style="color:var(--danger);font-family:var(--mono);">{{ c }}</span>{% endif %}
-          <details style="margin-top:6px;">
-            <summary style="font:500 11px/1 var(--mono);color:var(--muted);cursor:pointer;letter-spacing:0.08em;text-transform:uppercase;">details</summary>
-            <dl class="audit-detail">
-              <dt>timestamp</dt><dd>{{ e.ts }}</dd>
-              <dt>tenant</dt><dd>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}{{ e.tenant }}{% endif %}</dd>
-              <dt>token_hint</dt><dd>{{ e.token_hint }}</dd>
-              <dt>operation</dt><dd>{{ e.op }}</dd>
-              <dt>status</dt><dd>{% if e.status == "error" %}<b style="color:var(--danger);">{{ e.status }}</b>{% else %}{{ e.status }}{% endif %}</dd>
-              <dt>duration_ms</dt><dd>{{ e.duration_ms }}</dd>
-              {% if let Some(c) = e.collection %}<dt>collection</dt><dd><a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/collections/{{ c }}">{{ c }}</a></dd>{% endif %}
-              {% if let Some(h) = e.sql_hash %}<dt>sql_hash</dt><dd>{{ h }}</dd>{% endif %}
-              {% if let Some(id) = e.record_id %}<dt>record_id</dt><dd>{{ id }}</dd>{% endif %}
-              {% if let Some(c) = e.error_code %}<dt>error_code</dt><dd><b style="color:var(--danger);">{{ c }}</b></dd>{% endif %}
-              {% if let Some(m) = e.error_message %}<dt>error_message</dt><dd><pre class="audit-err">{{ m }}</pre></dd>{% endif %}
-              {% if let Some(m) = e.auth_method %}<dt>auth_method</dt><dd>{{ m }}</dd>{% endif %}
-              {% if let Some(em) = e.oauth_email %}<dt>oauth_email</dt><dd>{{ em }}</dd>{% endif %}
-              {% if let Some(ec) = e.oauth_error_code %}<dt>oauth_error_code</dt><dd><b style="color:var(--danger);">{{ ec }}</b></dd>{% endif %}
-              {% if let Some(xj) = e.extra_as_json() %}<dt>extra</dt><dd><pre class="audit-extras">{{ xj }}</pre></dd>{% endif %}
-            </dl>
-          </details>
+          {% if let Some(c) = e.error_code %} · <span style="color:var(--danger);font-family:var(--font-mono);">{{ c }}</span>{% endif %}
         </div>
         <div class="tl-meta">{{ e.duration_ms }} ms</div>
       </div>
       {% endfor %}
     </div>
+    {% if !entries.is_empty() %}
+<script id="audit-entries" type="application/json">{{ entries_json|safe }}</script>
+<script>
+  (function () {
+    var dataEl = document.getElementById('audit-entries');
+    if (!dataEl || !window.drustUI) return;
+    var entries;
+    try { entries = JSON.parse(dataEl.textContent); } catch (e) { return; }
+
+    function field(label, value, opts) {
+      opts = opts || {};
+      return { label: label, value: value, mono: !!opts.mono, code: !!opts.code };
+    }
+
+    function openDetail(e) {
+      if (!e) return;
+      var fields = [];
+      fields.push(field('timestamp', e.ts, { mono: true }));
+      var displayTenant = e.tenant === '-' ? 'admin' : (e.tenant_name || e.tenant);
+      fields.push(field('tenant', displayTenant));
+      if (e.tenant && e.tenant !== '-') fields.push(field('tenant_id', e.tenant, { mono: true }));
+      fields.push(field('token_hint', e.token_hint, { mono: true }));
+      fields.push(field('operation', e.op, { mono: true }));
+      fields.push(field('status', e.status));
+      fields.push(field('duration', e.duration_ms + ' ms'));
+      if (e.collection) fields.push(field('collection', e.collection, { mono: true }));
+      if (e.record_id != null) fields.push(field('record_id', String(e.record_id), { mono: true }));
+      if (e.sql_hash) fields.push(field('sql_hash', e.sql_hash, { mono: true }));
+      if (e.error_code) fields.push(field('error_code', e.error_code, { mono: true }));
+      if (e.error_message) fields.push(field('error_message', e.error_message, { code: true }));
+      if (e.auth_method) fields.push(field('auth_method', e.auth_method));
+      if (e.oauth_email) fields.push(field('oauth_email', e.oauth_email));
+      if (e.oauth_error_code) fields.push(field('oauth_error_code', e.oauth_error_code, { mono: true }));
+      if (e.extra && Object.keys(e.extra).length) {
+        try { fields.push(field('extra', JSON.stringify(e.extra, null, 2), { code: true })); }
+        catch (err) {}
+      }
+      drustUI.detail({ title: e.op + ' · ' + e.duration_ms + ' ms', fields: fields });
+    }
+
+    document.querySelectorAll('.tl-row[data-idx]').forEach(function (row) {
+      var idx = parseInt(row.dataset.idx, 10);
+      row.addEventListener('click', function () { openDetail(entries[idx]); });
+      row.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openDetail(entries[idx]); }
+      });
+    });
+  })();
+</script>
+    {% endif %}
   </div>
   <div class="card-foot">
     <span class="mono">{{ entries.len() }} entries{% if let Some(n) = truncated_from %} · truncated from {{ n }}{% endif %}</span>

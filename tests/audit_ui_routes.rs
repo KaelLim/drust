@@ -344,13 +344,180 @@ async fn browse_admin_plane_row_shows_admin_text_not_broken_link() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
-    // Admin-plane rows (tenant="-") must render as the "admin" label, not a broken link.
+    // Admin-plane rows (tenant="-") must render as a lilac "admin" pill, not a broken link.
     assert!(
-        body.contains(r#"class="muted">admin</span>"#),
-        "admin sentinel must render as <span class=\"muted\">admin</span>"
+        body.contains(r#"<span class="pill lilac">admin</span>"#),
+        "admin sentinel must render as <span class=\"pill lilac\">admin</span>"
     );
     assert!(
         !body.contains("/drust/admin/tenants/-/_logs"),
         "broken link to /tenants/-/_logs must not appear"
+    );
+}
+
+#[tokio::test]
+async fn host_browse_renders_tenant_datalist_with_names() {
+    let log_dir = tempdir().unwrap();
+    write_audit_fixture(log_dir.path());
+    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let cookie = login_session_cookie(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/audit?tab=browse")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(
+        body.contains(r#"<datalist id="tenant-list">"#),
+        "host scope must render tenant datalist"
+    );
+    // The seeded tenant ("Acme Inc") must appear as an option label.
+    assert!(body.contains("Acme Inc"), "datalist must render tenant display name");
+    assert!(
+        body.contains(r#"value="acme""#),
+        "datalist option value must be the tenant id"
+    );
+}
+
+#[tokio::test]
+async fn host_browse_renders_op_datalist() {
+    let log_dir = tempdir().unwrap();
+    write_audit_fixture(log_dir.path());
+    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let cookie = login_session_cookie(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/audit?tab=browse")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(body.contains(r#"<datalist id="op-list">"#));
+    // Fixture writes two distinct ops; both must appear as datalist options.
+    assert!(body.contains(r#"<option value="GET /records""#));
+    assert!(body.contains(r#"<option value="POST /records""#));
+}
+
+#[tokio::test]
+async fn tenant_browse_does_not_render_tenant_datalist() {
+    let log_dir = tempdir().unwrap();
+    write_audit_fixture(log_dir.path());
+    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let cookie = login_session_cookie(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/tenants/acme/_logs?tab=browse")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    // Tenant scope does NOT show the tenant dropdown (only one tenant in view).
+    assert!(
+        !body.contains(r#"<datalist id="tenant-list">"#),
+        "tenant scope must not render tenant datalist"
+    );
+    // But op datalist remains.
+    assert!(body.contains(r#"<datalist id="op-list">"#));
+}
+
+#[tokio::test]
+async fn host_browse_rows_have_data_idx_attribute() {
+    let log_dir = tempdir().unwrap();
+    write_audit_fixture(log_dir.path());
+    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let cookie = login_session_cookie(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/audit?tab=browse")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(body.contains(r#"data-idx="0""#), "first row must carry data-idx=0");
+    assert!(body.contains(r#"data-idx="1""#), "second row must carry data-idx=1");
+    assert!(
+        body.contains(r#"role="button""#),
+        "tl-row must carry role=button for click-to-modal affordance"
+    );
+}
+
+#[tokio::test]
+async fn host_browse_embeds_entries_json_script() {
+    let log_dir = tempdir().unwrap();
+    write_audit_fixture(log_dir.path());
+    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let cookie = login_session_cookie(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/audit?tab=browse")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(
+        body.contains(r#"<script id="audit-entries" type="application/json">"#),
+        "JSON blob script tag missing"
+    );
+    // Entry payload must include tenant_name resolution.
+    assert!(
+        body.contains(r#""tenant_name":"Acme Inc""#),
+        "JSON payload must carry resolved tenant_name for known id"
+    );
+}
+
+#[tokio::test]
+async fn host_browse_pill_shows_tenant_name_not_uuid() {
+    let log_dir = tempdir().unwrap();
+    write_audit_fixture(log_dir.path());
+    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let cookie = login_session_cookie(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/audit?tab=browse")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    // The pill content must be the resolved name ("Acme Inc"), not the raw id ("acme").
+    assert!(
+        body.contains(r#"title="acme"#) && body.contains(">Acme Inc<"),
+        "pill must show name as text and id as title"
     );
 }

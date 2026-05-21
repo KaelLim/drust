@@ -249,6 +249,128 @@ pub struct TopTenant {
     pub error_pct: f64,
 }
 
+/// v1.18 — wire-only projection of `AuditEntry` used by the audit
+/// browse tab. Mirrors `AuditEntry` field-for-field, plus a derived
+/// `tenant_name` (resolved from `meta.sqlite`) and a **non-flattened**
+/// `extra` map so the page-side JS can read it as `e.extra`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditEntryView {
+    pub ts: String,
+    pub tenant: String,
+    pub tenant_name: String,
+    pub token_hint: String,
+    pub op: String,
+    pub status: String,
+    pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sql_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_error_code: Option<String>,
+    #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl AuditEntryView {
+    pub fn from_entry(e: &AuditEntry, tenant_name: &str) -> Self {
+        Self {
+            ts: e.ts.clone(),
+            tenant: e.tenant.clone(),
+            tenant_name: tenant_name.to_string(),
+            token_hint: e.token_hint.clone(),
+            op: e.op.clone(),
+            status: e.status.clone(),
+            duration_ms: e.duration_ms,
+            collection: e.collection.clone(),
+            sql_hash: e.sql_hash.clone(),
+            record_id: e.record_id,
+            error_code: e.error_code.clone(),
+            error_message: e.error_message.clone(),
+            auth_method: e.auth_method.clone(),
+            oauth_email: e.oauth_email.clone(),
+            oauth_error_code: e.oauth_error_code.clone(),
+            extra: e.extra.clone(),
+        }
+    }
+}
+
+/// v1.18 — resolve a raw audit tenant id to a display name. Handles
+/// the `"-"` admin-plane sentinel and the missing-key case (tenant
+/// soft-deleted after the row was written).
+pub fn resolve_tenant_name(map: &std::collections::HashMap<String, String>, id: &str) -> String {
+    if id == "-" {
+        return "admin".to_string();
+    }
+    map.get(id).cloned().unwrap_or_else(|| id.to_string())
+}
+
+/// v1.18 — read the live tenants table into a `HashMap<id, name>`.
+/// Soft-deleted rows are skipped. Returns an empty map on SQL error
+/// so the audit page still renders (entries fall back to raw id).
+pub fn build_tenant_name_map(conn: &rusqlite::Connection) -> std::collections::HashMap<String, String> {
+    let mut stmt = match conn
+        .prepare_cached("SELECT id, name FROM tenants WHERE deleted_at IS NULL")
+    {
+        Ok(s) => s,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let iter = match stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    }) {
+        Ok(it) => it,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    iter.filter_map(Result::ok).collect()
+}
+
+/// v1.18 — collect distinct `op` values from `entries`, sorted
+/// ascending, capped at `limit`. Used to populate the toolbar's
+/// `<datalist>` for the operation filter. Cap prevents HTML bloat
+/// when an attacker injects wide op variation; beyond the cap, users
+/// type free-form (the datalist is a hint, not a strict select).
+pub fn distinct_ops_capped(entries: &[AuditEntry], limit: usize) -> Vec<String> {
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for e in entries {
+        if set.len() >= limit {
+            break;
+        }
+        set.insert(e.op.clone());
+    }
+    set.into_iter().collect()
+}
+
+/// v1.18 — `{id, name}` pair fed to the toolbar's tenant
+/// `<datalist>`. Sorted by `name` so the dropdown is stable across
+/// requests. Built once from `build_tenant_name_map`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TenantSummary {
+    pub id: String,
+    pub name: String,
+}
+
+pub fn tenant_summaries(map: &std::collections::HashMap<String, String>) -> Vec<TenantSummary> {
+    let mut out: Vec<TenantSummary> = map
+        .iter()
+        .map(|(id, name)| TenantSummary {
+            id: id.clone(),
+            name: name.clone(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 /// v1.17 — one bucket of the requests-over-time chart.
 /// `ts_unix` is the bucket's left edge in seconds since UNIX epoch.
 /// Counts are by HTTP status class.
@@ -630,6 +752,10 @@ pub struct BodyCtx {
     pub error_codes_svg: String,
     pub latency_svg: String,
     pub tenant_bars_svg: Option<String>,
+    pub tenants: Vec<TenantSummary>,
+    pub distinct_ops: Vec<String>,
+    pub entries_view: Vec<AuditEntryView>,
+    pub entries_json: String,
 }
 
 #[derive(Template)]
@@ -658,6 +784,10 @@ struct AuditHostPage {
     error_codes_svg: String,
     latency_svg: String,
     tenant_bars_svg: Option<String>,
+    tenants: Vec<TenantSummary>,
+    distinct_ops: Vec<String>,
+    entries_view: Vec<AuditEntryView>,
+    entries_json: String,
 }
 
 fn base_link(scope: &AuditScope) -> String {
@@ -700,10 +830,17 @@ struct ChartCtx {
 
 pub fn build_body_ctx(
     log_dir: &Path,
+    meta: &rusqlite::Connection,
     scope: AuditScope,
     q: &AuditQuery,
 ) -> BodyCtx {
     let now = chrono::Utc::now();
+    let tenant_name_map = build_tenant_name_map(meta);
+    let tenants_for_dropdown = if matches!(&scope, AuditScope::Host) {
+        tenant_summaries(&tenant_name_map)
+    } else {
+        Vec::new()
+    };
     let window = Window::from_str_or_default(q.window.as_deref().unwrap_or(""));
     let tab: &'static str = match q.tab.as_deref() {
         Some("browse") => "browse",
@@ -729,7 +866,7 @@ pub fn build_body_ctx(
         _ => None,
     };
 
-    let (overview, entries, next_cursor, chart_ctx) = if tab == "overview" {
+    let (overview, entries, entries_view, distinct_ops, entries_json, next_cursor, chart_ctx) = if tab == "overview" {
         // Clone so the optional tenant-filter `retain` doesn't mutate
         // the cached `scan.entries` (the browse branch may need them
         // unfiltered on a subsequent request — though we don't keep
@@ -770,7 +907,15 @@ pub fn build_body_ctx(
             latency_svg,
             tenant_bars_svg,
         };
-        (Some(aggregate(&for_overview, window)), Vec::new(), None, chart_ctx)
+        (
+            Some(aggregate(&for_overview, window)),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            String::from("[]"),
+            None,
+            chart_ctx,
+        )
     } else {
         let spec = FilterSpec {
             tenant: tenant_filter_effective.clone(),
@@ -780,12 +925,18 @@ pub fn build_body_ctx(
         };
         let filtered = filter(&scan.entries, &spec);
         let page: Vec<AuditEntry> = filtered.iter().take(PAGE_SIZE).cloned().collect();
+        let page_view: Vec<AuditEntryView> = page
+            .iter()
+            .map(|e| AuditEntryView::from_entry(e, &resolve_tenant_name(&tenant_name_map, &e.tenant)))
+            .collect();
+        let distinct_ops = distinct_ops_capped(&filtered, 200);
+        let entries_json = serde_json::to_string(&page_view).unwrap_or_else(|_| "[]".to_string());
         let next = if filtered.len() > PAGE_SIZE {
             page.last().map(|e| e.ts.clone())
         } else {
             None
         };
-        (None, page, next, ChartCtx::default())
+        (None, page, page_view, distinct_ops, entries_json, next, ChartCtx::default())
     };
 
     let base = base_link(&scope);
@@ -846,6 +997,10 @@ pub fn build_body_ctx(
         error_codes_svg: chart_ctx.error_codes_svg,
         latency_svg: chart_ctx.latency_svg,
         tenant_bars_svg: chart_ctx.tenant_bars_svg,
+        tenants: tenants_for_dropdown,
+        distinct_ops,
+        entries_view,
+        entries_json,
     }
 }
 
@@ -853,7 +1008,9 @@ pub async fn audit_host_page(
     State(state): State<crate::mgmt::tenants::TenantsState>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
-    let body = build_body_ctx(&state.log_dir, AuditScope::Host, &q);
+    let meta = state.session.meta.lock().await;
+    let body = build_body_ctx(&state.log_dir, &meta, AuditScope::Host, &q);
+    drop(meta);
     let page = AuditHostPage {
         version: env!("CARGO_PKG_VERSION"),
         is_host_scope: body.is_host_scope,
@@ -878,6 +1035,10 @@ pub async fn audit_host_page(
         error_codes_svg: body.error_codes_svg,
         latency_svg: body.latency_svg,
         tenant_bars_svg: body.tenant_bars_svg,
+        tenants: body.tenants,
+        distinct_ops: body.distinct_ops,
+        entries_view: body.entries_view,
+        entries_json: body.entries_json,
     };
     Html(page.render().unwrap()).into_response()
 }
@@ -912,6 +1073,10 @@ struct AuditTenantPage {
     error_codes_svg: String,
     latency_svg: String,
     tenant_bars_svg: Option<String>,
+    tenants: Vec<TenantSummary>,
+    distinct_ops: Vec<String>,
+    entries_view: Vec<AuditEntryView>,
+    entries_json: String,
 }
 
 pub async fn audit_tenant_page(
@@ -928,7 +1093,6 @@ pub async fn audit_tenant_page(
             |r| r.get(0),
         )
         .ok();
-    drop(conn);
     let tenant_name = match tenant_name {
         Some(n) => n,
         None => return (axum::http::StatusCode::NOT_FOUND, "tenant not found").into_response(),
@@ -941,7 +1105,13 @@ pub async fn audit_tenant_page(
         .and_then(|c| crate::storage::schema::list_collections(&c).ok())
         .unwrap_or_default();
 
-    let body = build_body_ctx(&state.log_dir, AuditScope::Tenant(tenant_id.clone()), &q);
+    let body = build_body_ctx(
+        &state.log_dir,
+        &conn,
+        AuditScope::Tenant(tenant_id.clone()),
+        &q,
+    );
+    drop(conn);
     let tpl = AuditTenantPage {
         version: env!("CARGO_PKG_VERSION"),
         tenant_id,
@@ -970,6 +1140,10 @@ pub async fn audit_tenant_page(
         error_codes_svg: body.error_codes_svg,
         latency_svg: body.latency_svg,
         tenant_bars_svg: body.tenant_bars_svg,
+        tenants: body.tenants,
+        distinct_ops: body.distinct_ops,
+        entries_view: body.entries_view,
+        entries_json: body.entries_json,
     };
     Html(tpl.render().unwrap()).into_response()
 }
@@ -1634,5 +1808,75 @@ mod tests {
         let bars = tenant_request_bars(&entries, 10);
         assert_eq!(bars.len(), 1);
         assert_eq!(bars[0].tenant, "real");
+    }
+
+    #[test]
+    fn audit_entry_view_serializes_extra_as_nested_object() {
+        // AuditEntry uses #[serde(flatten)] on `extra`; the view must NOT.
+        let mut e = mk_entry("2026-05-20T12:00:00.000Z", "acme", "GET /x", "ok", 5);
+        e.extra.insert("auth_kind".to_string(), serde_json::json!("user"));
+        e.extra.insert("auth_user_id".to_string(), serde_json::json!("u-abc"));
+        let view = AuditEntryView::from_entry(&e, "Acme Inc");
+        let json = serde_json::to_string(&view).unwrap();
+        // The extra fields must NOT appear at the top level.
+        assert!(
+            !json.contains(r#""auth_kind":"user","tenant"#) && !json.contains(r#""tenant":"acme","auth_kind"#),
+            "extra keys must not flatten to top level: {json}"
+        );
+        // They must appear nested under `extra`.
+        assert!(
+            json.contains(r#""extra":{"#),
+            "extra block missing: {json}"
+        );
+        assert!(json.contains(r#""auth_kind":"user""#));
+        assert!(json.contains(r#""auth_user_id":"u-abc""#));
+        assert!(json.contains(r#""tenant_name":"Acme Inc""#));
+    }
+
+    #[test]
+    fn resolve_tenant_name_handles_sentinels() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("a".to_string(), "Alpha".to_string());
+        map.insert("b".to_string(), "Beta".to_string());
+
+        assert_eq!(resolve_tenant_name(&map, "a"), "Alpha");
+        assert_eq!(resolve_tenant_name(&map, "b"), "Beta");
+        // "-" sentinel → "admin"
+        assert_eq!(resolve_tenant_name(&map, "-"), "admin");
+        // Missing id (e.g. tenant soft-deleted after audit row written) → fallback to id itself.
+        assert_eq!(resolve_tenant_name(&map, "ghost-id"), "ghost-id");
+    }
+
+    #[test]
+    fn distinct_ops_capped_returns_sorted_and_caps() {
+        // Mixed input with duplicates: result must be unique + sorted ascending.
+        let entries = vec![
+            mk_entry("2026-05-20T12:00:00.000Z", "t", "POST /records", "ok", 1),
+            mk_entry("2026-05-20T12:00:01.000Z", "t", "GET /records", "ok", 1),
+            mk_entry("2026-05-20T12:00:02.000Z", "t", "GET /records", "ok", 1),
+            mk_entry("2026-05-20T12:00:03.000Z", "t", "DELETE /records", "ok", 1),
+        ];
+        let ops = distinct_ops_capped(&entries, 200);
+        assert_eq!(ops, vec!["DELETE /records", "GET /records", "POST /records"]);
+    }
+
+    #[test]
+    fn distinct_ops_capped_truncates_at_limit() {
+        let entries: Vec<AuditEntry> = (0..500)
+            .map(|i| mk_entry("2026-05-20T12:00:00.000Z", "t", &format!("op-{i:04}"), "ok", 1))
+            .collect();
+        let ops = distinct_ops_capped(&entries, 200);
+        assert_eq!(ops.len(), 200);
+    }
+
+    #[test]
+    fn tenant_summaries_sorted_by_name() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("z-id".to_string(), "Alpha".to_string());
+        map.insert("a-id".to_string(), "Charlie".to_string());
+        map.insert("m-id".to_string(), "Bravo".to_string());
+        let v = tenant_summaries(&map);
+        let names: Vec<&str> = v.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Bravo", "Charlie"]);
     }
 }
