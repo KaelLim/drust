@@ -610,19 +610,30 @@ pub async fn set_anon_caps(
     }
     let pool = s.inner().pool.clone();
 
-    let name_check = collection.to_string();
-    let exists = pool
-        .with_reader(move |c| collection_exists(c, &name_check))
-        .await?;
-    if !exists {
-        anyhow::bail!("unknown collection: {collection}");
-    }
-
     let caps_set: BTreeSet<DmlVerb> = caps.iter().copied().collect();
     let meta_name = collection.to_string();
     let caps_for_writer = caps_set.clone();
-    pool.with_writer(move |c| write_anon_caps(c, &meta_name, &caps_for_writer))
-        .await?;
+    // v1.20 TOCTOU fix: fold existence check inside the writer closure so a
+    // concurrent drop_collection between check and write cannot leave an orphan
+    // _system_collection_meta row.
+    pool.with_writer(move |c| {
+        if !collection_exists(c, &meta_name)? {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!("COLLECTION_NOT_FOUND: {meta_name}")),
+            ));
+        }
+        write_anon_caps(c, &meta_name, &caps_for_writer)
+    })
+    .await
+    .map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("COLLECTION_NOT_FOUND") {
+            anyhow::anyhow!("{msg}")
+        } else {
+            anyhow::anyhow!("{e}")
+        }
+    })?;
     pool.schema_cache.invalidate(collection);
 
     Ok(json!({
@@ -649,20 +660,24 @@ pub async fn set_collection_description(
         Err((code, msg)) => anyhow::bail!("{code}: {msg}"),
     };
     let pool = pool.clone();
-    let coll_for_check = collection.to_string();
-    let exists = pool
-        .with_reader(move |c| collection_exists(c, &coll_for_check))
-        .await?;
-    if !exists {
-        anyhow::bail!("COLLECTION_NOT_FOUND: {collection}");
-    }
     let coll_for_write = collection.to_string();
     let value = if validated.is_empty() { None } else { Some(validated) };
     let value_for_write = value.clone();
+    // v1.20 TOCTOU fix: fold existence check inside the writer closure.
     pool.with_writer(move |c| {
+        if !collection_exists(c, &coll_for_write)? {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!("COLLECTION_NOT_FOUND: {coll_for_write}")),
+            ));
+        }
         write_collection_description(c, &coll_for_write, value_for_write.as_deref())
     })
-    .await?;
+    .await
+    .map_err(|e| {
+        let msg = e.to_string();
+        anyhow::anyhow!("{msg}")
+    })?;
     pool.schema_cache.invalidate(collection);
     let coll_for_read = collection.to_string();
     let final_value = pool
@@ -690,22 +705,43 @@ pub async fn set_field_description(
         Err((code, msg)) => anyhow::bail!("{code}: {msg}"),
     };
     let pool = pool.clone();
-    let coll_for_check = collection.to_string();
-    let cs = pool
-        .with_reader(move |c| describe_collection(c, &coll_for_check))
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("COLLECTION_NOT_FOUND: {collection}"))?;
-    if !cs.fields.iter().any(|f| f.name == field) {
-        anyhow::bail!("FIELD_NOT_FOUND: field {field} not on collection {collection}");
-    }
     let coll_for_write = collection.to_string();
     let field_for_write = field.to_string();
     let value = if validated.is_empty() { None } else { Some(validated) };
     let value_for_post = value.clone();
+    // v1.20 TOCTOU fix: fold both the collection and field existence checks
+    // inside the writer closure to prevent orphan keys in field_descriptions_json.
     pool.with_writer(move |c| {
+        if !collection_exists(c, &coll_for_write)? {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!("COLLECTION_NOT_FOUND: {coll_for_write}")),
+            ));
+        }
+        // Check the field exists via PRAGMA table_info.
+        let col_exists: bool = c
+            .prepare(&format!(
+                "PRAGMA table_info(\"{}\")",
+                coll_for_write.replace('"', "\"\"")
+            ))?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|col| col == field_for_write);
+        if !col_exists {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!(
+                    "FIELD_NOT_FOUND: field {field_for_write} not on collection {coll_for_write}"
+                )),
+            ));
+        }
         write_field_description(c, &coll_for_write, &field_for_write, value.as_deref())
     })
-    .await?;
+    .await
+    .map_err(|e| {
+        let msg = e.to_string();
+        anyhow::anyhow!("{msg}")
+    })?;
     pool.schema_cache.invalidate(collection);
     Ok(json!({
         "collection": collection,
@@ -732,22 +768,42 @@ pub async fn set_index_description(
         Err((code, msg)) => anyhow::bail!("{code}: {msg}"),
     };
     let pool = pool.clone();
-    let coll_for_check = collection.to_string();
-    let cs = pool
-        .with_reader(move |c| describe_collection(c, &coll_for_check))
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("COLLECTION_NOT_FOUND: {collection}"))?;
-    if !cs.indices.iter().any(|i| i.name == index_name) {
-        anyhow::bail!("INDEX_NOT_FOUND: index {index_name} not on collection {collection}");
-    }
     let coll_for_write = collection.to_string();
     let idx_for_write = index_name.to_string();
     let value = if validated.is_empty() { None } else { Some(validated) };
     let value_for_post = value.clone();
+    // v1.20 TOCTOU fix: fold both the collection and index existence checks
+    // inside the writer closure to prevent orphan keys in index_descriptions_json.
     pool.with_writer(move |c| {
+        if !collection_exists(c, &coll_for_write)? {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!("COLLECTION_NOT_FOUND: {coll_for_write}")),
+            ));
+        }
+        // Check the index exists on this collection via sqlite_master.
+        let idx_exists: bool = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='index' AND tbl_name=?1 AND name=?2",
+                rusqlite::params![coll_for_write, idx_for_write],
+                |r| r.get::<_, i64>(0),
+            )? > 0;
+        if !idx_exists {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!(
+                    "INDEX_NOT_FOUND: index {idx_for_write} not on collection {coll_for_write}"
+                )),
+            ));
+        }
         write_index_description(c, &coll_for_write, &idx_for_write, value.as_deref())
     })
-    .await?;
+    .await
+    .map_err(|e| {
+        let msg = e.to_string();
+        anyhow::anyhow!("{msg}")
+    })?;
     pool.schema_cache.invalidate(collection);
     Ok(json!({
         "collection": collection,

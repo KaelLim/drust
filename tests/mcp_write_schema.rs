@@ -718,9 +718,11 @@ async fn set_anon_caps_rejects_unknown_collection() {
     let err = set_anon_caps(&s, "ghosts", &[DmlVerb::Select])
         .await
         .unwrap_err();
+    // v1.20: error code is now COLLECTION_NOT_FOUND (folded into writer closure).
+    let msg = err.to_string();
     assert!(
-        err.to_string().contains("unknown collection"),
-        "expected unknown-collection rejection, got: {err}"
+        msg.contains("COLLECTION_NOT_FOUND") || msg.contains("unknown collection"),
+        "expected unknown-collection rejection, got: {msg}"
     );
 }
 
