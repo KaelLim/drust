@@ -175,7 +175,7 @@ async fn create_then_list_shows_row_and_surfaces_secret_once() {
 
     // POST create
     let form_body =
-        "collection=notes&events=created&url=https%3A%2F%2Fhooks.example.com%2Fone";
+        "collection=notes&events=created&url=https%3A%2F%2Fexample.com%2Fone";
     let resp = app
         .clone()
         .oneshot(
@@ -243,7 +243,7 @@ async fn create_then_list_shows_row_and_surfaces_secret_once() {
 
     // The page must list the new webhook row.
     assert!(
-        body.contains("https://hooks.example.com/one"),
+        body.contains("https://example.com/one"),
         "list page must show the created webhook url"
     );
     assert!(

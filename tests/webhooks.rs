@@ -289,7 +289,7 @@ async fn rest_create_returns_secret_once_and_lists_with_redacted_secret() {
     let body = serde_json::json!({
         "collection": "notes",
         "events": ["created"],
-        "url": "https://hooks.example.com/x",
+        "url": "https://example.com/x",
     });
     let (status, v) = create_webhook(&app, tid, &svc, body).await;
     assert_eq!(status, 201, "expected 201 Created, got {status}: {v}");
@@ -361,7 +361,7 @@ async fn rest_patch_can_toggle_active_and_update_events_but_not_secret() {
         serde_json::json!({
             "collection": "notes",
             "events": ["created"],
-            "url": "https://hooks.example.com/y",
+            "url": "https://example.com/y",
         }),
     )
     .await;
@@ -421,7 +421,7 @@ async fn rest_anon_token_rejected_with_403_service_only() {
     let body = serde_json::json!({
         "collection": "notes",
         "events": ["created"],
-        "url": "https://hooks.example.com/z",
+        "url": "https://example.com/z",
     });
     let (status, v) = create_webhook(&app, tid, &anon, body).await;
     assert_eq!(status, 403, "expected 403, got {status}: {v}");
@@ -583,7 +583,7 @@ async fn mcp_create_webhook_returns_secret_then_list_redacts() {
         serde_json::json!({
             "collection": "notes",
             "events": ["created"],
-            "url": "https://hooks.example.com/x",
+            "url": "https://example.com/x",
         }),
     )
     .await;
@@ -614,7 +614,7 @@ async fn mcp_create_webhook_returns_secret_then_list_redacts() {
     let items = v["webhooks"].as_array().expect("webhooks array");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["secret"].as_str(), Some("●●●●"));
-    assert_eq!(items[0]["url"].as_str(), Some("https://hooks.example.com/x"));
+    assert_eq!(items[0]["url"].as_str(), Some("https://example.com/x"));
 }
 
 #[tokio::test]
@@ -632,7 +632,7 @@ async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
         serde_json::json!({
             "collection": "notes",
             "events": ["created"],
-            "url": "https://hooks.example.com/a",
+            "url": "https://example.com/a",
         }),
     )
     .await;
@@ -646,7 +646,7 @@ async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
         &svc,
         &sid,
         "update_webhook",
-        serde_json::json!({"id": id, "url": "https://hooks.example.com/b", "active": false}),
+        serde_json::json!({"id": id, "url": "https://example.com/b", "active": false}),
     )
     .await;
     let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
@@ -657,7 +657,7 @@ async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
     let txt = mcp_call_tool(&app, tid, &svc, &sid, "list_webhooks", serde_json::json!({})).await;
     let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let items = v["webhooks"].as_array().unwrap();
-    assert_eq!(items[0]["url"].as_str(), Some("https://hooks.example.com/b"));
+    assert_eq!(items[0]["url"].as_str(), Some("https://example.com/b"));
     assert_eq!(items[0]["active"].as_bool(), Some(false));
 
     // Bad update — http://attacker URL should error
@@ -706,7 +706,7 @@ async fn mcp_delete_webhook_succeeds_and_errors_on_missing_id() {
         serde_json::json!({
             "collection": "notes",
             "events": ["created"],
-            "url": "https://hooks.example.com/del",
+            "url": "https://example.com/del",
         }),
     )
     .await;
@@ -851,7 +851,7 @@ async fn rest_get_one_redacts_secret() {
         serde_json::json!({
             "collection": "notes",
             "events": ["created"],
-            "url": "https://x.invalid/h",
+            "url": "https://example.com/h",
         }),
     )
     .await;
