@@ -393,6 +393,21 @@ impl DrustMcpService {
         }
     }
 
+    #[tool(description = "One-shot schema bootstrap for the tenant. Returns every \
+        collection's full schema (fields, indices, descriptions, anon_caps, owner_field, \
+        realtime_enabled, vector_fields) plus every stored RPC's metadata in a single \
+        response. Service-key only. Use this when an LLM first connects to learn the data \
+        model; the cheaper `list_collections` + `describe_collection` round-trips remain \
+        available for per-collection inspection.")]
+    async fn get_schema_overview(&self) -> Result<CallToolResult, McpError> {
+        match exploration::get_schema_overview(&self.state).await {
+            Ok(v) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&v).expect("serialise"),
+            )])),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
+    }
+
     #[tool(
         description = "Return up to `limit` rows from a collection, ordered by id ascending. \
         `limit` defaults to 20 and is clamped to 500. Use this to peek at a collection's data shape."
@@ -1279,7 +1294,7 @@ impl ServerHandler for DrustMcpService {
         let base = self.state.public_base_url();
         let instructions = format!(
             "drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.\n\n\
-             Tools: `whoami`, `list_collections`, `describe_collection`, `sample_rows`, \
+             Tools: `whoami`, `list_collections`, `describe_collection`, `get_schema_overview`, `sample_rows`, \
              `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
              `drop_collection`, `set_anon_caps`, `set_collection_description`, \

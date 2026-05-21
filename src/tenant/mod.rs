@@ -215,6 +215,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             put(collections::put_index_description_handler),
         )
         .route(
+            "/t/{tenant}/schema/overview",
+            get(collections::get_schema_overview_handler),
+        )
+        .route(
             "/t/{tenant}/records/{coll}",
             get(records::list_handler).post({
                 let b = bus.clone();
