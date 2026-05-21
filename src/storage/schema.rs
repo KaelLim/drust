@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// System-managed collections are drop-protected. Any name starting with
 /// `_system_` (note the trailing underscore) is refused by schema-mutating
@@ -86,6 +86,78 @@ pub fn anon_caps_to_json(caps: &BTreeSet<DmlVerb>) -> String {
     serde_json::to_string(&v).expect("BTreeSet<DmlVerb> serialises")
 }
 
+/// Maximum byte length for any description string. Applies uniformly to
+/// collection / field / index descriptions. RPC descriptions are not
+/// validated through this path (they flow through the existing
+/// `update_rpc` MCP arg shape).
+pub const MAX_DESCRIPTION_BYTES: usize = 2048;
+
+/// Pure validator for a description string. Returns the trimmed value
+/// on success. Empty input yields `Ok("")` — callers interpret as
+/// "clear". Mirrors the shape of `webhook_routes::check_url`:
+///   - `(code, message)` pair so callers (REST + MCP + admin UI) can
+///     map to their preferred error shape.
+///   - All branches are pure; no I/O.
+pub fn check_description(raw: &str) -> Result<String, (&'static str, &'static str)> {
+    let trimmed = raw.trim();
+    if trimmed.len() > MAX_DESCRIPTION_BYTES {
+        return Err((
+            "DESCRIPTION_TOO_LONG",
+            "description exceeds 2048-byte limit",
+        ));
+    }
+    if trimmed.contains('\0') {
+        return Err((
+            "DESCRIPTION_INVALID",
+            "description must not contain NUL",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod description_validator_tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_is_ok_with_empty_output() {
+        assert_eq!(check_description("").unwrap(), "");
+        assert_eq!(check_description("   ").unwrap(), "");
+        assert_eq!(check_description("\n\t").unwrap(), "");
+    }
+
+    #[test]
+    fn whitespace_is_trimmed() {
+        assert_eq!(check_description("  hello  ").unwrap(), "hello");
+    }
+
+    #[test]
+    fn exactly_max_length_is_ok() {
+        let s = "a".repeat(MAX_DESCRIPTION_BYTES);
+        assert!(check_description(&s).is_ok());
+    }
+
+    #[test]
+    fn one_over_max_length_is_rejected() {
+        let s = "a".repeat(MAX_DESCRIPTION_BYTES + 1);
+        let err = check_description(&s).unwrap_err();
+        assert_eq!(err.0, "DESCRIPTION_TOO_LONG");
+    }
+
+    #[test]
+    fn nul_byte_is_rejected() {
+        let err = check_description("hello\0world").unwrap_err();
+        assert_eq!(err.0, "DESCRIPTION_INVALID");
+    }
+
+    #[test]
+    fn unicode_within_limit_is_ok() {
+        let s = "你好，世界 🌏 markdown-ish summary line";
+        let got = check_description(s).unwrap();
+        assert_eq!(got, s);
+    }
+}
+
 #[cfg(test)]
 mod anon_caps_tests {
     use super::*;
@@ -133,6 +205,10 @@ mod anon_caps_tests {
 pub struct Collection {
     pub name: String,
     pub row_count: i64,
+    /// Collection-level free-form description (v1.19). Optional;
+    /// rendered identically when absent (`skip_serializing_if`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,6 +222,10 @@ pub struct Field {
     /// `None` otherwise. Sourced from `PRAGMA foreign_key_list`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub foreign_key: Option<String>,
+    /// Per-field description (v1.19). Sourced from
+    /// `_system_collection_meta.field_descriptions_json[name]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -153,6 +233,10 @@ pub struct IndexInfo {
     pub name: String,
     pub fields: Vec<String>,
     pub unique: bool,
+    /// Per-index description (v1.19). Sourced from
+    /// `_system_collection_meta.index_descriptions_json[name]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +273,9 @@ pub struct CollectionSchema {
     /// rows present before v1.16 (column default 1). New collections
     /// created from v1.16+ start at `false` via `create_collection`.
     pub realtime_enabled: bool,
+    /// Collection-level free-form description (v1.19).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 fn user_tables(conn: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -214,9 +301,11 @@ pub fn list_collections(conn: &Connection) -> rusqlite::Result<Vec<Collection>> 
             continue;
         }
         let count = row_count(conn, &name)?;
+        let description = read_collection_description(conn, &name)?;
         out.push(Collection {
             name,
             row_count: count,
+            description,
         });
     }
     Ok(out)
@@ -259,6 +348,138 @@ fn read_realtime_enabled(
     Ok(row.map(|n| n != 0).unwrap_or(true))
 }
 
+/// Read the collection-level description for `coll`. Returns `None` if
+/// the meta row is absent or the column is NULL.
+pub fn read_collection_description(
+    conn: &Connection,
+    coll: &str,
+) -> rusqlite::Result<Option<String>> {
+    match conn.query_row(
+        "SELECT description FROM _system_collection_meta WHERE collection_name = ?1",
+        rusqlite::params![coll],
+        |r| r.get::<_, Option<String>>(0),
+    ) {
+        Ok(v) => Ok(v),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Read the per-field description map for `coll`. Missing meta row →
+/// empty map. Malformed JSON → empty map (defensive; never panics).
+pub fn read_field_descriptions(
+    conn: &Connection,
+    coll: &str,
+) -> rusqlite::Result<BTreeMap<String, String>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT field_descriptions_json FROM _system_collection_meta
+                  WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(raw
+        .and_then(|j| serde_json::from_str::<BTreeMap<String, String>>(&j).ok())
+        .unwrap_or_default())
+}
+
+/// Read the per-index description map. Same semantics as
+/// `read_field_descriptions`.
+pub fn read_index_descriptions(
+    conn: &Connection,
+    coll: &str,
+) -> rusqlite::Result<BTreeMap<String, String>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT index_descriptions_json FROM _system_collection_meta
+                  WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| r.get(0),
+        )
+        .ok();
+    Ok(raw
+        .and_then(|j| serde_json::from_str::<BTreeMap<String, String>>(&j).ok())
+        .unwrap_or_default())
+}
+
+/// Set / clear the collection-level description. `None` or `Some("")`
+/// clears (column → NULL). Upserts the meta row if absent, defaulting
+/// `anon_caps_json = '["select"]'` (mirrors other upsert helpers).
+/// Caller must hold the writer mutex.
+pub fn write_collection_description(
+    conn: &Connection,
+    coll: &str,
+    description: Option<&str>,
+) -> rusqlite::Result<()> {
+    let value: Option<&str> = description.filter(|s| !s.is_empty());
+    conn.execute(
+        "INSERT INTO _system_collection_meta \
+              (collection_name, anon_caps_json, description, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              description = excluded.description, \
+              updated_at  = excluded.updated_at",
+        rusqlite::params![coll, value],
+    )?;
+    Ok(())
+}
+
+/// Set / clear a per-field description. Read-modify-write on the JSON
+/// blob (caller holds writer mutex so no concurrent racers). `None` or
+/// empty removes the key.
+pub fn write_field_description(
+    conn: &Connection,
+    coll: &str,
+    field: &str,
+    description: Option<&str>,
+) -> rusqlite::Result<()> {
+    let mut map = read_field_descriptions(conn, coll)?;
+    match description.filter(|s| !s.is_empty()) {
+        Some(text) => { map.insert(field.to_string(), text.to_string()); }
+        None => { map.remove(field); }
+    }
+    let json = serde_json::to_string(&map)
+        .expect("BTreeMap<String,String> always serialises");
+    conn.execute(
+        "INSERT INTO _system_collection_meta \
+              (collection_name, anon_caps_json, field_descriptions_json, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              field_descriptions_json = excluded.field_descriptions_json, \
+              updated_at              = excluded.updated_at",
+        rusqlite::params![coll, json],
+    )?;
+    Ok(())
+}
+
+/// Set / clear a per-index description. Same shape as
+/// `write_field_description` but writes to `index_descriptions_json`.
+pub fn write_index_description(
+    conn: &Connection,
+    coll: &str,
+    index_name: &str,
+    description: Option<&str>,
+) -> rusqlite::Result<()> {
+    let mut map = read_index_descriptions(conn, coll)?;
+    match description.filter(|s| !s.is_empty()) {
+        Some(text) => { map.insert(index_name.to_string(), text.to_string()); }
+        None => { map.remove(index_name); }
+    }
+    let json = serde_json::to_string(&map)
+        .expect("BTreeMap<String,String> always serialises");
+    conn.execute(
+        "INSERT INTO _system_collection_meta \
+              (collection_name, anon_caps_json, index_descriptions_json, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              index_descriptions_json = excluded.index_descriptions_json, \
+              updated_at              = excluded.updated_at",
+        rusqlite::params![coll, json],
+    )?;
+    Ok(())
+}
+
 pub fn describe_collection(
     conn: &Connection,
     name: &str,
@@ -286,7 +507,8 @@ pub fn describe_collection(
         })?
         .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
 
-    let fields = conn
+    let field_descs = read_field_descriptions(conn, name)?;
+    let mut fields = conn
         .prepare(&format!(
             "PRAGMA table_info(\"{}\")",
             name.replace('"', "\"\"")
@@ -303,10 +525,15 @@ pub fn describe_collection(
                 pk: pk_int > 0,
                 default_value: r.get::<_, Option<String>>(4)?,
                 foreign_key: fk,
+                description: None,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+    for f in &mut fields {
+        f.description = field_descs.get(&f.name).cloned();
+    }
 
+    let index_descs = read_index_descriptions(conn, name)?;
     let mut indices = Vec::new();
     let idx_rows: Vec<(String, bool)> = conn
         .prepare(&format!(
@@ -322,17 +549,19 @@ pub fn describe_collection(
         if iname.starts_with("sqlite_autoindex") {
             continue;
         }
-        let fields: Vec<String> = conn
+        let idx_fields: Vec<String> = conn
             .prepare(&format!(
                 "PRAGMA index_info(\"{}\")",
                 iname.replace('"', "\"\"")
             ))?
             .query_map([], |r| r.get::<_, String>(2))?
             .collect::<Result<Vec<_>, _>>()?;
+        let idx_desc = index_descs.get(&iname).cloned();
         indices.push(IndexInfo {
             name: iname,
-            fields,
+            fields: idx_fields,
             unique,
+            description: idx_desc,
         });
     }
 
@@ -341,6 +570,7 @@ pub fn describe_collection(
     let (owner_field, read_scope) = read_owner_field(conn, name)?;
     let vector_fields = read_vector_fields(conn, name)?;
     let realtime_enabled = read_realtime_enabled(conn, name)?;
+    let description = read_collection_description(conn, name)?;
     Ok(Some(CollectionSchema {
         name: name.to_string(),
         fields,
@@ -351,6 +581,7 @@ pub fn describe_collection(
         read_scope,
         vector_fields,
         realtime_enabled,
+        description,
     }))
 }
 
@@ -671,6 +902,93 @@ mod meta_io_tests {
         assert_eq!(read_anon_caps(&conn, "posts").unwrap(), caps);
         assert!(!read_realtime_enabled(&conn, "posts").unwrap());
     }
+
+    #[test]
+    fn collection_description_roundtrip() {
+        let (_t, conn) = fresh();
+        conn.execute_batch(
+            "ALTER TABLE _system_collection_meta ADD COLUMN description TEXT;
+             ALTER TABLE _system_collection_meta ADD COLUMN field_descriptions_json TEXT NOT NULL DEFAULT '{}';
+             ALTER TABLE _system_collection_meta ADD COLUMN index_descriptions_json TEXT NOT NULL DEFAULT '{}';",
+        ).unwrap();
+
+        assert_eq!(read_collection_description(&conn, "posts").unwrap(), None);
+        write_collection_description(&conn, "posts", Some("My posts")).unwrap();
+        assert_eq!(
+            read_collection_description(&conn, "posts").unwrap(),
+            Some("My posts".to_string())
+        );
+        write_collection_description(&conn, "posts", None).unwrap();
+        assert_eq!(read_collection_description(&conn, "posts").unwrap(), None);
+        write_collection_description(&conn, "posts", Some("again")).unwrap();
+        write_collection_description(&conn, "posts", Some("")).unwrap();
+        assert_eq!(read_collection_description(&conn, "posts").unwrap(), None);
+    }
+
+    #[test]
+    fn field_descriptions_roundtrip() {
+        let (_t, conn) = fresh();
+        conn.execute_batch(
+            "ALTER TABLE _system_collection_meta ADD COLUMN description TEXT;
+             ALTER TABLE _system_collection_meta ADD COLUMN field_descriptions_json TEXT NOT NULL DEFAULT '{}';
+             ALTER TABLE _system_collection_meta ADD COLUMN index_descriptions_json TEXT NOT NULL DEFAULT '{}';",
+        ).unwrap();
+
+        assert!(read_field_descriptions(&conn, "posts").unwrap().is_empty());
+        write_field_description(&conn, "posts", "title", Some("post title")).unwrap();
+        write_field_description(&conn, "posts", "body", Some("markdown body")).unwrap();
+        let m = read_field_descriptions(&conn, "posts").unwrap();
+        assert_eq!(m.get("title").map(|s| s.as_str()), Some("post title"));
+        assert_eq!(m.get("body").map(|s| s.as_str()), Some("markdown body"));
+
+        write_field_description(&conn, "posts", "title", None).unwrap();
+        let m = read_field_descriptions(&conn, "posts").unwrap();
+        assert!(!m.contains_key("title"));
+        assert!(m.contains_key("body"));
+
+        write_field_description(&conn, "posts", "body", Some("")).unwrap();
+        let m = read_field_descriptions(&conn, "posts").unwrap();
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn index_descriptions_roundtrip() {
+        let (_t, conn) = fresh();
+        conn.execute_batch(
+            "ALTER TABLE _system_collection_meta ADD COLUMN description TEXT;
+             ALTER TABLE _system_collection_meta ADD COLUMN field_descriptions_json TEXT NOT NULL DEFAULT '{}';
+             ALTER TABLE _system_collection_meta ADD COLUMN index_descriptions_json TEXT NOT NULL DEFAULT '{}';",
+        ).unwrap();
+
+        assert!(read_index_descriptions(&conn, "posts").unwrap().is_empty());
+        write_index_description(&conn, "posts", "idx_posts_author",
+            Some("fast lookup by author")).unwrap();
+        let m = read_index_descriptions(&conn, "posts").unwrap();
+        assert_eq!(
+            m.get("idx_posts_author").map(|s| s.as_str()),
+            Some("fast lookup by author")
+        );
+        write_index_description(&conn, "posts", "idx_posts_author", None).unwrap();
+        assert!(read_index_descriptions(&conn, "posts").unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_json_blob_reads_as_empty() {
+        let (_t, conn) = fresh();
+        conn.execute_batch(
+            "ALTER TABLE _system_collection_meta ADD COLUMN description TEXT;
+             ALTER TABLE _system_collection_meta ADD COLUMN field_descriptions_json TEXT NOT NULL DEFAULT '{}';
+             ALTER TABLE _system_collection_meta ADD COLUMN index_descriptions_json TEXT NOT NULL DEFAULT '{}';",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO _system_collection_meta \
+                  (collection_name, anon_caps_json, field_descriptions_json, updated_at) \
+                  VALUES ('rotten', '[\"select\"]', 'not json', datetime('now'))",
+            [],
+        ).unwrap();
+        let m = read_field_descriptions(&conn, "rotten").unwrap();
+        assert!(m.is_empty(), "malformed JSON must yield empty map (defensive)");
+    }
 }
 
 /// Returns true if the caller's role is permitted to perform `verb` on
@@ -717,6 +1035,7 @@ mod cap_gate_tests {
             read_scope: None,
             vector_fields: vec![],
             realtime_enabled: true,
+            description: None,
         }
     }
 
