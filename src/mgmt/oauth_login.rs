@@ -68,8 +68,16 @@ pub async fn oauth_callback(
     Path(provider): Path<String>,
     Query(q): Query<CallbackQuery>,
     cookies: CookieJar,
+    headers: HeaderMap,
     State(s): State<MgmtState>,
 ) -> Response {
+    // v1.19.2 — per-IP rate limit. Same shape as tenant oauth_callback.
+    let fallback_addr: std::net::SocketAddr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
+    if !s.admin_oauth_callback_rl.check(ip) {
+        audit_oauth_failure(&s, &provider, None, "rate_limited").await;
+        return redirect_login_error("rate_limited");
+    }
     // 1. provider exists
     let Some(p) = s.oauth_registry.get(&provider) else {
         return redirect_login_error("oauth_misconfigured");

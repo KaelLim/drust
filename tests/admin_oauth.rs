@@ -54,6 +54,8 @@ fn build_state(
         public_url: "http://test".to_string(),
         oauth_registry: Arc::new(registry),
         oauth_allowlist: Arc::new(allowlist),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
     }
 }
 

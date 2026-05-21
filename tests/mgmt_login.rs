@@ -36,6 +36,8 @@ async fn app() -> axum::Router {
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
         oauth_allowlist: Arc::new(std::collections::HashSet::new()),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
     };
     build_mgmt_router(state)
 }
