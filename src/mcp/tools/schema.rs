@@ -36,6 +36,10 @@ pub struct FieldSpec {
     /// 4 byte/elem = 16 KB per row).
     #[serde(default)]
     pub dim: Option<u32>,
+    /// Optional plain-text description for this field (v1.19).
+    /// Trimmed to ≤2048 bytes. Empty / absent = no description.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -56,6 +60,7 @@ mod field_spec_vector_tests {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         };
         let err = column_expr(&f).unwrap_err();
         assert!(
@@ -74,6 +79,7 @@ mod field_spec_vector_tests {
             default_value: None,
             foreign_key: None,
             dim: Some(384),
+            description: None,
         };
         let expr = column_expr(&f).unwrap();
         assert_eq!(expr, "\"embedding\" BLOB NOT NULL");
@@ -90,6 +96,7 @@ mod field_spec_vector_tests {
                 default_value: None,
                 foreign_key: None,
                 dim: Some(bad_dim),
+                description: None,
             };
             let err = column_expr(&f).unwrap_err();
             assert!(
@@ -109,6 +116,7 @@ mod field_spec_vector_tests {
             default_value: None,
             foreign_key: None,
             dim: Some(42),
+            description: None,
         };
         let expr = column_expr(&f).unwrap();
         assert_eq!(expr, "\"title\" TEXT");
@@ -327,6 +335,23 @@ pub async fn create_collection_with_desc(
             let val = validated.clone();
             pool.with_writer(move |c| write_collection_description(c, &coll, Some(&val)))
                 .await?;
+        }
+    }
+
+    // v1.19 — persist per-field descriptions provided in the fields payload.
+    for f in fields.iter() {
+        if let Some(desc) = f.description.as_deref().filter(|s| !s.is_empty()) {
+            let validated = check_description(desc)
+                .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
+            if !validated.is_empty() {
+                let coll = name.to_string();
+                let fname = f.name.clone();
+                let val = validated.clone();
+                pool.with_writer(move |c| {
+                    write_field_description(c, &coll, &fname, Some(&val))
+                })
+                .await?;
+            }
         }
     }
 

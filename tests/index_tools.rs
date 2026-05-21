@@ -22,6 +22,7 @@ async fn fixture(tenant: &str) -> (drust::mcp::server::DrustMcp, tempfile::TempD
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
     )
     .await
@@ -66,6 +67,7 @@ async fn creates_composite_index_on_two_fields() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         },
     )
     .await
@@ -352,6 +354,7 @@ async fn drop_by_fields_resolves_to_same_index() {
             sql_type: "integer".into(),
             nullable: true, unique: false, default_value: None, foreign_key: None,
             dim: None,
+            description: None,
         },
     ).await.unwrap();
     drust::mcp::tools::index::create_index(

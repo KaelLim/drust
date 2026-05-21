@@ -248,6 +248,7 @@ async fn create_collection_with_description_persists() {
             default_value: None,
             foreign_key: None,
             dim: None,
+            description: None,
         }],
         Some("Article collection for tests"),
     )
@@ -265,6 +266,80 @@ async fn create_collection_with_description_persists() {
         schema.description.as_deref(),
         Some("Article collection for tests"),
         "collection description not persisted"
+    );
+}
+
+// ── Test 9 ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn create_collection_with_per_field_description_persists() {
+    use drust::mcp::server::McpRegistry;
+    use drust::storage::pool::TenantRegistry;
+    use std::sync::Arc;
+
+    let d = tempfile::tempdir().unwrap();
+    let data = d.path().to_path_buf();
+    let tr = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let _ = drust::storage::tenant_db::open_write(&data, "desc-field-create").unwrap();
+    let reg = McpRegistry::new(tr);
+    let mcp = reg.get_or_create("desc-field-create").await.unwrap();
+
+    drust::mcp::tools::schema::create_collection_with_desc(
+        &mcp,
+        "posts",
+        &[
+            drust::mcp::tools::schema::FieldSpec {
+                name: "title".into(),
+                sql_type: "text".into(),
+                nullable: true,
+                unique: false,
+                default_value: None,
+                foreign_key: None,
+                dim: None,
+                description: Some("Post title".into()),
+            },
+            drust::mcp::tools::schema::FieldSpec {
+                name: "body".into(),
+                sql_type: "text".into(),
+                nullable: true,
+                unique: false,
+                default_value: None,
+                foreign_key: None,
+                dim: None,
+                description: Some("Markdown body".into()),
+            },
+        ],
+        Some("Blog posts"),
+    )
+    .await
+    .unwrap();
+
+    // Verify via describe_collection.
+    let pool = mcp.inner().pool.clone();
+    let schema = pool
+        .with_reader(|c| drust::storage::schema::describe_collection(c, "posts"))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        schema.description.as_deref(),
+        Some("Blog posts"),
+        "collection description not persisted"
+    );
+
+    let title_field = schema.fields.iter().find(|f| f.name == "title").unwrap();
+    assert_eq!(
+        title_field.description.as_deref(),
+        Some("Post title"),
+        "title field description not persisted"
+    );
+
+    let body_field = schema.fields.iter().find(|f| f.name == "body").unwrap();
+    assert_eq!(
+        body_field.description.as_deref(),
+        Some("Markdown body"),
+        "body field description not persisted"
     );
 }
 

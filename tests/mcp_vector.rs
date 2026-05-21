@@ -37,6 +37,7 @@ async fn make_vec_collection(s: &drust::mcp::server::DrustMcp) {
                 default_value: None,
                 foreign_key: None,
                 dim: None,
+                description: None,
             },
             FieldSpec {
                 name: "embedding".into(),
@@ -46,6 +47,7 @@ async fn make_vec_collection(s: &drust::mcp::server::DrustMcp) {
                 default_value: None,
                 foreign_key: None,
                 dim: Some(3),
+                description: None,
             },
         ],
     )
@@ -265,6 +267,7 @@ async fn mcp_search_filter_compiles_and_filters() {
                 default_value: None,
                 foreign_key: None,
                 dim: None,
+                description: None,
             },
             FieldSpec {
                 name: "category".into(),
@@ -274,6 +277,7 @@ async fn mcp_search_filter_compiles_and_filters() {
                 default_value: None,
                 foreign_key: None,
                 dim: None,
+                description: None,
             },
             FieldSpec {
                 name: "embedding".into(),
@@ -283,6 +287,7 @@ async fn mcp_search_filter_compiles_and_filters() {
                 default_value: None,
                 foreign_key: None,
                 dim: Some(3),
+                description: None,
             },
         ],
     )
