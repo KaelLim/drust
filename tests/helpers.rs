@@ -40,7 +40,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
-    let webhooks = WebhookDispatcher::new(data.clone());
+    let webhooks = WebhookDispatcher::new(tenants.clone());
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: tenants.clone(),
@@ -94,7 +94,7 @@ pub async fn spin_up_tenant_with_role(
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
-    let webhooks = WebhookDispatcher::new(data.clone());
+    let webhooks = WebhookDispatcher::new(tenants.clone());
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: tenants.clone(),
@@ -145,7 +145,7 @@ pub async fn spin_up_tenant_with_threshold(
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
-    let webhooks = WebhookDispatcher::new(data.clone());
+    let webhooks = WebhookDispatcher::new(tenants.clone());
     let state = TenantAuthState {
         meta: Arc::new(Mutex::new(conn)),
         registry: tenants.clone(),

@@ -1,19 +1,19 @@
 //! WebhookDispatcher — record-CRUD event → subscribed URLs.
 //!
 //! Public API:
-//!   WebhookDispatcher::new(data_root: PathBuf) -> Arc<Self>
+//!   WebhookDispatcher::new(pool: Arc<TenantRegistry>) -> Arc<Self>
 //!   WebhookDispatcher::dispatch(&self, tenant: &str, collection: &str, event: Event)
 //!
 //! Internal: pure helpers below (HMAC, payload, event filter) are
 //! `pub(crate)` to keep them testable from the integration suite.
 
+use crate::storage::pool::TenantRegistry;
 use crate::tenant::events::Event;
 use hmac::{Hmac, Mac};
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::Sha256;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -76,12 +76,12 @@ pub(crate) fn build_payload(
 
 #[derive(Clone)]
 pub struct WebhookDispatcher {
-    data_root: PathBuf,
+    pool: Arc<TenantRegistry>,
     http: reqwest::Client,
 }
 
 impl WebhookDispatcher {
-    pub fn new(data_root: PathBuf) -> Arc<Self> {
+    pub fn new(pool: Arc<TenantRegistry>) -> Arc<Self> {
         let http = reqwest::Client::builder()
             .pool_max_idle_per_host(8)
             .connect_timeout(std::time::Duration::from_secs(5))
@@ -94,7 +94,7 @@ impl WebhookDispatcher {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client builds");
-        Arc::new(Self { data_root, http })
+        Arc::new(Self { pool, http })
     }
 
     /// Fan out `event` to every active subscriber for `(tenant, collection)`.
@@ -103,26 +103,25 @@ impl WebhookDispatcher {
     /// `record_failure`). Returns immediately — the callers are on the hot
     /// REST/MCP path and must not block.
     pub fn dispatch(&self, tenant: &str, collection: &str, event: Event) {
-        let data_root = self.data_root.clone();
+        let pool = self.pool.clone();
         let tenant = tenant.to_string();
         let collection = collection.to_string();
         let http = self.http.clone();
         tokio::spawn(async move {
-            let conn = match open_tenant_conn(&data_root, &tenant) {
-                Ok(c) => c,
+            let tenant_pool = match pool.get_or_open(&tenant) {
+                Ok(p) => p,
                 Err(e) => {
-                    tracing::warn!(error = ?e, tenant = %tenant, "webhook dispatch: open_tenant_conn failed");
+                    tracing::warn!(error = ?e, tenant = %tenant, "webhook dispatch: get_or_open failed");
                     return;
                 }
             };
-            let subs = match list_subscriptions(&conn, &collection) {
+            let subs = match tenant_pool.with_reader(|conn| list_subscriptions(conn, &collection)).await {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!(error = ?e, tenant = %tenant, collection = %collection, "webhook dispatch: list_subscriptions failed");
                     return;
                 }
             };
-            drop(conn); // release before spawning per-delivery tasks
             let event_name = event.name();
             for sub in subs {
                 if !events_contains(&sub.events, event_name) {
@@ -144,7 +143,7 @@ impl WebhookDispatcher {
                     }
                 };
                 let http2 = http.clone();
-                let root2 = data_root.clone();
+                let pool2 = pool.clone();
                 let tenant2 = tenant.clone();
                 tokio::spawn(async move {
                     if let Err(e) = deliver(
@@ -152,7 +151,7 @@ impl WebhookDispatcher {
                         &sub,
                         body_bytes,
                         DeliverySchedule::default(),
-                        &root2,
+                        &pool2,
                         &tenant2,
                     )
                     .await
@@ -163,17 +162,6 @@ impl WebhookDispatcher {
             }
         });
     }
-}
-
-/// Open a fresh read+write connection to a tenant's `data.sqlite`. The
-/// dispatcher owns connections only for the duration of one subscription
-/// query — no pooling needed at v1.13 scale.
-pub(crate) fn open_tenant_conn(
-    data_root: &std::path::Path,
-    tenant: &str,
-) -> rusqlite::Result<Connection> {
-    let p = data_root.join("tenants").join(tenant).join("data.sqlite");
-    Connection::open(p)
 }
 
 /// Pull every active subscription whose `collection` matches. The
@@ -263,18 +251,29 @@ impl std::fmt::Display for DeliveryError {
 }
 
 /// Production entry: one delivery, 4 attempts, fail-then-record_failure.
+/// Uses the shared `TenantRegistry` pool so failure writes go through the
+/// per-tenant writer mutex — same serialization guarantee as all other writes.
 pub(crate) async fn deliver(
     http: &reqwest::Client,
     row: &WebhookRow,
     body_bytes: Vec<u8>,
     sched: DeliverySchedule,
-    data_root: &std::path::Path,
+    pool: &TenantRegistry,
     tenant_id: &str,
 ) -> Result<(), DeliveryError> {
     let outcome = deliver_for_test(http, row, body_bytes, sched).await;
     if let Err(ref e) = outcome {
-        if let Ok(conn) = open_tenant_conn(data_root, tenant_id) {
-            let _ = record_failure(&conn, row.id, &e.to_string());
+        let reason = e.to_string();
+        let id = row.id;
+        match pool.get_or_open(tenant_id) {
+            Ok(tenant_pool) => {
+                let _ = tenant_pool
+                    .with_writer(move |conn| record_failure(conn, id, &reason))
+                    .await;
+            }
+            Err(err) => {
+                tracing::warn!(error = ?err, tenant = %tenant_id, "deliver: get_or_open failed, skipping record_failure");
+            }
         }
     }
     outcome

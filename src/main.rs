@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.tenant_read_pool_size,
     ));
     let bus = EventBus::new();
-    let webhooks = drust::tenant::WebhookDispatcher::new(cfg.data_dir.clone());
+    let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone());
 
     let garage = match &cfg.storage {
         Some(sc) => match drust::storage::garage::GarageClient::new(sc) {
