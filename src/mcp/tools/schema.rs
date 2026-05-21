@@ -272,6 +272,30 @@ pub async fn create_collection_with_desc(
             anyhow::anyhow!("foreign_key references unknown collection(s): {fk_targets:?}")
         })?;
     }
+    // v1.19.1 — pre-validate every description before any DDL so a bad
+    // value never leaves a half-described collection on the floor.
+    let validated_coll_desc: Option<String> = match description.filter(|s| !s.is_empty()) {
+        Some(raw) => {
+            let v = check_description(raw)
+                .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
+            if v.is_empty() { None } else { Some(v) }
+        }
+        None => None,
+    };
+    let validated_field_descs: Vec<(String, String)> = {
+        let mut out = Vec::new();
+        for f in fields {
+            if let Some(raw) = f.description.as_deref().filter(|s| !s.is_empty()) {
+                let v = check_description(raw)
+                    .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
+                if !v.is_empty() {
+                    out.push((f.name.clone(), v));
+                }
+            }
+        }
+        out
+    };
+
     let mut col_exprs = vec!["id INTEGER PRIMARY KEY AUTOINCREMENT".to_string()];
     for f in fields {
         col_exprs.push(column_expr(f)?);
@@ -326,33 +350,20 @@ pub async fn create_collection_with_desc(
     // next describe_collection / REST request loads the fresh table.
     pool.schema_cache.invalidate(name);
 
-    // v1.19 — persist collection-level description if provided.
-    if let Some(desc) = description.filter(|s| !s.is_empty()) {
-        let validated = check_description(desc)
-            .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
-        if !validated.is_empty() {
-            let coll = name.to_string();
-            let val = validated.clone();
-            pool.with_writer(move |c| write_collection_description(c, &coll, Some(&val)))
-                .await?;
-        }
+    // v1.19.1 — persist collection-level description from the pre-validated value.
+    if let Some(val) = validated_coll_desc {
+        let coll = name.to_string();
+        pool.with_writer(move |c| write_collection_description(c, &coll, Some(&val)))
+            .await?;
     }
 
-    // v1.19 — persist per-field descriptions provided in the fields payload.
-    for f in fields.iter() {
-        if let Some(desc) = f.description.as_deref().filter(|s| !s.is_empty()) {
-            let validated = check_description(desc)
-                .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
-            if !validated.is_empty() {
-                let coll = name.to_string();
-                let fname = f.name.clone();
-                let val = validated.clone();
-                pool.with_writer(move |c| {
-                    write_field_description(c, &coll, &fname, Some(&val))
-                })
-                .await?;
-            }
-        }
+    // v1.19.1 — persist per-field descriptions from the pre-validated list.
+    for (fname, val) in validated_field_descs {
+        let coll = name.to_string();
+        pool.with_writer(move |c| {
+            write_field_description(c, &coll, &fname, Some(&val))
+        })
+        .await?;
     }
 
     let schema = pool2
@@ -387,6 +398,17 @@ pub async fn add_field(
     let pool = s.inner().pool.clone();
     let pool2 = pool.clone();
     let coll = collection.to_string();
+    // v1.19.1 — pre-validate description before any writer step so a bad
+    // value surfaces before we ALTER the table. Validated value is moved
+    // into the meta-write step further down.
+    let validated_desc: Option<String> = match field.description.as_deref().filter(|s| !s.is_empty()) {
+        Some(raw) => {
+            let v = crate::storage::schema::check_description(raw)
+                .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
+            if v.is_empty() { None } else { Some(v) }
+        }
+        None => None,
+    };
     pool.with_writer(move |c| c.execute(&sql, [])).await?;
     // If this is a vector field, register it in the meta. Done in a
     // separate writer step so the ALTER TABLE error path (e.g. column
@@ -404,6 +426,20 @@ pub async fn add_field(
                 dim,
             });
             crate::storage::schema::write_vector_fields(c, &coll_for_writer, &existing)
+        })
+        .await?;
+    }
+    // v1.19.1 — persist field description if provided. Run as a separate
+    // writer step so the error path stays clean: an ALTER TABLE failure
+    // never leaves an orphan key, and a meta-write failure never blocks
+    // the ALTER from committing.
+    if let Some(desc) = validated_desc {
+        let coll_for_desc = collection.to_string();
+        let field_name = field.name.clone();
+        pool.with_writer(move |c| {
+            crate::storage::schema::write_field_description(
+                c, &coll_for_desc, &field_name, Some(&desc),
+            )
         })
         .await?;
     }
