@@ -210,16 +210,16 @@ pub async fn drop_index(
         "DROP INDEX \"{}\";",
         resolved_name.replace('"', "\"\"")
     );
-    pool.with_writer(move |c| c.execute_batch(&drop_sql)).await?;
-
-    // v1.19 — drop the matching key from index_descriptions_json so the
-    // blob doesn't accumulate orphan entries.
-    let coll_for_clean = collection.to_string();
-    let idx_for_clean = resolved_name.clone();
-    pool.with_writer(move |c| {
+    // v1.19.1 — DROP and blob-cleanup in a single writer closure so an
+    // error after DROP doesn't leave the JSON blob with an orphan key.
+    let coll_for_writer = collection.to_string();
+    let idx_for_writer = resolved_name.clone();
+    pool.with_writer(move |c| -> rusqlite::Result<()> {
+        c.execute_batch(&drop_sql)?;
         crate::storage::schema::write_index_description(
-            c, &coll_for_clean, &idx_for_clean, None,
-        )
+            c, &coll_for_writer, &idx_for_writer, None,
+        )?;
+        Ok(())
     })
     .await?;
 
