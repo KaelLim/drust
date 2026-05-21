@@ -123,6 +123,54 @@
           setTimeout(function () { inputEl.focus(); inputEl.select(); }, 20);
         });
       }
+      ,
+      detail: function (opts) {
+        opts = opts || {};
+        titleEl.textContent = opts.title || 'Details';
+        // Build the <dl> grid from fields[].
+        var dl = document.createElement('dl');
+        dl.className = 'modal-detail-grid';
+        var fields = opts.fields || [];
+        for (var i = 0; i < fields.length; i++) {
+          var f = fields[i] || {};
+          var dt = document.createElement('dt');
+          dt.textContent = f.label || '';
+          var dd = document.createElement('dd');
+          if (f.code) {
+            var pre = document.createElement('pre');
+            pre.textContent = f.value == null ? '' : String(f.value);
+            dd.appendChild(pre);
+          } else {
+            if (f.mono) dd.className = 'mono';
+            dd.textContent = f.value == null ? '' : String(f.value);
+          }
+          dl.appendChild(dt);
+          dl.appendChild(dd);
+        }
+        bodyEl.innerHTML = '';
+        bodyEl.appendChild(dl);
+        inputEl.hidden = true;
+        actionsEl.innerHTML = '';
+        var actions = opts.actions;
+        if (actions && actions.length) {
+          for (var j = 0; j < actions.length; j++) {
+            (function (a) {
+              var variant = 'btn-' + (a.variant || 'ghost');
+              actionsEl.appendChild(btn(a.label || 'OK', variant, function () {
+                if (a.onClick) { try { a.onClick(); } catch (e) {} }
+                close(null);
+              }));
+            })(actions[j]);
+          }
+        } else {
+          actionsEl.appendChild(btn('Close', 'btn-ghost', function () { close(null); }));
+        }
+        overlay.hidden = false;
+        setTimeout(function () {
+          var firstBtn = actionsEl.querySelector('button');
+          if (firstBtn) firstBtn.focus();
+        }, 20);
+      }
     };
   })();
 </script>
