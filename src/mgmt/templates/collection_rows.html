@@ -34,6 +34,21 @@
           </div>
         </div>
 
+        {# v1.19 — collection description tile #}
+        <div class="desc-tile" id="desc-tile-collection">
+          <div class="desc-tile-head">
+            <span class="muted">Description</span>
+            <button type="button" class="btn sm ghost" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')">edit</button>
+          </div>
+          <div class="desc-tile-body" id="desc-body-collection">
+            {% if let Some(desc) = collection_description %}
+              <p style="white-space: pre-wrap; margin:0;">{{ desc }}</p>
+            {% else %}
+              <em class="muted">(no description)</em>
+            {% endif %}
+          </div>
+        </div>
+
         <nav class="col-tabs" aria-label="Collection view">
           <a class="col-tab{% if active_tab == "rows" %} on{% endif %}"     href="{{ tab_rows_url }}">Rows <span class="mono">{{ total_rows }}</span></a>
           <a class="col-tab{% if active_tab == "schema" %} on{% endif %}"   href="{{ tab_schema_url }}">Schema <span class="mono">{{ fields.len() }}</span></a>
@@ -158,6 +173,7 @@
             <div>null</div>
             <div>default</div>
             <div>constraints</div>
+            <div>description</div>
             <div></div>
           </div>
           {% for f in fields_with_badges %}
@@ -174,6 +190,14 @@
             <div class="fld-default">{% if let Some(d) = f.default_value %}{{ d }}{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</div>
             <div class="fld-desc">
               {% if let Some(fk) = f.foreign_key %}→ {{ fk }}{% else %}{% if f.pk %}primary key{% else %}{% if f.is_indexed %}indexed{% else %}—{% endif %}{% endif %}{% endif %}
+            </div>
+            <div id="desc-body-field-{{ f.name }}" style="font-size:13px;">
+              {% if let Some(desc) = f.description %}
+                <p style="white-space:pre-wrap;margin:0;">{{ desc }}</p>
+              {% else %}
+                <em class="muted" style="opacity:0.5;">(none)</em>
+              {% endif %}
+              <button type="button" class="btn sm ghost" style="margin-top:4px;" onclick="editDesc('field', '{{ tenant_id }}', '{{ coll_name }}', '{{ f.name }}')">edit</button>
             </div>
             <div style="text-align:center;color:var(--muted);">⋯</div>
           </div>
@@ -196,6 +220,7 @@
                 <th>name</th>
                 <th>fields</th>
                 <th style="width:90px;">unique</th>
+                <th>description</th>
                 <th class="actions" style="width:80px;"></th>
               </tr>
             </thead>
@@ -205,6 +230,14 @@
                 <td class="mono-cell" style="font-size:13px;color:var(--accent);">{{ idx.name }}</td>
                 <td class="mono-cell" style="font-size:12px;">{% for f in idx.fields %}{{ f }}{% if !loop.last %}, {% endif %}{% endfor %}</td>
                 <td>{% if idx.unique %}<span class="pill mint">unique</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
+                <td id="desc-body-index-{{ idx.name }}" style="font-size:13px;min-width:140px;">
+                  {% if let Some(desc) = idx.description %}
+                    <p style="white-space:pre-wrap;margin:0;">{{ desc }}</p>
+                  {% else %}
+                    <em class="muted" style="opacity:0.5;">(none)</em>
+                  {% endif %}
+                  <button type="button" class="btn sm ghost" style="margin-top:4px;" onclick="editDesc('index', '{{ tenant_id }}', '{{ coll_name }}', '{{ idx.name }}')">edit</button>
+                </td>
                 <td class="actions">
                   <button type="button"
                           class="btn sm danger drop-idx-btn"
@@ -214,7 +247,7 @@
               {% endfor %}
               {% if indices.is_empty() %}
               <tr>
-                <td colspan="4" style="text-align:center;color:var(--muted-2);padding:24px;font:400 14px/1 var(--sans);">
+                <td colspan="5" style="text-align:center;color:var(--muted-2);padding:24px;font:400 14px/1 var(--sans);">
                   No indexes yet — add one below.
                 </td>
               </tr>
@@ -535,5 +568,30 @@
 </div>
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
+<script>
+function editDesc(kind, tenant, coll, extra) {
+  var bodyId = kind === 'collection' ? 'desc-body-collection'
+             : kind === 'field'      ? 'desc-body-field-' + extra
+             :                         'desc-body-index-' + extra;
+  var url = kind === 'collection'
+          ? '/drust/admin/tenants/' + tenant + '/collections/' + coll + '/description'
+          : kind === 'field'
+          ? '/drust/admin/tenants/' + tenant + '/collections/' + coll + '/fields/' + extra + '/description'
+          : '/drust/admin/tenants/' + tenant + '/collections/' + coll + '/indexes/' + extra + '/description';
+  var body = document.getElementById(bodyId);
+  if (!body) return;
+  var p = body.querySelector('p');
+  var current = p ? p.innerText : '';
+  body.innerHTML = '<form method="post" action="' + url + '" style="margin:0;">'
+                 + '<textarea name="description" rows="3" maxlength="2048" style="width:100%;font-family:var(--font-mono);background:var(--bg-deep);color:var(--fg);border:1px solid var(--border-mid);border-radius:6px;padding:6px 8px;box-sizing:border-box;">'
+                 + current.replace(/[<>&"]/g, function(c){return '&#'+c.charCodeAt(0)+';';})
+                 + '</textarea>'
+                 + '<div style="margin-top:6px;display:flex;gap:6px;">'
+                 + '<button type="submit" class="btn sm">save</button>'
+                 + '<button type="button" class="btn sm ghost" onclick="location.reload()">cancel</button>'
+                 + '</div></form>';
+  body.querySelector('textarea').focus();
+}
+</script>
 </body>
 </html>

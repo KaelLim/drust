@@ -67,6 +67,8 @@ struct RowsPage {
     realtime_enabled: bool,
     /// Index list for the Indexes tab.
     indices: Vec<IndexInfo>,
+    /// v1.19 — collection-level description for the description tile.
+    collection_description: Option<String>,
     version: &'static str,
 }
 
@@ -83,6 +85,8 @@ struct FieldRow {
     foreign_key: Option<String>,
     default_value: Option<String>,
     is_indexed: bool,
+    /// v1.19 — per-field description, threaded from `Field::description`.
+    description: Option<String>,
 }
 
 struct SortOption {
@@ -453,6 +457,7 @@ pub async fn collection_rows_page(
             foreign_key: f.foreign_key.clone(),
             default_value: f.default_value.clone(),
             is_indexed: indexed_fields.contains(&f.name),
+            description: f.description.clone(),
         })
         .collect();
 
@@ -503,6 +508,7 @@ pub async fn collection_rows_page(
             tab_explain_url,
             anon_cap_choices,
             realtime_enabled,
+            collection_description: schema.description,
             version: env!("CARGO_PKG_VERSION"),
         }
         .render()
@@ -764,6 +770,144 @@ pub async fn explain_admin(
             r
         }
     }
+}
+
+// ── Description admin POST endpoints (v1.19) ─────────────────────────────────
+// Three form-POST routes that proxy to the write_*_description helpers.
+// Auth shape is identical to update_anon_caps (same session middleware wraps
+// all /admin/tenants/* routes — no explicit extractor needed).
+
+/// Shared form body for the three description endpoints.
+#[derive(serde::Deserialize)]
+pub struct DescriptionForm {
+    #[serde(default)]
+    pub description: String,
+}
+
+/// POST `/admin/tenants/{id}/collections/{coll}/description`
+pub async fn admin_update_collection_description(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name)): Path<(String, String)>,
+    axum::extract::Form(form): axum::extract::Form<DescriptionForm>,
+) -> Response {
+    use crate::storage::schema::{check_description, write_collection_description};
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    let validated = match check_description(&form.description) {
+        Ok(v) => v,
+        Err((_, msg)) => {
+            return (StatusCode::BAD_REQUEST, msg).into_response();
+        }
+    };
+    let value: Option<&str> = if validated.is_empty() {
+        None
+    } else {
+        Some(&validated)
+    };
+    let writer = match crate::storage::tenant_db::open_write(&state.data_dir, &tenant_id) {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if let Err(e) = write_collection_description(&writer, &coll_name, value) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    drop(writer);
+
+    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+        pool.schema_cache.invalidate(&coll_name);
+    }
+    Redirect::to(&format!(
+        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
+    ))
+    .into_response()
+}
+
+/// POST `/admin/tenants/{id}/collections/{coll}/fields/{field}/description`
+pub async fn admin_update_field_description(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name, field_name)): Path<(String, String, String)>,
+    axum::extract::Form(form): axum::extract::Form<DescriptionForm>,
+) -> Response {
+    use crate::storage::schema::{check_description, write_field_description};
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    let validated = match check_description(&form.description) {
+        Ok(v) => v,
+        Err((_, msg)) => {
+            return (StatusCode::BAD_REQUEST, msg).into_response();
+        }
+    };
+    let value: Option<&str> = if validated.is_empty() {
+        None
+    } else {
+        Some(&validated)
+    };
+    let writer = match crate::storage::tenant_db::open_write(&state.data_dir, &tenant_id) {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if let Err(e) = write_field_description(&writer, &coll_name, &field_name, value) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    drop(writer);
+
+    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+        pool.schema_cache.invalidate(&coll_name);
+    }
+    Redirect::to(&format!(
+        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
+    ))
+    .into_response()
+}
+
+/// POST `/admin/tenants/{id}/collections/{coll}/indexes/{index_name}/description`
+pub async fn admin_update_index_description(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name, index_name)): Path<(String, String, String)>,
+    axum::extract::Form(form): axum::extract::Form<DescriptionForm>,
+) -> Response {
+    use crate::storage::schema::{check_description, write_index_description};
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    let validated = match check_description(&form.description) {
+        Ok(v) => v,
+        Err((_, msg)) => {
+            return (StatusCode::BAD_REQUEST, msg).into_response();
+        }
+    };
+    let value: Option<&str> = if validated.is_empty() {
+        None
+    } else {
+        Some(&validated)
+    };
+    let writer = match crate::storage::tenant_db::open_write(&state.data_dir, &tenant_id) {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if let Err(e) = write_index_description(&writer, &coll_name, &index_name, value) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    drop(writer);
+
+    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+        pool.schema_cache.invalidate(&coll_name);
+    }
+    Redirect::to(&format!(
+        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=indexes"
+    ))
+    .into_response()
 }
 
 fn map_index_admin_error(msg: &str) -> (StatusCode, &'static str) {
