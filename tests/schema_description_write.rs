@@ -413,3 +413,173 @@ async fn drop_index_cleans_index_descriptions_blob() {
         "description key should be gone after drop_index, got: {map2}"
     );
 }
+
+// ── Test 10 ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn rest_set_description_user_denied() {
+    let tid = "desc-user";
+    // Use spin_up_tenant_self_register so the tenant accepts user registration,
+    // then mint a real user-session token via the auth endpoints.
+    let (app, _svc_tok, dir) = helpers::spin_up_tenant_self_register(tid).await;
+    seed_posts(&dir, tid).await;
+
+    let user_tok =
+        helpers::register_and_login_via_app(&app, tid, "u@test.com", "longpassword").await;
+
+    let (status, body) = put_json(
+        &app,
+        &format!("/t/{tid}/collections/posts/description"),
+        &user_tok,
+        serde_json::json!({ "description": "User-token should not set this" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403 for user token, got: {status} {body}");
+    assert_eq!(body["error_code"], "WRITE_DENIED");
+}
+
+// ── Test 11 ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn rest_set_field_description_user_denied() {
+    let tid = "desc-field-user";
+    let (app, _svc_tok, dir) = helpers::spin_up_tenant_self_register(tid).await;
+    seed_posts(&dir, tid).await;
+
+    let user_tok =
+        helpers::register_and_login_via_app(&app, tid, "u@test.com", "longpassword").await;
+
+    let (status, body) = put_json(
+        &app,
+        &format!("/t/{tid}/collections/posts/fields/title/description"),
+        &user_tok,
+        serde_json::json!({ "description": "User-token should not set this" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403 for user token, got: {status} {body}");
+    assert_eq!(body["error_code"], "WRITE_DENIED");
+}
+
+// ── Test 12 ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn rest_set_description_nul_returns_422() {
+    let tid = "desc-nul";
+    let (app, tok, dir) = spin_up_tenant_with_role(tid, "service").await;
+    seed_posts(&dir, tid).await;
+
+    let (status, body) = put_json(
+        &app,
+        &format!("/t/{tid}/collections/posts/description"),
+        &tok,
+        serde_json::json!({ "description": "hello\u{0000}world" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "expected 422, got: {status} {body}");
+    assert_eq!(body["error_code"], "DESCRIPTION_INVALID");
+}
+
+// ── Test 13 ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn rest_set_field_description_on_protected_returns_403() {
+    let tid = "desc-field-protected";
+    let (app, tok, dir) = spin_up_tenant_with_role(tid, "service").await;
+    let _ = dir;
+
+    let (status, body) = put_json(
+        &app,
+        &format!("/t/{tid}/collections/_system_files/fields/key/description"),
+        &tok,
+        serde_json::json!({ "description": "Should be rejected" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403, got: {status} {body}");
+    assert_eq!(body["error_code"], "PROTECTED_COLLECTION");
+}
+
+// ── Test 14 ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn rest_set_index_description_on_protected_returns_403() {
+    let tid = "desc-idx-protected";
+    let (app, tok, dir) = spin_up_tenant_with_role(tid, "service").await;
+    let _ = dir;
+
+    let (status, body) = put_json(
+        &app,
+        &format!("/t/{tid}/collections/_system_files/indexes/some_idx/description"),
+        &tok,
+        serde_json::json!({ "description": "Should be rejected" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403, got: {status} {body}");
+    assert_eq!(body["error_code"], "PROTECTED_COLLECTION");
+}
+
+// ── Test 15 ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn add_field_persists_field_description() {
+    use drust::mcp::server::McpRegistry;
+    use drust::storage::pool::TenantRegistry;
+    use std::sync::Arc;
+
+    let d = tempfile::tempdir().unwrap();
+    let data = d.path().to_path_buf();
+    let tr = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let _ = drust::storage::tenant_db::open_write(&data, "desc-add-field").unwrap();
+    let reg = McpRegistry::new(tr);
+    let mcp = reg.get_or_create("desc-add-field").await.unwrap();
+
+    // Create the collection without descriptions.
+    drust::mcp::tools::schema::create_collection_with_desc(
+        &mcp,
+        "items",
+        &[drust::mcp::tools::schema::FieldSpec {
+            name: "sku".into(),
+            sql_type: "text".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: None,
+            description: None,
+        }],
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Add a new field WITH a description.
+    drust::mcp::tools::schema::add_field(
+        &mcp,
+        "items",
+        drust::mcp::tools::schema::FieldSpec {
+            name: "qty".into(),
+            sql_type: "integer".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: None,
+            description: Some("Inventory quantity".into()),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Verify the field description was persisted.
+    let pool = mcp.inner().pool.clone();
+    let schema = pool
+        .with_reader(|c| drust::storage::schema::describe_collection(c, "items"))
+        .await
+        .unwrap()
+        .unwrap();
+    let qty = schema.fields.iter().find(|f| f.name == "qty").unwrap();
+    assert_eq!(
+        qty.description.as_deref(),
+        Some("Inventory quantity"),
+        "add_field description should persist"
+    );
+}
