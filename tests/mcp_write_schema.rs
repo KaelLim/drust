@@ -723,3 +723,78 @@ async fn set_anon_caps_rejects_unknown_collection() {
         "expected unknown-collection rejection, got: {err}"
     );
 }
+
+// ── PROTECTED_COLLECTION guard on records write tools ────────────────────────
+
+#[tokio::test]
+async fn insert_record_into_system_files_returns_protected_collection() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let err = insert_record(&s, "_system_files", serde_json::json!({"key": "foo"}))
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("PROTECTED_COLLECTION"),
+        "expected PROTECTED_COLLECTION error, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn update_record_in_system_users_returns_protected_collection() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let err = update_record(&s, "_system_users", 1, serde_json::json!({"email": "x@x.com"}))
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("PROTECTED_COLLECTION"),
+        "expected PROTECTED_COLLECTION error, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn delete_record_in_system_sessions_returns_protected_collection() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let err = delete_record(&s, "_system_sessions", 1)
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("PROTECTED_COLLECTION"),
+        "expected PROTECTED_COLLECTION error, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn delete_record_with_unknown_id_returns_record_not_found() {
+    // Collection exists but the id is absent — must return RECORD_NOT_FOUND,
+    // not COLLECTION_NOT_FOUND (which was the pre-fix wrong code).
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "items",
+        &[FieldSpec {
+            name: "label".into(),
+            sql_type: "text".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: None,
+            description: None,
+        }],
+    )
+    .await
+    .unwrap();
+    // id 9999 was never inserted.
+    let resp = delete_record(&s, "items", 9999).await.unwrap();
+    assert_eq!(
+        resp["error_code"], "RECORD_NOT_FOUND",
+        "expected RECORD_NOT_FOUND, got: {resp}"
+    );
+    assert_eq!(resp["ok"], false);
+}
