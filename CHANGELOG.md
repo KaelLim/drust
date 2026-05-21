@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.19.1] — 2026-05-21
+
+### Fixed
+- **Admin UI schema-row visual** — the schema tab head + body rendered 8 cells but the CSS grid only declared 7 tracks, causing header / body columns to desynchronize. Added the 8th track.
+- **Schema cache invalidation** on every description write (MCP `set_*_description` + REST PUT description handlers) — was a latent gap; cache consumers don't read `.description` today but would silently see stale data once they did.
+- **Admin UI description handlers** now block `_system_*` collections (403), check collection / field / index existence (404) before write, and route the JSON-blob read-modify-write through the per-tenant writer mutex so concurrent admin + MCP/REST writes can't lose updates.
+- **`add_field`** now persists `FieldSpec.description` — was silently dropped (same shape as the bug `6132a89` closed for `create_collection`).
+- **`drop_index`** runs `DROP INDEX` + `index_descriptions_json` cleanup in a single `with_writer` closure so a mid-cleanup failure can't orphan a JSON-blob key.
+- **`create_collection_with_desc`** pre-validates every description (collection-level + per-field) before `CREATE TABLE`, eliminating the half-described-collection failure mode.
+- **`read_field_descriptions` / `read_index_descriptions`** now parse JSON per-key — one bad value no longer wipes the whole map.
+- **`get_schema_overview_handler`** now returns typed `json_error` on 500 instead of plain-string bodies, matching the rest of the file.
+
+### Added
+- **Internal `debug_assert!`** in `write_collection_description` / `write_field_description` / `write_index_description` so a future caller forgetting `check_description` surfaces immediately in dev/test.
+- **Admin UI live UTF-8 byte counter** beside the description textarea (Blob().size); save button disables when over 2048 bytes.
+- **Admin UI inline error banner** when a server-side validator failure redirects back with `?desc_error=<code>`.
+
+### Tests
+- `rest_set_description_user_denied` / `rest_set_field_description_user_denied`
+- `rest_set_description_nul_returns_422`
+- `rest_set_field_description_on_protected_returns_403` / `rest_set_index_description_on_protected_returns_403`
+- `add_field_persists_field_description`
+- `description_read_tests` (3 tests for partial-malformed JSON)
+- New `tests/admin_description_write.rs` for the 3 admin POST routes
+
+### Plan
+- [`docs/superpowers/plans/2026-05-21-drust-v1191-patch.md`](docs/superpowers/plans/2026-05-21-drust-v1191-patch.md)
+
 ## [1.19.0] — 2026-05-21
 
 ### Added
