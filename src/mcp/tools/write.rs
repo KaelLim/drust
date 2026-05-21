@@ -1,5 +1,5 @@
 use crate::mcp::server::DrustMcp;
-use crate::storage::schema::{describe_collection, VectorField};
+use crate::storage::schema::{describe_collection, is_protected_collection, VectorField};
 use crate::tenant::events::Event;
 use rusqlite::types::Value;
 use serde_json::json;
@@ -103,6 +103,9 @@ pub async fn insert_record(
     collection: &str,
     data: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
+    if is_protected_collection(collection) {
+        anyhow::bail!("PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools.");
+    }
     let coll = collection.to_string();
     let data_map = data
         .as_object()
@@ -195,6 +198,9 @@ pub async fn update_record(
     id: i64,
     data: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
+    if is_protected_collection(collection) {
+        anyhow::bail!("PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools.");
+    }
     let coll = collection.to_string();
     let data_map = data
         .as_object()
@@ -278,6 +284,9 @@ pub async fn delete_record(
     collection: &str,
     id: i64,
 ) -> anyhow::Result<serde_json::Value> {
+    if is_protected_collection(collection) {
+        anyhow::bail!("PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools.");
+    }
     let coll = collection.to_string();
     let pool = s.inner().pool.clone();
     let tenant = s.inner().tenant_id.clone();
@@ -293,7 +302,7 @@ pub async fn delete_record(
         })
         .await?;
     if n == 0 {
-        return Ok(json!({ "ok": false, "error_code": "COLLECTION_NOT_FOUND" }));
+        return Ok(json!({ "ok": false, "error_code": "RECORD_NOT_FOUND", "message": format!("record with id {} not found in collection {:?}", id, collection) }));
     }
     let ev = Event::Deleted { id };
     bus.publish(&tenant, collection, ev.clone());
