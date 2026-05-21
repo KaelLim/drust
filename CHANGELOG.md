@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.19.0] — 2026-05-21
+
+### Added
+- **Schema descriptions** for collections, fields, indexes, and RPCs (RPC was already there since v1.6; now surfaced uniformly).
+- MCP tools `set_collection_description`, `set_field_description`, `set_index_description`, `get_schema_overview`.
+- REST routes `PUT /t/<id>/collections/<c>/description`, `PUT /t/<id>/collections/<c>/fields/<f>/description`, `PUT /t/<id>/collections/<c>/indexes/<i>/description`, `GET /t/<id>/schema/overview`.
+- `FieldSpec.description`, `CreateCollectionArgs.description`, `CreateIndexArgs.description` accepted at create time.
+- Admin UI per-collection page: inline-editable description tile + Description column on fields + indexes tables.
+
+### Changed
+- `Collection`, `Field`, `IndexInfo`, `CollectionSchema` gain optional `description: Option<String>` with `skip_serializing_if = "Option::is_none"` — existing response payloads remain byte-identical when no description is set.
+
+### Internal
+- `_system_collection_meta` gains 3 columns via idempotent `add_column_if_missing` migration: `description`, `field_descriptions_json`, `index_descriptions_json`.
+- New shared validator `check_description` (≤2048 bytes, no NUL, trim).
+- `drop_index` now cleans the matching key from `index_descriptions_json`.
+
+### Spec / Plan
+- Spec: `docs/superpowers/specs/2026-05-21-drust-schema-description-design.md`
+- Plan: `docs/superpowers/plans/2026-05-21-drust-schema-description.md`
+
 ## 1.17.2 - 2026-05-21
 
 Patch release: admin UI polish round 2 — chart removal, tenant name everywhere, audit row format.
