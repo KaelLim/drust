@@ -138,3 +138,42 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
         },
     }))
 }
+
+/// MCP impl: one-shot schema bootstrap. Returns every collection's
+/// full schema (incl. fields, indices, descriptions, anon_caps,
+/// realtime_enabled, etc.) plus every RPC's metadata (name,
+/// description, params, anon_callable, sql).
+///
+/// Service-key only (enforced at dispatch). LLM-friendly for
+/// connect-time "show me the data model" calls.
+pub async fn get_schema_overview(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
+    let pool = s.inner().pool.clone();
+    let collections = pool
+        .with_reader(|c| {
+            let names = crate::storage::schema::list_collections(c)?;
+            let mut out = Vec::with_capacity(names.len());
+            for col in names {
+                if let Some(cs) = crate::storage::schema::describe_collection(c, &col.name)? {
+                    out.push(cs);
+                }
+            }
+            Ok::<_, rusqlite::Error>(out)
+        })
+        .await?;
+    let rpcs = pool
+        .with_reader(|c| {
+            crate::rpc::registry::list(c).map_err(|e| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(e.to_string()),
+                )
+            })
+        })
+        .await?;
+    let tenant_id = s.inner().tenant_id.clone();
+    Ok(serde_json::json!({
+        "tenant": tenant_id,
+        "collections": collections,
+        "rpcs": rpcs,
+    }))
+}

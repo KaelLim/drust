@@ -270,3 +270,47 @@ pub async fn put_index_description_handler(
     }
     Json(serde_json::json!({ "collection": coll, "index_name": index_name, "description": value })).into_response()
 }
+
+/// GET /t/{tenant}/schema/overview — service-key only.
+/// REST mirror of the `get_schema_overview` MCP tool.
+pub async fn get_schema_overview_handler(
+    Extension(t): Extension<TenantRef>,
+) -> Response {
+    if !matches!(t.role, TokenRole::Service) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            "service token required for schema overview",
+        );
+    }
+    let collections = match t.pool.with_reader(|c| {
+        let names = crate::storage::schema::list_collections(c)?;
+        let mut out = Vec::with_capacity(names.len());
+        for col in names {
+            if let Some(cs) = crate::storage::schema::describe_collection(c, &col.name)? {
+                out.push(cs);
+            }
+        }
+        Ok::<_, rusqlite::Error>(out)
+    }).await {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let rpcs = match t.pool.with_reader(|c| {
+        crate::rpc::registry::list(c).map_err(|e| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(e.to_string()),
+            )
+        })
+    }).await {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let tenant_id = t.tenant_id.clone();
+    Json(serde_json::json!({
+        "tenant": tenant_id,
+        "collections": collections,
+        "rpcs": rpcs,
+    })).into_response()
+}
