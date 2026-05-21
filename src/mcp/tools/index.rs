@@ -32,6 +32,20 @@ pub async fn create_index_with_threshold(
     force: bool,
     large_table_rows: u64,
 ) -> anyhow::Result<serde_json::Value> {
+    create_index_with_threshold_and_desc(pool, collection, fields, unique, force, large_table_rows, None).await
+}
+
+/// Like [`create_index_with_threshold`] but also accepts an optional
+/// v1.19 description to persist against the new index.
+pub async fn create_index_with_threshold_and_desc(
+    pool: &SharedTenantPool,
+    collection: &str,
+    fields: &[String],
+    unique: bool,
+    force: bool,
+    large_table_rows: u64,
+    description: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
     identifier(collection)?;
     if is_protected_collection(collection) {
         anyhow::bail!("no such collection: {collection}");
@@ -119,6 +133,22 @@ pub async fn create_index_with_threshold(
     let pool2 = pool.clone();
     pool.with_writer(move |c| c.execute_batch(&sql)).await?;
     let duration_ms = start.elapsed().as_millis() as u64;
+
+    // v1.19 — persist description if provided.
+    if let Some(desc) = description.filter(|s| !s.is_empty()) {
+        let validated = crate::storage::schema::check_description(desc)
+            .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
+        if !validated.is_empty() {
+            let coll_for_idx = collection.to_string();
+            let idx = index_name.clone();
+            let val = validated.clone();
+            pool.with_writer(move |c| {
+                crate::storage::schema::write_index_description(c, &coll_for_idx, &idx, Some(&val))
+            })
+            .await?;
+        }
+    }
+
     pool.schema_cache.invalidate(collection);
 
     let coll_for_describe = collection.to_string();
@@ -181,6 +211,18 @@ pub async fn drop_index(
         resolved_name.replace('"', "\"\"")
     );
     pool.with_writer(move |c| c.execute_batch(&drop_sql)).await?;
+
+    // v1.19 — drop the matching key from index_descriptions_json so the
+    // blob doesn't accumulate orphan entries.
+    let coll_for_clean = collection.to_string();
+    let idx_for_clean = resolved_name.clone();
+    pool.with_writer(move |c| {
+        crate::storage::schema::write_index_description(
+            c, &coll_for_clean, &idx_for_clean, None,
+        )
+    })
+    .await?;
+
     pool.schema_cache.invalidate(collection);
 
     let coll_for_describe = collection.to_string();

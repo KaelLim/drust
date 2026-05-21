@@ -23,6 +23,20 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Map an anyhow error from a `set_*_description` impl into either
+/// `invalid_params` (typed codes) or `internal_error` (anything else).
+/// Typed codes are the prefix-before-colon of the message.
+fn map_desc_error(e: anyhow::Error) -> McpError {
+    let msg = e.to_string();
+    let code = msg.split(':').next().unwrap_or("");
+    match code {
+        "DESCRIPTION_TOO_LONG" | "DESCRIPTION_INVALID"
+        | "COLLECTION_NOT_FOUND" | "FIELD_NOT_FOUND" | "INDEX_NOT_FOUND"
+        | "PROTECTED_COLLECTION" => McpError::invalid_params(msg, None),
+        _ => McpError::internal_error(msg, None),
+    }
+}
+
 // --- Parameter types ---------------------------------------------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -60,6 +74,9 @@ pub struct ExplainArgs {
 pub struct CreateCollectionArgs {
     pub name: String,
     pub fields: Vec<schema_tools::FieldSpec>,
+    /// Optional plain-text description for the collection (v1.19).
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -87,6 +104,9 @@ pub struct CreateIndexArgs {
     pub unique: Option<bool>,
     #[serde(default)]
     pub force: Option<bool>,
+    /// Optional plain-text description for the index (v1.19).
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -111,6 +131,30 @@ pub struct SetAnonCapsArgs {
 pub struct SetRealtimeArgs {
     pub collection: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetCollectionDescriptionArgs {
+    pub collection: String,
+    /// Empty string clears the description (column → NULL).
+    /// Trimmed to ≤2048 bytes (MAX_DESCRIPTION_BYTES).
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetFieldDescriptionArgs {
+    pub collection: String,
+    pub field: String,
+    /// Empty string removes the key from field_descriptions_json.
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetIndexDescriptionArgs {
+    pub collection: String,
+    pub index_name: String,
+    /// Empty string removes the key from index_descriptions_json.
+    pub description: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -418,9 +462,9 @@ impl DrustMcpService {
         `foreign_key` names another collection; emits ON DELETE RESTRICT.")]
     async fn create_collection(
         &self,
-        Parameters(CreateCollectionArgs { name, fields }): Parameters<CreateCollectionArgs>,
+        Parameters(CreateCollectionArgs { name, fields, description }): Parameters<CreateCollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match schema_tools::create_collection(&self.state, &name, &fields).await {
+        match schema_tools::create_collection_with_desc(&self.state, &name, &fields, description.as_deref()).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -479,15 +523,16 @@ impl DrustMcpService {
         pass force=true only after understanding the temporary write lock implication.")]
     async fn create_index(
         &self,
-        Parameters(CreateIndexArgs { collection, fields, unique, force }): Parameters<CreateIndexArgs>,
+        Parameters(CreateIndexArgs { collection, fields, unique, force, description }): Parameters<CreateIndexArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match crate::mcp::tools::index::create_index_with_threshold(
+        match crate::mcp::tools::index::create_index_with_threshold_and_desc(
             &self.state.inner().pool,
             &collection,
             &fields,
             unique.unwrap_or(false),
             force.unwrap_or(false),
             self.state.inner().index_large_table_rows,
+            description.as_deref(),
         ).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
@@ -538,6 +583,62 @@ impl DrustMcpService {
         match crate::mcp::tools::realtime::set_realtime(&self.state, &collection, enabled).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Set or clear the collection-level description for a tenant \
+        collection. Service-key only. Empty / whitespace description clears (column → NULL). \
+        Bounded to 2048 bytes after trimming. Returns the post-state description.")]
+    async fn set_collection_description(
+        &self,
+        Parameters(args): Parameters<SetCollectionDescriptionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let pool = self.state.inner().pool.clone();
+        match schema_tools::set_collection_description(&pool, &args.collection, &args.description)
+            .await
+        {
+            Ok(v) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&v).expect("serialise"),
+            )])),
+            Err(e) => Err(map_desc_error(e)),
+        }
+    }
+
+    #[tool(description = "Set or clear a per-field description on a tenant collection. \
+        Service-key only. Returns FIELD_NOT_FOUND if the named field is not on the collection.")]
+    async fn set_field_description(
+        &self,
+        Parameters(args): Parameters<SetFieldDescriptionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let pool = self.state.inner().pool.clone();
+        match schema_tools::set_field_description(
+            &pool, &args.collection, &args.field, &args.description,
+        )
+        .await
+        {
+            Ok(v) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&v).expect("serialise"),
+            )])),
+            Err(e) => Err(map_desc_error(e)),
+        }
+    }
+
+    #[tool(description = "Set or clear a per-index description on a tenant collection. \
+        Service-key only. Returns INDEX_NOT_FOUND if the named index is not on the collection.")]
+    async fn set_index_description(
+        &self,
+        Parameters(args): Parameters<SetIndexDescriptionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let pool = self.state.inner().pool.clone();
+        match schema_tools::set_index_description(
+            &pool, &args.collection, &args.index_name, &args.description,
+        )
+        .await
+        {
+            Ok(v) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&v).expect("serialise"),
+            )])),
+            Err(e) => Err(map_desc_error(e)),
         }
     }
 
@@ -1181,7 +1282,9 @@ impl ServerHandler for DrustMcpService {
              Tools: `whoami`, `list_collections`, `describe_collection`, `sample_rows`, \
              `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
-             `drop_collection`, `set_anon_caps`, `set_realtime`, `create_index`, `drop_index`, \
+             `drop_collection`, `set_anon_caps`, `set_collection_description`, \
+             `set_field_description`, `set_index_description`, `set_realtime`, \
+             `create_index`, `drop_index`, \
              `search_collection`, `list_files`, `delete_file`, `get_file_url`, \
              `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, `call_rpc`, \
              `create_user`, `list_users`, `get_user`, `update_user`, `delete_user`, \
