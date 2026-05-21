@@ -202,6 +202,7 @@ mod tests {
                     pk: false,
                     default_value: None,
                     foreign_key: None,
+                    description: None,
                 })
                 .collect(),
             indices: vec![],
@@ -217,6 +218,7 @@ mod tests {
                 })
                 .collect(),
             realtime_enabled: true,
+            description: None,
         }
     }
 
