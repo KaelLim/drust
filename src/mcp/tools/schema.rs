@@ -1,7 +1,9 @@
 use crate::mcp::server::DrustMcp;
 use crate::storage::schema::{
-    DmlVerb, collection_exists, default_anon_caps, delete_collection_meta, describe_collection,
-    find_fk_referrers, is_protected_collection, write_anon_caps,
+    DmlVerb, check_description, collection_exists, default_anon_caps, delete_collection_meta,
+    describe_collection, find_fk_referrers, is_protected_collection, read_collection_description,
+    write_anon_caps, write_collection_description, write_field_description,
+    write_index_description,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -224,6 +226,15 @@ pub async fn create_collection(
     name: &str,
     fields: &[FieldSpec],
 ) -> anyhow::Result<serde_json::Value> {
+    create_collection_with_desc(s, name, fields, None).await
+}
+
+pub async fn create_collection_with_desc(
+    s: &DrustMcp,
+    name: &str,
+    fields: &[FieldSpec],
+    description: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
     identifier(name)?;
     // Validate all foreign-key targets exist before running the DDL —
     // SQLite's own error for a missing FK table is cryptic.
@@ -306,6 +317,18 @@ pub async fn create_collection(
     // Schema cache must drop any pre-existing entry for this name so the
     // next describe_collection / REST request loads the fresh table.
     pool.schema_cache.invalidate(name);
+
+    // v1.19 — persist collection-level description if provided.
+    if let Some(desc) = description.filter(|s| !s.is_empty()) {
+        let validated = check_description(desc)
+            .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
+        if !validated.is_empty() {
+            let coll = name.to_string();
+            let val = validated.clone();
+            pool.with_writer(move |c| write_collection_description(c, &coll, Some(&val)))
+                .await?;
+        }
+    }
 
     let schema = pool2
         .with_reader(move |c| describe_collection(c, &table))
@@ -545,5 +568,126 @@ pub async fn set_anon_caps(
         "ok": true,
         "collection": collection,
         "anon_caps": caps_set.iter().map(|v| v.as_str()).collect::<Vec<_>>(),
+    }))
+}
+
+/// MCP impl: set/clear the collection-level description. Service-key only
+/// (enforced by the dispatcher before this is called). Empty/whitespace
+/// description clears.
+pub async fn set_collection_description(
+    pool: &crate::storage::pool::SharedTenantPool,
+    collection: &str,
+    description: &str,
+) -> anyhow::Result<serde_json::Value> {
+    identifier(collection)?;
+    if is_protected_collection(collection) {
+        anyhow::bail!("PROTECTED_COLLECTION: {collection} is reserved");
+    }
+    let validated = match check_description(description) {
+        Ok(v) => v,
+        Err((code, msg)) => anyhow::bail!("{code}: {msg}"),
+    };
+    let pool = pool.clone();
+    let coll_for_check = collection.to_string();
+    let exists = pool
+        .with_reader(move |c| collection_exists(c, &coll_for_check))
+        .await?;
+    if !exists {
+        anyhow::bail!("COLLECTION_NOT_FOUND: {collection}");
+    }
+    let coll_for_write = collection.to_string();
+    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value_for_write = value.clone();
+    pool.with_writer(move |c| {
+        write_collection_description(c, &coll_for_write, value_for_write.as_deref())
+    })
+    .await?;
+    let coll_for_read = collection.to_string();
+    let final_value = pool
+        .with_reader(move |c| read_collection_description(c, &coll_for_read))
+        .await?;
+    Ok(json!({ "collection": collection, "description": final_value }))
+}
+
+/// MCP impl: set/clear a per-field description. Validates collection
+/// existence + field existence (returns FIELD_NOT_FOUND if absent —
+/// avoids orphan keys in field_descriptions_json).
+pub async fn set_field_description(
+    pool: &crate::storage::pool::SharedTenantPool,
+    collection: &str,
+    field: &str,
+    description: &str,
+) -> anyhow::Result<serde_json::Value> {
+    identifier(collection)?;
+    identifier(field)?;
+    if is_protected_collection(collection) {
+        anyhow::bail!("PROTECTED_COLLECTION: {collection} is reserved");
+    }
+    let validated = match check_description(description) {
+        Ok(v) => v,
+        Err((code, msg)) => anyhow::bail!("{code}: {msg}"),
+    };
+    let pool = pool.clone();
+    let coll_for_check = collection.to_string();
+    let cs = pool
+        .with_reader(move |c| describe_collection(c, &coll_for_check))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("COLLECTION_NOT_FOUND: {collection}"))?;
+    if !cs.fields.iter().any(|f| f.name == field) {
+        anyhow::bail!("FIELD_NOT_FOUND: field {field} not on collection {collection}");
+    }
+    let coll_for_write = collection.to_string();
+    let field_for_write = field.to_string();
+    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value_for_post = value.clone();
+    pool.with_writer(move |c| {
+        write_field_description(c, &coll_for_write, &field_for_write, value.as_deref())
+    })
+    .await?;
+    Ok(json!({
+        "collection": collection,
+        "field": field,
+        "description": value_for_post,
+    }))
+}
+
+/// MCP impl: set/clear a per-index description. Validates index
+/// existence on the collection (returns INDEX_NOT_FOUND if absent).
+pub async fn set_index_description(
+    pool: &crate::storage::pool::SharedTenantPool,
+    collection: &str,
+    index_name: &str,
+    description: &str,
+) -> anyhow::Result<serde_json::Value> {
+    identifier(collection)?;
+    identifier(index_name)?;
+    if is_protected_collection(collection) {
+        anyhow::bail!("PROTECTED_COLLECTION: {collection} is reserved");
+    }
+    let validated = match check_description(description) {
+        Ok(v) => v,
+        Err((code, msg)) => anyhow::bail!("{code}: {msg}"),
+    };
+    let pool = pool.clone();
+    let coll_for_check = collection.to_string();
+    let cs = pool
+        .with_reader(move |c| describe_collection(c, &coll_for_check))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("COLLECTION_NOT_FOUND: {collection}"))?;
+    if !cs.indices.iter().any(|i| i.name == index_name) {
+        anyhow::bail!("INDEX_NOT_FOUND: index {index_name} not on collection {collection}");
+    }
+    let coll_for_write = collection.to_string();
+    let idx_for_write = index_name.to_string();
+    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value_for_post = value.clone();
+    pool.with_writer(move |c| {
+        write_index_description(c, &coll_for_write, &idx_for_write, value.as_deref())
+    })
+    .await?;
+    Ok(json!({
+        "collection": collection,
+        "index_name": index_name,
+        "description": value_for_post,
     }))
 }

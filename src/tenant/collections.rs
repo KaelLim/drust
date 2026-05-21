@@ -1,5 +1,6 @@
+use crate::error::json_error;
 use crate::storage::schema::{describe_collection, list_collections};
-use crate::tenant::router::{TenantAuthState, TenantRef, require_service};
+use crate::tenant::router::{TenantAuthState, TenantRef, TokenRole, require_service};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -122,4 +123,150 @@ fn map_index_error(e: anyhow::Error) -> Response {
     let mut r = Json(body).into_response();
     *r.status_mut() = status;
     r
+}
+
+// ── Description REST handlers (v1.19) ──────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct DescriptionBody {
+    pub description: String,
+}
+
+/// PUT /t/{tenant}/collections/{coll}/description — service-key only
+pub async fn put_collection_description_handler(
+    Extension(t): Extension<TenantRef>,
+    Path((_, coll)): Path<(String, String)>,
+    Json(body): Json<DescriptionBody>,
+) -> Response {
+    if !matches!(t.role, TokenRole::Service) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            "service token required to edit descriptions",
+        );
+    }
+    if crate::storage::schema::is_protected_collection(&coll) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "PROTECTED_COLLECTION",
+            "cannot set description on a _system_* collection",
+        );
+    }
+    let validated = match crate::storage::schema::check_description(&body.description) {
+        Ok(v) => v,
+        Err((code, msg)) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg),
+    };
+    let coll_for_check = coll.clone();
+    let exists = match t.pool.with_reader(move |c|
+        crate::storage::schema::collection_exists(c, &coll_for_check)
+    ).await {
+        Ok(b) => b,
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
+    };
+    if !exists {
+        return json_error(StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", "no such collection");
+    }
+    let coll_for_write = coll.clone();
+    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value_for_write = value.clone();
+    if let Err(e) = t.pool.with_writer(move |c|
+        crate::storage::schema::write_collection_description(c, &coll_for_write, value_for_write.as_deref())
+    ).await {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
+    }
+    Json(serde_json::json!({ "collection": coll, "description": value })).into_response()
+}
+
+/// PUT /t/{tenant}/collections/{coll}/fields/{field}/description — service-key only
+pub async fn put_field_description_handler(
+    Extension(t): Extension<TenantRef>,
+    Path((_, coll, field)): Path<(String, String, String)>,
+    Json(body): Json<DescriptionBody>,
+) -> Response {
+    if !matches!(t.role, TokenRole::Service) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            "service token required to edit descriptions",
+        );
+    }
+    if crate::storage::schema::is_protected_collection(&coll) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "PROTECTED_COLLECTION",
+            "cannot set description on a _system_* collection",
+        );
+    }
+    let validated = match crate::storage::schema::check_description(&body.description) {
+        Ok(v) => v,
+        Err((code, msg)) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg),
+    };
+    let coll_for_check = coll.clone();
+    let cs = match t.pool.with_reader(move |c|
+        crate::storage::schema::describe_collection(c, &coll_for_check)
+    ).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return json_error(StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", "no such collection"),
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
+    };
+    if !cs.fields.iter().any(|f| f.name == field) {
+        return json_error(StatusCode::NOT_FOUND, "FIELD_NOT_FOUND", "no such field");
+    }
+    let coll_for_write = coll.clone();
+    let field_for_write = field.clone();
+    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value_for_write = value.clone();
+    if let Err(e) = t.pool.with_writer(move |c|
+        crate::storage::schema::write_field_description(c, &coll_for_write, &field_for_write, value_for_write.as_deref())
+    ).await {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
+    }
+    Json(serde_json::json!({ "collection": coll, "field": field, "description": value })).into_response()
+}
+
+/// PUT /t/{tenant}/collections/{coll}/indexes/{index_name}/description — service-key only
+pub async fn put_index_description_handler(
+    Extension(t): Extension<TenantRef>,
+    Path((_, coll, index_name)): Path<(String, String, String)>,
+    Json(body): Json<DescriptionBody>,
+) -> Response {
+    if !matches!(t.role, TokenRole::Service) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            "service token required to edit descriptions",
+        );
+    }
+    if crate::storage::schema::is_protected_collection(&coll) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "PROTECTED_COLLECTION",
+            "cannot set description on a _system_* collection",
+        );
+    }
+    let validated = match crate::storage::schema::check_description(&body.description) {
+        Ok(v) => v,
+        Err((code, msg)) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg),
+    };
+    let coll_for_check = coll.clone();
+    let cs = match t.pool.with_reader(move |c|
+        crate::storage::schema::describe_collection(c, &coll_for_check)
+    ).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return json_error(StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", "no such collection"),
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
+    };
+    if !cs.indices.iter().any(|i| i.name == index_name) {
+        return json_error(StatusCode::NOT_FOUND, "INDEX_NOT_FOUND", "no such index");
+    }
+    let coll_for_write = coll.clone();
+    let idx_for_write = index_name.clone();
+    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value_for_write = value.clone();
+    if let Err(e) = t.pool.with_writer(move |c|
+        crate::storage::schema::write_index_description(c, &coll_for_write, &idx_for_write, value_for_write.as_deref())
+    ).await {
+        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
+    }
+    Json(serde_json::json!({ "collection": coll, "index_name": index_name, "description": value })).into_response()
 }
