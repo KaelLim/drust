@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
+
+## 1.17.1 - 2026-05-21
+
+Patch release: admin UI refresh + `X-Drust-Version` response header. No schema or public API change.
+
+### Added
+
+- **`X-Drust-Version` response header** on every reply (`tower_http::set_header::SetResponseHeaderLayer::if_not_present`). drust-js SDK reads this on first request to detect server version + warn on mismatch.
+- **Audit log row → modal detail**: `/admin/audit` (host) and `/admin/tenants/<id>/_logs` (per-tenant) browse-tab rows are now click-to-open. Replaces the inline `<details>` expansion with `drustUI.detail({title, fields, actions?})` reading from an embedded `<script id="audit-entries" type="application/json">` blob. Keyboard parity: row carries `tabindex="0"` + `role="button"`; Enter/Space opens the modal.
+- **Audit toolbar `<datalist>` dropdowns**: tenant filter (host scope only) reads from `meta.sqlite.tenants WHERE deleted_at IS NULL`; op filter reads from the window's distinct `op` values (capped at 200 via `BTreeSet`). Replaces opaque text inputs. Native HTML5 — zero JS framework dependency.
+- **Audit row tenant pill** shows resolved `tenant_name` instead of UUID. Full UUID still surfaced via `title=` hover and inside the modal detail view. Pill carries `onclick="event.stopPropagation()"` so clicking it navigates without also opening the modal.
+- **6 new lucide-style icon symbols** in `_icons.html` (`#i-download` / `#i-trash` / `#i-search` / `#i-external-link` / `#i-info` / `#i-x`).
+- **`drustUI.detail({title, fields, actions?})` API** in `_modal.html`. Reuses the existing modal overlay. Renders `<dl class="modal-detail-grid">` from `fields[]`. Uses `textContent` everywhere — XSS-safe by construction.
+- **`/admin/tenants` search input** wrapped in `.input-with-icon` with a leading `#i-search` SVG. Placeholder simplified to `"search…"`; full hint moved to `title=`.
+- **`/admin/tenants` row actions** (`copy id` + `Delete`) get leading `#i-copy` + `#i-trash` icons. `copy id` click-feedback now swaps the SVG `<use href>` from `#i-copy` → `#i-check` and updates only the `.label` span, instead of nuking the whole button via `textContent`.
+- **`/admin/backups` row actions** (`Inspect` + `Download`) get leading `#i-eye` + `#i-download` icons.
+
+### Fixed
+
+- **`/admin/backups` DB glyph rendered solid black** because the inline `<svg>` was missing `fill="none" stroke="currentColor"`. Switched to `<use href="#i-db"/>` (the existing symbol has correct attrs); the existing `.bk-glyph { color: var(--accent) }` rule now paints it.
+- **XSS via `</script>` in audit op string**: the embedded JSON blob in `/admin/audit?tab=browse` is wrapped in `<script type="application/json">`. HTML5 §8.2.6.4 terminates the `<script>` element at any literal `</script>` token regardless of `type=`. `serde_json` does not escape `</` by default. Applied the canonical `</` → `<\/` swap on the serialized payload (RFC 8259 §7 legal; `JSON.parse` round-trips identically). Caught by code-quality review on the v1.17.1 admin-UI commit series.
+
+### Internal
+
+- `AuditEntryView` view-model in `src/mgmt/audit.rs` — wire-only projection of `AuditEntry` with non-flattened `extra` (so page-side JS sees `e.extra` as a nested object) and a derived `tenant_name`. The underlying `AuditEntry` retains `#[serde(flatten)]` on `extra` for the JSONL persistence shape.
+- `build_tenant_name_map` / `resolve_tenant_name` / `distinct_ops_capped` / `tenant_summaries` helpers added to `src/mgmt/audit.rs`. `build_body_ctx` now takes a `&rusqlite::Connection` so the helpers can run against the same meta connection.
+- Stale assertion in `tests/audit_ui_routes.rs::browse_admin_plane_row_shows_admin_text_not_broken_link` updated (the old inline `<details>` markup it asserted against was removed). +6 new integration tests covering datalist presence/absence, `data-idx` attribute, JSON blob, and the tenant-name pill.
+
+### Out of scope (deferred)
+
+- Action-button icons on other admin pages (`_api_keys` / `_system_files` / collection studio / `_oauth_providers` / `_webhooks`) — kept text-only this round; future polish pass.
+- Audit overview tab unchanged — the four server-side SVG charts (v1.17.0) stay as-is.
+- Backups row `Restore` / `Delete` actions — not surfaced in the current template (restore is reached via the inspect page; delete is automatic 30-day retention). Out of UI-refresh scope.
+
+Spec: [`../docs/superpowers/specs/2026-05-20-drust-admin-ui-refresh-design.md`](../docs/superpowers/specs/2026-05-20-drust-admin-ui-refresh-design.md). Plan: [`../docs/superpowers/plans/2026-05-20-drust-admin-ui-refresh.md`](../docs/superpowers/plans/2026-05-20-drust-admin-ui-refresh.md).
+
 ## 1.13.0 - 2026-05-16
 
 Minor release: outbound webhooks for record CRUD events.

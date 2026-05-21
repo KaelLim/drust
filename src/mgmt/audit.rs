@@ -249,7 +249,7 @@ pub struct TopTenant {
     pub error_pct: f64,
 }
 
-/// v1.18 — wire-only projection of `AuditEntry` used by the audit
+/// v1.17.1 — wire-only projection of `AuditEntry` used by the audit
 /// browse tab. Mirrors `AuditEntry` field-for-field, plus a derived
 /// `tenant_name` (resolved from `meta.sqlite`) and a **non-flattened**
 /// `extra` map so the page-side JS can read it as `e.extra`.
@@ -305,7 +305,7 @@ impl AuditEntryView {
     }
 }
 
-/// v1.18 — resolve a raw audit tenant id to a display name. Handles
+/// v1.17.1 — resolve a raw audit tenant id to a display name. Handles
 /// the `"-"` admin-plane sentinel and the missing-key case (tenant
 /// soft-deleted after the row was written).
 pub fn resolve_tenant_name(map: &std::collections::HashMap<String, String>, id: &str) -> String {
@@ -315,7 +315,7 @@ pub fn resolve_tenant_name(map: &std::collections::HashMap<String, String>, id: 
     map.get(id).cloned().unwrap_or_else(|| id.to_string())
 }
 
-/// v1.18 — read the live tenants table into a `HashMap<id, name>`.
+/// v1.17.1 — read the live tenants table into a `HashMap<id, name>`.
 /// Soft-deleted rows are skipped. Returns an empty map on SQL error
 /// so the audit page still renders (entries fall back to raw id).
 pub fn build_tenant_name_map(conn: &rusqlite::Connection) -> std::collections::HashMap<String, String> {
@@ -334,7 +334,7 @@ pub fn build_tenant_name_map(conn: &rusqlite::Connection) -> std::collections::H
     iter.filter_map(Result::ok).collect()
 }
 
-/// v1.18 — collect distinct `op` values from `entries`, sorted
+/// v1.17.1 — collect distinct `op` values from `entries`, sorted
 /// ascending, capped at `limit`. Used to populate the toolbar's
 /// `<datalist>` for the operation filter. Cap prevents HTML bloat
 /// when an attacker injects wide op variation; beyond the cap, users
@@ -350,7 +350,7 @@ pub fn distinct_ops_capped(entries: &[AuditEntry], limit: usize) -> Vec<String> 
     set.into_iter().collect()
 }
 
-/// v1.18 — `{id, name}` pair fed to the toolbar's tenant
+/// v1.17.1 — `{id, name}` pair fed to the toolbar's tenant
 /// `<datalist>`. Sorted by `name` so the dropdown is stable across
 /// requests. Built once from `build_tenant_name_map`.
 #[derive(Debug, Clone, serde::Serialize)]
