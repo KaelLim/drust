@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.20.0] — 2026-05-21
+
+### Refactor
+- admin REST writers (7 sites in `src/mgmt/{browse.rs,rpc_admin.rs,tenant_files.rs}`) now go through `pool.with_writer` instead of raw `open_write`; unifies concurrency model with v1.19.1 commit C.
+- `WebhookDispatcher::new` takes `Arc<TenantRegistry>` and routes both subscription read and `record_failure` write through the pool; removes the last `open_tenant_conn` helper.
+- `drust_session_janitor` binary is now `#[tokio::main]` async; per-tenant DELETE goes through `pool.with_writer`, inheriting `busy_timeout=5000` via `apply_common_pragmas` so a mid-write drust can't deadlock the sweep.
+
+### Fixed
+- MCP `insert_record` / `update_record` / `delete_record` now block writes against `_system_*` tables (returns `PROTECTED_COLLECTION`), symmetric with the existing REST block at `src/tenant/records.rs:46`.
+- MCP `delete_record` returns `RECORD_NOT_FOUND` instead of `COLLECTION_NOT_FOUND` when the table exists but the id is absent.
+- TOCTOU race in 6 schema helpers (`set_anon_caps`, `set_realtime`, `set_owner_field`, `set_collection_description`, `set_field_description`, `set_index_description`): existence check now runs inside the same `pool.with_writer` closure as the write, so a concurrent `drop_collection` can no longer leave orphan rows in `_system_collection_meta`. Distinct sentinels `COLLECTION_NOT_FOUND` / `FIELD_NOT_FOUND` / `INDEX_NOT_FOUND` preserve UX granularity.
+
+### Tests
+- New `tests/mcp_toctou_writes.rs` — 8 regression tests asserting zero orphan rows on each helper's not-found path.
+- New `tests/mcp_write_schema.rs` cases — protected-collection blocks on 3 MCP write tools + `RECORD_NOT_FOUND` discrimination.
+- New factories `TenantAuthState::test_default` / `TenantsState::test_default` / `TenantFilesState::test_default` (gated `cfg(any(test, debug_assertions))`); 11 test files migrated off inline struct literals. Confirmed absent from release binary via `nm target/release/drust`.
+
 ## [1.19.2] — 2026-05-21
 
 ### Security
