@@ -144,11 +144,22 @@ pub async fn oauth_callback(
             return redirect_login_error("oauth_provider_error");
         }
     };
+    // v1.22 — read persisted locale before dropping the conn so the SET_COOKIE
+    // below can mirror DB → cookie for the new device. Missing column / NULL
+    // / unknown value all skip the cookie write (Accept-Language fallback).
+    let admin_locale: Option<String> = conn
+        .query_row(
+            "SELECT locale FROM admins WHERE id = ?1",
+            rusqlite::params![admin_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
     drop(conn);
     let session_cookie = build_session_cookie(&token, s.session_ttl_days * 86_400);
     audit_oauth_success(&s, &provider, &user.email, admin_id).await;
 
-    Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, "/drust/admin/tenants")
         .header(header::SET_COOKIE, session_cookie)
@@ -159,9 +170,16 @@ pub async fn oauth_callback(
         .header(
             header::SET_COOKIE,
             oauth_state::clear_pkce_cookie().to_string(),
-        )
-        .body(axum::body::Body::empty())
-        .unwrap()
+        );
+    if let Some(loc) = admin_locale.as_deref()
+        && matches!(loc, "en" | "zh-TW")
+    {
+        builder = builder.header(
+            header::SET_COOKIE,
+            format!("drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax"),
+        );
+    }
+    builder.body(axum::body::Body::empty()).unwrap()
 }
 
 async fn audit_oauth_success(s: &MgmtState, provider: &str, email: &str, admin_id: i64) {

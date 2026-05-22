@@ -196,6 +196,12 @@ fn apply_migrations(conn: &Connection) -> anyhow::Result<()> {
          ON admins(email) WHERE email IS NOT NULL",
         [],
     )?;
+    // v1.22: admins.locale — nullable preferred UI language ("en" | "zh-TW" | NULL).
+    // NULL means "fall through to cookie / Accept-Language / en default" (the
+    // pre-v1.22 behaviour). Login + OAuth callback overwrite the `drust_locale`
+    // cookie with this value when not NULL, so the admin's preference follows
+    // them across devices.
+    crate::db::migrations::add_column_if_missing(conn, "admins", "locale", "TEXT")?;
 
     Ok(())
 }

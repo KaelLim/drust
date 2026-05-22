@@ -31,26 +31,18 @@
         <div class="card-head"><span>{{ t.s("settings.locale.card_title") }}</span></div>
         <div class="card-body">
           <p class="card-sub" style="margin:0 0 16px;">{{ t.s("settings.locale.card_sub") }}</p>
-          <div style="display:flex; gap:10px; align-items:center;">
-            <select id="locale-select" class="input" style="max-width:280px;">
+          <form method="post" action="/drust/admin/settings/locale" style="display:flex; gap:10px; align-items:center;">
+            <select name="locale" class="input" style="max-width:280px;">
               <option value="en"    {% if t.locale_code() == "en"    %}selected{% endif %}>English (en)</option>
               <option value="zh-TW" {% if t.locale_code() == "zh-TW" %}selected{% endif %}>繁體中文 (zh-TW)</option>
             </select>
-            <button type="button" class="btn primary" id="locale-save-btn">{{ t.s("common.button.save") }}</button>
-          </div>
+            <button type="submit" class="btn primary">{{ t.s("common.button.save") }}</button>
+          </form>
         </div>
       </div>
 
     </div>
   </main>
 </div>
-
-<script>
-  document.getElementById('locale-save-btn').addEventListener('click', function () {
-    var v = document.getElementById('locale-select').value;
-    document.cookie = 'drust_locale=' + v + '; path=/; max-age=31536000; SameSite=Lax';
-    location.reload();
-  });
-</script>
 </body>
 </html>
