@@ -64,7 +64,7 @@
             <label><input type="checkbox" name="anon_callable" value="1"{% if form_anon_callable %} checked{% endif %}> allow anon callers</label>
           </div>
           <div style="display:flex;gap:8px;">
-            <button class="btn btn-primary" type="submit">{% if editing %}save{% else %}create{% endif %}</button>
+            <button class="btn btn-primary" type="submit">{% if editing %}<svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>save{% else %}<svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>create{% endif %}</button>
             <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">cancel</a>
           </div>
         </form>
