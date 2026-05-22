@@ -38,7 +38,9 @@
         <div class="desc-tile" id="desc-tile-collection">
           <div class="desc-tile-head">
             <span class="muted">Description</span>
-            <button type="button" class="btn sm ghost" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')">edit</button>
+            <button type="button" class="btn sm icon ghost" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')" title="edit description" aria-label="edit description">
+              <svg aria-hidden="true"><use href="#i-edit"/></svg>
+            </button>
           </div>
           <div class="desc-tile-body" id="desc-body-collection">
             {% if let Some(desc) = collection_description %}
@@ -208,7 +210,9 @@
               {% else %}
                 <em class="muted" style="opacity:0.5;">(none)</em>
               {% endif %}
-              <button type="button" class="btn sm ghost" style="margin-top:4px;" onclick="editDesc('field', '{{ tenant_id }}', '{{ coll_name }}', '{{ f.name }}')">edit</button>
+              <button type="button" class="btn sm icon ghost" style="margin-top:4px;" onclick="editDesc('field', '{{ tenant_id }}', '{{ coll_name }}', '{{ f.name }}')" title="edit description" aria-label="edit field description">
+                <svg aria-hidden="true"><use href="#i-edit"/></svg>
+              </button>
             </div>
             <div style="text-align:center;color:var(--muted);">⋯</div>
           </div>
@@ -258,7 +262,9 @@
                   {% else %}
                     <em class="muted" style="opacity:0.5;">(none)</em>
                   {% endif %}
-                  <button type="button" class="btn sm ghost" style="margin-top:4px;" onclick="editDesc('index', '{{ tenant_id }}', '{{ coll_name }}', '{{ idx.name }}')">edit</button>
+                  <button type="button" class="btn sm icon ghost" style="margin-top:4px;" onclick="editDesc('index', '{{ tenant_id }}', '{{ coll_name }}', '{{ idx.name }}')" title="edit description" aria-label="edit index description">
+                    <svg aria-hidden="true"><use href="#i-edit"/></svg>
+                  </button>
                 </td>
                 <td class="actions">
                   <button type="button"
@@ -693,8 +699,8 @@ function editDesc(kind, tenant, coll, extra) {
                  + current.replace(/[<>&"]/g, function(c){return '&#'+c.charCodeAt(0)+';';})
                  + '</textarea>'
                  + '<div style="margin-top:6px;display:flex;gap:8px;align-items:center;">'
-                 + '<button type="submit" class="btn sm desc-save">save</button>'
-                 + '<button type="button" class="btn sm ghost" onclick="location.reload()">cancel</button>'
+                 + '<button type="submit" class="btn sm primary desc-save"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>save</button>'
+                 + '<button type="button" class="btn sm icon ghost" onclick="location.reload()" title="cancel" aria-label="cancel"><svg aria-hidden="true"><use href="#i-x"/></svg></button>'
                  + '<span class="desc-bytes muted" style="font-size:11px;font-family:var(--font-mono);"></span>'
                  + '</div></form>';
   var ta = body.querySelector('textarea');

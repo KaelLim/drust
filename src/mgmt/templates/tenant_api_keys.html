@@ -18,22 +18,32 @@
     {% if let Some(pt) = info.plaintext %}
   <code class="key-val" id="key-{{ role }}" data-plain="{{ pt }}" data-revealed="0">••••••••••••••••••••••••••••••••</code>
   <div class="row" style="gap:6px;">
-    <button class="btn sm ghost" type="button" onclick="toggleKey('key-{{ role }}', this)" title="show / hide">show</button>
-    <button class="btn sm" type="button" onclick="copyKey('key-{{ role }}', this)">copy</button>
+    <button class="btn sm icon ghost" type="button" onclick="toggleKey('key-{{ role }}', this)" title="show / hide" aria-label="show or hide key">
+      <svg aria-hidden="true"><use href="#i-eye"/></svg>
+    </button>
+    <button class="btn sm icon" type="button" onclick="copyKey('key-{{ role }}', this)" title="copy key" aria-label="copy key">
+      <svg aria-hidden="true"><use href="#i-copy"/></svg>
+    </button>
     <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="Reroll {{ role }} key? The current key will be invalidated immediately." class="reroll-form" style="margin:0;display:inline;">
-      <button class="btn sm danger" type="submit">reroll</button>
+      <button class="btn sm icon danger" type="submit" title="reroll — invalidates current key" aria-label="reroll key">
+        <svg aria-hidden="true"><use href="#i-refresh"/></svg>
+      </button>
     </form>
   </div>
     {% else %}
   <code class="key-val muted">key not stored — created before v1.1c</code>
   <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="Reroll {{ role }} key? The current key will be invalidated immediately." class="reroll-form" style="margin:0;">
-    <button class="btn sm danger" type="submit">reroll</button>
+    <button class="btn sm icon danger" type="submit" title="reroll — invalidates current key" aria-label="reroll key">
+      <svg aria-hidden="true"><use href="#i-refresh"/></svg>
+    </button>
   </form>
     {% endif %}
   {% else %}
   <code class="key-val muted">no {{ role }} key yet</code>
   <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" style="margin:0;">
-    <button class="btn sm" type="submit">generate</button>
+    <button class="btn sm icon" type="submit" title="generate key" aria-label="generate key">
+      <svg aria-hidden="true"><use href="#i-refresh"/></svg>
+    </button>
   </form>
   {% endif %}
 </div>
@@ -95,24 +105,38 @@
           </div>
           <code class="key-val" id="mcp-url" data-tenant="{{ tenant_id }}">/drust/t/{{ tenant_id }}/mcp</code>
           <div class="row" style="gap:6px;">
-            <button class="btn sm ghost" type="button" onclick="copyMcpUrl(this)">copy URL</button>
-            <button class="btn sm" type="button" onclick="copyMcpCommand(this)">copy mcp.json</button>
+            <button class="btn sm icon" type="button" onclick="copyMcpCommand(this)" title="copy claude mcp add-json command" aria-label="copy mcp.json command">
+              <svg aria-hidden="true"><use href="#i-braces"/></svg>
+            </button>
           </div>
         </div>
 
         <div class="card" style="margin-top:22px;">
           <div class="card-head">
             <div>
-              <div class="card-title">Self-registration</div>
+              <div class="card-title">
+                Self-registration
+                {% if allow_self_register %}
+                <span id="self-reg-pill" class="pill mint"><span class="dot"></span>enabled</span>
+                {% else %}
+                <span id="self-reg-pill" class="pill muted"><span class="dot"></span>disabled</span>
+                {% endif %}
+              </div>
               <div class="card-sub">When enabled, unauthenticated users can <code>POST /t/{{ tenant_id }}/auth/register</code></div>
             </div>
-            {% if allow_self_register %}<span class="pill mint"><span class="dot"></span>enabled</span>{% else %}<span class="pill muted">disabled</span>{% endif %}
           </div>
           <div class="card-body">
-            <label class="check">
-              <input type="checkbox" id="self-reg-toggle" onchange="toggleSelfRegister(this)" {% if allow_self_register %}checked{% endif %}>
-              <span>Allow end-users to register without admin approval</span>
-            </label>
+            <form id="self-reg-form" onsubmit="return false;">
+              <label class="cap-tile{% if allow_self_register %} on{% endif %}" style="max-width:380px;">
+                <input type="checkbox" id="self-reg-toggle" {% if allow_self_register %}checked{% endif %} style="display:none;">
+                <span class="cap-glyph">REG</span>
+                <div>
+                  <div class="cap-name">Public registration</div>
+                  <div class="cap-desc">end-users sign up without admin approval</div>
+                </div>
+                <span class="cap-switch" aria-hidden="true"></span>
+              </label>
+            </form>
           </div>
         </div>
 
@@ -123,32 +147,43 @@
 {% include "_cmdk.html" %}
 {% include "_modal.html" %}
 <script>
+  // For icon-only buttons: swap the <use href> to #i-check for 1.5s as the
+  // "copied ✓" confirmation, then restore. (Legacy text-only buttons still
+  // fall through to textContent swap so this is safe to call on either.)
   function _setOk(btn) {
-    var orig = btn.textContent;
-    btn.textContent = 'copied ✓';
-    if (window.chonkReact) window.chonkReact('happy');
-    setTimeout(function () { btn.textContent = orig; }, 1500);
+    var useEl = btn.querySelector('use');
+    if (useEl) {
+      var orig = useEl.getAttribute('href');
+      useEl.setAttribute('href', '#i-check');
+      if (window.chonkReact) window.chonkReact('happy');
+      setTimeout(function () { useEl.setAttribute('href', orig); }, 1500);
+    } else {
+      var origText = btn.textContent;
+      btn.textContent = 'copied ✓';
+      if (window.chonkReact) window.chonkReact('happy');
+      setTimeout(function () { btn.textContent = origText; }, 1500);
+    }
   }
   function toggleKey(id, btn) {
     var el = document.getElementById(id);
+    var useEl = btn.querySelector('use');
     var revealed = el.getAttribute('data-revealed') === '1';
     if (revealed) {
       el.textContent = '••••••••••••••••••••••••••••••••';
-      el.setAttribute('data-revealed', '0'); btn.textContent = 'show';
+      el.setAttribute('data-revealed', '0');
+      if (useEl) useEl.setAttribute('href', '#i-eye'); else btn.textContent = 'show';
+      btn.setAttribute('title', 'show key');
     } else {
       el.textContent = el.getAttribute('data-plain');
-      el.setAttribute('data-revealed', '1'); btn.textContent = 'hide';
+      el.setAttribute('data-revealed', '1');
+      if (useEl) useEl.setAttribute('href', '#i-eye-off'); else btn.textContent = 'hide';
+      btn.setAttribute('title', 'hide key');
       if (window.chonkReact) window.chonkReact('curious', 700);
     }
   }
   function copyKey(id, btn) {
     var el = document.getElementById(id);
     navigator.clipboard.writeText(el.getAttribute('data-plain')).then(function () { _setOk(btn); });
-  }
-  function copyMcpUrl(btn) {
-    var el = document.getElementById('mcp-url');
-    var url = window.location.origin + el.textContent.trim();
-    navigator.clipboard.writeText(url).then(function () { _setOk(btn); });
   }
   function copyMcpCommand(btn) {
     var urlEl = document.getElementById('mcp-url');
@@ -164,16 +199,46 @@
     var cmd = "claude mcp add-json drust-" + tenantId + " '" + JSON.stringify(serverCfg) + "'";
     navigator.clipboard.writeText(cmd).then(function () { _setOk(btn); });
   }
-  function toggleSelfRegister(cb) {
-    fetch('/drust/admin/tenants/{{ tenant_id }}/allow-self-register', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({enabled: cb.checked})
-    }).then(function(r) {
-      if (!r.ok) { cb.checked = !cb.checked; alert('Failed to update self-registration setting.'); }
-      else if (window.chonkReact) { window.chonkReact('happy', 600); }
-    }).catch(function() { cb.checked = !cb.checked; alert('Failed to update self-registration setting.'); });
+  function _setSelfRegPill(enabled) {
+    var pill = document.getElementById('self-reg-pill');
+    if (!pill) return;
+    pill.className = 'pill ' + (enabled ? 'mint' : 'muted');
+    pill.innerHTML = '<span class="dot"></span>' + (enabled ? 'enabled' : 'disabled');
   }
+  (function () {
+    var form = document.getElementById('self-reg-form');
+    if (!form) return;
+    var tile = form.querySelector('.cap-tile');
+    var cb = document.getElementById('self-reg-toggle');
+    if (!tile || !cb) return;
+    tile.addEventListener('click', function (e) {
+      if (e.target.tagName === 'INPUT') return;
+      var newVal = !cb.checked;
+      // Optimistic update — flip UI immediately, roll back on failure.
+      cb.checked = newVal;
+      tile.classList.toggle('on', newVal);
+      _setSelfRegPill(newVal);
+      fetch('/drust/admin/tenants/{{ tenant_id }}/allow-self-register', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({enabled: newVal})
+      }).then(function(r) {
+        if (!r.ok) {
+          cb.checked = !newVal;
+          tile.classList.toggle('on', !newVal);
+          _setSelfRegPill(!newVal);
+          drustUI.alert({title:'Update failed', body:'Could not update self-registration setting.'});
+        } else if (window.chonkReact) {
+          window.chonkReact('happy', 600);
+        }
+      }).catch(function() {
+        cb.checked = !newVal;
+        tile.classList.toggle('on', !newVal);
+        _setSelfRegPill(!newVal);
+        drustUI.alert({title:'Update failed', body:'Could not update self-registration setting.'});
+      });
+    });
+  })();
   document.querySelectorAll('form.reroll-form').forEach(function (f) {
     f.addEventListener('submit', async function (e) {
       e.preventDefault();

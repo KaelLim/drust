@@ -2,7 +2,7 @@
 type: index
 name: drust
 status: production
-updated: 2026-05-01
+updated: 2026-05-22
 ---
 
 # drust
@@ -24,10 +24,16 @@ updated: 2026-05-01
 - **Per-tenant SQLite isolation.** One file per tenant under `tenants/<id>/data.sqlite`. Cross-tenant `ATTACH` is denied at the SQL authorizer layer.
 - **Structured REST + MCP write API.** Writes never accept raw SQL; tools enforce schema, types, FK constraints, and an opt-in DML capability allowlist (`anon_caps`) per collection.
 - **Read-only SQL via authorizer whitelist.** Read connections open `SQLITE_OPEN_READONLY` and run under [`sqlite3_set_authorizer`](https://www.sqlite.org/c3ref/set_authorizer.html) — no `sqlite_master`, no `ATTACH`, no writes.
-- **Streamable HTTP MCP per tenant.** `/t/<tenant>/mcp` exposes 21 tools (CRUD, schema editing, RPC, file ops). One server instance per tenant, served over the [Streamable HTTP transport](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http).
-- **Stored RPCs.** Tenants can define named SELECT functions (Supabase-style) callable via `POST /t/<id>/rpc/<name>` or the MCP `call_rpc` tool. SQL is validated at create-time under the read-only authorizer.
-- **Admin UI.** Two-page web UI (`/admin/tenants` + per-tenant detail) with a terminal aesthetic, file management, RPC editor, anon capability matrix, MCP setup snippets.
+- **Streamable HTTP MCP per tenant.** `/t/<tenant>/mcp` exposes the full CRUD / schema / index / RPC / file / vector-search / webhook tool surface. One server instance per tenant, served over the [Streamable HTTP transport](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http). Service-key only.
+- **Stored RPCs.** Tenants can define named SELECT functions (Supabase-style) callable via `POST /t/<id>/rpc/<name>` or the MCP `call_rpc` tool. SQL is validated at create-time under the read-only authorizer; a built-in admin test playground runs them with `EXPLAIN QUERY PLAN`.
+- **Vector storage + similarity search.** Per-collection `vector` field type (packed f32 BLOB) with `POST /t/<id>/collections/<c>/search` for cosine / L2 / L1 top-k under a Filter AST. `sqlite-vec` is registered as a SQLite auto-extension so `vec_distance_*` are also callable from `/query` and stored RPCs.
+- **Realtime broadcast.** SSE channel per `(tenant, collection)` at `/t/<id>/records/<c>/subscribe`, per-collection opt-in toggle, anon-cap gate, user-token denial.
+- **End-user auth + per-tenant OAuth.** Per-tenant `_system_users` with Google / GitHub OAuth providers configured per tenant; opt-in self-registration; row-level filter via `owner_field` + `read_scope`; argon2id password hashing with timing-equalized login.
+- **Outbound webhooks.** Per-tenant CRUD-event subscriptions, HMAC-SHA256-signed POST with 4-attempt retry (+0s / +1s / +5s / +30s); admin UI + REST + MCP write surfaces; SSRF guard rejects private/loopback IPs.
+- **Schema descriptions for LLM bootstrap.** Optional plain-text `description` on every collection / field / index / RPC, surfaced through `describe_collection` and `get_schema_overview` so an LLM can read the schema's intent in one MCP call.
+- **Admin UI.** Two-page web UI (`/admin/tenants` + per-tenant `/admin/tenants/<id>/<datatable>`) with a terminal aesthetic, file management, RPC editor + test playground, anon capability matrix, MCP setup snippets, audit log with inline-SVG charts, backup browser with single-tenant restore.
 - **S3 file storage (optional).** When configured, every tenant gets two S3 buckets — `<id>-pub` (website-enabled) and `<id>-prv` (private) — provisioned automatically. Implemented against [Garage](https://garagehq.deuxfleurs.fr/) but the data path is plain S3 (`object_store::aws::AmazonS3`).
+- **Admin OAuth.** `/admin/login` accepts Google / GitHub OAuth alongside username + password; controlled via env allowlist.
 - **Operational basics.** Per-tenant rate limiting, JSONL audit log per request, daily `VACUUM INTO` snapshots with 30-day retention, soft-delete with 7-day grace, CORS allow-list with subdomain wildcards.
 
 ## Architecture at a glance
@@ -64,7 +70,7 @@ Public-bucket reads bypass drust entirely — they're served straight from the S
 |---|---|---|---|
 | Admin UI | `/admin/*` | Cookie session | Tenant + schema management, file ops |
 | Tenant REST | `/t/<id>/...` | Bearer (`anon` or `service`) | CRUD, RPC calls, file ops |
-| Tenant MCP | `/t/<id>/mcp` | Bearer (`service` only) | LLM tool calls (21 tools) |
+| Tenant MCP | `/t/<id>/mcp` | Bearer (`service` only) | LLM tool calls — CRUD, schema, indexes, RPCs, files, vector search, webhooks |
 | Health | `/health` | none | Liveness probe |
 
 The full per-file index of public items, module imports, and call graph lives in [`docs/architecture.md`](docs/architecture.md) (auto-generated from `src/**/*.rs`).
@@ -124,7 +130,7 @@ CLAUDE.md            internal guide for AI coding agents
 
 ## Status
 
-Production. Currently `v1.6.0`. See [CHANGELOG.md](CHANGELOG.md) for full history.
+Production. Currently `v1.20.0`. See [CHANGELOG.md](CHANGELOG.md) for full history.
 
 ## License
 
