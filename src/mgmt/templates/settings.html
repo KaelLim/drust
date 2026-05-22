@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="{{ t.locale_code() }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ t.s("settings.page.title") }}</title>
+<meta name="description" content="{{ t.s("settings.page.meta_description") }}">
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+</head>
+<body data-section="settings">
+{% include "_icons.html" %}
+<div class="app-shell">
+  {% include "_admin_sidebar.html" %}
+  <main class="main">
+    <header class="topbar">
+      {% include "_topbar_right.html" %}
+    </header>
+
+    <div class="page">
+
+      <div class="view-head">
+        <div class="grow">
+          <div class="eyebrow">{{ t.s("settings.head.eyebrow") }}</div>
+          <h1 class="view-title">{{ t.s("settings.head.title") }}</h1>
+          <p class="view-sub">{{ t.s("settings.head.subtitle") }}</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span>{{ t.s("settings.locale.card_title") }}</span></div>
+        <div class="card-body">
+          <p class="card-sub" style="margin:0 0 16px;">{{ t.s("settings.locale.card_sub") }}</p>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <select id="locale-select" class="input" style="max-width:280px;">
+              <option value="en"    {% if t.locale_code() == "en"    %}selected{% endif %}>English (en)</option>
+              <option value="zh-TW" {% if t.locale_code() == "zh-TW" %}selected{% endif %}>繁體中文 (zh-TW)</option>
+            </select>
+            <button type="button" class="btn primary" id="locale-save-btn">{{ t.s("common.button.save") }}</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<script>
+  document.getElementById('locale-save-btn').addEventListener('click', function () {
+    var v = document.getElementById('locale-select').value;
+    document.cookie = 'drust_locale=' + v + '; path=/; max-age=31536000; SameSite=Lax';
+    location.reload();
+  });
+</script>
+</body>
+</html>

@@ -100,6 +100,25 @@ async fn design_showcase(LocaleHint(locale): LocaleHint) -> Response {
     .into_response()
 }
 
+#[derive(Template)]
+#[template(path = "settings.html")]
+struct SettingsPage {
+    version: &'static str,
+    t: Translator,
+}
+
+async fn settings_page(LocaleHint(locale): LocaleHint) -> Response {
+    Html(
+        SettingsPage {
+            version: env!("CARGO_PKG_VERSION"),
+            t: Translator::new(locale),
+        }
+        .render()
+        .unwrap_or_default(),
+    )
+    .into_response()
+}
+
 #[derive(Debug, Deserialize)]
 struct LoginForm {
     username: String,
@@ -576,11 +595,18 @@ impl MgmtState {
         // into public crawl, but otherwise stateless.
         let design_router = Router::new().route("/admin/_design", get(design_showcase));
 
+        // Per-admin preferences hub. First section: locale switch (was on
+        // the topbar pre-2026-05-22). Future home for keyboard shortcuts,
+        // notifications, profile, etc. Stateless — preferences live in
+        // cookies, not DB.
+        let settings_router = Router::new().route("/admin/settings", get(settings_page));
+
         let protected = tenants_router
             .merge(public_files_router)
             .merge(admin_tenant_files_router)
             .merge(backups_router)
             .merge(design_router)
+            .merge(settings_router)
             .layer(axum::middleware::from_fn_with_state(
                 session,
                 admin_session_layer,

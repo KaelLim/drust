@@ -83,18 +83,6 @@ null = "NULL"
 size = "size"
 tenant = "tenant"
 
-[common.crumbs]
-audit = "audit"
-backups = "backups"
-collections = "collections"
-docs = "docs"
-files = "files"
-logs = "logs"
-new = "new"
-reconcile = "reconcile"
-rpc = "rpc"
-tenants = "tenants"
-
 [common.desc]
 bytes_unit = "bytes"
 edit_aria = "edit description"
@@ -138,9 +126,6 @@ operation = "Operation"
 # CONFLICT: case ("tenant" vs "Tenant") - see report
 tenant = "Tenant"
 timestamp = "timestamp"
-
-[common.locale]
-switch_aria = "Language"
 
 [common.link]
 view_all = "view all"
@@ -240,6 +225,7 @@ backups = "Backups"
 changelog = "Changelog"
 design_system = "Design system"
 host_files = "Host files"
+settings = "Settings"
 tenants = "Tenants"
 
 [admin_sidebar.plane]
@@ -337,9 +323,6 @@ title = "drust admin — {tenant_name} / _logs"
 [backup_inspect.confirm]
 ok = "Extract"
 title = "Restore tenant from snapshot"
-
-[backup_inspect.crumbs]
-here = "inspect"
 
 [backup_inspect.empty]
 body = "This archive may be empty or from before the first tenant was provisioned."
@@ -600,9 +583,6 @@ btn_open = "open palette"
 heading = "Command palette"
 placeholder = "Find tenant or command…"
 
-[design.crumb]
-current = "Design system"
-
 [design.inputs]
 heading = "Inputs"
 
@@ -813,6 +793,19 @@ welcome = "Welcome back."
 [login.page]
 meta_description = "Sign in to drust — multi-tenant SQLite BaaS admin console for the Tzu Chi Foundation."
 title = "drust — sign in"
+
+[settings.page]
+title = "drust admin — settings"
+meta_description = "drust admin — per-admin preferences (language, etc)."
+
+[settings.head]
+eyebrow = "Admin · preferences"
+title = "Settings"
+subtitle = "Personal preferences for this admin account. Saved to a long-lived cookie on this device."
+
+[settings.locale]
+card_title = "Language"
+card_sub = "Switch the admin UI language. Takes effect on the next page load. Missing translations fall back to English."
 
 [tenant_api_keys.alert]
 service_required_body = "Reroll or generate the service key above to enable the one-click MCP command."
@@ -1102,9 +1095,6 @@ run = "Run ↵"
 [tenant_rpc_test.bound]
 heading = "bound params (JSON)"
 
-[tenant_rpc_test.crumbs]
-here = "test"
-
 [tenant_rpc_test.explain]
 heading = "EXPLAIN QUERY PLAN"
 
@@ -1147,9 +1137,6 @@ total = "{n} tenants"
 prompt_body = "Provisions data.sqlite + per-tenant S3 buckets + anon/service tokens. Choose a display name."
 prompt_placeholder = "Event Registration"
 prompt_title = "Create a tenant"
-
-[tenants_list.crumb]
-here = "Tenants"
 
 [tenants_list.delete]
 confirm_body = 'Delete "{name}"? This removes its database, tokens, and any stored files.'

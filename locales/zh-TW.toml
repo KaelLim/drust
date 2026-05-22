@@ -86,18 +86,6 @@ null = "NULL"
 size = "大小"
 tenant = "租戶"
 
-[common.crumbs]
-audit = "稽核"
-backups = "備份"
-collections = "集合"
-docs = "文件"
-files = "檔案"
-logs = "日誌"
-new = "新增"
-reconcile = "對齊"
-rpc = "RPC"
-tenants = "租戶"
-
 [common.desc]
 bytes_unit = "位元組"
 edit_aria = "編輯描述"
@@ -140,9 +128,6 @@ count = "數量"
 operation = "操作"
 tenant = "租戶"
 timestamp = "時間戳記"
-
-[common.locale]
-switch_aria = "切換語言"
 
 [common.link]
 # REVIEW (low confidence): design-system link label, please verify
@@ -247,6 +232,7 @@ backups = "備份"
 changelog = "更新紀錄"
 design_system = "設計系統"
 host_files = "主機檔案"
+settings = "設定"
 tenants = "租戶"
 
 [admin_sidebar.plane]
@@ -355,9 +341,6 @@ title = "drust 管理 — {tenant_name} / _logs"
 [backup_inspect.confirm]
 ok = "解壓"
 title = "從快照還原租戶"
-
-[backup_inspect.crumbs]
-here = "檢視"
 
 [backup_inspect.empty]
 body = "此封存可能是空的，或來自第一個租戶建立之前。"
@@ -623,9 +606,6 @@ btn_open = "開啟面板"
 heading = "命令面板"
 placeholder = "搜尋租戶或命令…"
 
-[design.crumb]
-current = "設計系統"
-
 [design.inputs]
 heading = "輸入元件"
 
@@ -837,6 +817,19 @@ welcome = "歡迎回來。"
 [login.page]
 meta_description = "登入 drust — 慈濟基金會的多租戶 SQLite BaaS 管理主控台。"
 title = "drust — 登入"
+
+[settings.page]
+title = "drust 管理 — 設定"
+meta_description = "drust 管理 — 個別管理員偏好設定（語言等）。"
+
+[settings.head]
+eyebrow = "管理 · 偏好"
+title = "設定"
+subtitle = "此管理員帳號的個人偏好。儲存為此裝置上的長期 cookie。"
+
+[settings.locale]
+card_title = "語言"
+card_sub = "切換管理介面的顯示語言，下次載入頁面時生效。遺漏的翻譯會自動 fallback 到英文。"
 
 [tenant_api_keys.alert]
 service_required_body = "請於上方重新產生或建立 service 金鑰，以啟用一鍵 MCP 指令。"
@@ -1128,9 +1121,6 @@ run = "執行 ↵"
 [tenant_rpc_test.bound]
 heading = "綁定參數（JSON）"
 
-[tenant_rpc_test.crumbs]
-here = "測試"
-
 [tenant_rpc_test.explain]
 heading = "查詢計畫（EXPLAIN QUERY PLAN）"
 
@@ -1174,9 +1164,6 @@ total = "共 {n} 個租戶"
 prompt_body = "將會建立 data.sqlite、每租戶 S3 儲存桶，以及 anon／service 金鑰。請選擇顯示名稱。"
 prompt_placeholder = "活動報名"
 prompt_title = "建立租戶"
-
-[tenants_list.crumb]
-here = "租戶"
 
 [tenants_list.delete]
 # REVIEW (low confidence): contains template var {name}, verify quotation style
