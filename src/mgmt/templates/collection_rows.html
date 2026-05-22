@@ -479,15 +479,24 @@
 
         {# ============================== realtime tab ============================== #}
         {% if active_tab == "realtime" %}
-        <div class="banner info" style="margin-bottom:18px;">
+        <div class="banner info" style="margin-bottom:14px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg></span>
           <div class="b-body">
             <div class="b-title">SSE realtime broadcast</div>
-            <p>When enabled, <code>GET /drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</code> streams created / updated / deleted events. Anon callers additionally need <code>select</code> in this collection's anon capabilities. When disabled, existing connections are dropped immediately and the endpoint returns <code>403 REALTIME_DISABLED</code>.</p>
+            <p>Streams <code>created</code> / <code>updated</code> / <code>deleted</code> events from <code>GET /drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</code>. When disabled, existing connections drop within ~1s and the endpoint returns <code>403 REALTIME_DISABLED</code>.</p>
           </div>
         </div>
 
-        <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
+        <div style="display:flex;align-items:center;gap:10px;margin:0 0 12px;">
+          {% if realtime_enabled %}
+          <span class="pill mint"><span class="dot"></span>ENABLED — broadcasting</span>
+          {% else %}
+          <span class="pill muted"><span class="dot"></span>DISABLED — no broadcast</span>
+          {% endif %}
+          <span style="color:var(--muted);font:400 12px/1.4 var(--sans);">click the toggle to flip — saves immediately</span>
+        </div>
+
+        <form id="realtime-form" method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
           <label class="cap-tile{% if realtime_enabled %} on{% endif %}" style="max-width:380px;">
             <input type="checkbox" name="enabled" value="1"{% if realtime_enabled %} checked{% endif %} style="display:none;">
             <span class="cap-glyph">SSE</span>
@@ -495,24 +504,99 @@
               <div class="cap-name">Broadcast row changes</div>
               <div class="cap-desc">events: created · updated · deleted</div>
             </div>
-            <span class="cap-switch"></span>
+            <span class="cap-switch" aria-hidden="true"></span>
           </label>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:14px;">
-            <button class="btn primary" type="submit">apply changes</button>
-            <span style="color:var(--muted);font:400 12px/1.4 var(--sans);">tip: click the tile to toggle</span>
-          </div>
         </form>
         <script>
-          // Mirror the anon-tab script for the realtime tile (each tab body
-          // is mutually exclusive, so we need the binding inside this block).
-          document.querySelectorAll('form[action$="/realtime"] .cap-tile').forEach(function (tile) {
+          // Realtime is a single toggle — clicking the tile flips the checkbox
+          // and immediately submits, so there's no separate "apply changes"
+          // button. (The anon-caps tab keeps its save button because it has
+          // four toggles that should be staged then applied as one update.)
+          (function () {
+            var form = document.getElementById('realtime-form');
+            if (!form) return;
+            var tile = form.querySelector('.cap-tile');
+            var cb = form.querySelector('input[type="checkbox"]');
             tile.addEventListener('click', function (e) {
               if (e.target.tagName === 'INPUT') return;
-              var cb = tile.querySelector('input[type="checkbox"]');
-              if (!cb) return;
               cb.checked = !cb.checked;
               tile.classList.toggle('on', cb.checked);
+              form.submit();
             });
+          })();
+        </script>
+
+        <div class="card" style="margin-top:22px;">
+          <div class="card-head">
+            <div>
+              <div class="card-title">Quick start</div>
+              <div class="card-sub">Three ways to subscribe. <code>/subscribe</code> only accepts the bearer in the <code>Authorization</code> header — there is no <code>?token=</code> query parameter.</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px;">
+              <span class="pill accent"><span class="dot"></span>curl</span>
+              <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">works with anon (needs <code>select</code> cap) or service token</span>
+            </div>
+<pre class="code">curl -N \
+  -H "Authorization: Bearer drust_service_…" \
+  <span class="rt-origin">https://&lt;your-drust-host&gt;</span>/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</pre>
+
+            <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
+              <span class="pill lilac"><span class="dot"></span>Node.js</span>
+              <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">native <code>EventSource</code> can't send headers — use the <code>eventsource</code> npm package</span>
+            </div>
+<pre class="code">import EventSource from 'eventsource'; // npm i eventsource
+
+const es = new EventSource(
+  '<span class="rt-origin">https://&lt;your-drust-host&gt;</span>/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
+  { headers: { Authorization: 'Bearer drust_service_…' } }
+);
+
+es.addEventListener('created', e =&gt; console.log('+', JSON.parse(e.data).record));
+es.addEventListener('updated', e =&gt; console.log('~', JSON.parse(e.data).record));
+es.addEventListener('deleted', e =&gt; console.log('-', JSON.parse(e.data).id));</pre>
+
+            <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
+              <span class="pill warn"><span class="dot"></span>Browser</span>
+              <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">native <code>EventSource</code> can't send <code>Authorization</code> — proxy through a BFF, or use <code>fetch</code> + <code>ReadableStream</code></span>
+            </div>
+<pre class="code">// Anon tokens in URLs are unsafe — keep the bearer server-side and proxy the
+// stream from your BFF. Direct fetch shown here for completeness.
+const resp = await fetch(
+  '/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
+  { headers: { Authorization: 'Bearer drust_anon_…' } }
+);
+const reader = resp.body.getReader();
+const decoder = new TextDecoder();
+let buf = '';
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buf += decoder.decode(value, { stream: true });
+  const frames = buf.split('\n\n'); buf = frames.pop();
+  for (const frame of frames) {
+    const evt = {};
+    frame.split('\n').forEach(l =&gt; {
+      const i = l.indexOf(':'); if (i &lt; 0) return;
+      evt[l.slice(0, i)] = l.slice(i + 1).trimStart();
+    });
+    console.log(evt.event, evt.data);
+  }
+}</pre>
+
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;">
+              <span class="pill mint"><span class="dot"></span>service ✓ always allowed</span>
+              <span class="pill accent"><span class="dot"></span>anon ✓ needs <code style="background:transparent;border:0;padding:0;color:inherit;">select</code> cap</span>
+              <span class="pill muted"><span class="dot"></span>user ✕ always 403 SSE_USER_DENIED</span>
+            </div>
+          </div>
+        </div>
+        <script>
+          // Swap the host placeholder in the curl + Node snippets with the
+          // browser's current origin so users can paste-and-run directly.
+          document.querySelectorAll('.rt-origin').forEach(function (el) {
+            el.textContent = window.location.origin;
           });
         </script>
         {% endif %}
