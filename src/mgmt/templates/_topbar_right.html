@@ -1,15 +1,7 @@
-<!-- _topbar_right.html — v1.22+ holds the i18n locale switch dropdown.
-     Sits on the right cluster of every admin topbar. Cookie-driven; reloads
-     the page so SSR picks up the new locale. -->
-<select onchange="drustSetLocale(this.value)"
-        class="locale-switch"
-        aria-label="{{ t.s("common.locale.switch_aria") }}">
-  <option value="en"    {% if t.locale_code() == "en"    %}selected{% endif %}>EN</option>
-  <option value="zh-TW" {% if t.locale_code() == "zh-TW" %}selected{% endif %}>繁中</option>
-</select>
-<script>
-  function drustSetLocale(v) {
-    document.cookie = 'drust_locale=' + v + '; path=/; max-age=31536000; SameSite=Lax';
-    location.reload();
-  }
-</script>
+<!-- _topbar_right.html — intentionally empty. The cluster previously held a
+     role badge + mascot bounce (cleaned up 2026-05-18), then briefly the
+     v1.22 i18n locale-switch dropdown. The dropdown moved to the dedicated
+     /admin/settings page on 2026-05-22 — Settings is the canonical home for
+     per-admin preferences going forward. The include stays in every
+     template so the .topbar grid layout (which expects two children) is
+     preserved. -->

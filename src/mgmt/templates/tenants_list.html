@@ -14,9 +14,6 @@
   {% include "_admin_sidebar.html" %}
   <main class="main">
     <header class="topbar">
-      <nav class="crumbs">
-        <span class="here">{{ t.s("tenants_list.crumb.here") }}</span>
-      </nav>
       {% include "_topbar_right.html" %}
     </header>
 
@@ -47,7 +44,7 @@
       <div class="ten-grid">
         <div class="ten-pulse">
           <div class="head"><span>{{ t.s("tenants_list.pulse.active") }}</span><span class="pill mint"><span class="dot"></span>{{ t.fmt1("tenants_list.pulse.healthy_count", "n", tenants.len()) }}</span></div>
-          <div class="body">{{ tenants.len() }} <span class="unit">{{ t.s("common.crumbs.tenants") }}</span></div>
+          <div class="body">{{ tenants.len() }} <span class="unit">{{ t.s("common.units.tenants") }}</span></div>
           <div class="meta">{{ t.s("tenants_list.pulse.tagline") }}</div>
         </div>
         <div class="ten-pulse">
