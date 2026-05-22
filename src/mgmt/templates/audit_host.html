@@ -1,18 +1,10 @@
-<!doctype html>
-<html lang="{{ t.locale_code() }}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ t.s("audit_host.page.title") }}</title>
-<meta name="description" content="{{ t.s("audit_host.page.meta_description") }}">
-{% include "_favicon.html" %}
-{% include "_styles.html" %}
-</head>
-<body data-section="audit">
-{% include "_icons.html" %}
-<div class="app-shell">
-  {% include "_admin_sidebar.html" %}
-  <main class="main">
+{% extends "_base.html" %}
+
+{% block title %}{{ t.s("audit_host.page.title") }}{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.s("audit_host.page.meta_description") }}">{% endblock %}
+{% block body_attrs %} data-section="audit"{% endblock %}
+
+{% block content %}
     <div class="page page-wide">
       <div class="view-head">
         <div class="grow">
@@ -23,10 +15,10 @@
       </div>
       {% include "_audit_body.html" %}
     </div>
-  </main>
-</div>
+{% endblock %}
+
+{% block extra_scripts %}
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
 {% include "_modal.html" %}
-</body>
-</html>
+{% endblock %}

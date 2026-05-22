@@ -1,18 +1,10 @@
-<!doctype html>
-<html lang="{{ t.locale_code() }}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ t.fmt1("tenant_webhooks_admin.page.title", "tenant_name", tenant_name) }}</title>
-<meta name="description" content="{{ t.fmt1("tenant_webhooks_admin.page.meta_description", "tenant_name", tenant_name) }}">
-{% include "_favicon.html" %}
-{% include "_styles.html" %}
-</head>
-<body>
-{% include "_icons.html" %}
-<div class="app-shell">
-  {% include "_collection_sidebar.html" %}
-  <main class="main">
+{% extends "_base.html" %}
+
+{% block title %}{{ t.fmt1("tenant_webhooks_admin.page.title", "tenant_name", tenant_name) }}{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.fmt1("tenant_webhooks_admin.page.meta_description", "tenant_name", tenant_name) }}">{% endblock %}
+{% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
+
+{% block content %}
     <div class="page page-wide">
 
         <div class="view-head">
@@ -152,9 +144,9 @@
         </div>
 
       </div>
-  </main>
-</div>
+{% endblock %}
+
+{% block extra_scripts %}
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
-</body>
-</html>
+{% endblock %}

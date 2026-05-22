@@ -1,18 +1,10 @@
-<!doctype html>
-<html lang="{{ t.locale_code() }}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ t.s("settings.page.title") }}</title>
-<meta name="description" content="{{ t.s("settings.page.meta_description") }}">
-{% include "_favicon.html" %}
-{% include "_styles.html" %}
-</head>
-<body data-section="settings">
-{% include "_icons.html" %}
-<div class="app-shell">
-  {% include "_admin_sidebar.html" %}
-  <main class="main">
+{% extends "_base.html" %}
+
+{% block title %}{{ t.s("settings.page.title") }}{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.s("settings.page.meta_description") }}">{% endblock %}
+{% block body_attrs %} data-section="settings"{% endblock %}
+
+{% block content %}
     <div class="page">
 
       <div class="view-head">
@@ -38,7 +30,4 @@
       </div>
 
     </div>
-  </main>
-</div>
-</body>
-</html>
+{% endblock %}

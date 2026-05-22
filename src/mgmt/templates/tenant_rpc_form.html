@@ -1,17 +1,9 @@
-<!doctype html>
-<html lang="{{ t.locale_code() }}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_name }} / _rpc / {% if editing %}{{ existing_name }}{% else %}new{% endif %}</title>
-{% include "_favicon.html" %}
-{% include "_styles.html" %}
-</head>
-<body>
-{% include "_icons.html" %}
-<div class="app-shell">
-  {% include "_collection_sidebar.html" %}
-  <main class="main">
+{% extends "_base.html" %}
+
+{% block title %}drust admin — {{ tenant_name }} / _rpc / {% if editing %}{{ existing_name }}{% else %}new{% endif %}{% endblock %}
+{% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
+
+{% block content %}
     <div class="page">
         <div class="view-head">
           <div class="grow">
@@ -57,8 +49,9 @@
           </div>
         </form>
       </div>
-  </main>
-</div>
+{% endblock %}
+
+{% block extra_scripts %}
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
 {% include "_modal.html" %}
@@ -79,5 +72,4 @@
     });
   });
 </script>
-</body>
-</html>
+{% endblock %}
