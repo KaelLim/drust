@@ -100,12 +100,12 @@ impl Translator {
 
 fn substitute_placeholders(template: &str, args: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(template.len());
-    let bytes = template.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if let Some(end) = template[i + 1..].find('}') {
-                let name = &template[i + 1..i + 1 + end];
+    let mut chars = template.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '{' {
+            // Find closing '}' from this position via the original byte string.
+            if let Some(rel) = template[i + 1..].find('}') {
+                let name = &template[i + 1..i + 1 + rel];
                 if !name.is_empty()
                     && name
                         .bytes()
@@ -113,7 +113,16 @@ fn substitute_placeholders(template: &str, args: &[(&str, &str)]) -> String {
                 {
                     if let Some(&(_, v)) = args.iter().find(|(k, _)| *k == name) {
                         out.push_str(v);
-                        i = i + 1 + end + 1;
+                        // Skip past the `{name}` — advance the char iterator
+                        // until we've consumed bytes through `i+1+rel`
+                        // (inclusive of the closing '}').
+                        let target_byte = i + 1 + rel + 1; // first byte AFTER '}'
+                        while let Some(&(j, _)) = chars.peek() {
+                            if j >= target_byte {
+                                break;
+                            }
+                            chars.next();
+                        }
                         continue;
                     }
                     if cfg!(debug_assertions) {
@@ -122,15 +131,13 @@ fn substitute_placeholders(template: &str, args: &[(&str, &str)]) -> String {
                             "i18n: unknown placeholder in t.fmt template"
                         );
                     }
+                    // fall through to push the literal '{' as char
                 }
             }
         }
-        // Push the current byte. `template` is valid UTF-8; advance by one
-        // byte at a time is safe because we only special-case ASCII `{`,
-        // and the loop body always writes the byte (non-`{` paths fall
-        // through here, the `{` happy-path `continue`s above).
-        out.push(bytes[i] as char);
-        i += 1;
+        // `c` is already a proper `char` from `char_indices()`, so non-ASCII
+        // codepoints (e.g. Chinese) round-trip correctly.
+        out.push(c);
     }
     out
 }
@@ -263,6 +270,35 @@ mod tests {
     #[test]
     fn translator_fmt_unknown_placeholder_left_literal() {
         // covered after real bundles are in place (Theme E)
+    }
+
+    #[test]
+    fn substitute_placeholders_preserves_chinese() {
+        let out = substitute_placeholders(
+            "你好 {name}，歡迎使用 drust。",
+            &[("name", "Kael")],
+        );
+        assert_eq!(out, "你好 Kael，歡迎使用 drust。");
+    }
+
+    #[test]
+    fn substitute_placeholders_unknown_placeholder_left_literal() {
+        let out = substitute_placeholders("hi {who}, count {n}", &[("n", "3")]);
+        // `who` is left as literal "{who}", `n` substituted
+        assert_eq!(out, "hi {who}, count 3");
+    }
+
+    #[test]
+    fn substitute_placeholders_empty_braces_left_literal() {
+        let out = substitute_placeholders("a {} b", &[]);
+        assert_eq!(out, "a {} b");
+    }
+
+    #[test]
+    fn substitute_placeholders_unterminated_brace_passes_through() {
+        let out =
+            substitute_placeholders("oops {name no close", &[("name", "x")]);
+        assert_eq!(out, "oops {name no close");
     }
 
     /// Test-only helper that initialises BUNDLES without panicking if
