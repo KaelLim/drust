@@ -82,6 +82,13 @@ fn scan_template_keys(dir: &Path) -> BTreeMap<String, Vec<(String, usize)>> {
     for entry in entries {
         let entry = entry.expect("dir entry");
         let path = entry.path();
+        if path.is_dir() {
+            panic!(
+                "build.rs: subdirectory found in templates/ ({}). \
+                 Recursive walk not implemented — either flatten or extend the scanner.",
+                path.display()
+            );
+        }
         if path.extension().and_then(|s| s.to_str()) != Some("html") {
             continue;
         }

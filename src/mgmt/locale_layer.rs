@@ -104,4 +104,18 @@ mod tests {
         h.insert("accept-language", "ja-JP, fr-FR".parse().unwrap());
         assert_eq!(resolve_locale(&CookieJar::new(), &h), Locale::En);
     }
+
+    #[test]
+    fn malformed_cookie_falls_through_to_header() {
+        let mut h = HeaderMap::new();
+        h.insert("accept-language", "zh-TW".parse().unwrap());
+        let jar = jar_with("drust_locale", "xyz"); // not a supported tag
+        assert_eq!(resolve_locale(&jar, &h), Locale::ZhTw);
+    }
+
+    #[test]
+    fn malformed_cookie_no_header_falls_through_to_en_default() {
+        let jar = jar_with("drust_locale", "xyz");
+        assert_eq!(resolve_locale(&jar, &HeaderMap::new()), Locale::En);
+    }
 }

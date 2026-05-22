@@ -144,19 +144,24 @@ fn substitute_placeholders(template: &str, args: &[(&str, &str)]) -> String {
 
 pub static BUNDLES: OnceLock<HashMap<Locale, Bundle>> = OnceLock::new();
 
+/// Idempotent: production calls this exactly once at startup, but unit tests
+/// may also call it from a `#[test]` that's racing with another. Uses
+/// `get_or_init` (not `set`) so a second call is a no-op rather than a panic —
+/// production behavior is unchanged for the single-call happy path, and the
+/// test path no longer needs a separate helper.
 pub fn init_bundles() {
-    let mut m = HashMap::new();
-    m.insert(
-        Locale::En,
-        parse_toml(include_str!("../../locales/en.toml"), Locale::En),
-    );
-    m.insert(
-        Locale::ZhTw,
-        parse_toml(include_str!("../../locales/zh-TW.toml"), Locale::ZhTw),
-    );
-    BUNDLES
-        .set(m)
-        .unwrap_or_else(|_| panic!("init_bundles called only once at startup"));
+    BUNDLES.get_or_init(|| {
+        let mut m = HashMap::new();
+        m.insert(
+            Locale::En,
+            parse_toml(include_str!("../../locales/en.toml"), Locale::En),
+        );
+        m.insert(
+            Locale::ZhTw,
+            parse_toml(include_str!("../../locales/zh-TW.toml"), Locale::ZhTw),
+        );
+        m
+    });
 }
 
 /// Parses a TOML string into a flat `HashMap<"dotted.path", &'static str>`.
@@ -236,7 +241,9 @@ mod tests {
 
     #[test]
     fn translator_hits_active_bundle_first() {
-        init_bundles_for_test();
+        // Production `init_bundles` is now idempotent (get_or_init), so tests
+        // call it directly — no separate `_for_test` helper needed.
+        init_bundles();
         let t = Translator::new(Locale::ZhTw);
         assert_eq!(t.s("common.button.copy").as_ref(), "複製");
     }
@@ -250,7 +257,7 @@ mod tests {
 
     #[test]
     fn translator_missing_key_returns_bang_sentinel() {
-        init_bundles_for_test();
+        init_bundles();
         let t = Translator::new(Locale::En);
         let v = t.s("does.not.exist");
         assert_eq!(v.as_ref(), "!!does.not.exist!!");
@@ -258,7 +265,7 @@ mod tests {
 
     #[test]
     fn translator_fmt_substitutes_named_placeholders() {
-        init_bundles_for_test();
+        init_bundles();
         // For F1's stub TOML, no real key carries a placeholder.
         // We exercise the missing-key path here; the real placeholder
         // case is covered once Theme E lands real bundles.
@@ -299,22 +306,5 @@ mod tests {
         let out =
             substitute_placeholders("oops {name no close", &[("name", "x")]);
         assert_eq!(out, "oops {name no close");
-    }
-
-    /// Test-only helper that initialises BUNDLES without panicking if
-    /// already initialised (production path uses `.set().expect(...)`).
-    fn init_bundles_for_test() {
-        BUNDLES.get_or_init(|| {
-            let mut m = std::collections::HashMap::new();
-            m.insert(
-                Locale::En,
-                parse_toml(include_str!("../../locales/en.toml"), Locale::En),
-            );
-            m.insert(
-                Locale::ZhTw,
-                parse_toml(include_str!("../../locales/zh-TW.toml"), Locale::ZhTw),
-            );
-            m
-        });
     }
 }
