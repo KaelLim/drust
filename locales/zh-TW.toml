@@ -1,0 +1,5 @@
+[_meta]
+sentinel = "ok"
+
+[common.button]
+copy = "複製"

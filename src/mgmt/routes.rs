@@ -570,5 +570,11 @@ impl MgmtState {
             .merge(legacy_redirects)
             .merge(signed_router)
             .merge(protected)
+            // v1.22 i18n — outermost layer so unauthenticated routes
+            // (`/login`, `/admin/oauth/<provider>/callback`) also resolve
+            // a locale and let users switch language before signing in.
+            .layer(axum::middleware::from_fn(
+                crate::mgmt::locale_layer::locale_layer,
+            ))
     }
 }
