@@ -681,8 +681,8 @@ impl DrustMcpService {
         `{and:[...]}` / `{or:[...]}` / `{not:...}` over leaves \
         `{field: scalar}` (eq) or `{field: {op: operand}}`. Operators: eq, ne, \
         gt, gte, lt, lte, like, in (array), nin (array). `sort` is \
-        `{field, dir}` with dir in {asc, desc}. `per_page` is clamped to \
-        1..=500 (default 20). `select` is a list of column names; vector \
+        `{field, dir}` with dir in {asc, desc}. `per_page` must be 1..=500 \
+        (default 20). `select` is a list of column names; vector \
         fields are auto-excluded. Returns up to 500 rows per page. \
         owner_field enforcement is guaranteed by drust — service tokens \
         bypass; user tokens (REST only) get an auto-appended owner clause; \
