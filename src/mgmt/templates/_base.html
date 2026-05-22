@@ -1,14 +1,14 @@
-<!--
+{#
   _base.html — v1.22+ shared shell for every admin page.
 
   Pages extend this base and override blocks:
-    {% block title %}<title content (without the <title> tag itself)>{% endblock %}
-    {% block meta_description %}<the entire <meta name="description"...> tag>{% endblock %}
-    {% block extra_head %}<page-scoped <style>, <link>, additional <meta>, ...>{% endblock %}
-    {% block body_attrs %} data-section="…"{% endblock %}   ← leading space, attributes for <body>
-    {% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}   ← tenant-scoped pages
-    {% block content %}<everything inside <main class="main">…</main>>{% endblock %}
-    {% block extra_scripts %}<inline <script> blocks at end of <body>>{% endblock %}
+    block title           — content of <title>, without the tag itself
+    block meta_description — full <meta name="description" ...> tag
+    block extra_head      — page-scoped <style>, <link>, additional <meta>, ...
+    block body_attrs      — attributes for <body>, leading space (e.g. ` data-section="..."`)
+    block sidebar         — tenant-scoped pages override with _collection_sidebar.html
+    block content         — everything inside <main class="main">...</main>
+    block extra_scripts   — inline <script> blocks at end of <body>
 
   Defaults:
   - title  → "drust admin" (fallback only; every real page sets its own)
@@ -17,7 +17,12 @@
 
   login.html does NOT extend this — it has a fundamentally different layout
   (centered card, no app-shell). Keep it standalone.
--->
+
+  NOTE: This comment is an askama comment {# ... #}, stripped at compile time.
+  Do NOT use HTML comments <!-- ... --> here — askama expands {% block %}
+  markers regardless of HTML comment context, which would render every block
+  twice in the output.
+#}
 <!doctype html>
 <html lang="{{ t.locale_code() }}">
 <head>
