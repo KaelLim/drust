@@ -120,6 +120,46 @@ async fn settings_page(LocaleHint(locale): LocaleHint) -> Response {
 }
 
 #[derive(Debug, Deserialize)]
+struct LocalePrefForm {
+    locale: String,
+}
+
+/// `POST /admin/settings/locale` — persist the admin's UI language to
+/// `admins.locale` and mirror it back as the `drust_locale` cookie so the
+/// next render picks it up. Validation: only `en` / `zh-TW` accepted —
+/// anything else returns 400 (the dropdown can't submit unknown values,
+/// so this is purely defensive).
+async fn settings_locale_save(
+    State(state): State<MgmtState>,
+    axum::Extension(crate::auth::middleware::AdminId(admin_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    Form(form): Form<LocalePrefForm>,
+) -> Response {
+    let loc = match form.locale.as_str() {
+        "en" | "zh-TW" => form.locale.clone(),
+        _ => {
+            return (StatusCode::BAD_REQUEST, "unsupported locale").into_response();
+        }
+    };
+    {
+        let conn = state.meta.lock().await;
+        if let Err(e) = conn.execute(
+            "UPDATE admins SET locale = ?1 WHERE id = ?2",
+            rusqlite::params![loc, admin_id],
+        ) {
+            return internal(format!("update locale: {e}"));
+        }
+    }
+    let cookie =
+        format!("drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax");
+    let mut resp = Redirect::to("/drust/admin/settings").into_response();
+    resp.headers_mut()
+        .insert(header::SET_COOKIE, cookie.parse().unwrap());
+    resp
+}
+
+#[derive(Debug, Deserialize)]
 struct LoginForm {
     username: String,
     password: String,
@@ -175,15 +215,15 @@ async fn login_submit(
         return resp;
     }
     let mut conn = state.meta.lock().await;
-    let row: Option<(i64, String)> = conn
+    let row: Option<(i64, String, Option<String>)> = conn
         .query_row(
-            "SELECT id, password_hash FROM admins WHERE username = ?1",
+            "SELECT id, password_hash, locale FROM admins WHERE username = ?1",
             rusqlite::params![form.username],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok();
-    let (admin_id, phc) = match row {
-        Some((id, hash)) => (id, hash),
+    let (admin_id, phc, admin_locale) = match row {
+        Some((id, hash, loc)) => (id, hash, loc),
         None => {
             // S1: spend one argon2 verify so timing matches the wrong-password
             // path — prevents admin username existence leaking via wall-clock.
@@ -221,6 +261,19 @@ async fn login_submit(
     let mut resp = Redirect::to("/drust/admin/tenants").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
+    // v1.22 — if this admin has a persisted locale, push it down as a cookie
+    // so the next page renders in their preferred language regardless of
+    // which device they signed in from. `append` not `insert` — must coexist
+    // with the session cookie above.
+    if let Some(loc) = admin_locale.as_deref()
+        && matches!(loc, "en" | "zh-TW")
+    {
+        let locale_cookie = format!(
+            "drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax"
+        );
+        resp.headers_mut()
+            .append(header::SET_COOKIE, locale_cookie.parse().unwrap());
+    }
     resp
 }
 
@@ -597,9 +650,14 @@ impl MgmtState {
 
         // Per-admin preferences hub. First section: locale switch (was on
         // the topbar pre-2026-05-22). Future home for keyboard shortcuts,
-        // notifications, profile, etc. Stateless — preferences live in
-        // cookies, not DB.
-        let settings_router = Router::new().route("/admin/settings", get(settings_page));
+        // notifications, profile, etc. Save path writes through to
+        // `admins.locale` so the choice follows the admin across devices;
+        // the cookie is a per-device mirror of the same value.
+        let settings_state = self.clone();
+        let settings_router = Router::new()
+            .route("/admin/settings", get(settings_page))
+            .route("/admin/settings/locale", post(settings_locale_save))
+            .with_state(settings_state);
 
         let protected = tenants_router
             .merge(public_files_router)
