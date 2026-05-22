@@ -4,8 +4,8 @@
 
 <div class="toolbar-v2" style="margin-bottom:14px;">
   <div class="seg">
-    <a class="{% if tab == "overview" %}active{% endif %}" href="{{ overview_link }}">overview</a>
-    <a class="{% if tab == "browse" %}active{% endif %}" href="{{ browse_link }}">browse</a>
+    <a class="{% if tab == "overview" %}active{% endif %}" href="{{ overview_link }}">{{ t.s("audit_body.tab.overview") }}</a>
+    <a class="{% if tab == "browse" %}active{% endif %}" href="{{ browse_link }}">{{ t.s("audit_body.tab.browse") }}</a>
   </div>
   <span class="vsep"></span>
   <div class="seg">
@@ -14,9 +14,9 @@
     {% endfor %}
   </div>
   <span class="right" style="display:inline-flex;gap:6px;">
-    <a class="btn sm ghost" href="{{ refresh_link }}">refresh</a>
+    <a class="btn sm ghost" href="{{ refresh_link }}">{{ t.s("common.button.refresh") }}</a>
     <a class="btn sm{% if auto_refresh %} primary{% endif %}" href="{{ auto_toggle_link }}">
-      {% if auto_refresh %}stop auto-refresh{% else %}auto 30s{% endif %}
+      {% if auto_refresh %}{{ t.s("audit_body.button.stop_auto_refresh") }}{% else %}{{ t.s("audit_body.button.auto_30s") }}{% endif %}
     </a>
   </span>
 </div>
@@ -25,24 +25,24 @@
 {% if let Some(ov) = overview %}
 <div class="stat-grid" style="margin-bottom:18px;">
   <div class="stat accent-edge">
-    <div class="label">Total requests</div>
+    <div class="label">{{ t.s("audit_body.stat.total_requests") }}</div>
     <div class="val">{{ ov.total }}</div>
-    <div class="meta">window</div>
+    <div class="meta">{{ t.s("audit_body.stat.meta_window") }}</div>
   </div>
   <div class="stat">
-    <div class="label">Errors</div>
+    <div class="label">{{ t.s("audit_body.stat.errors") }}</div>
     <div class="val" style="{% if ov.error_count > 0 %}color:var(--danger);{% endif %}">{{ ov.error_count }}</div>
-    <div class="meta">{% if ov.error_count > 0 %}<span class="down">{{ "{:.1}"|format(ov.error_pct) }}% err</span>{% else %}<span class="up">0% err</span>{% endif %}</div>
+    <div class="meta">{% if ov.error_count > 0 %}<span class="down">{{ "{:.1}"|format(ov.error_pct) }}{{ t.s("audit_body.stat.pct_err_suffix") }}</span>{% else %}<span class="up">{{ t.s("audit_body.stat.zero_err") }}</span>{% endif %}</div>
   </div>
   <div class="stat">
-    <div class="label">Latency p50</div>
-    <div class="val">{{ ov.p50_ms }} <span class="unit">ms</span></div>
-    <div class="meta">p99 {{ ov.p99_ms }} ms</div>
+    <div class="label">{{ t.s("audit_body.stat.latency_p50") }}</div>
+    <div class="val">{{ ov.p50_ms }} <span class="unit">{{ t.s("common.duration.ms") }}</span></div>
+    <div class="meta">{{ t.fmt1("audit_body.stat.p99_meta", "p99", ov.p99_ms) }}</div>
   </div>
   <div class="stat">
-    <div class="label">Avg RPS</div>
+    <div class="label">{{ t.s("audit_body.stat.avg_rps") }}</div>
     <div class="val">{{ "{:.2}"|format(ov.rps_avg) }}</div>
-    <div class="meta">req / sec</div>
+    <div class="meta">{{ t.s("audit_body.stat.req_per_sec") }}</div>
   </div>
 </div>
 
@@ -50,19 +50,19 @@
 <div class="card" style="margin-bottom:18px;">
   <div class="card-head">
     <div>
-      <div class="card-title">Top tenants</div>
-      <div class="card-sub">request volume + error rate, this window</div>
+      <div class="card-title">{{ t.s("audit_body.card.top_tenants_title") }}</div>
+      <div class="card-sub">{{ t.s("audit_body.card.top_tenants_sub") }}</div>
     </div>
   </div>
-  {% if ov.top_tenants.is_empty() %}<div class="empty" style="padding:36px 24px;">no data</div>{% else %}
+  {% if ov.top_tenants.is_empty() %}<div class="empty" style="padding:36px 24px;">{{ t.s("common.empty.no_data") }}</div>{% else %}
   <table class="data">
-    <thead><tr><th>tenant</th><th class="num">count</th><th class="num">err%</th></tr></thead>
+    <thead><tr><th>{{ t.s("backup_inspect.table.col_tenant") }}</th><th class="num">{{ t.s("common.label.count") }}</th><th class="num">{{ t.s("audit_body.table.err_pct") }}</th></tr></thead>
     <tbody>
-      {% for t in ov.top_tenants %}
+      {% for tn in ov.top_tenants %}
       <tr>
-        <td>{% if t.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ t.tenant }}/_logs" title="{{ t.tenant }}">{{ t.tenant_name }}</a>{% endif %}</td>
-        <td class="num">{{ t.count }}</td>
-        <td class="num">{% if t.error_pct > 0.0 %}<span class="pill danger">{{ "{:.1}"|format(t.error_pct) }}%</span>{% else %}<span class="pill mint">{{ "{:.1}"|format(t.error_pct) }}%</span>{% endif %}</td>
+        <td>{% if tn.tenant == "-" %}<span class="muted">{{ t.s("audit_body.label.admin") }}</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ tn.tenant }}/_logs" title="{{ tn.tenant }}">{{ tn.tenant_name }}</a>{% endif %}</td>
+        <td class="num">{{ tn.count }}</td>
+        <td class="num">{% if tn.error_pct > 0.0 %}<span class="pill danger">{{ "{:.1}"|format(tn.error_pct) }}%</span>{% else %}<span class="pill mint">{{ "{:.1}"|format(tn.error_pct) }}%</span>{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -74,23 +74,23 @@
 <div class="card">
   <div class="card-head">
     <div>
-      <div class="card-title">Top slowest ops</div>
-      <div class="card-sub">slowest individual requests in this window</div>
+      <div class="card-title">{{ t.s("audit_body.card.top_slowest_ops_title") }}</div>
+      <div class="card-sub">{{ t.s("audit_body.card.top_slowest_ops_sub") }}</div>
     </div>
   </div>
-  {% if top_slow_ops_view.is_empty() %}<div class="empty" style="padding:36px 24px;">no data</div>{% else %}
+  {% if top_slow_ops_view.is_empty() %}<div class="empty" style="padding:36px 24px;">{{ t.s("common.empty.no_data") }}</div>{% else %}
   <table class="data">
     <thead><tr>
-      <th>timestamp</th>
-      {% if is_host_scope %}<th>tenant</th>{% endif %}
+      <th>{{ t.s("common.label.timestamp") }}</th>
+      {% if is_host_scope %}<th>{{ t.s("backup_inspect.table.col_tenant") }}</th>{% endif %}
       <th>operation</th>
-      <th class="num">ms</th>
+      <th class="num">{{ t.s("common.duration.ms") }}</th>
     </tr></thead>
     <tbody>
       {% for e in top_slow_ops_view %}
       <tr>
         <td class="muted-cell">{{ e.ts_display }}</td>
-        {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">admin</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs" title="{{ e.tenant }}">{{ e.tenant_name }}</a>{% endif %}</td>{% endif %}
+        {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">{{ t.s("audit_body.label.admin") }}</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs" title="{{ e.tenant }}">{{ e.tenant_name }}</a>{% endif %}</td>{% endif %}
         <td class="mono-cell" style="font-size:12px;">{{ e.op }}</td>
         <td class="num"><b>{{ e.duration_ms }}</b></td>
       </tr>
@@ -108,25 +108,25 @@
 
   {% if is_host_scope %}
   <div class="field-group">
-    <label class="field-label">Tenant</label>
+    <label class="field-label">{{ t.s("common.label.tenant") }}</label>
     <input class="input" list="tenant-list" name="tenant"
-           placeholder="all tenants"
-           value="{% if let Some(t) = tenant_filter %}{{ t }}{% endif %}"
+           placeholder="{{ t.s("audit_body.placeholder.all_tenants") }}"
+           value="{% if let Some(tn) = tenant_filter %}{{ tn }}{% endif %}"
            style="min-width:0;width:200px;">
     <datalist id="tenant-list">
-      {% for t in tenants %}
-      <option value="{{ t.id }}">{{ t.name }}</option>
+      {% for tn in tenants %}
+      <option value="{{ tn.id }}">{{ tn.name }}</option>
       {% endfor %}
     </datalist>
   </div>
   {% endif %}
 
   <div class="field-group">
-    <label class="field-label">Operation</label>
+    <label class="field-label">{{ t.s("common.label.operation") }}</label>
     <input class="input" list="op-list" name="op"
-           placeholder="e.g. POST /records/posts"
+           placeholder="{{ t.s("audit_body.placeholder.op_example") }}"
            value="{% if let Some(o) = op_filter %}{{ o }}{% endif %}"
-           title="HTTP method + path"
+           title="{{ t.s("audit_body.title.http_method_path") }}"
            style="min-width:0;width:240px;">
     <datalist id="op-list">
       {% for op in distinct_ops %}<option value="{{ op }}"></option>{% endfor %}
@@ -134,35 +134,35 @@
   </div>
 
   <div class="seg">
-    <a class="{% if status_filter == "all" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=all{% if let Some(t) = tenant_filter %}&tenant={{ t }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">all</a>
-    <a class="{% if status_filter == "ok" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=ok{% if let Some(t) = tenant_filter %}&tenant={{ t }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">ok</a>
-    <a class="{% if status_filter == "error" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=error{% if let Some(t) = tenant_filter %}&tenant={{ t }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">error</a>
+    <a class="{% if status_filter == "all" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=all{% if let Some(tn) = tenant_filter %}&tenant={{ tn }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">{{ t.s("audit_body.filter.all") }}</a>
+    <a class="{% if status_filter == "ok" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=ok{% if let Some(tn) = tenant_filter %}&tenant={{ tn }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">{{ t.s("audit_body.filter.ok") }}</a>
+    <a class="{% if status_filter == "error" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=error{% if let Some(tn) = tenant_filter %}&tenant={{ tn }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">{{ t.s("audit_body.filter.error") }}</a>
   </div>
-  <button class="btn sm primary" type="submit">apply</button>
-  <span class="right mono">{{ entries.len() }} shown{% if let Some(n) = truncated_from %} · truncated from {{ n }}{% endif %}</span>
+  <button class="btn sm primary" type="submit">{{ t.s("common.button.apply") }}</button>
+  <span class="right mono">{{ entries.len() }} {{ t.s("audit_body.count.shown_suffix") }}{% if let Some(n) = truncated_from %} {{ t.fmt1("audit_body.count.truncated_from", "n", n) }}{% endif %}</span>
 </form>
 
 <div class="card">
   <div class="card-head">
     <div>
-      <div class="card-title">Audit entries</div>
-      <div class="card-sub">{{ entries.len() }} shown · click a row for full detail</div>
+      <div class="card-title">{{ t.s("audit_body.card.entries_title") }}</div>
+      <div class="card-sub">{{ t.fmt1("audit_body.card.entries_sub", "count", entries.len()) }}</div>
     </div>
   </div>
   {% if entries.is_empty() %}
-  <div class="empty" style="padding:48px 24px;">no entries match.</div>
+  <div class="empty" style="padding:48px 24px;">{{ t.s("audit_body.empty.no_entries_match") }}</div>
   {% else %}
   <div class="card-body" style="padding:6px 18px;">
     <div class="tl">
       {% for e in entries_view %}
       <div class="tl-row" data-idx="{{ loop.index0 }}" tabindex="0" role="button"
-           aria-label="show details for {{ e.op }}">
+           aria-label="{{ t.fmt1("audit_body.aria.show_details_for", "op", e.op) }}">
         <div class="tl-time" title="{{ e.ts }}">{{ e.ts_display }}</div>
         <div class="tl-glyph{% if e.status == "error" %} fail{% else %} ok{% endif %}">{% if e.status == "error" %}✕{% else %}✓{% endif %}</div>
         <div class="tl-body">
           {% if is_host_scope %}
             {% if e.tenant == "-" %}
-              <span class="pill lilac">admin</span>
+              <span class="pill lilac">{{ t.s("audit_body.label.admin") }}</span>
             {% else %}
               <a class="pill info" href="/drust/admin/tenants/{{ e.tenant }}/_logs"
                  title="{{ e.tenant }}"
@@ -172,7 +172,7 @@
           <code>{{ e.op }}</code>
           {% if let Some(c) = e.error_code %} · <span style="color:var(--danger);font-family:var(--font-mono);">{{ c }}</span>{% endif %}
         </div>
-        <div class="tl-meta">{{ e.duration_ms }} ms</div>
+        <div class="tl-meta">{{ e.duration_ms }} {{ t.s("common.duration.ms") }}</div>
       </div>
       {% endfor %}
     </div>
@@ -228,12 +228,12 @@
     {% endif %}
   </div>
   <div class="card-foot">
-    <span class="mono">{{ entries.len() }} entries{% if let Some(n) = truncated_from %} · truncated from {{ n }}{% endif %}</span>
+    <span class="mono">{{ entries.len() }} {{ t.s("audit_body.foot.entries") }}{% if let Some(n) = truncated_from %} {{ t.fmt1("audit_body.count.truncated_from", "n", n) }}{% endif %}</span>
     <span class="right">
       {% if let Some(href) = next_page_link %}
-      <a class="btn sm ghost" href="{{ href }}">next page →</a>
+      <a class="btn sm ghost" href="{{ href }}">{{ t.s("audit_body.pagination.next_page") }}</a>
       {% else %}
-      <span class="btn sm ghost" style="opacity:0.4;cursor:default;">next page →</span>
+      <span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("audit_body.pagination.next_page") }}</span>
       {% endif %}
     </span>
   </div>
@@ -243,7 +243,7 @@
 
 {% if parse_errors > 0 || !archive_errors.is_empty() %}
 <div class="muted" style="margin-top:14px;font:500 11px/1.4 var(--mono);letter-spacing:0.04em;">
-  {% if parse_errors > 0 %}{{ parse_errors }} unparseable lines skipped. {% endif %}
-  {% if !archive_errors.is_empty() %}{{ archive_errors.len() }} corrupt archive(s) skipped: {{ archive_errors|join(", ") }}.{% endif %}
+  {% if parse_errors > 0 %}{{ t.fmt1("audit_body.diag.unparseable_skipped", "count", parse_errors) }} {% endif %}
+  {% if !archive_errors.is_empty() %}{{ t.fmt1("audit_body.diag.corrupt_archives_skipped", "count", archive_errors.len()) }} {{ archive_errors|join(", ") }}.{% endif %}
 </div>
 {% endif %}

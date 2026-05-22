@@ -14,46 +14,46 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <a href="/drust/admin/tenants/{{ tenant_id }}/_rpc">rpc</a>
+        <a href="/drust/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("common.crumbs.rpc") }}</a>
         <span class="sep">/</span>
-        <span class="here">{% if editing %}{{ existing_name }}{% else %}new{% endif %}</span>
+        <span class="here">{% if editing %}{{ existing_name }}{% else %}{{ t.s("common.crumbs.new") }}{% endif %}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
     <div class="page">
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">Tenant · stored functions · {% if editing %}edit{% else %}new{% endif %}</div>
-            <h1 class="view-title">{% if editing %}{{ existing_name }}{% else %}New function{% endif %}</h1>
+            <div class="eyebrow">{% if editing %}{{ t.s("tenant_rpc_form.eyebrow.edit") }}{% else %}{{ t.s("tenant_rpc_form.eyebrow.new") }}{% endif %}</div>
+            <h1 class="view-title">{% if editing %}{{ existing_name }}{% else %}{{ t.s("tenant_rpc_form.title.new") }}{% endif %}</h1>
             <p class="view-sub">{% if editing %}Edit a stored SELECT function. Service-only authoring; persisted in <code>_system_rpc</code>.{% else %}Create a stored SELECT function callable by REST + MCP. Service-only authoring; optional anon access via the <code>allow_anon_callers</code> flag.{% endif %}</p>
           </div>
-          <a class="btn ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">← back to rpc</a>
+          <a class="btn ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("tenant_rpc_form.actions.back") }}</a>
         </div>
         {% if let Some(err) = error %}
         <div class="banner danger" style="margin-bottom:14px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
-          <div class="b-body"><div class="b-title">Save failed</div><p>{{ err }}</p></div>
+          <div class="b-body"><div class="b-title">{{ t.s("tenant_rpc_form.error.save_failed") }}</div><p>{{ err }}</p></div>
         </div>
         {% endif %}
         <form method="post" action="{% if editing %}/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/save{% else %}/drust/admin/tenants/{{ tenant_id }}/_rpc/new{% endif %}" class="card" style="padding:18px;display:grid;gap:14px;">
           {% if !editing %}
           <div class="field">
-            <label>name (snake_case, unique)</label>
+            <label>{{ t.s("tenant_rpc_form.field.name") }}</label>
             <input class="input" type="text" name="name" required pattern="[a-z][a-z0-9_]*" maxlength="80" value="{{ form_name }}">
           </div>
           {% else %}
           <input type="hidden" name="name" value="{{ existing_name }}">
           {% endif %}
           <div class="field">
-            <label>description (optional)</label>
+            <label>{{ t.s("tenant_rpc_form.field.description") }}</label>
             <input class="input" type="text" name="description" value="{{ form_description }}">
           </div>
           <div class="field">
-            <label>sql (use :name for params)</label>
+            <label>{{ t.s("tenant_rpc_form.field.sql") }}</label>
             <textarea class="textarea" name="sql" rows="10" required>{{ form_sql }}</textarea>
           </div>
           <div class="field">
@@ -61,11 +61,11 @@
             <textarea class="textarea" name="params_json" rows="6" required>{{ form_params_json }}</textarea>
           </div>
           <div class="field">
-            <label><input type="checkbox" name="anon_callable" value="1"{% if form_anon_callable %} checked{% endif %}> allow anon callers</label>
+            <label><input type="checkbox" name="anon_callable" value="1"{% if form_anon_callable %} checked{% endif %}> {{ t.s("tenant_rpc_form.field.anon_callable") }}</label>
           </div>
           <div style="display:flex;gap:8px;">
-            <button class="btn btn-primary" type="submit">{% if editing %}<svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>save{% else %}<svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>create{% endif %}</button>
-            <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">cancel</a>
+            <button class="btn btn-primary" type="submit">{% if editing %}<svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>{{ t.s("common.action.save") }}{% else %}<svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>create{% endif %}</button>
+            <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("common.action.cancel") }}</a>
           </div>
         </form>
       </div>
@@ -82,9 +82,9 @@
     cb.addEventListener("change", async (e) => {
       if (!cb.checked) return;
       const ok = await drustUI.confirm({
-        title: "allow anon callers?",
-        body: "Any caller (no service key) can invoke this RPC. Continue?",
-        okText: "Yes, allow anon",
+        title: "{{ t.s("tenant_rpc_form.confirm_anon.title") }}",
+        body: "{{ t.s("tenant_rpc_form.confirm_anon.body") }}",
+        okText: "{{ t.s("tenant_rpc_form.confirm_anon.ok") }}",
         danger: true,
       });
       if (!ok) cb.checked = false;

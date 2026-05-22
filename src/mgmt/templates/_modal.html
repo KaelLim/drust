@@ -50,8 +50,8 @@
         var copyBtn = document.createElement('button');
         copyBtn.type = 'button';
         copyBtn.className = 'modal-code-copy';
-        copyBtn.setAttribute('aria-label', 'Copy to clipboard');
-        copyBtn.title = 'Copy to clipboard';
+        copyBtn.setAttribute('aria-label', '{{ t.s("common.button.copy_to_clipboard") }}');
+        copyBtn.title = '{{ t.s("common.button.copy_to_clipboard") }}';
         copyBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>';
         copyBtn.addEventListener('click', function () {
           navigator.clipboard.writeText(codeBlock).then(function () {
@@ -79,11 +79,11 @@
     window.drustUI = {
       alert: function (opts) {
         opts = opts || {};
-        titleEl.textContent = opts.title || 'Notice';
+        titleEl.textContent = opts.title || '{{ t.s("common.modal.title_notice") }}';
         setBody(opts.body, opts.codeBlock);
         inputEl.hidden = true;
         actionsEl.innerHTML = '';
-        actionsEl.appendChild(btn('OK', 'btn-primary', function () { close(true); }));
+        actionsEl.appendChild(btn('{{ t.s("common.button.ok") }}', 'btn-primary', function () { close(true); }));
         overlay.hidden = false;
         if (opts.danger) box.classList.add('modal-variant-danger');
         setTimeout(function () { actionsEl.querySelector('button').focus(); }, 20);
@@ -92,13 +92,13 @@
         opts = opts || {};
         return new Promise(function (resolve) {
           closeCb = resolve;
-          titleEl.textContent = opts.title || 'Confirm';
+          titleEl.textContent = opts.title || '{{ t.s("common.modal.title_confirm") }}';
           setBody(opts.body);
           inputEl.hidden = true;
           actionsEl.innerHTML = '';
-          actionsEl.appendChild(btn('Cancel', 'btn-ghost', function () { close(false); }));
+          actionsEl.appendChild(btn('{{ t.s("common.button.cancel") }}', 'btn-ghost', function () { close(false); }));
           var okVariant = opts.danger ? 'btn-danger' : 'btn-primary';
-          actionsEl.appendChild(btn(opts.okText || 'OK', okVariant, function () { close(true); }));
+          actionsEl.appendChild(btn(opts.okText || '{{ t.s("common.button.ok") }}', okVariant, function () { close(true); }));
           if (opts.danger) box.classList.add('modal-variant-danger');
           overlay.hidden = false;
           setTimeout(function () { actionsEl.lastChild.focus(); }, 20);
@@ -108,14 +108,14 @@
         opts = opts || {};
         return new Promise(function (resolve) {
           closeCb = resolve;
-          titleEl.textContent = opts.title || 'Input';
+          titleEl.textContent = opts.title || '{{ t.s("common.modal.title_input") }}';
           setBody(opts.body);
           inputEl.hidden = false;
           inputEl.value = opts.default || '';
           inputEl.placeholder = opts.placeholder || '';
           actionsEl.innerHTML = '';
-          actionsEl.appendChild(btn('Cancel', 'btn-ghost', function () { close(null); }));
-          actionsEl.appendChild(btn(opts.okText || 'OK', 'btn-primary', function () { close(inputEl.value); }));
+          actionsEl.appendChild(btn('{{ t.s("common.button.cancel") }}', 'btn-ghost', function () { close(null); }));
+          actionsEl.appendChild(btn(opts.okText || '{{ t.s("common.button.ok") }}', 'btn-primary', function () { close(inputEl.value); }));
           inputEl.addEventListener('keydown', function handler(e) {
             if (e.key === 'Enter') { e.preventDefault(); inputEl.removeEventListener('keydown', handler); close(inputEl.value); }
           });
@@ -126,7 +126,7 @@
       ,
       detail: function (opts) {
         opts = opts || {};
-        titleEl.textContent = opts.title || 'Details';
+        titleEl.textContent = opts.title || '{{ t.s("common.modal.title_details") }}';
         // Build the <dl> grid from fields[].
         var dl = document.createElement('dl');
         dl.className = 'modal-detail-grid';
@@ -156,14 +156,14 @@
           for (var j = 0; j < actions.length; j++) {
             (function (a) {
               var variant = 'btn-' + (a.variant || 'ghost');
-              actionsEl.appendChild(btn(a.label || 'OK', variant, function () {
+              actionsEl.appendChild(btn(a.label || '{{ t.s("common.button.ok") }}', variant, function () {
                 if (a.onClick) { try { a.onClick(); } catch (e) {} }
                 close(null);
               }));
             })(actions[j]);
           }
         } else {
-          actionsEl.appendChild(btn('Close', 'btn-ghost', function () { close(null); }));
+          actionsEl.appendChild(btn('{{ t.s("common.button.close") }}', 'btn-ghost', function () { close(null); }));
         }
         overlay.hidden = false;
         setTimeout(function () {

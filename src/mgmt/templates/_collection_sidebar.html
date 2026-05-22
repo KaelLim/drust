@@ -16,20 +16,20 @@
     </div>
     <div class="brand-text">
       <div class="brand-name">drust</div>
-      <div class="brand-meta">tenant studio</div>
+      <div class="brand-meta">{{ t.s("collection_sidebar.brand.meta") }}</div>
     </div>
     <div class="brand-ver">v{{ version }}</div>
   </div>
 
   <a class="back-strip" href="/drust/admin/tenants">
     <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
-    Back to all tenants
+    {{ t.s("collection_sidebar.back.all_tenants") }}
   </a>
 
-  <button type="button" class="plane-pill tenant clickable" onclick="if(window.drustCmdK)drustCmdK.open();" title="switch tenant (⌘K)">
+  <button type="button" class="plane-pill tenant clickable" onclick="if(window.drustCmdK)drustCmdK.open();" title="{{ t.s("collection_sidebar.switch_tenant.title") }}">
     <span class="dot"></span>
     <div class="body">
-      <div class="label">plane · tenant</div>
+      <div class="label">{{ t.s("collection_sidebar.plane.tenant_label") }}</div>
       <div class="name" title="{{ tenant_name }}">{{ tenant_name }}</div>
       <div class="id" title="{{ tenant_id }}">{{ tenant_id }}</div>
     </div>
@@ -37,61 +37,61 @@
   </button>
 
   <nav class="nav">
-    <div class="nav-section"><span>Home</span></div>
+    <div class="nav-section"><span>{{ t.s("collection_sidebar.section.home") }}</span></div>
     <a class="nav-item{% if active_coll == "_overview" %} on{% endif %}"
-       href="/drust/admin/tenants/{{ tenant_id }}/_overview" title="overview · stats · recent activity">
+       href="/drust/admin/tenants/{{ tenant_id }}/_overview" title="{{ t.s("collection_sidebar.overview.title") }}">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg></span>
-      Overview
+      {{ t.s("collection_sidebar.nav.overview") }}
     </a>
 
-    <div class="nav-section"><span>Connect</span></div>
+    <div class="nav-section"><span>{{ t.s("collection_sidebar.section.connect") }}</span></div>
     <a class="nav-item{% if active_coll == "_api_keys" %} on{% endif %}"
-       href="/drust/admin/tenants/{{ tenant_id }}/_api_keys" title="anon · service · MCP keys">
+       href="/drust/admin/tenants/{{ tenant_id }}/_api_keys" title="{{ t.s("collection_sidebar.api_keys.title") }}">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l3 3"/></svg></span>
-      API keys
+      {{ t.s("collection_sidebar.nav.api_keys") }}
     </a>
     <a class="nav-item{% if active_coll == "_rpc" %} on{% endif %}"
-       href="/drust/admin/tenants/{{ tenant_id }}/_rpc" title="stored functions">
+       href="/drust/admin/tenants/{{ tenant_id }}/_rpc" title="{{ t.s("collection_sidebar.rpc.title") }}">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17 14l4 3-4 3"/></svg></span>
-      Stored RPC
+      {{ t.s("collection_sidebar.nav.stored_rpc") }}
     </a>
 
-    <div class="nav-section"><span>Backend</span></div>
+    <div class="nav-section"><span>{{ t.s("collection_sidebar.section.backend") }}</span></div>
     <a class="nav-item{% if active_coll == "_system_files" %} on{% endif %}"
-       href="/drust/admin/tenants/{{ tenant_id }}/files" title="file storage (S3)">
+       href="/drust/admin/tenants/{{ tenant_id }}/files" title="{{ t.s("collection_sidebar.files.title") }}">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 7l2-2h5l2 2h9v12H3z"/></svg></span>
-      Files
+      {{ t.s("collection_sidebar.nav.files") }}
     </a>
     <a class="nav-item{% if active_coll == "_system_users" %} on{% endif %}"
-       href="/drust/admin/tenants/{{ tenant_id }}/collections/_system_users" title="registered end-users">
+       href="/drust/admin/tenants/{{ tenant_id }}/collections/_system_users" title="{{ t.s("collection_sidebar.end_users.title") }}">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 19c0-3.5 3.2-6 7-6s7 2.5 7 6"/></svg></span>
-      End-users
+      {{ t.s("collection_sidebar.nav.end_users") }}
     </a>
     <a class="nav-item{% if active_coll == "_oauth_providers" %} on{% endif %}"
-       href="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers" title="per-tenant Google/GitHub OAuth">
+       href="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers" title="{{ t.s("collection_sidebar.oauth.title") }}">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6z"/></svg></span>
-      OAuth providers
+      {{ t.s("collection_sidebar.nav.oauth_providers") }}
     </a>
     <a class="nav-item{% if active_coll == "_webhooks" %} on{% endif %}"
-       href="/drust/admin/tenants/{{ tenant_id }}/_webhooks" title="outbound webhook subscriptions">
+       href="/drust/admin/tenants/{{ tenant_id }}/_webhooks" title="{{ t.s("collection_sidebar.webhooks.title") }}">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M15 17l2 4 5-12-10 5 3 3-3 3z"/><path d="M3 11l8-3"/></svg></span>
-      Webhooks
+      {{ t.s("collection_sidebar.nav.webhooks") }}
     </a>
     <a class="nav-item{% if active_coll == "_logs" %} on{% endif %}"
-       href="/drust/admin/tenants/{{ tenant_id }}/_logs" title="audit · request history">
+       href="/drust/admin/tenants/{{ tenant_id }}/_logs" title="{{ t.s("collection_sidebar.logs.title") }}">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h6"/></svg></span>
-      Logs
+      {{ t.s("collection_sidebar.nav.logs") }}
     </a>
 
     {% if collections.len() > 0 %}
     <div class="nav-section">
-      <span>Collections</span>
+      <span>{{ t.s("collection_sidebar.section.collections") }}</span>
       <span class="count">{{ collections.len() }}</span>
     </div>
     {% for c in collections %}
     <a class="nav-collection{% if c.name == active_coll %} on{% endif %}"
        href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}"
-       title="{{ c.name }} · {{ c.row_count }} rows">
+       title="{{ c.name }} · {{ c.row_count }} {{ t.s("common.unit.rows") }}">
       <span class="dot"></span>
       <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ c.name }}</span>
       <span class="count">{{ c.row_count }}</span>
@@ -103,9 +103,9 @@
   <div class="sidebar-foot">
     <div class="who-av">AK</div>
     <div class="who">
-      <div class="who-name">admin</div>
-      <div class="who-mail">scope: this tenant</div>
+      <div class="who-name">{{ t.s("collection_sidebar.foot.admin") }}</div>
+      <div class="who-mail">{{ t.s("collection_sidebar.foot.scope") }}</div>
     </div>
-    <span class="status-pulse" title="tenant healthy"></span>
+    <span class="status-pulse" title="{{ t.s("collection_sidebar.status.healthy") }}"></span>
   </div>
 </aside>

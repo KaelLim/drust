@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_name }} / overview</title>
-<meta name="description" content="drust admin — tenant {{ tenant_name }} overview: collections, records, storage, recent activity.">
+<title>{{ t.fmt1("tenant_overview.page.title", "tenant_name", tenant_name) }}</title>
+<meta name="description" content="{{ t.fmt1("tenant_overview.page.meta_description", "tenant_name", tenant_name) }}">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -15,7 +15,7 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
         <span class="here">{{ tenant_name }}</span>
       </nav>
@@ -25,31 +25,31 @@
 
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">Tenant · home</div>
+            <div class="eyebrow">{{ t.s("tenant_overview.header.eyebrow") }}</div>
             <h1 class="view-title">{{ tenant_name }}</h1>
-            <p class="view-sub">A snapshot of every surface this tenant has — collections, traffic, auth, storage, backups. Tenant id <code>{{ tenant_id }}</code> · created {{ created_at }}.</p>
+            <p class="view-sub">{{ t.fmt2("tenant_overview.header.subtitle", "tenant_id", tenant_id, "created_at", created_at) }}</p>
           </div>
-          <span class="pill mint"><span class="dot"></span>healthy</span>
+          <span class="pill mint"><span class="dot"></span>{{ t.s("tenant_overview.header.health_pill") }}</span>
         </div>
 
         <div class="stat-grid" style="margin-bottom:18px;">
           <div class="stat accent-edge">
-            <div class="label">Collections</div>
-            <div class="val">{{ collection_count }} <span class="unit">tables</span></div>
-            <div class="meta">user collections in this tenant</div>
+            <div class="label">{{ t.s("collection_sidebar.section.collections") }}</div>
+            <div class="val">{{ collection_count }} <span class="unit">{{ t.s("common.unit.tables") }}</span></div>
+            <div class="meta">{{ t.s("tenant_overview.stat.collections_meta") }}</div>
           </div>
           <div class="stat">
-            <div class="label">Total rows</div>
+            <div class="label">{{ t.s("tenant_overview.stat.total_rows_label") }}</div>
             <div class="val">{{ total_records }}</div>
-            <div class="meta">across every collection</div>
+            <div class="meta">{{ t.s("tenant_overview.stat.total_rows_meta") }}</div>
           </div>
           <div class="stat">
-            <div class="label">Storage</div>
+            <div class="label">{{ t.s("common.stat.storage") }}</div>
             <div class="val">{{ db_size_display }}</div>
-            <div class="meta">data.sqlite on disk</div>
+            <div class="meta">{{ t.s("tenant_overview.stat.storage_meta") }}</div>
           </div>
           <div class="stat">
-            <div class="label">End-users</div>
+            <div class="label">{{ t.s("tenant_overview.stat.end_users_label") }}</div>
             <div class="val">{{ user_count }}</div>
             <div class="meta">_system_users rows</div>
           </div>
@@ -57,24 +57,24 @@
 
         <div class="stat-grid" style="margin-bottom:24px;">
           <div class="stat">
-            <div class="label">Stored RPCs</div>
+            <div class="label">{{ t.s("tenant_overview.stat.rpcs_label") }}</div>
             <div class="val">{{ rpc_count }}</div>
-            <div class="meta">named SELECT functions</div>
+            <div class="meta">{{ t.s("tenant_overview.stat.rpcs_meta") }}</div>
           </div>
           <div class="stat">
-            <div class="label">Webhooks</div>
+            <div class="label">{{ t.s("tenant_overview.stat.webhooks_label") }}</div>
             <div class="val">{{ webhook_active_count }}{% if webhook_total_count > webhook_active_count %} <span class="unit">/ {{ webhook_total_count }} total</span>{% endif %}</div>
-            <div class="meta">active subscriptions</div>
+            <div class="meta">{{ t.s("tenant_overview.stat.webhooks_meta") }}</div>
           </div>
           <div class="stat">
-            <div class="label">OAuth providers</div>
+            <div class="label">{{ t.s("tenant_overview.stat.oauth_label") }}</div>
             <div class="val">{{ oauth_count }}</div>
-            <div class="meta">per-tenant Google · GitHub</div>
+            <div class="meta">{{ t.s("tenant_overview.stat.oauth_meta") }}</div>
           </div>
           <div class="stat">
-            <div class="label">API tokens</div>
+            <div class="label">{{ t.s("tenant_overview.stat.api_tokens_label") }}</div>
             <div class="val">{{ token_count }}</div>
-            <div class="meta">anon + service</div>
+            <div class="meta">{{ t.s("tenant_overview.stat.api_tokens_meta") }}</div>
           </div>
         </div>
 
@@ -82,8 +82,8 @@
         <div class="banner danger" style="margin-bottom:18px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
           <div class="b-body">
-            <div class="b-title">Webhook failures · last 24h ({{ webhook_failures.len() }})</div>
-            <p>One or more outbound webhook subscriptions failed recently. Check the URL, secret, and target response.</p>
+            <div class="b-title">{{ t.fmt1("tenant_overview.webhook_failures.title", "n", webhook_failures.len()) }}</div>
+            <p>{{ t.s("tenant_overview.webhook_failures.body") }}</p>
             <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
               {% for f in webhook_failures %}
               <div style="background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:500 11.5px/1.4 var(--mono);color:var(--text-soft);">
@@ -96,7 +96,7 @@
               </div>
               {% endfor %}
             </div>
-            <div class="b-actions"><a class="btn sm" href="/drust/admin/tenants/{{ tenant_id }}/_webhooks">Manage webhooks →</a></div>
+            <div class="b-actions"><a class="btn sm" href="/drust/admin/tenants/{{ tenant_id }}/_webhooks">{{ t.s("tenant_overview.webhook_failures.manage_button") }}</a></div>
           </div>
         </div>
         {% endif %}
@@ -106,10 +106,10 @@
           <div class="card">
             <div class="card-head">
               <div>
-                <div class="card-title">Collections</div>
+                <div class="card-title">{{ t.s("collection_sidebar.section.collections") }}</div>
                 <div class="card-sub">{{ collection_count }} tables · click to open the editor</div>
               </div>
-              <div class="card-head-actions"><a href="/drust/admin/tenants/{{ tenant_id }}/collections">view all →</a></div>
+              <div class="card-head-actions"><a href="/drust/admin/tenants/{{ tenant_id }}/collections">{{ t.s("common.card.view_all") }}</a></div>
             </div>
             {% if collections.len() > 0 %}
             <div style="padding:0;">
@@ -125,8 +125,8 @@
             {% else %}
             <div class="card-body">
               <div class="empty" style="padding:32px 12px;">
-                <h3>No user collections yet</h3>
-                <p>Use the MCP <code>create_collection</code> tool or the REST API to add one.</p>
+                <h3>{{ t.s("tenant_overview.collections_card.empty_title") }}</h3>
+                <p>{{ t.s("tenant_overview.collections_card.empty_body") }}</p>
               </div>
             </div>
             {% endif %}
@@ -136,10 +136,10 @@
           <div class="card">
             <div class="card-head">
               <div>
-                <div class="card-title">Recent activity</div>
-                <div class="card-sub">last 24h · scoped to this tenant</div>
+                <div class="card-title">{{ t.s("tenant_overview.activity_card.title") }}</div>
+                <div class="card-sub">{{ t.s("tenant_overview.activity_card.subtitle") }}</div>
               </div>
-              <div class="card-head-actions"><a href="/drust/admin/tenants/{{ tenant_id }}/_logs">view all →</a></div>
+              <div class="card-head-actions"><a href="/drust/admin/tenants/{{ tenant_id }}/_logs">{{ t.s("common.card.view_all") }}</a></div>
             </div>
             {% if recent_audit.len() > 0 %}
             <div class="card-body" style="padding:6px 18px;">
@@ -162,8 +162,8 @@
             {% else %}
             <div class="card-body">
               <div class="empty" style="padding:32px 12px;">
-                <h3>No requests in the last 24h</h3>
-                <p>This tenant is idle — no REST or MCP traffic.</p>
+                <h3>{{ t.s("tenant_overview.activity_card.empty_title") }}</h3>
+                <p>{{ t.s("tenant_overview.activity_card.empty_body") }}</p>
               </div>
             </div>
             {% endif %}

@@ -1111,6 +1111,9 @@ heading = "EXPLAIN QUERY PLAN"
 [tenant_rpc_test.eyebrow]
 view = "Tenant · stored functions · playground"
 
+[tenant_rpc_test.page]
+title = "drust admin — {tenant_name} / _rpc / {name} / test"
+
 [tenant_rpc_test.params]
 empty = "No parameters — press Run to execute."
 heading = "params"

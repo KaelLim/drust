@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_name }} / _logs</title>
-<meta name="description" content="drust admin — tenant {{ tenant_name }}: audit log viewer.">
+<title>{{ t.fmt1("audit_tenant.page.title", "tenant_name", tenant_name) }}</title>
+<meta name="description" content="{{ t.fmt1("audit_tenant.page.meta_description", "tenant_name", tenant_name) }}">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -15,11 +15,11 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <span class="here">logs</span>
+        <span class="here">{{ t.s("common.crumbs.logs") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -27,9 +27,9 @@
     <div class="page page-wide">
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">Tenant · governance</div>
-            <h1 class="view-title">Audit log</h1>
-            <p class="view-sub">Scoped to <span style="color:var(--accent);">{{ tenant_name }}</span> — every REST, MCP, and SSE request, plus all denials. Host-wide events live in Admin · audit.</p>
+            <div class="eyebrow">{{ t.s("audit_tenant.head.eyebrow") }}</div>
+            <h1 class="view-title">{{ t.s("admin_sidebar.nav.audit_log") }}</h1>
+            <p class="view-sub">{{ t.fmt1("audit_tenant.head.subtitle", "tenant_name", tenant_name) }}</p>
           </div>
         </div>
         {% include "_audit_body.html" %}

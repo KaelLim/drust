@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_name }} / _oauth_providers</title>
-<meta name="description" content="drust admin — tenant {{ tenant_name }}: per-tenant OAuth provider configs (Google · GitHub) for end-user sign-in.">
+<title>{{ t.s("common.app.title") }} — {{ tenant_name }} / _oauth_providers</title>
+<meta name="description" content="{{ t.fmt1("tenant_oauth_providers.meta.description", "tenant_name", tenant_name) }}">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -15,11 +15,11 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <span class="here">OAuth providers</span>
+        <span class="here">{{ t.s("tenant_oauth_providers.crumbs.here") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -28,16 +28,16 @@
 
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">Tenant · backend</div>
-            <h1 class="view-title">OAuth providers</h1>
-            <p class="view-sub">End-users can sign in to this tenant via Google or GitHub. Each provider has its own client credentials and callback URL — host admin OAuth is configured separately.</p>
+            <div class="eyebrow">{{ t.s("common.eyebrow.tenant_backend") }}</div>
+            <h1 class="view-title">{{ t.s("tenant_oauth_providers.crumbs.here") }}</h1>
+            <p class="view-sub">{{ t.s("tenant_oauth_providers.head.sub") }}</p>
           </div>
         </div>
 
         <div class="banner info" style="margin-bottom:18px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
           <div class="b-body">
-            <div class="b-title">Callback URL is fixed per tenant</div>
+            <div class="b-title">{{ t.s("tenant_oauth_providers.callback_banner.title") }}</div>
             <p><code>/drust/t/<b style="color:var(--accent);">{{ tenant_id }}</b>/oauth/&lt;provider&gt;/callback</code> — copy this into your provider console exactly.</p>
           </div>
         </div>
@@ -46,7 +46,7 @@
         <div class="banner danger" style="margin-bottom:18px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
           <div class="b-body">
-            <div class="b-title">Save failed</div>
+            <div class="b-title">{{ t.s("tenant_oauth_providers.error_banner.title") }}</div>
             <p>{{ msg }}</p>
           </div>
         </div>
@@ -58,8 +58,8 @@
             <div style="margin-bottom:14px;display:grid;place-items:center;">
               <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
             </div>
-            <h3>No OAuth providers configured</h3>
-            <p>Add one below to enable end-user sign-in.</p>
+            <h3>{{ t.s("tenant_oauth_providers.empty.title") }}</h3>
+            <p>{{ t.s("tenant_oauth_providers.empty.body") }}</p>
           </div>
         </div>
         {% else %}
@@ -73,16 +73,16 @@
             {% endif %}
           </div>
           <div class="prov-body">
-            <div class="prov-title">{{ p.provider|capitalize }} <span class="pill mint"><span class="dot"></span>enabled</span></div>
-            <div class="prov-meta">updated {{ p.updated_at }}</div>
+            <div class="prov-title">{{ p.provider|capitalize }} <span class="pill mint"><span class="dot"></span>{{ t.s("common.pill.enabled") }}</span></div>
+            <div class="prov-meta">{{ t.s("common.meta.updated") }} {{ p.updated_at }}</div>
             <div class="prov-fields">
-              <div class="lbl">Client ID</div>
+              <div class="lbl">{{ t.s("tenant_oauth_providers.field.client_id") }}</div>
               <div class="val" title="{{ p.client_id }}">{{ p.client_id_short }}</div>
-              <div class="lbl">Client secret</div>
+              <div class="lbl">{{ t.s("tenant_oauth_providers.field.client_secret") }}</div>
               <div class="val" style="color:var(--muted-2);">●●●●●●●●●●●●●●●●●●●●  (rotate by submitting form below)</div>
-              <div class="lbl">Callback</div>
+              <div class="lbl">{{ t.s("tenant_oauth_providers.field.callback") }}</div>
               <div class="val">/drust/t/{{ tenant_id }}/oauth/{{ p.provider }}/callback</div>
-              <div class="lbl">Allow redirects</div>
+              <div class="lbl">{{ t.s("tenant_oauth_providers.field.allow_redirects") }}</div>
               <div class="val">
                 {% for u in p.allowed_redirect_uris %}{{ u }}{% if !loop.last %} · {% endif %}{% endfor %}
               </div>
@@ -91,9 +91,9 @@
           <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
             <form method="post"
                   action="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers/{{ p.provider }}/delete"
-                  onsubmit="return confirm('Delete the {{ p.provider }} OAuth config? End users will no longer be able to sign in via {{ p.provider }} on this tenant.');"
+                  onsubmit="return confirm('{{ t.fmt1("tenant_oauth_providers.delete.confirm", "provider", p.provider) }}');"
                   style="margin:0;">
-              <button type="submit" class="btn sm danger">disable</button>
+              <button type="submit" class="btn sm danger">{{ t.s("tenant_oauth_providers.delete.button") }}</button>
             </form>
           </div>
         </div>
@@ -103,7 +103,7 @@
         <div class="card" style="margin-top:24px;">
           <div class="card-head">
             <div>
-              <div class="card-title">Add / update provider</div>
+              <div class="card-title">{{ t.s("tenant_oauth_providers.upsert.title") }}</div>
               <div class="card-sub">Upsert — submitting an existing provider overwrites it</div>
             </div>
           </div>
@@ -111,31 +111,31 @@
             <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers"
                   style="display:grid;grid-template-columns:1fr;gap:18px;">
               <div class="field">
-                <label>provider</label>
+                <label>{{ t.s("tenant_oauth_providers.form.provider_label") }}</label>
                 <select class="select" name="provider" required>
                   <option value="google">google</option>
                   <option value="github">github</option>
                 </select>
               </div>
               <div class="field">
-                <label>client id</label>
+                <label>{{ t.s("tenant_oauth_providers.form.client_id_label") }}</label>
                 <input class="input" name="client_id" required maxlength="256"
                        autocomplete="off" spellcheck="false"
                        placeholder="e.g. 1234567890-abc.apps.googleusercontent.com">
               </div>
               <div class="field">
-                <label>client secret <span class="hint">always blank · submitting replaces stored secret</span></label>
+                <label>{{ t.s("tenant_oauth_providers.form.client_secret_label") }} <span class="hint">always blank · submitting replaces stored secret</span></label>
                 <input class="input" name="client_secret" type="password" required maxlength="256"
                        autocomplete="off" spellcheck="false">
               </div>
               <div class="field">
-                <label>allowed redirect uris <span class="hint">one URL per line · https:// or http://localhost</span></label>
+                <label>{{ t.s("tenant_oauth_providers.form.redirects_label") }} <span class="hint">one URL per line · https:// or http://localhost</span></label>
                 <textarea class="textarea" name="allowed_redirect_uris" rows="4" required
                           spellcheck="false"
                           placeholder="https://app.example.com/auth/callback&#10;http://localhost:5173/auth/callback"></textarea>
               </div>
               <div>
-                <button type="submit" class="btn primary"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>save provider</button>
+                <button type="submit" class="btn primary"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>{{ t.s("tenant_oauth_providers.form.submit") }}</button>
               </div>
             </form>
           </div>

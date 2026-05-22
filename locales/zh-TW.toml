@@ -1137,6 +1137,9 @@ heading = "查詢計畫（EXPLAIN QUERY PLAN）"
 [tenant_rpc_test.eyebrow]
 view = "租戶 · 預存函式 · 測試場"
 
+[tenant_rpc_test.page]
+title = "drust 管理 — {tenant_name} / _rpc / {name} / 測試"
+
 [tenant_rpc_test.params]
 empty = "無參數 — 按下「執行」以執行。"
 heading = "參數"

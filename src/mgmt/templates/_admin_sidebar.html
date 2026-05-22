@@ -13,58 +13,58 @@
     </div>
     <div class="brand-text">
       <div class="brand-name">drust</div>
-      <div class="brand-meta">admin console</div>
+      <div class="brand-meta">{{ t.s("admin_sidebar.brand.subtitle") }}</div>
     </div>
     <div class="brand-ver">v{{ version }}</div>
   </div>
 
-  <button type="button" class="plane-pill clickable" onclick="if(window.drustCmdK)drustCmdK.open();" title="jump (⌘K)">
+  <button type="button" class="plane-pill clickable" onclick="if(window.drustCmdK)drustCmdK.open();" title="{{ t.s("admin_sidebar.plane.jump_title") }}">
     <span class="dot"></span>
     <div class="body">
-      <div class="label">plane · admin</div>
-      <div class="name">All tenants</div>
-      <div class="id">host-level scope</div>
+      <div class="label">{{ t.s("admin_sidebar.plane.label") }}</div>
+      <div class="name">{{ t.s("admin_sidebar.plane.name") }}</div>
+      <div class="id">{{ t.s("admin_sidebar.plane.scope") }}</div>
     </div>
     <span class="chev"><svg viewBox="0 0 24 24"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg></span>
   </button>
 
   <nav class="nav">
-    <div class="nav-section"><span>Organization</span></div>
+    <div class="nav-section"><span>{{ t.s("admin_sidebar.section.organization") }}</span></div>
     <a class="nav-item" data-section="tenants" href="/drust/admin/tenants">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/></svg></span>
-      Tenants
+      {{ t.s("admin_sidebar.nav.tenants") }}
     </a>
     <a class="nav-item" data-section="audit" href="/drust/admin/audit">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h6"/></svg></span>
-      Audit log
+      {{ t.s("admin_sidebar.nav.audit_log") }}
     </a>
     <a class="nav-item" data-section="backups" href="/drust/admin/backups">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
-      Backups
+      {{ t.s("admin_sidebar.nav.backups") }}
     </a>
     <a class="nav-item" data-section="files" href="/drust/admin/files">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 7l2-2h5l2 2h9v12H3z"/></svg></span>
-      Host files
+      {{ t.s("admin_sidebar.nav.host_files") }}
     </a>
 
-    <div class="nav-section"><span>Resources</span></div>
+    <div class="nav-section"><span>{{ t.s("admin_sidebar.section.resources") }}</span></div>
     <a class="nav-item" data-section="docs" href="/drust/admin/_docs/changelog">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 4h12l4 4v12H4z"/><path d="M16 4v4h4"/></svg></span>
-      Changelog
+      {{ t.s("admin_sidebar.nav.changelog") }}
     </a>
     <a class="nav-item" data-section="design" href="/drust/admin/_design">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="19" r="1.5"/><circle cx="5" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></span>
-      Design system
+      {{ t.s("admin_sidebar.nav.design_system") }}
     </a>
   </nav>
 
   <div class="sidebar-foot">
     <div class="who-av">AK</div>
     <div class="who">
-      <div class="who-name">admin</div>
-      <div class="who-mail">scope: host</div>
+      <div class="who-name">{{ t.s("admin_sidebar.foot.username") }}</div>
+      <div class="who-mail">{{ t.s("admin_sidebar.foot.scope") }}</div>
     </div>
-    <span class="status-pulse" title="all systems nominal"></span>
+    <span class="status-pulse" title="{{ t.s("admin_sidebar.foot.status_title") }}"></span>
   </div>
 </aside>
 <script>

@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ t.locale_code() }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_name }} / _rpc / {{ existing_name }} / test</title>
+<title>{{ t.fmt2("tenant_rpc_test.page.title", "tenant_name", tenant_name, "name", existing_name) }}</title>
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -14,15 +14,15 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <a href="/drust/admin/tenants/{{ tenant_id }}/_rpc">rpc</a>
+        <a href="/drust/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("common.crumbs.rpc") }}</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/edit">{{ existing_name }}</a>
         <span class="sep">/</span>
-        <span class="here">test</span>
+        <span class="here">{{ t.s("tenant_rpc_test.crumbs.here") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -30,43 +30,43 @@
     <div class="page page-wide">
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">Tenant · stored functions · playground</div>
+            <div class="eyebrow">{{ t.s("tenant_rpc_test.eyebrow.view") }}</div>
             <h1 class="view-title">{{ existing_name }}</h1>
             <p class="view-sub">
-              {% if anon_callable %}<span class="pill accent"><span class="dot"></span>anon-callable</span>{% else %}<span class="pill muted">service-only</span>{% endif %}
+              {% if anon_callable %}<span class="pill accent"><span class="dot"></span>{{ t.s("common.rpc.pill_anon_callable") }}</span>{% else %}<span class="pill muted">{{ t.s("common.rpc.pill_service_only") }}</span>{% endif %}
               {% if let Some(d) = description %} · {{ d }}{% endif %}
             </p>
           </div>
           <div style="display:flex;gap:8px;">
-            <a class="btn ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/edit">edit →</a>
+            <a class="btn ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/edit">{{ t.s("tenant_rpc_test.actions.edit") }}</a>
           </div>
         </div>
 
         <div class="card" style="margin-bottom:14px;">
-          <div class="card-head">sql</div>
+          <div class="card-head">{{ t.s("tenant_rpc_test.sql.heading") }}</div>
           <pre class="code">{{ sql }}</pre>
         </div>
 
         <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/test/run" class="card">
           <div class="card-head">
-            <span>params <span class="count">· {{ params.len() }} declared</span></span>
-            <button class="btn btn-primary btn-sm" type="submit">Run ↵</button>
+            <span>{{ t.s("tenant_rpc_test.params.heading") }} <span class="count">· {{ params.len() }} declared</span></span>
+            <button class="btn btn-primary btn-sm" type="submit">{{ t.s("tenant_rpc_test.actions.run") }}</button>
           </div>
           <div class="card-body">
             {% if params.is_empty() %}
-            <div class="muted">No parameters — press <b>Run</b> to execute.</div>
+            <div class="muted">{{ t.s("tenant_rpc_test.params.empty") }}</div>
             {% else %}
             <div style="display:grid;grid-template-columns:160px 90px 1fr;gap:10px 14px;align-items:center;">
-              <div class="muted" style="font-size:12px;">name</div>
-              <div class="muted" style="font-size:12px;">type</div>
-              <div class="muted" style="font-size:12px;">value{% if !params.is_empty() %} <span class="muted-cell" style="font-size:11px;margin-left:8px;">empty → null/default</span>{% endif %}</div>
+              <div class="muted" style="font-size:12px;">{{ t.s("tenant_rpc_test.params_col.name") }}</div>
+              <div class="muted" style="font-size:12px;">{{ t.s("tenant_rpc_test.params_col.type") }}</div>
+              <div class="muted" style="font-size:12px;">{{ t.s("tenant_rpc_test.params_col.value") }}{% if !params.is_empty() %} <span class="muted-cell" style="font-size:11px;margin-left:8px;">empty → null/default</span>{% endif %}</div>
               {% for p in params %}
               <label for="p_{{ p.name }}" style="font-family:var(--mono);">
                 {{ p.name }}{% if p.required %} <span style="color:var(--danger);">*</span>{% endif %}
               </label>
               <span class="pill muted" style="font-size:10px;">{{ p.ty }}</span>
               <input id="p_{{ p.name }}" class="input" name="p_{{ p.name }}" value="{{ p.value }}"
-                     placeholder="{% if !p.default_display.is_empty() %}default: {{ p.default_display }}{% else %}{% if p.required %}required{% else %}optional · null{% endif %}{% endif %}"
+                     placeholder="{% if !p.default_display.is_empty() %}default: {{ p.default_display }}{% else %}{% if p.required %}{{ t.s("tenant_rpc_test.params_placeholder.required") }}{% else %}{{ t.s("tenant_rpc_test.params_placeholder.optional") }}{% endif %}{% endif %}"
                      data-type="{{ p.ty }}">
               {% endfor %}
             </div>
@@ -77,22 +77,22 @@
         {% if let Some(o) = outcome %}
         <div class="card" style="margin-top:14px;">
           <div class="card-head">
-            <span>result</span>
-            <span class="card-head-actions"><b>{{ o.duration_ms }}</b> ms</span>
+            <span>{{ t.s("tenant_rpc_test.result.heading") }}</span>
+            <span class="card-head-actions"><b>{{ o.duration_ms }}</b> {{ t.s("common.duration.ms") }}</span>
           </div>
 
           {% if let Some(err) = o.error %}
           <div class="banner danger" style="margin:14px 18px;">
             <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
-            <div class="b-body"><div class="b-title">Query error</div><p style="white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:13px;">{{ err }}</p></div>
+            <div class="b-body"><div class="b-title">{{ t.s("tenant_rpc_test.result.error_title") }}</div><p style="white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:13px;">{{ err }}</p></div>
           </div>
           {% endif %}
 
           {% if let Some(r) = o.result %}
           <div style="padding:0 18px 14px;display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--muted);">
-            <span><b style="color:var(--text);">{{ r.row_count }}</b> rows</span>
-            <span><b style="color:var(--text);">{{ r.column_names.len() }}</b> columns</span>
-            {% if r.truncated %}<span class="pill warn"><span class="dot"></span>truncated</span>{% endif %}
+            <span><b style="color:var(--text);">{{ r.row_count }}</b> {{ t.s("tenant_rpc_test.result.rows_unit") }}</span>
+            <span><b style="color:var(--text);">{{ r.column_names.len() }}</b> {{ t.s("tenant_rpc_test.result.columns_unit") }}</span>
+            {% if r.truncated %}<span class="pill warn"><span class="dot"></span>{{ t.s("tenant_rpc_test.result.truncated") }}</span>{% endif %}
           </div>
           <div class="records-scroll" style="max-height:480px;">
             <table class="data">
@@ -119,14 +119,14 @@
 
         {% if !o.bound_json.is_empty() %}
         <details class="card" style="margin-top:14px;">
-          <summary class="card-head" style="cursor:pointer;list-style:none;">bound params (JSON)</summary>
+          <summary class="card-head" style="cursor:pointer;list-style:none;">{{ t.s("tenant_rpc_test.bound.heading") }}</summary>
           <pre class="code code-sm">{{ o.bound_json }}</pre>
         </details>
         {% endif %}
 
         {% if !o.explain_rows.is_empty() %}
         <details class="card" style="margin-top:14px;" open>
-          <summary class="card-head" style="cursor:pointer;list-style:none;">EXPLAIN QUERY PLAN <span class="count">· {{ o.explain_rows.len() }} rows</span></summary>
+          <summary class="card-head" style="cursor:pointer;list-style:none;">{{ t.s("tenant_rpc_test.explain.heading") }} <span class="count">· {{ o.explain_rows.len() }} {{ t.s("tenant_rpc_test.result.rows_unit") }}</span></summary>
           <pre class="code code-sm">{% for line in o.explain_rows %}{{ line }}
 {% endfor %}</pre>
         </details>
