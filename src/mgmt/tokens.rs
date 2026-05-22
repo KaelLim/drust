@@ -1,10 +1,9 @@
 use crate::auth::bearer::{generate_token, hash_token};
-use crate::mgmt::i18n::{Locale, Translator};
+use crate::mgmt::i18n::{LocaleHint, Translator};
 use crate::mgmt::tenants::TenantsState;
 use crate::storage::schema::{Collection, list_collections};
 use crate::storage::tenant_db::open_read;
 use askama::Template;
-use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -191,7 +190,7 @@ pub async fn detail_redirect(Path(tenant_id): Path<String>) -> Response {
 /// collection page. The sidebar's `_api_keys` row links here.
 pub async fn api_keys_page(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let conn = state.session.meta.lock().await;

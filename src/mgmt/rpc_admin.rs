@@ -5,13 +5,12 @@
 //! `crate::rpc::registry::list` for the index page; deletes via
 //! `crate::rpc::registry::delete` and 303-redirects back to the list.
 
-use crate::mgmt::i18n::{Locale, Translator};
+use crate::mgmt::i18n::{Locale, LocaleHint, Translator};
 use crate::mgmt::tenants::TenantsState;
 use crate::rpc::registry;
 use crate::storage::schema::{Collection, list_collections};
 use crate::storage::tenant_db::open_read;
 use askama::Template;
-use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -64,7 +63,7 @@ pub struct RpcListQs {
 /// the empty-state mascot and "+ new function" CTA.
 pub async fn rpc_index(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
     axum::extract::Query(qs): axum::extract::Query<RpcListQs>,
 ) -> Response {
@@ -194,7 +193,7 @@ fn load_collections(state: &TenantsState, tenant_id: &str) -> Vec<Collection> {
 /// `GET /admin/tenants/{id}/_rpc/new` — render the empty create form.
 pub async fn rpc_new_form(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
@@ -229,7 +228,7 @@ pub async fn rpc_new_form(
 /// from the existing row. 404 when the RPC isn't found.
 pub async fn rpc_edit_form(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
     let conn = match open_read(&state.data_dir, &tenant_id) {
@@ -290,7 +289,7 @@ pub struct RpcFormBody {
 /// with the submitted name already exists.
 pub async fn rpc_save(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
     axum::Form(form): axum::Form<RpcFormBody>,
 ) -> Response {
@@ -475,7 +474,7 @@ pub struct RpcTestRunForm {
 /// doesn't exist (matches the existence check shape of other handlers).
 pub async fn rpc_test_form(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
     let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
@@ -573,7 +572,7 @@ fn coerce_form_string(ty: crate::rpc::params::ParamType, s: &str) -> serde_json:
 /// the submitted form values and re-render the page with the result.
 pub async fn rpc_test_run(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path((tenant_id, name)): Path<(String, String)>,
     axum::Form(form): axum::Form<RpcTestRunForm>,
 ) -> Response {

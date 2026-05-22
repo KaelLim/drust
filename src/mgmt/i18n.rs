@@ -46,6 +46,11 @@ pub struct Translator {
 
 impl Translator {
     pub fn new(locale: Locale) -> Self {
+        // v1.22 — defensive idempotent init so any test that builds an admin
+        // handler directly (bypassing the production router entry points)
+        // doesn't panic. Production main also calls this at startup; the
+        // OnceLock makes the second call a no-op.
+        init_bundles();
         let bundles = BUNDLES
             .get()
             .expect("init_bundles must run before Translator::new");
@@ -184,6 +189,29 @@ fn substitute_placeholders(template: &str, args: &[(&str, &str)]) -> String {
         out.push(c);
     }
     out
+}
+
+/// Axum extractor that picks `Locale` out of request extensions (placed by
+/// `locale_layer`) and falls back to `Locale::En` when the layer didn't run.
+/// Means handlers compile + work even on test routers that bypass the
+/// outer admin layer chain — the page just renders in English. Production
+/// routers DO wire the middleware, so the fallback only fires in tests.
+pub struct LocaleHint(pub Locale);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for LocaleHint {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(LocaleHint(
+            parts
+                .extensions
+                .get::<Locale>()
+                .copied()
+                .unwrap_or(Locale::En),
+        ))
+    }
 }
 
 pub static BUNDLES: OnceLock<HashMap<Locale, Bundle>> = OnceLock::new();

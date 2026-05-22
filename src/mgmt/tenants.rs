@@ -1,10 +1,9 @@
 use crate::auth::bearer::{generate_token, hash_token};
 use crate::auth::middleware::AdminSessionState;
-use crate::mgmt::i18n::{Locale, Translator};
+use crate::mgmt::i18n::{Locale, LocaleHint, Translator};
 use crate::storage::garage::GarageClient;
 use crate::storage::tenant_db::{open_read, open_write, tenant_dir, validate_tenant_id};
 use askama::Template;
-use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -185,7 +184,7 @@ pub fn valid_slug(s: &str) -> bool {
 
 pub async fn list_page_axum(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
 ) -> Response {
     // v1.15.0 — reads denormalized stats columns. Zero per-tenant SQLite
     // opens on the request path; the background sampler keeps them fresh.
@@ -710,7 +709,7 @@ fn humanize_audit_ts(ts: &str) -> String {
 /// `/_api_keys` is still reachable but no longer the default).
 pub async fn tenant_overview_page(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
     if validate_tenant_id(&tenant_id).is_err() {
@@ -874,7 +873,7 @@ pub async fn tenant_overview_page(
 /// Admin uploads go to the tenant's own buckets (tenant-{id}-{pub,prv}).
 pub async fn tenant_files_admin_page(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
     axum::extract::Query(qs): axum::extract::Query<TenantFilesListQs>,
 ) -> Response {
@@ -1210,7 +1209,7 @@ async fn render_oauth_providers_page(
 /// `GET /admin/tenants/{id}/_oauth_providers`
 pub async fn tenant_oauth_providers_page(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
     render_oauth_providers_page(&state, tenant_id, None, locale).await
@@ -1223,7 +1222,7 @@ pub async fn tenant_oauth_providers_page(
 /// on success 303s back to the GET so a refresh doesn't resubmit.
 pub async fn tenant_oauth_provider_upsert(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
     Form(form): Form<OauthProviderUpsertForm>,
 ) -> Response {
@@ -1504,7 +1503,7 @@ async fn render_webhooks_page(
 /// the response.
 pub async fn tenant_webhooks_page(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -1533,7 +1532,7 @@ pub async fn tenant_webhooks_page(
 /// via `Referer` even though it never lives in the URL.
 pub async fn tenant_webhook_create_form(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
     Form(form): Form<WebhookCreateForm>,
 ) -> Response {

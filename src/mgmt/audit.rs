@@ -514,9 +514,8 @@ pub fn filter(entries: &[AuditEntry], spec: &FilterSpec) -> Vec<AuditEntry> {
         .collect()
 }
 
-use crate::mgmt::i18n::{Locale, Translator};
+use crate::mgmt::i18n::{LocaleHint, Translator};
 use askama::Template;
-use axum::Extension;
 use axum::extract::{Query, State};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
@@ -794,7 +793,7 @@ pub fn build_body_ctx(
 
 pub async fn audit_host_page(
     State(state): State<crate::mgmt::tenants::TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Query(q): Query<AuditQuery>,
 ) -> Response {
     let meta = state.session.meta.lock().await;
@@ -866,7 +865,7 @@ struct AuditTenantPage {
 
 pub async fn audit_tenant_page(
     State(state): State<crate::mgmt::tenants::TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     axum::extract::Path(tenant_id): axum::extract::Path<String>,
     Query(q): Query<AuditQuery>,
 ) -> Response {

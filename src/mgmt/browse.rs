@@ -1,4 +1,4 @@
-use crate::mgmt::i18n::{Locale, Translator};
+use crate::mgmt::i18n::{LocaleHint, Translator};
 use crate::mgmt::tenants::TenantsState;
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::{execute_read_query, execute_read_query_admin};
@@ -8,7 +8,6 @@ use crate::storage::schema::{
 };
 use crate::storage::tenant_db::open_read;
 use askama::Template;
-use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -148,7 +147,7 @@ fn tenant_name_lookup(conn: &rusqlite::Connection, tenant_id: &str) -> Option<St
 
 pub async fn collections_page(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let meta = state.session.meta.lock().await;
@@ -254,7 +253,7 @@ fn mask_sensitive_columns(
 
 pub async fn collection_rows_page(
     State(state): State<TenantsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path((tenant_id, coll_name)): Path<(String, String)>,
     Query(qs): Query<BrowseQs>,
 ) -> Response {
