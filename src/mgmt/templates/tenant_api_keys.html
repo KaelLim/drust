@@ -10,7 +10,7 @@
   <div class="key-info">
     <div class="key-name">
       {{ label }}
-      {% if role == "service" %}<span class="pill accent"><span class="dot"></span>server-only</span>{% else %}<span class="pill mint"><span class="dot"></span>public</span>{% endif %}
+      {% if role == "service" %}<span class="pill accent"><span class="dot"></span>{{ t.s("tenant_api_keys.pill.server_only") }}</span>{% else %}<span class="pill mint"><span class="dot"></span>{{ t.s("tenant_api_keys.pill.public") }}</span>{% endif %}
     </div>
     <div class="key-desc">{{ scopes }}</div>
   </div>
@@ -18,30 +18,30 @@
     {% if let Some(pt) = info.plaintext %}
   <code class="key-val" id="key-{{ role }}" data-plain="{{ pt }}" data-revealed="0">••••••••••••••••••••••••••••••••</code>
   <div class="row" style="gap:6px;">
-    <button class="btn sm icon ghost" type="button" onclick="toggleKey('key-{{ role }}', this)" title="show / hide" aria-label="show or hide key">
+    <button class="btn sm icon ghost" type="button" onclick="toggleKey('key-{{ role }}', this)" title="{{ t.s("tenant_api_keys.btn.show_hide_title") }}" aria-label="show or hide key">
       <svg aria-hidden="true"><use href="#i-eye"/></svg>
     </button>
-    <button class="btn sm icon" type="button" onclick="copyKey('key-{{ role }}', this)" title="copy key" aria-label="copy key">
+    <button class="btn sm icon" type="button" onclick="copyKey('key-{{ role }}', this)" title="{{ t.s("tenant_api_keys.btn.copy_key_title") }}" aria-label="copy key">
       <svg aria-hidden="true"><use href="#i-copy"/></svg>
     </button>
-    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="Reroll {{ role }} key? The current key will be invalidated immediately." class="reroll-form" style="margin:0;display:inline;">
-      <button class="btn sm icon danger" type="submit" title="reroll — invalidates current key" aria-label="reroll key">
+    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="{{ t.fmt1("tenant_api_keys.confirm.reroll_text", "role", role) }}" class="reroll-form" style="margin:0;display:inline;">
+      <button class="btn sm icon danger" type="submit" title="{{ t.s("tenant_api_keys.btn.reroll_title") }}" aria-label="reroll key">
         <svg aria-hidden="true"><use href="#i-refresh"/></svg>
       </button>
     </form>
   </div>
     {% else %}
-  <code class="key-val muted">key not stored — created before v1.1c</code>
-  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="Reroll {{ role }} key? The current key will be invalidated immediately." class="reroll-form" style="margin:0;">
-    <button class="btn sm icon danger" type="submit" title="reroll — invalidates current key" aria-label="reroll key">
+  <code class="key-val muted">{{ t.s("tenant_api_keys.state.key_not_stored") }}</code>
+  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="{{ t.fmt1("tenant_api_keys.confirm.reroll_text", "role", role) }}" class="reroll-form" style="margin:0;">
+    <button class="btn sm icon danger" type="submit" title="{{ t.s("tenant_api_keys.btn.reroll_title") }}" aria-label="reroll key">
       <svg aria-hidden="true"><use href="#i-refresh"/></svg>
     </button>
   </form>
     {% endif %}
   {% else %}
-  <code class="key-val muted">no {{ role }} key yet</code>
+  <code class="key-val muted">{{ t.fmt1("tenant_api_keys.state.no_key_yet", "role", role) }}</code>
   <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" style="margin:0;">
-    <button class="btn sm icon" type="submit" title="generate key" aria-label="generate key">
+    <button class="btn sm icon" type="submit" title="{{ t.s("tenant_api_keys.btn.generate_title") }}" aria-label="generate key">
       <svg aria-hidden="true"><use href="#i-refresh"/></svg>
     </button>
   </form>
@@ -53,7 +53,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_name }} / _api_keys</title>
+<title>{{ t.fmt1("tenant_api_keys.page.title", "tenant_name", tenant_name) }}</title>
 <meta name="description" content="drust admin — tenant {{ tenant_name }}: API keys (anon + service) and one-click Claude Code MCP server setup.">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
@@ -65,11 +65,11 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <span class="here">API keys</span>
+        <span class="here">{{ t.s("tenant_api_keys.crumbs.here") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -78,8 +78,8 @@
 
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">Tenant · connect</div>
-            <h1 class="view-title">API keys</h1>
+            <div class="eyebrow">{{ t.s("tenant_api_keys.head.eyebrow") }}</div>
+            <h1 class="view-title">{{ t.s("tenant_api_keys.crumbs.here") }}</h1>
             <p class="view-sub">Two personalities for this tenant — pick whichever matches the surface you're integrating with. Reroll clears the previous bearer immediately. Tenant <b>{{ tenant_name }}</b> <code style="opacity:0.6;font-size:11px;">{{ tenant_id }}</code> · created {{ created_at }}.</p>
           </div>
         </div>
@@ -87,25 +87,25 @@
         <div class="banner danger" style="margin-bottom:18px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
           <div class="b-body">
-            <div class="b-title">Service token is full admin of this tenant.</div>
+            <div class="b-title">{{ t.s("tenant_api_keys.banner.service_admin_title") }}</div>
             <p>Treat it like a database root password. Use the <b>anon</b> token for browser-visible surfaces; service stays on your server.</p>
           </div>
         </div>
 
-        {% call api_key_card("anon", "Anon key", "For browser SDKs · subject to per-collection anon_caps", anon, tenant_id) %}
-        {% call api_key_card("service", "Service key", "Bypasses anon_caps and owner-field · use only in trusted backends", service, tenant_id) %}
+        {% call api_key_card("anon", t.s("tenant_api_keys.card.anon_label"), t.s("tenant_api_keys.card.anon_scopes"), anon, tenant_id) %}
+        {% call api_key_card("service", t.s("tenant_api_keys.card.service_label"), t.s("tenant_api_keys.card.service_scopes"), service, tenant_id) %}
 
         <div class="key-row" style="margin-top:10px;">
           <div class="key-icon" style="color:var(--lilac);">
             <svg viewBox="0 0 24 24"><path d="M4 4l8 4 8-4M4 12l8 4 8-4M4 20l8-4 8 4" stroke-linejoin="round" stroke-linecap="round"/></svg>
           </div>
           <div class="key-info">
-            <div class="key-name">MCP endpoint <span class="pill lilac"><span class="dot"></span>42 tools</span></div>
-            <div class="key-desc">Streamable HTTP · authenticated via service token</div>
+            <div class="key-name">{{ t.s("tenant_api_keys.mcp.name") }} <span class="pill lilac"><span class="dot"></span>{{ t.fmt1("tenant_api_keys.mcp.tools_pill", "n", 48) }}</span></div>
+            <div class="key-desc">{{ t.s("tenant_api_keys.mcp.desc") }}</div>
           </div>
           <code class="key-val" id="mcp-url" data-tenant="{{ tenant_id }}">/drust/t/{{ tenant_id }}/mcp</code>
           <div class="row" style="gap:6px;">
-            <button class="btn sm icon" type="button" onclick="copyMcpCommand(this)" title="copy claude mcp add-json command" aria-label="copy mcp.json command">
+            <button class="btn sm icon" type="button" onclick="copyMcpCommand(this)" title="{{ t.s("tenant_api_keys.mcp.copy_title") }}" aria-label="copy mcp.json command">
               <svg aria-hidden="true"><use href="#i-braces"/></svg>
             </button>
           </div>
@@ -115,11 +115,11 @@
           <div class="card-head">
             <div>
               <div class="card-title">
-                Self-registration
+                {{ t.s("tenant_api_keys.self_reg.title") }}
                 {% if allow_self_register %}
-                <span id="self-reg-pill" class="pill mint"><span class="dot"></span>enabled</span>
+                <span id="self-reg-pill" class="pill mint"><span class="dot"></span>{{ t.s("common.pill.enabled") }}</span>
                 {% else %}
-                <span id="self-reg-pill" class="pill muted"><span class="dot"></span>disabled</span>
+                <span id="self-reg-pill" class="pill muted"><span class="dot"></span>{{ t.s("common.state.disabled") }}</span>
                 {% endif %}
               </div>
               <div class="card-sub">When enabled, unauthenticated users can <code>POST /t/{{ tenant_id }}/auth/register</code></div>
@@ -131,8 +131,8 @@
                 <input type="checkbox" id="self-reg-toggle" {% if allow_self_register %}checked{% endif %} style="display:none;">
                 <span class="cap-glyph">REG</span>
                 <div>
-                  <div class="cap-name">Public registration</div>
-                  <div class="cap-desc">end-users sign up without admin approval</div>
+                  <div class="cap-name">{{ t.s("tenant_api_keys.self_reg.cap_name") }}</div>
+                  <div class="cap-desc">{{ t.s("tenant_api_keys.self_reg.cap_desc") }}</div>
                 </div>
                 <span class="cap-switch" aria-hidden="true"></span>
               </label>
@@ -159,7 +159,7 @@
       setTimeout(function () { useEl.setAttribute('href', orig); }, 1500);
     } else {
       var origText = btn.textContent;
-      btn.textContent = 'copied ✓';
+      btn.textContent = '{{ t.s("common.button.copied") }}';
       if (window.chonkReact) window.chonkReact('happy');
       setTimeout(function () { btn.textContent = origText; }, 1500);
     }
@@ -171,12 +171,12 @@
     if (revealed) {
       el.textContent = '••••••••••••••••••••••••••••••••';
       el.setAttribute('data-revealed', '0');
-      if (useEl) useEl.setAttribute('href', '#i-eye'); else btn.textContent = 'show';
+      if (useEl) useEl.setAttribute('href', '#i-eye'); else btn.textContent = '{{ t.s("common.button.show") }}';
       btn.setAttribute('title', 'show key');
     } else {
       el.textContent = el.getAttribute('data-plain');
       el.setAttribute('data-revealed', '1');
-      if (useEl) useEl.setAttribute('href', '#i-eye-off'); else btn.textContent = 'hide';
+      if (useEl) useEl.setAttribute('href', '#i-eye-off'); else btn.textContent = '{{ t.s("common.button.hide") }}';
       btn.setAttribute('title', 'hide key');
       if (window.chonkReact) window.chonkReact('curious', 700);
     }
@@ -191,7 +191,7 @@
     var tenantId = urlEl && urlEl.getAttribute('data-tenant');
     var token = keyEl && keyEl.getAttribute('data-plain');
     if (!tenantId || !token) {
-      drustUI.alert({title:'Service key required', body:'Reroll or generate the service key above to enable the one-click MCP command.'});
+      drustUI.alert({title:'{{ t.s("tenant_api_keys.alert.service_required_title") }}', body:'{{ t.s("tenant_api_keys.alert.service_required_body") }}'});
       return;
     }
     var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
@@ -227,7 +227,7 @@
           cb.checked = !newVal;
           tile.classList.toggle('on', !newVal);
           _setSelfRegPill(!newVal);
-          drustUI.alert({title:'Update failed', body:'Could not update self-registration setting.'});
+          drustUI.alert({title:'{{ t.s("tenant_api_keys.alert.update_failed_title") }}', body:'Could not update self-registration setting.'});
         } else if (window.chonkReact) {
           window.chonkReact('happy', 600);
         }
@@ -235,7 +235,7 @@
         cb.checked = !newVal;
         tile.classList.toggle('on', !newVal);
         _setSelfRegPill(!newVal);
-        drustUI.alert({title:'Update failed', body:'Could not update self-registration setting.'});
+        drustUI.alert({title:'{{ t.s("tenant_api_keys.alert.update_failed_title") }}', body:'Could not update self-registration setting.'});
       });
     });
   })();
@@ -243,9 +243,9 @@
     f.addEventListener('submit', async function (e) {
       e.preventDefault();
       var ok = await drustUI.confirm({
-        title:'Reroll key',
+        title:'{{ t.s("tenant_api_keys.confirm.reroll_title") }}',
         body: f.getAttribute('data-confirm-text') || 'Reroll the key? The previous key will be invalidated immediately.',
-        okText:'Reroll', danger:true
+        okText:'{{ t.s("tenant_api_keys.confirm.reroll_ok") }}', danger:true
       });
       if (ok) f.submit();
     });

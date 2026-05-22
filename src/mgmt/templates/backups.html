@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — backups</title>
-<meta name="description" content="drust admin — backup snapshots produced by drust-backup.timer. List + download.">
+<title>{{ t.s("backups.page.title") }}</title>
+<meta name="description" content="{{ t.s("backups.page.meta_description") }}">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -15,9 +15,9 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
-        <span class="here">Backups</span>
+        <span class="here">{{ t.s("backups.crumbs.here") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -26,8 +26,8 @@
 
       <div class="view-head">
         <div class="grow">
-          <div class="eyebrow">Admin · resilience</div>
-          <h1 class="view-title">Backups</h1>
+          <div class="eyebrow">{{ t.s("backups.head.eyebrow") }}</div>
+          <h1 class="view-title">{{ t.s("backups.crumbs.here") }}</h1>
           <p class="view-sub">Daily <code>VACUUM INTO</code> snapshots driven by <code>drust-backup.timer</code>, compressed with zstd, retained 30 days. Inspect a snapshot before restoring to see which tenants are inside.</p>
         </div>
       </div>
@@ -35,19 +35,19 @@
       {% if backups.len() > 0 %}
       <div class="stat-grid" style="margin-bottom:20px;">
         <div class="stat accent-edge">
-          <div class="label">Snapshots</div>
+          <div class="label">{{ t.s("backups.stats.snapshots_label") }}</div>
           <div class="val">{{ backups.len() }}</div>
-          <div class="meta">on disk</div>
+          <div class="meta">{{ t.s("backups.stats.snapshots_meta") }}</div>
         </div>
         <div class="stat">
-          <div class="label">Total size</div>
+          <div class="label">{{ t.s("backups.stats.total_size_label") }}</div>
           <div class="val">{{ total_size_human }}</div>
-          <div class="meta">.tar.zst combined</div>
+          <div class="meta">{{ t.s("backups.stats.total_size_meta") }}</div>
         </div>
         <div class="stat">
-          <div class="label">Storage path</div>
+          <div class="label">{{ t.s("backups.stats.storage_path_label") }}</div>
           <div class="val" style="font:500 13px/1.3 var(--mono);color:var(--text-soft);word-break:break-all;">{{ backup_dir }}</div>
-          <div class="meta">30-day retention</div>
+          <div class="meta">{{ t.s("backups.stats.storage_path_meta") }}</div>
         </div>
       </div>
       {% endif %}
@@ -55,7 +55,7 @@
       <div class="banner info" style="margin-bottom:18px;">
         <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
         <div class="b-body">
-          <div class="b-title">Inspecting a snapshot</div>
+          <div class="b-title">{{ t.s("backups.banner.inspect_title") }}</div>
           <p>Each <code>.tar.zst</code> contains <code>meta.sqlite</code> + every tenant's <code>data.sqlite</code>. From the shell: <code>tar --zstd -tf &lt;file&gt;</code> to list, <code>tar --zstd -xf &lt;file&gt; -C /tmp/restore</code> to extract.</p>
         </div>
       </div>
@@ -66,7 +66,7 @@
           <div style="margin-bottom:18px;display:grid;place-items:center;">
             <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
           </div>
-          <h3>No backups yet</h3>
+          <h3>{{ t.s("backups.empty.title") }}</h3>
           <p>The first run of <code>drust-backup.timer</code> will populate this list.</p>
         </div>
       </div>
@@ -82,11 +82,11 @@
         </div>
         <div class="bk-size">{{ b.size_human }}</div>
         <div class="bk-actions">
-          <a class="btn sm ghost" href="/drust/admin/backups/{{ b.filename }}/inspect" title="inspect tenants in snapshot">
-            <svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>inspect
+          <a class="btn sm ghost" href="/drust/admin/backups/{{ b.filename }}/inspect" title="{{ t.s("backups.row.inspect_title") }}">
+            <svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>{{ t.s("backups.row.inspect_label") }}
           </a>
-          <a class="btn sm" href="/drust/admin/backups/{{ b.filename }}/download" download="{{ b.filename }}" title="download .tar.zst">
-            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>download
+          <a class="btn sm" href="/drust/admin/backups/{{ b.filename }}/download" download="{{ b.filename }}" title="{{ t.s("backups.row.download_title") }}">
+            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>{{ t.s("backups.row.download_label") }}
           </a>
         </div>
       </div>

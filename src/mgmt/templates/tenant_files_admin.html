@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_name }} / files</title>
+<title>{{ t.s("tenant_files_admin.page.title") }} — {{ tenant_name }}</title>
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -14,11 +14,11 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <span class="here">files</span>
+        <span class="here">{{ t.s("common.crumbs.files") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -27,8 +27,8 @@
 
       <div class="view-head">
         <div class="grow">
-          <div class="eyebrow">Tenant · backend</div>
-          <h1 class="view-title">Storage</h1>
+          <div class="eyebrow">{{ t.s("tenant_files_admin.head.eyebrow") }}</div>
+          <h1 class="view-title">{{ t.s("tenant_files_admin.head.title") }}</h1>
           <p class="view-sub">Two Garage buckets per tenant — <code>tenant-{{ tenant_id }}-pub</code> served at <code>/public/&lt;key&gt;</code>, <code>tenant-{{ tenant_id }}-prv</code> requires signed URLs.</p>
         </div>
       </div>
@@ -37,7 +37,7 @@
       <div class="banner danger" style="margin-bottom:14px;">
         <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg></span>
         <div class="b-body">
-          <div class="b-title">Host disk at {{ disk.free_pct_display }}% free — uploads paused</div>
+          <div class="b-title">{{ t.fmt1("tenant_files_admin.disk.banner_title", "pct", disk.free_pct_display) }}</div>
           <p>Free up <code>/var/lib/garage</code> on the host or scale the disk.</p>
         </div>
       </div>
@@ -45,38 +45,38 @@
 
       <div class="stat-grid" style="margin-bottom:24px;">
         <div class="stat accent-edge">
-          <div class="label">Files</div>
+          <div class="label">{{ t.s("tenant_files_admin.stats.files_label") }}</div>
           <div class="val">{{ total_files }}</div>
-          <div class="meta">_system_files rows</div>
+          <div class="meta">{{ t.s("tenant_files_admin.stats.files_meta") }}</div>
         </div>
         <div class="stat">
-          <div class="label">Total size</div>
+          <div class="label">{{ t.s("tenant_files_admin.stats.size_label") }}</div>
           <div class="val">{{ used_mb_display }}</div>
           <div class="meta">SUM(size_bytes)</div>
         </div>
         <div class="stat">
-          <div class="label">Host disk free</div>
+          <div class="label">{{ t.s("tenant_files_admin.stats.disk_label") }}</div>
           <div class="val" style="{% if disk.free_pct < 20.0 %}color:var(--danger);{% endif %}">{{ disk.free_pct_display }} <span class="unit">%</span></div>
-          <div class="meta">{% if disk.free_pct < 20.0 %}<span class="down">uploads paused</span>{% else %}<span class="up">healthy</span>{% endif %}</div>
+          <div class="meta">{% if disk.free_pct < 20.0 %}<span class="down">{{ t.s("tenant_files_admin.stats.disk_paused") }}</span>{% else %}<span class="up">{{ t.s("tenant_files_admin.stats.disk_healthy") }}</span>{% endif %}</div>
         </div>
       </div>
 
       {% if storage_available %}
       <div class="card">
-        <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin → tenant-{{ tenant_id }}-*</span></div>
+        <div class="card-head"><span>{{ t.s("tenant_files_admin.upload.card_title") }}</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin → tenant-{{ tenant_id }}-*</span></div>
         <div class="card-body">
           <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/files/upload" enctype="multipart/form-data" id="upload-form">
             <div class="dropzone" id="dropzone">
               <div class="dropzone-inner">
                 <div class="dropzone-prompt">
                   <span class="dz-arrow">↓</span>
-                  <span class="dz-text">drag &amp; drop a file here</span>
-                  <span class="dz-or">or</span>
+                  <span class="dz-text">{{ t.s("tenant_files_admin.upload.dropzone_prompt") }}</span>
+                  <span class="dz-or">{{ t.s("common.upload.or") }}</span>
                   <label class="filepick-btn" for="upload-file" id="upload-btn">
-                    <span class="filepick-btn-label">browse…</span>
+                    <span class="filepick-btn-label">{{ t.s("tenant_files_admin.upload.browse") }}</span>
                   </label>
                 </div>
-                <div class="dropzone-name" id="upload-name" data-empty="1">— no file chosen —</div>
+                <div class="dropzone-name" id="upload-name" data-empty="1">{{ t.s("tenant_files_admin.upload.no_file") }}</div>
               </div>
               <input type="file" name="file" id="upload-file" required class="filepick-input"
                      data-max-mb="{{ max_upload_mb }}">
@@ -84,28 +84,28 @@
 
             <div class="upload-fields">
               <div class="field">
-                <span class="field-label">visibility</span>
+                <span class="field-label">{{ t.s("tenant_files_admin.table.col_visibility") }}</span>
                 <div class="pill-toggle" role="radiogroup" aria-label="Visibility">
                   <input type="radio" id="tv-vis-public" name="visibility" value="public" checked>
-                  <label for="tv-vis-public">public</label>
+                  <label for="tv-vis-public">{{ t.s("tenant_files_admin.upload.vis_public") }}</label>
                   <input type="radio" id="tv-vis-private" name="visibility" value="private">
-                  <label for="tv-vis-private">private</label>
+                  <label for="tv-vis-private">{{ t.s("tenant_files_admin.upload.vis_private") }}</label>
                 </div>
               </div>
               <div class="field">
-                <span class="field-label">disposition</span>
+                <span class="field-label">{{ t.s("tenant_files_admin.upload.disposition_label") }}</span>
                 <div class="pill-toggle" role="radiogroup" aria-label="Disposition">
                   <input type="radio" id="tv-disp-inline" name="disposition" value="inline" checked>
-                  <label for="tv-disp-inline">inline</label>
+                  <label for="tv-disp-inline">{{ t.s("tenant_files_admin.upload.disp_inline") }}</label>
                   <input type="radio" id="tv-disp-attachment" name="disposition" value="attachment">
-                  <label for="tv-disp-attachment">attachment</label>
+                  <label for="tv-disp-attachment">{{ t.s("tenant_files_admin.upload.disp_attachment") }}</label>
                 </div>
               </div>
             </div>
 
             <div class="upload-row">
               <span class="upload-hint" id="upload-hint"></span>
-              <button type="submit" class="btn btn-primary" id="upload-submit" disabled>Upload <span class="kbd">↵</span></button>
+              <button type="submit" class="btn btn-primary" id="upload-submit" disabled>{{ t.s("tenant_files_admin.upload.card_title") }} <span class="kbd">↵</span></button>
             </div>
           </form>
         </div>
@@ -115,7 +115,7 @@
         <div class="card-head">
           <span>_system_files <span class="count">· {{ total_files }} rows</span></span>
           <form method="get" style="display:inline-flex;gap:8px;align-items:center;">
-            <span class="muted" style="font-size:13px;">per page</span>
+            <span class="muted" style="font-size:13px;">{{ t.s("collection_rows.rows.per_page_label") }}</span>
             <select class="input" name="per_page" onchange="this.form.submit()" style="height:32px;width:80px;font-size:13px;">
               {% for opt in per_page_options %}
               <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
@@ -129,8 +129,8 @@
           <div style="margin-bottom:18px;display:grid;place-items:center;">
             <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
           </div>
-          <h3>No files yet</h3>
-          <p>Upload the first one with the form above.</p>
+          <h3>{{ t.s("tenant_files_admin.empty.title") }}</h3>
+          <p>{{ t.s("tenant_files_admin.empty.body") }}</p>
         </div>
         {% else %}
         <div class="pub-scroll">
@@ -145,12 +145,12 @@
             </colgroup>
             <thead>
               <tr>
-                <th>original name</th>
-                <th>visibility</th>
-                <th>type</th>
-                <th>size</th>
-                <th>uploaded</th>
-                <th>actions</th>
+                <th>{{ t.s("tenant_files_admin.table.col_name") }}</th>
+                <th>{{ t.s("tenant_files_admin.table.col_visibility") }}</th>
+                <th>{{ t.s("tenant_files_admin.table.col_type") }}</th>
+                <th>{{ t.s("tenant_files_admin.table.col_size") }}</th>
+                <th>{{ t.s("tenant_files_admin.table.col_uploaded") }}</th>
+                <th>{{ t.s("tenant_files_admin.table.col_actions") }}</th>
               </tr>
             </thead>
             <tbody>
@@ -165,11 +165,11 @@
                 <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
                 <td class="cell-actions">
                   {% if f.visibility == "public" %}
-                  <button type="button" class="btn btn-sm btn-ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">copy URL</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">{{ t.s("tenant_files_admin.row.copy_url") }}</button>
                   {% else %}
-                  <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">Sign URL</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">{{ t.s("tenant_files_admin.row.sign_url") }}</button>
                   {% endif %}
-                  <button type="button" class="btn btn-sm btn-ghost" data-delete-key="{{ f.key }}" data-delete-name="{{ f.original_name }}" style="color:var(--danger);">delete</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-delete-key="{{ f.key }}" data-delete-name="{{ f.original_name }}" style="color:var(--danger);">{{ t.s("tenant_files_admin.row.delete") }}</button>
                 </td>
               </tr>
               {% endfor %}
@@ -179,9 +179,9 @@
         <div class="pager">
           <div class="page-of">page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_files }}</b> total</div>
           <div class="pager-group">
-            {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
+            {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.prev") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.prev") }}</span>{% endif %}
             <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
-            {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+            {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.next") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.next") }}</span>{% endif %}
           </div>
         </div>
         {% endif %}
@@ -193,7 +193,7 @@
             <div style="margin-bottom:22px;display:grid;place-items:center;">
               <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
             </div>
-            <h3>Storage not configured</h3>
+            <h3>{{ t.s("tenant_files_admin.unconfigured.title") }}</h3>
             <p>Set <code>GARAGE_S3_ENDPOINT</code> in drust's <code>.env</code> and restart.</p>
           </div>
         </div>
@@ -245,7 +245,7 @@
     form.addEventListener('submit', async function (e) {
       e.preventDefault();
       btn.disabled = true;
-      hint.className = 'upload-hint'; hint.textContent = 'uploading…';
+      hint.className = 'upload-hint'; hint.textContent = "{{ t.s("tenant_files_admin.upload.uploading") }}";
       if (window.chonkReact) window.chonkReact('working', 3000);
       try {
         var fd = new FormData(form);
@@ -272,7 +272,7 @@
       b.addEventListener('click', function () {
         var url = b.getAttribute('data-copy-url');
         navigator.clipboard.writeText(url).then(function () {
-          var orig = b.textContent; b.textContent = 'copied ✓';
+          var orig = b.textContent; b.textContent = "{{ t.s("tenant_files_admin.row.copied") }}";
           if (window.chonkReact) window.chonkReact('happy');
           setTimeout(function () { b.textContent = orig; }, 1500);
         });
@@ -284,14 +284,14 @@
     btn.addEventListener('click', async function() {
       var key = btn.dataset.signKey;
       var ttl = await drustUI.prompt({
-        title: 'Sign URL',
-        body: 'Expiry in seconds (1–604800). Default 3600 = 1 hour.',
-        default: '3600', placeholder: '3600', okText: 'Sign',
+        title: "{{ t.s("tenant_files_admin.row.sign_url") }}",
+        body: "{{ t.s("tenant_files_admin.sign.prompt_body") }}",
+        default: '3600', placeholder: '3600', okText: "{{ t.s("tenant_files_admin.sign.prompt_ok") }}",
       });
       if (ttl === null) return;
       var expires_in = parseInt(ttl, 10);
       if (!Number.isFinite(expires_in) || expires_in < 1 || expires_in > 604800) {
-        drustUI.alert({title: 'Invalid TTL', body: 'Must be an integer between 1 and 604800.', danger: true});
+        drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.invalid_title") }}", body: 'Must be an integer between 1 and 604800.', danger: true});
         return;
       }
       var tid = '{{ tenant_id }}';
@@ -301,12 +301,12 @@
       });
       if (!resp.ok) {
         if (window.chonkReact) window.chonkReact('oops', 900);
-        drustUI.alert({title: 'Sign failed', body: 'HTTP ' + resp.status, danger: true});
+        drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.failed_title") }}", body: 'HTTP ' + resp.status, danger: true});
         return;
       }
       var j = await resp.json();
       if (window.chonkReact) window.chonkReact('happy');
-      drustUI.alert({title: 'Signed URL', body: 'Copy the URL below. It expires in ' + expires_in + ' seconds.', codeBlock: j.url});
+      drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.success_title") }}", body: 'Copy the URL below. It expires in ' + expires_in + ' seconds.', codeBlock: j.url});
     });
   });
 
@@ -314,7 +314,7 @@
     btn.addEventListener('click', async function() {
       var key = btn.dataset.deleteKey;
       var name = btn.dataset.deleteName || key;
-      var ok = await drustUI.confirm({title: 'Delete file', body: 'Delete "' + name + '"? This cannot be undone.', okText: 'Delete', danger: true});
+      var ok = await drustUI.confirm({title: "{{ t.s("tenant_files_admin.delete.confirm_title") }}", body: 'Delete "' + name + '"? This cannot be undone.', okText: 'Delete', danger: true});
       if (!ok) return;
       if (window.chonkReact) window.chonkReact('working', 1200);
       var tid = '{{ tenant_id }}';
@@ -323,7 +323,7 @@
       });
       if (!resp.ok && resp.status !== 204) {
         if (window.chonkReact) window.chonkReact('oops', 900);
-        drustUI.alert({title: 'Delete failed', body: 'HTTP ' + resp.status, danger: true});
+        drustUI.alert({title: "{{ t.s("tenant_files_admin.delete.failed_title") }}", body: 'HTTP ' + resp.status, danger: true});
         return;
       }
       if (window.chonkReact) window.chonkReact('happy', 700);

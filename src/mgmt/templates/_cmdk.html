@@ -10,12 +10,12 @@
      Exposes: window.drustCmdK = { open(), close() }. -->
 <div class="cmdk-overlay" id="cmdk-overlay" hidden onclick="if(event.target===this)drustCmdK.close()">
   <div class="cmdk">
-    <input class="cmdk-input" id="cmdk-input" placeholder="Jump to tenant…" autocomplete="off">
+    <input class="cmdk-input" id="cmdk-input" placeholder="{{ t.s("cmdk.input.placeholder") }}" autocomplete="off">
     <div class="cmdk-list" id="cmdk-list"></div>
     <div style="padding:8px 16px;border-top:1px solid var(--line);font:500 10.5px/1 var(--mono);color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;display:flex;gap:14px;align-items:center;">
-      <span><span class="kbd" style="height:18px;min-width:0;padding:0 5px;font-size:10.5px;">↑↓</span> navigate</span>
-      <span><span class="kbd" style="height:18px;min-width:0;padding:0 5px;font-size:10.5px;">↵</span> open</span>
-      <span style="margin-left:auto;">⌘K from anywhere</span>
+      <span><span class="kbd" style="height:18px;min-width:0;padding:0 5px;font-size:10.5px;">↑↓</span> {{ t.s("cmdk.hint.navigate") }}</span>
+      <span><span class="kbd" style="height:18px;min-width:0;padding:0 5px;font-size:10.5px;">↵</span> {{ t.s("cmdk.hint.open") }}</span>
+      <span style="margin-left:auto;">{{ t.s("cmdk.hint.shortcut") }}</span>
     </div>
   </div>
 </div>
@@ -62,7 +62,7 @@
   function render() {
     var list = $('cmdk-list');
     if (filtered.length === 0) {
-      list.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center;font:400 13px/1 var(--sans);">no matches</div>';
+      list.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center;font:400 13px/1 var(--sans);">{{ t.s("cmdk.empty.no_matches") }}</div>';
       return;
     }
     var html = '';

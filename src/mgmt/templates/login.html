@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust — sign in</title>
-<meta name="description" content="Sign in to drust — multi-tenant SQLite BaaS admin console for the Tzu Chi Foundation.">
+<title>{{ t.s("login.page.title") }}</title>
+<meta name="description" content="{{ t.s("login.page.meta_description") }}">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 <style>
@@ -87,16 +87,16 @@
       <div class="brand-mark"><canvas class="pix" data-chonk="awake" data-size="22"></canvas></div>
       <div>
         <div class="brand-name">drust</div>
-        <div class="brand-meta">multi-tenant sqlite · v{{ version }}</div>
+        <div class="brand-meta">{{ t.s("login.brand.tagline") }} · v{{ version }}</div>
       </div>
     </div>
-    <h1 class="login-title">Welcome back.</h1>
-    <p class="login-sub">Sign in to manage tenants, OAuth, files, and stored RPCs — internal tool, Tzu Chi Foundation.</p>
+    <h1 class="login-title">{{ t.s("login.heading.welcome") }}</h1>
+    <p class="login-sub">{{ t.s("login.heading.subtitle") }}</p>
 
     {% if let Some(err) = error %}
     <div class="banner danger" style="margin-bottom:14px;">
       <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
-      <div class="b-body"><div class="b-title">Sign-in failed</div><p>{{ err }}</p></div>
+      <div class="b-body"><div class="b-title">{{ t.s("login.error.password_title") }}</div><p>{{ err }}</p></div>
     </div>
     {% endif %}
 
@@ -104,16 +104,16 @@
     <div class="banner danger" style="margin-bottom:14px;" role="alert">
       <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
       <div class="b-body">
-        <div class="b-title">OAuth sign-in failed</div>
+        <div class="b-title">{{ t.s("login.error.oauth_title") }}</div>
         <p>
           {% match oerr.as_str() %}
-            {% when "oauth_state_mismatch" %}Login session expired. Please try again.
-            {% when "oauth_provider_error" %}Provider returned an error. Try again or use password.
-            {% when "oauth_email_unverified" %}Your provider email is not verified.
-            {% when "oauth_not_allowed" %}This email is not on the admin allowlist.
-            {% when "oauth_admin_email_missing" %}Your admin record has no email — run <code>drust_set_admin_password --email</code>.
-            {% when "oauth_misconfigured" %}OAuth is not configured.
-            {% when _ %}Login failed.
+            {% when "oauth_state_mismatch" %}{{ t.s("login.error.oauth_state_mismatch") }}
+            {% when "oauth_provider_error" %}{{ t.s("login.error.oauth_provider_error") }}
+            {% when "oauth_email_unverified" %}{{ t.s("login.error.oauth_email_unverified") }}
+            {% when "oauth_not_allowed" %}{{ t.s("login.error.oauth_not_allowed") }}
+            {% when "oauth_admin_email_missing" %}{{ t.s("login.error.oauth_admin_email_missing") }}
+            {% when "oauth_misconfigured" %}{{ t.s("login.error.oauth_misconfigured") }}
+            {% when _ %}{{ t.s("login.error.oauth_generic") }}
           {% endmatch %}
         </p>
       </div>
@@ -122,18 +122,18 @@
 
     <form method="post" action="/drust/login">
       <div class="login-field">
-        <label>Username</label>
+        <label>{{ t.s("common.field.username") }}</label>
         <input class="login-input" name="username" placeholder="admin" required autofocus autocomplete="username">
       </div>
       <div class="login-field">
-        <label>Password</label>
+        <label>{{ t.s("common.field.password") }}</label>
         <input class="login-input" type="password" name="password" placeholder="••••••••••••" required autocomplete="current-password">
       </div>
-      <button class="login-cta" type="submit">Sign in →</button>
+      <button class="login-cta" type="submit">{{ t.s("login.button.submit") }}</button>
     </form>
 
     {% if !oauth_providers.is_empty() %}
-    <div class="login-divider"><span></span><span>or continue with</span><span></span></div>
+    <div class="login-divider"><span></span><span>{{ t.s("login.divider.or_continue") }}</span><span></span></div>
     {% for p in oauth_providers %}
     <a class="oauth-btn" href="/drust/admin/oauth/{{ p }}/start">
       {% if p == "google" %}
@@ -141,7 +141,7 @@
       {% else %}
       <svg viewBox="0 0 24 24" fill="#f5ede2"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.93c.57.1.78-.25.78-.55v-2.07c-3.2.7-3.88-1.36-3.88-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.34.96.1-.74.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.78 0c2.21-1.5 3.18-1.18 3.18-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.4-5.25 5.69.41.35.78 1.05.78 2.13v3.16c0 .31.21.66.79.55A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
       {% endif %}
-      Continue with {{ p|capitalize }}
+      {{ t.fmt1("login.button.continue_with_provider", "p", p) }}
     </a>
     {% endfor %}
     {% endif %}
@@ -149,10 +149,10 @@
     <div class="login-foot">
       <span style="display:inline-flex;align-items:center;gap:8px;">
         <canvas class="pix" data-chonk="awake" data-size="14"></canvas>
-        LiveChonk on duty
+        {{ t.s("login.footer.mascot") }}
       </span>
       <span style="opacity:0.5;">·</span>
-      <span>forgot password? ask admin</span>
+      <span>{{ t.s("login.footer.forgot_password") }}</span>
     </div>
   </div>
 </div>

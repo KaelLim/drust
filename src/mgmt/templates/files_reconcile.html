@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — public bucket · sync audit</title>
-<meta name="description" content="drust admin — reconcile Garage public bucket objects with drust's _system_public_files metadata. Finds orphans and dangling rows.">
+<title>{{ t.s("files_reconcile.page.title") }}</title>
+<meta name="description" content="{{ t.s("files_reconcile.page.meta_description") }}">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -15,11 +15,11 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
-        <a href="/drust/admin/files">files</a>
+        <a href="/drust/admin/files">{{ t.s("common.crumbs.files") }}</a>
         <span class="sep">/</span>
-        <span class="here">reconcile</span>
+        <span class="here">{{ t.s("common.crumbs.reconcile") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -27,20 +27,20 @@
     <div class="page">
       <div class="view-head">
         <div class="grow">
-          <div class="eyebrow">Admin · storage maintenance</div>
-          <h1 class="view-title">Reconcile</h1>
-          <p class="view-sub">Compare Garage bucket contents to drust's metadata. Select what to clean up, then apply. Usually empty — runs after network glitches or manual S3 edits.</p>
+          <div class="eyebrow">{{ t.s("files_reconcile.header.eyebrow") }}</div>
+          <h1 class="view-title">{{ t.s("files_reconcile.header.title") }}</h1>
+          <p class="view-sub">{{ t.s("files_reconcile.header.sub") }}</p>
         </div>
       </div>
 
       <form method="post" action="/drust/admin/files/reconcile">
         <div class="card">
-          <div class="card-head"><span>Orphan objects</span><span class="card-head-actions">in Garage, not tracked by drust — delete from Garage</span></div>
+          <div class="card-head"><span>{{ t.s("files_reconcile.orphan_objects.title") }}</span><span class="card-head-actions">{{ t.s("files_reconcile.orphan_objects.subtitle") }}</span></div>
           <div class="records-scroll">
             {% if orphan_objects.is_empty() %}
-            <div class="empty" style="padding:32px;"><h3>None</h3></div>
+            <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
             {% else %}
-            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>key</th><th>size</th></tr></thead><tbody>
+            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>{{ t.s("files_reconcile.col.key") }}</th><th>{{ t.s("common.col.size") }}</th></tr></thead><tbody>
               {% for item in orphan_objects %}
               <tr><td><input type="checkbox" name="delete_orphan_keys" value="{{ item.0 }}"></td><td>{{ item.0 }}</td><td>{{ item.1 }}</td></tr>
               {% endfor %}
@@ -50,12 +50,12 @@
         </div>
 
         <div class="card" style="margin-top:24px;">
-          <div class="card-head"><span>Dangling rows</span><span class="card-head-actions">in drust, object missing from Garage — delete the row</span></div>
+          <div class="card-head"><span>{{ t.s("files_reconcile.dangling_rows.title") }}</span><span class="card-head-actions">{{ t.s("files_reconcile.dangling_rows.subtitle") }}</span></div>
           <div class="records-scroll">
             {% if dangling_rows.is_empty() %}
-            <div class="empty" style="padding:32px;"><h3>None</h3></div>
+            <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
             {% else %}
-            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>original name</th><th>key</th></tr></thead><tbody>
+            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>{{ t.s("files_reconcile.col.original_name") }}</th><th>{{ t.s("files_reconcile.col.key") }}</th></tr></thead><tbody>
               {% for item in dangling_rows %}
               <tr><td><input type="checkbox" name="delete_dangling_ids" value="{{ item.0 }}"></td><td>{{ item.2 }}</td><td>{{ item.1 }}</td></tr>
               {% endfor %}
@@ -65,43 +65,43 @@
         </div>
 
         <div style="margin-top:24px;display:flex;gap:12px;">
-          <button type="submit" class="btn btn-primary">Apply selected</button>
-          <a href="/drust/admin/files" class="btn btn-ghost">cancel</a>
+          <button type="submit" class="btn btn-primary">{{ t.s("files_reconcile.action.apply_selected") }}</button>
+          <a href="/drust/admin/files" class="btn btn-ghost">{{ t.s("common.action.cancel") }}</a>
         </div>
       </form>
 
       <div class="card" style="margin-top:24px;">
-        <div class="card-head"><span>Pending revokes ({{ pending_revokes.len() }})</span><span class="card-head-actions">Garage revoke failed during soft-delete — retry to deny bucket access</span></div>
+        <div class="card-head"><span>{{ t.s("files_reconcile.pending_revokes.title") }} ({{ pending_revokes.len() }})</span><span class="card-head-actions">{{ t.s("files_reconcile.pending_revokes.subtitle") }}</span></div>
         {% if pending_revokes.is_empty() %}
-        <div class="empty" style="padding:32px;"><h3>None</h3></div>
+        <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
         {% else %}
         <form method="post" action="/drust/admin/files/reconcile">
           <div class="records-scroll">
-            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>tenant</th><th>detected</th><th>last error</th></tr></thead><tbody>
+            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>{{ t.s("backup_inspect.table.col_tenant") }}</th><th>{{ t.s("files_reconcile.col.detected") }}</th><th>{{ t.s("files_reconcile.col.last_error") }}</th></tr></thead><tbody>
               {% for r in pending_revokes %}
               <tr><td><input type="checkbox" name="retry_pending_revokes" value="{{ r.tenant_id }}"></td><td title="{{ r.tenant_id }}">{{ r.tenant_name }}</td><td>{{ r.detected_at }}</td><td class="muted">{{ r.last_error.as_deref().unwrap_or("") }}</td></tr>
               {% endfor %}
             </tbody></table>
           </div>
-          <div class="card-body-tight"><button type="submit" class="btn btn-primary">Retry selected</button></div>
+          <div class="card-body-tight"><button type="submit" class="btn btn-primary">{{ t.s("files_reconcile.action.retry_selected") }}</button></div>
         </form>
         {% endif %}
       </div>
 
       <div class="card" style="margin-top:24px;">
-        <div class="card-head"><span>Orphan buckets ({{ orphan_buckets.len() }})</span><span class="card-head-actions">Garage bucket delete failed during hard-delete — retry to remove</span></div>
+        <div class="card-head"><span>{{ t.s("files_reconcile.orphan_buckets.title") }} ({{ orphan_buckets.len() }})</span><span class="card-head-actions">{{ t.s("files_reconcile.orphan_buckets.subtitle") }}</span></div>
         {% if orphan_buckets.is_empty() %}
-        <div class="empty" style="padding:32px;"><h3>None</h3></div>
+        <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
         {% else %}
         <form method="post" action="/drust/admin/files/reconcile">
           <div class="records-scroll">
-            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>bucket</th><th>detected</th><th>reason</th></tr></thead><tbody>
+            <table class="data"><thead><tr><th style="width:40px;">✓</th><th>{{ t.s("files_reconcile.col.bucket") }}</th><th>{{ t.s("files_reconcile.col.detected") }}</th><th>{{ t.s("files_reconcile.col.reason") }}</th></tr></thead><tbody>
               {% for b in orphan_buckets %}
               <tr><td><input type="checkbox" name="retry_orphan_buckets" value="{{ b.bucket_name }}"></td><td>{{ b.bucket_name }}</td><td>{{ b.detected_at }}</td><td class="muted">{{ b.reason }}</td></tr>
               {% endfor %}
             </tbody></table>
           </div>
-          <div class="card-body-tight"><button type="submit" class="btn btn-primary">Delete selected</button></div>
+          <div class="card-body-tight"><button type="submit" class="btn btn-primary">{{ t.s("files_reconcile.action.delete_selected") }}</button></div>
         </form>
         {% endif %}
       </div>

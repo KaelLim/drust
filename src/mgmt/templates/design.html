@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust — design system</title>
+<title>{{ t.s("design.page.title") }}</title>
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 <style>
@@ -68,38 +68,38 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
-        <span class="here">Design system</span>
+        <span class="here">{{ t.s("design.crumb.current") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
 
       <div class="page page-wide ds-page">
         <nav class="ds-toc">
-          <div class="ds-toc-head">on this page</div>
-          <a href="#tokens">color tokens</a>
-          <a href="#type">typography</a>
-          <a href="#buttons">buttons</a>
-          <a href="#inputs">inputs</a>
-          <a href="#cards-tables">cards &amp; tables</a>
-          <a href="#chips">chips &amp; pills</a>
-          <a href="#role-badges">role badges</a>
-          <a href="#plane-pills">plane pills</a>
-          <a href="#stat-tiles">stat tiles</a>
+          <div class="ds-toc-head">{{ t.s("design.toc.head") }}</div>
+          <a href="#tokens">{{ t.s("design.toc.tokens") }}</a>
+          <a href="#type">{{ t.s("design.toc.type") }}</a>
+          <a href="#buttons">{{ t.s("design.toc.buttons") }}</a>
+          <a href="#inputs">{{ t.s("design.toc.inputs") }}</a>
+          <a href="#cards-tables">{{ t.s("design.toc.cards_tables") }}</a>
+          <a href="#chips">{{ t.s("design.toc.chips") }}</a>
+          <a href="#role-badges">{{ t.s("design.toc.role_badges") }}</a>
+          <a href="#plane-pills">{{ t.s("design.toc.plane_pills") }}</a>
+          <a href="#stat-tiles">{{ t.s("design.toc.stat_tiles") }}</a>
           <a href="#badge-minis">field badges</a>
           <a href="#meters">meters</a>
-          <a href="#alerts">alerts</a>
-          <a href="#toasts">toasts</a>
-          <a href="#cmdk">command palette</a>
-          <a href="#modal">modal</a>
+          <a href="#alerts">{{ t.s("design.toc.alerts") }}</a>
+          <a href="#toasts">{{ t.s("design.toc.toasts") }}</a>
+          <a href="#cmdk">{{ t.s("design.toc.cmdk") }}</a>
+          <a href="#modal">{{ t.s("design.toc.modal") }}</a>
           <a href="#sidebar">tenant sidebar</a>
-          <a href="#mascot">mascot</a>
+          <a href="#mascot">{{ t.s("design.toc.mascot") }}</a>
         </nav>
 
         <div>
           <header style="margin-bottom: 36px">
-            <h1 class="display-serif-h1">drust design system</h1>
+            <h1 class="display-serif-h1">{{ t.s("design.page.h1") }}</h1>
             <p style="font:400 16px/1.5 var(--sans); color: var(--muted); margin: 8px 0 0; max-width: 64ch;">
               Cozy-dark palette · apricot accent (hue 50) · Newsreader / Inter / JetBrains Mono.
               All tokens defined in <code style="font-family: var(--mono); color: var(--accent);">_styles.html</code>.
@@ -109,7 +109,7 @@
 
           <!-- ============================== -->
           <section id="tokens" class="ds-section">
-            <h2>Color tokens</h2>
+            <h2>{{ t.s("design.tokens.heading") }}</h2>
             <p class="ds-section-desc">Surfaces, ink, and status families. All values are OKLCH, so chroma and lightness move predictably under hue shift. Background hue is ~50 (warm apricot family); accents hold their own hues.</p>
 
             <h3 style="font:500 13px/1 var(--mono); color: var(--muted); margin: 0 0 10px; text-transform: lowercase; letter-spacing: 0.04em;">surface &amp; ink</h3>
@@ -142,7 +142,7 @@
 
           <!-- ============================== -->
           <section id="type" class="ds-section">
-            <h2>Typography</h2>
+            <h2>{{ t.s("design.type.heading") }}</h2>
             <p class="ds-section-desc">Three families: serif for display headings, sans for UI chrome, mono for data &amp; code. Existing pages still use mono everywhere; new pages can opt into <code style="font-family:var(--mono);color:var(--accent);">var(--serif)</code> / <code style="font-family:var(--mono);color:var(--accent);">var(--sans)</code> directly.</p>
             <div class="card" style="background: var(--surface); padding: 28px 32px;">
               <div class="display-serif-h1">Newsreader · 36/1.15</div>
@@ -161,33 +161,33 @@
 
           <!-- ============================== -->
           <section id="buttons" class="ds-section">
-            <h2>Buttons</h2>
+            <h2>{{ t.s("design.buttons.heading") }}</h2>
             <p class="ds-section-desc">Primary, default, ghost, and danger × default / sm. The focus ring is the apricot accent at 25% chroma — tab-able from any input.</p>
             <div class="ds-row" style="margin-bottom: 14px;">
-              <button class="btn btn-primary" type="button">Save changes</button>
-              <button class="btn" type="button">Cancel</button>
-              <button class="btn btn-ghost" type="button">Cancel</button>
-              <button class="btn btn-danger" type="button">Delete tenant</button>
+              <button class="btn btn-primary" type="button">{{ t.s("common.button.save_changes") }}</button>
+              <button class="btn" type="button">{{ t.s("common.button.cancel") }}</button>
+              <button class="btn btn-ghost" type="button">{{ t.s("common.button.cancel") }}</button>
+              <button class="btn btn-danger" type="button">{{ t.s("common.button.delete_tenant") }}</button>
             </div>
             <div class="ds-row">
-              <button class="btn btn-primary btn-sm" type="button">Save</button>
-              <button class="btn btn-sm" type="button">Reset</button>
-              <button class="btn btn-ghost btn-sm" type="button">Cancel</button>
-              <button class="btn btn-danger btn-sm" type="button">Drop</button>
+              <button class="btn btn-primary btn-sm" type="button">{{ t.s("common.button.save") }}</button>
+              <button class="btn btn-sm" type="button">{{ t.s("common.button.reset") }}</button>
+              <button class="btn btn-ghost btn-sm" type="button">{{ t.s("common.button.cancel") }}</button>
+              <button class="btn btn-danger btn-sm" type="button">{{ t.s("common.button.drop") }}</button>
             </div>
           </section>
 
           <!-- ============================== -->
           <section id="inputs" class="ds-section">
-            <h2>Inputs</h2>
+            <h2>{{ t.s("design.inputs.heading") }}</h2>
             <p class="ds-section-desc">Text, select, textarea, checkbox, segmented pill toggle.</p>
             <div class="ds-grid-2">
               <div class="field">
-                <label>tenant name <span class="hint">required</span></label>
+                <label>{{ t.s("design.inputs_label.tenant_name") }} <span class="hint">{{ t.s("common.hint.required") }}</span></label>
                 <input class="input" type="text" placeholder="acme-corp" value="">
               </div>
               <div class="field">
-                <label>region</label>
+                <label>{{ t.s("design.inputs_label.region") }}</label>
                 <select class="select">
                   <option>asia-east-1</option>
                   <option>europe-west-1</option>
@@ -196,20 +196,20 @@
               </div>
             </div>
             <div class="field" style="margin-top: 18px;">
-              <label>signed url <span class="hint">prefix locked</span></label>
+              <label>{{ t.s("design.inputs_label.signed_url") }} <span class="hint">prefix locked</span></label>
               <div class="input-prefix">
                 <span class="prefix">https://tool.tzuchi-org.tw/s/t/</span>
                 <input class="input" type="text" value="acme/avatar.png">
               </div>
             </div>
             <div class="field" style="margin-top: 18px;">
-              <label>sql</label>
+              <label>{{ t.s("design.inputs_label.sql") }}</label>
               <textarea class="textarea" rows="3">SELECT id, name, anon_caps FROM _system_collection_meta;</textarea>
             </div>
             <div class="ds-row" style="margin-top: 18px;">
-              <label class="check"><input type="checkbox" checked> allow self-register</label>
+              <label class="check"><input type="checkbox" checked> {{ t.s("design.inputs_check.allow_self_register") }}</label>
               <label class="check"><input type="checkbox"> require email verification</label>
-              <label class="check"><input type="checkbox"> read-only mode</label>
+              <label class="check"><input type="checkbox"> {{ t.s("design.inputs_check.read_only_mode") }}</label>
             </div>
             <div class="pill-toggle" style="margin-top: 18px;">
               <input type="radio" name="ds-pt" id="ds-pt-1" checked><label for="ds-pt-1">cosine</label>
@@ -220,12 +220,12 @@
 
           <!-- ============================== -->
           <section id="cards-tables" class="ds-section">
-            <h2>Cards &amp; tables</h2>
+            <h2>{{ t.s("design.cards_tables.heading") }}</h2>
             <p class="ds-section-desc">Card has its own head, body, and tight-body variants. Tables under <code style="font-family:var(--mono);color:var(--accent);">table.data</code> have sticky thead and ellipsis-truncation by default.</p>
             <div class="card">
               <div class="card-head">
                 <span>recent tenants <span class="count">3</span></span>
-                <div class="card-head-actions"><a href="#">view all</a></div>
+                <div class="card-head-actions"><a href="#">{{ t.s("common.link.view_all") }}</a></div>
               </div>
               <table class="data">
                 <thead>
@@ -242,15 +242,15 @@
 
           <!-- ============================== -->
           <section id="chips" class="ds-section">
-            <h2>Chips &amp; pills</h2>
+            <h2>{{ t.s("design.chips.heading") }}</h2>
             <p class="ds-section-desc">Six tonal variants. Chips are the universal small label; pill-toggle is a segmented control variant.</p>
             <div class="ds-row">
-              <span class="chip">default</span>
-              <span class="chip ok"><span class="dot"></span>active</span>
-              <span class="chip warn">pending</span>
-              <span class="chip danger">revoked</span>
-              <span class="chip info">scheduled</span>
-              <span class="chip lilac">vector</span>
+              <span class="chip">{{ t.s("design.chips_sample.default") }}</span>
+              <span class="chip ok"><span class="dot"></span>{{ t.s("design.chips_sample.active") }}</span>
+              <span class="chip warn">{{ t.s("design.chips_sample.pending") }}</span>
+              <span class="chip danger">{{ t.s("design.chips_sample.revoked") }}</span>
+              <span class="chip info">{{ t.s("design.chips_sample.scheduled") }}</span>
+              <span class="chip lilac">{{ t.s("design.chips_sample.vector") }}</span>
               <span class="chip accent">primary</span>
               <span class="chip mute">muted</span>
             </div>
@@ -258,19 +258,19 @@
 
           <!-- ============================== -->
           <section id="role-badges" class="ds-section">
-            <h2>Role badges</h2>
+            <h2>{{ t.s("design.role_badges.heading") }}</h2>
             <p class="ds-section-desc">Anchors next to the account dropdown so the user always knows which token is in play. Four roles; service is info-blue, anon is grey, user is sage, admin is apricot.</p>
             <div class="ds-row">
-              <span class="role-badge admin">admin</span>
-              <span class="role-badge service">service</span>
-              <span class="role-badge anon">anon</span>
-              <span class="role-badge user">user</span>
+              <span class="role-badge admin">{{ t.s("admin_sidebar.foot.username") }}</span>
+              <span class="role-badge service">{{ t.s("common.role.service") }}</span>
+              <span class="role-badge anon">{{ t.s("common.role.anon") }}</span>
+              <span class="role-badge user">{{ t.s("common.role.user") }}</span>
             </div>
           </section>
 
           <!-- ============================== -->
           <section id="plane-pills" class="ds-section">
-            <h2>Plane pills</h2>
+            <h2>{{ t.s("design.plane_pills.heading") }}</h2>
             <p class="ds-section-desc">Sidebar header indicator showing which plane (host-level admin vs per-tenant studio) the user is in. Apricot for admin, lilac for tenant.</p>
             <div class="ds-row">
               <div class="plane-pill admin">plane · admin</div>
@@ -280,7 +280,7 @@
 
           <!-- ============================== -->
           <section id="stat-tiles" class="ds-section">
-            <h2>Stat tiles</h2>
+            <h2>{{ t.s("design.stat_tiles.heading") }}</h2>
             <p class="ds-section-desc">Large serif numeral + mono label. Used for overview dashboards (host or tenant).</p>
             <div class="ds-grid-3">
               <div class="stat-tile">
@@ -330,7 +330,7 @@
 
           <!-- ============================== -->
           <section id="alerts" class="ds-section">
-            <h2>Alerts</h2>
+            <h2>{{ t.s("design.alerts.heading") }}</h2>
             <p class="ds-section-desc">Page-level banners with a coloured left border + tinted background.</p>
             <div style="display: flex; flex-direction: column; gap: 12px;">
               <div class="alert info"><span class="icon">i</span><span class="msg">Backups run nightly at 02:00 UTC. Last snapshot: <b>2026-05-15 02:00:14</b>.</span><span></span></div>
@@ -342,25 +342,25 @@
 
           <!-- ============================== -->
           <section id="toasts" class="ds-section">
-            <h2>Toasts</h2>
+            <h2>{{ t.s("design.toasts.heading") }}</h2>
             <p class="ds-section-desc">Ephemeral bottom-right notifications. Four tones — neutral, ok, warn, danger, info.</p>
             <div class="ds-row">
-              <button class="btn btn-sm" onclick="dsToast('ok','Tenant saved.')">show ok</button>
-              <button class="btn btn-sm" onclick="dsToast('warn','Disk above 80%.')">show warn</button>
-              <button class="btn btn-sm" onclick="dsToast('danger','DB_ERROR — write rejected.')">show danger</button>
-              <button class="btn btn-sm" onclick="dsToast('info','Snapshot scheduled for 02:00 UTC.')">show info</button>
+              <button class="btn btn-sm" onclick="dsToast('ok','Tenant saved.')">{{ t.s("design.toasts.btn_show_ok") }}</button>
+              <button class="btn btn-sm" onclick="dsToast('warn','Disk above 80%.')">{{ t.s("design.toasts.btn_show_warn") }}</button>
+              <button class="btn btn-sm" onclick="dsToast('danger','DB_ERROR — write rejected.')">{{ t.s("design.toasts.btn_show_danger") }}</button>
+              <button class="btn btn-sm" onclick="dsToast('info','Snapshot scheduled for 02:00 UTC.')">{{ t.s("design.toasts.btn_show_info") }}</button>
             </div>
             <div class="toast-stack" id="ds-toasts"></div>
           </section>
 
           <!-- ============================== -->
           <section id="cmdk" class="ds-section">
-            <h2>Command palette</h2>
+            <h2>{{ t.s("design.cmdk.heading") }}</h2>
             <p class="ds-section-desc">Press <span class="kbd">⌘ K</span> (or <span class="kbd">Ctrl K</span>) to open. Anchors to top-center; backdrop blur; arrow keys + enter to navigate.</p>
-            <button class="btn" onclick="dsCmdkShow()">open palette</button>
+            <button class="btn" onclick="dsCmdkShow()">{{ t.s("design.cmdk.btn_open") }}</button>
             <div class="cmdk-overlay" id="ds-cmdk" hidden onclick="if (event.target === this) dsCmdkHide()">
               <div class="cmdk">
-                <input class="cmdk-input" id="ds-cmdk-input" placeholder="Find tenant or command…" oninput="dsCmdkFilter()">
+                <input class="cmdk-input" id="ds-cmdk-input" placeholder="{{ t.s("design.cmdk.placeholder") }}" oninput="dsCmdkFilter()">
                 <div class="cmdk-list" id="ds-cmdk-list"></div>
               </div>
             </div>
@@ -368,7 +368,7 @@
 
           <!-- ============================== -->
           <section id="modal" class="ds-section">
-            <h2>Modal</h2>
+            <h2>{{ t.s("design.modal.heading") }}</h2>
             <p class="ds-section-desc">Used for confirmations and "secret-once" reveals. Inline preview below — wiring lives in <code style="font-family:var(--mono);color:var(--accent);">_modal.html</code>.</p>
             <div class="modal-overlay" style="position: relative; inset: auto; padding: 24px; background: oklch(0 0 0 / 0.25); border-radius: var(--radius-lg); border: 1px solid var(--line); place-items: center; min-height: 280px;">
               <div class="modal">
@@ -384,7 +384,7 @@
 
           <!-- ============================== -->
           <section id="sidebar" class="ds-section">
-            <h2>Tenant sidebar</h2>
+            <h2>{{ t.s("design.sidebar.heading") }}</h2>
             <p class="ds-section-desc">Per-tenant nav. Markup is a drop-in copy of <code style="font-family:var(--mono);color:var(--accent);">_collection_sidebar.html</code> — brand block, back-strip, plane pill, sectioned nav (Home / Connect / Backend / Collections), and a sticky <code style="font-family:var(--mono);color:var(--accent);">.sidebar-foot</code>. The nav itself scrolls when content overflows; the strip + foot stay pinned.</p>
             <div class="ds-sidebar-demo">
               <aside class="tenant-sidebar" style="position:static;height:auto">
@@ -415,46 +415,46 @@
                 </button>
 
                 <nav class="nav">
-                  <div class="nav-section"><span>Home</span></div>
+                  <div class="nav-section"><span>{{ t.s("collection_sidebar.section.home") }}</span></div>
                   <a class="nav-item on" href="#">
                     <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg></span>
-                    Overview
+                    {{ t.s("collection_sidebar.nav.overview") }}
                   </a>
 
-                  <div class="nav-section"><span>Connect</span></div>
+                  <div class="nav-section"><span>{{ t.s("collection_sidebar.section.connect") }}</span></div>
                   <a class="nav-item" href="#">
                     <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M14 9l3 3"/></svg></span>
-                    API keys
+                    {{ t.s("collection_sidebar.nav.api_keys") }}
                   </a>
                   <a class="nav-item" href="#">
                     <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17 14l4 3-4 3"/></svg></span>
-                    Stored RPC
+                    {{ t.s("collection_sidebar.nav.stored_rpc") }}
                   </a>
 
-                  <div class="nav-section"><span>Backend</span></div>
+                  <div class="nav-section"><span>{{ t.s("collection_sidebar.section.backend") }}</span></div>
                   <a class="nav-item" href="#">
                     <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 7l2-2h5l2 2h9v12H3z"/></svg></span>
-                    Files
+                    {{ t.s("collection_sidebar.nav.files") }}
                   </a>
                   <a class="nav-item" href="#">
                     <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 19c0-3.5 3.2-6 7-6s7 2.5 7 6"/></svg></span>
-                    End-users
+                    {{ t.s("collection_sidebar.nav.end_users") }}
                   </a>
                   <a class="nav-item" href="#">
                     <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6z"/></svg></span>
-                    OAuth providers
+                    {{ t.s("collection_sidebar.nav.oauth_providers") }}
                   </a>
                   <a class="nav-item" href="#">
                     <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M15 17l2 4 5-12-10 5 3 3-3 3z"/><path d="M3 11l8-3"/></svg></span>
-                    Webhooks
+                    {{ t.s("collection_sidebar.nav.webhooks") }}
                   </a>
                   <a class="nav-item" href="#">
                     <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h6"/></svg></span>
-                    Logs
+                    {{ t.s("collection_sidebar.nav.logs") }}
                   </a>
 
                   <div class="nav-section">
-                    <span>Collections</span>
+                    <span>{{ t.s("collection_sidebar.section.collections") }}</span>
                     <span class="count">3</span>
                   </div>
                   <a class="nav-collection" href="#"><span class="dot"></span><span>orders</span><span class="count">14k</span></a>
@@ -477,7 +477,7 @@
 
           <!-- ============================== -->
           <section id="mascot" class="ds-section">
-            <h2>LiveChonk mascot</h2>
+            <h2>{{ t.s("design.mascot.heading") }}</h2>
             <p class="ds-section-desc">Apricot pixel cat. Sizes by usage: 18 in topbar · 32 in sidebar header · 48 on login · 96 on empty states. Moods: awake (tracks mouse) · happy · sleep · working · curious · error.</p>
             <div class="ds-row" style="align-items: flex-end; gap: 32px;">
               <div style="text-align: center;"><canvas class="pix" data-chonk="awake" data-size="18"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">18 · topbar</div></div>
@@ -536,7 +536,7 @@
       var on = ix === dsCmdkSelIx ? ' on' : '';
       html += '<a class="cmdk-item' + on + '" href="#"><span class="cmdk-icon">' + it.icon + '</span><span class="cmdk-label">' + it.label + '</span><span class="cmdk-hint">' + it.hint + '</span></a>';
     });
-    list.innerHTML = html || '<div style="padding:18px;color:var(--muted-2);font:400 14px/1 var(--sans);">no matches</div>';
+    list.innerHTML = html || '<div style="padding:18px;color:var(--muted-2);font:400 14px/1 var(--sans);">{{ t.s("cmdk.empty.no_matches") }}</div>';
   }
   document.addEventListener('keydown', function (e) {
     var open = !document.getElementById('ds-cmdk').hidden;

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_name }} / _rpc</title>
+<title>{{ t.fmt1("tenant_rpc.page.title", "tenant", tenant_name) }}</title>
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -14,11 +14,11 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
-        <span class="here">Stored RPC</span>
+        <span class="here">{{ t.s("tenant_rpc.crumbs.here") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -27,32 +27,32 @@
 
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">Tenant · stored functions</div>
-            <h1 class="view-title">Stored RPC</h1>
-            <p class="view-sub">Named SELECT-only functions, callable by service tokens — and by anon if <code>anon_callable=1</code>. Open one to test in the playground.</p>
+            <div class="eyebrow">{{ t.s("tenant_rpc.head.eyebrow") }}</div>
+            <h1 class="view-title">{{ t.s("tenant_rpc.crumbs.here") }}</h1>
+            <p class="view-sub">{{ t.s("tenant_rpc.head.sub") }}</p>
           </div>
           <a class="btn primary" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/new">
             <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-            New RPC
+            {{ t.s("tenant_rpc.actions.new") }}
           </a>
         </div>
 
         {% if total_rpcs > 0 %}
         <div class="stat-grid" style="margin-bottom:24px;">
           <div class="stat accent-edge">
-            <div class="label">Total</div>
+            <div class="label">{{ t.s("tenant_rpc.stats_total.label") }}</div>
             <div class="val">{{ total_rpcs }}</div>
-            <div class="meta">named functions</div>
+            <div class="meta">{{ t.s("tenant_rpc.stats_total.meta") }}</div>
           </div>
           <div class="stat">
-            <div class="label">Anon-callable</div>
+            <div class="label">{{ t.s("tenant_rpc.stats_anon.label") }}</div>
             <div class="val">{{ total_anon_callable }}</div>
-            <div class="meta">REST + MCP via anon token</div>
+            <div class="meta">{{ t.s("tenant_rpc.stats_anon.meta") }}</div>
           </div>
           <div class="stat">
-            <div class="label">Service-only</div>
+            <div class="label">{{ t.s("tenant_rpc.stats_service.label") }}</div>
             <div class="val">{{ total_rpcs - total_anon_callable }}</div>
-            <div class="meta">service-key required</div>
+            <div class="meta">{{ t.s("tenant_rpc.stats_service.meta") }}</div>
           </div>
         </div>
         {% endif %}
@@ -63,13 +63,13 @@
             <div style="margin-bottom:18px;display:grid;place-items:center;">
               <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
             </div>
-            <h3>No functions yet</h3>
-            <p>Stored RPCs are named <code>SELECT</code> queries that frontends and MCP clients call by name. Click <b>New RPC</b> to create one.</p>
+            <h3>{{ t.s("tenant_rpc.empty.title") }}</h3>
+            <p>{{ t.s("tenant_rpc.empty.body") }}</p>
           </div>
         </div>
         {% else %}
         <form method="get" class="toolbar-v2">
-          <span class="mono">per page</span>
+          <span class="mono">{{ t.s("collection_rows.rows.per_page_label") }}</span>
           <select class="input" name="per_page" onchange="this.form.submit()" style="min-width:0;width:90px;">
             {% for opt in per_page_options %}
             <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
@@ -88,21 +88,21 @@
               <div class="rpc-name">{{ r.name }}</div>
               {% if let Some(d) = r.description %}<div class="rpc-desc">{{ d }}</div>{% endif %}
               <div class="rpc-tags">
-                {% if r.anon_callable %}<span class="pill accent"><span class="dot"></span>ANON OK</span>{% else %}<span class="pill muted">service-only</span>{% endif %}
+                {% if r.anon_callable %}<span class="pill accent"><span class="dot"></span>{{ t.s("tenant_rpc.row_pill.anon_ok") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_rpc.row_pill.service_only") }}</span>{% endif %}
               </div>
               <pre class="sql-block" style="margin-top:10px;font-size:11.5px;">{{ r.sql }}</pre>
               <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
-                <a class="btn sm" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/edit">edit</a>
-                <a class="btn sm ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/test">test call →</a>
+                <a class="btn sm" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/edit">{{ t.s("common.button.edit") }}</a>
+                <a class="btn sm ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/test">{{ t.s("tenant_rpc.row_actions.test") }}</a>
                 <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/delete" class="rpc-delete-form" data-rpc-name="{{ r.name }}" style="display:inline;margin-left:auto;">
-                  <button type="submit" class="btn sm danger">delete</button>
+                  <button type="submit" class="btn sm danger">{{ t.s("files.row.delete_btn") }}</button>
                 </form>
               </div>
             </div>
             <div class="rpc-meta">
-              <b>{{ r.anon_calls }}</b> anon<br>
-              <b>{{ r.service_calls }}</b> service
-              {% if let Some(t) = r.last_called_at %}<br><span style="color:var(--muted-2);">last {{ t }}</span>{% endif %}
+              <b>{{ r.anon_calls }}</b> {{ t.s("tenant_rpc.row_meta.anon") }}<br>
+              <b>{{ r.service_calls }}</b> {{ t.s("tenant_rpc.row_meta.service") }}
+              {% if let Some(ts) = r.last_called_at %}<br><span style="color:var(--muted-2);">last {{ ts }}</span>{% endif %}
             </div>
           </div>
           {% endfor %}
@@ -112,8 +112,8 @@
           <div class="card-foot">
             <span class="mono">page {{ page }} of {{ total_pages }} · {{ total_rpcs }} total</span>
             <span class="right" style="display:inline-flex;gap:6px;">
-              {% if let Some(url) = prev_url %}<a class="btn sm ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
-              {% if let Some(url) = next_url %}<a class="btn sm ghost" href="{{ url }}">next →</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+              {% if let Some(url) = prev_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("common.pager.prev") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.prev") }}</span>{% endif %}
+              {% if let Some(url) = next_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("common.pager.next") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.next") }}</span>{% endif %}
             </span>
           </div>
         </div>
@@ -130,9 +130,9 @@
       e.preventDefault();
       var name = f.getAttribute('data-rpc-name') || 'this RPC';
       var ok = await drustUI.confirm({
-        title:'Delete RPC',
-        body:'Delete RPC "' + name + '"? This cannot be undone.',
-        okText:'Delete', danger:true,
+        title:'{{ t.s("tenant_rpc.delete.title") }}',
+        body:'{{ t.fmt1("tenant_rpc.delete.body", "name", "__NAME__")|safe }}'.replace('__NAME__', name),
+        okText:'{{ t.s("common.button.delete") }}', danger:true,
       });
       if (ok) f.submit();
     });

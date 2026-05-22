@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ t.locale_code() }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — backup inspect — {{ filename }}</title>
+<title>{{ t.s("backup_inspect.page.title") }} — {{ filename }}</title>
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -14,11 +14,11 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
-        <a href="/drust/admin/backups">backups</a>
+        <a href="/drust/admin/backups">{{ t.s("common.crumbs.backups") }}</a>
         <span class="sep">/</span>
-        <span class="here">inspect</span>
+        <span class="here">{{ t.s("backup_inspect.crumbs.here") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -27,13 +27,13 @@
 
       <div class="view-head">
         <div class="grow">
-          <div class="eyebrow">Admin · backup snapshot</div>
+          <div class="eyebrow">{{ t.s("backup_inspect.head.eyebrow") }}</div>
           <h1 class="view-title">{{ filename }}</h1>
-          <p class="view-sub"><b>{{ snapshot_size_human }}</b> · {{ snapshot_ts }} · listing every tenant whose <code>data.sqlite</code> is inside this archive.</p>
+          <p class="view-sub"><b>{{ snapshot_size_human }}</b> · {{ snapshot_ts }} {{ t.s("backup_inspect.head.sub_suffix") }}</p>
         </div>
         <div style="display:flex;gap:8px;">
-          <a class="btn sm ghost" href="/drust/admin/backups">← all snapshots</a>
-          <a class="btn sm" href="/drust/admin/backups/{{ filename }}/download" download="{{ filename }}">download .tar.zst</a>
+          <a class="btn sm ghost" href="/drust/admin/backups">{{ t.s("backup_inspect.head.back_all") }}</a>
+          <a class="btn sm" href="/drust/admin/backups/{{ filename }}/download" download="{{ filename }}">{{ t.s("backup_inspect.head.download") }}</a>
         </div>
       </div>
 
@@ -41,7 +41,7 @@
       <div class="banner success" style="margin-bottom:18px;">
         <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/></svg></span>
         <div class="b-body">
-          <div class="b-title">Tenant {{ f.tenant_name }} restored</div>
+          <div class="b-title">{{ t.s("backup_inspect.flash.tenant_prefix") }} {{ f.tenant_name }} {{ t.s("backup_inspect.flash.tenant_suffix") }}</div>
           <p>Extracted to <code>{{ f.destination }}</code>. Inspect, then <code>mv</code> the <code>data.sqlite</code> back into <code>tenants/&lt;id&gt;/</code> when you're ready. The current live database is untouched.</p>
         </div>
       </div>
@@ -51,7 +51,7 @@
       <div class="banner danger" style="margin-bottom:18px;">
         <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
         <div class="b-body">
-          <div class="b-title">Restore failed</div>
+          <div class="b-title">{{ t.s("backup_inspect.error.title") }}</div>
           <p style="white-space:pre-wrap;word-break:break-word;">{{ err }}</p>
         </div>
       </div>
@@ -60,7 +60,7 @@
       <div class="banner info" style="margin-bottom:18px;">
         <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
         <div class="b-body">
-          <div class="b-title">How restore works</div>
+          <div class="b-title">{{ t.s("backup_inspect.info.title") }}</div>
           <p>The selected tenant's <code>data.sqlite</code> extracts to <code>_trash/&lt;id&gt;-restored-&lt;ts&gt;/</code> — the live tenant is <b>not</b> overwritten. Review, then <code>mv</code> manually.</p>
         </div>
       </div>
@@ -68,44 +68,44 @@
       <div class="card">
         <div class="card-head">
           <div>
-            <div class="card-title">Tenants in snapshot</div>
-            <div class="card-sub">{{ tenants.len() }} active tenants when this snapshot was taken</div>
+            <div class="card-title">{{ t.s("backup_inspect.tenants_card.title") }}</div>
+            <div class="card-sub">{{ tenants.len() }} {{ t.s("backup_inspect.tenants_card.sub") }}</div>
           </div>
         </div>
         {% if tenants.is_empty() %}
         <div class="empty" style="padding:48px 24px;">
-          <h3>{% if let Some(_) = error %}meta.sqlite couldn't be parsed{% else %}No active tenants in this snapshot{% endif %}</h3>
-          <p>{% if let Some(_) = error %}See error above.{% else %}This archive may be empty or from before the first tenant was provisioned.{% endif %}</p>
+          <h3>{% if let Some(_) = error %}{{ t.s("backup_inspect.empty.error_title") }}{% else %}{{ t.s("backup_inspect.empty.title") }}{% endif %}</h3>
+          <p>{% if let Some(_) = error %}{{ t.s("backup_inspect.empty.error_body") }}{% else %}{{ t.s("backup_inspect.empty.body") }}{% endif %}</p>
         </div>
         {% else %}
         <table class="data">
           <thead>
             <tr>
-              <th>tenant</th>
-              <th style="width:200px;">created</th>
-              <th class="num" style="width:140px;">db size in archive</th>
+              <th>{{ t.s("backup_inspect.table.col_tenant") }}</th>
+              <th style="width:200px;">{{ t.s("backup_inspect.table.col_created") }}</th>
+              <th class="num" style="width:140px;">{{ t.s("backup_inspect.table.col_db_size") }}</th>
               <th class="actions" style="width:140px;"></th>
             </tr>
           </thead>
           <tbody>
-            {% for t in tenants %}
+            {% for tn in tenants %}
             <tr>
               <td>
                 <span class="ten-cell">
-                  <span class="ten-avatar av-{{ loop.index0 % 6 + 1 }}">{{ t.name|truncate(2) }}</span>
-                  <span class="ten-meta"><span class="ten-name">{{ t.name }}</span><span class="ten-id">{{ t.id }}</span></span>
+                  <span class="ten-avatar av-{{ loop.index0 % 6 + 1 }}">{{ tn.name|truncate(2) }}</span>
+                  <span class="ten-meta"><span class="ten-name">{{ tn.name }}</span><span class="ten-id">{{ tn.id }}</span></span>
                 </span>
               </td>
-              <td class="muted-cell">{{ t.created_at }}</td>
-              <td class="num">{% if t.db_present %}{{ t.db_size_human }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
+              <td class="muted-cell">{{ tn.created_at }}</td>
+              <td class="num">{% if tn.db_present %}{{ tn.db_size_human }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
               <td class="actions">
-                {% if t.db_present %}
-                <form method="post" action="/drust/admin/backups/{{ filename }}/restore" class="restore-form" data-tenant-name="{{ t.name }}" data-tenant-id="{{ t.id }}" style="display:inline;">
-                  <input type="hidden" name="tenant_id" value="{{ t.id }}">
-                  <button class="btn sm" type="submit">restore →</button>
+                {% if tn.db_present %}
+                <form method="post" action="/drust/admin/backups/{{ filename }}/restore" class="restore-form" data-tenant-name="{{ tn.name }}" data-tenant-id="{{ tn.id }}" style="display:inline;">
+                  <input type="hidden" name="tenant_id" value="{{ tn.id }}">
+                  <button class="btn sm" type="submit">{{ t.s("backup_inspect.table.action_restore") }}</button>
                 </form>
                 {% else %}
-                <span class="muted-cell" style="font:500 11px/1 var(--mono);">no db in archive</span>
+                <span class="muted-cell" style="font:500 11px/1 var(--mono);">{{ t.s("backup_inspect.table.no_db") }}</span>
                 {% endif %}
               </td>
             </tr>
@@ -126,9 +126,9 @@
       e.preventDefault();
       var name = f.getAttribute('data-tenant-name');
       var ok = await drustUI.confirm({
-        title: 'Restore tenant from snapshot',
+        title: '{{ t.s("backup_inspect.confirm.title")|safe }}',
         body: 'Extract "' + name + '" data.sqlite from this snapshot to _trash/<id>-restored-<ts>/ ? The live tenant directory is NOT overwritten.',
-        okText: 'Extract',
+        okText: '{{ t.s("backup_inspect.confirm.ok")|safe }}',
       });
       if (ok) f.submit();
     });

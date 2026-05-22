@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — _docs / {{ active }}</title>
-<meta name="description" content="drust admin — on-disk doc viewer ({{ active }}).">
+<title>{{ t.fmt1("tenant_docs.page.title", "active", active) }}</title>
+<meta name="description" content="{{ t.fmt1("tenant_docs.page.meta_description", "active", active) }}">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -15,9 +15,9 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
-        <a href="/drust/admin/_docs/changelog">docs</a>
+        <a href="/drust/admin/_docs/changelog">{{ t.s("common.crumbs.docs") }}</a>
         <span class="sep">/</span>
         <span class="here">{{ active }}</span>
       </nav>
@@ -26,7 +26,7 @@
 
     <div class="docs-shell">
         <aside class="docs-toc">
-          <div class="docs-toc-head">on this page <span class="count">{{ nav.len() }}</span></div>
+          <div class="docs-toc-head">{{ t.s("tenant_docs.toc.heading") }} <span class="count">{{ nav.len() }}</span></div>
           <nav class="docs-toc-list">
             {% for item in nav %}
               <a href="#{{ item.slug }}">{{ item.text }}</a>
@@ -36,9 +36,9 @@
         <div class="docs-content">
           <div class="view-head">
             <div class="grow">
-              <div class="eyebrow">Admin · documentation</div>
+              <div class="eyebrow">{{ t.s("tenant_docs.head.eyebrow") }}</div>
               <h1 class="view-title">{{ title }}</h1>
-              <p class="view-sub">Source: <code>{{ source_path }}</code></p>
+              <p class="view-sub">{{ t.s("tenant_docs.head.source_label") }} <code>{{ source_path }}</code></p>
             </div>
           </div>
 

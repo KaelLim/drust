@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ t.locale_code() }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — {{ tenant_name }} / {{ coll_name }}</title>
-<meta name="description" content="drust admin — browse {{ coll_name }} in tenant {{ tenant_name }}. {{ total_rows }} records, {{ fields.len() }} fields.">
+<title>{{ t.s("common.app.title") }} — {{ tenant_name }} / {{ coll_name }}</title>
+<meta name="description" content="{{ t.s("common.app.title") }} — browse {{ coll_name }} in tenant {{ tenant_name }}. {{ total_rows }} {{ t.s("common.stat.records") }}, {{ fields.len() }} {{ t.s("collection_rows.indexes.col_fields") }}.">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -15,7 +15,7 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
         <a href="/drust/admin/tenants/{{ tenant_id }}/_overview">{{ tenant_name }}</a>
         <span class="sep">/</span>
@@ -28,17 +28,17 @@
 
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">Tenant · collection</div>
+            <div class="eyebrow">{{ t.s("collection_rows.head.eyebrow") }}</div>
             <h1 class="view-title">{{ coll_name }}</h1>
-            <p class="view-sub"><b>{{ total_rows }}</b> records · <b>{{ fields.len() }}</b> fields · <b>{{ indices.len() }}</b> indexes</p>
+            <p class="view-sub"><b>{{ total_rows }}</b> {{ t.s("common.stat.records") }} · <b>{{ fields.len() }}</b> {{ t.s("collection_rows.indexes.col_fields") }} · <b>{{ indices.len() }}</b> {{ t.s("common.stat.indexes") }}</p>
           </div>
         </div>
 
         {# v1.19 — collection description tile #}
         <div class="desc-tile" id="desc-tile-collection">
           <div class="desc-tile-head">
-            <span class="muted">Description</span>
-            <button type="button" class="btn sm icon ghost" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')" title="edit description" aria-label="edit description">
+            <span class="muted">{{ t.s("common.desc.label") }}</span>
+            <button type="button" class="btn sm icon ghost" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')" title="{{ t.s("common.desc.edit_aria") }}" aria-label="{{ t.s("common.desc.edit_aria") }}">
               <svg aria-hidden="true"><use href="#i-edit"/></svg>
             </button>
           </div>
@@ -46,18 +46,18 @@
             {% if let Some(desc) = collection_description %}
               <p style="white-space: pre-wrap; margin:0;">{{ desc }}</p>
             {% else %}
-              <em class="muted">(no description)</em>
+              <em class="muted">{{ t.s("common.desc.none") }}</em>
             {% endif %}
           </div>
         </div>
 
-        <nav class="col-tabs" aria-label="Collection view">
-          <a class="col-tab{% if active_tab == "rows" %} on{% endif %}"     href="{{ tab_rows_url }}">Rows <span class="mono">{{ total_rows }}</span></a>
-          <a class="col-tab{% if active_tab == "schema" %} on{% endif %}"   href="{{ tab_schema_url }}">Schema <span class="mono">{{ fields.len() }}</span></a>
-          <a class="col-tab{% if active_tab == "indexes" %} on{% endif %}"  href="{{ tab_indexes_url }}">Indexes <span class="mono">{{ indices.len() }}</span></a>
-          <a class="col-tab{% if active_tab == "anon" %} on{% endif %}"     href="{{ tab_anon_url }}">Anon access</a>
-          <a class="col-tab{% if active_tab == "realtime" %} on{% endif %}" href="{{ tab_realtime_url }}">Realtime</a>
-          <a class="col-tab{% if active_tab == "explain" %} on{% endif %}"  href="{{ tab_explain_url }}">Explain</a>
+        <nav class="col-tabs" aria-label="{{ t.s("collection_rows.tabs.aria_label") }}">
+          <a class="col-tab{% if active_tab == "rows" %} on{% endif %}"     href="{{ tab_rows_url }}">{{ t.s("collection_rows.tabs.rows") }} <span class="mono">{{ total_rows }}</span></a>
+          <a class="col-tab{% if active_tab == "schema" %} on{% endif %}"   href="{{ tab_schema_url }}">{{ t.s("collection_rows.schema.title") }} <span class="mono">{{ fields.len() }}</span></a>
+          <a class="col-tab{% if active_tab == "indexes" %} on{% endif %}"  href="{{ tab_indexes_url }}">{{ t.s("collection_rows.indexes.title") }} <span class="mono">{{ indices.len() }}</span></a>
+          <a class="col-tab{% if active_tab == "anon" %} on{% endif %}"     href="{{ tab_anon_url }}">{{ t.s("collection_rows.tabs.anon") }}</a>
+          <a class="col-tab{% if active_tab == "realtime" %} on{% endif %}" href="{{ tab_realtime_url }}">{{ t.s("collection_rows.tabs.realtime") }}</a>
+          <a class="col-tab{% if active_tab == "explain" %} on{% endif %}"  href="{{ tab_explain_url }}">{{ t.s("collection_rows.tabs.explain") }}</a>
         </nav>
 
         {# ============================== rows tab ============================== #}
@@ -65,23 +65,23 @@
         <div class="card">
           <form method="get" class="toolbar">
             <div class="field">
-              <label>filter · sql where fragment</label>
+              <label>{{ t.s("collection_rows.rows.filter_label") }}</label>
               <div class="input-prefix">
-                <span class="prefix">WHERE</span>
-                <input class="input" type="text" name="filter" value="{{ filter_val }}" placeholder="e.g. created_at &gt; '2026-01-01'">
+                <span class="prefix">{{ t.s("collection_rows.rows.filter_prefix") }}</span>
+                <input class="input" type="text" name="filter" value="{{ filter_val }}" placeholder="{{ t.s("collection_rows.rows.filter_placeholder") }}">
               </div>
             </div>
             <div class="field">
-              <label>sort</label>
+              <label>{{ t.s("collection_rows.rows.sort_label") }}</label>
               <select class="select" name="sort">
-                <option value="">— default (id desc) —</option>
+                <option value="">{{ t.s("collection_rows.rows.sort_default") }}</option>
                 {% for opt in sort_options %}
                 <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.label }}</option>
                 {% endfor %}
               </select>
             </div>
             <div class="field">
-              <label>per page</label>
+              <label>{{ t.s("collection_rows.rows.per_page_label") }}</label>
               <select class="select" name="per_page">
                 {% for opt in per_page_options %}
                 <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
@@ -89,8 +89,8 @@
               </select>
             </div>
             <div class="actions">
-              <button class="btn btn-primary" type="submit">Apply</button>
-              <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset</a>
+              <button class="btn btn-primary" type="submit">{{ t.s("common.action.apply") }}</button>
+              <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">{{ t.s("common.action.reset") }}</a>
             </div>
           </form>
 
@@ -98,18 +98,18 @@
           <div style="padding:14px 18px;border-bottom:1px solid var(--line-2);">
             <div class="banner danger">
               <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
-              <div class="b-body"><div class="b-title">Query error</div><p>{{ err }}</p></div>
+              <div class="b-body"><div class="b-title">{{ t.s("collection_rows.rows.error_title") }}</div><p>{{ err }}</p></div>
             </div>
           </div>
           {% endif %}
 
           <div class="meta-row">
-            <span><b>{{ total_rows }}</b> records</span>
+            <span><b>{{ total_rows }}</b> {{ t.s("common.stat.records") }}</span>
             <span style="color:var(--line);">│</span>
-            <span>page <b>{{ page }}</b> / {{ total_pages }}</span>
+            <span>{{ t.s("common.pager.page") }} <b>{{ page }}</b> / {{ total_pages }}</span>
             {% if !filter_val.is_empty() %}
             <span style="color:var(--line);">│</span>
-            <span>filter <b>{{ filter_val }}</b></span>
+            <span>{{ t.s("collection_rows.rows.filter_indicator") }} <b>{{ filter_val }}</b></span>
             {% endif %}
             <span class="spacer"></span>
           </div>
@@ -120,10 +120,10 @@
               <div style="margin-bottom:18px;display:grid;place-items:center;">
                 <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
               </div>
-              <h3>0 records</h3>
-              <p>{% if !filter_val.is_empty() %}Your filter returned no rows. Try loosening the predicate or reset.{% else %}This collection is empty.{% endif %}</p>
+              <h3>{{ t.s("collection_rows.rows.empty_title") }}</h3>
+              <p>{% if !filter_val.is_empty() %}{{ t.s("collection_rows.rows.empty_filtered") }}{% else %}{{ t.s("collection_rows.rows.empty_collection") }}{% endif %}</p>
               {% if !filter_val.is_empty() %}
-              <div class="suggest"><a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">reset filter</a></div>
+              <div class="suggest"><a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">{{ t.s("collection_rows.rows.reset_filter") }}</a></div>
               {% endif %}
             </div>
             {% else %}
@@ -135,7 +135,7 @@
                 {% for row in rows %}
                 <tr>
                   {% for cell in row %}
-                  <td class="{% if cell == "NULL" %}null{% endif %} trunc" title="{{ cell }}">{% if cell == "NULL" %}NULL{% else %}{{ cell }}{% endif %}</td>
+                  <td class="{% if cell == "NULL" %}null{% endif %} trunc" title="{{ cell }}">{% if cell == "NULL" %}{{ t.s("common.cell.null") }}{% else %}{{ cell }}{% endif %}</td>
                   {% endfor %}
                 </tr>
                 {% endfor %}
@@ -147,12 +147,12 @@
           {% if !rows.is_empty() %}
           <div class="pager">
             <div class="page-of">
-              page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_rows }}</b> total
+              {{ t.s("common.pager.page") }} <b>{{ page }}</b> {{ t.s("common.pager.of") }} {{ total_pages }} · <b>{{ total_rows }}</b> {{ t.s("common.pager.total") }}
             </div>
             <div class="pager-group">
-              {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
-              <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
-              {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+              {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.prev") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.prev") }}</span>{% endif %}
+              <span style="color:var(--muted);">{{ t.s("common.pager.page") }} <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
+              {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.next") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.next") }}</span>{% endif %}
             </div>
           </div>
           {% endif %}
@@ -164,29 +164,29 @@
         {% if let Some(err) = desc_error %}
         <div style="margin:0 0 12px 0;padding:10px 14px;background:#fde7e7;border:1px solid #f5a3a3;border-radius:6px;color:#7d1f1f;font-size:13px;">
           {% if err == "DESCRIPTION_TOO_LONG" %}
-            Description exceeds the 2048-byte limit. Edit and resubmit.
+            {{ t.s("common.desc.err_too_long") }}
           {% else if err == "DESCRIPTION_INVALID" %}
-            Description contains an invalid character (NUL byte) and was rejected.
+            {{ t.s("common.desc.err_invalid") }}
           {% else %}
-            Description rejected: {{ err }}
+            {{ t.s("common.desc.err_generic") }} {{ err }}
           {% endif %}
         </div>
         {% endif %}
         <div class="card" style="overflow:hidden;">
           <div class="card-head">
             <div>
-              <div class="card-title">Schema</div>
-              <div class="card-sub">{{ fields.len() }} fields · drag handle reserved for future reorder</div>
+              <div class="card-title">{{ t.s("collection_rows.schema.title") }}</div>
+              <div class="card-sub">{{ fields.len() }} {{ t.s("collection_rows.indexes.col_fields") }} · drag handle reserved for future reorder</div>
             </div>
           </div>
           <div class="schema-row head">
             <div></div>
-            <div>field</div>
-            <div>type</div>
-            <div>null</div>
-            <div>default</div>
-            <div>constraints</div>
-            <div>description</div>
+            <div>{{ t.s("collection_rows.schema.col_field") }}</div>
+            <div>{{ t.s("collection_rows.schema.col_type") }}</div>
+            <div>{{ t.s("collection_rows.schema.col_null") }}</div>
+            <div>{{ t.s("collection_rows.schema.col_default") }}</div>
+            <div>{{ t.s("collection_rows.schema.col_constraints") }}</div>
+            <div>{{ t.s("collection_rows.indexes.col_description") }}</div>
             <div></div>
           </div>
           {% for f in fields_with_badges %}
@@ -194,23 +194,23 @@
             <div class="drag">⋮⋮</div>
             <div class="fld-name">
               {{ f.name }}
-              {% if f.pk %}<span class="badge-mini pk">PK</span>{% endif %}
-              {% if let Some(fk) = f.foreign_key %}<span class="badge-mini fk" title="references {{ fk }}">FK</span>{% endif %}
-              {% if f.is_indexed && !f.pk %}<span class="badge-mini idx">IDX</span>{% endif %}
+              {% if f.pk %}<span class="badge-mini pk">{{ t.s("common.badge.pk") }}</span>{% endif %}
+              {% if let Some(fk) = f.foreign_key %}<span class="badge-mini fk" title="references {{ fk }}">{{ t.s("common.badge.fk") }}</span>{% endif %}
+              {% if f.is_indexed && !f.pk %}<span class="badge-mini idx">{{ t.s("common.badge.idx") }}</span>{% endif %}
             </div>
             <div class="fld-type">{{ f.sql_type }}</div>
             <div class="fld-null{% if f.nullable %} yes{% else %} no{% endif %}">{% if f.nullable %}✓{% else %}✕{% endif %}</div>
             <div class="fld-default">{% if let Some(d) = f.default_value %}{{ d }}{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</div>
             <div class="fld-desc">
-              {% if let Some(fk) = f.foreign_key %}→ {{ fk }}{% else %}{% if f.pk %}primary key{% else %}{% if f.is_indexed %}indexed{% else %}—{% endif %}{% endif %}{% endif %}
+              {% if let Some(fk) = f.foreign_key %}→ {{ fk }}{% else %}{% if f.pk %}{{ t.s("collection_rows.schema.primary_key") }}{% else %}{% if f.is_indexed %}{{ t.s("collection_rows.schema.indexed") }}{% else %}—{% endif %}{% endif %}{% endif %}
             </div>
             <div id="desc-body-field-{{ f.name }}" style="font-size:13px;">
               {% if let Some(desc) = f.description %}
                 <p style="white-space:pre-wrap;margin:0;">{{ desc }}</p>
               {% else %}
-                <em class="muted" style="opacity:0.5;">(none)</em>
+                <em class="muted" style="opacity:0.5;">{{ t.s("common.desc.field_none") }}</em>
               {% endif %}
-              <button type="button" class="btn sm icon ghost" style="margin-top:4px;" onclick="editDesc('field', '{{ tenant_id }}', '{{ coll_name }}', '{{ f.name }}')" title="edit description" aria-label="edit field description">
+              <button type="button" class="btn sm icon ghost" style="margin-top:4px;" onclick="editDesc('field', '{{ tenant_id }}', '{{ coll_name }}', '{{ f.name }}')" title="{{ t.s("common.desc.edit_aria") }}" aria-label="{{ t.s("collection_rows.schema.edit_field_desc_aria") }}">
                 <svg aria-hidden="true"><use href="#i-edit"/></svg>
               </button>
             </div>
@@ -225,28 +225,28 @@
         {% if let Some(err) = desc_error %}
         <div style="margin:0 0 12px 0;padding:10px 14px;background:#fde7e7;border:1px solid #f5a3a3;border-radius:6px;color:#7d1f1f;font-size:13px;">
           {% if err == "DESCRIPTION_TOO_LONG" %}
-            Description exceeds the 2048-byte limit. Edit and resubmit.
+            {{ t.s("common.desc.err_too_long") }}
           {% else if err == "DESCRIPTION_INVALID" %}
-            Description contains an invalid character (NUL byte) and was rejected.
+            {{ t.s("common.desc.err_invalid") }}
           {% else %}
-            Description rejected: {{ err }}
+            {{ t.s("common.desc.err_generic") }} {{ err }}
           {% endif %}
         </div>
         {% endif %}
         <div class="card" style="overflow:hidden;">
           <div class="card-head">
             <div>
-              <div class="card-title">Indexes</div>
+              <div class="card-title">{{ t.s("collection_rows.indexes.title") }}</div>
               <div class="card-sub">{{ indices.len() }} defined · auto-named idx_&lt;coll&gt;_&lt;f1&gt;_&lt;f2&gt;…</div>
             </div>
           </div>
           <table class="data">
             <thead>
               <tr>
-                <th>name</th>
-                <th>fields</th>
-                <th style="width:90px;">unique</th>
-                <th>description</th>
+                <th>{{ t.s("collection_rows.indexes.col_name") }}</th>
+                <th>{{ t.s("collection_rows.indexes.col_fields") }}</th>
+                <th style="width:90px;">{{ t.s("collection_rows.indexes.col_unique") }}</th>
+                <th>{{ t.s("collection_rows.indexes.col_description") }}</th>
                 <th class="actions" style="width:80px;"></th>
               </tr>
             </thead>
@@ -255,35 +255,35 @@
               <tr>
                 <td class="mono-cell" style="font-size:13px;color:var(--accent);">{{ idx.name }}</td>
                 <td class="mono-cell" style="font-size:12px;">{% for f in idx.fields %}{{ f }}{% if !loop.last %}, {% endif %}{% endfor %}</td>
-                <td>{% if idx.unique %}<span class="pill mint">unique</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
+                <td>{% if idx.unique %}<span class="pill mint">{{ t.s("collection_rows.indexes.col_unique") }}</span>{% else %}<span style="color:var(--muted-2);">—</span>{% endif %}</td>
                 <td id="desc-body-index-{{ idx.name }}" style="font-size:13px;min-width:140px;">
                   {% if let Some(desc) = idx.description %}
                     <p style="white-space:pre-wrap;margin:0;">{{ desc }}</p>
                   {% else %}
-                    <em class="muted" style="opacity:0.5;">(none)</em>
+                    <em class="muted" style="opacity:0.5;">{{ t.s("common.desc.field_none") }}</em>
                   {% endif %}
-                  <button type="button" class="btn sm icon ghost" style="margin-top:4px;" onclick="editDesc('index', '{{ tenant_id }}', '{{ coll_name }}', '{{ idx.name }}')" title="edit description" aria-label="edit index description">
+                  <button type="button" class="btn sm icon ghost" style="margin-top:4px;" onclick="editDesc('index', '{{ tenant_id }}', '{{ coll_name }}', '{{ idx.name }}')" title="{{ t.s("common.desc.edit_aria") }}" aria-label="{{ t.s("collection_rows.indexes.edit_index_desc_aria") }}">
                     <svg aria-hidden="true"><use href="#i-edit"/></svg>
                   </button>
                 </td>
                 <td class="actions">
                   <button type="button"
                           class="btn sm danger drop-idx-btn"
-                          data-idx-name="{{ idx.name }}">drop</button>
+                          data-idx-name="{{ idx.name }}">{{ t.s("collection_rows.indexes.drop_btn") }}</button>
                 </td>
               </tr>
               {% endfor %}
               {% if indices.is_empty() %}
               <tr>
                 <td colspan="5" style="text-align:center;color:var(--muted-2);padding:24px;font:400 14px/1 var(--sans);">
-                  No indexes yet — add one below.
+                  {{ t.s("collection_rows.indexes.empty") }}
                 </td>
               </tr>
               {% endif %}
             </tbody>
           </table>
           <div class="card-body-tight" style="border-top:1px solid var(--line);">
-            <div style="font:600 11px/1 var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">create index</div>
+            <div style="font:600 11px/1 var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">{{ t.s("collection_rows.indexes.create_heading") }}</div>
             <div style="font:400 12px/1.5 var(--sans);color:var(--muted);margin-bottom:12px;">
               Row order is the index column order (matters for composite indexes).
             </div>
@@ -291,29 +291,29 @@
               <div class="idx-row" style="display:flex;gap:8px;align-items:center;">
                 <span class="idx-num muted" style="font-family:var(--mono);font-size:13px;width:24px;text-align:right;">1.</span>
                 <select class="select idx-field" style="flex:1;min-width:0;">
-                  <option value="">— select field —</option>
+                  <option value="">{{ t.s("collection_rows.indexes.select_field_placeholder") }}</option>
                   {% for f in fields %}
                   <option value="{{ f.name }}">{{ f.name }}</option>
                   {% endfor %}
                 </select>
-                <button type="button" class="btn btn-sm btn-ghost idx-remove" title="remove this field" aria-label="remove">×</button>
+                <button type="button" class="btn btn-sm btn-ghost idx-remove" title="{{ t.s("collection_rows.indexes.remove_field_title") }}" aria-label="remove">×</button>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap;">
-              <button type="button" id="idx-add" class="btn btn-sm">+ add field</button>
+              <button type="button" id="idx-add" class="btn btn-sm">{{ t.s("collection_rows.indexes.add_field_btn") }}</button>
               <span id="idx-preview" class="muted" style="font-family:var(--mono);font-size:13px;flex:1;min-width:0;"></span>
             </div>
             <div style="display:flex;gap:18px;align-items:center;margin-top:14px;flex-wrap:wrap;">
               <label class="check">
                 <input type="checkbox" name="unique" id="idx-unique">
-                <span>unique</span>
+                <span>{{ t.s("collection_rows.indexes.col_unique") }}</span>
               </label>
               <label class="check">
                 <input type="checkbox" name="force" id="idx-force">
-                <span>force (skip large-table guard)</span>
+                <span>{{ t.s("collection_rows.indexes.force_check") }}</span>
               </label>
               <span style="flex:1;"></span>
-              <button id="idx-submit" type="button" class="btn btn-primary btn-sm">create index</button>
+              <button id="idx-submit" type="button" class="btn btn-primary btn-sm">{{ t.s("collection_rows.indexes.create_heading") }}</button>
             </div>
             <pre id="create-idx-output" class="output is-error" hidden style="margin-top:10px;"></pre>
           </div>
@@ -325,13 +325,13 @@
 
   document.querySelectorAll('.drop-idx-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
-      if (!confirm('Drop index ' + btn.dataset.idxName + '?')) return;
+      if (!confirm('{{ t.s("collection_rows.indexes.confirm_drop") }} ' + btn.dataset.idxName + '?')) return;
       fetch(
         '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_indexes/' + btn.dataset.idxName,
         { method: 'DELETE' }
       ).then(function(r) {
         if (r.ok) { location.reload(); }
-        else { r.text().then(function(t) { alert('Drop failed: ' + t); }); }
+        else { r.text().then(function(tx) { alert('Drop failed: ' + tx); }); }
       }).catch(function(e) { alert(e); });
     });
   });
@@ -402,7 +402,7 @@
     submitBtn.addEventListener('click', function() {
       var fields = getSelectedFields();
       if (fields.length === 0) {
-        out.textContent = 'Select at least one field.';
+        out.textContent = '{{ t.s("collection_rows.indexes.err_no_field") }}';
         out.hidden = false;
         return;
       }
@@ -421,7 +421,7 @@
         if (r.ok) { location.reload(); }
         else {
           r.json().catch(function() { return {}; }).then(function(j) {
-            out.textContent = (j.error_code || 'ERROR') + ': ' + (j.message || r.statusText);
+            out.textContent = (j.error_code || '{{ t.s("common.error.fallback") }}') + ': ' + (j.message || r.statusText);
             out.hidden = false;
           });
         }
@@ -440,8 +440,8 @@
         <div class="banner warn" style="margin-bottom:18px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
           <div class="b-body">
-            <div class="b-title">/records vs /query</div>
-            <p>Capabilities below govern the <b>REST /records/*</b> API only. Anon tokens can still read this collection through <code>POST /t/&lt;tid&gt;/query</code> (free-form SELECT) regardless. To fully restrict anon read, revoke the anon token entirely.</p>
+            <div class="b-title">{{ t.s("collection_rows.anon.banner_title") }}</div>
+            <p>{{ t.s("collection_rows.anon.banner_body") }}</p>
           </div>
         </div>
 
@@ -454,10 +454,10 @@
               <div>
                 <div class="cap-name">{{ verb.0 }}</div>
                 <div class="cap-desc">
-                  {% if verb.0 == "select" %}read rows (filtered){% endif %}
-                  {% if verb.0 == "insert" %}create rows{% endif %}
-                  {% if verb.0 == "update" %}modify existing{% endif %}
-                  {% if verb.0 == "delete" %}remove rows{% endif %}
+                  {% if verb.0 == "select" %}{{ t.s("collection_rows.anon.cap_select") }}{% endif %}
+                  {% if verb.0 == "insert" %}{{ t.s("collection_rows.anon.cap_insert") }}{% endif %}
+                  {% if verb.0 == "update" %}{{ t.s("collection_rows.anon.cap_update") }}{% endif %}
+                  {% if verb.0 == "delete" %}{{ t.s("collection_rows.anon.cap_delete") }}{% endif %}
                 </div>
               </div>
               <span class="cap-switch"></span>
@@ -465,8 +465,8 @@
             {% endfor %}
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
-            <button class="btn primary" type="submit">apply changes</button>
-            <span style="color:var(--muted);font:400 12px/1.4 var(--sans);">tip: click a tile to toggle</span>
+            <button class="btn primary" type="submit">{{ t.s("collection_rows.anon.apply_btn") }}</button>
+            <span style="color:var(--muted);font:400 12px/1.4 var(--sans);">{{ t.s("collection_rows.anon.tip") }}</span>
           </div>
         </form>
         <script>
@@ -488,18 +488,18 @@
         <div class="banner info" style="margin-bottom:14px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg></span>
           <div class="b-body">
-            <div class="b-title">SSE realtime broadcast</div>
+            <div class="b-title">{{ t.s("collection_rows.realtime.banner_title") }}</div>
             <p>Streams <code>created</code> / <code>updated</code> / <code>deleted</code> events from <code>GET /drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</code>. When disabled, existing connections drop within ~1s and the endpoint returns <code>403 REALTIME_DISABLED</code>.</p>
           </div>
         </div>
 
         <div style="display:flex;align-items:center;gap:10px;margin:0 0 12px;">
           {% if realtime_enabled %}
-          <span class="pill mint"><span class="dot"></span>ENABLED — broadcasting</span>
+          <span class="pill mint"><span class="dot"></span>{{ t.s("collection_rows.realtime.pill_enabled") }}</span>
           {% else %}
-          <span class="pill muted"><span class="dot"></span>DISABLED — no broadcast</span>
+          <span class="pill muted"><span class="dot"></span>{{ t.s("collection_rows.realtime.pill_disabled") }}</span>
           {% endif %}
-          <span style="color:var(--muted);font:400 12px/1.4 var(--sans);">click the toggle to flip — saves immediately</span>
+          <span style="color:var(--muted);font:400 12px/1.4 var(--sans);">{{ t.s("collection_rows.realtime.tip") }}</span>
         </div>
 
         <form id="realtime-form" method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
@@ -507,8 +507,8 @@
             <input type="checkbox" name="enabled" value="1"{% if realtime_enabled %} checked{% endif %} style="display:none;">
             <span class="cap-glyph">SSE</span>
             <div>
-              <div class="cap-name">Broadcast row changes</div>
-              <div class="cap-desc">events: created · updated · deleted</div>
+              <div class="cap-name">{{ t.s("collection_rows.realtime.tile_name") }}</div>
+              <div class="cap-desc">{{ t.s("collection_rows.realtime.tile_desc") }}</div>
             </div>
             <span class="cap-switch" aria-hidden="true"></span>
           </label>
@@ -535,7 +535,7 @@
         <div class="card" style="margin-top:22px;">
           <div class="card-head">
             <div>
-              <div class="card-title">Quick start</div>
+              <div class="card-title">{{ t.s("collection_rows.realtime.quickstart_title") }}</div>
               <div class="card-sub">Three ways to subscribe. <code>/subscribe</code> only accepts the bearer in the <code>Authorization</code> header — there is no <code>?token=</code> query parameter.</div>
             </div>
           </div>
@@ -612,30 +612,30 @@ for (;;) {
         <div class="card" style="margin-bottom:14px;">
           <div class="card-head">
             <div>
-              <div class="card-title">Run EXPLAIN QUERY PLAN</div>
+              <div class="card-title">{{ t.s("collection_rows.explain.title") }}</div>
               <div class="card-sub">Paste any SELECT against this collection · runs read-only · no rows fetched</div>
             </div>
           </div>
           <div class="card-body">
             <div class="field" style="margin-bottom:12px;">
-              <label>select statement <span class="hint">read-only authorizer</span></label>
+              <label>{{ t.s("collection_rows.explain.label") }} <span class="hint">read-only authorizer</span></label>
               <textarea id="explain-sql"
                         class="textarea"
                         rows="4"
                         placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
             </div>
-            <button id="explain-run" type="button" class="btn primary">▶ Explain</button>
+            <button id="explain-run" type="button" class="btn primary">{{ t.s("collection_rows.explain.run_btn") }}</button>
           </div>
         </div>
         <div class="card">
           <div class="card-head">
             <div>
-              <div class="card-title">Plan</div>
+              <div class="card-title">{{ t.s("collection_rows.explain.plan_title") }}</div>
               <div class="card-sub">SQLite planner steps · table scan vs index lookup, join order, etc.</div>
             </div>
           </div>
           <div class="card-body">
-            <pre id="explain-output" class="explain" hidden style="margin:0;">click ▶ Explain to run.</pre>
+            <pre id="explain-output" class="explain" hidden style="margin:0;">{{ t.s("collection_rows.explain.placeholder_output") }}</pre>
             <div style="margin-top:14px;font:400 12px/1.5 var(--sans);color:var(--muted);">
               Runs against the read-only connection — same authorizer that protects <code>POST /t/&lt;tid&gt;/query/explain</code>.
             </div>
@@ -648,7 +648,7 @@ for (;;) {
   document.getElementById('explain-run').addEventListener('click', function() {
     var sql = document.getElementById('explain-sql').value;
     var out = document.getElementById('explain-output');
-    out.textContent = 'Running...';
+    out.textContent = '{{ t.s("collection_rows.explain.running") }}';
     out.hidden = false;
     fetch(
       '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_explain',
@@ -665,7 +665,7 @@ for (;;) {
           return (p.parent > 0 ? '  ' : '') + p.detail;
         }).join('\n');
       } else {
-        out.textContent = (res.j.error_code || 'ERROR') + ': ' + (res.j.message || '');
+        out.textContent = (res.j.error_code || '{{ t.s("common.error.fallback") }}') + ': ' + (res.j.message || '');
       }
     }).catch(function(e) {
       out.textContent = String(e);
@@ -699,8 +699,8 @@ function editDesc(kind, tenant, coll, extra) {
                  + current.replace(/[<>&"]/g, function(c){return '&#'+c.charCodeAt(0)+';';})
                  + '</textarea>'
                  + '<div style="margin-top:6px;display:flex;gap:8px;align-items:center;">'
-                 + '<button type="submit" class="btn sm primary desc-save"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>save</button>'
-                 + '<button type="button" class="btn sm icon ghost" onclick="location.reload()" title="cancel" aria-label="cancel"><svg aria-hidden="true"><use href="#i-x"/></svg></button>'
+                 + '<button type="submit" class="btn sm primary desc-save"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>{{ t.s("common.action.save") }}</button>'
+                 + '<button type="button" class="btn sm icon ghost" onclick="location.reload()" title="{{ t.s("common.action.cancel") }}" aria-label="{{ t.s("common.action.cancel") }}"><svg aria-hidden="true"><use href="#i-x"/></svg></button>'
                  + '<span class="desc-bytes muted" style="font-size:11px;font-family:var(--font-mono);"></span>'
                  + '</div></form>';
   var ta = body.querySelector('textarea');
@@ -708,7 +708,7 @@ function editDesc(kind, tenant, coll, extra) {
   var bytesEl = body.querySelector('.desc-bytes');
   function updateBytes() {
     var n = new Blob([ta.value]).size;     // UTF-8 byte count
-    bytesEl.textContent = n + ' / 2048 bytes';
+    bytesEl.textContent = n + ' / 2048 {{ t.s("common.desc.bytes_unit") }}';
     if (n > 2048) {
       bytesEl.style.color = 'var(--danger, #d33)';
       saveBtn.disabled = true;
