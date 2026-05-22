@@ -675,6 +675,29 @@ impl DrustMcpService {
         }
     }
 
+    #[tool(description = "List records from a collection with structured filter, \
+        sort, and pagination. Reuses the same FilterAst as `search_collection`; \
+        rejects raw SQL by construction. `filter` is a tree of \
+        `{and:[...]}` / `{or:[...]}` / `{not:...}` over leaves \
+        `{field: scalar}` (eq) or `{field: {op: operand}}`. Operators: eq, ne, \
+        gt, gte, lt, lte, like, in (array), nin (array). `sort` is \
+        `{field, dir}` with dir in {asc, desc}. `per_page` is clamped to \
+        1..=500 (default 20). `select` is a list of column names; vector \
+        fields are auto-excluded. Returns up to 500 rows per page. \
+        owner_field enforcement is guaranteed by drust — service tokens \
+        bypass; user tokens (REST only) get an auto-appended owner clause; \
+        MCP is service-only at the transport layer so this tool sees all \
+        rows.")]
+    async fn list_records(
+        &self,
+        Parameters(args): Parameters<read::ListRecordsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match read::list_records(&self.state, args).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
     #[tool(
         description = "Insert one record into a collection. `data` is a JSON object whose keys \
         must be known fields of the collection (unknown fields are rejected). \
@@ -1295,7 +1318,7 @@ impl ServerHandler for DrustMcpService {
         let instructions = format!(
             "drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.\n\n\
              Tools: `whoami`, `list_collections`, `describe_collection`, `get_schema_overview`, `sample_rows`, \
-             `count_rows`, `query`, `explain`, `insert_record`, `update_record`, \
+             `count_rows`, `list_records`, `query`, `explain`, `insert_record`, `update_record`, \
              `delete_record`, `create_collection`, `add_field`, `drop_field`, \
              `drop_collection`, `set_anon_caps`, `set_collection_description`, \
              `set_field_description`, `set_index_description`, `set_realtime`, \

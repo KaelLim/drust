@@ -63,6 +63,18 @@ pub fn build_list_sql(collection: &str, p: &ListParams) -> String {
         wheres.push(format!("({f})"));
     }
     if let Some((field, val)) = &p.owner_filter {
+        // v1.21 — defense-in-depth: user IDs are minted as `u-<uuid4-hex>`
+        // by `auth::user_session` so inlining them after `sql_escape` is
+        // safe. This debug_assert catches any future caller that shoves
+        // an arbitrary string into `owner_filter` (which would re-open
+        // the v1.19.2 raw-SQL injection class on `/records/*`). Stripped
+        // from release builds.
+        debug_assert!(
+            val.starts_with("u-")
+                && val.len() >= 4
+                && val.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-' || b == b'u'),
+            "owner_filter user_id shape: expected `u-<hex/uuid>`, got {val:?}"
+        );
         wheres.push(format!("{} = '{}'", q(field), sql_escape(val)));
     }
     if !wheres.is_empty() {
