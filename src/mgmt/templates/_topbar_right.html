@@ -1,5 +1,15 @@
-<!-- _topbar_right.html — intentionally empty. Earlier the topbar's right cluster
-     held a role badge + mascot bounce; both were redundant with the sidebar
-     foot (admin scope + status pulse) and the page-level mascot include, so
-     the cluster was cleaned up entirely on 2026-05-18. Includes remain in
-     every template as no-ops so the .topbar layout stays unchanged. -->
+<!-- _topbar_right.html — v1.22+ holds the i18n locale switch dropdown.
+     Sits on the right cluster of every admin topbar. Cookie-driven; reloads
+     the page so SSR picks up the new locale. -->
+<select onchange="drustSetLocale(this.value)"
+        class="locale-switch"
+        aria-label="{{ t.s("common.locale.switch_aria") }}">
+  <option value="en"    {% if t.locale_code() == "en"    %}selected{% endif %}>EN</option>
+  <option value="zh-TW" {% if t.locale_code() == "zh-TW" %}selected{% endif %}>繁中</option>
+</select>
+<script>
+  function drustSetLocale(v) {
+    document.cookie = 'drust_locale=' + v + '; path=/; max-age=31536000; SameSite=Lax';
+    location.reload();
+  }
+</script>

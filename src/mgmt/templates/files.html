@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — files</title>
-<meta name="description" content="drust admin — host-level file storage. Upload, browse, and manage public and private files backed by Garage S3.">
+<title>{{ t.s("files.page.title") }}</title>
+<meta name="description" content="{{ t.s("files.page.meta_description") }}">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -15,9 +15,9 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <a href="/drust/admin/tenants">tenants</a>
+        <a href="/drust/admin/tenants">{{ t.s("common.crumbs.tenants") }}</a>
         <span class="sep">/</span>
-        <span class="here">files</span>
+        <span class="here">{{ t.s("files.head.pill_files_unit") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -25,37 +25,37 @@
     <div class="page">
       <div class="view-head">
         <div class="grow">
-          <div class="eyebrow">Admin · storage</div>
-          <h1 class="view-title">Host files</h1>
+          <div class="eyebrow">{{ t.s("files.head.eyebrow") }}</div>
+          <h1 class="view-title">{{ t.s("files.head.title") }}</h1>
           <p class="view-sub">{% if storage_available %}Host-level Garage bucket — anonymous read at <code>/public/&lt;key&gt;</code>. Per-tenant buckets live inside each tenant's Files page.{% else %}Garage S3 not configured. Set <code>GARAGE_S3_ENDPOINT</code> in <code>.env</code> and restart drust.{% endif %}</p>
         </div>
-        {% if storage_available %}<span class="pill mint"><span class="dot"></span>{{ total_files }} files · {{ total_bytes_human }}</span>{% else %}<span class="pill warn"><span class="dot"></span>not configured</span>{% endif %}
+        {% if storage_available %}<span class="pill mint"><span class="dot"></span>{{ total_files }} {{ t.s("files.head.pill_files_unit") }} · {{ total_bytes_human }}</span>{% else %}<span class="pill warn"><span class="dot"></span>{{ t.s("files.head.pill_not_configured") }}</span>{% endif %}
       </div>
 
       {% if disk.free_pct < 20.0 %}
       <div class="banner danger" style="margin-bottom:18px;">
         <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg></span>
         <div class="b-body">
-          <div class="b-title">Disk at {{ disk.free_pct_display }}% free — uploads paused</div>
+          <div class="b-title">{{ t.fmt1("files.disk.banner_title", "pct", disk.free_pct_display) }}</div>
           <p>{{ disk.used_gb }} GB used of {{ disk.total_gb }} GB total. Free up <code>/var/lib/garage</code> or scale the disk.</p>
         </div>
       </div>
       {% else %}
       <div class="stat-grid" style="margin-bottom:18px;">
         <div class="stat accent-edge">
-          <div class="label">Files</div>
+          <div class="label">{{ t.s("files.list.card_title") }}</div>
           <div class="val">{{ total_files }}</div>
-          <div class="meta">{{ total_bytes_human }} total</div>
+          <div class="meta">{{ total_bytes_human }} {{ t.s("files.stats.total_suffix") }}</div>
         </div>
         <div class="stat">
-          <div class="label">Disk used</div>
+          <div class="label">{{ t.s("files.stats.disk_used_label") }}</div>
           <div class="val">{{ disk.used_gb }} <span class="unit">GB</span></div>
           <div class="meta">of {{ disk.total_gb }} GB</div>
         </div>
         <div class="stat">
-          <div class="label">Disk free</div>
+          <div class="label">{{ t.s("files.stats.disk_free_label") }}</div>
           <div class="val">{{ disk.free_pct_display }} <span class="unit">%</span></div>
-          <div class="meta"><span class="up">healthy</span></div>
+          <div class="meta"><span class="up">{{ t.s("files.stats.disk_healthy") }}</span></div>
         </div>
       </div>
       {% endif %}

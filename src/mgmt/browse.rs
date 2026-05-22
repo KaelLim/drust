@@ -1,3 +1,4 @@
+use crate::mgmt::i18n::{Locale, Translator};
 use crate::mgmt::tenants::TenantsState;
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::{execute_read_query, execute_read_query_admin};
@@ -7,6 +8,7 @@ use crate::storage::schema::{
 };
 use crate::storage::tenant_db::open_read;
 use askama::Template;
+use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -19,6 +21,7 @@ struct CollectionsPage {
     tenant_id: String,
     tenant_name: String,
     version: &'static str,
+    t: Translator,
 }
 
 #[derive(Template)]
@@ -73,6 +76,7 @@ struct RowsPage {
     /// the server-side validator. `None` on the plain GET render.
     desc_error: Option<String>,
     version: &'static str,
+    t: Translator,
 }
 
 /// Field row enriched with badge flags, consumed by the schema tab.
@@ -144,6 +148,7 @@ fn tenant_name_lookup(conn: &rusqlite::Connection, tenant_id: &str) -> Option<St
 
 pub async fn collections_page(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let meta = state.session.meta.lock().await;
@@ -175,6 +180,7 @@ pub async fn collections_page(
             tenant_id,
             tenant_name,
             version: env!("CARGO_PKG_VERSION"),
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -248,6 +254,7 @@ fn mask_sensitive_columns(
 
 pub async fn collection_rows_page(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path((tenant_id, coll_name)): Path<(String, String)>,
     Query(qs): Query<BrowseQs>,
 ) -> Response {
@@ -519,6 +526,7 @@ pub async fn collection_rows_page(
             collection_description: schema.description,
             desc_error: qs.desc_error.clone(),
             version: env!("CARGO_PKG_VERSION"),
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),

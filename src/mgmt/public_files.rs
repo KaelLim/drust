@@ -5,11 +5,13 @@
 //! `Caddy → Garage s3_web` directly. This module only handles management.
 
 use crate::auth::middleware::AdminSessionState;
+use crate::mgmt::i18n::{Locale, Translator};
 use crate::storage::files::{
     Disposition, Owner, Visibility, bucket_for_upload, default_cache_control,
 };
 use crate::storage::garage::GarageClient;
 use askama::Template;
+use axum::Extension;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -89,6 +91,7 @@ struct FilesPage {
     filter: String,
     counts: Counts,
     disk: DiskView,
+    t: Translator,
 }
 
 struct PerPageOption {
@@ -130,6 +133,7 @@ struct ReconcilePage {
     dangling_rows: Vec<(i64, String, String)>, // (id, key, original_name)
     pending_revokes: Vec<PendingRevokeRow>,
     orphan_buckets: Vec<OrphanBucketRow>,
+    t: Translator,
 }
 
 /// Build a `DiskView` for the Garage data volume. If `/var/lib/garage` is
@@ -157,6 +161,7 @@ pub fn build_disk_view() -> DiskView {
 
 pub async fn list_page(
     State(state): State<PublicFilesState>,
+    Extension(locale): Extension<Locale>,
     Query(qs): Query<ListQs>,
 ) -> Response {
     let per_page = qs
@@ -224,6 +229,7 @@ pub async fn list_page(
         filter,
         counts,
         disk,
+        t: Translator::new(locale),
     };
     Html(page.render().unwrap()).into_response()
 }
@@ -558,7 +564,10 @@ pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path
     Redirect::to("/drust/admin/files").into_response()
 }
 
-pub async fn reconcile_page(State(state): State<PublicFilesState>) -> Response {
+pub async fn reconcile_page(
+    State(state): State<PublicFilesState>,
+    Extension(locale): Extension<Locale>,
+) -> Response {
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
     };
@@ -655,6 +664,7 @@ pub async fn reconcile_page(State(state): State<PublicFilesState>) -> Response {
             dangling_rows,
             pending_revokes,
             orphan_buckets,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),

@@ -514,7 +514,9 @@ pub fn filter(entries: &[AuditEntry], spec: &FilterSpec) -> Vec<AuditEntry> {
         .collect()
 }
 
+use crate::mgmt::i18n::{Locale, Translator};
 use askama::Template;
+use axum::Extension;
 use axum::extract::{Query, State};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
@@ -599,6 +601,7 @@ struct AuditHostPage {
     entries_view: Vec<AuditEntryView>,
     entries_json: String,
     top_slow_ops_view: Vec<AuditEntryView>,
+    t: Translator,
 }
 
 fn base_link(scope: &AuditScope) -> String {
@@ -791,6 +794,7 @@ pub fn build_body_ctx(
 
 pub async fn audit_host_page(
     State(state): State<crate::mgmt::tenants::TenantsState>,
+    Extension(locale): Extension<Locale>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
     let meta = state.session.meta.lock().await;
@@ -821,6 +825,7 @@ pub async fn audit_host_page(
         entries_view: body.entries_view,
         entries_json: body.entries_json,
         top_slow_ops_view: body.top_slow_ops_view,
+        t: Translator::new(locale),
     };
     Html(page.render().unwrap()).into_response()
 }
@@ -856,10 +861,12 @@ struct AuditTenantPage {
     entries_view: Vec<AuditEntryView>,
     entries_json: String,
     top_slow_ops_view: Vec<AuditEntryView>,
+    t: Translator,
 }
 
 pub async fn audit_tenant_page(
     State(state): State<crate::mgmt::tenants::TenantsState>,
+    Extension(locale): Extension<Locale>,
     axum::extract::Path(tenant_id): axum::extract::Path<String>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
@@ -920,6 +927,7 @@ pub async fn audit_tenant_page(
         entries_view: body.entries_view,
         entries_json: body.entries_json,
         top_slow_ops_view: body.top_slow_ops_view,
+        t: Translator::new(locale),
     };
     Html(tpl.render().unwrap()).into_response()
 }

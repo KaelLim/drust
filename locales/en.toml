@@ -139,6 +139,9 @@ operation = "Operation"
 tenant = "Tenant"
 timestamp = "timestamp"
 
+[common.locale]
+switch_aria = "Language"
+
 [common.link]
 view_all = "view all"
 
@@ -250,14 +253,14 @@ organization = "Organization"
 resources = "Resources"
 
 [audit_body.aria]
-show_details_for = "show details for {{ e.op }}"
+show_details_for = "show details for {op}"
 
 [audit_body.button]
 auto_30s = "auto 30s"
 stop_auto_refresh = "stop auto-refresh"
 
 [audit_body.card]
-entries_sub = "{{ entries.len() }} shown · click a row for full detail"
+entries_sub = "{count} shown · click a row for full detail"
 entries_title = "Audit entries"
 top_slowest_ops_sub = "slowest individual requests in this window"
 top_slowest_ops_title = "Top slowest ops"
@@ -266,11 +269,11 @@ top_tenants_title = "Top tenants"
 
 [audit_body.count]
 shown_suffix = "shown"
-truncated_from = "· truncated from {{ n }}"
+truncated_from = "· truncated from {n}"
 
 [audit_body.diag]
-corrupt_archives_skipped = "{{ archive_errors.len() }} corrupt archive(s) skipped."
-unparseable_skipped = "{{ parse_errors }} unparseable lines skipped."
+corrupt_archives_skipped = "{count} corrupt archive(s) skipped."
+unparseable_skipped = "{count} unparseable lines skipped."
 
 [audit_body.empty]
 no_entries_match = "no entries match."
@@ -298,7 +301,7 @@ avg_rps = "Avg RPS"
 errors = "Errors"
 latency_p50 = "Latency p50"
 meta_window = "window"
-p99_meta = "p99 {{ ov.p99_ms }} ms"
+p99_meta = "p99 {p99} ms"
 pct_err_suffix = "% err"
 req_per_sec = "req / sec"
 total_requests = "Total requests"
@@ -325,11 +328,11 @@ title = "drust admin — audit"
 
 [audit_tenant.head]
 eyebrow = "Tenant · governance"
-subtitle = "Scoped to {{ tenant_name }} — every REST, MCP, and SSE request, plus all denials. Host-wide events live in Admin · audit."
+subtitle = "Scoped to {tenant_name} — every REST, MCP, and SSE request, plus all denials. Host-wide events live in Admin · audit."
 
 [audit_tenant.page]
-meta_description = "drust admin — tenant {{ tenant_name }}: audit log viewer."
-title = "drust admin — {{ tenant_name }} / _logs"
+meta_description = "drust admin — tenant {tenant_name}: audit log viewer."
+title = "drust admin — {tenant_name} / _logs"
 
 [backup_inspect.confirm]
 ok = "Extract"
@@ -569,8 +572,8 @@ eyebrow = "Tenant · collections"
 title = "Empty tenant"
 
 [collections.page]
-meta_description = "drust admin — {{ tenant_name }} has no collections yet. Collections appear automatically once your client writes the first record."
-title = "drust admin — {{ tenant_name }} / collections (empty)"
+meta_description = "drust admin — {tenant_name} has no collections yet. Collections appear automatically once your client writes the first record."
+title = "drust admin — {tenant_name} / collections (empty)"
 
 [design.alerts]
 heading = "Alerts"
@@ -782,7 +785,7 @@ title = "Pending revokes"
 tagline = "multi-tenant sqlite"
 
 [login.button]
-continue_with_provider = "Continue with {{ p|capitalize }}"
+continue_with_provider = "Continue with {p}"
 submit = "Sign in →"
 
 [login.divider]
@@ -833,7 +836,7 @@ service_scopes = "Bypasses anon_caps and owner-field · use only in trusted back
 
 [tenant_api_keys.confirm]
 reroll_ok = "Reroll"
-reroll_text = "Reroll {{ role }} key? The current key will be invalidated immediately."
+reroll_text = "Reroll {role} key? The current key will be invalidated immediately."
 reroll_title = "Reroll key"
 
 [tenant_api_keys.crumbs]
@@ -853,7 +856,7 @@ name = "MCP endpoint"
 tools_pill = "{n} tools"
 
 [tenant_api_keys.page]
-title = "drust admin — {{ tenant_name }} / _api_keys"
+title = "drust admin — {tenant_name} / _api_keys"
 
 [tenant_api_keys.pill]
 public = "public"
@@ -866,15 +869,15 @@ title = "Self-registration"
 
 [tenant_api_keys.state]
 key_not_stored = "key not stored — created before v1.1c"
-no_key_yet = "no {{ role }} key yet"
+no_key_yet = "no {role} key yet"
 
 [tenant_docs.head]
 eyebrow = "Admin · documentation"
 source_label = "Source:"
 
 [tenant_docs.page]
-meta_description = "drust admin — on-disk doc viewer ({{ active }})."
-title = "drust admin — _docs / {{ active }}"
+meta_description = "drust admin — on-disk doc viewer ({active})."
+title = "drust admin — _docs / {active}"
 
 [tenant_docs.toc]
 heading = "on this page"
@@ -952,7 +955,7 @@ here = "OAuth providers"
 
 [tenant_oauth_providers.delete]
 button = "disable"
-confirm = "Delete the {{ p.provider }} OAuth config? End users will no longer be able to sign in via {{ p.provider }} on this tenant."
+confirm = "Delete the {provider} OAuth config? End users will no longer be able to sign in via {provider} on this tenant."
 
 [tenant_oauth_providers.empty]
 body = "Add one below to enable end-user sign-in."
@@ -979,7 +982,7 @@ sub = "End-users can sign in to this tenant via Google or GitHub. Each provider 
 title = "OAuth providers"
 
 [tenant_oauth_providers.meta]
-description = "drust admin — tenant {{ tenant_name }}: per-tenant OAuth provider configs (Google · GitHub) for end-user sign-in."
+description = "drust admin — tenant {tenant_name}: per-tenant OAuth provider configs (Google · GitHub) for end-user sign-in."
 
 [tenant_oauth_providers.upsert]
 title = "Add / update provider"
@@ -1203,7 +1206,7 @@ new_subscription = "New subscription"
 here = "Webhooks"
 
 [tenant_webhooks_admin.delete]
-confirm = "Delete webhook {{ r.id }} ({{ r.collection }} → {{ r.url }})? Further record CRUD events will not be delivered."
+confirm = "Delete webhook {id} ({collection} → {url})? Further record CRUD events will not be delivered."
 
 [tenant_webhooks_admin.empty]
 body = "Add one below to start receiving record-CRUD notifications."
@@ -1222,8 +1225,8 @@ url_hint = "https:// or http:// loopback only"
 url_label = "url"
 
 [tenant_webhooks_admin.page]
-meta_description = "drust admin — tenant {{ tenant_name }}: outbound webhook subscriptions. Each row fans out on record CRUD to the subscriber URL."
-title = "drust admin — {{ tenant_name }} / _webhooks"
+meta_description = "drust admin — tenant {tenant_name}: outbound webhook subscriptions. Each row fans out on record CRUD to the subscriber URL."
+title = "drust admin — {tenant_name} / _webhooks"
 
 [tenant_webhooks_admin.pill]
 off = "off"
@@ -1231,7 +1234,7 @@ on = "on"
 
 [tenant_webhooks_admin.secret_banner]
 body = "Use this value to verify the X-Drust-Signature header on incoming deliveries. drust never stores it in cleartext after this render."
-title = "Webhook secret (id {{ s.id }}) — copy now, you will not see it again."
+title = "Webhook secret (id {id}) — copy now, you will not see it again."
 
 [tenant_webhooks_admin.stats]
 active = "Active"

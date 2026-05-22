@@ -6,7 +6,9 @@
 //! emit our own `<hN id="...">` so each `## v…` heading gets a stable
 //! anchor for the in-page sidebar (`tenant_docs.html`'s docs-toc).
 
+use crate::mgmt::i18n::{Locale, Translator};
 use askama::Template;
+use axum::Extension;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd, html};
@@ -21,6 +23,7 @@ struct DocsPage {
     source_path: &'static str,
     version: &'static str,
     active: &'static str,
+    t: Translator,
 }
 
 pub struct NavItem {
@@ -28,7 +31,7 @@ pub struct NavItem {
     pub text: String,
 }
 
-pub async fn changelog_page() -> Response {
+pub async fn changelog_page(Extension(locale): Extension<Locale>) -> Response {
     let path = "CHANGELOG.md";
     let md = match tokio::fs::read_to_string(path).await {
         Ok(s) => s,
@@ -48,6 +51,7 @@ pub async fn changelog_page() -> Response {
         source_path: path,
         version: env!("CARGO_PKG_VERSION"),
         active: "changelog",
+        t: Translator::new(locale),
     };
     Html(page.render().unwrap()).into_response()
 }
