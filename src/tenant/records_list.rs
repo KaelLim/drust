@@ -180,11 +180,11 @@ pub async fn post_list(
         .await;
     let (col_names, rows) = match records_res {
         Ok(v) => v,
-        Err(_e) => {
+        Err(e) => {
             return json_error(
-                StatusCode::BAD_REQUEST,
-                "QUERY_FORBIDDEN",
-                "list rejected",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
             );
         }
     };
@@ -208,7 +208,7 @@ pub async fn post_list(
     let pool_count = t.pool.clone();
     let count_sql_owned = count_sql.clone();
     let binds_for_count = binds.clone();
-    let total: i64 = pool_count
+    let count_res: rusqlite::Result<i64> = pool_count
         .with_reader(move |c| -> rusqlite::Result<i64> {
             attach_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<i64> {
@@ -222,8 +222,17 @@ pub async fn post_list(
             detach_authorizer(c);
             r
         })
-        .await
-        .unwrap_or(0);
+        .await;
+    let total: i64 = match count_res {
+        Ok(n) => n,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
+    };
 
     let per_page = req.per_page.unwrap_or(20);
     let page = req.page.unwrap_or(1);
