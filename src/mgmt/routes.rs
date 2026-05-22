@@ -1,9 +1,8 @@
 use crate::auth::admin::{dummy_hash, verify_password};
 use crate::auth::middleware::{build_session_cookie, clear_session_cookie};
 use crate::auth::session::{create_session, revoke_session};
-use crate::mgmt::i18n::{Locale, Translator};
+use crate::mgmt::i18n::{Locale, LocaleHint, Translator};
 use askama::Template;
-use axum::Extension;
 use axum::Router;
 use axum::extract::{Form, Query, State};
 use axum::http::{StatusCode, header};
@@ -89,7 +88,7 @@ struct DesignShowcase {
     t: Translator,
 }
 
-async fn design_showcase(Extension(locale): Extension<Locale>) -> Response {
+async fn design_showcase(LocaleHint(locale): LocaleHint) -> Response {
     Html(
         DesignShowcase {
             version: env!("CARGO_PKG_VERSION"),
@@ -115,7 +114,7 @@ struct LoginPageQuery {
 
 async fn login_page(
     State(state): State<MgmtState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Query(q): Query<LoginPageQuery>,
 ) -> Html<String> {
     Html(
@@ -133,7 +132,7 @@ async fn login_page(
 
 async fn login_submit(
     State(state): State<MgmtState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     headers: axum::http::HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
@@ -264,15 +263,27 @@ async fn legacy_reconcile_redirect() -> Response {
 }
 
 pub fn build_mgmt_router(state: MgmtState) -> Router {
+    // v1.22 — `init_bundles` is idempotent (OnceLock::get_or_init). Calling
+    // it here means every code path that materialises an admin router gets
+    // the i18n bundles loaded, including integration tests that bypass
+    // `main.rs`. Production main also calls this directly; the second call
+    // is a cheap no-op.
+    crate::mgmt::i18n::init_bundles();
     Router::new()
         .route("/", get(root_redirect))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
+        .layer(axum::middleware::from_fn(
+            crate::mgmt::locale_layer::locale_layer,
+        ))
         .with_state(state)
 }
 
 impl MgmtState {
     pub fn with_data_dir(self, data_dir: std::path::PathBuf) -> Router {
+        // v1.22 — idempotent (OnceLock::get_or_init). Production main also
+        // calls this; tests that bypass main need it here.
+        crate::mgmt::i18n::init_bundles();
         use crate::auth::middleware::{AdminSessionState, admin_session_layer};
         use crate::mgmt::public_files::{
             PublicFilesState, admin_sign_url, admin_stream_bytes, delete_submit,

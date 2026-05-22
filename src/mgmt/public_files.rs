@@ -5,13 +5,12 @@
 //! `Caddy → Garage s3_web` directly. This module only handles management.
 
 use crate::auth::middleware::AdminSessionState;
-use crate::mgmt::i18n::{Locale, Translator};
+use crate::mgmt::i18n::{LocaleHint, Translator};
 use crate::storage::files::{
     Disposition, Owner, Visibility, bucket_for_upload, default_cache_control,
 };
 use crate::storage::garage::GarageClient;
 use askama::Template;
-use axum::Extension;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -161,7 +160,7 @@ pub fn build_disk_view() -> DiskView {
 
 pub async fn list_page(
     State(state): State<PublicFilesState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Query(qs): Query<ListQs>,
 ) -> Response {
     let per_page = qs
@@ -566,7 +565,7 @@ pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path
 
 pub async fn reconcile_page(
     State(state): State<PublicFilesState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
 ) -> Response {
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();

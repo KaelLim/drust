@@ -5,9 +5,8 @@
 //! shell script). This module never writes — restore lives outside this
 //! UI for now (extract manually via `tar --zstd -xf ...`).
 
-use crate::mgmt::i18n::{Locale, Translator};
+use crate::mgmt::i18n::{Locale, LocaleHint, Translator};
 use askama::Template;
-use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
@@ -121,7 +120,7 @@ fn is_safe_backup_filename(name: &str) -> bool {
 
 pub async fn list_page(
     State(state): State<BackupsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
 ) -> Response {
     let dir = state.data_dir.join("backups");
     let mut rows: Vec<BackupRow> = Vec::new();
@@ -238,7 +237,7 @@ fn parse_tenant_db_path(p: &str) -> Option<String> {
 /// list. The temp meta.sqlite is dropped before the response is rendered.
 pub async fn inspect(
     State(state): State<BackupsState>,
-    Extension(locale): Extension<Locale>,
+    LocaleHint(locale): LocaleHint,
     Path(filename): Path<String>,
     Query(qs): Query<InspectQs>,
 ) -> Response {

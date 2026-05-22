@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.22.0] — 2026-05-22
+
+### Added
+- **Server-side i18n for the admin UI** — admin pages now render in English (default) or 繁體中文 based on a `drust_locale` cookie, falling back to the `Accept-Language` header, then `en`. Topbar gains a language-switch dropdown (cookie-driven, reloads the page so SSR picks up the new locale). Bundles compiled into the binary via `include_str!`; missing keys fall back to `en` and emit a dev-only `tracing::warn` with a `!!key!!` sentinel rendered.
+- **`src/mgmt/i18n.rs`** — `Locale` enum (`En` / `ZhTw`, permissive `zh*` matching), `Translator::s` / `fmt` / `fmt1` / `fmt2` / `fmt3` (the positional variants are askama-friendly since askama 0.12 cannot parse slice-of-tuples literals). Bundle TOMLs are leaked into `'static` once at startup.
+- **`src/mgmt/locale_layer.rs`** — outermost middleware on the admin router; resolves the locale per request and injects `Extension<Locale>` so every handler can construct its `Translator` for the per-page Template struct.
+- **`build.rs`** — round-trips every `t.s("…")` / `t.fmt*("…", …)` call site against `locales/en.toml`; warns on orphan keys and panics on missing keys at compile time.
+- **`locales/en.toml` + `locales/zh-TW.toml`** — 705+ keys extracted from 25 templates, K1+K2 naming (page-specific `<file>.<section>.<role>` + reused `common.<group>.<role>`).
+- Every admin template (`src/mgmt/templates/*.html`) re-keyed: `_admin_sidebar`, `_audit_body`, `_cmdk`, `_collection_sidebar`, `_modal`, `audit_host`, `audit_tenant`, `backup_inspect`, `backups`, `collection_rows`, `collections`, `design`, `files`, `files_reconcile`, `login`, `tenant_api_keys`, `tenant_docs`, `tenant_files_admin`, `tenant_oauth_providers`, `tenant_overview`, `tenant_rpc`, `tenant_rpc_form`, `tenant_rpc_test`, `tenant_webhooks_admin`, `tenants_list`.
+
+### Spec / plan
+- [`docs/superpowers/specs/2026-05-22-drust-i18n-design.md`](docs/superpowers/specs/2026-05-22-drust-i18n-design.md)
+- Plan at `tool/docs/superpowers/plans/2026-05-22-drust-i18n.md`
+
 ## [1.20.0] — 2026-05-21
 
 ### Refactor
