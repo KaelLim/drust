@@ -1,18 +1,10 @@
-<!doctype html>
-<html lang="{{ t.locale_code() }}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ t.fmt1("tenant_docs.page.title", "active", active) }}</title>
-<meta name="description" content="{{ t.fmt1("tenant_docs.page.meta_description", "active", active) }}">
-{% include "_favicon.html" %}
-{% include "_styles.html" %}
-</head>
-<body data-section="docs">
-{% include "_icons.html" %}
-<div class="app-shell">
-  {% include "_admin_sidebar.html" %}
-  <main class="main">
+{% extends "_base.html" %}
+
+{% block title %}{{ t.fmt1("tenant_docs.page.title", "active", active) }}{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.fmt1("tenant_docs.page.meta_description", "active", active) }}">{% endblock %}
+{% block body_attrs %} data-section="docs"{% endblock %}
+
+{% block content %}
     <div class="docs-shell">
         <aside class="docs-toc">
           <div class="docs-toc-head">{{ t.s("tenant_docs.toc.heading") }} <span class="count">{{ nav.len() }}</span></div>
@@ -40,8 +32,9 @@
           </div>
         </div>
       </div>
-  </main>
-</div>
+{% endblock %}
+
+{% block extra_scripts %}
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
 
@@ -70,5 +63,4 @@
   if (initial) setActive(initial.id);
 })();
 </script>
-</body>
-</html>
+{% endblock %}

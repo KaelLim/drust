@@ -1,17 +1,9 @@
-<!doctype html>
-<html lang="{{ t.locale_code() }}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ t.s("backup_inspect.page.title") }} — {{ filename }}</title>
-{% include "_favicon.html" %}
-{% include "_styles.html" %}
-</head>
-<body data-section="backups">
-{% include "_icons.html" %}
-<div class="app-shell">
-  {% include "_admin_sidebar.html" %}
-  <main class="main">
+{% extends "_base.html" %}
+
+{% block title %}{{ t.s("backup_inspect.page.title") }} — {{ filename }}{% endblock %}
+{% block body_attrs %} data-section="backups"{% endblock %}
+
+{% block content %}
     <div class="page">
 
       <div class="view-head">
@@ -104,8 +96,9 @@
         {% endif %}
       </div>
     </div>
-  </main>
-</div>
+{% endblock %}
+
+{% block extra_scripts %}
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
 {% include "_modal.html" %}
@@ -123,5 +116,4 @@
     });
   });
 </script>
-</body>
-</html>
+{% endblock %}

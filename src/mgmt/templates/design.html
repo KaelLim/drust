@@ -1,11 +1,7 @@
-<!doctype html>
-<html lang="{{ t.locale_code() }}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ t.s("design.page.title") }}</title>
-{% include "_favicon.html" %}
-{% include "_styles.html" %}
+{% extends "_base.html" %}
+
+{% block title %}{{ t.s("design.page.title") }}{% endblock %}
+{% block extra_head %}
 <style>
   /* Page-scoped: the section grid + swatch grid only used here.
      If the same patterns are needed on a real page, promote to
@@ -60,12 +56,10 @@
     padding: 20px;
   }
 </style>
-</head>
-<body data-section="design">
-{% include "_icons.html" %}
-<div class="app-shell">
-  {% include "_admin_sidebar.html" %}
-  <main class="main">
+{% endblock %}
+{% block body_attrs %} data-section="design"{% endblock %}
+
+{% block content %}
       <div class="page page-wide ds-page">
         <nav class="ds-toc">
           <div class="ds-toc-head">{{ t.s("design.toc.head") }}</div>
@@ -480,9 +474,9 @@
           </section>
         </div>
       </div>
-  </main>
-</div>
+{% endblock %}
 
+{% block extra_scripts %}
 {% include "_mascot.html" %}
 
 <script>
@@ -539,5 +533,4 @@
     if (open && e.key === 'Escape') { e.preventDefault(); dsCmdkHide(); }
   });
 </script>
-</body>
-</html>
+{% endblock %}

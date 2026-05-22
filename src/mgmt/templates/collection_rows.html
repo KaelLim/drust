@@ -1,18 +1,10 @@
-<!doctype html>
-<html lang="{{ t.locale_code() }}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ t.s("common.app.title") }} — {{ tenant_name }} / {{ coll_name }}</title>
-<meta name="description" content="{{ t.s("common.app.title") }} — browse {{ coll_name }} in tenant {{ tenant_name }}. {{ total_rows }} {{ t.s("common.stat.records") }}, {{ fields.len() }} {{ t.s("collection_rows.indexes.col_fields") }}.">
-{% include "_favicon.html" %}
-{% include "_styles.html" %}
-</head>
-<body>
-{% include "_icons.html" %}
-<div class="app-shell">
-  {% include "_collection_sidebar.html" %}
-  <main class="main">
+{% extends "_base.html" %}
+
+{% block title %}{{ t.s("common.app.title") }} — {{ tenant_name }} / {{ coll_name }}{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.s("common.app.title") }} — browse {{ coll_name }} in tenant {{ tenant_name }}. {{ total_rows }} {{ t.s("common.stat.records") }}, {{ fields.len() }} {{ t.s("collection_rows.indexes.col_fields") }}.">{% endblock %}
+{% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
+
+{% block content %}
     <div class="page page-wide">
 
         <div class="view-head">
@@ -665,8 +657,9 @@ for (;;) {
         {% endif %}
 
       </div>
-  </main>
-</div>
+{% endblock %}
+
+{% block extra_scripts %}
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
 <script>
@@ -711,5 +704,4 @@ function editDesc(kind, tenant, coll, extra) {
   ta.focus();
 }
 </script>
-</body>
-</html>
+{% endblock %}
