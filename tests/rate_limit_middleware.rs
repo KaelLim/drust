@@ -37,7 +37,7 @@ async fn app_with_limiter(
 
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
-    let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone());
+    let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
     let mut state = TenantAuthState::test_default(
         meta,

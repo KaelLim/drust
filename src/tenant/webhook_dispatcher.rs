@@ -1,8 +1,15 @@
 //! WebhookDispatcher — record-CRUD event → subscribed URLs.
 //!
 //! Public API:
-//!   WebhookDispatcher::new(pool: Arc<TenantRegistry>) -> Arc<Self>
+//!   WebhookDispatcher::new(
+//!       pool: Arc<TenantRegistry>,
+//!       resolver_override: Option<Arc<dyn reqwest::dns::Resolve + Send + Sync>>,
+//!   ) -> Arc<Self>
 //!   WebhookDispatcher::dispatch(&self, tenant: &str, collection: &str, event: Event)
+//!
+//! Production passes `None` for `resolver_override` so dispatch uses
+//! `webhook_resolver::PinnedPublicResolver`. Tests inject an
+//! `AllowAllResolver` to bypass the public-IP filter.
 //!
 //! Internal: pure helpers below (HMAC, payload, event filter) are
 //! `pub(crate)` to keep them testable from the integration suite.
@@ -77,24 +84,21 @@ pub(crate) fn build_payload(
 #[derive(Clone)]
 pub struct WebhookDispatcher {
     pool: Arc<TenantRegistry>,
-    http: reqwest::Client,
+    /// Test-only injection point for `reqwest::dns::Resolve`. Production
+    /// passes `None`; the dispatch path then falls back to
+    /// `webhook_resolver::PinnedPublicResolver` per attempt so a host that
+    /// rebinds mid-flight cannot win against the resolver cache. The
+    /// per-attempt client is built inside `deliver_for_test` so no Client
+    /// state is reused across attempts. See spec §1.
+    resolver_override: Option<Arc<dyn reqwest::dns::Resolve + Send + Sync>>,
 }
 
 impl WebhookDispatcher {
-    pub fn new(pool: Arc<TenantRegistry>) -> Arc<Self> {
-        let http = reqwest::Client::builder()
-            .pool_max_idle_per_host(8)
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(10))
-            .user_agent("drust-webhook/1.19.2")
-            // v1.19.2 — SSRF defense: don't follow redirects. A subscriber
-            // that 302s to an internal endpoint (RFC1918 / link-local /
-            // loopback) would let an attacker pivot inward even though
-            // check_url rejected the original host.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("reqwest client builds");
-        Arc::new(Self { pool, http })
+    pub fn new(
+        pool: Arc<TenantRegistry>,
+        resolver_override: Option<Arc<dyn reqwest::dns::Resolve + Send + Sync>>,
+    ) -> Arc<Self> {
+        Arc::new(Self { pool, resolver_override })
     }
 
     /// Fan out `event` to every active subscriber for `(tenant, collection)`.
@@ -106,7 +110,15 @@ impl WebhookDispatcher {
         let pool = self.pool.clone();
         let tenant = tenant.to_string();
         let collection = collection.to_string();
-        let http = self.http.clone();
+        // Pin a resolver for this dispatch fan-out: tests inject their own
+        // via `resolver_override`; production uses the wrap-first
+        // PinnedPublicResolver so private/loopback addresses never reach
+        // reqwest's dial step. Built per attempt inside `deliver_for_test`,
+        // so we just clone the Arc here.
+        let resolver: Arc<dyn reqwest::dns::Resolve + Send + Sync> = self
+            .resolver_override
+            .clone()
+            .unwrap_or_else(|| Arc::new(crate::tenant::webhook_resolver::PinnedPublicResolver));
         tokio::spawn(async move {
             let tenant_pool = match pool.get_or_open(&tenant) {
                 Ok(p) => p,
@@ -142,12 +154,12 @@ impl WebhookDispatcher {
                         continue;
                     }
                 };
-                let http2 = http.clone();
+                let resolver2 = resolver.clone();
                 let pool2 = pool.clone();
                 let tenant2 = tenant.clone();
                 tokio::spawn(async move {
                     if let Err(e) = deliver(
-                        &http2,
+                        resolver2,
                         &sub,
                         body_bytes,
                         DeliverySchedule::default(),
@@ -254,14 +266,14 @@ impl std::fmt::Display for DeliveryError {
 /// Uses the shared `TenantRegistry` pool so failure writes go through the
 /// per-tenant writer mutex — same serialization guarantee as all other writes.
 pub(crate) async fn deliver(
-    http: &reqwest::Client,
+    resolver: Arc<dyn reqwest::dns::Resolve + Send + Sync>,
     row: &WebhookRow,
     body_bytes: Vec<u8>,
     sched: DeliverySchedule,
     pool: &TenantRegistry,
     tenant_id: &str,
 ) -> Result<(), DeliveryError> {
-    let outcome = deliver_for_test(http, row, body_bytes, sched).await;
+    let outcome = deliver_for_test(resolver, row, body_bytes, sched).await;
     if let Err(ref e) = outcome {
         let reason = e.to_string();
         let id = row.id;
@@ -282,27 +294,95 @@ pub(crate) async fn deliver(
 /// Exposed only for integration tests in `tests/`. Production code
 /// uses `deliver()` (which wraps this + calls `record_failure` on
 /// failure). Do NOT call from the dispatch path.
+///
+/// v1.21: wrap-first standalone resolve via `webhook_resolver::resolve_public`
+/// short-circuits the entire attempt loop if the host now resolves only to
+/// private/loopback/link-local IPs (or fails resolution outright). On dev
+/// loopback hosts (`127.0.0.1` / `localhost` / `::1`) the pre-check and the
+/// reqwest-level resolver are both bypassed — Caddy & test scaffolds live
+/// on loopback. Every other host gets a fresh, single-shot reqwest::Client
+/// per attempt wired to the injected resolver so no DNS cache survives an
+/// attempt boundary.
 pub async fn deliver_for_test(
-    http: &reqwest::Client,
+    resolver: Arc<dyn reqwest::dns::Resolve + Send + Sync>,
     row: &WebhookRow,
     body_bytes: Vec<u8>,
     sched: DeliverySchedule,
 ) -> Result<(), DeliveryError> {
+    use std::time::Duration;
+
+    // Parse once at the top — we need host/port for the wrap-first
+    // standalone resolve and for the dev-loopback bypass.
+    let parsed = reqwest::Url::parse(&row.url).map_err(|e| DeliveryError::NonRetryable {
+        status: 0,
+        body: format!("url parse: {e}"),
+    })?;
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    // reqwest::Url returns `[::1]` (with brackets) for IPv6 literals — accept
+    // both forms here, same as `check_url`.
+    let is_loopback_dev = matches!(
+        host.as_str(),
+        "127.0.0.1" | "localhost" | "::1" | "[::1]"
+    );
+
+    // Wrap-first standalone resolve: BEFORE any attempt, confirm the
+    // host still maps to at least one public IP. A rebinding between
+    // registration and dispatch hits here as a terminal NonRetryable.
+    if !is_loopback_dev {
+        if let Err(e) = crate::tenant::webhook_resolver::resolve_public(host.clone(), port).await {
+            tracing::warn!(
+                webhook_id = %row.id,
+                url = %row.url,
+                error = %e,
+                "deliver: wrap-first resolve rejected — terminal"
+            );
+            return Err(DeliveryError::NonRetryable {
+                status: 0,
+                body: "host_now_private_or_unresolvable".to_string(),
+            });
+        }
+    }
+
     let sig = compute_signature(&row.secret, &body_bytes);
     let delivery_id = uuid::Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().to_rfc3339();
     let mut last_err = String::new();
     for (attempt_idx, wait_secs) in sched.backoffs.iter().enumerate() {
         if *wait_secs > 0 {
-            tokio::time::sleep(std::time::Duration::from_secs(*wait_secs)).await;
+            tokio::time::sleep(Duration::from_secs(*wait_secs)).await;
         }
-        let req = http
+        // Per-attempt client: no idle-pool reuse, no shared DNS cache, no
+        // redirects, fresh resolver each attempt.
+        let mut b = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("drust-webhook/1.21.0");
+        if !is_loopback_dev {
+            // Wrap the `dyn` resolver in a sized handle — reqwest's
+            // `dns_resolver` takes `Arc<R: Resolve + 'static + Sized>`,
+            // and `dyn Resolve` is not `Sized`.
+            b = b.dns_resolver(Arc::new(
+                crate::tenant::webhook_resolver::ResolverHandle(resolver.clone()),
+            ));
+        }
+        let client = match b.build() {
+            Ok(c) => c,
+            Err(e) => {
+                return Err(DeliveryError::NonRetryable {
+                    status: 0,
+                    body: format!("client build: {e}"),
+                });
+            }
+        };
+        let req = client
             .post(&row.url)
             .header("content-type", "application/json")
             .header("x-drust-signature", &sig)
             .header("x-drust-delivery-id", &delivery_id)
             .header("x-drust-timestamp", &timestamp)
-            .timeout(std::time::Duration::from_secs(sched.per_attempt_timeout_secs))
+            .timeout(Duration::from_secs(sched.per_attempt_timeout_secs))
             .body(body_bytes.clone());
         match req.send().await {
             Ok(resp) => {

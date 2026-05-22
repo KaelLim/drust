@@ -108,7 +108,7 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
     let reg = McpRegistry::with_bus_and_storage(
         tr.clone(),
         EventBus::new(),
-        drust::tenant::WebhookDispatcher::new(tr.clone()),
+        drust::tenant::WebhookDispatcher::new(tr.clone(), None),
         None,
         String::new(),
         Arc::new([0u8; 32]),

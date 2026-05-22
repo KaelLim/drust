@@ -35,7 +35,7 @@ async fn app_with_audit(
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
-    let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone());
+    let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(
         meta,
