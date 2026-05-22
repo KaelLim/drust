@@ -3,6 +3,7 @@ pub mod auth_routes;
 pub mod collections;
 pub mod events;
 pub mod webhook_dispatcher;
+pub mod webhook_resolver;
 pub use webhook_dispatcher::WebhookDispatcher;
 pub mod mcp_dispatch;
 pub mod oauth_admin_routes;

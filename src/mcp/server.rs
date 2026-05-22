@@ -114,7 +114,7 @@ pub struct McpRegistry {
 
 impl McpRegistry {
     pub fn new(tenants: Arc<TenantRegistry>) -> Self {
-        let webhooks = WebhookDispatcher::new(tenants.clone());
+        let webhooks = WebhookDispatcher::new(tenants.clone(), None);
         Self {
             tenants,
             bus: EventBus::new(),
@@ -129,7 +129,7 @@ impl McpRegistry {
         }
     }
     pub fn with_bus(tenants: Arc<TenantRegistry>, bus: EventBus) -> Self {
-        let webhooks = WebhookDispatcher::new(tenants.clone());
+        let webhooks = WebhookDispatcher::new(tenants.clone(), None);
         Self {
             tenants,
             bus,

@@ -7,6 +7,8 @@ use drust::tenant::webhook_dispatcher::{
 use helpers::spin_up_tenant_with_role;
 use axum::body::Body;
 use axum::http::{Request, header};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+use std::sync::Arc;
 use tower::ServiceExt;
 
 fn fake_row(url: &str) -> WebhookRow {
@@ -18,6 +20,32 @@ fn fake_row(url: &str) -> WebhookRow {
         secret: "topsecret".into(),
         active: 1,
     }
+}
+
+/// Permissive mock resolver — lets every host resolve via stdlib DNS with
+/// no public-IP filtering. v1.21 swapped `deliver_for_test`'s first arg
+/// from `&reqwest::Client` to `Arc<dyn Resolve>`; for `127.0.0.1`-backed
+/// FakeHook tests the dispatcher's `is_loopback_dev` bypass means this
+/// resolver is never actually called, but it is still required for type
+/// compatibility.
+#[derive(Clone)]
+struct AllowAllResolver;
+impl Resolve for AllowAllResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            use std::net::ToSocketAddrs;
+            let addrs: Vec<_> = (host.as_str(), 0u16)
+                .to_socket_addrs()
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
+                .collect();
+            Ok(Box::new(addrs.into_iter()) as Addrs)
+        })
+    }
+}
+
+fn mock_resolver() -> Arc<dyn Resolve + Send + Sync> {
+    Arc::new(AllowAllResolver)
 }
 
 #[tokio::test]
@@ -49,7 +77,7 @@ async fn deliver_happy_path_signature_matches() {
     let body_bytes = serde_json::to_vec(&payload).unwrap();
     let expected_sig = compute_signature("topsecret", &body_bytes);
     let outcome = deliver_for_test(
-        &reqwest::Client::new(),
+        mock_resolver(),
         &fake_row(hook.url()),
         body_bytes.clone(),
         DeliverySchedule::fast_for_tests(),
@@ -65,7 +93,7 @@ async fn deliver_happy_path_signature_matches() {
 async fn deliver_retries_on_5xx_then_succeeds() {
     let hook = FakeHook::start_scripted(vec![500, 503]).await; // then 200
     let outcome = deliver_for_test(
-        &reqwest::Client::new(),
+        mock_resolver(),
         &fake_row(hook.url()),
         b"{}".to_vec(),
         DeliverySchedule::fast_for_tests(),
@@ -79,7 +107,7 @@ async fn deliver_retries_on_5xx_then_succeeds() {
 async fn deliver_stops_on_4xx() {
     let hook = FakeHook::start_scripted(vec![401]).await;
     let outcome = deliver_for_test(
-        &reqwest::Client::new(),
+        mock_resolver(),
         &fake_row(hook.url()),
         b"{}".to_vec(),
         DeliverySchedule::fast_for_tests(),
@@ -93,7 +121,7 @@ async fn deliver_stops_on_4xx() {
 async fn deliver_all_four_attempts_fail_returns_err() {
     let hook = FakeHook::start_scripted(vec![500, 500, 500, 500]).await;
     let outcome = deliver_for_test(
-        &reqwest::Client::new(),
+        mock_resolver(),
         &fake_row(hook.url()),
         b"{}".to_vec(),
         DeliverySchedule::fast_for_tests(),
