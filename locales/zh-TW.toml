@@ -381,9 +381,6 @@ title = "快照中的租戶"
 [backups.banner]
 inspect_title = "檢視快照"
 
-[backups.crumbs]
-here = "備份"
-
 [backups.empty]
 title = "尚無備份"
 
@@ -856,9 +853,6 @@ reroll_ok = "重新產生"
 reroll_text = "要重新產生 {role} 金鑰嗎？目前的金鑰會立即失效。"
 reroll_title = "重新產生金鑰"
 
-[tenant_api_keys.crumbs]
-here = "API 金鑰"
-
 [tenant_api_keys.head]
 eyebrow = "租戶・連接"
 title = "API 金鑰"
@@ -965,9 +959,6 @@ visibility_label = "可見性"
 [tenant_oauth_providers.callback_banner]
 title = "Callback URL 為各租戶固定值"
 
-[tenant_oauth_providers.crumbs]
-here = "OAuth providers"
-
 [tenant_oauth_providers.delete]
 button = "停用"
 confirm = "刪除 {provider} 的 OAuth 設定？此租戶的終端使用者將無法再透過 {provider} 登入。"
@@ -1047,9 +1038,6 @@ title = "Webhook 失敗 · 最近 24 小時 ({n})"
 
 [tenant_rpc.actions]
 new = "新增 RPC"
-
-[tenant_rpc.crumbs]
-here = "預存 RPC"
 
 [tenant_rpc.delete]
 body = "確定要刪除 RPC「{name}」？此操作無法復原。"
@@ -1224,9 +1212,6 @@ col_total = "總計"
 
 [tenant_webhooks_admin.actions]
 new_subscription = "新增訂閱"
-
-[tenant_webhooks_admin.crumbs]
-here = "Webhooks"
 
 [tenant_webhooks_admin.delete]
 confirm = "刪除 webhook {id}（{collection} → {url}）？後續的記錄 CRUD 事件將不會再投遞。"
