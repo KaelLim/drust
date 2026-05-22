@@ -13,16 +13,12 @@
 <div class="app-shell">
   {% include "_admin_sidebar.html" %}
   <main class="main">
-    <header class="topbar">
-      {% include "_topbar_right.html" %}
-    </header>
-
     <div class="page">
 
       <div class="view-head">
         <div class="grow">
           <div class="eyebrow">{{ t.s("backups.head.eyebrow") }}</div>
-          <h1 class="view-title">{{ t.s("backups.crumbs.here") }}</h1>
+          <h1 class="view-title">{{ t.s("backups.head.title") }}</h1>
           <p class="view-sub">Daily <code>VACUUM INTO</code> snapshots driven by <code>drust-backup.timer</code>, compressed with zstd, retained 30 days. Inspect a snapshot before restoring to see which tenants are inside.</p>
         </div>
       </div>

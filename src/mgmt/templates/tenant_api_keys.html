@@ -63,16 +63,12 @@
 <div class="app-shell">
   {% include "_collection_sidebar.html" %}
   <main class="main">
-    <header class="topbar">
-      {% include "_topbar_right.html" %}
-    </header>
-
     <div class="page page-wide">
 
         <div class="view-head">
           <div class="grow">
             <div class="eyebrow">{{ t.s("tenant_api_keys.head.eyebrow") }}</div>
-            <h1 class="view-title">{{ t.s("tenant_api_keys.crumbs.here") }}</h1>
+            <h1 class="view-title">{{ t.s("tenant_api_keys.head.title") }}</h1>
             <p class="view-sub">Two personalities for this tenant — pick whichever matches the surface you're integrating with. Reroll clears the previous bearer immediately. Tenant <b>{{ tenant_name }}</b> <code style="opacity:0.6;font-size:11px;">{{ tenant_id }}</code> · created {{ created_at }}.</p>
           </div>
         </div>

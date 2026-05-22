@@ -12,16 +12,12 @@
 <div class="app-shell">
   {% include "_collection_sidebar.html" %}
   <main class="main">
-    <header class="topbar">
-      {% include "_topbar_right.html" %}
-    </header>
-
     <div class="page">
 
         <div class="view-head">
           <div class="grow">
             <div class="eyebrow">{{ t.s("tenant_rpc.head.eyebrow") }}</div>
-            <h1 class="view-title">{{ t.s("tenant_rpc.crumbs.here") }}</h1>
+            <h1 class="view-title">{{ t.s("tenant_rpc.head.title") }}</h1>
             <p class="view-sub">{{ t.s("tenant_rpc.head.sub") }}</p>
           </div>
           <a class="btn primary" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/new">

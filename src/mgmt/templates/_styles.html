@@ -75,7 +75,7 @@
   @keyframes chonk-blink{0%,92%,100%{transform:scaleY(1)}94%,98%{transform:scaleY(0.1)}}
   /* drust templates apply `.bounce` directly; mockup uses `.chonk-bounce`. Both
      alias to the same keyframes so either class works. */
-  .chonk-bounce,.top-mascot.bounce,.bounce{animation:chonk-bounce 2.4s ease-in-out infinite}
+  .chonk-bounce,.bounce{animation:chonk-bounce 2.4s ease-in-out infinite}
   @keyframes chonk-bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
 
   /* ---------------- sidebar (shared) ---------------- */
@@ -188,78 +188,12 @@
   .status-pulse::after{content:"";position:absolute;inset:-3px;border-radius:50%;background:var(--mint);opacity:.35;animation:pulse 2s ease-out infinite}
   @keyframes pulse{0%{transform:scale(.6);opacity:.5}100%{transform:scale(2.2);opacity:0}}
 
-  /* ---------------- main + topbar ---------------- */
+  /* ---------------- main ---------------- */
   /* no overflow; body scrolls. min-width:0 so grid can shrink below content. */
   .main{display:flex;flex-direction:column;min-width:0;background:var(--bg)}
-  .topbar{
-    height:50px;
-    border-bottom:1px solid var(--border);
-    background:var(--bg);
-    display:flex;align-items:center;
-    padding:0 22px;gap:14px;
-    position:sticky;top:0;z-index:5;
-    backdrop-filter:saturate(180%) blur(6px);
-  }
-  .crumbs{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-2);min-width:0;flex-wrap:nowrap}
-  .crumbs .sep{color:var(--muted-2)}
-  .crumbs .here{color:var(--fg)}
-  .crumbs a{color:var(--muted);cursor:pointer;transition:color .12s}
-  .crumbs a:hover{color:var(--fg-2)}
-
-  .role-badge{
-    display:inline-flex;align-items:center;gap:6px;
-    font-family:var(--font-mono);font-size:10px;font-weight:500;
-    letter-spacing:1.3px;text-transform:uppercase;
-    padding:4px 9px;border-radius:9999px;
-    border:1px solid;
-    cursor:help;
-  }
-  .role-badge.admin{color:var(--lilac);background:var(--lilac-soft);border-color:var(--lilac-border)}
-  .role-badge.service{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-border)}
-  .role-badge.anon{color:var(--mint);background:var(--mint-soft);border-color:var(--mint-border)}
-  .role-badge.user{color:var(--info);background:var(--info-soft);border-color:var(--info-border)}
-  .role-badge .dot{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.85}
-
-  .top-search{
-    margin-left:auto;
-    display:flex;align-items:center;gap:8px;
-    border:1px solid var(--border-mid);background:var(--bg-deep);
-    border-radius:10px;padding:5px 10px;
-    min-width:240px;color:var(--muted);font-size:12.5px;
-    cursor:text;transition:border-color .15s;
-    /* button UA reset (drust uses <button> wrapper) */
-    font-family:inherit;text-align:left;
-  }
-  .top-search:hover{border-color:var(--border-strong)}
-  .top-search input{background:none;border:0;outline:0;color:var(--fg);font-family:inherit;font-size:12.5px;flex:1;min-width:0}
-  .top-search input::placeholder{color:var(--muted)}
-  .top-search svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2}
-
-  /* drust wraps the right cluster in .topbar-right (mockup goes flat). Push to
-     the right and lay out as flex; cancel the per-element margin-left:auto. */
-  .topbar-right{
-    margin-left:auto;display:inline-flex;align-items:center;gap:14px;
-    color:var(--muted);font-size:13px;
-  }
-  .topbar-right .top-search{margin-left:0}
-  .topbar-right form{display:inline-flex;align-items:center;margin:0}
-
-  .top-mascot{
-    display:flex;align-items:center;justify-content:center;
-    width:36px;height:36px;border-radius:11px;
-    border:1px solid var(--border-mid);background:var(--bg-deep);
-    flex-shrink:0;cursor:pointer;
-    transition:transform .15s,border-color .15s;
-  }
-  .top-mascot:hover{transform:translateY(-1px);border-color:var(--accent-border)}
-
-  .top-icon{
-    display:flex;align-items:center;justify-content:center;
-    width:32px;height:32px;border-radius:9px;color:var(--muted);
-    cursor:pointer;transition:background .12s,color .12s;
-  }
-  .top-icon:hover{background:var(--surface);color:var(--fg-2)}
-  .top-icon svg{fill:none;stroke:currentColor;stroke-width:1.7}
+  /* .topbar / .topbar-right / .crumbs / .role-badge / .top-search / .top-mascot
+     / .top-icon were removed 2026-05-22 — the entire <header class="topbar">
+     was retired from every admin template. See memory/feedback-no-topbar. */
 
   /* ---------------- view container ---------------- */
   /* .page fills the viewport width. Pages that need a narrower reading
@@ -363,9 +297,9 @@
   table.data-table,table.data{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums}
   /* sticky thead pinned to its scroll container's top. Most .data tables live
      inside a .card (overflow:hidden) or .records-scroll (overflow:auto), both
-     of which become the sticky ancestor — so top:0 is correct. The old
-     top:50px (meant to clear the 50px sticky topbar in a body-scroll layout)
-     left a 50px gap above the thead inside every card-wrapped table. */
+     of which become the sticky ancestor — so top:0 is correct. (Historical
+     note: top:50px was here to clear the legacy .topbar; topbar removed
+     2026-05-22, so top:0 is unconditionally right.) */
   table.data-table thead th,table.data thead th{
     text-align:left;font-family:var(--font-mono);font-size:10px;letter-spacing:1.3px;text-transform:uppercase;
     color:var(--muted);font-weight:500;
