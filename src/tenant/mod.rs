@@ -13,6 +13,7 @@ pub mod owner_field;
 pub mod query_endpoint;
 pub mod realtime_routes;
 pub mod records;
+pub mod records_list;
 pub mod router;
 pub mod sse;
 pub mod vector_search;
@@ -193,6 +194,14 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .route(
             "/t/{tenant}/collections/{coll}/search",
             post(vector_search::search_handler),
+        )
+        .route(
+            "/t/{tenant}/collections/{coll}/list",
+            post(records_list::post_list),
+        )
+        .route(
+            "/t/{tenant}/collections/{coll}/list/explain",
+            post(records_list::post_list_explain),
         )
         .route(
             "/t/{tenant}/collections/{coll}/realtime",

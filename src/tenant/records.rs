@@ -247,8 +247,11 @@ pub async fn list_handler(
             "USER_FILTER_DENIED_ON_OWNER_SCOPED",
             "user-token filter/sort on owner-scoped collections is unsupported \
              (raw filter strings can bypass row-level owner enforcement). \
-             Use POST /collections/<c>/search with a structured Filter AST, \
-             or expose a stored RPC that binds :user_id internally.",
+             Use POST /collections/<c>/list with a structured Filter AST \
+             (drust builds the SQL itself with `?` binds, so owner_field is \
+             enforced by construction), POST /collections/<c>/search for \
+             vector queries, or expose a stored RPC that binds :user_id \
+             internally.",
         );
     }
     let pool = t.pool.clone();
