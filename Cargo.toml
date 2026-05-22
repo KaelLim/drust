@@ -37,6 +37,7 @@ nix                = { version = "0.29", features = ["fs"] }
 chrono             = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+toml               = "0.8"
 anyhow             = "1"
 thiserror          = "2"
 axum-extra         = { version = "0.10", features = ["cookie", "cookie-signed", "form"] }
@@ -60,6 +61,10 @@ serial_test        = "3"
 reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 eventsource-stream = "0.2"
 serde_urlencoded   = "0.7"
+
+[build-dependencies]
+toml       = "0.8"
+regex-lite = "0.1"
 
 [profile.release]
 lto = "thin"

@@ -26,6 +26,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // i18n bundles must be initialised before any request handler can
+    // construct a `Translator` (which expects BUNDLES populated).
+    drust::mgmt::i18n::init_bundles();
+
     let cfg = Config::from_env()?;
     std::fs::create_dir_all(&cfg.data_dir)?;
     std::fs::create_dir_all(&cfg.log_dir)?;
