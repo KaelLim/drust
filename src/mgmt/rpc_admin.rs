@@ -5,11 +5,13 @@
 //! `crate::rpc::registry::list` for the index page; deletes via
 //! `crate::rpc::registry::delete` and 303-redirects back to the list.
 
+use crate::mgmt::i18n::{Locale, Translator};
 use crate::mgmt::tenants::TenantsState;
 use crate::rpc::registry;
 use crate::storage::schema::{Collection, list_collections};
 use crate::storage::tenant_db::open_read;
 use askama::Template;
+use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -36,6 +38,7 @@ struct RpcPage {
     prev_url: Option<String>,
     next_url: Option<String>,
     per_page_options: Vec<RpcPerPageOption>,
+    t: Translator,
 }
 
 struct RpcPerPageOption {
@@ -61,6 +64,7 @@ pub struct RpcListQs {
 /// the empty-state mascot and "+ new function" CTA.
 pub async fn rpc_index(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
     axum::extract::Query(qs): axum::extract::Query<RpcListQs>,
 ) -> Response {
@@ -140,6 +144,7 @@ pub async fn rpc_index(
             prev_url,
             next_url,
             per_page_options,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -164,6 +169,7 @@ struct RpcForm {
     form_params_json: String,
     form_anon_callable: bool,
     error: Option<String>,
+    t: Translator,
 }
 
 async fn lookup_tenant_name(state: &TenantsState, tenant_id: &str) -> Option<String> {
@@ -188,6 +194,7 @@ fn load_collections(state: &TenantsState, tenant_id: &str) -> Vec<Collection> {
 /// `GET /admin/tenants/{id}/_rpc/new` — render the empty create form.
 pub async fn rpc_new_form(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
@@ -210,6 +217,7 @@ pub async fn rpc_new_form(
             form_params_json: "[]".into(),
             form_anon_callable: false,
             error: None,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -221,6 +229,7 @@ pub async fn rpc_new_form(
 /// from the existing row. 404 when the RPC isn't found.
 pub async fn rpc_edit_form(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
     let conn = match open_read(&state.data_dir, &tenant_id) {
@@ -255,6 +264,7 @@ pub async fn rpc_edit_form(
             form_params_json: params_json_string,
             form_anon_callable: existing.anon_callable,
             error: None,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -280,6 +290,7 @@ pub struct RpcFormBody {
 /// with the submitted name already exists.
 pub async fn rpc_save(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
     axum::Form(form): axum::Form<RpcFormBody>,
 ) -> Response {
@@ -299,7 +310,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale);
     }
 
     // Validate SQL through the read-only authorizer (uses a reader connection
@@ -320,7 +331,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale);
     }
 
     // Single writer transaction: lookup existence + create-or-update.
@@ -363,7 +374,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string());
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale);
     }
 
     Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_rpc")).into_response()
@@ -376,6 +387,7 @@ fn render_form_with_error(
     form: &RpcFormBody,
     editing: bool,
     msg: String,
+    locale: Locale,
 ) -> Response {
     let collections = load_collections(state, tenant_id);
     Html(
@@ -393,6 +405,7 @@ fn render_form_with_error(
             form_params_json: form.params_json.clone(),
             form_anon_callable: form.anon_callable.is_some(),
             error: Some(msg),
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -428,6 +441,7 @@ struct RpcTestPage {
     params: Vec<RpcTestParam>,
     /// Set when the user has just clicked Run. None on the bare GET.
     outcome: Option<RpcTestOutcome>,
+    t: Translator,
 }
 
 struct RpcTestOutcome {
@@ -461,6 +475,7 @@ pub struct RpcTestRunForm {
 /// doesn't exist (matches the existence check shape of other handlers).
 pub async fn rpc_test_form(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
     let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
@@ -506,6 +521,7 @@ pub async fn rpc_test_form(
                 })
                 .collect(),
             outcome: None,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -557,6 +573,7 @@ fn coerce_form_string(ty: crate::rpc::params::ParamType, s: &str) -> serde_json:
 /// the submitted form values and re-render the page with the result.
 pub async fn rpc_test_run(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path((tenant_id, name)): Path<(String, String)>,
     axum::Form(form): axum::Form<RpcTestRunForm>,
 ) -> Response {
@@ -605,6 +622,7 @@ pub async fn rpc_test_run(
                 Vec::new(),
                 0,
                 serde_json::to_string_pretty(&body_map).unwrap_or_default(),
+                locale,
             );
         }
     };
@@ -638,6 +656,7 @@ pub async fn rpc_test_run(
             explain_rows,
             duration_ms,
             bound_json,
+            locale,
         ),
         Err(e) => render_test_outcome(
             tenant_id,
@@ -649,6 +668,7 @@ pub async fn rpc_test_run(
             explain_rows,
             duration_ms,
             bound_json,
+            locale,
         ),
     }
 }
@@ -664,6 +684,7 @@ fn render_test_outcome(
     explain_rows: Vec<String>,
     duration_ms: u128,
     bound_json: String,
+    locale: Locale,
 ) -> Response {
     let result = exec.as_ref().ok().map(|qr| RpcTestResult {
         column_names: qr.column_names.clone(),
@@ -720,6 +741,7 @@ fn render_test_outcome(
                 error,
                 explain_rows,
             }),
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),

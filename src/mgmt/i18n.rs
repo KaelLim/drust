@@ -96,6 +96,50 @@ impl Translator {
         let template = self.s(key).into_owned();
         substitute_placeholders(&template, args)
     }
+
+    /// Single-pair variant callable from askama templates (askama 0.12 cannot
+    /// parse the slice-of-tuples literal `&[("name", value)]`, so the
+    /// general `fmt` is only usable from Rust code; templates use this).
+    /// `value` accepts any `Display` — String, &str, integers, etc.
+    pub fn fmt1(&self, key: &str, name: &str, value: impl std::fmt::Display) -> String {
+        let template = self.s(key).into_owned();
+        let s = value.to_string();
+        substitute_placeholders(&template, &[(name, s.as_str())])
+    }
+
+    pub fn fmt2(
+        &self,
+        key: &str,
+        n1: &str,
+        v1: impl std::fmt::Display,
+        n2: &str,
+        v2: impl std::fmt::Display,
+    ) -> String {
+        let template = self.s(key).into_owned();
+        let s1 = v1.to_string();
+        let s2 = v2.to_string();
+        substitute_placeholders(&template, &[(n1, s1.as_str()), (n2, s2.as_str())])
+    }
+
+    pub fn fmt3(
+        &self,
+        key: &str,
+        n1: &str,
+        v1: impl std::fmt::Display,
+        n2: &str,
+        v2: impl std::fmt::Display,
+        n3: &str,
+        v3: impl std::fmt::Display,
+    ) -> String {
+        let template = self.s(key).into_owned();
+        let s1 = v1.to_string();
+        let s2 = v2.to_string();
+        let s3 = v3.to_string();
+        substitute_placeholders(
+            &template,
+            &[(n1, s1.as_str()), (n2, s2.as_str()), (n3, s3.as_str())],
+        )
+    }
 }
 
 fn substitute_placeholders(template: &str, args: &[(&str, &str)]) -> String {

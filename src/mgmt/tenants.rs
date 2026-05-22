@@ -1,8 +1,10 @@
 use crate::auth::bearer::{generate_token, hash_token};
 use crate::auth::middleware::AdminSessionState;
+use crate::mgmt::i18n::{Locale, Translator};
 use crate::storage::garage::GarageClient;
 use crate::storage::tenant_db::{open_read, open_write, tenant_dir, validate_tenant_id};
 use askama::Template;
+use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -96,6 +98,7 @@ struct TenantsListPage {
     /// (sampler iterates ORDER BY id, so `tenants[0]` is the most recent).
     /// Empty when no sampler tick has run yet on this boot.
     stats_age_display: String,
+    t: Translator,
 }
 
 struct TenantRow {
@@ -180,7 +183,10 @@ pub fn valid_slug(s: &str) -> bool {
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
-pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
+pub async fn list_page_axum(
+    State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
+) -> Response {
     // v1.15.0 — reads denormalized stats columns. Zero per-tenant SQLite
     // opens on the request path; the background sampler keeps them fresh.
     let mut latest_sample: Option<String> = None;
@@ -246,6 +252,7 @@ pub async fn list_page_axum(State(state): State<TenantsState>) -> Response {
             disk,
             stats_interval_min,
             stats_age_display,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -571,6 +578,7 @@ struct TenantFilesAdminPage {
     prev_url: Option<String>,
     next_url: Option<String>,
     per_page_options: Vec<TenantFilesPerPageOption>,
+    t: Translator,
 }
 
 #[derive(Clone)]
@@ -645,6 +653,7 @@ struct TenantOverviewPage {
     token_count: i64,
     webhook_failures: Vec<WebhookFailureRow>,
     recent_audit: Vec<RecentAuditRow>,
+    t: Translator,
 }
 
 struct WebhookFailureRow {
@@ -701,6 +710,7 @@ fn humanize_audit_ts(ts: &str) -> String {
 /// `/_api_keys` is still reachable but no longer the default).
 pub async fn tenant_overview_page(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
 ) -> Response {
     if validate_tenant_id(&tenant_id).is_err() {
@@ -851,6 +861,7 @@ pub async fn tenant_overview_page(
             token_count,
             webhook_failures,
             recent_audit,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -863,6 +874,7 @@ pub async fn tenant_overview_page(
 /// Admin uploads go to the tenant's own buckets (tenant-{id}-{pub,prv}).
 pub async fn tenant_files_admin_page(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
     axum::extract::Query(qs): axum::extract::Query<TenantFilesListQs>,
 ) -> Response {
@@ -933,6 +945,7 @@ pub async fn tenant_files_admin_page(
                 prev_url: None,
                 next_url: None,
                 per_page_options: per_page_options.clone(),
+                t: Translator::new(locale),
             }
             .render()
             .unwrap(),
@@ -1035,6 +1048,7 @@ pub async fn tenant_files_admin_page(
             prev_url,
             next_url,
             per_page_options,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -1058,6 +1072,7 @@ struct TenantOauthProvidersPage {
     /// Surfaced after a failed upsert (validation / DB error). `None`
     /// on the plain GET render.
     error: Option<String>,
+    t: Translator,
 }
 
 struct TenantOauthProviderRow {
@@ -1155,6 +1170,7 @@ async fn render_oauth_providers_page(
     state: &TenantsState,
     tenant_id: String,
     error: Option<String>,
+    locale: Locale,
 ) -> Response {
     let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
         Ok(t) => t,
@@ -1183,6 +1199,7 @@ async fn render_oauth_providers_page(
             collections,
             active_coll: "_oauth_providers".to_string(),
             error,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -1193,9 +1210,10 @@ async fn render_oauth_providers_page(
 /// `GET /admin/tenants/{id}/_oauth_providers`
 pub async fn tenant_oauth_providers_page(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    render_oauth_providers_page(&state, tenant_id, None).await
+    render_oauth_providers_page(&state, tenant_id, None, locale).await
 }
 
 /// `POST /admin/tenants/{id}/_oauth_providers` — upsert. Splits the
@@ -1205,6 +1223,7 @@ pub async fn tenant_oauth_providers_page(
 /// on success 303s back to the GET so a refresh doesn't resubmit.
 pub async fn tenant_oauth_provider_upsert(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
     Form(form): Form<OauthProviderUpsertForm>,
 ) -> Response {
@@ -1231,7 +1250,7 @@ pub async fn tenant_oauth_provider_upsert(
         &form.client_secret,
         &uris,
     ) {
-        return render_oauth_providers_page(&state, tenant_id, Some(e.to_string())).await;
+        return render_oauth_providers_page(&state, tenant_id, Some(e.to_string()), locale).await;
     }
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
@@ -1255,7 +1274,7 @@ pub async fn tenant_oauth_provider_upsert(
             "/drust/admin/tenants/{tenant_id}/_oauth_providers"
         ))
         .into_response(),
-        Err(msg) => render_oauth_providers_page(&state, tenant_id, Some(msg)).await,
+        Err(msg) => render_oauth_providers_page(&state, tenant_id, Some(msg), locale).await,
     }
 }
 
@@ -1311,6 +1330,7 @@ struct TenantWebhooksPage {
     /// banner. Sourced from the `drust_webhook_secret_once` cookie and
     /// cleared on the next response.
     secret_once: Option<WebhookSecretBanner>,
+    t: Translator,
 }
 
 struct TenantWebhookRow {
@@ -1442,6 +1462,7 @@ async fn render_webhooks_page(
     tenant_id: String,
     ctx: WebhookPageContext,
     extra_header: Option<(axum::http::HeaderName, axum::http::HeaderValue)>,
+    locale: Locale,
 ) -> Response {
     let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
         Ok(t) => t,
@@ -1467,6 +1488,7 @@ async fn render_webhooks_page(
         form_events: ctx.form_events,
         form_url: ctx.form_url,
         secret_once: ctx.secret_once,
+        t: Translator::new(locale),
     }
     .render()
     .unwrap();
@@ -1482,6 +1504,7 @@ async fn render_webhooks_page(
 /// the response.
 pub async fn tenant_webhooks_page(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -1497,6 +1520,7 @@ pub async fn tenant_webhooks_page(
             ..Default::default()
         },
         clear,
+        locale,
     )
     .await
 }
@@ -1509,6 +1533,7 @@ pub async fn tenant_webhooks_page(
 /// via `Referer` even though it never lives in the URL.
 pub async fn tenant_webhook_create_form(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
     Form(form): Form<WebhookCreateForm>,
 ) -> Response {
@@ -1536,6 +1561,7 @@ pub async fn tenant_webhook_create_form(
                 secret_once: None,
             },
             None,
+            locale,
         )
         .await;
     }
@@ -1551,6 +1577,7 @@ pub async fn tenant_webhook_create_form(
                 secret_once: None,
             },
             None,
+            locale,
         )
         .await;
     }
@@ -1567,6 +1594,7 @@ pub async fn tenant_webhook_create_form(
                 secret_once: None,
             },
             None,
+            locale,
         )
         .await;
     }
@@ -1591,6 +1619,7 @@ pub async fn tenant_webhook_create_form(
                     secret_once: None,
                 },
                 None,
+                locale,
             )
             .await;
         }
@@ -1648,6 +1677,7 @@ pub async fn tenant_webhook_create_form(
                     secret_once: None,
                 },
                 None,
+                locale,
             )
             .await
         }

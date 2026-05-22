@@ -5,7 +5,9 @@
 //! shell script). This module never writes — restore lives outside this
 //! UI for now (extract manually via `tar --zstd -xf ...`).
 
+use crate::mgmt::i18n::{Locale, Translator};
 use askama::Template;
+use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
@@ -34,6 +36,7 @@ struct BackupsPage {
     backups: Vec<BackupRow>,
     backup_dir: String,
     total_size_human: String,
+    t: Translator,
 }
 
 pub struct TenantInBackup {
@@ -58,6 +61,7 @@ struct BackupInspectPage {
     /// Set after a successful restore (PRG-style flash).
     flash: Option<RestoreFlash>,
     error: Option<String>,
+    t: Translator,
 }
 
 pub struct RestoreFlash {
@@ -115,7 +119,10 @@ fn is_safe_backup_filename(name: &str) -> bool {
         && name != ".."
 }
 
-pub async fn list_page(State(state): State<BackupsState>) -> Response {
+pub async fn list_page(
+    State(state): State<BackupsState>,
+    Extension(locale): Extension<Locale>,
+) -> Response {
     let dir = state.data_dir.join("backups");
     let mut rows: Vec<BackupRow> = Vec::new();
     let mut total: u64 = 0;
@@ -161,6 +168,7 @@ pub async fn list_page(State(state): State<BackupsState>) -> Response {
             backups: rows,
             backup_dir: dir.display().to_string(),
             total_size_human: humanize_bytes(total),
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -230,6 +238,7 @@ fn parse_tenant_db_path(p: &str) -> Option<String> {
 /// list. The temp meta.sqlite is dropped before the response is rendered.
 pub async fn inspect(
     State(state): State<BackupsState>,
+    Extension(locale): Extension<Locale>,
     Path(filename): Path<String>,
     Query(qs): Query<InspectQs>,
 ) -> Response {
@@ -257,10 +266,10 @@ pub async fn inspect(
     let (meta_tmp, sizes) = match extract_result {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, e.to_string());
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, e.to_string(), locale);
         }
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("join error: {e}"));
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("join error: {e}"), locale);
         }
     };
 
@@ -271,7 +280,7 @@ pub async fn inspect(
     let conn = match conn_res {
         Ok(c) => c,
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("open meta.sqlite: {e}"));
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("open meta.sqlite: {e}"), locale);
         }
     };
 
@@ -306,7 +315,7 @@ pub async fn inspect(
             })
             .unwrap_or_default(),
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("query: {e}"));
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("query: {e}"), locale);
         }
     };
 
@@ -335,6 +344,7 @@ pub async fn inspect(
             tenants,
             flash,
             error: None,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -347,6 +357,7 @@ fn render_inspect_error(
     mtime: DateTime<Utc>,
     snapshot_size_human: String,
     msg: String,
+    locale: Locale,
 ) -> Response {
     Html(
         BackupInspectPage {
@@ -357,6 +368,7 @@ fn render_inspect_error(
             tenants: Vec::new(),
             flash: None,
             error: Some(msg),
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),

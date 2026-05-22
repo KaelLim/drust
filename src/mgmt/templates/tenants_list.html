@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>drust admin — tenants</title>
-<meta name="description" content="drust admin — tenants overview. Create tenants, rotate API keys, wire Claude Code MCP servers.">
+<title>{{ t.s("tenants_list.page.title") }}</title>
+<meta name="description" content="{{ t.s("tenants_list.page.meta_description") }}">
 {% include "_favicon.html" %}
 {% include "_styles.html" %}
 </head>
@@ -15,7 +15,7 @@
   <main class="main">
     <header class="topbar">
       <nav class="crumbs">
-        <span class="here">Tenants</span>
+        <span class="here">{{ t.s("tenants_list.crumb.here") }}</span>
       </nav>
       {% include "_topbar_right.html" %}
     </header>
@@ -24,13 +24,13 @@
 
       <div class="view-head">
         <div class="grow">
-          <div class="eyebrow">Admin · platform</div>
-          <h1 class="view-title">All tenants</h1>
-          <p class="view-sub">Each tenant gets its own SQLite database, S3 bucket pair, OAuth registrations, anon &amp; service keys, and MCP endpoint. Click a row to enter the tenant studio.</p>
+          <div class="eyebrow">{{ t.s("tenants_list.head.eyebrow") }}</div>
+          <h1 class="view-title">{{ t.s("tenants_list.head.title") }}</h1>
+          <p class="view-sub">{{ t.s("tenants_list.head.subtitle") }}</p>
         </div>
         <button type="button" class="btn primary" id="new-tenant-btn">
           <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-          New tenant
+          {{ t.s("tenants_list.actions.new_tenant") }}
         </button>
       </div>
 
@@ -38,7 +38,7 @@
       <div class="banner danger" style="margin-bottom:16px;">
         <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg></span>
         <div class="b-body">
-          <div class="b-title">Disk at {{ disk.free_pct_display }}% free — uploads paused</div>
+          <div class="b-title">{{ t.fmt1("tenants_list.disk.banner_title", "pct", disk.free_pct_display) }}</div>
           <p>Garage object uploads are blocked below 20% free space. Free up <code>/var/lib/garage</code> or scale the disk.</p>
         </div>
       </div>
@@ -46,19 +46,19 @@
 
       <div class="ten-grid">
         <div class="ten-pulse">
-          <div class="head"><span>Active</span><span class="pill mint"><span class="dot"></span>{{ tenants.len() }} healthy</span></div>
-          <div class="body">{{ tenants.len() }} <span class="unit">tenants</span></div>
-          <div class="meta">multi-tenant SQLite BaaS</div>
+          <div class="head"><span>{{ t.s("tenants_list.pulse.active") }}</span><span class="pill mint"><span class="dot"></span>{{ t.fmt1("tenants_list.pulse.healthy_count", "n", tenants.len()) }}</span></div>
+          <div class="body">{{ tenants.len() }} <span class="unit">{{ t.s("common.crumbs.tenants") }}</span></div>
+          <div class="meta">{{ t.s("tenants_list.pulse.tagline") }}</div>
         </div>
         <div class="ten-pulse">
-          <div class="head"><span>Storage</span>{% if disk.free_pct < 20.0 %}<span class="pill danger">low</span>{% else %}<span class="pill mint">healthy</span>{% endif %}</div>
-          <div class="body">{{ disk.used_gb }} <span class="unit">GB · used</span></div>
+          <div class="head"><span>{{ t.s("tenants_list.pulse.storage") }}</span>{% if disk.free_pct < 20.0 %}<span class="pill danger">{{ t.s("tenants_list.pulse.storage_low") }}</span>{% else %}<span class="pill mint">{{ t.s("tenants_list.pulse.storage_healthy") }}</span>{% endif %}</div>
+          <div class="body">{{ disk.used_gb }} <span class="unit">{{ t.s("tenants_list.pulse.gb_used") }}</span></div>
           <div class="meta">of {{ disk.total_gb }} GB total</div>
         </div>
         <div class="ten-pulse">
-          <div class="head"><span>Disk free</span></div>
+          <div class="head"><span>{{ t.s("tenants_list.pulse.disk_free") }}</span></div>
           <div class="body" style="{% if disk.free_pct < 20.0 %}color:var(--danger);{% endif %}">{{ disk.free_pct_display }} <span class="unit">%</span></div>
-          <div class="meta">{% if disk.free_pct < 20.0 %}uploads paused (&lt; 20% threshold){% else %}well above 20% threshold{% endif %}</div>
+          <div class="meta">{% if disk.free_pct < 20.0 %}{{ t.s("tenants_list.pulse.uploads_paused") }}{% else %}{{ t.s("tenants_list.pulse.well_above_threshold") }}{% endif %}</div>
         </div>
       </div>
 
@@ -70,11 +70,11 @@
         <div class="input-with-icon" style="flex:1;max-width:280px;">
           <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
           <input class="input" id="tenants-search" type="search"
-                 placeholder="search…"
-                 title="Filter by tenant name or id ( / to focus )"
+                 placeholder="{{ t.s("common.search.placeholder") }}"
+                 title="{{ t.s("tenants_list.search.title") }}"
                  autocomplete="off" spellcheck="false">
         </div>
-        <span class="right mono" id="tenants-count">{{ tenants.len() }} tenants</span>
+        <span class="right mono" id="tenants-count">{{ t.fmt1("tenants_list.count.total", "n", tenants.len()) }}</span>
       </div>
 
       <div class="card" style="overflow:hidden;">

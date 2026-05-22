@@ -1,7 +1,9 @@
 use crate::auth::admin::{dummy_hash, verify_password};
 use crate::auth::middleware::{build_session_cookie, clear_session_cookie};
 use crate::auth::session::{create_session, revoke_session};
+use crate::mgmt::i18n::{Locale, Translator};
 use askama::Template;
+use axum::Extension;
 use axum::Router;
 use axum::extract::{Form, Query, State};
 use axum::http::{StatusCode, header};
@@ -77,18 +79,21 @@ struct LoginPage {
     version: &'static str,
     oauth_providers: Vec<String>,
     oauth_error: Option<String>,
+    t: Translator,
 }
 
 #[derive(Template)]
 #[template(path = "design.html")]
 struct DesignShowcase {
     version: &'static str,
+    t: Translator,
 }
 
-async fn design_showcase() -> Response {
+async fn design_showcase(Extension(locale): Extension<Locale>) -> Response {
     Html(
         DesignShowcase {
             version: env!("CARGO_PKG_VERSION"),
+            t: Translator::new(locale),
         }
         .render()
         .unwrap_or_default(),
@@ -110,6 +115,7 @@ struct LoginPageQuery {
 
 async fn login_page(
     State(state): State<MgmtState>,
+    Extension(locale): Extension<Locale>,
     Query(q): Query<LoginPageQuery>,
 ) -> Html<String> {
     Html(
@@ -118,6 +124,7 @@ async fn login_page(
             version: env!("CARGO_PKG_VERSION"),
             oauth_providers: state.oauth_registry.enabled_names().into_iter().map(String::from).collect(),
             oauth_error: q.oauth_error,
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
@@ -126,6 +133,7 @@ async fn login_page(
 
 async fn login_submit(
     State(state): State<MgmtState>,
+    Extension(locale): Extension<Locale>,
     headers: axum::http::HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
@@ -167,7 +175,7 @@ async fn login_submit(
             entry.auth_method = Some("password".to_string());
             entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
             crate::safety::audit::write_entry(&state.log_dir, &entry).await;
-            return unauthorized("Invalid credentials", &state);
+            return unauthorized("Invalid credentials", &state, locale);
         }
     };
     match verify_password(&phc, &form.password) {
@@ -178,7 +186,7 @@ async fn login_submit(
             entry.auth_method = Some("password".to_string());
             entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
             crate::safety::audit::write_entry(&state.log_dir, &entry).await;
-            return unauthorized("Invalid credentials", &state);
+            return unauthorized("Invalid credentials", &state, locale);
         }
     }
     let ttl_secs = (state.session_ttl_days * 86_400) as i64;
@@ -218,12 +226,13 @@ async fn root_redirect() -> Redirect {
     Redirect::to("/drust/admin/tenants")
 }
 
-fn unauthorized(msg: &str, state: &MgmtState) -> Response {
+fn unauthorized(msg: &str, state: &MgmtState, locale: Locale) -> Response {
     let body = LoginPage {
         error: Some(msg.to_string()),
         version: env!("CARGO_PKG_VERSION"),
         oauth_providers: state.oauth_registry.enabled_names().into_iter().map(String::from).collect(),
         oauth_error: None,
+        t: Translator::new(locale),
     }
     .render()
     .unwrap();

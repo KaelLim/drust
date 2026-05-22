@@ -141,6 +141,9 @@ operation = "操作"
 tenant = "租戶"
 timestamp = "時間戳記"
 
+[common.locale]
+switch_aria = "切換語言"
+
 [common.link]
 # REVIEW (low confidence): design-system link label, please verify
 view_all = "檢視全部"
@@ -259,7 +262,7 @@ resources = "資源"
 
 [audit_body.aria]
 # REVIEW (low confidence): aria-label with template var, please verify wording
-show_details_for = "顯示 {{ e.op }} 的詳細資訊"
+show_details_for = "顯示 {op} 的詳細資訊"
 
 [audit_body.button]
 auto_30s = "自動 30 秒"
@@ -267,7 +270,7 @@ stop_auto_refresh = "停止自動重整"
 
 [audit_body.card]
 # REVIEW (low confidence): subtitle with embedded template var, verify phrasing
-entries_sub = "已顯示 {{ entries.len() }} 筆 · 點擊列以檢視完整詳情"
+entries_sub = "已顯示 {count} 筆 · 點擊列以檢視完整詳情"
 entries_title = "稽核紀錄"
 top_slowest_ops_sub = "本時段最慢的個別請求"
 top_slowest_ops_title = "最慢操作排行"
@@ -277,14 +280,14 @@ top_tenants_title = "Top 租戶"
 [audit_body.count]
 # REVIEW (low confidence): standalone suffix may read oddly; please verify
 shown_suffix = "已顯示"
-# REVIEW (low confidence): pagination phrase with embedded {{ n }}, verify wording
-truncated_from = "· 自 {{ n }} 裁切"
+# REVIEW (low confidence): pagination phrase with embedded {n}, verify wording
+truncated_from = "· 自 {n} 裁切"
 
 [audit_body.diag]
 # REVIEW (low confidence): diagnostic message with template var
-corrupt_archives_skipped = "已略過 {{ archive_errors.len() }} 個損毀的封存檔。"
+corrupt_archives_skipped = "已略過 {count} 個損毀的封存檔。"
 # REVIEW (low confidence): diagnostic message with template var
-unparseable_skipped = "已略過 {{ parse_errors }} 行無法解析的紀錄。"
+unparseable_skipped = "已略過 {count} 行無法解析的紀錄。"
 
 [audit_body.empty]
 no_entries_match = "沒有符合的紀錄。"
@@ -314,7 +317,7 @@ errors = "錯誤"
 latency_p50 = "延遲 p50"
 meta_window = "時間窗"
 # REVIEW (low confidence): contains template var
-p99_meta = "p99 {{ ov.p99_ms }} 毫秒"
+p99_meta = "p99 {p99} 毫秒"
 # REVIEW (low confidence): standalone suffix, please verify
 pct_err_suffix = "% 錯誤"
 req_per_sec = "請求 / 秒"
@@ -343,11 +346,11 @@ title = "drust 管理 — 稽核"
 
 [audit_tenant.head]
 eyebrow = "租戶 · 治理"
-subtitle = "範圍為 {{ tenant_name }} — 涵蓋所有 REST、MCP、SSE 請求與所有拒絕事件。全主機事件請見「管理 · 稽核」。"
+subtitle = "範圍為 {tenant_name} — 涵蓋所有 REST、MCP、SSE 請求與所有拒絕事件。全主機事件請見「管理 · 稽核」。"
 
 [audit_tenant.page]
-meta_description = "drust 管理 — 租戶 {{ tenant_name }}：稽核日誌檢視器。"
-title = "drust 管理 — {{ tenant_name }} / _logs"
+meta_description = "drust 管理 — 租戶 {tenant_name}：稽核日誌檢視器。"
+title = "drust 管理 — {tenant_name} / _logs"
 
 [backup_inspect.confirm]
 ok = "解壓"
@@ -588,8 +591,8 @@ eyebrow = "租戶 · 集合"
 title = "空租戶"
 
 [collections.page]
-meta_description = "drust 管理 — {{ tenant_name }} 尚無集合。當你的客戶端寫入第一筆記錄後，集合會自動出現。"
-title = "drust 管理 — {{ tenant_name }} / 集合（空）"
+meta_description = "drust 管理 — {tenant_name} 尚無集合。當你的客戶端寫入第一筆記錄後，集合會自動出現。"
+title = "drust 管理 — {tenant_name} / 集合（空）"
 
 # Design system page strings — every entry is low-confidence because
 # this page is a developer reference; preferred terminology may differ
@@ -806,7 +809,7 @@ title = "待重試的撤權"
 tagline = "多租戶 sqlite"
 
 [login.button]
-continue_with_provider = "使用 {{ p|capitalize }} 繼續"
+continue_with_provider = "使用 {p} 繼續"
 submit = "登入 →"
 
 [login.divider]
@@ -857,7 +860,7 @@ service_scopes = "略過 anon_caps 與 owner-field・僅限可信後端使用"
 
 [tenant_api_keys.confirm]
 reroll_ok = "重新產生"
-reroll_text = "要重新產生 {{ role }} 金鑰嗎？目前的金鑰會立即失效。"
+reroll_text = "要重新產生 {role} 金鑰嗎？目前的金鑰會立即失效。"
 reroll_title = "重新產生金鑰"
 
 [tenant_api_keys.crumbs]
@@ -875,7 +878,7 @@ name = "MCP 端點"
 tools_pill = "{n} 個工具"
 
 [tenant_api_keys.page]
-title = "drust 管理—{{ tenant_name }} / _api_keys"
+title = "drust 管理—{tenant_name} / _api_keys"
 
 [tenant_api_keys.pill]
 public = "公開"
@@ -888,15 +891,15 @@ title = "自助註冊"
 
 [tenant_api_keys.state]
 key_not_stored = "金鑰未保存—於 v1.1c 之前建立"
-no_key_yet = "尚未產生 {{ role }} 金鑰"
+no_key_yet = "尚未產生 {role} 金鑰"
 
 [tenant_docs.head]
 eyebrow = "管理 · 文件"
 source_label = "來源："
 
 [tenant_docs.page]
-meta_description = "drust 管理 — 本機文件檢視器（{{ active }}）。"
-title = "drust 管理 — _docs / {{ active }}"
+meta_description = "drust 管理 — 本機文件檢視器（{active}）。"
+title = "drust 管理 — _docs / {active}"
 
 [tenant_docs.toc]
 heading = "本頁內容"
@@ -974,7 +977,7 @@ here = "OAuth providers"
 
 [tenant_oauth_providers.delete]
 button = "停用"
-confirm = "刪除 {{ p.provider }} 的 OAuth 設定？此租戶的終端使用者將無法再透過 {{ p.provider }} 登入。"
+confirm = "刪除 {provider} 的 OAuth 設定？此租戶的終端使用者將無法再透過 {provider} 登入。"
 
 [tenant_oauth_providers.empty]
 body = "請於下方新增以啟用終端使用者登入。"
@@ -1001,7 +1004,7 @@ sub = "終端使用者可透過 Google 或 GitHub 登入此租戶。每個 provi
 title = "OAuth providers"
 
 [tenant_oauth_providers.meta]
-description = "drust 管理 — 租戶 {{ tenant_name }}：個別租戶 OAuth provider 設定（Google · GitHub），供終端使用者登入。"
+description = "drust 管理 — 租戶 {tenant_name}：個別租戶 OAuth provider 設定（Google · GitHub），供終端使用者登入。"
 
 [tenant_oauth_providers.upsert]
 title = "新增 / 更新 provider"
@@ -1236,7 +1239,7 @@ new_subscription = "新增訂閱"
 here = "Webhooks"
 
 [tenant_webhooks_admin.delete]
-confirm = "刪除 webhook {{ r.id }}（{{ r.collection }} → {{ r.url }}）？後續的記錄 CRUD 事件將不會再投遞。"
+confirm = "刪除 webhook {id}（{collection} → {url}）？後續的記錄 CRUD 事件將不會再投遞。"
 
 [tenant_webhooks_admin.empty]
 body = "在下方新增一筆，開始接收記錄 CRUD 通知。"
@@ -1255,8 +1258,8 @@ url_hint = "僅允許 https:// 或 http:// 迴環位址"
 url_label = "url"
 
 [tenant_webhooks_admin.page]
-meta_description = "drust 管理 — 租戶 {{ tenant_name }}：對外 webhook 訂閱。每筆記錄 CRUD 事件會向訂閱 URL 廣播。"
-title = "drust 管理 — {{ tenant_name }} / _webhooks"
+meta_description = "drust 管理 — 租戶 {tenant_name}：對外 webhook 訂閱。每筆記錄 CRUD 事件會向訂閱 URL 廣播。"
+title = "drust 管理 — {tenant_name} / _webhooks"
 
 [tenant_webhooks_admin.pill]
 off = "關閉"
@@ -1264,7 +1267,7 @@ on = "開啟"
 
 [tenant_webhooks_admin.secret_banner]
 body = "用此值驗證進站投遞的 X-Drust-Signature 標頭。drust 在此頁面之後不會以明文保存。"
-title = "Webhook 密鑰（id {{ s.id }})— 請立即複製，之後將無法再看到。"
+title = "Webhook 密鑰（id {id})— 請立即複製，之後將無法再看到。"
 
 [tenant_webhooks_admin.stats]
 active = "啟用中"

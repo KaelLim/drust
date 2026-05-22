@@ -1,8 +1,10 @@
 use crate::auth::bearer::{generate_token, hash_token};
+use crate::mgmt::i18n::{Locale, Translator};
 use crate::mgmt::tenants::TenantsState;
 use crate::storage::schema::{Collection, list_collections};
 use crate::storage::tenant_db::open_read;
 use askama::Template;
+use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -25,6 +27,7 @@ struct ApiKeysPage {
     /// Current state of `tenants.allow_self_register`. Drives the checkbox.
     allow_self_register: bool,
     version: &'static str,
+    t: Translator,
 }
 
 pub struct TokenSlotInfo {
@@ -188,6 +191,7 @@ pub async fn detail_redirect(Path(tenant_id): Path<String>) -> Response {
 /// collection page. The sidebar's `_api_keys` row links here.
 pub async fn api_keys_page(
     State(state): State<TenantsState>,
+    Extension(locale): Extension<Locale>,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let conn = state.session.meta.lock().await;
@@ -225,6 +229,7 @@ pub async fn api_keys_page(
             active_coll: "_api_keys".to_string(),
             allow_self_register: self_register_flag != 0,
             version: env!("CARGO_PKG_VERSION"),
+            t: Translator::new(locale),
         }
         .render()
         .unwrap(),
