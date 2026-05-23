@@ -8,11 +8,15 @@ use std::sync::{Arc, RwLock};
 /// `crate::storage::pool`). Lookups are amortised RwLock reads;
 /// invalidations are write-locks but DDL is rare.
 ///
-/// The cache speaks the same `CollectionSchema` type as
-/// `describe_collection` so callers can use it as a drop-in.
+/// Schemas are stored as `Arc<CollectionSchema>` so cache hits are an
+/// 8-byte refcount bump instead of a deep clone of the struct (which
+/// holds `Vec<FieldSpec>` + `Vec<IndexSpec>` + nested data). Schema
+/// values are immutable post-insert — any DDL goes through
+/// `invalidate()` which drops the Arc and forces the next reader to
+/// re-fetch a fresh snapshot from SQLite.
 #[derive(Clone, Default)]
 pub struct SchemaCache {
-    inner: Arc<RwLock<HashMap<String, CollectionSchema>>>,
+    inner: Arc<RwLock<HashMap<String, Arc<CollectionSchema>>>>,
 }
 
 impl SchemaCache {
@@ -21,8 +25,9 @@ impl SchemaCache {
     }
 
     /// Read a cached schema. Returns `None` if not present — caller
-    /// should fall back to `ensure_loaded`.
-    pub fn get(&self, coll: &str) -> Option<CollectionSchema> {
+    /// should fall back to `ensure_loaded`. Cloning the returned
+    /// `Arc<CollectionSchema>` is an 8-byte refcount bump.
+    pub fn get(&self, coll: &str) -> Option<Arc<CollectionSchema>> {
         self.inner.read().ok()?.get(coll).cloned()
     }
 
@@ -33,17 +38,18 @@ impl SchemaCache {
         &self,
         conn: &Connection,
         coll: &str,
-    ) -> rusqlite::Result<Option<CollectionSchema>> {
+    ) -> rusqlite::Result<Option<Arc<CollectionSchema>>> {
         if let Some(s) = self.get(coll) {
             return Ok(Some(s));
         }
         match describe_collection(conn, coll)? {
             None => Ok(None),
             Some(s) => {
+                let arc = Arc::new(s);
                 if let Ok(mut w) = self.inner.write() {
-                    w.insert(coll.to_string(), s.clone());
+                    w.insert(coll.to_string(), arc.clone());
                 }
-                Ok(Some(s))
+                Ok(Some(arc))
             }
         }
     }

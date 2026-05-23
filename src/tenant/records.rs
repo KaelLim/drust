@@ -39,7 +39,7 @@ async fn require_dml_cap(
     tenant: &TenantRef,
     coll: &str,
     verb: DmlVerb,
-) -> Result<CollectionSchema, Response> {
+) -> Result<std::sync::Arc<CollectionSchema>, Response> {
     // _system_* tables are internal storage and never exposed via the
     // records API regardless of role. Service tokens that need to touch
     // them have dedicated admin/MCP entry points.
@@ -109,7 +109,7 @@ async fn require_write_cap(
     ctx: &AuthCtx,
     coll: &str,
     verb: DmlVerb,
-) -> Result<CollectionSchema, Response> {
+) -> Result<std::sync::Arc<CollectionSchema>, Response> {
     if is_protected_collection(coll) {
         return Err(json_error(
             StatusCode::NOT_FOUND,
