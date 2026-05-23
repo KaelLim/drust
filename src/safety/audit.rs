@@ -248,6 +248,21 @@ impl AuditLog {
 /// the admin audit UI sees both. Failures are logged at WARN and
 /// swallowed — audit writes must never block the request path.
 pub async fn write_entry(dir: &std::path::Path, entry: &AuditEntry) {
+    // v1.24 — SQLite first via global OnceLock-backed writer. No-op when
+    // init_globals has not run (test paths, pre-init startup).
+    crate::safety::audit_db::try_send(entry);
+
+    // JSONL safety net during the dual-write window. v1.24 default true;
+    // v1.25 flips default to false; v1.26 removes this branch entirely.
+    if crate::safety::audit_db::dual_write_enabled() {
+        write_jsonl_internal(dir, entry).await;
+    }
+}
+
+// Renamed wrapper around the existing JSONL write logic. Body verbatim
+// from pre-v1.24 write_entry; only the function name is new (so the
+// new write_entry can conditionally call it).
+async fn write_jsonl_internal(dir: &std::path::Path, entry: &AuditEntry) {
     let date = entry.ts.get(..10).unwrap_or(&entry.ts);
     let path = dir.join(format!("audit-{date}.jsonl"));
     if let Err(e) = tokio::fs::create_dir_all(dir).await {
