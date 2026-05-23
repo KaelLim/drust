@@ -299,15 +299,15 @@ async fn login_submit(
         return resp;
     }
     let mut conn = state.meta.lock().await;
-    let row: Option<(i64, String, Option<String>)> = conn
+    let row: Option<(i64, String, Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT id, password_hash, locale FROM admins WHERE username = ?1",
+            "SELECT id, password_hash, locale, theme FROM admins WHERE username = ?1",
             rusqlite::params![form.username],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .ok();
-    let (admin_id, phc, admin_locale) = match row {
-        Some((id, hash, loc)) => (id, hash, loc),
+    let (admin_id, phc, admin_locale, admin_theme) = match row {
+        Some((id, hash, loc, th)) => (id, hash, loc, th),
         None => {
             // S1: spend one argon2 verify so timing matches the wrong-password
             // path — prevents admin username existence leaking via wall-clock.
@@ -357,6 +357,15 @@ async fn login_submit(
         );
         resp.headers_mut()
             .append(header::SET_COOKIE, locale_cookie.parse().unwrap());
+    }
+    if let Some(th) = admin_theme.as_deref()
+        && crate::mgmt::theme::Theme::from_tag(th).is_some()
+    {
+        let theme_cookie = format!(
+            "drust_theme={th}; Path=/; Max-Age=31536000; SameSite=Lax"
+        );
+        resp.headers_mut()
+            .append(header::SET_COOKIE, theme_cookie.parse().unwrap());
     }
     resp
 }

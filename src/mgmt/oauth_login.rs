@@ -147,14 +147,14 @@ pub async fn oauth_callback(
     // v1.22 — read persisted locale before dropping the conn so the SET_COOKIE
     // below can mirror DB → cookie for the new device. Missing column / NULL
     // / unknown value all skip the cookie write (Accept-Language fallback).
-    let admin_locale: Option<String> = conn
+    // v1.23 — same pattern for `theme`; merged into one query.
+    let (admin_locale, admin_theme): (Option<String>, Option<String>) = conn
         .query_row(
-            "SELECT locale FROM admins WHERE id = ?1",
+            "SELECT locale, theme FROM admins WHERE id = ?1",
             rusqlite::params![admin_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok()
-        .flatten();
+        .unwrap_or((None, None));
     drop(conn);
     let session_cookie = build_session_cookie(&token, s.session_ttl_days * 86_400);
     audit_oauth_success(&s, &provider, &user.email, admin_id).await;
@@ -177,6 +177,14 @@ pub async fn oauth_callback(
         builder = builder.header(
             header::SET_COOKIE,
             format!("drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax"),
+        );
+    }
+    if let Some(th) = admin_theme.as_deref()
+        && crate::mgmt::theme::Theme::from_tag(th).is_some()
+    {
+        builder = builder.header(
+            header::SET_COOKIE,
+            format!("drust_theme={th}; Path=/; Max-Age=31536000; SameSite=Lax"),
         );
     }
     builder.body(axum::body::Body::empty()).unwrap()
