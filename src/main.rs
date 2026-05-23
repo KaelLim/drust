@@ -1,5 +1,6 @@
 use axum::{Router, routing::get};
 use axum::http::{HeaderName, HeaderValue};
+use chrono::Datelike;
 use drust::config::Config;
 use drust::mcp::http_registry::McpHttpRegistry;
 use drust::mcp::server::McpRegistry;
@@ -79,6 +80,30 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         if let Err(e) = drust::safety::audit_db::backfill_from_jsonl(&backfill_dir, &backfill_log).await {
             tracing::error!(err=?e, "audit backfill: failed");
+        }
+    });
+
+    // v1.24 — daily retention: DELETE rows older than 90 days; VACUUM on
+    // the 1st of each month (UTC). Sends a WriterCmd::RunRetention through
+    // the same channel the writer task drains, so connection ownership
+    // stays single-threaded (no Mutex contention with the hot Insert path).
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Burn the immediate first tick — drust just started, no need
+        // to run retention before the first real day boundary.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            let now = chrono::Utc::now();
+            let cutoff = (now - chrono::Duration::days(90))
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string();
+            let do_vacuum = now.day() == 1;
+            match drust::safety::audit_db::writer_for_init_use() {
+                Some(w) => w.send_retention(cutoff, do_vacuum).await,
+                None => tracing::error!("audit retention: global writer not initialised"),
+            }
         }
     });
 
