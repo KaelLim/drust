@@ -13,7 +13,74 @@ use tower::ServiceExt;
 const ADMIN: &str = "root";
 const PWD: &str = "hunter2";
 
-async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, tempfile::TempDir) {
+/// Test-only audit DB handle. Owns the underlying tempdir so the SQLite
+/// file outlives the test. Exposes a `seed_from_jsonl` shortcut so the
+/// fixture-readback tests don't need to duplicate the parse+insert dance.
+struct TestAuditDb {
+    conn: Arc<Mutex<rusqlite::Connection>>,
+    _dir: tempfile::TempDir, // keeps the on-disk file alive
+}
+
+impl TestAuditDb {
+    fn new() -> Self {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("meta_logs.sqlite");
+        // Opens read-write + applies SCHEMA_SQL so the SELECTs in the
+        // audit handler can prepare against the real schema. Production
+        // uses open_audit_db_read here; in tests we use the rw conn
+        // directly so the same Mutex<Connection> can also INSERT.
+        let conn = drust::safety::audit_db::open_audit_db_write(&path).unwrap();
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+            _dir: dir,
+        }
+    }
+
+    /// Parse every audit JSONL file in `log_dir` (production parser via
+    /// `scan_window` with a wide-enough window to catch the fixture rows)
+    /// and INSERT each entry directly into the audit DB. Mirrors the
+    /// production writer task's INSERT shape — same column order, same
+    /// `hoist_indexed_fields` extraction of `caller_ip` / `user_agent`
+    /// out of the `extra` blob.
+    async fn seed_from_jsonl(&self, log_dir: &std::path::Path) {
+        let now = chrono::Utc::now();
+        let scan = drust::mgmt::audit::scan_window(
+            log_dir,
+            drust::mgmt::audit::Window::D7,
+            now,
+        );
+        let conn = self.conn.lock().await;
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO audit (ts, tenant, token_hint, op, status, duration_ms,
+                                    error_code, auth_method, oauth_email, oauth_error_code,
+                                    caller_ip, user_agent, extra)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            )
+            .unwrap();
+        for entry in scan.entries {
+            let hoist = drust::safety::audit_db::hoist_indexed_fields(entry.extra);
+            stmt.execute(rusqlite::params![
+                entry.ts,
+                entry.tenant,
+                entry.token_hint,
+                entry.op,
+                entry.status,
+                entry.duration_ms as i64,
+                entry.error_code,
+                entry.auth_method,
+                entry.oauth_email,
+                entry.oauth_error_code,
+                hoist.caller_ip,
+                hoist.user_agent,
+                hoist.remaining_json,
+            ])
+            .unwrap();
+        }
+    }
+}
+
+async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, TestAuditDb, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
@@ -31,9 +98,10 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, tempfile::TempDir)
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
     )));
+    let audit_db = TestAuditDb::new();
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
-        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
+        audit_meta_read: audit_db.conn.clone(),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
@@ -53,7 +121,7 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, tempfile::TempDir)
         admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
     };
     let router = state.with_data_dir(data_dir);
-    (router, dir)
+    (router, audit_db, dir)
 }
 
 fn write_audit_fixture(log_dir: &std::path::Path) {
@@ -145,7 +213,8 @@ async fn body_string(resp: axum::http::Response<Body>) -> String {
 #[tokio::test]
 async fn host_audit_unauthenticated_redirects_to_login() {
     let log_dir = tempdir().unwrap();
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let resp = app
         .oneshot(
             Request::builder()
@@ -176,7 +245,8 @@ async fn host_audit_unauthenticated_redirects_to_login() {
 async fn host_audit_with_session_renders_overview() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
 
     let resp = app
@@ -200,7 +270,8 @@ async fn host_audit_with_session_renders_overview() {
 async fn host_audit_browse_filters_status_error() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
 
     let resp = app
@@ -223,7 +294,8 @@ async fn host_audit_browse_filters_status_error() {
 #[tokio::test]
 async fn tenant_logs_unknown_id_404() {
     let log_dir = tempdir().unwrap();
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
 
     let resp = app
@@ -244,7 +316,8 @@ async fn tenant_logs_unknown_id_404() {
 async fn tenant_logs_known_id_renders_no_top_tenants() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
 
     let resp = app
@@ -271,7 +344,8 @@ async fn tenant_logs_known_id_renders_no_top_tenants() {
 async fn host_audit_overview_contains_top_tenants_with_data() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
 
     let resp = app
@@ -296,7 +370,8 @@ async fn host_audit_overview_contains_top_tenants_with_data() {
 async fn browse_renders_typed_oauth_fields_and_extra_map() {
     let log_dir = tempdir().unwrap();
     write_oauth_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
 
     let resp = app
@@ -330,7 +405,8 @@ async fn browse_renders_typed_oauth_fields_and_extra_map() {
 async fn browse_admin_plane_row_shows_admin_text_not_broken_link() {
     let log_dir = tempdir().unwrap();
     write_oauth_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
 
     let resp = app
@@ -362,7 +438,8 @@ async fn browse_admin_plane_row_shows_admin_text_not_broken_link() {
 async fn host_browse_renders_tenant_datalist_with_names() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
     let resp = app
         .clone()
@@ -393,7 +470,8 @@ async fn host_browse_renders_tenant_datalist_with_names() {
 async fn host_browse_renders_op_datalist() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
     let resp = app
         .clone()
@@ -418,7 +496,8 @@ async fn host_browse_renders_op_datalist() {
 async fn tenant_browse_does_not_render_tenant_datalist() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
     let resp = app
         .clone()
@@ -446,7 +525,8 @@ async fn tenant_browse_does_not_render_tenant_datalist() {
 async fn host_browse_rows_have_data_idx_attribute() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
     let resp = app
         .clone()
@@ -473,7 +553,8 @@ async fn host_browse_rows_have_data_idx_attribute() {
 async fn host_browse_embeds_entries_json_script() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
     let resp = app
         .clone()
@@ -503,7 +584,8 @@ async fn host_browse_embeds_entries_json_script() {
 async fn host_browse_pill_shows_tenant_name_not_uuid() {
     let log_dir = tempdir().unwrap();
     write_audit_fixture(log_dir.path());
-    let (app, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    let (app, audit_db, _meta) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
     let cookie = login_session_cookie(&app).await;
     let resp = app
         .clone()
