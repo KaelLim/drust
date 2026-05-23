@@ -6,7 +6,9 @@
 //! Soft warnings (do not fail build):
 //!   - keys in `en.toml` not referenced by any template (orphans — safe
 //!     to remove, but not a bug)
-//!   - keys in `zh-TW.toml` not in `en.toml` (dead — en is source of truth)
+//!   - keys in any non-en bundle not in `en.toml` (dead — en is source of
+//!     truth). Every `locales/<tag>.toml` is checked; adding a new locale
+//!     file is enough, no edits to `build.rs` required.
 //!
 //! See spec docs/superpowers/specs/2026-05-22-drust-i18n-design.md §3.
 
@@ -17,13 +19,34 @@ use std::path::Path;
 fn main() {
     println!("cargo:rerun-if-changed=src/mgmt/templates");
     println!("cargo:rerun-if-changed=locales/en.toml");
-    println!("cargo:rerun-if-changed=locales/zh-TW.toml");
     println!("cargo:rerun-if-changed=build.rs");
+
+    // Discover every locale bundle in one dir-walk, emit rerun-if-changed
+    // for each so adding `locales/<tag>.toml` automatically triggers a
+    // rebuild and a dead-key check.
+    let locales_dir = Path::new("locales");
+    let mut non_en_locales: Vec<String> = Vec::new();
+    for entry in fs::read_dir(locales_dir).expect("read locales dir") {
+        let path = entry.expect("locale entry").path();
+        if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("locale file_stem utf-8")
+            .to_string();
+        if stem == "en" {
+            continue;
+        }
+        println!("cargo:rerun-if-changed=locales/{stem}.toml");
+        non_en_locales.push(stem);
+    }
+    non_en_locales.sort();
 
     let template_dir = Path::new("src/mgmt/templates");
     let used = scan_template_keys(template_dir);
     let en_keys = load_toml_keys("locales/en.toml");
-    let zh_keys = load_toml_keys("locales/zh-TW.toml");
 
     // (a) missing in en — hard error
     let missing: Vec<_> = used
@@ -57,13 +80,18 @@ fn main() {
         }
     }
 
-    // (c) keys in zh-TW.toml but NOT in en.toml — soft warn (dead in zh-TW)
-    for k in &zh_keys {
-        if !en_keys.contains(k.as_str()) && !k.starts_with("_meta.") {
-            println!(
-                "cargo:warning=i18n: zh-TW.toml key `{k}` is not in en.toml \
-                 (dead key — en.toml is source of truth)"
-            );
+    // (c) dead keys in any non-en bundle — soft warn. en.toml is source of
+    // truth, so any key present in another bundle but missing in en.toml is
+    // either a typo or a stale translation that nothing renders.
+    for stem in &non_en_locales {
+        let keys = load_toml_keys(&format!("locales/{stem}.toml"));
+        for k in &keys {
+            if !en_keys.contains(k.as_str()) && !k.starts_with("_meta.") {
+                println!(
+                    "cargo:warning=i18n: {stem}.toml key `{k}` is not in en.toml \
+                     (dead key — en.toml is source of truth)"
+                );
+            }
         }
     }
 }

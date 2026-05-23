@@ -12,10 +12,28 @@ pub enum Locale {
 }
 
 impl Locale {
+    /// Every locale this binary ships with, in stable display order. Single
+    /// source of truth for: the settings dropdown, the `settings_locale_save`
+    /// whitelist, and any future surface that enumerates languages.
+    /// Adding a new language: append a variant + cover it in `code()` /
+    /// `display_name()` / `from_tag()` + add `Locale::Xx` here + register
+    /// the bundle in `init_bundles`.
+    pub const ALL: &'static [Locale] = &[Locale::En, Locale::ZhTw];
+
     pub fn code(&self) -> &'static str {
         match self {
             Locale::En => "en",
             Locale::ZhTw => "zh-TW",
+        }
+    }
+
+    /// Human-readable label shown in the locale picker, written in the
+    /// language itself (so a Japanese user can find their language even if
+    /// the rest of the page is rendering in English fallback).
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Locale::En => "English",
+            Locale::ZhTw => "繁體中文",
         }
     }
 
@@ -30,6 +48,25 @@ impl Locale {
             _ => None,
         }
     }
+
+    /// UI projection of `Locale::ALL`: `(canonical tag, display label)` for
+    /// every locale. Consumed by the settings dropdown.
+    pub fn options() -> Vec<LocaleOption> {
+        Locale::ALL
+            .iter()
+            .map(|l| LocaleOption {
+                code: l.code(),
+                label: l.display_name(),
+            })
+            .collect()
+    }
+}
+
+/// Public projection for askama templates that iterate the locale catalog.
+/// Lives next to `Locale` so adding a language only touches one file.
+pub struct LocaleOption {
+    pub code: &'static str,
+    pub label: &'static str,
 }
 
 pub struct Bundle {

@@ -21,8 +21,9 @@
           <p class="card-sub" style="margin:0 0 16px;">{{ t.s("settings.locale.card_sub") }}</p>
           <form method="post" action="/drust/admin/settings/locale" style="display:flex; gap:10px; align-items:center;">
             <select name="locale" class="input" style="max-width:280px;">
-              <option value="en"    {% if t.locale_code() == "en"    %}selected{% endif %}>English (en)</option>
-              <option value="zh-TW" {% if t.locale_code() == "zh-TW" %}selected{% endif %}>繁體中文 (zh-TW)</option>
+              {% for opt in available_locales %}
+              <option value="{{ opt.code }}" {% if t.locale_code() == opt.code %}selected{% endif %}>{{ opt.label }} ({{ opt.code }})</option>
+              {% endfor %}
             </select>
             <button type="submit" class="btn primary">{{ t.s("common.button.save") }}</button>
           </form>
