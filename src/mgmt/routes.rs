@@ -122,6 +122,8 @@ struct SettingsPage {
     version: &'static str,
     t: Translator,
     available_locales: Vec<LocaleOption>,
+    available_themes: Vec<crate::mgmt::theme::ThemeOption>,
+    theme: crate::mgmt::theme::Theme,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -138,6 +140,8 @@ async fn settings_page(
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
             available_locales: Locale::options(),
+            available_themes: crate::mgmt::theme::Theme::options(),
+            theme,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -183,6 +187,49 @@ async fn settings_locale_save(
     }
     let cookie =
         format!("drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax");
+    let mut resp = Redirect::to("/drust/admin/settings").into_response();
+    resp.headers_mut()
+        .insert(header::SET_COOKIE, cookie.parse().unwrap());
+    resp
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ThemePrefForm {
+    theme: String,
+}
+
+/// `POST /admin/settings/theme` — persist the admin's UI theme to
+/// `admins.theme` and mirror it back as the `drust_theme` cookie so the
+/// next render picks it up. Validation: only codes in `Theme::ALL`
+/// accepted; everything else returns 400 (the dropdown can't submit
+/// unknown values, so this is purely defensive).
+async fn settings_theme_save(
+    State(state): State<MgmtState>,
+    axum::Extension(crate::auth::middleware::AdminId(admin_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    Form(form): Form<ThemePrefForm>,
+) -> Response {
+    let code = match crate::mgmt::theme::Theme::ALL
+        .iter()
+        .find(|t| t.code() == form.theme)
+    {
+        Some(t) => t.code().to_string(),
+        None => {
+            return (StatusCode::BAD_REQUEST, "unsupported theme").into_response();
+        }
+    };
+    {
+        let conn = state.meta.lock().await;
+        if let Err(e) = conn.execute(
+            "UPDATE admins SET theme = ?1 WHERE id = ?2",
+            rusqlite::params![code, admin_id],
+        ) {
+            return internal(format!("update theme: {e}"));
+        }
+    }
+    let cookie =
+        format!("drust_theme={code}; Path=/; Max-Age=31536000; SameSite=Lax");
     let mut resp = Redirect::to("/drust/admin/settings").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
@@ -711,6 +758,7 @@ impl MgmtState {
         let settings_router = Router::new()
             .route("/admin/settings", get(settings_page))
             .route("/admin/settings/locale", post(settings_locale_save))
+            .route("/admin/settings/theme", post(settings_theme_save))
             .with_state(settings_state);
 
         let protected = tenants_router
