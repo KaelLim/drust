@@ -16,6 +16,9 @@ use tokio::sync::Mutex;
 #[derive(Clone)]
 pub struct MgmtState {
     pub meta: Arc<Mutex<Connection>>,
+    /// v1.24 — read-only connection to meta_logs.sqlite. Used by the
+    /// admin audit page handler (Task 8 wires the SQL reader).
+    pub audit_meta_read: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
     pub session_ttl_days: u64,
     pub garage: Option<Arc<crate::storage::garage::GarageClient>>,
     pub public_base_url: String,

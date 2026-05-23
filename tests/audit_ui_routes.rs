@@ -33,6 +33,7 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, tempfile::TempDir)
     )));
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
+        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
