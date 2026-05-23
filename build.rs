@@ -170,10 +170,10 @@ fn main() {
                 let target = sys
                     .get(partner)
                     .and_then(|v| v.as_str())
-                    .unwrap_or_else(|| panic!("themes/{code}.toml [system] missing `{partner}`"));
+                    .unwrap_or_else(|| panic!("themes/{code}.toml [system] missing '{partner}'"));
                 if !theme_codes.iter().any(|c| c == target) {
                     panic!(
-                        "themes/{code}.toml [system].{partner} = `{target}` but \
+                        "themes/{code}.toml [system].{partner} = '{target}' but \
                          themes/{target}.toml does not exist"
                     );
                 }
@@ -188,7 +188,7 @@ fn main() {
                 .unwrap_or_else(|| panic!("themes/{code}.toml missing [ui]"));
             for k in REQUIRED_UI_KEYS {
                 if !ui.contains_key(*k) {
-                    panic!("themes/{code}.toml [ui] missing required key `{k}`");
+                    panic!("themes/{code}.toml [ui] missing required key '{k}'");
                 }
             }
             let accent = val
@@ -197,7 +197,7 @@ fn main() {
                 .unwrap_or_else(|| panic!("themes/{code}.toml missing [accent]"));
             for k in REQUIRED_ACCENT_KEYS {
                 if !accent.contains_key(*k) {
-                    panic!("themes/{code}.toml [accent] missing required key `{k}`");
+                    panic!("themes/{code}.toml [accent] missing required key '{k}'");
                 }
             }
             let mascot = val
@@ -207,7 +207,7 @@ fn main() {
             for k in REQUIRED_MASCOT_KEYS {
                 let s = k.to_string();
                 if !mascot.contains_key(&s) {
-                    panic!("themes/{code}.toml [mascot] missing required key `{s}`");
+                    panic!("themes/{code}.toml [mascot] missing required key '{s}'");
                 }
             }
         }
