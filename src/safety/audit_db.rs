@@ -196,6 +196,42 @@ impl AuditWriter {
     }
 }
 
+use std::sync::OnceLock;
+
+static WRITER: OnceLock<AuditWriter> = OnceLock::new();
+static DUAL_WRITE: OnceLock<bool> = OnceLock::new();
+
+/// One-time initialisation. Called from `main.rs` after the audit DB is
+/// open and the writer task is spawned. Idempotent: second call is a
+/// no-op (returns Err from .set, ignored).
+pub fn init_globals(writer: AuditWriter, dual_write: bool) {
+    let _ = WRITER.set(writer);
+    let _ = DUAL_WRITE.set(dual_write);
+}
+
+/// Non-blocking dispatch from a request handler. No-op when init_globals
+/// has not run yet (test paths, pre-init startup). Caller's JSONL write
+/// path is independent and still runs.
+pub fn try_send(entry: &crate::safety::audit::AuditEntry) {
+    if let Some(w) = WRITER.get() {
+        w.try_send_inner(entry);
+    }
+}
+
+/// True during the v1.24 dual-write window. Default `true` when env is
+/// absent or invalid. v1.25 flips the default.
+pub fn dual_write_enabled() -> bool {
+    *DUAL_WRITE.get().unwrap_or(&true)
+}
+
+/// Test-only / future-main-use accessor. Used by Task 7's retention task
+/// to send WriterCmd::RunRetention through the same channel. NOT for use
+/// from request handlers (those should use `try_send` which is the
+/// non-blocking variant).
+pub fn writer_for_init_use() -> Option<&'static AuditWriter> {
+    WRITER.get()
+}
+
 async fn writer_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriterCmd>) {
     let mut buf: Vec<crate::safety::audit::AuditEntry> =
         Vec::with_capacity(FLUSH_BATCH_SIZE);
