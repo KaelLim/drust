@@ -94,6 +94,124 @@ fn main() {
             }
         }
     }
+
+    // -----------------------------------------------------------------
+    // (d) themes/*.toml validation
+    // -----------------------------------------------------------------
+    // Adding themes/<code>.toml is enough to trigger a rebuild + check.
+    // Required key sets are hard-coded here — they're the implementation
+    // contract for src/mgmt/theme.rs.
+
+    println!("cargo:rerun-if-changed=themes");
+    let themes_dir = Path::new("themes");
+    let mut theme_codes: Vec<String> = Vec::new();
+    for entry in fs::read_dir(themes_dir).expect("read themes dir") {
+        let path = entry.expect("theme entry").path();
+        if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("theme file_stem utf-8")
+            .to_string();
+        println!("cargo:rerun-if-changed=themes/{stem}.toml");
+        theme_codes.push(stem);
+    }
+    theme_codes.sort();
+
+    const REQUIRED_UI_KEYS: &[&str] = &[
+        "bg",
+        "bg-deep",
+        "surface",
+        "surface-2",
+        "surface-3",
+        "border",
+        "border-mid",
+        "border-strong",
+        "fg",
+        "fg-2",
+        "muted",
+        "muted-2",
+    ];
+    const REQUIRED_ACCENT_KEYS: &[&str] = &[
+        "accent",
+        "accent-2",
+        "accent-soft",
+        "accent-border",
+        "rust",
+        "warn",
+        "danger",
+        "info",
+        "mint",
+        "lilac",
+    ];
+    const REQUIRED_MASCOT_KEYS: &[char] = &['B', 'E', 'P', 'Z', 'R', 'S', 'H'];
+
+    for code in &theme_codes {
+        let src = fs::read_to_string(format!("themes/{code}.toml"))
+            .unwrap_or_else(|e| panic!("read themes/{code}.toml: {e}"));
+        let val: toml::Value =
+            toml::from_str(&src).unwrap_or_else(|e| panic!("parse themes/{code}.toml: {e}"));
+        let has_system = val.get("system").is_some();
+        let has_ui = val.get("ui").is_some();
+        let has_accent = val.get("accent").is_some();
+        let has_mascot = val.get("mascot").is_some();
+
+        if has_system {
+            if has_ui || has_accent || has_mascot {
+                panic!(
+                    "themes/{code}.toml: has [system] AND one of [ui]/[accent]/[mascot] — \
+                     system themes reference others, they do not define palettes"
+                );
+            }
+            let sys = val.get("system").unwrap();
+            for partner in &["light", "dark"] {
+                let target = sys
+                    .get(partner)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("themes/{code}.toml [system] missing `{partner}`"));
+                if !theme_codes.iter().any(|c| c == target) {
+                    panic!(
+                        "themes/{code}.toml [system].{partner} = `{target}` but \
+                         themes/{target}.toml does not exist"
+                    );
+                }
+                if target == code {
+                    panic!("themes/{code}.toml [system].{partner} cannot reference itself");
+                }
+            }
+        } else {
+            let ui = val
+                .get("ui")
+                .and_then(|v| v.as_table())
+                .unwrap_or_else(|| panic!("themes/{code}.toml missing [ui]"));
+            for k in REQUIRED_UI_KEYS {
+                if !ui.contains_key(*k) {
+                    panic!("themes/{code}.toml [ui] missing required key `{k}`");
+                }
+            }
+            let accent = val
+                .get("accent")
+                .and_then(|v| v.as_table())
+                .unwrap_or_else(|| panic!("themes/{code}.toml missing [accent]"));
+            for k in REQUIRED_ACCENT_KEYS {
+                if !accent.contains_key(*k) {
+                    panic!("themes/{code}.toml [accent] missing required key `{k}`");
+                }
+            }
+            let mascot = val
+                .get("mascot")
+                .and_then(|v| v.as_table())
+                .unwrap_or_else(|| panic!("themes/{code}.toml missing [mascot]"));
+            for k in REQUIRED_MASCOT_KEYS {
+                let s = k.to_string();
+                if !mascot.contains_key(&s) {
+                    panic!("themes/{code}.toml [mascot] missing required key `{s}`");
+                }
+            }
+        }
+    }
 }
 
 /// Returns map: key → [(file, line), ...] for every literal `t.s("key")`
