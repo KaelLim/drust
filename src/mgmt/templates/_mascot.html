@@ -51,7 +51,8 @@
 </style>
 <script>
 (function () {
-  const PAL = { '.': null, 'B': '#0a0a0a', 'E': '#7FE87F', 'P': '#FFA3C7', 'Z': '#7dd3d8', 'R': '#d94a4a', 'S': '#fff7a3', 'H': '#FFA3C7' };
+  const DEFAULT_PAL = { '.': null, 'B': '#0a0a0a', 'E': '#7FE87F', 'P': '#FFA3C7', 'Z': '#7dd3d8', 'R': '#d94a4a', 'S': '#fff7a3', 'H': '#FFA3C7' };
+  const PAL = Object.assign({}, DEFAULT_PAL, window.DRUST_MASCOT_PAL || {});
   const BASE = [
     '................','................','................',
     '.B............B.','.BB..........BB.','.BBB........BBB.',
