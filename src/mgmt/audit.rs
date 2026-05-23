@@ -454,13 +454,13 @@ pub fn scan_window_cached(
     result
 }
 
-fn read_plain(path: &Path) -> std::io::Result<(Vec<AuditEntry>, usize)> {
+pub(crate) fn read_plain(path: &Path) -> std::io::Result<(Vec<AuditEntry>, usize)> {
     let f = std::fs::File::open(path)?;
     let reader = BufReader::new(f);
     parse_lines(reader)
 }
 
-fn read_gz(path: &Path) -> std::io::Result<(Vec<AuditEntry>, usize)> {
+pub(crate) fn read_gz(path: &Path) -> std::io::Result<(Vec<AuditEntry>, usize)> {
     let f = std::fs::File::open(path)?;
     let dec = flate2::read::GzDecoder::new(f);
     // BufReader::lines is lazy; the first read will surface a corrupt-gzip

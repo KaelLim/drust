@@ -71,6 +71,17 @@ async fn main() -> anyhow::Result<()> {
         "audit SQLite ready"
     );
 
+    // One-shot backfill from existing JSONL on first start; idempotent via marker.
+    // Background task — main doesn't block waiting for it. ~10M rows takes a
+    // few minutes; admin UI sees rows trickle in as the writer drains.
+    let backfill_dir = cfg.data_dir.clone();
+    let backfill_log = cfg.log_dir.clone();
+    tokio::spawn(async move {
+        if let Err(e) = drust::safety::audit_db::backfill_from_jsonl(&backfill_dir, &backfill_log).await {
+            tracing::error!(err=?e, "audit backfill: failed");
+        }
+    });
+
     // Read-only connection for the admin UI; threaded into MgmtState below.
     let audit_meta_read = std::sync::Arc::new(tokio::sync::Mutex::new(
         drust::safety::audit_db::open_audit_db_read(&audit_db_path)?,

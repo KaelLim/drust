@@ -347,6 +347,116 @@ fn run_retention(conn: &mut Connection, cutoff_ts: &str, vacuum: bool) {
     }
 }
 
+/// One-shot backfill from existing JSONL audit files on first start.
+/// Idempotent via the marker file `audit-backfill.done` in `data_dir`.
+/// Sends every parsed entry through the writer channel; safe to call
+/// before any request handlers are wired up.
+///
+/// NOT crash-safe across partial backfill: if the process crashes
+/// mid-backfill, the marker is not written and the next start re-runs
+/// the whole thing, producing duplicate rows. v1.24 accepts this
+/// trade-off; per-file granular markers land in v1.25 if needed.
+pub async fn backfill_from_jsonl(
+    data_dir: &std::path::Path,
+    log_dir: &std::path::Path,
+) -> std::io::Result<u64> {
+    let marker = data_dir.join("audit-backfill.done");
+    if marker.exists() {
+        tracing::info!("audit backfill: marker present, skipping");
+        return Ok(0);
+    }
+    let writer = match WRITER.get() {
+        Some(w) => w,
+        None => {
+            tracing::error!("audit backfill: global writer not initialised; aborting");
+            return Ok(0);
+        }
+    };
+    tracing::info!(log_dir = %log_dir.display(), "audit backfill: starting one-shot from JSONL");
+    let entries = read_all_jsonl(log_dir);
+    let expected = entries.len() as u64;
+    tracing::info!(parsed = expected, "audit backfill: parsed JSONL files");
+    if expected == 0 {
+        // Nothing to backfill — write the marker anyway so we don't re-scan.
+        std::fs::write(&marker, "")?;
+        tracing::info!("audit backfill: nothing to do, marker written");
+        return Ok(0);
+    }
+    for chunk in entries.chunks(10_000) {
+        for entry in chunk {
+            if writer.send_backfill(entry.clone()).await.is_err() {
+                tracing::error!("audit backfill: channel closed mid-send, bailing without marker");
+                return Ok(0);
+            }
+        }
+        tracing::info!(chunk = chunk.len(), "audit backfill: chunk dispatched");
+    }
+    tracing::info!("audit backfill: waiting for writer drain");
+    // Drain wait: poll the SQLite COUNT until it catches up. Cap at 5 min.
+    let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    let read_conn = open_audit_db_read(&data_dir.join("meta_logs.sqlite"))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    loop {
+        let cnt: i64 = read_conn
+            .query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0))
+            .unwrap_or(0);
+        if cnt as u64 >= expected {
+            break;
+        }
+        if std::time::Instant::now() > drain_deadline {
+            tracing::error!(seen = cnt, expected, "audit backfill: drain timeout, bailing");
+            return Ok(cnt as u64);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    std::fs::write(&marker, "")?;
+    tracing::info!(rows = expected, "audit backfill: complete");
+    Ok(expected)
+}
+
+/// Walk `log_dir` for `audit-*.jsonl{,.N,.gz}` files and parse each.
+/// Order is by filename (date-prefixed names sort lexically = chronologically).
+/// Skips files that fail to read; logs a warn per skipped file.
+fn read_all_jsonl(log_dir: &std::path::Path) -> Vec<crate::safety::audit::AuditEntry> {
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir(log_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(err=?e, "audit backfill: log_dir read failed");
+            return out;
+        }
+    };
+    let mut paths: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("audit-") && (
+                    n.contains(".jsonl") || n.contains(".jsonl.")
+                ))
+        })
+        .collect();
+    paths.sort();
+    for path in paths {
+        let parsed = if path.extension().and_then(|s| s.to_str()) == Some("gz") {
+            crate::mgmt::audit::read_gz(&path)
+        } else {
+            crate::mgmt::audit::read_plain(&path)
+        };
+        match parsed {
+            Ok((entries, errs)) => {
+                if errs > 0 {
+                    tracing::warn!(file=%path.display(), errs, "audit backfill: parse errors");
+                }
+                out.extend(entries);
+            }
+            Err(e) => tracing::warn!(file=%path.display(), err=?e, "audit backfill: read failed"),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
