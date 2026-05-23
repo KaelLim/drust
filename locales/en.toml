@@ -808,6 +808,10 @@ card_sub = "Switch the admin UI language. Takes effect on the next page load. Mi
 card_title = "Theme"
 card_sub = "Choose how the admin UI looks."
 
+[settings.preferences]
+card_title = "Preferences"
+unsaved = "Unsaved"
+
 [tenant_api_keys.alert]
 service_required_body = "Reroll or generate the service key above to enable the one-click MCP command."
 service_required_title = "Service key required"

@@ -15,35 +15,157 @@
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-head"><span>{{ t.s("settings.locale.card_title") }}</span></div>
-        <div class="card-body">
-          <p class="card-sub" style="margin:0 0 16px;">{{ t.s("settings.locale.card_sub") }}</p>
-          <form method="post" action="/drust/admin/settings/locale" style="display:flex; gap:10px; align-items:center;">
-            <select name="locale" class="input" style="max-width:280px;">
-              {% for opt in available_locales %}
-              <option value="{{ opt.code }}" {% if t.locale_code() == opt.code %}selected{% endif %}>{{ opt.label }} ({{ opt.code }})</option>
-              {% endfor %}
-            </select>
-            <button type="submit" class="btn primary">{{ t.s("common.button.save") }}</button>
-          </form>
+      <form id="settings-form" method="post" action="/drust/admin/settings">
+        <div class="card">
+          <div class="card-head"><span>{{ t.s("settings.preferences.card_title") }}</span></div>
+          <div class="card-body" style="padding:0">
+            <div class="settings-rows">
+              <div class="settings-row">
+                <span class="settings-row-label">
+                  <svg aria-hidden="true"><use href="#i-globe"/></svg>
+                  {{ t.s("settings.locale.card_title") }}
+                </span>
+                <select name="locale" class="input" id="settings-locale">
+                  {% for opt in available_locales %}
+                  <option value="{{ opt.code }}" {% if t.locale_code() == opt.code %}selected{% endif %}>{{ opt.label }} ({{ opt.code }})</option>
+                  {% endfor %}
+                </select>
+                <span class="settings-row-status" data-status="locale">• {{ t.s("settings.preferences.unsaved") }}</span>
+              </div>
+              <div class="settings-row">
+                <span class="settings-row-label">
+                  <svg aria-hidden="true"><use href="#i-palette"/></svg>
+                  {{ t.s("settings.theme.card_title") }}
+                </span>
+                <select name="theme" class="input" id="settings-theme">
+                  {% for opt in available_themes %}
+                  <option value="{{ opt.code }}" {% if theme.code() == opt.code %}selected{% endif %}>{{ opt.label }} ({{ opt.code }})</option>
+                  {% endfor %}
+                </select>
+                <span class="settings-row-status" data-status="theme">• {{ t.s("settings.preferences.unsaved") }}</span>
+              </div>
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="btn ghost" id="settings-cancel" disabled>
+                <svg aria-hidden="true"><use href="#i-x"/></svg>
+                {{ t.s("common.button.cancel") }}
+              </button>
+              <button type="submit" class="btn primary" id="settings-save" disabled>
+                <svg aria-hidden="true"><use href="#i-save"/></svg>
+                {{ t.s("common.button.save") }}
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      </form>
 
-      <div class="card">
-        <div class="card-head"><span>{{ t.s("settings.theme.card_title") }}</span></div>
-        <div class="card-body">
-          <p class="card-sub" style="margin:0 0 16px;">{{ t.s("settings.theme.card_sub") }}</p>
-          <form method="post" action="/drust/admin/settings/theme" style="display:flex; gap:10px; align-items:center;">
-            <select name="theme" class="input" style="max-width:280px;">
-              {% for opt in available_themes %}
-              <option value="{{ opt.code }}" {% if theme.code() == opt.code %}selected{% endif %}>{{ opt.label }} ({{ opt.code }})</option>
-              {% endfor %}
-            </select>
-            <button type="submit" class="btn primary">{{ t.s("common.button.save") }}</button>
-          </form>
-        </div>
-      </div>
+      <script>
+      (function () {
+        // v1.23 — settings page live preview controller.
+        // Embed every theme's palette so the user can preview theme changes
+        // without a round-trip. Locale changes can't be previewed (templates
+        // are server-rendered) — those just mark the row dirty until Save.
+        var THEMES = {{ all_themes_json|safe }};
+        var ORIG_LOCALE = "{{ t.locale_code() }}";
+        var ORIG_THEME = "{{ theme.code() }}";
+
+        var localeSel  = document.getElementById('settings-locale');
+        var themeSel   = document.getElementById('settings-theme');
+        var saveBtn    = document.getElementById('settings-save');
+        var cancelBtn  = document.getElementById('settings-cancel');
+        var localeStat = document.querySelector('[data-status="locale"]');
+        var themeStat  = document.querySelector('[data-status="theme"]');
+
+        // CSS var groups. Mirrors _styles.html's :root block.
+        var UI_VARS     = ['bg','bg-deep','surface','surface-2','surface-3','border','border-mid','border-strong','fg','fg-2','muted','muted-2'];
+        var ACCENT_VARS = ['accent','accent-2','accent-soft','accent-border','rust','warn','danger','info','mint','lilac'];
+
+        // Build the inline-override <style> block on demand. We use !important
+        // on every CSS var so this rule beats both the original :root AND any
+        // @media (prefers-color-scheme: dark) override emitted by _styles.html
+        // for the System theme. On Cancel, the block's text is cleared and the
+        // original server-rendered :root takes back over.
+        function previewStyleNode() {
+          var n = document.getElementById('settings-preview-style');
+          if (!n) {
+            n = document.createElement('style');
+            n.id = 'settings-preview-style';
+            document.head.appendChild(n);
+          }
+          return n;
+        }
+
+        function buildVarLines(pal) {
+          var lines = '';
+          UI_VARS.forEach(function (k) {
+            if (pal.ui && pal.ui[k]) lines += '--' + k + ':' + pal.ui[k] + ' !important;';
+          });
+          ACCENT_VARS.forEach(function (k) {
+            if (pal.accent && pal.accent[k]) lines += '--' + k + ':' + pal.accent[k] + ' !important;';
+          });
+          return lines;
+        }
+
+        function currentSystemSide() {
+          return window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? THEMES.system.dark
+            : THEMES.system.light;
+        }
+
+        function applyTheme(code) {
+          var node = previewStyleNode();
+          if (code === ORIG_THEME) {
+            // Reverting to original — clear the override.
+            node.textContent = '';
+          } else if (code === 'system') {
+            var light = THEMES.system.light;
+            var dark  = THEMES.system.dark;
+            node.textContent =
+              ':root{' + buildVarLines(light) + '}' +
+              '@media (prefers-color-scheme: dark){:root{' + buildVarLines(dark) + '}}';
+          } else {
+            var pal = THEMES[code];
+            if (!pal) return;
+            node.textContent = ':root{' + buildVarLines(pal) + '}';
+          }
+          // Mascot palette: pick the side the user would actually see right now.
+          var mascotPal;
+          if (code === 'system') {
+            mascotPal = currentSystemSide().mascot;
+          } else {
+            mascotPal = THEMES[code] && THEMES[code].mascot;
+          }
+          if (window.chonkSetPAL && mascotPal) window.chonkSetPAL(mascotPal);
+        }
+
+        function refreshDirty() {
+          var localeDirty = localeSel.value !== ORIG_LOCALE;
+          var themeDirty  = themeSel.value  !== ORIG_THEME;
+          var anyDirty    = localeDirty || themeDirty;
+          localeStat.classList.toggle('is-dirty', localeDirty);
+          themeStat.classList.toggle('is-dirty', themeDirty);
+          saveBtn.disabled   = !anyDirty;
+          cancelBtn.disabled = !anyDirty;
+        }
+
+        themeSel.addEventListener('change', function () {
+          applyTheme(themeSel.value);
+          refreshDirty();
+        });
+        localeSel.addEventListener('change', refreshDirty);
+
+        cancelBtn.addEventListener('click', function () {
+          localeSel.value = ORIG_LOCALE;
+          themeSel.value  = ORIG_THEME;
+          applyTheme(ORIG_THEME);
+          refreshDirty();
+        });
+      })();
+      </script>
 
     </div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "_mascot.html" %}
 {% endblock %}
