@@ -203,6 +203,15 @@ fn apply_migrations(conn: &Connection) -> anyhow::Result<()> {
     // them across devices.
     crate::db::migrations::add_column_if_missing(conn, "admins", "locale", "TEXT")?;
 
+    // v1.23: admins.theme — nullable preferred UI theme code
+    // ("system" | "cozy-dark" | "soft-light" | NULL). Same posture as locale:
+    // NULL means "fall through to cookie / default". Login + OAuth callback
+    // overwrite the `drust_theme` cookie with this value when not NULL.
+    // Unknown values (e.g. a renamed theme that left an orphan row) fall
+    // through at resolve time with a warn log; no DB-side CHECK constraint
+    // so themes can be renamed in code without a DB cascade.
+    crate::db::migrations::add_column_if_missing(conn, "admins", "theme", "TEXT")?;
+
     Ok(())
 }
 
