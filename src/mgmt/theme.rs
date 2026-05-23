@@ -249,8 +249,28 @@ fn parse_palette(src: &str, theme: Theme) -> Palette {
 }
 
 // ---------------------------------------------------------------------------
-// ThemeHint extractor — added in Task 6.
+// Axum extractor — picks Theme out of request extensions (placed by
+// `theme_layer`), falls back to Theme::System if the layer didn't run
+// (e.g. unit tests bypassing the outer admin chain).
 // ---------------------------------------------------------------------------
+
+pub struct ThemeHint(pub Theme);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ThemeHint {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(ThemeHint(
+            parts
+                .extensions
+                .get::<Theme>()
+                .copied()
+                .unwrap_or(Theme::System),
+        ))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Unit tests
