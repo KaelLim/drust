@@ -7,7 +7,7 @@
 use crate::safety::audit::AuditEntry;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Window {
     H1,
     H24,
@@ -17,9 +17,11 @@ pub enum Window {
 impl Window {
     pub fn from_str_or_default(s: &str) -> Self {
         match s {
-            "1h" => Window::H1,
+            "24h" => Window::H24,
             "7d" => Window::D7,
-            _ => Window::H24, // default + fallback for unrecognised input
+            _ => Window::H1, // v1.24 — default + fallback for unrecognised input.
+                             // Pre-v1.24 default was H24 but most pages render
+                             // far faster on H1 and 24h/7d remain explicit picks.
         }
     }
 
@@ -53,6 +55,20 @@ pub struct ScanResult {
     pub parse_errors: usize,
     pub archive_errors: Vec<String>, // file names of skipped corrupt archives
     pub truncated_from: Option<usize>, // Some(N) iff entries was capped at MAX_ENTRIES
+    /// v1.24 — true entry count BEFORE the MAX_ENTRIES truncation. Same as
+    /// `entries.len()` when not truncated; equals `truncated_from.unwrap()`
+    /// when truncated. Used by aggregate() so the Overview total displays
+    /// the real number instead of the 50K sample cap.
+    pub total_raw: u64,
+    /// v1.24 — true error count (entries with status == "error") computed
+    /// before truncation.
+    pub error_count_raw: u64,
+    /// v1.24 — pre-truncation (total, errors) per tenant. Used when the
+    /// Overview is tenant-scoped (either the per-tenant audit page, or
+    /// the host page with a tenant filter applied) so the displayed total
+    /// reflects all rows for that tenant, not just the ones that survived
+    /// the 50K cap.
+    pub tenant_counts_raw: std::collections::HashMap<String, (u64, u64)>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -73,6 +89,11 @@ pub struct Overview {
     pub rps_avg: f64,
     pub top_tenants: Vec<TopTenant>,  // len ≤ 5
     pub top_slow_ops: Vec<AuditEntry>, // len ≤ 5
+    /// v1.24 — true when latency/top tenants were computed over the 50K
+    /// newest sample rather than the full window. UI surfaces a caveat
+    /// in this case. `total` + `error_count` + `error_pct` + `rps_avg`
+    /// are NOT sampled — they always reflect the real pre-truncation count.
+    pub is_sampled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -351,10 +372,84 @@ pub fn scan_window(
     // Sort newest-first by ts.
     result.entries.sort_by(|a, b| b.ts.cmp(&a.ts));
 
+    // v1.24 — record TRUE pre-truncation totals so the Overview can show
+    // honest counts even when the 50K cap is hit. Per-tenant breakdown
+    // is built in the same pass so tenant-scoped Overview rows don't
+    // fall back to sample-based numbers.
+    result.total_raw = result.entries.len() as u64;
+    for e in &result.entries {
+        let is_err = e.status == "error";
+        if is_err {
+            result.error_count_raw += 1;
+        }
+        let slot = result
+            .tenant_counts_raw
+            .entry(e.tenant.clone())
+            .or_insert((0, 0));
+        slot.0 += 1;
+        if is_err {
+            slot.1 += 1;
+        }
+    }
+
     // Hard cap.
     if result.entries.len() > MAX_ENTRIES {
         result.truncated_from = Some(result.entries.len());
         result.entries.truncate(MAX_ENTRIES);
+    }
+    result
+}
+
+/// v1.24 — process-wide scan cache keyed by (log_dir, window). TTL is
+/// short (10 s) so a busy admin flipping between Overview / Browse tabs
+/// or refreshing the page doesn't re-parse hundreds of thousands of
+/// JSONL lines on every click; an idle admin still sees fresh data
+/// within seconds. Cache size is bounded to ≤ N windows × 1 entry each
+/// — currently 3 entries max (H1/H24/D7), one per active window.
+///
+/// NOT shared with the host vs. per-tenant scopes: both share the same
+/// (log_dir, window) key, because per-tenant filtering happens after the
+/// scan via `tenant_counts_raw` and an in-memory `.retain()` pass.
+const SCAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+struct ScanCacheEntry {
+    scan: std::sync::Arc<ScanResult>,
+    expires_at: std::time::Instant,
+}
+
+static SCAN_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<(PathBuf, Window), ScanCacheEntry>>,
+> = std::sync::OnceLock::new();
+
+pub fn scan_window_cached(
+    dir: &Path,
+    window: Window,
+    now: chrono::DateTime<chrono::Utc>,
+) -> std::sync::Arc<ScanResult> {
+    let cache = SCAN_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let key = (dir.to_path_buf(), window);
+    let now_instant = std::time::Instant::now();
+
+    // Fast path: live cache hit, clone the Arc and return.
+    if let Ok(guard) = cache.lock() {
+        if let Some(entry) = guard.get(&key) {
+            if entry.expires_at > now_instant {
+                return std::sync::Arc::clone(&entry.scan);
+            }
+        }
+    }
+
+    // Miss or expired — scan, store, evict any other expired entries.
+    let result = std::sync::Arc::new(scan_window(dir, window, now));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(
+            key,
+            ScanCacheEntry {
+                scan: std::sync::Arc::clone(&result),
+                expires_at: now_instant + SCAN_CACHE_TTL,
+            },
+        );
+        guard.retain(|_, e| e.expires_at > now_instant);
     }
     result
 }
@@ -402,14 +497,24 @@ pub fn parse_jsonl_line(line: &str) -> Option<AuditEntry> {
     serde_json::from_str(trimmed).ok()
 }
 
-/// Compute summary stats over `entries`. `window` is used only for RPS denom
-/// (each audit row corresponds to one HTTP request — not one SQL query).
-pub fn aggregate(entries: &[AuditEntry], window: Window) -> Overview {
-    let total = entries.len() as u64;
-    if total == 0 {
+/// Compute summary stats over `entries`. `window` is used for RPS denom.
+///
+/// v1.24 — `total_raw` / `error_count_raw` come from `ScanResult` and
+/// reflect the TRUE pre-truncation counts; `entries` is the (possibly
+/// 50K-capped) sample used for latency percentiles and top-tenants. When
+/// the sample is smaller than `total_raw`, `Overview.is_sampled` is set
+/// to true so the UI can surface a caveat.
+pub fn aggregate(
+    entries: &[AuditEntry],
+    window: Window,
+    total_raw: u64,
+    error_count_raw: u64,
+) -> Overview {
+    if total_raw == 0 {
         return Overview::default();
     }
-    let error_count = entries.iter().filter(|e| e.status == "error").count() as u64;
+    let total = total_raw;
+    let error_count = error_count_raw;
     let error_pct = (error_count as f64) / (total as f64) * 100.0;
 
     let mut durations: Vec<u64> = entries.iter().map(|e| e.duration_ms).collect();
@@ -431,6 +536,7 @@ pub fn aggregate(entries: &[AuditEntry], window: Window) -> Overview {
         rps_avg,
         top_tenants,
         top_slow_ops,
+        is_sampled: (entries.len() as u64) < total_raw,
     }
 }
 
@@ -659,7 +765,7 @@ pub fn build_body_ctx(
     };
     let auto_refresh = matches!(q.auto.as_deref(), Some("1"));
 
-    let scan = scan_window(log_dir, window, now);
+    let scan = scan_window_cached(log_dir, window, now);
 
     let tenant_filter_effective: Option<String> = match &scope {
         AuditScope::Tenant(id) => Some(id.clone()),
@@ -674,14 +780,26 @@ pub fn build_body_ctx(
 
     let (overview, entries, entries_view, distinct_ops, entries_json, next_cursor, top_slow_ops_view) = if tab == "overview" {
         // Clone so the optional tenant-filter `retain` doesn't mutate
-        // the cached `scan.entries` (the browse branch may need them
-        // unfiltered on a subsequent request — though we don't keep
-        // them across requests, clarity here trumps the tiny copy).
+        // the shared cached `scan.entries` (Arc); other concurrent
+        // tenant scopes need to see the unfiltered sample.
         let mut for_overview = scan.entries.clone();
         if let Some(t) = &tenant_filter_effective {
             for_overview.retain(|e| &e.tenant == t);
         }
-        let mut ov = aggregate(&for_overview, window);
+        // v1.24 — pre-truncation counts. When a tenant filter is in
+        // effect, fall back to that tenant's pre-truncation row; otherwise
+        // use the host-scope total. tenant_counts_raw is built in
+        // scan_window before the 50K cap so the displayed total is honest
+        // even on busy 7d windows.
+        let (total_raw, error_raw) = if let Some(t) = &tenant_filter_effective {
+            scan.tenant_counts_raw
+                .get(t)
+                .copied()
+                .unwrap_or((0, 0))
+        } else {
+            (scan.total_raw, scan.error_count_raw)
+        };
+        let mut ov = aggregate(&for_overview, window, total_raw, error_raw);
         // Resolve tenant_name on TopTenant rows (compute_top_tenants
         // leaves them blank because `aggregate` doesn't carry the map).
         for t in &mut ov.top_tenants {
@@ -782,7 +900,7 @@ pub fn build_body_ctx(
         overview,
         entries,
         parse_errors: scan.parse_errors,
-        archive_errors: scan.archive_errors,
+        archive_errors: scan.archive_errors.clone(),
         truncated_from: scan.truncated_from,
         tenant_filter: tenant_filter_for_render,
         op_filter: op_filter_effective,
@@ -990,10 +1108,11 @@ mod tests {
     }
 
     #[test]
-    fn window_falls_back_to_24h_on_unknown() {
-        assert_eq!(Window::from_str_or_default(""), Window::H24);
-        assert_eq!(Window::from_str_or_default("garbage"), Window::H24);
-        assert_eq!(Window::from_str_or_default("30d"), Window::H24);
+    fn window_falls_back_to_1h_on_unknown() {
+        // v1.24: default changed from H24 to H1 — most loads are sub-second.
+        assert_eq!(Window::from_str_or_default(""), Window::H1);
+        assert_eq!(Window::from_str_or_default("garbage"), Window::H1);
+        assert_eq!(Window::from_str_or_default("30d"), Window::H1);
     }
 
     #[test]
@@ -1209,9 +1328,19 @@ mod tests {
         assert_eq!(res.truncated_from, Some(MAX_ENTRIES + 100));
     }
 
+    /// Helper for tests: counts entries to derive total_raw + error_count_raw
+    /// the way scan_window does for the non-truncated case. Lets the existing
+    /// test assertions ride on (Window, &entries) without needing every test
+    /// to spell out the raw numbers explicitly.
+    fn agg_full(entries: &[AuditEntry], window: Window) -> Overview {
+        let total_raw = entries.len() as u64;
+        let error_raw = entries.iter().filter(|e| e.status == "error").count() as u64;
+        aggregate(entries, window, total_raw, error_raw)
+    }
+
     #[test]
     fn aggregate_empty_input() {
-        let ov = aggregate(&[], Window::H24);
+        let ov = agg_full(&[], Window::H24);
         assert_eq!(ov.total, 0);
         assert_eq!(ov.error_count, 0);
         assert_eq!(ov.error_pct, 0.0);
@@ -1220,6 +1349,7 @@ mod tests {
         assert_eq!(ov.rps_avg, 0.0);
         assert!(ov.top_tenants.is_empty());
         assert!(ov.top_slow_ops.is_empty());
+        assert!(!ov.is_sampled);
     }
 
     #[test]
@@ -1229,7 +1359,7 @@ mod tests {
             mk_entry("2026-05-05T01:00:01.000Z", "acme", "GET", "error", 12),
             mk_entry("2026-05-05T01:00:02.000Z", "beta", "POST", "ok", 5),
         ];
-        let ov = aggregate(&entries, Window::H1);
+        let ov = agg_full(&entries, Window::H1);
         assert_eq!(ov.total, 3);
         assert_eq!(ov.error_count, 1);
         // 33.333...%
@@ -1242,7 +1372,7 @@ mod tests {
         let entries: Vec<AuditEntry> = (1..=100)
             .map(|i| mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", i))
             .collect();
-        let ov = aggregate(&entries, Window::H1);
+        let ov = agg_full(&entries, Window::H1);
         assert_eq!(ov.p50_ms, 50);
         assert_eq!(ov.p99_ms, 99);
     }
@@ -1255,7 +1385,7 @@ mod tests {
                 entries.push(mk_entry("2026-05-05T01:00:00.000Z", tenant, "GET", "ok", 1));
             }
         }
-        let ov = aggregate(&entries, Window::H1);
+        let ov = agg_full(&entries, Window::H1);
         let names: Vec<&str> = ov.top_tenants.iter().map(|t| t.tenant.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c", "d", "e"]); // top 5, in count-desc order
         assert_eq!(ov.top_tenants.len(), 5);
@@ -1269,7 +1399,7 @@ mod tests {
             mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "error", 1),
             mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "error", 1),
         ];
-        let ov = aggregate(&entries, Window::H1);
+        let ov = agg_full(&entries, Window::H1);
         assert_eq!(ov.top_tenants.len(), 1);
         assert_eq!(ov.top_tenants[0].tenant, "acme");
         assert_eq!(ov.top_tenants[0].count, 4);
@@ -1291,10 +1421,27 @@ mod tests {
                 )
             })
             .collect();
-        let ov = aggregate(&entries, Window::H1);
+        let ov = agg_full(&entries, Window::H1);
         assert_eq!(ov.top_slow_ops.len(), 5);
         let durations: Vec<u64> = ov.top_slow_ops.iter().map(|e| e.duration_ms).collect();
         assert_eq!(durations, vec![1000, 800, 200, 50, 30]);
+    }
+
+    #[test]
+    fn aggregate_marks_sampled_when_total_raw_exceeds_entries_len() {
+        // 3 entries kept, but pre-truncation count was 150K — i.e. the 50K
+        // cap fired. Overview.total reports the honest 150_000, and
+        // is_sampled flags that latency / top stats came from the sample.
+        let entries = vec![
+            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", 10),
+            mk_entry("2026-05-05T01:00:01.000Z", "acme", "GET", "ok", 12),
+            mk_entry("2026-05-05T01:00:02.000Z", "beta", "POST", "ok", 5),
+        ];
+        let ov = aggregate(&entries, Window::H1, 150_000, 4_500);
+        assert_eq!(ov.total, 150_000);
+        assert_eq!(ov.error_count, 4_500);
+        assert!((ov.error_pct - 3.0).abs() < 0.01);
+        assert!(ov.is_sampled, "is_sampled should be true when entries.len() < total_raw");
     }
 
     fn fixture() -> Vec<AuditEntry> {

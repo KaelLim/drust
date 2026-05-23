@@ -290,6 +290,8 @@ meta_window = "window"
 p99_meta = "p99 {p99} ms"
 pct_err_suffix = "% err"
 req_per_sec = "req / sec"
+sampled_label = "sampled"
+sampled_note = "Latency, top tenants and top slow ops are computed from the 50,000 newest entries when the window holds more rows."
 total_requests = "Total requests"
 zero_err = "0% err"
 

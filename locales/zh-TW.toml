@@ -307,6 +307,8 @@ p99_meta = "p99 {p99} 毫秒"
 # REVIEW (low confidence): standalone suffix, please verify
 pct_err_suffix = "% 錯誤"
 req_per_sec = "請求 / 秒"
+sampled_label = "取樣"
+sampled_note = "本時間窗超過 50,000 筆時，延遲、Top tenants、Top slow ops 為最近 50,000 筆的樣本統計。請求總數仍為實際全量。"
 total_requests = "請求總數"
 zero_err = "0% 錯誤"
 
