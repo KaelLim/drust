@@ -1,0 +1,40 @@
+# Cozy Dark — v1.22 visual state preserved exactly.
+# Refactor source: src/mgmt/templates/_styles.html:12-45 + _mascot.html:54.
+
+[meta]
+display_name = "Cozy Dark"
+
+[ui]
+bg            = "#1c1816"
+bg-deep       = "#15110f"
+surface       = "#26211d"
+surface-2     = "#2c2723"
+surface-3     = "#332d28"
+border        = "#2a2521"
+border-mid    = "#37312c"
+border-strong = "#453d37"
+fg            = "#f5ede2"
+fg-2          = "#c9bdae"
+muted         = "#988b7d"
+muted-2       = "#5a514a"
+
+[accent]
+accent        = "#e8a17c"
+accent-2      = "#f3b48f"
+accent-soft   = "rgba(232,161,124,0.13)"
+accent-border = "rgba(232,161,124,0.34)"
+rust          = "#d97757"
+warn          = "#f1c27a"
+danger        = "#e88a8a"
+info          = "#a5b8f0"
+mint          = "#9ed3b8"
+lilac         = "#c9a8e3"
+
+[mascot]
+B = "#0a0a0a"
+E = "#7FE87F"
+P = "#FFA3C7"
+Z = "#7dd3d8"
+R = "#d94a4a"
+S = "#fff7a3"
+H = "#FFA3C7"
