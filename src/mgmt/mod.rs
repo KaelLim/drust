@@ -6,6 +6,7 @@ pub mod format;
 pub mod i18n;
 pub mod locale_layer;
 pub mod theme;
+pub mod theme_layer;
 pub mod oauth_login;
 pub mod public_files;
 pub mod routes;
