@@ -98,6 +98,10 @@ struct TenantsListPage {
     /// Empty when no sampler tick has run yet on this boot.
     stats_age_display: String,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 struct TenantRow {
@@ -185,6 +189,7 @@ pub fn valid_slug(s: &str) -> bool {
 pub async fn list_page_axum(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
 ) -> Response {
     // v1.15.0 — reads denormalized stats columns. Zero per-tenant SQLite
     // opens on the request path; the background sampler keeps them fresh.
@@ -244,6 +249,7 @@ pub async fn list_page_axum(
         .unwrap_or(300)
         / 60;
     let stats_age_display = humanize_age(latest_sample.as_deref());
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         TenantsListPage {
             tenants: rows,
@@ -252,6 +258,10 @@ pub async fn list_page_axum(
             stats_interval_min,
             stats_age_display,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -578,6 +588,10 @@ struct TenantFilesAdminPage {
     next_url: Option<String>,
     per_page_options: Vec<TenantFilesPerPageOption>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 #[derive(Clone)]
@@ -653,6 +667,10 @@ struct TenantOverviewPage {
     webhook_failures: Vec<WebhookFailureRow>,
     recent_audit: Vec<RecentAuditRow>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 struct WebhookFailureRow {
@@ -710,6 +728,7 @@ fn humanize_audit_ts(ts: &str) -> String {
 pub async fn tenant_overview_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
     if validate_tenant_id(&tenant_id).is_err() {
@@ -841,6 +860,7 @@ pub async fn tenant_overview_page(
     recent_audit.truncate(10);
 
     let collection_count = collections.len();
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         TenantOverviewPage {
             tenant_id: tenant_id.clone(),
@@ -861,6 +881,10 @@ pub async fn tenant_overview_page(
             webhook_failures,
             recent_audit,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -874,6 +898,7 @@ pub async fn tenant_overview_page(
 pub async fn tenant_files_admin_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
     axum::extract::Query(qs): axum::extract::Query<TenantFilesListQs>,
 ) -> Response {
@@ -926,6 +951,7 @@ pub async fn tenant_files_admin_page(
     let empty_page = |tenant_id: String, tenant_name: String| -> Response {
         // Sidebar still renders the virtual rows even when the tenant DB
         // hasn't been opened; `collections: vec![]` is fine here.
+        let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
         Html(
             TenantFilesAdminPage {
                 version: env!("CARGO_PKG_VERSION"),
@@ -945,6 +971,10 @@ pub async fn tenant_files_admin_page(
                 next_url: None,
                 per_page_options: per_page_options.clone(),
                 t: Translator::new(locale),
+                palette_resolved: trc.palette_resolved,
+                mascot_json_static: trc.mascot_json_static,
+                mascot_json_light: trc.mascot_json_light,
+                mascot_json_dark: trc.mascot_json_dark,
             }
             .render()
             .unwrap(),
@@ -1029,6 +1059,7 @@ pub async fn tenant_files_admin_page(
 
     let collections = crate::storage::schema::list_collections(&conn).unwrap_or_default();
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         TenantFilesAdminPage {
             version: env!("CARGO_PKG_VERSION"),
@@ -1048,6 +1079,10 @@ pub async fn tenant_files_admin_page(
             next_url,
             per_page_options,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -1072,6 +1107,10 @@ struct TenantOauthProvidersPage {
     /// on the plain GET render.
     error: Option<String>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 struct TenantOauthProviderRow {
@@ -1170,6 +1209,7 @@ async fn render_oauth_providers_page(
     tenant_id: String,
     error: Option<String>,
     locale: Locale,
+    theme: crate::mgmt::theme::Theme,
 ) -> Response {
     let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
         Ok(t) => t,
@@ -1189,6 +1229,7 @@ async fn render_oauth_providers_page(
         Err(_) => vec![],
     };
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         TenantOauthProvidersPage {
             version: env!("CARGO_PKG_VERSION"),
@@ -1199,6 +1240,10 @@ async fn render_oauth_providers_page(
             active_coll: "_oauth_providers".to_string(),
             error,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -1210,9 +1255,10 @@ async fn render_oauth_providers_page(
 pub async fn tenant_oauth_providers_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    render_oauth_providers_page(&state, tenant_id, None, locale).await
+    render_oauth_providers_page(&state, tenant_id, None, locale, theme).await
 }
 
 /// `POST /admin/tenants/{id}/_oauth_providers` — upsert. Splits the
@@ -1223,6 +1269,7 @@ pub async fn tenant_oauth_providers_page(
 pub async fn tenant_oauth_provider_upsert(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
     Form(form): Form<OauthProviderUpsertForm>,
 ) -> Response {
@@ -1249,7 +1296,7 @@ pub async fn tenant_oauth_provider_upsert(
         &form.client_secret,
         &uris,
     ) {
-        return render_oauth_providers_page(&state, tenant_id, Some(e.to_string()), locale).await;
+        return render_oauth_providers_page(&state, tenant_id, Some(e.to_string()), locale, theme).await;
     }
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
@@ -1273,7 +1320,7 @@ pub async fn tenant_oauth_provider_upsert(
             "/drust/admin/tenants/{tenant_id}/_oauth_providers"
         ))
         .into_response(),
-        Err(msg) => render_oauth_providers_page(&state, tenant_id, Some(msg), locale).await,
+        Err(msg) => render_oauth_providers_page(&state, tenant_id, Some(msg), locale, theme).await,
     }
 }
 
@@ -1330,6 +1377,10 @@ struct TenantWebhooksPage {
     /// cleared on the next response.
     secret_once: Option<WebhookSecretBanner>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 struct TenantWebhookRow {
@@ -1462,6 +1513,7 @@ async fn render_webhooks_page(
     ctx: WebhookPageContext,
     extra_header: Option<(axum::http::HeaderName, axum::http::HeaderValue)>,
     locale: Locale,
+    theme: crate::mgmt::theme::Theme,
 ) -> Response {
     let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
         Ok(t) => t,
@@ -1473,6 +1525,7 @@ async fn render_webhooks_page(
         .iter()
         .filter(|w| w.last_failure_at.is_some())
         .count();
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     let body = TenantWebhooksPage {
         version: env!("CARGO_PKG_VERSION"),
         tenant_id,
@@ -1488,6 +1541,10 @@ async fn render_webhooks_page(
         form_url: ctx.form_url,
         secret_once: ctx.secret_once,
         t: Translator::new(locale),
+        palette_resolved: trc.palette_resolved,
+        mascot_json_static: trc.mascot_json_static,
+        mascot_json_light: trc.mascot_json_light,
+        mascot_json_dark: trc.mascot_json_dark,
     }
     .render()
     .unwrap();
@@ -1504,6 +1561,7 @@ async fn render_webhooks_page(
 pub async fn tenant_webhooks_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -1520,6 +1578,7 @@ pub async fn tenant_webhooks_page(
         },
         clear,
         locale,
+        theme,
     )
     .await
 }
@@ -1533,6 +1592,7 @@ pub async fn tenant_webhooks_page(
 pub async fn tenant_webhook_create_form(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
     Form(form): Form<WebhookCreateForm>,
 ) -> Response {
@@ -1561,6 +1621,7 @@ pub async fn tenant_webhook_create_form(
             },
             None,
             locale,
+            theme,
         )
         .await;
     }
@@ -1577,6 +1638,7 @@ pub async fn tenant_webhook_create_form(
             },
             None,
             locale,
+            theme,
         )
         .await;
     }
@@ -1594,6 +1656,7 @@ pub async fn tenant_webhook_create_form(
             },
             None,
             locale,
+            theme,
         )
         .await;
     }
@@ -1619,6 +1682,7 @@ pub async fn tenant_webhook_create_form(
                 },
                 None,
                 locale,
+                theme,
             )
             .await;
         }
@@ -1677,6 +1741,7 @@ pub async fn tenant_webhook_create_form(
                 },
                 None,
                 locale,
+                theme,
             )
             .await
         }

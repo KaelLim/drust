@@ -23,6 +23,10 @@ struct DocsPage {
     version: &'static str,
     active: &'static str,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 pub struct NavItem {
@@ -30,7 +34,10 @@ pub struct NavItem {
     pub text: String,
 }
 
-pub async fn changelog_page(LocaleHint(locale): LocaleHint) -> Response {
+pub async fn changelog_page(
+    LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+) -> Response {
     let path = "CHANGELOG.md";
     let md = match tokio::fs::read_to_string(path).await {
         Ok(s) => s,
@@ -43,6 +50,7 @@ pub async fn changelog_page(LocaleHint(locale): LocaleHint) -> Response {
         }
     };
     let (body_html, nav) = render_markdown(&md);
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     let page = DocsPage {
         title: "CHANGELOG",
         body_html,
@@ -51,6 +59,10 @@ pub async fn changelog_page(LocaleHint(locale): LocaleHint) -> Response {
         version: env!("CARGO_PKG_VERSION"),
         active: "changelog",
         t: Translator::new(locale),
+        palette_resolved: trc.palette_resolved,
+        mascot_json_static: trc.mascot_json_static,
+        mascot_json_light: trc.mascot_json_light,
+        mascot_json_dark: trc.mascot_json_dark,
     };
     Html(page.render().unwrap()).into_response()
 }

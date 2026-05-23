@@ -272,6 +272,51 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ThemeHint {
     }
 }
 
+/// Bundle of fields every admin Template struct needs to render
+/// _styles.html + _theme_palette.html correctly. Constructed once per
+/// request by the handler, then spread into the Template struct via the
+/// `From<&ThemeRenderCtx>` impls each consumer template needs.
+///
+/// We could shove a `pub theme_ctx: ThemeRenderCtx` field on every struct
+/// instead — but askama 0.12 cannot dot-traverse into a sub-struct from
+/// `{% include %}`d partials cleanly, so keeping the fields flat on the
+/// Template struct is cheaper than fighting the parser.
+pub struct ThemeRenderCtx {
+    pub palette_resolved: ResolvedPalette,
+    pub mascot_json_static: String,
+    pub mascot_json_light: String,
+    pub mascot_json_dark: String,
+}
+
+impl ThemeRenderCtx {
+    pub fn build(theme: Theme) -> Self {
+        let resolved = palette_for(theme);
+        let (s, l, d) = match &resolved {
+            ResolvedPalette::Static(p) => (mascot_to_json(&p.mascot), String::new(), String::new()),
+            ResolvedPalette::System(sys) => (
+                String::new(),
+                mascot_to_json(&sys.light.mascot),
+                mascot_to_json(&sys.dark.mascot),
+            ),
+        };
+        ThemeRenderCtx {
+            palette_resolved: resolved,
+            mascot_json_static: s,
+            mascot_json_light: l,
+            mascot_json_dark: d,
+        }
+    }
+}
+
+fn mascot_to_json(m: &BTreeMap<char, &'static str>) -> String {
+    // Map<char, &str> → JSON object. char keys serialize as 1-char strings.
+    let map: serde_json::Map<String, serde_json::Value> = m
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::Value::String((*v).to_string())))
+        .collect();
+    serde_json::to_string(&map).expect("serialize mascot palette")
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------

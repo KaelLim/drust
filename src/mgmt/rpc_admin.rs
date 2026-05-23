@@ -38,6 +38,10 @@ struct RpcPage {
     next_url: Option<String>,
     per_page_options: Vec<RpcPerPageOption>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 struct RpcPerPageOption {
@@ -64,6 +68,7 @@ pub struct RpcListQs {
 pub async fn rpc_index(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
     axum::extract::Query(qs): axum::extract::Query<RpcListQs>,
 ) -> Response {
@@ -128,6 +133,7 @@ pub async fn rpc_index(
         })
         .collect();
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         RpcPage {
             tenant_id,
@@ -144,6 +150,10 @@ pub async fn rpc_index(
             next_url,
             per_page_options,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -169,6 +179,10 @@ struct RpcForm {
     form_anon_callable: bool,
     error: Option<String>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 async fn lookup_tenant_name(state: &TenantsState, tenant_id: &str) -> Option<String> {
@@ -194,6 +208,7 @@ fn load_collections(state: &TenantsState, tenant_id: &str) -> Vec<Collection> {
 pub async fn rpc_new_form(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
@@ -201,6 +216,7 @@ pub async fn rpc_new_form(
         None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
     };
     let collections = load_collections(&state, &tenant_id);
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         RpcForm {
             tenant_id: tenant_id.clone(),
@@ -217,6 +233,10 @@ pub async fn rpc_new_form(
             form_anon_callable: false,
             error: None,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -229,6 +249,7 @@ pub async fn rpc_new_form(
 pub async fn rpc_edit_form(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
     let conn = match open_read(&state.data_dir, &tenant_id) {
@@ -248,6 +269,7 @@ pub async fn rpc_edit_form(
     let collections = load_collections(&state, &tenant_id);
     let params_json_string =
         serde_json::to_string_pretty(&existing.params).unwrap_or_else(|_| "[]".into());
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         RpcForm {
             tenant_id: tenant_id.clone(),
@@ -264,6 +286,10 @@ pub async fn rpc_edit_form(
             form_anon_callable: existing.anon_callable,
             error: None,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -290,6 +316,7 @@ pub struct RpcFormBody {
 pub async fn rpc_save(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
     axum::Form(form): axum::Form<RpcFormBody>,
 ) -> Response {
@@ -309,7 +336,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale);
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme);
     }
 
     // Validate SQL through the read-only authorizer (uses a reader connection
@@ -330,7 +357,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale);
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme);
     }
 
     // Single writer transaction: lookup existence + create-or-update.
@@ -373,12 +400,13 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale);
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme);
     }
 
     Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_rpc")).into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_form_with_error(
     state: &TenantsState,
     tenant_id: &str,
@@ -387,8 +415,10 @@ fn render_form_with_error(
     editing: bool,
     msg: String,
     locale: Locale,
+    theme: crate::mgmt::theme::Theme,
 ) -> Response {
     let collections = load_collections(state, tenant_id);
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         RpcForm {
             tenant_id: tenant_id.to_string(),
@@ -405,6 +435,10 @@ fn render_form_with_error(
             form_anon_callable: form.anon_callable.is_some(),
             error: Some(msg),
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -441,6 +475,10 @@ struct RpcTestPage {
     /// Set when the user has just clicked Run. None on the bare GET.
     outcome: Option<RpcTestOutcome>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 struct RpcTestOutcome {
@@ -475,6 +513,7 @@ pub struct RpcTestRunForm {
 pub async fn rpc_test_form(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
     let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
@@ -493,6 +532,7 @@ pub async fn rpc_test_form(
     let collections = list_collections(&conn).unwrap_or_default();
     drop(conn);
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         RpcTestPage {
             tenant_id,
@@ -521,6 +561,10 @@ pub async fn rpc_test_form(
                 .collect(),
             outcome: None,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -573,6 +617,7 @@ fn coerce_form_string(ty: crate::rpc::params::ParamType, s: &str) -> serde_json:
 pub async fn rpc_test_run(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path((tenant_id, name)): Path<(String, String)>,
     axum::Form(form): axum::Form<RpcTestRunForm>,
 ) -> Response {
@@ -622,6 +667,7 @@ pub async fn rpc_test_run(
                 0,
                 serde_json::to_string_pretty(&body_map).unwrap_or_default(),
                 locale,
+                theme,
             );
         }
     };
@@ -656,6 +702,7 @@ pub async fn rpc_test_run(
             duration_ms,
             bound_json,
             locale,
+            theme,
         ),
         Err(e) => render_test_outcome(
             tenant_id,
@@ -668,6 +715,7 @@ pub async fn rpc_test_run(
             duration_ms,
             bound_json,
             locale,
+            theme,
         ),
     }
 }
@@ -684,6 +732,7 @@ fn render_test_outcome(
     duration_ms: u128,
     bound_json: String,
     locale: Locale,
+    theme: crate::mgmt::theme::Theme,
 ) -> Response {
     let result = exec.as_ref().ok().map(|qr| RpcTestResult {
         column_names: qr.column_names.clone(),
@@ -721,6 +770,7 @@ fn render_test_outcome(
         })
         .collect();
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         RpcTestPage {
             tenant_id,
@@ -741,6 +791,10 @@ fn render_test_outcome(
                 explain_rows,
             }),
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),

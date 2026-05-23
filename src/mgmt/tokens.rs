@@ -27,6 +27,10 @@ struct ApiKeysPage {
     allow_self_register: bool,
     version: &'static str,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 pub struct TokenSlotInfo {
@@ -191,6 +195,7 @@ pub async fn detail_redirect(Path(tenant_id): Path<String>) -> Response {
 pub async fn api_keys_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let conn = state.session.meta.lock().await;
@@ -217,6 +222,7 @@ pub async fn api_keys_page(
         .and_then(|c| list_collections(&c).ok())
         .unwrap_or_default();
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         ApiKeysPage {
             tenant_id: tenant_id.clone(),
@@ -229,6 +235,10 @@ pub async fn api_keys_page(
             allow_self_register: self_register_flag != 0,
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),

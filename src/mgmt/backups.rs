@@ -36,6 +36,10 @@ struct BackupsPage {
     backup_dir: String,
     total_size_human: String,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 pub struct TenantInBackup {
@@ -61,6 +65,10 @@ struct BackupInspectPage {
     flash: Option<RestoreFlash>,
     error: Option<String>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 pub struct RestoreFlash {
@@ -121,6 +129,7 @@ fn is_safe_backup_filename(name: &str) -> bool {
 pub async fn list_page(
     State(state): State<BackupsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
 ) -> Response {
     let dir = state.data_dir.join("backups");
     let mut rows: Vec<BackupRow> = Vec::new();
@@ -161,6 +170,7 @@ pub async fn list_page(
         }
     }
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         BackupsPage {
             version: env!("CARGO_PKG_VERSION"),
@@ -168,6 +178,10 @@ pub async fn list_page(
             backup_dir: dir.display().to_string(),
             total_size_human: humanize_bytes(total),
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -238,6 +252,7 @@ fn parse_tenant_db_path(p: &str) -> Option<String> {
 pub async fn inspect(
     State(state): State<BackupsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(filename): Path<String>,
     Query(qs): Query<InspectQs>,
 ) -> Response {
@@ -265,10 +280,10 @@ pub async fn inspect(
     let (meta_tmp, sizes) = match extract_result {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, e.to_string(), locale);
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, e.to_string(), locale, theme);
         }
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("join error: {e}"), locale);
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("join error: {e}"), locale, theme);
         }
     };
 
@@ -279,7 +294,7 @@ pub async fn inspect(
     let conn = match conn_res {
         Ok(c) => c,
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("open meta.sqlite: {e}"), locale);
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("open meta.sqlite: {e}"), locale, theme);
         }
     };
 
@@ -314,7 +329,7 @@ pub async fn inspect(
             })
             .unwrap_or_default(),
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("query: {e}"), locale);
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("query: {e}"), locale, theme);
         }
     };
 
@@ -334,6 +349,7 @@ pub async fn inspect(
         _ => None,
     };
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         BackupInspectPage {
             version: env!("CARGO_PKG_VERSION"),
@@ -344,6 +360,10 @@ pub async fn inspect(
             flash,
             error: None,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -357,7 +377,9 @@ fn render_inspect_error(
     snapshot_size_human: String,
     msg: String,
     locale: Locale,
+    theme: crate::mgmt::theme::Theme,
 ) -> Response {
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         BackupInspectPage {
             version: env!("CARGO_PKG_VERSION"),
@@ -368,6 +390,10 @@ fn render_inspect_error(
             flash: None,
             error: Some(msg),
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
