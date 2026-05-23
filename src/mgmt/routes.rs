@@ -1,7 +1,7 @@
 use crate::auth::admin::{dummy_hash, verify_password};
 use crate::auth::middleware::{build_session_cookie, clear_session_cookie};
 use crate::auth::session::{create_session, revoke_session};
-use crate::mgmt::i18n::{Locale, LocaleHint, Translator};
+use crate::mgmt::i18n::{Locale, LocaleHint, LocaleOption, Translator};
 use askama::Template;
 use axum::Router;
 use axum::extract::{Form, Query, State};
@@ -105,6 +105,7 @@ async fn design_showcase(LocaleHint(locale): LocaleHint) -> Response {
 struct SettingsPage {
     version: &'static str,
     t: Translator,
+    available_locales: Vec<LocaleOption>,
 }
 
 async fn settings_page(LocaleHint(locale): LocaleHint) -> Response {
@@ -112,6 +113,7 @@ async fn settings_page(LocaleHint(locale): LocaleHint) -> Response {
         SettingsPage {
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
+            available_locales: Locale::options(),
         }
         .render()
         .unwrap_or_default(),
@@ -136,9 +138,9 @@ async fn settings_locale_save(
     >,
     Form(form): Form<LocalePrefForm>,
 ) -> Response {
-    let loc = match form.locale.as_str() {
-        "en" | "zh-TW" => form.locale.clone(),
-        _ => {
+    let loc = match Locale::ALL.iter().find(|l| l.code() == form.locale) {
+        Some(l) => l.code().to_string(),
+        None => {
             return (StatusCode::BAD_REQUEST, "unsupported locale").into_response();
         }
     };
