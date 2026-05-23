@@ -91,6 +91,10 @@ struct FilesPage {
     counts: Counts,
     disk: DiskView,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 struct PerPageOption {
@@ -133,6 +137,10 @@ struct ReconcilePage {
     pending_revokes: Vec<PendingRevokeRow>,
     orphan_buckets: Vec<OrphanBucketRow>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 /// Build a `DiskView` for the Garage data volume. If `/var/lib/garage` is
@@ -161,6 +169,7 @@ pub fn build_disk_view() -> DiskView {
 pub async fn list_page(
     State(state): State<PublicFilesState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Query(qs): Query<ListQs>,
 ) -> Response {
     let per_page = qs
@@ -213,6 +222,7 @@ pub async fn list_page(
     // Build disk view. If /var/lib/garage is unavailable, show neutral placeholders.
     let disk = build_disk_view();
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     let page = FilesPage {
         version: env!("CARGO_PKG_VERSION"),
         storage_available: state.garage.is_some(),
@@ -229,6 +239,10 @@ pub async fn list_page(
         counts,
         disk,
         t: Translator::new(locale),
+        palette_resolved: trc.palette_resolved,
+        mascot_json_static: trc.mascot_json_static,
+        mascot_json_light: trc.mascot_json_light,
+        mascot_json_dark: trc.mascot_json_dark,
     };
     Html(page.render().unwrap()).into_response()
 }
@@ -566,6 +580,7 @@ pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path
 pub async fn reconcile_page(
     State(state): State<PublicFilesState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
 ) -> Response {
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
@@ -656,6 +671,7 @@ pub async fn reconcile_page(
         }
     };
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         ReconcilePage {
             version: env!("CARGO_PKG_VERSION"),
@@ -664,6 +680,10 @@ pub async fn reconcile_page(
             pending_revokes,
             orphan_buckets,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),

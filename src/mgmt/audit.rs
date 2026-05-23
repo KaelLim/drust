@@ -601,6 +601,10 @@ struct AuditHostPage {
     entries_json: String,
     top_slow_ops_view: Vec<AuditEntryView>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 fn base_link(scope: &AuditScope) -> String {
@@ -794,11 +798,13 @@ pub fn build_body_ctx(
 pub async fn audit_host_page(
     State(state): State<crate::mgmt::tenants::TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Query(q): Query<AuditQuery>,
 ) -> Response {
     let meta = state.session.meta.lock().await;
     let body = build_body_ctx(&state.log_dir, &meta, AuditScope::Host, &q);
     drop(meta);
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     let page = AuditHostPage {
         version: env!("CARGO_PKG_VERSION"),
         is_host_scope: body.is_host_scope,
@@ -825,6 +831,10 @@ pub async fn audit_host_page(
         entries_json: body.entries_json,
         top_slow_ops_view: body.top_slow_ops_view,
         t: Translator::new(locale),
+        palette_resolved: trc.palette_resolved,
+        mascot_json_static: trc.mascot_json_static,
+        mascot_json_light: trc.mascot_json_light,
+        mascot_json_dark: trc.mascot_json_dark,
     };
     Html(page.render().unwrap()).into_response()
 }
@@ -861,11 +871,16 @@ struct AuditTenantPage {
     entries_json: String,
     top_slow_ops_view: Vec<AuditEntryView>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 pub async fn audit_tenant_page(
     State(state): State<crate::mgmt::tenants::TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::extract::Path(tenant_id): axum::extract::Path<String>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
@@ -897,6 +912,7 @@ pub async fn audit_tenant_page(
         &q,
     );
     drop(conn);
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     let tpl = AuditTenantPage {
         version: env!("CARGO_PKG_VERSION"),
         tenant_id,
@@ -927,6 +943,10 @@ pub async fn audit_tenant_page(
         entries_json: body.entries_json,
         top_slow_ops_view: body.top_slow_ops_view,
         t: Translator::new(locale),
+        palette_resolved: trc.palette_resolved,
+        mascot_json_static: trc.mascot_json_static,
+        mascot_json_light: trc.mascot_json_light,
+        mascot_json_dark: trc.mascot_json_dark,
     };
     Html(tpl.render().unwrap()).into_response()
 }

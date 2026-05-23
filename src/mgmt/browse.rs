@@ -21,6 +21,10 @@ struct CollectionsPage {
     tenant_name: String,
     version: &'static str,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 #[derive(Template)]
@@ -76,6 +80,10 @@ struct RowsPage {
     desc_error: Option<String>,
     version: &'static str,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 /// Field row enriched with badge flags, consumed by the schema tab.
@@ -148,6 +156,7 @@ fn tenant_name_lookup(conn: &rusqlite::Connection, tenant_id: &str) -> Option<St
 pub async fn collections_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let meta = state.session.meta.lock().await;
@@ -174,12 +183,17 @@ pub async fn collections_page(
         return Redirect::to(&to).into_response();
     }
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         CollectionsPage {
             tenant_id,
             tenant_name,
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -254,6 +268,7 @@ fn mask_sensitive_columns(
 pub async fn collection_rows_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Path((tenant_id, coll_name)): Path<(String, String)>,
     Query(qs): Query<BrowseQs>,
 ) -> Response {
@@ -492,6 +507,7 @@ pub async fn collection_rows_page(
         })
         .collect();
 
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         RowsPage {
             tenant_id,
@@ -526,6 +542,10 @@ pub async fn collection_rows_page(
             desc_error: qs.desc_error.clone(),
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),

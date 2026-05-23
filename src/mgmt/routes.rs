@@ -79,6 +79,10 @@ struct LoginPage {
     oauth_providers: Vec<String>,
     oauth_error: Option<String>,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 #[derive(Template)]
@@ -86,13 +90,25 @@ struct LoginPage {
 struct DesignShowcase {
     version: &'static str,
     t: Translator,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
-async fn design_showcase(LocaleHint(locale): LocaleHint) -> Response {
+async fn design_showcase(
+    LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+) -> Response {
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         DesignShowcase {
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap_or_default(),
@@ -106,14 +122,26 @@ struct SettingsPage {
     version: &'static str,
     t: Translator,
     available_locales: Vec<LocaleOption>,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
-async fn settings_page(LocaleHint(locale): LocaleHint) -> Response {
+async fn settings_page(
+    LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+) -> Response {
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         SettingsPage {
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
             available_locales: Locale::options(),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap_or_default(),
@@ -176,8 +204,10 @@ struct LoginPageQuery {
 async fn login_page(
     State(state): State<MgmtState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     Query(q): Query<LoginPageQuery>,
 ) -> Html<String> {
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         LoginPage {
             error: None,
@@ -185,6 +215,10 @@ async fn login_page(
             oauth_providers: state.oauth_registry.enabled_names().into_iter().map(String::from).collect(),
             oauth_error: q.oauth_error,
             t: Translator::new(locale),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
         }
         .render()
         .unwrap(),
@@ -194,6 +228,7 @@ async fn login_page(
 async fn login_submit(
     State(state): State<MgmtState>,
     LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     headers: axum::http::HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
@@ -235,7 +270,7 @@ async fn login_submit(
             entry.auth_method = Some("password".to_string());
             entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
             crate::safety::audit::write_entry(&state.log_dir, &entry).await;
-            return unauthorized("Invalid credentials", &state, locale);
+            return unauthorized("Invalid credentials", &state, locale, theme);
         }
     };
     match verify_password(&phc, &form.password) {
@@ -246,7 +281,7 @@ async fn login_submit(
             entry.auth_method = Some("password".to_string());
             entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
             crate::safety::audit::write_entry(&state.log_dir, &entry).await;
-            return unauthorized("Invalid credentials", &state, locale);
+            return unauthorized("Invalid credentials", &state, locale, theme);
         }
     }
     let ttl_secs = (state.session_ttl_days * 86_400) as i64;
@@ -299,13 +334,23 @@ async fn root_redirect() -> Redirect {
     Redirect::to("/drust/admin/tenants")
 }
 
-fn unauthorized(msg: &str, state: &MgmtState, locale: Locale) -> Response {
+fn unauthorized(
+    msg: &str,
+    state: &MgmtState,
+    locale: Locale,
+    theme: crate::mgmt::theme::Theme,
+) -> Response {
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     let body = LoginPage {
         error: Some(msg.to_string()),
         version: env!("CARGO_PKG_VERSION"),
         oauth_providers: state.oauth_registry.enabled_names().into_iter().map(String::from).collect(),
         oauth_error: None,
         t: Translator::new(locale),
+        palette_resolved: trc.palette_resolved,
+        mascot_json_static: trc.mascot_json_static,
+        mascot_json_light: trc.mascot_json_light,
+        mascot_json_dark: trc.mascot_json_dark,
     }
     .render()
     .unwrap();
