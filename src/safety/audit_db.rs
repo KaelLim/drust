@@ -6,6 +6,7 @@
 //! the JSONL writer is removed in v1.26 once SQLite has proven stable
 //! in production.
 
+use anyhow::Context;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -47,22 +48,27 @@ PRAGMA busy_timeout = 5000;
 
 /// Open the audit DB in read-write mode and apply schema + write PRAGMAs.
 /// Idempotent: CREATE TABLE IF NOT EXISTS + index CREATE IF NOT EXISTS.
-pub fn open_audit_db_write(path: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(path)?;
-    conn.execute_batch(PRAGMAS_WRITE)?;
-    conn.execute_batch(SCHEMA_SQL)?;
+pub fn open_audit_db_write(path: &Path) -> anyhow::Result<Connection> {
+    let conn = Connection::open(path)
+        .with_context(|| format!("opening audit DB at {}", path.display()))?;
+    conn.execute_batch(PRAGMAS_WRITE)
+        .with_context(|| format!("opening audit DB at {}", path.display()))?;
+    conn.execute_batch(SCHEMA_SQL)
+        .with_context(|| format!("opening audit DB at {}", path.display()))?;
     Ok(conn)
 }
 
 /// Open the audit DB in read-only mode. Caller is responsible for
 /// ensuring the file exists (open_audit_db_write was called at least
 /// once first).
-pub fn open_audit_db_read(path: &Path) -> rusqlite::Result<Connection> {
+pub fn open_audit_db_read(path: &Path) -> anyhow::Result<Connection> {
     let conn = Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
-    conn.execute_batch(PRAGMAS_READ)?;
+    )
+    .with_context(|| format!("opening audit DB read-only at {}", path.display()))?;
+    conn.execute_batch(PRAGMAS_READ)
+        .with_context(|| format!("opening audit DB read-only at {}", path.display()))?;
     Ok(conn)
 }
 
