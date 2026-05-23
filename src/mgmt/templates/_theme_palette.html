@@ -1,0 +1,19 @@
+{#
+  _theme_palette.html — inject the mascot palette for the current theme.
+  v1.23+. Must be included BEFORE _mascot.html on every page that uses
+  the mascot; the mascot script reads window.DRUST_MASCOT_PAL on first
+  execution.
+
+  Branch shape mirrors _styles.html: System emits a matchMedia ternary,
+  every explicit theme emits a single object literal.
+#}
+<script>
+{% match palette_resolved %}
+  {% when crate::mgmt::theme::ResolvedPalette::Static with (p) %}
+window.DRUST_MASCOT_PAL = {{ mascot_json_static|safe }};
+  {% when crate::mgmt::theme::ResolvedPalette::System with (sys) %}
+window.DRUST_MASCOT_PAL = window.matchMedia('(prefers-color-scheme: dark)').matches
+  ? {{ mascot_json_dark|safe }}
+  : {{ mascot_json_light|safe }};
+{% endmatch %}
+</script>
