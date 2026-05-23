@@ -39,6 +39,10 @@ pub struct TenantsState {
     /// `$DRUST_LOG_DIR` at boot; consumed by the admin audit UI handlers
     /// mounted under tenants_router.
     pub log_dir: PathBuf,
+    /// v1.24 — read-only connection to `meta_logs.sqlite`. Consumed by
+    /// the admin audit UI (`audit_host_page` / `audit_tenant_page`) which
+    /// now queries SQL directly instead of scanning JSONL.
+    pub audit_meta_read: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
     /// Row count threshold above which index creation is considered "large
     /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
     /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
@@ -68,6 +72,10 @@ impl TenantsState {
     ) -> Self {
         use crate::auth::middleware::AdminSessionState;
         let log_dir = data_dir.join("logs");
+        let audit_meta_read = std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::safety::audit_db::open_audit_db_memory()
+                .expect("in-memory audit DB for tests"),
+        ));
         Self {
             session: AdminSessionState { meta: meta.clone() },
             data_dir,
@@ -80,6 +88,7 @@ impl TenantsState {
             mcp,
             bus,
             log_dir,
+            audit_meta_read,
             index_large_table_rows: 1_000_000,
         }
     }

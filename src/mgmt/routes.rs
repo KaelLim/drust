@@ -560,6 +560,7 @@ impl MgmtState {
             mcp: self.mcp.clone(),
             bus: self.bus.clone(),
             log_dir: self.log_dir.clone(),
+            audit_meta_read: self.audit_meta_read.clone(),
             index_large_table_rows: self.index_large_table_rows,
         };
         let public_files_state = PublicFilesState {
