@@ -24,6 +24,7 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
     )));
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
+        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
@@ -148,6 +149,7 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
 
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
+        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),

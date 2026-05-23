@@ -201,6 +201,19 @@ use std::sync::OnceLock;
 static WRITER: OnceLock<AuditWriter> = OnceLock::new();
 static DUAL_WRITE: OnceLock<bool> = OnceLock::new();
 
+/// v1.24 — test-only helper. Opens an in-memory audit DB with the same
+/// schema as `open_audit_db_write` so tests that construct `MgmtState`
+/// can satisfy the `audit_meta_read` field without touching the disk.
+/// Gated to test + debug builds; absent from the release binary.
+#[cfg(any(test, debug_assertions))]
+pub fn open_audit_db_memory() -> anyhow::Result<Connection> {
+    let conn = Connection::open_in_memory()
+        .with_context(|| "opening in-memory audit DB")?;
+    conn.execute_batch(SCHEMA_SQL)
+        .with_context(|| "applying schema to in-memory audit DB")?;
+    Ok(conn)
+}
+
 /// One-time initialisation. Called from `main.rs` after the audit DB is
 /// open and the writer task is spawned. Idempotent: second call is a
 /// no-op (returns Err from .set, ignored).

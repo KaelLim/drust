@@ -55,6 +55,27 @@ async fn main() -> anyhow::Result<()> {
     }
     let meta = Arc::new(Mutex::new(meta));
 
+    // v1.24 — audit log SQLite. Parallel to meta.sqlite, separate file,
+    // separate connection. Spawn the background writer task and init the
+    // process-global handle so safety::audit::write_entry can dispatch.
+    let audit_db_path = cfg.data_dir.join("meta_logs.sqlite");
+    let audit_write_conn = drust::safety::audit_db::open_audit_db_write(&audit_db_path)?;
+    let audit_writer = drust::safety::audit_db::AuditWriter::new(audit_write_conn);
+    let audit_dual_write = std::env::var("AUDIT_DUAL_WRITE")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true); // v1.24 default
+    drust::safety::audit_db::init_globals(audit_writer, audit_dual_write);
+    tracing::info!(
+        path = %audit_db_path.display(),
+        dual_write = audit_dual_write,
+        "audit SQLite ready"
+    );
+
+    // Read-only connection for the admin UI; threaded into MgmtState below.
+    let audit_meta_read = std::sync::Arc::new(tokio::sync::Mutex::new(
+        drust::safety::audit_db::open_audit_db_read(&audit_db_path)?,
+    ));
+
     // v1.15.0 stats sampler — denormalizes per-tenant db_bytes + files_bytes
     // into meta.sqlite so /admin/tenants doesn't open per-tenant SQLite
     // on every request. Background task, default 5 min interval.
@@ -170,6 +191,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mgmt_state = MgmtState {
         meta: meta.clone(),
+        audit_meta_read: audit_meta_read.clone(),
         session_ttl_days: cfg.session_ttl_days,
         garage: garage.clone(),
         public_base_url: cfg.public_base_url.clone(),

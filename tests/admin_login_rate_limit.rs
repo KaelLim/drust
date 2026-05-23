@@ -19,6 +19,7 @@ async fn build_login_router(rl_capacity: u32) -> Router {
     let meta = Arc::new(Mutex::new(meta_conn));
     let mgmt_state = MgmtState {
         meta: meta.clone(),
+        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
         session_ttl_days: 1,
         garage: None,
         public_base_url: "http://localhost".into(),
