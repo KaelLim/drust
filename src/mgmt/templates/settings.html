@@ -30,5 +30,20 @@
         </div>
       </div>
 
+      <div class="card">
+        <div class="card-head"><span>{{ t.s("settings.theme.card_title") }}</span></div>
+        <div class="card-body">
+          <p class="card-sub" style="margin:0 0 16px;">{{ t.s("settings.theme.card_sub") }}</p>
+          <form method="post" action="/drust/admin/settings/theme" style="display:flex; gap:10px; align-items:center;">
+            <select name="theme" class="input" style="max-width:280px;">
+              {% for opt in available_themes %}
+              <option value="{{ opt.code }}" {% if theme.code() == opt.code %}selected{% endif %}>{{ opt.label }} ({{ opt.code }})</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn primary">{{ t.s("common.button.save") }}</button>
+          </form>
+        </div>
+      </div>
+
     </div>
 {% endblock %}
