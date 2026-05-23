@@ -1,0 +1,40 @@
+# Soft Light — new in v1.23. Initial proposal; tune in-place after first build.
+# Spec: docs/superpowers/specs/2026-05-23-drust-theme-design.md §Initial palette values.
+
+[meta]
+display_name = "Soft Light"
+
+[ui]
+bg            = "#faf4e8"
+bg-deep       = "#f3ebda"
+surface       = "#ffffff"
+surface-2     = "#fdf8ee"
+surface-3     = "#f7eede"
+border        = "#e5dcc7"
+border-mid    = "#d4c8ad"
+border-strong = "#b4a489"
+fg            = "#1c1816"
+fg-2          = "#4a4138"
+muted         = "#7d6f5e"
+muted-2       = "#a89b86"
+
+[accent]
+accent        = "#d97757"
+accent-2      = "#c66544"
+accent-soft   = "rgba(217,119,87,0.10)"
+accent-border = "rgba(217,119,87,0.36)"
+rust          = "#d97757"
+warn          = "#c4922e"
+danger        = "#b9433a"
+info          = "#4f6cb8"
+mint          = "#4d9870"
+lilac         = "#8c5fc1"
+
+[mascot]
+B = "#2c2723"
+E = "#5fa861"
+P = "#d97a9f"
+Z = "#4ab3b8"
+R = "#b9433a"
+S = "#e8c93b"
+H = "#d97a9f"

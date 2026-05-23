@@ -1,0 +1,12 @@
+# System (auto-switch via prefers-color-scheme).
+# This theme has NO [ui] / [accent] / [mascot] of its own — at render
+# time, palette_for(Theme::System) returns the two partners listed below
+# and downstream emits both `:root` blocks with a media-query separator.
+# Build-time validator rejects [ui] / [accent] / [mascot] here.
+
+[meta]
+display_name = "System (auto)"
+
+[system]
+light = "soft-light"
+dark  = "cozy-dark"
