@@ -37,7 +37,7 @@
   <div class="stat">
     <div class="label">{{ t.s("audit_body.stat.latency_p50") }}</div>
     <div class="val">{{ ov.p50_ms }} <span class="unit">{{ t.s("common.duration.ms") }}</span></div>
-    <div class="meta">{{ t.fmt1("audit_body.stat.p99_meta", "p99", ov.p99_ms) }}{% if ov.is_sampled %} · <span title="{{ t.s("audit_body.stat.sampled_note") }}">{{ t.s("audit_body.stat.sampled_label") }}</span>{% endif %}</div>
+    <div class="meta">{{ t.fmt1("audit_body.stat.p99_meta", "p99", ov.p99_ms) }}</div>
   </div>
   <div class="stat">
     <div class="label">{{ t.s("audit_body.stat.avg_rps") }}</div>
@@ -139,7 +139,7 @@
     <a class="{% if status_filter == "error" %}active{% endif %}" href="?tab=browse&window={{ window_str }}&status=error{% if let Some(tn) = tenant_filter %}&tenant={{ tn }}{% endif %}{% if let Some(o) = op_filter %}&op={{ o }}{% endif %}">{{ t.s("audit_body.filter.error") }}</a>
   </div>
   <button class="btn sm primary" type="submit">{{ t.s("common.button.apply") }}</button>
-  <span class="right mono">{{ entries.len() }} {{ t.s("audit_body.count.shown_suffix") }}{% if let Some(n) = truncated_from %} {{ t.fmt1("audit_body.count.truncated_from", "n", n) }}{% endif %}</span>
+  <span class="right mono">{{ entries.len() }} {{ t.s("audit_body.count.shown_suffix") }}</span>
 </form>
 
 <div class="card">
@@ -228,7 +228,7 @@
     {% endif %}
   </div>
   <div class="card-foot">
-    <span class="mono">{{ entries.len() }} {{ t.s("audit_body.foot.entries") }}{% if let Some(n) = truncated_from %} {{ t.fmt1("audit_body.count.truncated_from", "n", n) }}{% endif %}</span>
+    <span class="mono">{{ entries.len() }} {{ t.s("audit_body.foot.entries") }}</span>
     <span class="right">
       {% if let Some(href) = next_page_link %}
       <a class="btn sm ghost" href="{{ href }}">{{ t.s("audit_body.pagination.next_page") }}</a>
