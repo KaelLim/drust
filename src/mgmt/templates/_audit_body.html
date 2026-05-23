@@ -37,7 +37,7 @@
   <div class="stat">
     <div class="label">{{ t.s("audit_body.stat.latency_p50") }}</div>
     <div class="val">{{ ov.p50_ms }} <span class="unit">{{ t.s("common.duration.ms") }}</span></div>
-    <div class="meta">{{ t.fmt1("audit_body.stat.p99_meta", "p99", ov.p99_ms) }}</div>
+    <div class="meta">{{ t.fmt1("audit_body.stat.p99_meta", "p99", ov.p99_ms) }}{% if ov.is_sampled %} · <span title="{{ t.s("audit_body.stat.sampled_note") }}">{{ t.s("audit_body.stat.sampled_label") }}</span>{% endif %}</div>
   </div>
   <div class="stat">
     <div class="label">{{ t.s("audit_body.stat.avg_rps") }}</div>
