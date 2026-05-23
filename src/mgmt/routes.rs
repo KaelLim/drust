@@ -388,12 +388,19 @@ pub fn build_mgmt_router(state: MgmtState) -> Router {
     // `main.rs`. Production main also calls this directly; the second call
     // is a cheap no-op.
     crate::mgmt::i18n::init_bundles();
+    let theme_state = crate::mgmt::theme_layer::ThemeLayerState {
+        meta: state.meta.clone(),
+    };
     Router::new()
         .route("/", get(root_redirect))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .layer(axum::middleware::from_fn(
             crate::mgmt::locale_layer::locale_layer,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            theme_state,
+            crate::mgmt::theme_layer::theme_layer,
         ))
         .with_state(state)
 }
@@ -717,6 +724,9 @@ impl MgmtState {
                 admin_session_layer,
             ));
 
+        let theme_state = crate::mgmt::theme_layer::ThemeLayerState {
+            meta: self.meta.clone(),
+        };
         public
             .merge(legacy_redirects)
             .merge(signed_router)
@@ -726,6 +736,10 @@ impl MgmtState {
             // a locale and let users switch language before signing in.
             .layer(axum::middleware::from_fn(
                 crate::mgmt::locale_layer::locale_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                theme_state,
+                crate::mgmt::theme_layer::theme_layer,
             ))
     }
 }

@@ -828,6 +828,10 @@ subtitle = "此管理員帳號的個人偏好。儲存為此裝置上的長期 c
 card_title = "語言"
 card_sub = "切換管理介面的顯示語言，下次載入頁面時生效。遺漏的翻譯會自動 fallback 到英文。"
 
+[settings.theme]
+card_title = "主題"
+card_sub = "選擇 admin UI 的外觀。"
+
 [tenant_api_keys.alert]
 service_required_body = "請於上方重新產生或建立 service 金鑰，以啟用一鍵 MCP 指令。"
 service_required_title = "需要 Service 金鑰"

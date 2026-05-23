@@ -804,6 +804,10 @@ subtitle = "Personal preferences for this admin account. Saved to a long-lived c
 card_title = "Language"
 card_sub = "Switch the admin UI language. Takes effect on the next page load. Missing translations fall back to English."
 
+[settings.theme]
+card_title = "Theme"
+card_sub = "Choose how the admin UI looks."
+
 [tenant_api_keys.alert]
 service_required_body = "Reroll or generate the service key above to enable the one-click MCP command."
 service_required_title = "Service key required"
