@@ -72,6 +72,50 @@ pub fn open_audit_db_read(path: &Path) -> anyhow::Result<Connection> {
     Ok(conn)
 }
 
+/// v1.24 — extracted-column shape returned by `hoist_indexed_fields`.
+/// The writer task uses these as direct column values during INSERT;
+/// `remaining_json` (the post-hoist `extra` map serialised) goes into
+/// the `extra` column as a JSON blob.
+pub struct HoistResult {
+    pub caller_ip: Option<String>,
+    pub user_agent: Option<String>,
+    /// Post-hoist map serialised. `None` when the map is empty after
+    /// removing caller_ip + user_agent.
+    pub remaining_json: Option<String>,
+}
+
+/// Remove `caller_ip` and `user_agent` (if present as strings) from the
+/// passed-in `extra` map and return them as separate fields. The
+/// remaining map serialises as JSON for the `extra` column. Non-string
+/// values for those keys are left in the map (will go into `extra`).
+pub fn hoist_indexed_fields(
+    mut extra: serde_json::Map<String, serde_json::Value>,
+) -> HoistResult {
+    let caller_ip = take_string_key(&mut extra, "caller_ip");
+    let user_agent = take_string_key(&mut extra, "user_agent");
+    let remaining_json = if extra.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&serde_json::Value::Object(extra)).ok()
+    };
+    HoistResult { caller_ip, user_agent, remaining_json }
+}
+
+fn take_string_key(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<String> {
+    // Peek the value: only remove if it's a String. Leave non-String
+    // values in the map so they end up in the `extra` blob and the
+    // caller can debug.
+    if let Some(serde_json::Value::String(_)) = map.get(key) {
+        if let Some(serde_json::Value::String(s)) = map.remove(key) {
+            return Some(s);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +177,50 @@ mod tests {
             [],
         );
         assert!(res.is_err(), "read-only conn must reject writes");
+    }
+
+    #[test]
+    fn hoist_extracts_caller_ip_and_user_agent_strings() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("caller_ip".into(), serde_json::json!("203.0.113.5"));
+        extra.insert("user_agent".into(), serde_json::json!("curl/8.0"));
+        extra.insert("auth_kind".into(), serde_json::json!("admin"));
+        let result = hoist_indexed_fields(extra);
+        assert_eq!(result.caller_ip.as_deref(), Some("203.0.113.5"));
+        assert_eq!(result.user_agent.as_deref(), Some("curl/8.0"));
+        // remaining holds only auth_kind
+        let remaining_json = result.remaining_json.expect("remaining");
+        assert!(remaining_json.contains("\"auth_kind\":\"admin\""));
+        assert!(!remaining_json.contains("caller_ip"));
+        assert!(!remaining_json.contains("user_agent"));
+    }
+
+    #[test]
+    fn hoist_empty_extra_returns_all_none() {
+        let result = hoist_indexed_fields(serde_json::Map::new());
+        assert!(result.caller_ip.is_none());
+        assert!(result.user_agent.is_none());
+        assert!(result.remaining_json.is_none());
+    }
+
+    #[test]
+    fn hoist_leaves_non_string_caller_ip_in_remaining() {
+        let mut extra = serde_json::Map::new();
+        // Wrong type — `caller_ip` is a number for some reason.
+        extra.insert("caller_ip".into(), serde_json::json!(12345));
+        let result = hoist_indexed_fields(extra);
+        assert!(result.caller_ip.is_none(), "non-string ignored");
+        // The number stays in remaining so the bug is visible in extra.
+        let remaining_json = result.remaining_json.expect("remaining");
+        assert!(remaining_json.contains("\"caller_ip\":12345"));
+    }
+
+    #[test]
+    fn hoist_empty_after_extraction_returns_none_for_remaining() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("caller_ip".into(), serde_json::json!("1.2.3.4"));
+        let result = hoist_indexed_fields(extra);
+        assert_eq!(result.caller_ip.as_deref(), Some("1.2.3.4"));
+        assert!(result.remaining_json.is_none(), "empty map → None, not 'null'");
     }
 }
