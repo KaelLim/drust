@@ -317,6 +317,49 @@ fn mascot_to_json(m: &BTreeMap<char, &'static str>) -> String {
     serde_json::to_string(&map).expect("serialize mascot palette")
 }
 
+/// Serialize one Palette into a JSON object with `ui`/`accent`/`mascot`
+/// sub-tables, used by the v1.23 settings page's live theme-preview JS.
+fn palette_to_json_value(p: &Palette) -> serde_json::Value {
+    use serde_json::Value;
+    fn str_map(m: &BTreeMap<&'static str, &'static str>) -> serde_json::Map<String, Value> {
+        m.iter()
+            .map(|(k, v)| ((*k).to_string(), Value::String((*v).to_string())))
+            .collect()
+    }
+    fn char_map(m: &BTreeMap<char, &'static str>) -> serde_json::Map<String, Value> {
+        m.iter()
+            .map(|(k, v)| (k.to_string(), Value::String((*v).to_string())))
+            .collect()
+    }
+    serde_json::json!({
+        "ui":     str_map(&p.ui),
+        "accent": str_map(&p.accent),
+        "mascot": char_map(&p.mascot),
+    })
+}
+
+/// Build a JSON string containing every theme's palette for the v1.23
+/// settings page client-side live-preview. Shape:
+///   { "cozy-dark": {ui,accent,mascot}, "soft-light": {...},
+///     "system":   { "light": {...}, "dark": {...} } }
+/// The settings JS reads this on load + applies inline CSS overrides on
+/// theme-select change, restores on Cancel.
+pub fn build_all_themes_json() -> String {
+    use serde_json::Value;
+    let mut top = serde_json::Map::new();
+    for t in Theme::ALL {
+        let entry = match palette_for(*t) {
+            ResolvedPalette::Static(p) => palette_to_json_value(p),
+            ResolvedPalette::System(sys) => serde_json::json!({
+                "light": palette_to_json_value(sys.light),
+                "dark":  palette_to_json_value(sys.dark),
+            }),
+        };
+        top.insert(t.code().to_string(), entry);
+    }
+    serde_json::to_string(&Value::Object(top)).expect("serialize all themes")
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------

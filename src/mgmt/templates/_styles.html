@@ -268,7 +268,7 @@
   .view-head > .grow{flex:1;min-width:0}
   .eyebrow{font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.5px;color:var(--accent);text-transform:uppercase}
   .view-title{font-family:var(--font-display);font-size:34px;font-weight:500;letter-spacing:-0.6px;line-height:1.08;margin:6px 0 0}
-  .view-sub{color:var(--fg-2);font-size:14px;margin-top:6px;max-width:60ch}
+  .view-sub{color:var(--fg-2);font-size:14px;margin-top:6px}
   .view-sub code{font-family:var(--font-mono);font-size:12px;color:var(--fg-2);background:var(--bg-deep);padding:1px 6px;border-radius:6px;border:1px solid var(--border)}
 
   .row{display:flex;align-items:center;gap:10px}
@@ -336,6 +336,39 @@
   .card-foot{padding:10px 18px;border-top:1px solid var(--border-mid);display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
   .card-head-actions{margin-left:auto;display:inline-flex;gap:10px;align-items:center;font-family:var(--font-mono);font-size:12px;color:var(--muted)}
   .count{font-family:var(--font-mono);font-size:11px;color:var(--muted);letter-spacing:0.3px}
+
+  /* v1.23 — settings page Preferences card: iconified rows + batched Save/Cancel.
+     Each row is a 3-column grid (label | control | dirty status); the action bar
+     sits in its own footer-style band at the bottom of the same card. */
+  .settings-rows{display:flex;flex-direction:column}
+  .settings-row{
+    display:grid;
+    grid-template-columns:minmax(140px,auto) 1fr auto;
+    gap:14px;
+    align-items:center;
+    padding:14px 18px;
+    border-top:1px solid var(--border);
+  }
+  .settings-row:first-child{border-top:0}
+  .settings-row-label{
+    display:inline-flex;align-items:center;gap:10px;
+    font-weight:500;color:var(--fg);font-size:13.5px;
+  }
+  .settings-row-label svg{width:16px;height:16px;color:var(--muted);flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.8}
+  .settings-row .input{max-width:320px;width:100%}
+  .settings-row-status{
+    font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.4px;
+    color:var(--accent);text-transform:uppercase;
+    visibility:hidden;
+  }
+  .settings-row-status.is-dirty{visibility:visible}
+  .settings-actions{
+    display:flex;justify-content:flex-end;gap:10px;
+    padding:12px 18px;
+    border-top:1px solid var(--border-mid);
+    background:var(--bg-deep);
+  }
+  .settings-actions .btn:disabled{opacity:0.5;cursor:not-allowed;pointer-events:none}
 
   /* ---------------- stat ---------------- */
   .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}

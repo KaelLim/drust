@@ -128,6 +128,10 @@ struct SettingsPage {
     mascot_json_static: String,
     mascot_json_light: String,
     mascot_json_dark: String,
+    /// v1.23 — all 3 palettes serialized as one JSON object for the
+    /// settings page client-side live-preview. Consumed by inline JS in
+    /// settings.html via `|safe`.
+    all_themes_json: String,
 }
 
 async fn settings_page(
@@ -146,6 +150,7 @@ async fn settings_page(
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
             mascot_json_dark: trc.mascot_json_dark,
+            all_themes_json: crate::mgmt::theme::build_all_themes_json(),
         }
         .render()
         .unwrap_or_default(),
@@ -233,6 +238,58 @@ async fn settings_theme_save(
     let mut resp = Redirect::to("/drust/admin/settings").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
+    resp
+}
+
+#[derive(Debug, Deserialize)]
+struct SettingsForm {
+    locale: String,
+    theme: String,
+}
+
+/// `POST /admin/settings` — combined save handler that updates BOTH
+/// `admins.locale` and `admins.theme` in one round trip. Used by the
+/// v1.23 settings page redesign that batches both changes behind a
+/// single Save button (Save / Cancel pair sit at the bottom of the
+/// Preferences card). The single-field endpoints
+/// `/admin/settings/locale` and `/admin/settings/theme` are preserved
+/// for any future sidebar quick-switcher.
+async fn settings_combined_save(
+    State(state): State<MgmtState>,
+    axum::Extension(crate::auth::middleware::AdminId(admin_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    Form(form): Form<SettingsForm>,
+) -> Response {
+    let loc = match Locale::ALL.iter().find(|l| l.code() == form.locale) {
+        Some(l) => l.code().to_string(),
+        None => return (StatusCode::BAD_REQUEST, "unsupported locale").into_response(),
+    };
+    let theme_code = match crate::mgmt::theme::Theme::ALL
+        .iter()
+        .find(|t| t.code() == form.theme)
+    {
+        Some(t) => t.code().to_string(),
+        None => return (StatusCode::BAD_REQUEST, "unsupported theme").into_response(),
+    };
+    {
+        let conn = state.meta.lock().await;
+        if let Err(e) = conn.execute(
+            "UPDATE admins SET locale = ?1, theme = ?2 WHERE id = ?3",
+            rusqlite::params![loc, theme_code, admin_id],
+        ) {
+            return internal(format!("update settings: {e}"));
+        }
+    }
+    let locale_cookie =
+        format!("drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax");
+    let theme_cookie =
+        format!("drust_theme={theme_code}; Path=/; Max-Age=31536000; SameSite=Lax");
+    let mut resp = Redirect::to("/drust/admin/settings").into_response();
+    resp.headers_mut()
+        .insert(header::SET_COOKIE, locale_cookie.parse().unwrap());
+    resp.headers_mut()
+        .append(header::SET_COOKIE, theme_cookie.parse().unwrap());
     resp
 }
 
@@ -765,7 +822,10 @@ impl MgmtState {
         // the cookie is a per-device mirror of the same value.
         let settings_state = self.clone();
         let settings_router = Router::new()
-            .route("/admin/settings", get(settings_page))
+            .route(
+                "/admin/settings",
+                get(settings_page).post(settings_combined_save),
+            )
             .route("/admin/settings/locale", post(settings_locale_save))
             .route("/admin/settings/theme", post(settings_theme_save))
             .with_state(settings_state);

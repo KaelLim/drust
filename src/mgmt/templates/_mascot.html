@@ -159,10 +159,12 @@
                      : mood === 'curious' ? 'curious'
                      : 'open';
     if (reduced) {
-      paint(canvas, build(staticPose), scale);
+      const staticGrid = build(staticPose);
+      paint(canvas, staticGrid, scale);
       MASCOTS.push({
         canvas: canvas,
-        react: function () { /* no-op under reduced motion */ }
+        react: function () { /* no-op under reduced motion */ },
+        repaint: function () { paint(canvas, staticGrid, scale); }
       });
       return;
     }
@@ -299,6 +301,16 @@
   // Public API.
   window.chonkReact = function (mood, durationMs) {
     MASCOTS.forEach(function (m) { try { m.react(mood, durationMs); } catch (_) {} });
+  };
+
+  // v1.23 — live theme preview hook. Mutates PAL in place; animated mascots
+  // pick up the new colors on the next RAF tick (paint() reads PAL each
+  // frame). Reduced-motion mascots also get a one-shot repaint via the
+  // repaint() helper attached in the static branch.
+  window.chonkSetPAL = function (newPal) {
+    if (!newPal) return;
+    Object.keys(newPal).forEach(function (k) { PAL[k] = newPal[k]; });
+    MASCOTS.forEach(function (m) { if (m.repaint) try { m.repaint(); } catch (_) {} });
   };
 
   if (document.readyState === 'loading') {
