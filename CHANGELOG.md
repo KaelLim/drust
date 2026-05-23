@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.24.0] — 2026-05-24
+
+### Added
+- **Audit log SQLite storage** — audit rows now write to `meta_logs.sqlite` (parallel to `meta.sqlite`, separate file + connection + Mutex) via a process-global `AuditWriter` handle (`OnceLock` in `src/safety/audit_db.rs`). The writer task drains a `mpsc::channel(1000)` and batches INSERTs every 100ms or 100 rows in a single transaction. `try_send` is non-blocking — channel-full drops the entry, increments a counter, and emits `tracing::warn!`. JSONL writes continue in parallel during a 30-day validation window under env flag `AUDIT_DUAL_WRITE` (default `true` in v1.24, default `false` in v1.25, removed in v1.26).
+- **SQL-backed audit reader** — `mgmt::audit::aggregate_via_sql` + `query_browse` replace the JSONL-scan path. `caller_ip` + `user_agent` are hoisted out of `AuditEntry.extra` into dedicated indexed columns at INSERT time. Browse pagination uses `(ts DESC, id DESC)` cursor for stable ordering across ties.
+- **One-shot JSONL backfill** on first start — walks `audit-*.jsonl{,.N,.gz}` files in `log_dir`, dispatches each entry through the writer channel in 10K-row chunks; drain wait via SELECT COUNT polling (5-min cap). Idempotent via `/var/lib/drust/audit-backfill.done` marker. v1.24 launch backfilled ~2.58M rows in ~9s.
+- **In-process retention** — daily DELETE of rows older than 90 days; monthly VACUUM on the 1st (UTC). Routed through `WriterCmd::RunRetention` on the same channel as INSERTs to preserve single-owner connection semantics — no Mutex contention with the hot Insert path.
+- **`AUDIT_DUAL_WRITE` env flag** + `.env.example` entry.
+- **`tests/audit_sqlite.rs`** — 13 integration tests against a temp audit DB + spawned AuditWriter: schema/indexes, single-row round-trip, caller_ip/user_agent hoisting, 100-row batch insert, tenant filter, SQL aggregate vs count, top_tenants, retention DELETE through writer channel, pagination cursor, nested-extra preservation, empty-DB aggregates.
+- **`tests/audit_ui_routes.rs`** migrated to seed the SQLite reader directly (parses JSONL fixtures via `scan_window` + INSERTs into a temp audit DB) so the existing 14 audit-UI integration tests survive the JSONL→SQL reader switch.
+
+### Changed
+- **`MAX_ENTRIES=50_000` cap removed** — total counts in the Overview tab are honest by construction (SQL aggregates). The previous in-process `SCAN_CACHE` (10s TTL, added in the v1.24 patch series) is also removed — SQL with indexes is faster than the cache hit path.
+- **`Overview.is_sampled` field removed** + the `{% if ov.is_sampled %}` template conditional in `_audit_body.html` deleted.
+- `mgmt::audit::aggregate()` signature reverted to `(entries, window) -> Overview` (the v1.24-patch-era `total_raw, error_count_raw` parameters dropped along with the sampling state they fed).
+- `MgmtState` + `TenantsState` gain `audit_meta_read: Arc<Mutex<rusqlite::Connection>>` (read-only WAL connection); admin audit handlers route queries through it.
+
+### Removed (cleanup of v1.24-patch series)
+- `mgmt::audit::SCAN_CACHE` + `SCAN_CACHE_TTL` + `ScanCacheEntry` + `scan_window_cached`.
+- `mgmt::audit::MAX_ENTRIES`.
+- `ScanResult.{total_raw, error_count_raw, tenant_counts_raw, truncated_from}`.
+- `Overview.is_sampled`.
+
+### Deprecated
+- `/etc/logrotate.d/drust` — was a no-op for date-named files (drust never rotated in-place; each day got a fresh filename, so `rotate 14` never triggered). Kept around through the v1.24 dual-write window; v1.25 removes it.
+
+### Pre-v1.24 patches (rolled into this release; never separately tagged)
+- **`feat(audit): default 1h + honest total + 10s scan cache`** (commit `0d879c4`) — landed mid-v1.24-cycle: changed audit page default window 24h → 1h; introduced pre-truncation `total_raw` / `error_count_raw` / `tenant_counts_raw` so the Overview total reflected real numbers instead of the 50K cap; added a 10s scan cache for repeated tab flips. Both the raw-counts plumbing and the cache were superseded by the SQL reader in this release.
+- **`feat(admin-ui): settings redesign — batch save + live theme preview`** (commit `c27e058`) — single Preferences card with iconified rows replacing 2 separate cards (~60% less vertical space); batched Save / Cancel pair in the card footer; theme select applies instantly via inline `<style>` override with `!important` on the 22 CSS vars; mascot palette swapped via new `window.chonkSetPAL` hook (`_mascot.html`); 2 new SVG symbols (`i-globe`, `i-palette`); `.view-sub max-width:60ch` dropped; `settings.html` missing `{% include "_mascot.html" %}` fixed (sidebar brand-mark canvas had been a no-op there); new `POST /admin/settings` combined save handler (the single-field endpoints stay for future sidebar quick-switchers); 2 new i18n keys per locale.
+
+### Spec / plan
+- [`docs/superpowers/specs/2026-05-23-drust-audit-sqlite-design.md`](../docs/superpowers/specs/2026-05-23-drust-audit-sqlite-design.md)
+- Plan at `tool/docs/superpowers/plans/2026-05-23-drust-audit-sqlite.md`
+
+## [1.23.0] — 2026-05-23
+
+### Added
+- **Server-side theming for the admin UI** — admin pages render in one of three themes: `system` (auto-switch via `prefers-color-scheme`, default for unset users), `cozy-dark` (v1.22 visual state preserved), or `soft-light` (warm cream + rust accent). Selection persists via a `drust_theme` cookie + `admins.theme` column; login + OAuth callback push the DB value down as a cookie so the choice follows the admin across devices.
+- **`src/mgmt/theme.rs`** — `Theme` enum (`System` / `CozyDark` / `SoftLight`), `Palette` types, `palette_for(theme) -> ResolvedPalette`. `Theme::System` is a 1st-class variant, not a detection mechanism — CSS emits both light + dark `:root` blocks with `@media (prefers-color-scheme: dark)`; mascot JS branches client-side via one `matchMedia` call at boot. Explicit themes emit static single-palette CSS.
+- **`src/mgmt/theme_layer.rs`** — outermost middleware on the admin router; resolves cookie → `admins.theme` (when logged in) → `Theme::System` default. Attaches `Extension<Theme>` so every handler can construct its `ThemeRenderCtx` for the per-page Template struct.
+- **`themes/cozy-dark.toml` + `themes/soft-light.toml` + `themes/system.toml`** — 12 `[ui]` keys + 10 `[accent]` keys + 7 `[mascot]` keys per static theme, embedded via `include_str!`. `system.toml` references the two static partners.
+- **`build.rs`** — extended with theme TOML validator (required-key check per `[ui]/[accent]/[mascot]`; system theme partner-reference validation; rejects palette tables on system theme).
+- **`admins.theme` migration** — idempotent ALTER via `add_column_if_missing`.
+- **`tests/admin_theme.rs`** — 7 integration tests covering the resolution chain (cookie / db / default), system-vs-static palette resolution, palette key counts per static theme.
+- 21 admin Template structs gained 4 fields each (`palette_resolved`, `mascot_json_static`, `mascot_json_light`, `mascot_json_dark`) via a shared `ThemeRenderCtx::build()` helper.
+
+### Spec / plan
+- [`docs/superpowers/specs/2026-05-23-drust-theme-design.md`](../docs/superpowers/specs/2026-05-23-drust-theme-design.md)
+- Plan at `tool/docs/superpowers/plans/2026-05-23-drust-theme.md`
+
 ## [1.22.0] — 2026-05-22
 
 ### Added
