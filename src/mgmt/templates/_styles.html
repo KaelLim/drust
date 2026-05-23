@@ -9,34 +9,96 @@
      ============================================================ */
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap');
 
+  {# v1.23 — :root colours are theme-driven. Static (cozy-dark / soft-light)
+     emit a single :root block; System emits a light :root + an @media
+     (prefers-color-scheme: dark) override. Fonts + radii are theme-
+     independent so they live outside the match. #}
+  {% match palette_resolved %}
+  {% when crate::mgmt::theme::ResolvedPalette::Static with (p) %}
   :root{
-    /* cozy-dark: warm charcoal base, apricot accent */
-    --bg:#1c1816;
-    --bg-deep:#15110f;
-    --surface:#26211d;
-    --surface-2:#2c2723;
-    --surface-3:#332d28;
-    --border:#2a2521;
-    --border-mid:#37312c;
-    --border-strong:#453d37;
-    --fg:#f5ede2;
-    --fg-2:#c9bdae;
-    --muted:#988b7d;
-    --muted-2:#5a514a;
+    --bg:{{ p.ui["bg"] }};
+    --bg-deep:{{ p.ui["bg-deep"] }};
+    --surface:{{ p.ui["surface"] }};
+    --surface-2:{{ p.ui["surface-2"] }};
+    --surface-3:{{ p.ui["surface-3"] }};
+    --border:{{ p.ui["border"] }};
+    --border-mid:{{ p.ui["border-mid"] }};
+    --border-strong:{{ p.ui["border-strong"] }};
+    --fg:{{ p.ui["fg"] }};
+    --fg-2:{{ p.ui["fg-2"] }};
+    --muted:{{ p.ui["muted"] }};
+    --muted-2:{{ p.ui["muted-2"] }};
 
-    --accent:#e8a17c;
-    --accent-2:#f3b48f;
-    --accent-soft:rgba(232,161,124,0.13);
-    --accent-border:rgba(232,161,124,0.34);
-    --rust:#d97757;
+    --accent:{{ p.accent["accent"] }};
+    --accent-2:{{ p.accent["accent-2"] }};
+    --accent-soft:{{ p.accent["accent-soft"] }};
+    --accent-border:{{ p.accent["accent-border"] }};
+    --rust:{{ p.accent["rust"] }};
 
-    /* candy pills — softer, warmer */
-    --warn:#f1c27a;          --warn-soft:rgba(241,194,122,0.13);   --warn-border:rgba(241,194,122,0.34);
-    --danger:#e88a8a;        --danger-soft:rgba(232,138,138,0.14); --danger-border:rgba(232,138,138,0.34);
-    --info:#a5b8f0;          --info-soft:rgba(165,184,240,0.13);   --info-border:rgba(165,184,240,0.34);
-    --mint:#9ed3b8;          --mint-soft:rgba(158,211,184,0.13);   --mint-border:rgba(158,211,184,0.34);
-    --lilac:#c9a8e3;         --lilac-soft:rgba(201,168,227,0.14);  --lilac-border:rgba(201,168,227,0.34);
+    --warn:{{ p.accent["warn"] }};          --warn-soft:rgba(241,194,122,0.13);   --warn-border:rgba(241,194,122,0.34);
+    --danger:{{ p.accent["danger"] }};      --danger-soft:rgba(232,138,138,0.14); --danger-border:rgba(232,138,138,0.34);
+    --info:{{ p.accent["info"] }};          --info-soft:rgba(165,184,240,0.13);   --info-border:rgba(165,184,240,0.34);
+    --mint:{{ p.accent["mint"] }};          --mint-soft:rgba(158,211,184,0.13);   --mint-border:rgba(158,211,184,0.34);
+    --lilac:{{ p.accent["lilac"] }};        --lilac-soft:rgba(201,168,227,0.14);  --lilac-border:rgba(201,168,227,0.34);
+  }
+  {% when crate::mgmt::theme::ResolvedPalette::System with (sys) %}
+  :root{
+    --bg:{{ sys.light.ui["bg"] }};
+    --bg-deep:{{ sys.light.ui["bg-deep"] }};
+    --surface:{{ sys.light.ui["surface"] }};
+    --surface-2:{{ sys.light.ui["surface-2"] }};
+    --surface-3:{{ sys.light.ui["surface-3"] }};
+    --border:{{ sys.light.ui["border"] }};
+    --border-mid:{{ sys.light.ui["border-mid"] }};
+    --border-strong:{{ sys.light.ui["border-strong"] }};
+    --fg:{{ sys.light.ui["fg"] }};
+    --fg-2:{{ sys.light.ui["fg-2"] }};
+    --muted:{{ sys.light.ui["muted"] }};
+    --muted-2:{{ sys.light.ui["muted-2"] }};
 
+    --accent:{{ sys.light.accent["accent"] }};
+    --accent-2:{{ sys.light.accent["accent-2"] }};
+    --accent-soft:{{ sys.light.accent["accent-soft"] }};
+    --accent-border:{{ sys.light.accent["accent-border"] }};
+    --rust:{{ sys.light.accent["rust"] }};
+
+    --warn:{{ sys.light.accent["warn"] }};      --warn-soft:rgba(241,194,122,0.13);   --warn-border:rgba(241,194,122,0.34);
+    --danger:{{ sys.light.accent["danger"] }};  --danger-soft:rgba(232,138,138,0.14); --danger-border:rgba(232,138,138,0.34);
+    --info:{{ sys.light.accent["info"] }};      --info-soft:rgba(165,184,240,0.13);   --info-border:rgba(165,184,240,0.34);
+    --mint:{{ sys.light.accent["mint"] }};      --mint-soft:rgba(158,211,184,0.13);   --mint-border:rgba(158,211,184,0.34);
+    --lilac:{{ sys.light.accent["lilac"] }};    --lilac-soft:rgba(201,168,227,0.14);  --lilac-border:rgba(201,168,227,0.34);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root{
+      --bg:{{ sys.dark.ui["bg"] }};
+      --bg-deep:{{ sys.dark.ui["bg-deep"] }};
+      --surface:{{ sys.dark.ui["surface"] }};
+      --surface-2:{{ sys.dark.ui["surface-2"] }};
+      --surface-3:{{ sys.dark.ui["surface-3"] }};
+      --border:{{ sys.dark.ui["border"] }};
+      --border-mid:{{ sys.dark.ui["border-mid"] }};
+      --border-strong:{{ sys.dark.ui["border-strong"] }};
+      --fg:{{ sys.dark.ui["fg"] }};
+      --fg-2:{{ sys.dark.ui["fg-2"] }};
+      --muted:{{ sys.dark.ui["muted"] }};
+      --muted-2:{{ sys.dark.ui["muted-2"] }};
+
+      --accent:{{ sys.dark.accent["accent"] }};
+      --accent-2:{{ sys.dark.accent["accent-2"] }};
+      --accent-soft:{{ sys.dark.accent["accent-soft"] }};
+      --accent-border:{{ sys.dark.accent["accent-border"] }};
+      --rust:{{ sys.dark.accent["rust"] }};
+
+      --warn:{{ sys.dark.accent["warn"] }};       --warn-soft:rgba(241,194,122,0.13);   --warn-border:rgba(241,194,122,0.34);
+      --danger:{{ sys.dark.accent["danger"] }};   --danger-soft:rgba(232,138,138,0.14); --danger-border:rgba(232,138,138,0.34);
+      --info:{{ sys.dark.accent["info"] }};       --info-soft:rgba(165,184,240,0.13);   --info-border:rgba(165,184,240,0.34);
+      --mint:{{ sys.dark.accent["mint"] }};       --mint-soft:rgba(158,211,184,0.13);   --mint-border:rgba(158,211,184,0.34);
+      --lilac:{{ sys.dark.accent["lilac"] }};     --lilac-soft:rgba(201,168,227,0.14);  --lilac-border:rgba(201,168,227,0.34);
+    }
+  }
+  {% endmatch %}
+
+  :root{
     --font-sans:'Inter',-apple-system,BlinkMacSystemFont,'Helvetica Neue',Helvetica,Arial,sans-serif;
     --font-display:'Newsreader','Iowan Old Style','Charter',Georgia,serif;
     --font-mono:'JetBrains Mono','Source Code Pro','SF Mono',Menlo,monospace;
