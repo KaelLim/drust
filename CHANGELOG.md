@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.25.0] - 2026-05-24
+### Fixed
+- **Theme persistence now works when cookies are cleared but session remains.** `theme_layer` was registered outermost on the full router but read `Extension<AdminId>` which is only inserted by `admin_session_layer` (registered inside `protected`) — so the DB-fallback branch was dead. v1.25 splits the middleware: an outer cookie-only layer covers `/login` + OAuth callback; an inner DB-aware layer registered inside `protected` (after `admin_session_layer`) reads `admins.theme` when the cookie is absent. (F5/F6)
+- **`drust_theme` and `drust_locale` cookies now use `Path=/drust` and `Secure`,** matching `drust_session`. The preference cookies no longer leak to `/t/<id>/...` tenant REST/MCP or `/public/*`. Dev workflow on plain-HTTP loopback can set `DRUST_DEV_NO_SECURE_COOKIES=1` to keep accepting writes. (F8)
+- **`build.rs` now panics on `themes/*.toml` ↔ `EXPECTED_THEMES` drift.** Adding a TOML without a `Theme` enum variant, or a variant without a TOML, fails the build with a clear message instead of producing a silent runtime issue. (F7)
+
+### Added
+- `tests/admin_theme.rs` gains 5 cases: 3 covering the inner/outer layer split (one that the v1.23 review would have caught) + 2 covering cookie attribute correctness with the dev-override branch.
+
 ## [1.24.2] - 2026-05-24
 ### Changed
 - **Audit backfill is now atomic.** v1.24's channel-based backfill could leave partial rows committed without the marker, producing duplicate rows on next start if killed mid-drain. v1.24.2 runs backfill synchronously on `spawn_blocking` BEFORE the writer task spawns, wrapped in a single `BEGIN...COMMIT` that includes the sentinel row. The legacy filesystem marker `audit-backfill.done` is auto-promoted to the new in-DB sentinel on first v1.24.2 start so existing nodes don't re-backfill. (F2)
