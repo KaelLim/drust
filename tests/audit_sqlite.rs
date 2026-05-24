@@ -416,3 +416,10 @@ async fn backfill_commits_atomically_and_writes_sentinel() {
     let total2: i64 = conn.query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0)).unwrap();
     assert_eq!(total2, 3, "second backfill must not duplicate rows");
 }
+
+#[tokio::test]
+async fn dropped_total_reports_zero_before_init() {
+    // dropped_total() must return 0 when no writer is initialised (test path)
+    let n = drust::safety::audit_db::dropped_total();
+    assert_eq!(n, 0);
+}
