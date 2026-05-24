@@ -172,19 +172,19 @@ pub async fn oauth_callback(
             oauth_state::clear_pkce_cookie().to_string(),
         );
     if let Some(loc) = admin_locale.as_deref()
-        && matches!(loc, "en" | "zh-TW")
+        && let Some(locale) = crate::mgmt::i18n::Locale::from_tag(loc)
     {
         builder = builder.header(
             header::SET_COOKIE,
-            format!("drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax"),
+            crate::mgmt::i18n::build_locale_cookie(locale),
         );
     }
     if let Some(th) = admin_theme.as_deref()
-        && crate::mgmt::theme::Theme::from_tag(th).is_some()
+        && let Some(theme) = crate::mgmt::theme::Theme::from_tag(th)
     {
         builder = builder.header(
             header::SET_COOKIE,
-            format!("drust_theme={th}; Path=/; Max-Age=31536000; SameSite=Lax"),
+            crate::mgmt::theme::build_theme_cookie(theme),
         );
     }
     builder.body(axum::body::Body::empty()).unwrap()

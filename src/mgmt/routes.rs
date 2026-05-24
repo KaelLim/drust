@@ -178,8 +178,8 @@ async fn settings_locale_save(
     >,
     Form(form): Form<LocalePrefForm>,
 ) -> Response {
-    let loc = match Locale::ALL.iter().find(|l| l.code() == form.locale) {
-        Some(l) => l.code().to_string(),
+    let locale = match Locale::ALL.iter().find(|l| l.code() == form.locale) {
+        Some(l) => *l,
         None => {
             return (StatusCode::BAD_REQUEST, "unsupported locale").into_response();
         }
@@ -188,13 +188,12 @@ async fn settings_locale_save(
         let conn = state.meta.lock().await;
         if let Err(e) = conn.execute(
             "UPDATE admins SET locale = ?1 WHERE id = ?2",
-            rusqlite::params![loc, admin_id],
+            rusqlite::params![locale.code(), admin_id],
         ) {
             return internal(format!("update locale: {e}"));
         }
     }
-    let cookie =
-        format!("drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax");
+    let cookie = crate::mgmt::i18n::build_locale_cookie(locale);
     let mut resp = Redirect::to("/drust/admin/settings").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
@@ -218,11 +217,11 @@ async fn settings_theme_save(
     >,
     Form(form): Form<ThemePrefForm>,
 ) -> Response {
-    let code = match crate::mgmt::theme::Theme::ALL
+    let theme = match crate::mgmt::theme::Theme::ALL
         .iter()
         .find(|t| t.code() == form.theme)
     {
-        Some(t) => t.code().to_string(),
+        Some(t) => *t,
         None => {
             return (StatusCode::BAD_REQUEST, "unsupported theme").into_response();
         }
@@ -231,13 +230,12 @@ async fn settings_theme_save(
         let conn = state.meta.lock().await;
         if let Err(e) = conn.execute(
             "UPDATE admins SET theme = ?1 WHERE id = ?2",
-            rusqlite::params![code, admin_id],
+            rusqlite::params![theme.code(), admin_id],
         ) {
             return internal(format!("update theme: {e}"));
         }
     }
-    let cookie =
-        format!("drust_theme={code}; Path=/; Max-Age=31536000; SameSite=Lax");
+    let cookie = crate::mgmt::theme::build_theme_cookie(theme);
     let mut resp = Redirect::to("/drust/admin/settings").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
@@ -264,30 +262,28 @@ async fn settings_combined_save(
     >,
     Form(form): Form<SettingsForm>,
 ) -> Response {
-    let loc = match Locale::ALL.iter().find(|l| l.code() == form.locale) {
-        Some(l) => l.code().to_string(),
+    let locale = match Locale::ALL.iter().find(|l| l.code() == form.locale) {
+        Some(l) => *l,
         None => return (StatusCode::BAD_REQUEST, "unsupported locale").into_response(),
     };
-    let theme_code = match crate::mgmt::theme::Theme::ALL
+    let theme = match crate::mgmt::theme::Theme::ALL
         .iter()
         .find(|t| t.code() == form.theme)
     {
-        Some(t) => t.code().to_string(),
+        Some(t) => *t,
         None => return (StatusCode::BAD_REQUEST, "unsupported theme").into_response(),
     };
     {
         let conn = state.meta.lock().await;
         if let Err(e) = conn.execute(
             "UPDATE admins SET locale = ?1, theme = ?2 WHERE id = ?3",
-            rusqlite::params![loc, theme_code, admin_id],
+            rusqlite::params![locale.code(), theme.code(), admin_id],
         ) {
             return internal(format!("update settings: {e}"));
         }
     }
-    let locale_cookie =
-        format!("drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax");
-    let theme_cookie =
-        format!("drust_theme={theme_code}; Path=/; Max-Age=31536000; SameSite=Lax");
+    let locale_cookie = crate::mgmt::i18n::build_locale_cookie(locale);
+    let theme_cookie = crate::mgmt::theme::build_theme_cookie(theme);
     let mut resp = Redirect::to("/drust/admin/settings").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, locale_cookie.parse().unwrap());
