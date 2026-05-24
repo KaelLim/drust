@@ -243,8 +243,7 @@ pub fn init_globals(writer: AuditWriter) {
 }
 
 /// Non-blocking dispatch from a request handler. No-op when init_globals
-/// has not run yet (test paths, pre-init startup). Caller's JSONL write
-/// path is independent and still runs.
+/// has not run yet (test paths, pre-init startup).
 pub fn try_send(entry: &crate::safety::audit::AuditEntry) {
     if let Some(w) = WRITER.get() {
         w.try_send_inner(entry);
