@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.25.1] - 2026-05-24
+### Removed (cleanup)
+- v1.24.2 one-time migration block in `open_audit_db_write` that promoted the legacy `audit-backfill.done` filesystem marker to the `_meta.backfill_done` sentinel. The promotion fired exactly once per live install during v1.24.2 rollout; subsequent opens short-circuited via `has_sentinel=true`. Block + companion test now removed.
+- `/var/lib/drust/audit-backfill.done` filesystem marker (deleted on the live host; not under repo control). Canonical sentinel lives in `meta_logs.sqlite._meta`.
+- `deploy/logrotate-drust` repo file + `/etc/logrotate.d/drust` live config. Deprecated since v1.24.0 (no-op for date-named audit log files).
+
+### Notes
+- **JSONL dual-write is STILL ACTIVE.** `AUDIT_DUAL_WRITE` env, the `write_jsonl_internal` writer, and the `DUAL_WRITE` OnceLock are untouched in v1.25.1 — they retire in v1.25.2 (scheduled ~2026-06-22, after the 30-day SQLite validation window closes).
+
 ## [1.25.0] - 2026-05-24
 ### Fixed
 - **Theme persistence now works when cookies are cleared but session remains.** `theme_layer` was registered outermost on the full router but read `Extension<AdminId>` which is only inserted by `admin_session_layer` (registered inside `protected`) — so the DB-fallback branch was dead. v1.25 splits the middleware: an outer cookie-only layer covers `/login` + OAuth callback; an inner DB-aware layer registered inside `protected` (after `admin_session_layer`) reads `admins.theme` when the cookie is absent. (F5/F6)
