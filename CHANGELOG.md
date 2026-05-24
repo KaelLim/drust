@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.24.2] - 2026-05-24
+### Changed
+- **Audit backfill is now atomic.** v1.24's channel-based backfill could leave partial rows committed without the marker, producing duplicate rows on next start if killed mid-drain. v1.24.2 runs backfill synchronously on `spawn_blocking` BEFORE the writer task spawns, wrapped in a single `BEGIN...COMMIT` that includes the sentinel row. The legacy filesystem marker `audit-backfill.done` is auto-promoted to the new in-DB sentinel on first v1.24.2 start so existing nodes don't re-backfill. (F2)
+- **Retention anchored to wall-clock 03:00 UTC** instead of `interval(24h)` + uptime drift. VACUUM fires on day 1 OR when `last_vacuum_ts` (now persisted in the new `_meta` table) is in a previous month — a restart on day 1 no longer skips that month's VACUUM. (F4)
+
+### Added
+- **`_meta` key/value table** inside `meta_logs.sqlite`. Holds `backfill_done` sentinel + `last_vacuum_ts`. Created idempotently in `open_audit_db_write`. (F2 + F4)
+- **`WriterCmd::SetMeta`** routed through the existing writer channel so the single-owner-of-connection invariant is preserved.
+- **Sampled WARN for audit channel-full.** Drops are still counted atomically, but the per-drop WARN is rate-limited to the 1st + every 10,000th to prevent journal flood under sustained backpressure. (F3)
+- **60-second drop-summary task** logs an info-level delta since the previous report when non-zero.
+- **Admin UI "Audit drops" chip** on `/admin/audit` overview tab. Only renders when `dropped_total > 0`. (F3)
+
 ## [1.24.1] — 2026-05-24
 
 ### Fixed
