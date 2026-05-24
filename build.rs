@@ -212,6 +212,36 @@ fn main() {
             }
         }
     }
+
+    // v1.25 F7 — TOMLs in themes/ must match the Theme enum exactly.
+    // If a new variant is added in src/mgmt/theme.rs, also add its code
+    // here. If a TOML is added without an enum variant, palette_for()
+    // panics at runtime on the first request — catch it at build time.
+    const EXPECTED_THEMES: &[&str] = &["cozy-dark", "soft-light", "system"];
+
+    let expected: std::collections::BTreeSet<&str> =
+        EXPECTED_THEMES.iter().copied().collect();
+    let actual: std::collections::BTreeSet<String> = fs::read_dir("themes")
+        .expect("read themes dir")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let n = e.file_name();
+            let s = n.to_str()?.to_string();
+            s.strip_suffix(".toml").map(String::from)
+        })
+        .collect();
+    let actual_refs: std::collections::BTreeSet<&str> =
+        actual.iter().map(|s| s.as_str()).collect();
+
+    if actual_refs != expected {
+        let missing: Vec<&&str> = expected.difference(&actual_refs).collect();
+        let extra: Vec<&&str> = actual_refs.difference(&expected).collect();
+        panic!(
+            "themes/ ↔ EXPECTED_THEMES mismatch. Missing TOMLs: {:?}. Unexpected TOMLs: {:?}. \
+             Edit build.rs EXPECTED_THEMES + Theme::ALL in src/mgmt/theme.rs together.",
+            missing, extra,
+        );
+    }
 }
 
 /// Returns map: key → [(file, line), ...] for every literal `t.s("key")`
