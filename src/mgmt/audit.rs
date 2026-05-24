@@ -74,6 +74,10 @@ pub struct Overview {
     pub rps_avg: f64,
     pub top_tenants: Vec<TopTenant>,  // len ≤ 5
     pub top_slow_ops: Vec<AuditEntry>, // len ≤ 5
+    /// Process-lifetime count of audit entries dropped due to writer
+    /// channel-full. Populated from `audit_db::dropped_total()` in
+    /// `aggregate_via_sql`. Resets on drust restart. v1.24.2 F3.
+    pub dropped_total: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -426,6 +430,7 @@ pub fn aggregate(entries: &[AuditEntry], window: Window) -> Overview {
         rps_avg,
         top_tenants,
         top_slow_ops,
+        dropped_total: crate::safety::audit_db::dropped_total(),
     }
 }
 
@@ -1043,6 +1048,7 @@ pub fn aggregate_via_sql(
                 total, error_count, error_pct, p50_ms, p99_ms, rps_avg,
                 top_tenants: Vec::new(),
                 top_slow_ops: Vec::new(),
+                dropped_total: crate::safety::audit_db::dropped_total(),
             },
         };
         let rows: rusqlite::Result<Vec<TopTenant>> = stmt
@@ -1081,6 +1087,7 @@ pub fn aggregate_via_sql(
             Err(_) => return Overview {
                 total, error_count, error_pct, p50_ms, p99_ms, rps_avg,
                 top_tenants, top_slow_ops: Vec::new(),
+                dropped_total: crate::safety::audit_db::dropped_total(),
             },
         };
         let rows: rusqlite::Result<Vec<AuditEntry>> = stmt
@@ -1098,6 +1105,7 @@ pub fn aggregate_via_sql(
         rps_avg,
         top_tenants,
         top_slow_ops,
+        dropped_total: crate::safety::audit_db::dropped_total(),
     }
 }
 
