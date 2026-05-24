@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.25.2] - 2026-05-24
+### Removed
+- `AUDIT_DUAL_WRITE` env var (no-op since v1.25.2; startup WARN logged if set).
+- `src/safety/audit_db.rs`: `DUAL_WRITE` OnceLock, `dual_write_enabled()`, `backfill_from_jsonl_sync`, `read_all_jsonl`. `init_globals` signature simplified to `init_globals(writer)`.
+- `src/safety/audit.rs`: `write_jsonl_internal` and the JSONL fallback branch in `write_entry`. Audit writes now go to SQLite exclusively.
+- `src/main.rs`: startup backfill spawn block and `audit_dual_write` env parse.
+- Live host: `/var/log/drust/audit-*.jsonl*` (~520M of redundant historical archive; all data already in `meta_logs.sqlite`).
+
+### Notes
+- JSONL dual-write was v1.24's safety net during the SQLite migration. After v1.24.x ran cleanly for ~24h on the canonical SQLite path, the dual-write's marginal value dropped enough to warrant same-day retirement (overriding the 30-day validation window v1.25.1 originally set). Backfill function deletion is final; v1.24.2 implementation remains at git tag `v1.24.2` for reference.
+- `_meta.backfill_done` sentinel row left in place (harmless dead key; not worth a cleanup migration).
+
 ## [1.25.1] - 2026-05-24
 ### Removed (cleanup)
 - v1.24.2 one-time migration block in `open_audit_db_write` that promoted the legacy `audit-backfill.done` filesystem marker to the `_meta.backfill_done` sentinel. The promotion fired exactly once per live install during v1.24.2 rollout; subsequent opens short-circuited via `has_sentinel=true`. Block + companion test now removed.

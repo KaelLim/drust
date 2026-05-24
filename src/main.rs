@@ -55,39 +55,17 @@ async fn main() -> anyhow::Result<()> {
     }
     let meta = Arc::new(Mutex::new(meta));
 
-    // v1.24.2 — audit log SQLite. Order matters:
-    //   1. Open one RW connection just for backfill
-    //   2. Run backfill synchronously (BEGIN..COMMIT) on spawn_blocking
-    //   3. Drop that connection
-    //   4. Open a fresh RW connection for the AuditWriter task and
-    //      init the process-global handle
-    //
-    // Running backfill before the writer task spawns guarantees no
-    // contention on the write lock and makes the backfill commit + the
-    // sentinel atomic. See F2 in the v1.24 hardening spec.
     let audit_db_path = cfg.data_dir.join("meta_logs.sqlite");
-    let backfill_log = cfg.log_dir.clone();
-    {
-        let db = audit_db_path.clone();
-        let log = backfill_log.clone();
-        let backfilled = tokio::task::spawn_blocking(move || {
-            drust::safety::audit_db::backfill_from_jsonl_sync(&db, &log)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("audit backfill join: {e}"))?
-        .map_err(|e| anyhow::anyhow!("audit backfill: {e}"))?;
-        tracing::info!(rows = backfilled, "audit backfill: phase complete");
-    }
-
     let audit_write_conn = drust::safety::audit_db::open_audit_db_write(&audit_db_path)?;
     let audit_writer = drust::safety::audit_db::AuditWriter::new(audit_write_conn);
-    let audit_dual_write = std::env::var("AUDIT_DUAL_WRITE")
-        .map(|v| v != "false" && v != "0")
-        .unwrap_or(true); // v1.24 default
-    drust::safety::audit_db::init_globals(audit_writer, audit_dual_write);
+    drust::safety::audit_db::init_globals(audit_writer);
+    if std::env::var("AUDIT_DUAL_WRITE").is_ok() {
+        tracing::warn!(
+            "AUDIT_DUAL_WRITE env var is set but no longer used (retired in v1.25.2). Safe to remove from .env."
+        );
+    }
     tracing::info!(
         path = %audit_db_path.display(),
-        dual_write = audit_dual_write,
         "audit SQLite ready"
     );
 
