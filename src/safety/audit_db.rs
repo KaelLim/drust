@@ -1,10 +1,9 @@
 //! v1.24 — SQLite-backed audit log storage. See spec
 //! docs/superpowers/specs/2026-05-23-drust-audit-sqlite-design.md.
 //!
-//! Lives in src/safety/ alongside the existing JSONL-based audit.rs.
-//! Both write paths run in parallel during the v1.24 dual-write window;
-//! the JSONL writer is removed in v1.26 once SQLite has proven stable
-//! in production.
+//! v1.25.2 retired the JSONL dual-write fallback (v1.24's safety net
+//! during the SQLite migration); this file is now the sole audit
+//! write path.
 
 use anyhow::Context;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -222,7 +221,6 @@ impl AuditWriter {
 use std::sync::OnceLock;
 
 static WRITER: OnceLock<AuditWriter> = OnceLock::new();
-static DUAL_WRITE: OnceLock<bool> = OnceLock::new();
 
 /// v1.24 — test-only helper. Opens an in-memory audit DB with the same
 /// schema as `open_audit_db_write` so tests that construct `MgmtState`
@@ -240,9 +238,8 @@ pub fn open_audit_db_memory() -> anyhow::Result<Connection> {
 /// One-time initialisation. Called from `main.rs` after the audit DB is
 /// open and the writer task is spawned. Idempotent: second call is a
 /// no-op (returns Err from .set, ignored).
-pub fn init_globals(writer: AuditWriter, dual_write: bool) {
+pub fn init_globals(writer: AuditWriter) {
     let _ = WRITER.set(writer);
-    let _ = DUAL_WRITE.set(dual_write);
 }
 
 /// Non-blocking dispatch from a request handler. No-op when init_globals
@@ -252,12 +249,6 @@ pub fn try_send(entry: &crate::safety::audit::AuditEntry) {
     if let Some(w) = WRITER.get() {
         w.try_send_inner(entry);
     }
-}
-
-/// True during the v1.24 dual-write window. Default `true` when env is
-/// absent or invalid. v1.25 flips the default.
-pub fn dual_write_enabled() -> bool {
-    *DUAL_WRITE.get().unwrap_or(&true)
 }
 
 /// Test-only / future-main-use accessor. Used by Task 7's retention task
@@ -446,113 +437,6 @@ fn run_retention(conn: &mut Connection, cutoff_ts: &str, vacuum: bool) {
     }
 }
 
-/// v1.24.2 — transactional, synchronous backfill. Replaces v1.24's
-/// `backfill_from_jsonl` which used `tokio::spawn` + channel + drain wait
-/// + filesystem marker. Now: own RW connection, single BEGIN...COMMIT
-/// wrapping every INSERT + the sentinel row.
-///
-/// Caller MUST invoke via `tokio::task::spawn_blocking`. Holds a write
-/// lock on `meta_logs.sqlite` for the duration of the transaction
-/// (production-confirmed: ~9s for ~2.58M rows). Run BEFORE the
-/// `AuditWriter` is spawned to keep this the only writer.
-pub fn backfill_from_jsonl_sync(
-    audit_db_path: &Path,
-    log_dir: &Path,
-) -> anyhow::Result<u64> {
-    let mut conn = open_audit_db_write(audit_db_path).with_context(|| {
-        format!("opening audit DB for backfill at {}", audit_db_path.display())
-    })?;
-
-    // Sentinel check: skip if already done
-    let already: Option<String> = conn
-        .query_row(
-            "SELECT value FROM _meta WHERE key = 'backfill_done'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if already.is_some() {
-        tracing::info!("audit backfill: sentinel present, skipping");
-        return Ok(0);
-    }
-
-    let entries = read_all_jsonl(log_dir);
-    let expected = entries.len() as u64;
-    tracing::info!(parsed = expected, "audit backfill: parsed JSONL files");
-
-    let tx = conn.transaction()?;
-    {
-        let mut stmt = tx.prepare(INSERT_SQL)?;
-        for e in &entries {
-            let h = hoist_indexed_fields(e.extra.clone());
-            stmt.execute(rusqlite::params![
-                e.ts,
-                e.tenant,
-                e.token_hint,
-                e.op,
-                e.status,
-                e.duration_ms,
-                e.error_code.as_deref(),
-                e.auth_method.as_deref(),
-                e.oauth_email.as_deref(),
-                e.oauth_error_code.as_deref(),
-                h.caller_ip,
-                h.user_agent,
-                h.remaining_json,
-            ])?;
-        }
-        tx.execute(
-            "INSERT INTO _meta(key, value) VALUES ('backfill_done', ?1)",
-            rusqlite::params![chrono::Utc::now().to_rfc3339()],
-        )?;
-    }
-    tx.commit()?;
-    tracing::info!(rows = expected, "audit backfill: committed atomically");
-    Ok(expected)
-}
-
-/// Walk `log_dir` for `audit-*.jsonl{,.N,.gz}` files and parse each.
-/// Order is by filename (date-prefixed names sort lexically = chronologically).
-/// Skips files that fail to read; logs a warn per skipped file.
-fn read_all_jsonl(log_dir: &std::path::Path) -> Vec<crate::safety::audit::AuditEntry> {
-    let mut out = Vec::new();
-    let entries = match std::fs::read_dir(log_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!(err=?e, "audit backfill: log_dir read failed");
-            return out;
-        }
-    };
-    let mut paths: Vec<_> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("audit-") && (
-                    n.contains(".jsonl") || n.contains(".jsonl.")
-                ))
-        })
-        .collect();
-    paths.sort();
-    for path in paths {
-        let parsed = if path.extension().and_then(|s| s.to_str()) == Some("gz") {
-            crate::mgmt::audit::read_gz(&path)
-        } else {
-            crate::mgmt::audit::read_plain(&path)
-        };
-        match parsed {
-            Ok((entries, errs)) => {
-                if errs > 0 {
-                    tracing::warn!(file=%path.display(), errs, "audit backfill: parse errors");
-                }
-                out.extend(entries);
-            }
-            Err(e) => tracing::warn!(file=%path.display(), err=?e, "audit backfill: read failed"),
-        }
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {

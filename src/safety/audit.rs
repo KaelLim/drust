@@ -247,56 +247,10 @@ impl AuditLog {
 /// `audit-YYYY-MM-DD.jsonl` file that `AuditLog::start` writes to, so
 /// the admin audit UI sees both. Failures are logged at WARN and
 /// swallowed — audit writes must never block the request path.
-pub async fn write_entry(dir: &std::path::Path, entry: &AuditEntry) {
-    // v1.24 — SQLite first via global OnceLock-backed writer. No-op when
-    // init_globals has not run (test paths, pre-init startup).
+pub async fn write_entry(_dir: &std::path::Path, entry: &AuditEntry) {
     crate::safety::audit_db::try_send(entry);
-
-    // JSONL safety net during the dual-write window. v1.24 default true;
-    // v1.25 flips default to false; v1.26 removes this branch entirely.
-    if crate::safety::audit_db::dual_write_enabled() {
-        write_jsonl_internal(dir, entry).await;
-    }
 }
 
-// Renamed wrapper around the existing JSONL write logic. Body verbatim
-// from pre-v1.24 write_entry; only the function name is new (so the
-// new write_entry can conditionally call it).
-async fn write_jsonl_internal(dir: &std::path::Path, entry: &AuditEntry) {
-    let date = entry.ts.get(..10).unwrap_or(&entry.ts);
-    let path = dir.join(format!("audit-{date}.jsonl"));
-    if let Err(e) = tokio::fs::create_dir_all(dir).await {
-        tracing::warn!(error = %e, "audit create_dir_all failed");
-        return;
-    }
-    let mut line = match serde_json::to_string(entry) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "audit serialize failed");
-            return;
-        }
-    };
-    line.push('\n');
-    let mut f = match tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .await
-    {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!(error = %e, "audit open failed");
-            return;
-        }
-    };
-    if let Err(e) = f.write_all(line.as_bytes()).await {
-        tracing::warn!(error = %e, "audit write_all failed");
-        return;
-    }
-    if let Err(e) = f.flush().await {
-        tracing::warn!(error = %e, "audit flush failed");
-    }
-}
 
 #[cfg(test)]
 mod sanitize_tests {
