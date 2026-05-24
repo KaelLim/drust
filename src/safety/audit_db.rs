@@ -383,6 +383,71 @@ fn run_retention(conn: &mut Connection, cutoff_ts: &str, vacuum: bool) {
     }
 }
 
+/// v1.24.2 — transactional, synchronous backfill. Replaces v1.24's
+/// `backfill_from_jsonl` which used `tokio::spawn` + channel + drain wait
+/// + filesystem marker. Now: own RW connection, single BEGIN...COMMIT
+/// wrapping every INSERT + the sentinel row.
+///
+/// Caller MUST invoke via `tokio::task::spawn_blocking`. Holds a write
+/// lock on `meta_logs.sqlite` for the duration of the transaction
+/// (production-confirmed: ~9s for ~2.58M rows). Run BEFORE the
+/// `AuditWriter` is spawned to keep this the only writer.
+pub fn backfill_from_jsonl_sync(
+    audit_db_path: &Path,
+    log_dir: &Path,
+) -> anyhow::Result<u64> {
+    let mut conn = open_audit_db_write(audit_db_path).with_context(|| {
+        format!("opening audit DB for backfill at {}", audit_db_path.display())
+    })?;
+
+    // Sentinel check: skip if already done
+    let already: Option<String> = conn
+        .query_row(
+            "SELECT value FROM _meta WHERE key = 'backfill_done'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if already.is_some() {
+        tracing::info!("audit backfill: sentinel present, skipping");
+        return Ok(0);
+    }
+
+    let entries = read_all_jsonl(log_dir);
+    let expected = entries.len() as u64;
+    tracing::info!(parsed = expected, "audit backfill: parsed JSONL files");
+
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare(INSERT_SQL)?;
+        for e in &entries {
+            let h = hoist_indexed_fields(e.extra.clone());
+            stmt.execute(rusqlite::params![
+                e.ts,
+                e.tenant,
+                e.token_hint,
+                e.op,
+                e.status,
+                e.duration_ms,
+                e.error_code.as_deref(),
+                e.auth_method.as_deref(),
+                e.oauth_email.as_deref(),
+                e.oauth_error_code.as_deref(),
+                h.caller_ip,
+                h.user_agent,
+                h.remaining_json,
+            ])?;
+        }
+        tx.execute(
+            "INSERT INTO _meta(key, value) VALUES ('backfill_done', ?1)",
+            rusqlite::params![chrono::Utc::now().to_rfc3339()],
+        )?;
+    }
+    tx.commit()?;
+    tracing::info!(rows = expected, "audit backfill: committed atomically");
+    Ok(expected)
+}
+
 /// One-shot backfill from existing JSONL audit files on first start.
 /// Idempotent via the marker file `audit-backfill.done` in `data_dir`.
 /// Sends every parsed entry through the writer channel; safe to call
