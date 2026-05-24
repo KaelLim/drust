@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their respective spec/plan docs under `docs/superpowers/`. Backfill is open work.
 
+## [1.24.1] — 2026-05-24
+
+### Fixed
+- Backup script now snapshots `meta_logs.sqlite` alongside `meta.sqlite`. Without this, a disk failure lost the entire 90-day audit trail introduced in v1.24.0 — backup retention is 30d so this restores roughly the last 30 days of audit recoverability. (F1 from the v1.24 post-ship review.)
+
 ## [1.24.0] — 2026-05-24
 
 ### Added

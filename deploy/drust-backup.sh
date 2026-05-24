@@ -10,6 +10,7 @@ trap "rm -rf '${STAGE}'" EXIT
 mkdir -p "${DATA_DIR}/backups"
 
 sqlite3 "${DATA_DIR}/meta.sqlite" "VACUUM INTO '${STAGE}/meta.sqlite'"
+sqlite3 "${DATA_DIR}/meta_logs.sqlite" "VACUUM INTO '${STAGE}/meta_logs.sqlite'"
 
 if [ -d "${DATA_DIR}/tenants" ]; then
   for DIR in "${DATA_DIR}"/tenants/*/; do
