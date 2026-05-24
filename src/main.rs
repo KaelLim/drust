@@ -56,10 +56,30 @@ async fn main() -> anyhow::Result<()> {
     }
     let meta = Arc::new(Mutex::new(meta));
 
-    // v1.24 — audit log SQLite. Parallel to meta.sqlite, separate file,
-    // separate connection. Spawn the background writer task and init the
-    // process-global handle so safety::audit::write_entry can dispatch.
+    // v1.24.2 — audit log SQLite. Order matters:
+    //   1. Open one RW connection just for backfill
+    //   2. Run backfill synchronously (BEGIN..COMMIT) on spawn_blocking
+    //   3. Drop that connection
+    //   4. Open a fresh RW connection for the AuditWriter task and
+    //      init the process-global handle
+    //
+    // Running backfill before the writer task spawns guarantees no
+    // contention on the write lock and makes the backfill commit + the
+    // sentinel atomic. See F2 in the v1.24 hardening spec.
     let audit_db_path = cfg.data_dir.join("meta_logs.sqlite");
+    let backfill_log = cfg.log_dir.clone();
+    {
+        let db = audit_db_path.clone();
+        let log = backfill_log.clone();
+        let backfilled = tokio::task::spawn_blocking(move || {
+            drust::safety::audit_db::backfill_from_jsonl_sync(&db, &log)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("audit backfill join: {e}"))?
+        .map_err(|e| anyhow::anyhow!("audit backfill: {e}"))?;
+        tracing::info!(rows = backfilled, "audit backfill: phase complete");
+    }
+
     let audit_write_conn = drust::safety::audit_db::open_audit_db_write(&audit_db_path)?;
     let audit_writer = drust::safety::audit_db::AuditWriter::new(audit_write_conn);
     let audit_dual_write = std::env::var("AUDIT_DUAL_WRITE")
@@ -71,17 +91,6 @@ async fn main() -> anyhow::Result<()> {
         dual_write = audit_dual_write,
         "audit SQLite ready"
     );
-
-    // One-shot backfill from existing JSONL on first start; idempotent via marker.
-    // Background task — main doesn't block waiting for it. ~10M rows takes a
-    // few minutes; admin UI sees rows trickle in as the writer drains.
-    let backfill_dir = cfg.data_dir.clone();
-    let backfill_log = cfg.log_dir.clone();
-    tokio::spawn(async move {
-        if let Err(e) = drust::safety::audit_db::backfill_from_jsonl(&backfill_dir, &backfill_log).await {
-            tracing::error!(err=?e, "audit backfill: failed");
-        }
-    });
 
     // v1.24 — daily retention: DELETE rows older than 90 days; VACUUM on
     // the 1st of each month (UTC). Sends a WriterCmd::RunRetention through
