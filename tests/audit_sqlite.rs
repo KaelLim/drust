@@ -314,3 +314,105 @@ async fn migration_promotes_filesystem_marker() {
         assert!(sentinel.is_some(), "expected sentinel after migration, got None");
     }
 }
+
+#[tokio::test]
+async fn backfill_skips_when_sentinel_present() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path();
+    let log_dir = tmp.path().join("logs");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let db_path = data_dir.join("meta_logs.sqlite");
+
+    // Pre-populate: 1 audit row + sentinel
+    {
+        let conn = drust::safety::audit_db::open_audit_db_write(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO audit (ts, tenant, token_hint, op, status) VALUES ('2026-01-01T00:00:00.000Z', '-', '-', 'preexisting', 'ok')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES ('backfill_done', '2026-05-24T00:00:00Z')",
+            [],
+        ).unwrap();
+    }
+
+    // Write a JSONL file with 3 new entries that would land if backfill ran
+    let jsonl = log_dir.join("audit-2026-05-23.jsonl");
+    std::fs::write(
+        &jsonl,
+        r#"{"ts":"2026-05-23T00:00:01.000Z","tenant":"t1","token_hint":"a","op":"x","status":"ok","duration_ms":1,"error_code":null,"extra":{}}
+{"ts":"2026-05-23T00:00:02.000Z","tenant":"t1","token_hint":"a","op":"x","status":"ok","duration_ms":1,"error_code":null,"extra":{}}
+{"ts":"2026-05-23T00:00:03.000Z","tenant":"t1","token_hint":"a","op":"x","status":"ok","duration_ms":1,"error_code":null,"extra":{}}
+"#,
+    ).unwrap();
+
+    let n = tokio::task::spawn_blocking({
+        let db = db_path.clone();
+        let log = log_dir.clone();
+        move || drust::safety::audit_db::backfill_from_jsonl_sync(&db, &log).unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(n, 0, "backfill should report 0 rows committed when skipped");
+
+    let conn = drust::safety::audit_db::open_audit_db_read(&db_path).unwrap();
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0)).unwrap();
+    assert_eq!(total, 1, "audit table should still have only the preexisting row");
+}
+
+#[tokio::test]
+async fn backfill_commits_atomically_and_writes_sentinel() {
+    use rusqlite::OptionalExtension;
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path();
+    let log_dir = tmp.path().join("logs");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let db_path = data_dir.join("meta_logs.sqlite");
+
+    // Seed JSONL with 3 entries
+    let jsonl = log_dir.join("audit-2026-05-23.jsonl");
+    std::fs::write(
+        &jsonl,
+        r#"{"ts":"2026-05-23T00:00:01.000Z","tenant":"t1","token_hint":"a","op":"x","status":"ok","duration_ms":1,"error_code":null,"extra":{}}
+{"ts":"2026-05-23T00:00:02.000Z","tenant":"t1","token_hint":"a","op":"y","status":"ok","duration_ms":2,"error_code":null,"extra":{}}
+{"ts":"2026-05-23T00:00:03.000Z","tenant":"t1","token_hint":"a","op":"z","status":"error","duration_ms":3,"error_code":"E","extra":{}}
+"#,
+    ).unwrap();
+
+    let n = tokio::task::spawn_blocking({
+        let db = db_path.clone();
+        let log = log_dir.clone();
+        move || drust::safety::audit_db::backfill_from_jsonl_sync(&db, &log).unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(n, 3);
+
+    let conn = drust::safety::audit_db::open_audit_db_read(&db_path).unwrap();
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0)).unwrap();
+    assert_eq!(total, 3);
+
+    let sentinel: Option<String> = conn
+        .query_row(
+            "SELECT value FROM _meta WHERE key = 'backfill_done'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert!(sentinel.is_some(), "sentinel must be written after successful backfill");
+
+    // Second call should skip (idempotent)
+    let n2 = tokio::task::spawn_blocking({
+        let db = db_path.clone();
+        let log = log_dir.clone();
+        move || drust::safety::audit_db::backfill_from_jsonl_sync(&db, &log).unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(n2, 0);
+    let total2: i64 = conn.query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0)).unwrap();
+    assert_eq!(total2, 3, "second backfill must not duplicate rows");
+}
