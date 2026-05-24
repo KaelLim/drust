@@ -7,7 +7,7 @@
 //! in production.
 
 use anyhow::Context;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE INDEX IF NOT EXISTS idx_audit_ts        ON audit(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_tenant_ts ON audit(tenant, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_status_ts ON audit(ts DESC) WHERE status = 'error';
+
+CREATE TABLE IF NOT EXISTS _meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+) STRICT;
 ";
 
 const PRAGMAS_WRITE: &str = "
@@ -68,6 +73,37 @@ pub fn open_audit_db_write(path: &Path) -> anyhow::Result<Connection> {
         .with_context(|| format!("opening audit DB at {}", path.display()))?;
     conn.execute_batch(SCHEMA_SQL)
         .with_context(|| format!("opening audit DB at {}", path.display()))?;
+
+    // v1.24.2 one-time migration: if the audit table has rows AND the
+    // legacy filesystem marker `audit-backfill.done` exists AND no `_meta`
+    // sentinel is present yet, promote the marker to the in-DB sentinel.
+    // Without this, a v1.24 node upgrading to v1.24.2 would re-run
+    // backfill and produce duplicates (see F2 in the design spec).
+    let has_sentinel: bool = conn
+        .query_row(
+            "SELECT 1 FROM _meta WHERE key = 'backfill_done'",
+            [],
+            |_| Ok(true),
+        )
+        .optional()?
+        .is_some();
+    let has_rows: bool = conn
+        .query_row("SELECT 1 FROM audit LIMIT 1", [], |_| Ok(true))
+        .optional()?
+        .is_some();
+    let fs_marker = path
+        .parent()
+        .map(|p| p.join("audit-backfill.done"))
+        .unwrap_or_default();
+    if !has_sentinel && has_rows && fs_marker.exists() {
+        // INSERT OR IGNORE so a race between concurrent opens never errors.
+        conn.execute(
+            "INSERT OR IGNORE INTO _meta(key, value) VALUES ('backfill_done', ?1)",
+            rusqlite::params![chrono::Utc::now().to_rfc3339()],
+        )?;
+        tracing::info!("v1.24.2 migration: filesystem backfill marker promoted to _meta sentinel");
+    }
+
     Ok(conn)
 }
 

@@ -262,3 +262,55 @@ async fn tenant_filter_excludes_other_tenants_in_overview() {
     // Top tenants empty when tenant filter is applied (per spec).
     assert!(ov.top_tenants.is_empty());
 }
+
+#[tokio::test]
+async fn open_audit_db_write_creates_meta_table() {
+    use rusqlite::OptionalExtension;
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("meta_logs.sqlite");
+    let conn = drust::safety::audit_db::open_audit_db_write(&p).unwrap();
+    let exists: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='_meta'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(exists.as_deref(), Some("_meta"));
+}
+
+#[tokio::test]
+async fn migration_promotes_filesystem_marker() {
+    use rusqlite::OptionalExtension;
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path();
+    let db_path = data_dir.join("meta_logs.sqlite");
+
+    // 1. First open: creates schema, seed 1 audit row, no marker → no sentinel
+    {
+        let conn = drust::safety::audit_db::open_audit_db_write(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO audit (ts, tenant, token_hint, op, status) VALUES ('2026-01-01T00:00:00.000Z', '-', '-', 'test_op', 'ok')",
+            [],
+        ).unwrap();
+    }
+
+    // 2. Touch the legacy filesystem marker (as v1.24 would have left it)
+    let fs_marker = data_dir.join("audit-backfill.done");
+    std::fs::write(&fs_marker, "").unwrap();
+
+    // 3. Re-open → migration should promote the marker to a sentinel row
+    {
+        let conn = drust::safety::audit_db::open_audit_db_write(&db_path).unwrap();
+        let sentinel: Option<String> = conn
+            .query_row(
+                "SELECT value FROM _meta WHERE key = 'backfill_done'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(sentinel.is_some(), "expected sentinel after migration, got None");
+    }
+}
