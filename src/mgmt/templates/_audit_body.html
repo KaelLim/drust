@@ -46,6 +46,14 @@
   </div>
 </div>
 
+{% if ov.dropped_total > 0 %}
+<div class="card" style="margin-bottom:18px;border-left:3px solid var(--danger);padding:8px 14px;">
+  <strong>{{ t.s("audit_body.warn.dropped_label") }}:</strong>
+  <span style="color:var(--danger);font-weight:600;">{{ ov.dropped_total }}</span>
+  <span class="meta" style="margin-left:8px;">{{ t.s("audit_body.warn.dropped_suffix") }}</span>
+</div>
+{% endif %}
+
 {% if is_host_scope %}
 <div class="card" style="margin-bottom:18px;">
   <div class="card-head">

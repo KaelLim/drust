@@ -316,6 +316,10 @@ zero_err = "0% 錯誤"
 browse = "瀏覽"
 overview = "總覽"
 
+[audit_body.warn]
+dropped_label = "Audit 訊息丟棄"
+dropped_suffix = "自上次啟動以來"
+
 [audit_body.table]
 err_pct = "錯誤率"
 

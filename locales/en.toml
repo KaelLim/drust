@@ -299,6 +299,10 @@ zero_err = "0% err"
 browse = "browse"
 overview = "overview"
 
+[audit_body.warn]
+dropped_label = "Audit drops"
+dropped_suffix = "since last restart"
+
 [audit_body.table]
 err_pct = "err%"
 
