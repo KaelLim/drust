@@ -423,3 +423,50 @@ async fn dropped_total_reports_zero_before_init() {
     let n = drust::safety::audit_db::dropped_total();
     assert_eq!(n, 0);
 }
+
+#[test]
+fn next_0300_utc_before_fire_time() {
+    use chrono::{TimeZone, Utc};
+    let now = Utc.with_ymd_and_hms(2026, 5, 24, 2, 59, 0).unwrap();
+    let next = drust::safety::audit_db::next_0300_utc(now);
+    assert_eq!(next, Utc.with_ymd_and_hms(2026, 5, 24, 3, 0, 0).unwrap());
+}
+
+#[test]
+fn next_0300_utc_after_fire_time() {
+    use chrono::{TimeZone, Utc};
+    let now = Utc.with_ymd_and_hms(2026, 5, 24, 3, 0, 1).unwrap();
+    let next = drust::safety::audit_db::next_0300_utc(now);
+    assert_eq!(next, Utc.with_ymd_and_hms(2026, 5, 25, 3, 0, 0).unwrap());
+}
+
+#[test]
+fn should_vacuum_true_on_day_one() {
+    use chrono::{TimeZone, Utc};
+    let now = Utc.with_ymd_and_hms(2026, 6, 1, 3, 0, 0).unwrap();
+    let last = Some(Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap());
+    assert!(drust::safety::audit_db::should_vacuum(now, last));
+}
+
+#[test]
+fn should_vacuum_true_when_last_vacuum_in_previous_month() {
+    use chrono::{TimeZone, Utc};
+    let now = Utc.with_ymd_and_hms(2026, 6, 15, 3, 0, 0).unwrap();
+    let last = Some(Utc.with_ymd_and_hms(2026, 5, 1, 3, 0, 0).unwrap());
+    assert!(drust::safety::audit_db::should_vacuum(now, last));
+}
+
+#[test]
+fn should_vacuum_false_when_last_vacuum_same_month() {
+    use chrono::{TimeZone, Utc};
+    let now = Utc.with_ymd_and_hms(2026, 6, 15, 3, 0, 0).unwrap();
+    let last = Some(Utc.with_ymd_and_hms(2026, 6, 1, 3, 0, 0).unwrap());
+    assert!(!drust::safety::audit_db::should_vacuum(now, last));
+}
+
+#[test]
+fn should_vacuum_true_when_no_record() {
+    use chrono::{TimeZone, Utc};
+    let now = Utc.with_ymd_and_hms(2026, 6, 15, 3, 0, 0).unwrap();
+    assert!(drust::safety::audit_db::should_vacuum(now, None));
+}

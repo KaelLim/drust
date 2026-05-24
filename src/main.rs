@@ -1,6 +1,5 @@
 use axum::{Router, routing::get};
 use axum::http::{HeaderName, HeaderValue};
-use chrono::Datelike;
 use drust::config::Config;
 use drust::mcp::http_registry::McpHttpRegistry;
 use drust::mcp::server::McpRegistry;
@@ -92,26 +91,61 @@ async fn main() -> anyhow::Result<()> {
         "audit SQLite ready"
     );
 
-    // v1.24 — daily retention: DELETE rows older than 90 days; VACUUM on
-    // the 1st of each month (UTC). Sends a WriterCmd::RunRetention through
-    // the same channel the writer task drains, so connection ownership
-    // stays single-threaded (no Mutex contention with the hot Insert path).
+    // v1.24.2 — daily retention: DELETE rows older than 90 days; VACUUM
+    // on day 1 OR when last_vacuum_ts is in a previous month. Anchored
+    // to wall-clock 03:00 UTC via sleep_until so the cadence doesn't
+    // drift with process uptime, and a restart on day 1 doesn't skip
+    // the month's VACUUM. See F4 in the v1.24 hardening spec.
+    let audit_meta_for_retention = std::sync::Arc::new(tokio::sync::Mutex::new(
+        drust::safety::audit_db::open_audit_db_read(&audit_db_path)?,
+    ));
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // Burn the immediate first tick — drust just started, no need
-        // to run retention before the first real day boundary.
-        tick.tick().await;
         loop {
-            tick.tick().await;
             let now = chrono::Utc::now();
-            let cutoff = (now - chrono::Duration::days(90))
+            let next = drust::safety::audit_db::next_0300_utc(now);
+            let dur = (next - now)
+                .to_std()
+                .unwrap_or(std::time::Duration::from_secs(60));
+            tokio::time::sleep(dur).await;
+
+            let fired = chrono::Utc::now();
+            let cutoff = (fired - chrono::Duration::days(90))
                 .format("%Y-%m-%dT%H:%M:%S%.3fZ")
                 .to_string();
-            let do_vacuum = now.day() == 1;
+
+            let last = drust::safety::audit_db::read_last_vacuum_ts(&audit_meta_for_retention).await;
+            let do_vacuum = drust::safety::audit_db::should_vacuum(fired, last);
+
             match drust::safety::audit_db::writer_for_init_use() {
-                Some(w) => w.send_retention(cutoff, do_vacuum).await,
+                Some(w) => {
+                    w.send_retention(cutoff, do_vacuum).await;
+                    if do_vacuum {
+                        w.send_set_meta(
+                            "last_vacuum_ts".to_string(),
+                            fired.to_rfc3339(),
+                        )
+                        .await;
+                    }
+                }
                 None => tracing::error!("audit retention: global writer not initialised"),
+            }
+        }
+    });
+
+    // v1.24.2 — drop summary: every 60s, log an info-level summary of
+    // audit-channel drops since the last report. Complements the sampled
+    // WARN in try_send and the admin UI counter. See F3 in the spec.
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_reported: u64 = 0;
+        loop {
+            tick.tick().await;
+            let total = drust::safety::audit_db::dropped_total();
+            let delta = total.saturating_sub(last_reported);
+            if delta > 0 {
+                tracing::info!(delta, total, "audit: channel-drop summary (60s)");
+                last_reported = total;
             }
         }
     });

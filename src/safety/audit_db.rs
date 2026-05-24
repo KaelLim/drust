@@ -180,6 +180,7 @@ pub struct AuditWriter {
 pub enum WriterCmd {
     Insert(crate::safety::audit::AuditEntry),
     RunRetention { cutoff_ts: String, vacuum: bool },
+    SetMeta { key: String, value: String },
 }
 
 impl AuditWriter {
@@ -238,6 +239,13 @@ impl AuditWriter {
             .send(WriterCmd::Insert(entry))
             .await
             .map_err(|_| ())
+    }
+
+    /// Persist a single key/value into the audit DB's `_meta` table
+    /// via the writer task. Used by the retention task to record
+    /// `last_vacuum_ts`. Single-owner-of-connection invariant preserved.
+    pub async fn send_set_meta(&self, key: String, value: String) {
+        let _ = self.tx.send(WriterCmd::SetMeta { key, value }).await;
     }
 }
 
@@ -300,6 +308,64 @@ pub fn dropped_total() -> u64 {
         .unwrap_or(0)
 }
 
+/// Compute the next 03:00 UTC fire time strictly after `now`. If `now`
+/// is exactly 03:00:00 UTC, returns the same time tomorrow (no double-fire).
+pub fn next_0300_utc(now: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+    let today_0300 = now
+        .date_naive()
+        .and_hms_opt(3, 0, 0)
+        .expect("3am is valid")
+        .and_utc();
+    if now < today_0300 {
+        today_0300
+    } else {
+        today_0300 + chrono::Duration::days(1)
+    }
+}
+
+/// Decide whether the retention pass should also run VACUUM. True when:
+/// - `now` is the 1st of the month (always — preserves the original
+///   month-boundary intent), OR
+/// - no previous vacuum is recorded (fresh process / cold DB), OR
+/// - the last recorded vacuum was in a previous month.
+///
+/// Last clause is what recovers from a restart on day 1 that skipped
+/// the day-1 fire — by day-2+ same month, the check still returns true.
+pub fn should_vacuum(
+    now: chrono::DateTime<chrono::Utc>,
+    last_vacuum: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    use chrono::Datelike;
+    if now.day() == 1 {
+        return true;
+    }
+    match last_vacuum {
+        None => true,
+        Some(last) => last.year() != now.year() || last.month() != now.month(),
+    }
+}
+
+/// Read the `last_vacuum_ts` from the audit `_meta` table. Returns None
+/// when the row is absent (cold DB) or unparseable. Uses the audit RO
+/// connection — fast, no contention with the writer task.
+pub async fn read_last_vacuum_ts(
+    conn: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let guard = conn.lock().await;
+    let s: Option<String> = guard
+        .query_row(
+            "SELECT value FROM _meta WHERE key = 'last_vacuum_ts'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    drop(guard);
+    s.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
 async fn writer_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriterCmd>) {
     let mut buf: Vec<crate::safety::audit::AuditEntry> =
         Vec::with_capacity(FLUSH_BATCH_SIZE);
@@ -322,6 +388,14 @@ async fn writer_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriterCmd>) {
                             }
                             run_retention(&mut conn, &cutoff_ts, vacuum);
                             break;
+                        }
+                        Some(WriterCmd::SetMeta { key, value }) => {
+                            if let Err(e) = conn.execute(
+                                "INSERT OR REPLACE INTO _meta(key, value) VALUES (?1, ?2)",
+                                rusqlite::params![key, value],
+                            ) {
+                                tracing::warn!(error = %e, key = %key, "audit: _meta write failed");
+                            }
                         }
                         None => {
                             // channel closed — drain and exit (shutdown path)
