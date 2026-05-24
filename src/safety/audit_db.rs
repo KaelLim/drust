@@ -201,8 +201,17 @@ impl AuditWriter {
         match self.tx.try_send(WriterCmd::Insert(entry.clone())) {
             Ok(_) => {}
             Err(_) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!("audit write dropped (channel full)");
+                let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                // Emit WARN at thresholds to bound systemd-journal spam
+                // during sustained backpressure. F3 rationale: a real
+                // spike can hit 1000/s and produce one identical WARN
+                // per drop, masking real errors in the journal.
+                if n == 1 || n % 10_000 == 0 {
+                    tracing::warn!(
+                        total_dropped = n,
+                        "audit: channel full, entry dropped (rate-limited log)"
+                    );
+                }
             }
         }
     }
@@ -279,6 +288,16 @@ pub fn dual_write_enabled() -> bool {
 /// non-blocking variant).
 pub fn writer_for_init_use() -> Option<&'static AuditWriter> {
     WRITER.get()
+}
+
+/// Process-lifetime counter: total number of audit entries dropped
+/// because the writer channel was full. Resets to 0 on restart.
+/// Returns 0 when no writer is initialised (test paths, pre-init).
+pub fn dropped_total() -> u64 {
+    WRITER
+        .get()
+        .map(|w| w.dropped.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 async fn writer_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriterCmd>) {
