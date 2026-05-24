@@ -31,7 +31,12 @@ async fn test_router() -> (axum::Router, std::sync::Arc<tokio::sync::Mutex<rusql
 
     // Tiny router that just attaches Extension<Theme> via theme_layer and
     // echoes the resolved value as a response header.
-    let state = drust::mgmt::theme_layer::ThemeLayerState { meta: meta.clone() };
+    // Uses allow_db_fallback=false (outer-layer posture) — no AdminId injected
+    // in these basic tests.
+    let state = drust::mgmt::theme_layer::ThemeLayerState {
+        meta: meta.clone(),
+        allow_db_fallback: false,
+    };
     let app = axum::Router::new()
         .route(
             "/probe",
@@ -164,4 +169,163 @@ async fn all_themes_in_enum_have_resolvable_palette() {
     for t in Theme::ALL {
         let _ = palette_for(*t); // panics if any partner is missing
     }
+}
+
+// ---------------------------------------------------------------------------
+// v1.25 — F5/F6: inner-layer (allow_db_fallback=true) tests
+// ---------------------------------------------------------------------------
+
+/// Probe middleware: forces Extension<AdminId>(id) into request extensions.
+/// Replaces the real admin_session_layer in the F6 tests, which exercise
+/// the inner theme_layer in isolation.
+async fn inject_admin_id(
+    id: i64,
+    mut req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    req.extensions_mut()
+        .insert(drust::auth::middleware::AdminId(id));
+    next.run(req).await
+}
+
+/// Build an in-memory meta DB with one admin row (theme optionally set).
+async fn setup_meta_with_admin(
+    id: i64,
+    theme: Option<&str>,
+) -> (
+    std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    tempfile::TempDir,
+) {
+    let tmp = tempfile::tempdir().unwrap();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE admins (
+            id INTEGER PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            email TEXT,
+            locale TEXT,
+            theme TEXT
+        );",
+    )
+    .unwrap();
+    if let Some(t) = theme {
+        conn.execute(
+            "INSERT INTO admins(id, username, password_hash, theme) VALUES (?1, 'test', '$argon2id$dummy$', ?2)",
+            rusqlite::params![id, t],
+        )
+        .unwrap();
+    } else {
+        conn.execute(
+            "INSERT INTO admins(id, username, password_hash) VALUES (?1, 'test', '$argon2id$dummy$')",
+            rusqlite::params![id],
+        )
+        .unwrap();
+    }
+    (
+        std::sync::Arc::new(tokio::sync::Mutex::new(conn)),
+        tmp,
+    )
+}
+
+/// Handler that echoes the resolved Theme as plain text.
+async fn theme_echo_handler(
+    axum::extract::Extension(theme): axum::extract::Extension<drust::mgmt::theme::Theme>,
+) -> String {
+    theme.code().to_string()
+}
+
+async fn body_to_string(resp: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 64)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+/// F6-a: inner layer (allow_db_fallback=true) falls back to DB when no cookie.
+#[tokio::test]
+async fn inner_layer_falls_back_to_db_when_cookie_absent() {
+    let (meta, _tmp) = setup_meta_with_admin(1, Some("soft-light")).await;
+    let state = drust::mgmt::theme_layer::ThemeLayerState {
+        meta: meta.clone(),
+        allow_db_fallback: true,
+    };
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(theme_echo_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            drust::mgmt::theme_layer::theme_layer,
+        ))
+        .layer(axum::middleware::from_fn(|req, next| {
+            inject_admin_id(1, req, next)
+        }));
+
+    let resp = app
+        .oneshot(
+            axum::http::Request::get("/")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_to_string(resp).await, "soft-light");
+}
+
+/// F6-b: inner layer — cookie wins over DB value.
+#[tokio::test]
+async fn inner_layer_cookie_wins_over_db() {
+    let (meta, _tmp) = setup_meta_with_admin(1, Some("soft-light")).await;
+    let state = drust::mgmt::theme_layer::ThemeLayerState {
+        meta: meta.clone(),
+        allow_db_fallback: true,
+    };
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(theme_echo_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            drust::mgmt::theme_layer::theme_layer,
+        ))
+        .layer(axum::middleware::from_fn(|req, next| {
+            inject_admin_id(1, req, next)
+        }));
+
+    let resp = app
+        .oneshot(
+            axum::http::Request::get("/")
+                .header("Cookie", "drust_theme=cozy-dark")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_to_string(resp).await, "cozy-dark");
+}
+
+/// F5: outer layer (allow_db_fallback=false) ignores DB even if AdminId present.
+#[tokio::test]
+async fn outer_layer_does_not_read_db_even_if_admin_id_present() {
+    let (meta, _tmp) = setup_meta_with_admin(1, Some("soft-light")).await;
+    let state = drust::mgmt::theme_layer::ThemeLayerState {
+        meta: meta.clone(),
+        allow_db_fallback: false,
+    };
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(theme_echo_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            drust::mgmt::theme_layer::theme_layer,
+        ))
+        .layer(axum::middleware::from_fn(|req, next| {
+            inject_admin_id(1, req, next)
+        }));
+
+    let resp = app
+        .oneshot(
+            axum::http::Request::get("/")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_to_string(resp).await, "system");
 }
