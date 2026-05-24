@@ -9,6 +9,7 @@
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
+use serial_test::serial;
 use tower::ServiceExt;
 
 // Helper: build a minimal admin router with our test meta DB.
@@ -299,6 +300,42 @@ async fn inner_layer_cookie_wins_over_db() {
         .await
         .unwrap();
     assert_eq!(body_to_string(resp).await, "cozy-dark");
+}
+
+// ---------------------------------------------------------------------------
+// v1.25 — T11: centralised cookie helpers
+// ---------------------------------------------------------------------------
+
+#[test]
+#[serial(env_cookie_secure)]
+fn theme_cookie_has_drust_path_and_secure() {
+    // ensure no override is set
+    // SAFETY: tests inside #[serial] never race
+    unsafe {
+        std::env::remove_var("DRUST_DEV_NO_SECURE_COOKIES");
+    }
+    let c = drust::mgmt::theme::build_theme_cookie(drust::mgmt::theme::Theme::CozyDark);
+    assert!(c.contains("drust_theme=cozy-dark"), "cookie: {c}");
+    assert!(c.contains("Path=/drust"), "cookie: {c}");
+    assert!(c.contains("SameSite=Lax"), "cookie: {c}");
+    assert!(c.contains("Secure"), "cookie: {c}");
+    assert!(c.contains("Max-Age=31536000"), "cookie: {c}");
+}
+
+#[test]
+#[serial(env_cookie_secure)]
+fn theme_cookie_dev_override_drops_secure() {
+    // SAFETY: serial wrapper ensures no concurrent access
+    unsafe {
+        std::env::set_var("DRUST_DEV_NO_SECURE_COOKIES", "1");
+    }
+    let c = drust::mgmt::theme::build_theme_cookie(drust::mgmt::theme::Theme::SoftLight);
+    unsafe {
+        std::env::remove_var("DRUST_DEV_NO_SECURE_COOKIES");
+    }
+    assert!(c.contains("drust_theme=soft-light"));
+    assert!(c.contains("Path=/drust"));
+    assert!(!c.contains("Secure"), "Secure must be absent when dev override is set; got: {c}");
 }
 
 /// F5: outer layer (allow_db_fallback=false) ignores DB even if AdminId present.

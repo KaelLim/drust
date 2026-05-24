@@ -77,6 +77,26 @@ impl Theme {
     }
 }
 
+/// Build the `Set-Cookie` header value for the `drust_theme` preference
+/// cookie. Aligned with `drust_session` attributes: `Path=/drust` (no
+/// leak to /t/<id>/... tenant routes), `SameSite=Lax` (Strict breaks
+/// OAuth callback chain — see project memory), `Secure` (production).
+///
+/// `DRUST_DEV_NO_SECURE_COOKIES=1` strips the `Secure` attribute so
+/// dev workflow on plain-HTTP `127.0.0.1:47826` accepts cookie writes.
+/// MUST NOT be set in production.
+pub fn build_theme_cookie(theme: Theme) -> String {
+    let base = format!(
+        "drust_theme={code}; Path=/drust; Max-Age=31536000; SameSite=Lax",
+        code = theme.code(),
+    );
+    if std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_ok() {
+        base
+    } else {
+        format!("{base}; Secure")
+    }
+}
+
 /// Public projection for askama templates that iterate the theme catalog.
 /// Lives next to `Theme` so adding a theme only touches one file.
 pub struct ThemeOption {
