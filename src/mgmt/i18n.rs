@@ -62,6 +62,21 @@ impl Locale {
     }
 }
 
+/// Build the `Set-Cookie` header value for the `drust_locale` preference
+/// cookie. Same attributes as `drust_theme`. See
+/// `crate::mgmt::theme::build_theme_cookie` for rationale.
+pub fn build_locale_cookie(locale: Locale) -> String {
+    let base = format!(
+        "drust_locale={code}; Path=/drust; Max-Age=31536000; SameSite=Lax",
+        code = locale.code(),
+    );
+    if std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_ok() {
+        base
+    } else {
+        format!("{base}; Secure")
+    }
+}
+
 /// Public projection for askama templates that iterate the locale catalog.
 /// Lives next to `Locale` so adding a language only touches one file.
 pub struct LocaleOption {
