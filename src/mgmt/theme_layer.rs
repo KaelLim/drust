@@ -2,26 +2,36 @@
 //!
 //! Resolution order:
 //!   1. `drust_theme` cookie (long-lived, set by settings dropdown & login)
-//!   2. logged-in admin's `admins.theme` column (if Extension<AdminId> present)
+//!   2. logged-in admin's `admins.theme` column (if Extension<AdminId> present
+//!      AND `allow_db_fallback` is true)
 //!   3. Default `Theme::System`
 //!
-//! Mounted as the OUTERMOST layer on the admin router — same as locale_layer
-//! — so `/login` and the OAuth callback chain also resolve a theme. Users
-//! who haven't logged in get the cookie-or-System path; logged-in users get
-//! their DB row if the cookie isn't fresh enough.
+//! v1.25 — two-layer registration:
+//!
+//! • **Outer layer** (`allow_db_fallback=false`, outermost on the full router):
+//!   covers `/login` and OAuth callback where `AdminId` is not yet resolved.
+//!   Cookie-or-System only.
+//!
+//! • **Inner layer** (`allow_db_fallback=true`, inside `protected` after
+//!   `admin_session_layer`): `AdminId` is now in request extensions; falls back
+//!   from cookie → DB → System and overwrites whatever the outer layer set.
 
 use axum::{extract::Request, http::HeaderMap, middleware::Next, response::Response};
 use axum_extra::extract::cookie::CookieJar;
 
 use crate::mgmt::theme::Theme;
 
-/// State the theme middleware needs to look up `admins.theme`. We can't
-/// reach into MgmtState directly because the layer is registered on the
-/// outermost router (where AdminId hasn't been resolved yet), so we accept
-/// just the meta-connection mutex.
+/// State the theme middleware needs to look up `admins.theme`.
 #[derive(Clone)]
 pub struct ThemeLayerState {
     pub meta: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    /// When `false`, this layer ignores `AdminId` and resolves cookie-or-System
+    /// only. Used by the outer layer (covers `/login`, OAuth callback) where
+    /// `AdminId` is not yet in request extensions.
+    /// When `true`, falls back to `SELECT theme FROM admins WHERE id = ?`
+    /// — required for the inner layer (inside `protected`, after
+    /// `admin_session_layer`).
+    pub allow_db_fallback: bool,
 }
 
 pub async fn theme_layer(
@@ -40,7 +50,8 @@ pub async fn theme_layer(
     next.run(req).await
 }
 
-/// Pure-ish resolver: cookie wins, else DB if admin is logged in, else default.
+/// Pure-ish resolver: cookie wins, else DB if admin is logged in AND
+/// `allow_db_fallback` is set, else default.
 pub async fn resolve_theme(
     jar: &CookieJar,
     state: &ThemeLayerState,
@@ -52,23 +63,27 @@ pub async fn resolve_theme(
             return t;
         }
     }
-    // (2) DB lookup if logged in
-    if let Some(id) = admin_id {
-        let conn = state.meta.lock().await;
-        let row: Option<String> = conn
-            .query_row(
-                "SELECT theme FROM admins WHERE id = ?1",
-                rusqlite::params![id],
-                |r| r.get::<_, Option<String>>(0),
-            )
-            .ok()
-            .flatten();
-        drop(conn);
-        if let Some(s) = row {
-            if let Some(t) = Theme::from_tag(&s) {
-                return t;
+    // (2) DB lookup if logged in AND this layer is allowed to do it.
+    // The outer layer (allow_db_fallback=false) skips this branch because
+    // AdminId has not been populated by admin_session_layer yet.
+    if state.allow_db_fallback {
+        if let Some(id) = admin_id {
+            let conn = state.meta.lock().await;
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT theme FROM admins WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten();
+            drop(conn);
+            if let Some(s) = row {
+                if let Some(t) = Theme::from_tag(&s) {
+                    return t;
+                }
+                tracing::warn!(value = %s, "admins.theme contains unknown code — falling back to System");
             }
-            tracing::warn!(value = %s, "admins.theme contains unknown code — falling back to System");
         }
     }
     // (3) default
@@ -96,6 +111,7 @@ mod tests {
         .unwrap();
         ThemeLayerState {
             meta: std::sync::Arc::new(tokio::sync::Mutex::new(conn)),
+            allow_db_fallback: true,
         }
     }
 

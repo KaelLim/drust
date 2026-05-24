@@ -504,8 +504,12 @@ pub fn build_mgmt_router(state: MgmtState) -> Router {
     // `main.rs`. Production main also calls this directly; the second call
     // is a cheap no-op.
     crate::mgmt::i18n::init_bundles();
+    // build_mgmt_router covers only the unauthenticated mini-router
+    // (/login, /logout, root redirect) — no AdminId ever in extensions here,
+    // so outer (cookie-only) layer is correct.
     let theme_state = crate::mgmt::theme_layer::ThemeLayerState {
         meta: state.meta.clone(),
+        allow_db_fallback: false,
     };
     Router::new()
         .route("/", get(root_redirect))
@@ -834,6 +838,13 @@ impl MgmtState {
             .route("/admin/settings/theme", post(settings_theme_save))
             .with_state(settings_state);
 
+        // v1.25 — inner theme layer: runs after admin_session_layer so
+        // AdminId is in request extensions. Falls back cookie → DB → System.
+        // Overwrites whatever the outer layer set. (F5/F6 from v1.23 review.)
+        let inner_theme_state = crate::mgmt::theme_layer::ThemeLayerState {
+            meta: self.meta.clone(),
+            allow_db_fallback: true,
+        };
         let protected = tenants_router
             .merge(public_files_router)
             .merge(admin_tenant_files_router)
@@ -843,10 +854,19 @@ impl MgmtState {
             .layer(axum::middleware::from_fn_with_state(
                 session,
                 admin_session_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                inner_theme_state,
+                crate::mgmt::theme_layer::theme_layer,
             ));
 
-        let theme_state = crate::mgmt::theme_layer::ThemeLayerState {
+        // Outer theme layer: cookie-only (allow_db_fallback=false). Covers
+        // unauthenticated routes (/login, OAuth callback) where AdminId is
+        // not yet populated. Inner layer (above) overwrites this for
+        // authenticated routes.
+        let outer_theme_state = crate::mgmt::theme_layer::ThemeLayerState {
             meta: self.meta.clone(),
+            allow_db_fallback: false,
         };
         public
             .merge(legacy_redirects)
@@ -859,7 +879,7 @@ impl MgmtState {
                 crate::mgmt::locale_layer::locale_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
-                theme_state,
+                outer_theme_state,
                 crate::mgmt::theme_layer::theme_layer,
             ))
     }
