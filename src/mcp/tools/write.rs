@@ -279,6 +279,37 @@ pub async fn update_record(
     Ok(json!({ "record": record }))
 }
 
+/// v1.26 — Validation half of `delete_record`, used by dry_run mode.
+/// Runs the existence + protection checks but returns Ok before the
+/// DELETE would execute. Errors mirror the real path 1:1 so dry_run
+/// surfaces the same problems a real call would.
+pub async fn delete_record_validate(
+    s: &DrustMcp,
+    collection: &str,
+    id: i64,
+) -> anyhow::Result<()> {
+    if is_protected_collection(collection) {
+        anyhow::bail!("PROTECTED_COLLECTION: cannot delete from {collection}");
+    }
+    let coll_owned = collection.to_string();
+    let exists: i64 = s
+        .inner()
+        .pool
+        .with_reader(move |c| {
+            let count_sql = format!(
+                "SELECT COUNT(*) FROM \"{}\" WHERE id = ?1",
+                coll_owned.replace('"', "\"\"")
+            );
+            c.query_row(&count_sql, rusqlite::params![id], |r| r.get(0))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("COLLECTION_NOT_FOUND: {e}"))?;
+    if exists == 0 {
+        anyhow::bail!("RECORD_NOT_FOUND: id {id} not in {collection}");
+    }
+    Ok(())
+}
+
 pub async fn delete_record(
     s: &DrustMcp,
     collection: &str,

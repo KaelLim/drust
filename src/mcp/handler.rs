@@ -176,6 +176,10 @@ pub struct UpdateRecordArgs {
 pub struct DeleteRecordArgs {
     pub collection: String,
     pub id: i64,
+    /// v1.26: when true, return blast radius (fk_blocks etc.) without
+    /// actually deleting. Defaults to false (existing behavior).
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Clone, schemars::JsonSchema, Deserialize)]
@@ -779,14 +783,29 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(
-        description = "Delete one record by id. A foreign-key constraint from another \
-        collection (ON DELETE RESTRICT) will block the delete if any children reference this row."
-    )]
+    #[tool(description = "Delete a record from a collection by primary key. \
+        Returns RECORD_NOT_FOUND if the row does not exist; FK_RESTRICT if \
+        another collection still references it. \
+        v1.26: pass `dry_run: true` to receive blast radius (which collections \
+        would block the delete) without actually deleting.")]
     async fn delete_record(
         &self,
-        Parameters(DeleteRecordArgs { collection, id }): Parameters<DeleteRecordArgs>,
+        Parameters(DeleteRecordArgs { collection, id, dry_run }): Parameters<DeleteRecordArgs>,
     ) -> Result<CallToolResult, McpError> {
+        if dry_run.unwrap_or(false) {
+            match crate::mcp::tools::write::delete_record_validate(&self.state, &collection, id).await {
+                Ok(()) => {}
+                Err(e) => return bail_mcp(e),
+            }
+            match crate::storage::blast_radius::delete_blast_radius(
+                &self.state.inner().pool,
+                &collection,
+                id,
+            ).await {
+                Ok(br) => return json_content(serde_json::to_value(br).expect("serialise")),
+                Err(e) => return bail_mcp(e),
+            }
+        }
         match write_tools::delete_record(&self.state, &collection, id).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
