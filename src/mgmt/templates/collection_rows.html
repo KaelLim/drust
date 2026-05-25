@@ -29,14 +29,6 @@
           </div>
         </div>
 
-        <nav class="col-tabs" aria-label="{{ t.s("collection_rows.tabs.aria_label") }}">
-          <a class="col-tab{% if active_tab == "rows" %} on{% endif %}"     href="{{ tab_rows_url }}">{{ t.s("collection_rows.tabs.rows") }} <span class="mono">{{ total_rows }}</span></a>
-          <a class="col-tab{% if active_tab == "schema" %} on{% endif %}"   href="{{ tab_schema_url }}">{{ t.s("collection_rows.schema.title") }} <span class="mono">{{ fields.len() }}</span></a>
-          <a class="col-tab{% if active_tab == "indexes" %} on{% endif %}"  href="{{ tab_indexes_url }}">{{ t.s("collection_rows.indexes.title") }} <span class="mono">{{ indices.len() }}</span></a>
-          <a class="col-tab{% if active_tab == "anon" %} on{% endif %}"     href="{{ tab_anon_url }}">{{ t.s("collection_rows.tabs.anon") }}</a>
-          <a class="col-tab{% if active_tab == "realtime" %} on{% endif %}" href="{{ tab_realtime_url }}">{{ t.s("collection_rows.tabs.realtime") }}</a>
-          <a class="col-tab{% if active_tab == "explain" %} on{% endif %}"  href="{{ tab_explain_url }}">{{ t.s("collection_rows.tabs.explain") }}</a>
-        </nav>
 
         {# ============================== Table view ============================== #}
         <div id="view-table" class="view-pane">
@@ -70,8 +62,8 @@
           </div>
         </div>
 
-        {# ============================== schema tab ============================== #}
-        {% if active_tab == "schema" %}
+        {# ============================== Definition view ============================== #}
+        <div id="view-definition" class="view-pane" hidden>
         {% if let Some(err) = desc_error %}
         <div style="margin:0 0 12px 0;padding:10px 14px;background:#fde7e7;border:1px solid #f5a3a3;border-radius:6px;color:#7d1f1f;font-size:13px;">
           {% if err == "DESCRIPTION_TOO_LONG" %}
@@ -129,22 +121,8 @@
           </div>
           {% endfor %}
         </div>
-        {% endif %}
 
-        {# ============================== indexes tab ============================== #}
-        {% if active_tab == "indexes" %}
-        {% if let Some(err) = desc_error %}
-        <div style="margin:0 0 12px 0;padding:10px 14px;background:#fde7e7;border:1px solid #f5a3a3;border-radius:6px;color:#7d1f1f;font-size:13px;">
-          {% if err == "DESCRIPTION_TOO_LONG" %}
-            {{ t.s("common.desc.err_too_long") }}
-          {% else if err == "DESCRIPTION_INVALID" %}
-            {{ t.s("common.desc.err_invalid") }}
-          {% else %}
-            {{ t.s("common.desc.err_generic") }} {{ err }}
-          {% endif %}
-        </div>
-        {% endif %}
-        <div class="card" style="overflow:hidden;">
+        <div class="card" style="overflow:hidden;margin-top:18px;">
           <div class="card-head">
             <div>
               <div class="card-title">{{ t.s("collection_rows.indexes.title") }}</div>
@@ -344,247 +322,17 @@
   }
 })();
         </script>
-        {% endif %}
 
-        {# ============================== anon tab ============================== #}
-        {% if active_tab == "anon" %}
-        <div class="banner warn" style="margin-bottom:18px;">
-          <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
-          <div class="b-body">
-            <div class="b-title">{{ t.s("collection_rows.anon.banner_title") }}</div>
-            <p>{{ t.s("collection_rows.anon.banner_body") }}</p>
-          </div>
+        {# --- Stats footer (new in v1.28) --- #}
+        <div style="padding:14px 18px;border-top:1px solid var(--line-2);font:400 12px/1.4 var(--sans);color:var(--muted);">
+          {{ fields.len() }} {{ t.s("collection_page.definition.fields_heading") }} ·
+          {{ indices.len() }} {{ t.s("collection_page.definition.indexes_heading") }} ·
+          <span id="def-row-count">…</span> rows
+        </div>
         </div>
 
-        <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/anon-caps">
-          <div class="cap-grid">
-            {% for verb in anon_cap_choices %}
-            <label class="cap-tile{% if verb.1 %} on{% endif %}">
-              <input type="checkbox" name="caps" value="{{ verb.0 }}"{% if verb.1 %} checked{% endif %} style="display:none;">
-              <span class="cap-glyph">{{ verb.0|truncate(3) }}</span>
-              <div>
-                <div class="cap-name">{{ verb.0 }}</div>
-                <div class="cap-desc">
-                  {% if verb.0 == "select" %}{{ t.s("collection_rows.anon.cap_select") }}{% endif %}
-                  {% if verb.0 == "insert" %}{{ t.s("collection_rows.anon.cap_insert") }}{% endif %}
-                  {% if verb.0 == "update" %}{{ t.s("collection_rows.anon.cap_update") }}{% endif %}
-                  {% if verb.0 == "delete" %}{{ t.s("collection_rows.anon.cap_delete") }}{% endif %}
-                </div>
-              </div>
-              <span class="cap-switch"></span>
-            </label>
-            {% endfor %}
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <button class="btn primary" type="submit">{{ t.s("collection_rows.anon.apply_btn") }}</button>
-            <span style="color:var(--muted);font:400 12px/1.4 var(--sans);">{{ t.s("collection_rows.anon.tip") }}</span>
-          </div>
-        </form>
-        <script>
-          // make .cap-tile clickable: toggle .on + checkbox state
-          document.querySelectorAll('.cap-tile').forEach(function (tile) {
-            tile.addEventListener('click', function (e) {
-              if (e.target.tagName === 'INPUT') return;
-              var cb = tile.querySelector('input[type="checkbox"]');
-              if (!cb) return;
-              cb.checked = !cb.checked;
-              tile.classList.toggle('on', cb.checked);
-            });
-          });
-        </script>
-        {% endif %}
 
-        {# ============================== realtime tab ============================== #}
-        {% if active_tab == "realtime" %}
-        <div class="banner info" style="margin-bottom:14px;">
-          <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg></span>
-          <div class="b-body">
-            <div class="b-title">{{ t.s("collection_rows.realtime.banner_title") }}</div>
-            <p>Streams <code>created</code> / <code>updated</code> / <code>deleted</code> events from <code>GET /drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</code>. When disabled, existing connections drop within ~1s and the endpoint returns <code>403 REALTIME_DISABLED</code>.</p>
-          </div>
-        </div>
 
-        <div style="display:flex;align-items:center;gap:10px;margin:0 0 12px;">
-          {% if realtime_enabled %}
-          <span class="pill mint"><span class="dot"></span>{{ t.s("collection_rows.realtime.pill_enabled") }}</span>
-          {% else %}
-          <span class="pill muted"><span class="dot"></span>{{ t.s("collection_rows.realtime.pill_disabled") }}</span>
-          {% endif %}
-          <span style="color:var(--muted);font:400 12px/1.4 var(--sans);">{{ t.s("collection_rows.realtime.tip") }}</span>
-        </div>
-
-        <form id="realtime-form" method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
-          <label class="cap-tile{% if realtime_enabled %} on{% endif %}" style="max-width:380px;">
-            <input type="checkbox" name="enabled" value="1"{% if realtime_enabled %} checked{% endif %} style="display:none;">
-            <span class="cap-glyph">SSE</span>
-            <div>
-              <div class="cap-name">{{ t.s("collection_rows.realtime.tile_name") }}</div>
-              <div class="cap-desc">{{ t.s("collection_rows.realtime.tile_desc") }}</div>
-            </div>
-            <span class="cap-switch" aria-hidden="true"></span>
-          </label>
-        </form>
-        <script>
-          // Realtime is a single toggle — clicking the tile flips the checkbox
-          // and immediately submits, so there's no separate "apply changes"
-          // button. (The anon-caps tab keeps its save button because it has
-          // four toggles that should be staged then applied as one update.)
-          (function () {
-            var form = document.getElementById('realtime-form');
-            if (!form) return;
-            var tile = form.querySelector('.cap-tile');
-            var cb = form.querySelector('input[type="checkbox"]');
-            tile.addEventListener('click', function (e) {
-              if (e.target.tagName === 'INPUT') return;
-              cb.checked = !cb.checked;
-              tile.classList.toggle('on', cb.checked);
-              form.submit();
-            });
-          })();
-        </script>
-
-        <div class="card" style="margin-top:22px;">
-          <div class="card-head">
-            <div>
-              <div class="card-title">{{ t.s("collection_rows.realtime.quickstart_title") }}</div>
-              <div class="card-sub">Three ways to subscribe. <code>/subscribe</code> only accepts the bearer in the <code>Authorization</code> header — there is no <code>?token=</code> query parameter.</div>
-            </div>
-          </div>
-          <div class="card-body">
-            <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px;">
-              <span class="pill accent"><span class="dot"></span>curl</span>
-              <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">works with anon (needs <code>select</code> cap) or service token</span>
-            </div>
-<pre class="code">curl -N \
-  -H "Authorization: Bearer drust_service_…" \
-  <span class="rt-origin">https://&lt;your-drust-host&gt;</span>/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</pre>
-
-            <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
-              <span class="pill lilac"><span class="dot"></span>Node.js</span>
-              <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">native <code>EventSource</code> can't send headers — use the <code>eventsource</code> npm package</span>
-            </div>
-<pre class="code">import EventSource from 'eventsource'; // npm i eventsource
-
-const es = new EventSource(
-  '<span class="rt-origin">https://&lt;your-drust-host&gt;</span>/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
-  { headers: { Authorization: 'Bearer drust_service_…' } }
-);
-
-es.addEventListener('created', e =&gt; console.log('+', JSON.parse(e.data).record));
-es.addEventListener('updated', e =&gt; console.log('~', JSON.parse(e.data).record));
-es.addEventListener('deleted', e =&gt; console.log('-', JSON.parse(e.data).id));</pre>
-
-            <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
-              <span class="pill warn"><span class="dot"></span>Browser</span>
-              <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">native <code>EventSource</code> can't send <code>Authorization</code> — proxy through a BFF, or use <code>fetch</code> + <code>ReadableStream</code></span>
-            </div>
-<pre class="code">// Anon tokens in URLs are unsafe — keep the bearer server-side and proxy the
-// stream from your BFF. Direct fetch shown here for completeness.
-const resp = await fetch(
-  '/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
-  { headers: { Authorization: 'Bearer drust_anon_…' } }
-);
-const reader = resp.body.getReader();
-const decoder = new TextDecoder();
-let buf = '';
-for (;;) {
-  const { value, done } = await reader.read();
-  if (done) break;
-  buf += decoder.decode(value, { stream: true });
-  const frames = buf.split('\n\n'); buf = frames.pop();
-  for (const frame of frames) {
-    const evt = {};
-    frame.split('\n').forEach(l =&gt; {
-      const i = l.indexOf(':'); if (i &lt; 0) return;
-      evt[l.slice(0, i)] = l.slice(i + 1).trimStart();
-    });
-    console.log(evt.event, evt.data);
-  }
-}</pre>
-
-            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;">
-              <span class="pill mint"><span class="dot"></span>service ✓ always allowed</span>
-              <span class="pill accent"><span class="dot"></span>anon ✓ needs <code style="background:transparent;border:0;padding:0;color:inherit;">select</code> cap</span>
-              <span class="pill muted"><span class="dot"></span>user ✕ always 403 SSE_USER_DENIED</span>
-            </div>
-          </div>
-        </div>
-        <script>
-          // Swap the host placeholder in the curl + Node snippets with the
-          // browser's current origin so users can paste-and-run directly.
-          document.querySelectorAll('.rt-origin').forEach(function (el) {
-            el.textContent = window.location.origin;
-          });
-        </script>
-        {% endif %}
-
-        {# ============================== explain tab ============================== #}
-        {% if active_tab == "explain" %}
-        <div class="card" style="margin-bottom:14px;">
-          <div class="card-head">
-            <div>
-              <div class="card-title">{{ t.s("collection_rows.explain.title") }}</div>
-              <div class="card-sub">Paste any SELECT against this collection · runs read-only · no rows fetched</div>
-            </div>
-          </div>
-          <div class="card-body">
-            <div class="field" style="margin-bottom:12px;">
-              <label>{{ t.s("collection_rows.explain.label") }} <span class="hint">read-only authorizer</span></label>
-              <textarea id="explain-sql"
-                        class="textarea"
-                        rows="4"
-                        placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
-            </div>
-            <button id="explain-run" type="button" class="btn primary">{{ t.s("collection_rows.explain.run_btn") }}</button>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <div class="card-title">{{ t.s("collection_rows.explain.plan_title") }}</div>
-              <div class="card-sub">SQLite planner steps · table scan vs index lookup, join order, etc.</div>
-            </div>
-          </div>
-          <div class="card-body">
-            <pre id="explain-output" class="explain" hidden style="margin:0;">{{ t.s("collection_rows.explain.placeholder_output") }}</pre>
-            <div style="margin-top:14px;font:400 12px/1.5 var(--sans);color:var(--muted);">
-              Runs against the read-only connection — same authorizer that protects <code>POST /t/&lt;tid&gt;/query/explain</code>.
-            </div>
-          </div>
-        </div>
-        <script>
-(function() {
-  var tenantId = '{{ tenant_id }}';
-  var collName = '{{ coll_name }}';
-  document.getElementById('explain-run').addEventListener('click', function() {
-    var sql = document.getElementById('explain-sql').value;
-    var out = document.getElementById('explain-output');
-    out.textContent = '{{ t.s("collection_rows.explain.running") }}';
-    out.hidden = false;
-    fetch(
-      '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_explain',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sql: sql })
-      }
-    ).then(function(r) {
-      return r.json().then(function(j) { return { ok: r.ok, j: j }; });
-    }).then(function(res) {
-      if (res.j.plan) {
-        out.textContent = res.j.plan.map(function(p) {
-          return (p.parent > 0 ? '  ' : '') + p.detail;
-        }).join('\n');
-      } else {
-        out.textContent = (res.j.error_code || '{{ t.s("common.error.fallback") }}') + ': ' + (res.j.message || '');
-      }
-    }).catch(function(e) {
-      out.textContent = String(e);
-    });
-  });
-})();
-        </script>
-        {% endif %}
 
       </div>
 {% endblock %}
