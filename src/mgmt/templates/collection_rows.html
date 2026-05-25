@@ -693,6 +693,95 @@ for (;;) {
   document.getElementById('add-filter-btn').addEventListener('click', openFilterPopover);
   renderChips();  // initial (in case URL had ?filters=)
 
+  // ── Sort dropdown ────────────────────────────────────────────────────
+  document.getElementById('sort-btn').addEventListener('click', () => {
+    const existing = document.getElementById('sort-popover');
+    if (existing) { existing.remove(); return; }
+    const pop = document.createElement('div');
+    pop.id = 'sort-popover';
+    pop.className = 'filter-popover';
+    const rect = document.getElementById('sort-btn').getBoundingClientRect();
+    pop.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+    pop.style.left = (rect.left   + window.scrollX) + 'px';
+    const opts = fields.flatMap(f => [
+      `<option value="${escapeHtml(f.name)}|asc">${escapeHtml(f.name)} ↑</option>`,
+      `<option value="${escapeHtml(f.name)}|desc">${escapeHtml(f.name)} ↓</option>`,
+    ]).join('');
+    pop.innerHTML = `<div class="row"><select id="sort-sel">${opts}</select></div>
+      <div class="row" style="justify-content:flex-end;"><button class="btn btn-sm btn-primary" id="sort-apply">Apply</button></div>`;
+    document.body.appendChild(pop);
+    pop.querySelector('#sort-sel').value = `${state.sort.field}|${state.sort.dir}`;
+    pop.querySelector('#sort-apply').addEventListener('click', () => {
+      const [field, dir] = pop.querySelector('#sort-sel').value.split('|');
+      state.sort = { field, dir };
+      state.page = 1;
+      document.getElementById('sort-current').textContent = `${field} ${dir === 'desc' ? '↓' : '↑'}`;
+      pop.remove();
+      refresh();
+    });
+    setTimeout(() => {
+      const onClick = (ev) => {
+        if (!pop.contains(ev.target) && ev.target.id !== 'sort-btn') {
+          pop.remove();
+          document.removeEventListener('click', onClick);
+        }
+      };
+      document.addEventListener('click', onClick);
+    }, 0);
+  });
+  // Initial label sync.
+  document.getElementById('sort-current').textContent = `${state.sort.field} ${state.sort.dir === 'desc' ? '↓' : '↑'}`;
+
+  // ── Settings popover ─────────────────────────────────────────────────
+  const settingsPop = document.getElementById('settings-popover');
+  const gearBtn = document.getElementById('coll-gear');
+  function openSettings(){
+    const rect = gearBtn.getBoundingClientRect();
+    settingsPop.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+    settingsPop.style.right = '18px';
+    settingsPop.hidden = false;
+    setTimeout(() => {
+      const onClick = (ev) => {
+        if (!settingsPop.contains(ev.target) && ev.target !== gearBtn) {
+          settingsPop.hidden = true;
+          document.removeEventListener('click', onClick);
+        }
+      };
+      document.addEventListener('click', onClick);
+    }, 0);
+  }
+  gearBtn.addEventListener('click', (e) => { e.stopPropagation(); settingsPop.hidden ? openSettings() : (settingsPop.hidden = true); });
+  // Intercept anon form to use fetch.
+  document.getElementById('anon-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await fetch(e.target.action, { method: 'POST', body: new URLSearchParams(fd) });
+    settingsPop.hidden = true;
+  });
+  // Realtime toggle: submit on change.
+  document.getElementById('realtime-form').querySelector('input[type=checkbox]').addEventListener('change', async (e) => {
+    const fd = new FormData(e.target.form);
+    if (!e.target.checked) fd.delete('enabled');
+    await fetch(e.target.form.action, { method: 'POST', body: new URLSearchParams(fd) });
+  });
+
+  // ── Explain modal ────────────────────────────────────────────────────
+  const modal = document.getElementById('explain-modal');
+  document.getElementById('open-explain-modal').addEventListener('click', () => { modal.hidden = false; });
+  document.getElementById('explain-close').addEventListener('click', () => { modal.hidden = true; });
+  document.getElementById('explain-run').addEventListener('click', async () => {
+    const sql = document.getElementById('explain-sql').value;
+    const out = document.getElementById('explain-output');
+    out.textContent = 'Running...'; out.hidden = false;
+    const r = await fetch(`/drust/admin/tenants/${tenantId}/collections/${collName}/_explain`, {
+      method: 'POST', headers: {'content-type':'application/json'},
+      body: JSON.stringify({ sql }),
+    });
+    const j = await r.json();
+    out.textContent = j.plan ? j.plan.map(p => (p.parent > 0 ? '  ' : '') + p.detail).join('\n')
+                              : `${j.error_code || 'ERROR'}: ${j.message || ''}`;
+  });
+
   // Expose for Task 17 (filter popover) + Task 18 (sort/settings/explain) wiring.
   window.drustColl = { state: state, refresh: refresh, fields: fields, tenantId: tenantId, collName: collName };
 })();
