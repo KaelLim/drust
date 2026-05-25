@@ -1,3 +1,8 @@
+## [1.28.4] - 2026-05-25
+
+### Added
+- Collection page sticky-top now shows the eyebrow `Tenant · <tenant_name>` above the collection title, matching the pre-v1.28 `.view-head` chrome. Uses the existing `.eyebrow` style + `common.label.tenant` i18n key (no new keys).
+
 ## [1.28.3] - 2026-05-25
 
 ### Changed
