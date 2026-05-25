@@ -437,8 +437,8 @@ for (;;) {
         </div>
 
         {# ============================== Explain modal ============================== #}
-        <div id="explain-modal" hidden style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:200;display:flex;align-items:center;justify-content:center;">
-          <div style="background:var(--bg);border-radius:8px;padding:18px;max-width:680px;width:90%;">
+        <div id="explain-modal" class="coll-modal" hidden>
+          <div class="coll-modal-body">
             <h2 style="font:600 16px/1 var(--sans);margin:0 0 12px;">{{ t.s("collection_rows.explain.title") }}</h2>
             <textarea id="explain-sql" rows="4" style="width:100%;padding:8px;font-family:var(--mono);font-size:13px;" placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
             <div style="margin-top:8px;display:flex;gap:8px;">

@@ -1175,4 +1175,25 @@
   }
   .filter-popover .row{display:flex;gap:6px;align-items:center}
   .filter-popover select,.filter-popover input{padding:6px 8px;border:1px solid var(--line);border-radius:4px;font:400 13px/1.4 var(--sans)}
+
+  /* v1.28.2 — modal styling lives on the .coll-modal class, NOT inline.
+     The HTML `hidden` attribute (UA stylesheet → display:none) is the
+     single source of truth for visibility; any element-level inline
+     `display:flex` would override `hidden` and the modal would stay
+     visible on page load. */
+  .coll-modal{
+    position:fixed; inset:0; z-index:200;
+    background:rgba(0,0,0,0.45);
+    display:flex; align-items:center; justify-content:center;
+  }
+  /* `.coll-modal { display:flex }` wins over the UA stylesheet's
+     `[hidden] { display:none }` since both rules have the same
+     specificity but author CSS beats UA CSS. Re-assert display:none
+     for the hidden state — same idiom as .modal-overlay[hidden] /
+     .cmdk-overlay[hidden] above. */
+  .coll-modal[hidden]{display:none}
+  .coll-modal-body{
+    background:var(--bg); border-radius:8px; padding:18px;
+    max-width:680px; width:90%;
+  }
 </style>

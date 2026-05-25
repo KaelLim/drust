@@ -1,3 +1,8 @@
+## [1.28.2] - 2026-05-25
+
+### Fixed
+- v1.28 explain modal popped open on page load and refused to close. Root cause: the modal `<div>` carried both `hidden` attribute AND inline `style="...display:flex..."`; the inline `display:` value beats the UA stylesheet's `[hidden] { display:none }`, so the modal was always visible. Moved the modal styling into a new `.coll-modal` / `.coll-modal-body` class pair in `_styles.html` (no `display:` collision on the host element) so `hidden` is once again the single source of truth for visibility.
+
 ## [1.28.1] - 2026-05-25
 
 ### Fixed
