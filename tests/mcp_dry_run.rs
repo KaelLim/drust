@@ -118,3 +118,52 @@ async fn drop_index_dry_run_unknown_returns_error() {
     let msg = err.to_string();
     assert!(msg.starts_with("INDEX_NOT_FOUND"), "got: {msg}");
 }
+
+#[tokio::test]
+async fn rest_drop_index_dry_run_does_not_drop() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, header};
+    use tower::ServiceExt;
+
+    let (app, svc_token, dir) =
+        test_helpers::spin_up_tenant_with_role("acme", "service").await;
+
+    // Seed a `posts` table and create an index via the pool writer.
+    let pool = test_helpers::grab_pool("acme", &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL);
+             INSERT INTO posts (id, title) VALUES (1, 'hello');
+             CREATE INDEX idx_posts_title ON posts(title);",
+        )
+    })
+    .await
+    .unwrap();
+
+    // Hit the dry_run endpoint — should return blast-radius JSON without dropping.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/t/acme/collections/posts/indexes/idx_posts_title?dry_run=true")
+        .header(header::AUTHORIZATION, format!("Bearer {svc_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["would_drop"], true);
+    assert_eq!(v["name"], "idx_posts_title");
+
+    // Index must still exist.
+    let still_there: i64 = pool
+        .with_reader(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_posts_title'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(still_there, 1, "dry_run must not drop the index");
+}

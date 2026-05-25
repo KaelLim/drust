@@ -1,10 +1,16 @@
 use crate::error::json_error;
 use crate::storage::schema::{describe_collection, list_collections};
 use crate::tenant::router::{TenantAuthState, TenantRef, TokenRole, require_service};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
+
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct DryRunQuery {
+    #[serde(default)]
+    pub(crate) dry_run: Option<bool>,
+}
 
 pub async fn list_handler(Extension(t): Extension<TenantRef>) -> Response {
     let pool = t.pool.clone();
@@ -79,10 +85,29 @@ pub async fn create_index_handler(
 pub async fn drop_index_handler(
     Extension(t): Extension<TenantRef>,
     Path((_tenant, _coll, name)): Path<(String, String, String)>,
+    Query(q): Query<DryRunQuery>,
 ) -> Response {
     if let Err(r) = require_service(&t) {
         return r;
     }
+    if q.dry_run.unwrap_or(false) {
+        return match crate::storage::blast_radius::drop_index_blast_radius(&t.pool, &name).await {
+            Ok(br) => axum::Json(serde_json::to_value(br).expect("serialise")).into_response(),
+            Err(e) => {
+                let s = e.to_string();
+                if s.starts_with("INDEX_NOT_FOUND") {
+                    json_error(axum::http::StatusCode::NOT_FOUND, "INDEX_NOT_FOUND", &s)
+                } else {
+                    json_error(
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "INTERNAL_ERROR",
+                        &s,
+                    )
+                }
+            }
+        };
+    }
+    // ── existing drop_index_handler body unchanged from here ──
     // REST drop is name-only; field-based resolution is MCP-only.
     match crate::mcp::tools::index::drop_index(&t.pool, &_coll, Some(&name), None).await {
         Ok(v) => {
