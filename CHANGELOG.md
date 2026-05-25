@@ -1,3 +1,13 @@
+## [1.26.0] - 2026-05-25
+
+### Added
+- `suggested_fix` field on every REST error response and MCP `ErrorData.data`. Static catalog (~25 entries, one per error code) plus four context-aware sites (`FIELD_NOT_FOUND`, `COLLECTION_NOT_FOUND`, `VECTOR_DIM_MISMATCH`, `OWNER_FIELD_REQUIRED`) that substitute actual variable values into the hint.
+- `dry_run: true` parameter on `delete_record` / `drop_collection` / `drop_index` (MCP); query string `?dry_run=true` on the matching REST routes (`DELETE /records/<c>/<id>` and `DELETE /collections/<c>/indexes/<n>`). Returns a blast-radius preview (FK blockers, dependent indexes, RPCs that reference the collection, reverse FKs) without mutating storage, writing audit, or firing webhooks.
+- `recent_writes` MCP tool. Service-key only. Returns the latest write events (ts/op/collection/status/error_code) for the calling tenant from `meta_logs.sqlite`. Params: `limit` (1..=200, default 50), `collection`, `since_ts`.
+
+### Notes
+- All additions are byte-compatible with v1.25.2: `suggested_fix` is optional (omitted when no catalog entry), `dry_run` defaults to `false`, `recent_writes` is a new tool that did not exist.
+
 ## [1.25.2] - 2026-05-24
 
 ### Removed
