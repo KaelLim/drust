@@ -132,6 +132,176 @@ fn triple_to_node(
     }
 }
 
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use crate::mgmt::tenants::TenantsState;
+
+/// POST /admin/tenants/<id>/collections/<coll>/_list
+pub async fn admin_list_handler(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name)): Path<(String, String)>,
+    Json(req): Json<ListRequest>,
+) -> Response {
+    // Tenant existence check — mirrors browse.rs.
+    let meta = state.session.meta.lock().await;
+    let active = meta.query_row(
+        "SELECT COUNT(*) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+        rusqlite::params![tenant_id],
+        |r| r.get::<_, i64>(0),
+    ).map(|n| n > 0).unwrap_or(false);
+    drop(meta);
+    if !active {
+        return error_response(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", "no such tenant");
+    }
+
+    // Load schema (need it for FilterAst::compile + column_names).
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string()),
+    };
+    let coll_for_describe = coll_name.clone();
+    let schema = match pool.with_reader(move |c| {
+        crate::storage::schema::describe_collection(c, &coll_for_describe)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
+    }).await {
+        Ok(Some(s)) => s,
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", "no such collection"),
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string()),
+    };
+
+    // Translate triples → FilterAst → SQL fragment + binds.
+    let ast = match filter_triples_to_ast(&req.filters) {
+        Ok(a) => a,
+        Err(msg) => return error_response(StatusCode::BAD_REQUEST, "INVALID_FILTER", &msg),
+    };
+    let (where_sql, binds) = match crate::query::vector_filter::compile(&schema, &ast) {
+        Ok(p) => p,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "INVALID_FILTER", &e.to_string()),
+    };
+
+    // Sort field must exist in schema (unless caller omitted sort).
+    let (sort_field, sort_dir_sql) = match &req.sort {
+        Some(s) => {
+            if !schema.fields.iter().any(|f| f.name == s.field) {
+                return error_response(StatusCode::BAD_REQUEST, "UNKNOWN_SORT_FIELD",
+                    &format!("sort field {:?} not in schema", s.field));
+            }
+            let dir = match s.dir { SortDir::Asc => "ASC", SortDir::Desc => "DESC" };
+            (s.field.clone(), dir)
+        }
+        None => ("id".to_string(), "DESC"),
+    };
+
+    let page = req.page.max(1);
+    let per_page = req.per_page.clamp(1, 500);
+    let offset = (page as u64 - 1) * per_page as u64;
+    let table = format!("\"{}\"", coll_name.replace('"', "\"\""));
+    let sort_col = format!("\"{}\"", sort_field.replace('"', "\"\""));
+
+    let list_sql = format!(
+        "SELECT * FROM {table} WHERE {where_sql} ORDER BY {sort_col} {sort_dir_sql} LIMIT {per_page} OFFSET {offset}"
+    );
+    let count_sql = format!("SELECT COUNT(*) FROM {table} WHERE {where_sql}");
+
+    // Execute under read lock. Admin path bypasses the read-only authorizer
+    // for _system_* tables (connection is still SQLITE_OPEN_READONLY).
+    let is_protected = crate::storage::schema::is_protected_collection(&coll_name);
+    let binds_for_list = binds.clone();
+    let list_sql_for_closure = list_sql.clone();
+    let rows_result = pool.with_reader(move |c| -> rusqlite::Result<(Vec<String>, Vec<Vec<serde_json::Value>>)> {
+        if !is_protected {
+            crate::query::authorizer::attach_readonly_authorizer(c);
+        }
+        let mut stmt = c.prepare(&list_sql_for_closure)?;
+        let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let mut rows_iter = stmt.query(rusqlite::params_from_iter(binds_for_list.iter()))?;
+        let mut out: Vec<Vec<serde_json::Value>> = Vec::new();
+        while let Some(r) = rows_iter.next()? {
+            let mut row_vals = Vec::with_capacity(col_names.len());
+            for i in 0..col_names.len() {
+                let v: rusqlite::types::Value = r.get(i)?;
+                row_vals.push(match v {
+                    rusqlite::types::Value::Null => serde_json::Value::Null,
+                    rusqlite::types::Value::Integer(n) => serde_json::Value::Number(n.into()),
+                    rusqlite::types::Value::Real(f) => serde_json::Number::from_f64(f)
+                        .map(serde_json::Value::Number).unwrap_or(serde_json::Value::Null),
+                    rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
+                    rusqlite::types::Value::Blob(_) => serde_json::Value::String("[blob]".into()),
+                });
+            }
+            out.push(row_vals);
+        }
+        if !is_protected {
+            crate::query::authorizer::detach_authorizer(c);
+        }
+        Ok((col_names, out))
+    }).await;
+
+    let (column_names, rows) = match rows_result {
+        Ok(pair) => pair,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, "SQL_ERROR", &e.to_string()),
+    };
+
+    // Mask sensitive columns (e.g. _system_users.password_hash). The masker
+    // operates on stringified rows, so round-trip through Vec<Vec<String>>.
+    let rows_stringified: Vec<Vec<String>> = rows.iter().map(|row| {
+        row.iter().map(|v| match v {
+            serde_json::Value::Null => "NULL".to_string(),
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        }).collect()
+    }).collect();
+    let (column_names, rows_masked_stringified) =
+        crate::mgmt::browse::mask_sensitive_columns(&coll_name, column_names, rows_stringified);
+    let rows: Vec<Vec<serde_json::Value>> = rows_masked_stringified.into_iter().map(|r| {
+        r.into_iter().map(serde_json::Value::String).collect()
+    }).collect();
+
+    // Count.
+    let binds_for_count = binds;
+    let count_sql_for_closure = count_sql;
+    let total_result = pool.with_reader(move |c| -> rusqlite::Result<i64> {
+        if !is_protected {
+            crate::query::authorizer::attach_readonly_authorizer(c);
+        }
+        let n = c.query_row(
+            &count_sql_for_closure,
+            rusqlite::params_from_iter(binds_for_count.iter()),
+            |r| r.get::<_, i64>(0),
+        )?;
+        if !is_protected {
+            crate::query::authorizer::detach_authorizer(c);
+        }
+        Ok(n)
+    }).await;
+    let total: i64 = match total_result {
+        Ok(n) => n,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string()),
+    };
+
+    let total_pages = if total == 0 { 1 } else { (total as u64).div_ceil(per_page as u64) as u32 };
+
+    Json(ListResponse {
+        columns: column_names,
+        rows,
+        total,
+        page,
+        per_page,
+        total_pages,
+    }).into_response()
+}
+
+fn error_response(status: StatusCode, code: &'static str, msg: &str) -> Response {
+    let body = serde_json::json!({"error_code": code, "message": msg});
+    let mut r = Json(body).into_response();
+    *r.status_mut() = status;
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
