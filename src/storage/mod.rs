@@ -1,3 +1,4 @@
+pub mod blast_radius;
 pub mod disk;
 pub mod files;
 pub mod garage;
