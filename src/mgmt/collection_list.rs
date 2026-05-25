@@ -146,6 +146,35 @@ pub async fn admin_list_handler(
     Path((tenant_id, coll_name)): Path<(String, String)>,
     Json(req): Json<ListRequest>,
 ) -> Response {
+    let started = std::time::Instant::now();
+    let result = admin_list_inner(&state, &tenant_id, &coll_name, req).await;
+    let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    match result {
+        Ok(body) => {
+            let entry = crate::safety::audit::AuditEntry::success(
+                &tenant_id, "-", "admin.collection.list", duration_ms,
+            );
+            crate::safety::audit_db::try_send(&entry);
+            Json(body).into_response()
+        }
+        Err((status, code, msg)) => {
+            let entry = crate::safety::audit::AuditEntry::failure(
+                &tenant_id, "-", "admin.collection.list", duration_ms,
+                &format!("HTTP_{}", status.as_u16()),
+                &msg,
+            );
+            crate::safety::audit_db::try_send(&entry);
+            error_response(status, code, &msg)
+        }
+    }
+}
+
+async fn admin_list_inner(
+    state: &TenantsState,
+    tenant_id: &str,
+    coll_name: &str,
+    req: ListRequest,
+) -> Result<ListResponse, (StatusCode, &'static str, String)> {
     // Tenant existence check — mirrors browse.rs.
     let meta = state.session.meta.lock().await;
     let active = meta.query_row(
@@ -155,40 +184,40 @@ pub async fn admin_list_handler(
     ).map(|n| n > 0).unwrap_or(false);
     drop(meta);
     if !active {
-        return error_response(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", "no such tenant");
+        return Err((StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", "no such tenant".to_string()));
     }
 
     // Load schema (need it for FilterAst::compile + column_names).
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_open(tenant_id) {
         Ok(p) => p,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string()),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", e.to_string())),
     };
-    let coll_for_describe = coll_name.clone();
+    let coll_for_describe = coll_name.to_string();
     let schema = match pool.with_reader(move |c| {
         crate::storage::schema::describe_collection(c, &coll_for_describe)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
     }).await {
         Ok(Some(s)) => s,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", "no such collection"),
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string()),
+        Ok(None) => return Err((StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", "no such collection".to_string())),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", e.to_string())),
     };
 
     // Translate triples → FilterAst → SQL fragment + binds.
     let ast = match filter_triples_to_ast(&req.filters) {
         Ok(a) => a,
-        Err(msg) => return error_response(StatusCode::BAD_REQUEST, "INVALID_FILTER", &msg),
+        Err(msg) => return Err((StatusCode::BAD_REQUEST, "INVALID_FILTER", msg)),
     };
     let (where_sql, binds) = match crate::query::vector_filter::compile(&schema, &ast) {
         Ok(p) => p,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, "INVALID_FILTER", &e.to_string()),
+        Err(e) => return Err((StatusCode::BAD_REQUEST, "INVALID_FILTER", e.to_string())),
     };
 
     // Sort field must exist in schema (unless caller omitted sort).
     let (sort_field, sort_dir_sql) = match &req.sort {
         Some(s) => {
             if !schema.fields.iter().any(|f| f.name == s.field) {
-                return error_response(StatusCode::BAD_REQUEST, "UNKNOWN_SORT_FIELD",
-                    &format!("sort field {:?} not in schema", s.field));
+                return Err((StatusCode::BAD_REQUEST, "UNKNOWN_SORT_FIELD",
+                    format!("sort field {:?} not in schema", s.field)));
             }
             let dir = match s.dir { SortDir::Asc => "ASC", SortDir::Desc => "DESC" };
             (s.field.clone(), dir)
@@ -209,7 +238,7 @@ pub async fn admin_list_handler(
 
     // Execute under read lock. Admin path bypasses the read-only authorizer
     // for _system_* tables (connection is still SQLITE_OPEN_READONLY).
-    let is_protected = crate::storage::schema::is_protected_collection(&coll_name);
+    let is_protected = crate::storage::schema::is_protected_collection(coll_name);
     let binds_for_list = binds.clone();
     let list_sql_for_closure = list_sql.clone();
     let rows_result = pool.with_reader(move |c| -> rusqlite::Result<(Vec<String>, Vec<Vec<serde_json::Value>>)> {
@@ -243,7 +272,7 @@ pub async fn admin_list_handler(
 
     let (column_names, rows) = match rows_result {
         Ok(pair) => pair,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, "SQL_ERROR", &e.to_string()),
+        Err(e) => return Err((StatusCode::BAD_REQUEST, "SQL_ERROR", e.to_string())),
     };
 
     // Mask sensitive columns (e.g. _system_users.password_hash). The masker
@@ -256,7 +285,7 @@ pub async fn admin_list_handler(
         }).collect()
     }).collect();
     let (column_names, rows_masked_stringified) =
-        crate::mgmt::browse::mask_sensitive_columns(&coll_name, column_names, rows_stringified);
+        crate::mgmt::browse::mask_sensitive_columns(coll_name, column_names, rows_stringified);
     let rows: Vec<Vec<serde_json::Value>> = rows_masked_stringified.into_iter().map(|r| {
         r.into_iter().map(serde_json::Value::String).collect()
     }).collect();
@@ -280,19 +309,19 @@ pub async fn admin_list_handler(
     }).await;
     let total: i64 = match total_result {
         Ok(n) => n,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string()),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", e.to_string())),
     };
 
     let total_pages = if total == 0 { 1 } else { (total as u64).div_ceil(per_page as u64) as u32 };
 
-    Json(ListResponse {
+    Ok(ListResponse {
         columns: column_names,
         rows,
         total,
         page,
         per_page,
         total_pages,
-    }).into_response()
+    })
 }
 
 fn error_response(status: StatusCode, code: &'static str, msg: &str) -> Response {
