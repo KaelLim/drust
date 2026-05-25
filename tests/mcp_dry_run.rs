@@ -109,3 +109,12 @@ async fn drop_collection_dry_run_does_not_drop() {
         .unwrap();
     assert_eq!(still_there, 1, "posts table must still exist after dry_run");
 }
+
+#[tokio::test]
+async fn drop_index_dry_run_unknown_returns_error() {
+    let (pool, _dir) = helpers::make_tenant_with_posts();
+    let r = drop_index_blast_radius(&pool, "idx_does_not_exist").await;
+    let err = r.unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.starts_with("INDEX_NOT_FOUND"), "got: {msg}");
+}

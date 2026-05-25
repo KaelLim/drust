@@ -118,6 +118,8 @@ pub struct DropIndexArgs {
     pub name: Option<String>,
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -632,13 +634,30 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Drop an index by name (use `name`) or by field set (use `fields`). \
-        Exactly one of `name` or `fields` must be provided. \
-        Removes the lookup structure but does NOT touch row data. Irreversible.")]
+    #[tool(description = "Drop an index by name or by field set. \
+        Removes the lookup structure but does NOT touch row data. \
+        v1.26: pass `dry_run: true` to confirm the index exists and \
+        receive its name without dropping.")]
     async fn drop_index(
         &self,
-        Parameters(DropIndexArgs { collection, name, fields }): Parameters<DropIndexArgs>,
+        Parameters(DropIndexArgs { collection, name, fields, dry_run }): Parameters<DropIndexArgs>,
     ) -> Result<CallToolResult, McpError> {
+        if dry_run.unwrap_or(false) {
+            let resolved = match (name.as_deref(), fields.as_deref()) {
+                (Some(n), _) => n.to_string(),
+                (None, Some(fs)) if !fs.is_empty() => {
+                    crate::mcp::tools::index::derive_index_name(&collection, fs)
+                }
+                _ => return bail_mcp(anyhow::anyhow!("INVALID_PARAMS: provide either name or non-empty fields")),
+            };
+            return match crate::storage::blast_radius::drop_index_blast_radius(
+                &self.state.inner().pool,
+                &resolved,
+            ).await {
+                Ok(br) => json_content(serde_json::to_value(br).expect("serialise")),
+                Err(e) => bail_mcp(e),
+            };
+        }
         match crate::mcp::tools::index::drop_index(
             &self.state.inner().pool,
             &collection,
