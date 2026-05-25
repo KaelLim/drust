@@ -345,8 +345,54 @@ fn json_content(v: Value) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![Content::text(text)]))
 }
 
+/// v1.26 — Wrap an anyhow error into McpError, attaching error_code +
+/// suggested_fix to the `data` field so LLM tools see structured
+/// remediation hints. Convention: tool functions `anyhow::bail!` with
+/// `"<CODE>: <message>"`, mirroring the REST `json_error` shape.
 fn bail_mcp<T>(e: anyhow::Error) -> Result<T, McpError> {
-    Err(McpError::internal_error(e.to_string(), None))
+    let msg = e.to_string();
+    let code = msg.split(':').next().unwrap_or("").trim();
+    let fix = crate::safety::error_fixes::lookup(code);
+    let mut data = serde_json::Map::new();
+    if !code.is_empty() {
+        data.insert("error_code".into(), serde_json::Value::String(code.to_string()));
+    }
+    if let Some(f) = fix {
+        data.insert("suggested_fix".into(), serde_json::Value::String(f.to_string()));
+    }
+    let data_val = if data.is_empty() { None } else { Some(serde_json::Value::Object(data)) };
+    Err(McpError::internal_error(msg, data_val))
+}
+
+#[cfg(test)]
+mod bail_mcp_tests {
+    use super::*;
+
+    #[test]
+    fn known_code_yields_data_with_fix() {
+        let r: Result<(), McpError> = bail_mcp(anyhow::anyhow!("LARGE_TABLE: too many rows"));
+        let err = r.unwrap_err();
+        let data = err.data.expect("data present");
+        assert_eq!(data["error_code"], "LARGE_TABLE");
+        assert!(data["suggested_fix"].as_str().unwrap().contains("force"));
+    }
+
+    #[test]
+    fn unknown_code_yields_data_with_code_only() {
+        let r: Result<(), McpError> = bail_mcp(anyhow::anyhow!("MADE_UP: boom"));
+        let err = r.unwrap_err();
+        let data = err.data.expect("data present");
+        assert_eq!(data["error_code"], "MADE_UP");
+        assert!(data.get("suggested_fix").is_none());
+    }
+
+    #[test]
+    fn no_colon_message_yields_no_data() {
+        let r: Result<(), McpError> = bail_mcp(anyhow::anyhow!("just a free-form message"));
+        let err = r.unwrap_err();
+        let data = err.data.expect("data present");
+        assert_eq!(data["error_code"], "just a free-form message");
+    }
 }
 
 #[tool_router]
