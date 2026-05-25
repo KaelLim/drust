@@ -343,6 +343,111 @@
           </div>
         </div>
       </div>
+
+        {# ============================== Settings popover ============================== #}
+        <div id="settings-popover" class="settings-popover" hidden>
+          <section>
+            <h3>{{ t.s("collection_page.settings.section.anon") }}</h3>
+            <form id="anon-form" method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/anon-caps">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                {% for verb in anon_cap_choices %}
+                <label class="check"><input type="checkbox" name="caps" value="{{ verb.0 }}"{% if verb.1 %} checked{% endif %}> {{ verb.0 }}</label>
+                {% endfor %}
+              </div>
+              <div style="margin-top:8px;"><button class="btn btn-sm btn-primary" type="submit">{{ t.s("collection_rows.anon.apply_btn") }}</button></div>
+            </form>
+          </section>
+          <section>
+            <h3>{{ t.s("collection_page.settings.section.realtime") }}</h3>
+            <form id="realtime-form" method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
+              <label class="check">
+                <input type="checkbox" name="enabled" value="1"{% if realtime_enabled %} checked{% endif %}>
+                <span>SSE broadcast</span>
+              </label>
+            </form>
+            <details style="margin-top:8px;">
+              <summary style="cursor:pointer;color:var(--muted);font:400 12px/1.4 var(--sans);">SSE quickstart (curl / Node / Browser)</summary>
+              <div style="font:400 12px/1.5 var(--mono);color:var(--muted);margin-top:6px;">
+                <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px;">
+                  <span class="pill accent"><span class="dot"></span>curl</span>
+                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">works with anon (needs <code>select</code> cap) or service token</span>
+                </div>
+<pre class="code">curl -N \
+  -H "Authorization: Bearer drust_service_…" \
+  <span class="rt-origin">https://&lt;your-drust-host&gt;</span>/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</pre>
+
+                <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
+                  <span class="pill lilac"><span class="dot"></span>Node.js</span>
+                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">native <code>EventSource</code> can't send headers — use the <code>eventsource</code> npm package</span>
+                </div>
+<pre class="code">import EventSource from 'eventsource'; // npm i eventsource
+
+const es = new EventSource(
+  '<span class="rt-origin">https://&lt;your-drust-host&gt;</span>/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
+  { headers: { Authorization: 'Bearer drust_service_…' } }
+);
+
+es.addEventListener('created', e =&gt; console.log('+', JSON.parse(e.data).record));
+es.addEventListener('updated', e =&gt; console.log('~', JSON.parse(e.data).record));
+es.addEventListener('deleted', e =&gt; console.log('-', JSON.parse(e.data).id));</pre>
+
+                <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
+                  <span class="pill warn"><span class="dot"></span>Browser</span>
+                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">native <code>EventSource</code> can't send <code>Authorization</code> — proxy through a BFF, or use <code>fetch</code> + <code>ReadableStream</code></span>
+                </div>
+<pre class="code">// Anon tokens in URLs are unsafe — keep the bearer server-side and proxy the
+// stream from your BFF. Direct fetch shown here for completeness.
+const resp = await fetch(
+  '/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
+  { headers: { Authorization: 'Bearer drust_anon_…' } }
+);
+const reader = resp.body.getReader();
+const decoder = new TextDecoder();
+let buf = '';
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buf += decoder.decode(value, { stream: true });
+  const frames = buf.split('\n\n'); buf = frames.pop();
+  for (const frame of frames) {
+    const evt = {};
+    frame.split('\n').forEach(l =&gt; {
+      const i = l.indexOf(':'); if (i &lt; 0) return;
+      evt[l.slice(0, i)] = l.slice(i + 1).trimStart();
+    });
+    console.log(evt.event, evt.data);
+  }
+}</pre>
+
+                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;">
+                  <span class="pill mint"><span class="dot"></span>service ✓ always allowed</span>
+                  <span class="pill accent"><span class="dot"></span>anon ✓ needs <code style="background:transparent;border:0;padding:0;color:inherit;">select</code> cap</span>
+                  <span class="pill muted"><span class="dot"></span>user ✕ always 403 SSE_USER_DENIED</span>
+                </div>
+                <script>
+                  document.querySelectorAll('.rt-origin').forEach(function (el) { el.textContent = window.location.origin; });
+                </script>
+              </div>
+            </details>
+          </section>
+          <section>
+            <h3>{{ t.s("collection_page.settings.section.developer") }}</h3>
+            <button type="button" id="open-explain-modal" class="btn btn-sm">{{ t.s("collection_page.settings.run_explain") }}</button>
+          </section>
+        </div>
+
+        {# ============================== Explain modal ============================== #}
+        <div id="explain-modal" hidden style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:200;display:flex;align-items:center;justify-content:center;">
+          <div style="background:var(--bg);border-radius:8px;padding:18px;max-width:680px;width:90%;">
+            <h2 style="font:600 16px/1 var(--sans);margin:0 0 12px;">{{ t.s("collection_rows.explain.title") }}</h2>
+            <textarea id="explain-sql" rows="4" style="width:100%;padding:8px;font-family:var(--mono);font-size:13px;" placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
+            <div style="margin-top:8px;display:flex;gap:8px;">
+              <button type="button" id="explain-run" class="btn btn-sm btn-primary">{{ t.s("collection_rows.explain.run_btn") }}</button>
+              <button type="button" id="explain-close" class="btn btn-sm btn-ghost">Close</button>
+            </div>
+            <pre id="explain-output" class="explain" hidden style="margin-top:10px;max-height:300px;overflow:auto;"></pre>
+          </div>
+        </div>
 {% endblock %}
 
 {% block extra_scripts %}
