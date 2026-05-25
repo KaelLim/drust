@@ -41,6 +41,57 @@ pub fn lookup(code: &str) -> Option<&'static str> {
         .map(|i| SUGGESTED_FIXES[i].1)
 }
 
+/// Context for a context-aware fix. Each variant carries just what its
+/// template needs; sites without context use `lookup` directly.
+pub enum ErrorContext<'a> {
+    FieldNotFound {
+        field: &'a str,
+        collection: &'a str,
+        existing: &'a [String],
+    },
+    CollectionNotFound {
+        collection: &'a str,
+        existing: &'a [String],
+    },
+    VectorDimMismatch {
+        field: &'a str,
+        expected_dim: u32,
+        actual_dim: u32,
+    },
+    OwnerFieldRequired {
+        collection: &'a str,
+        field: &'a str,
+    },
+}
+
+/// Build a context-aware fix string. Returns `None` when the code
+/// has no context-aware variant; caller should fall back to `lookup`.
+pub fn contextual_fix(ctx: &ErrorContext<'_>) -> String {
+    match ctx {
+        ErrorContext::FieldNotFound { field, collection, existing } => format!(
+            "Field `{field}` not found on collection `{collection}`. \
+             Existing fields: [{}].",
+            existing.join(", ")
+        ),
+        ErrorContext::CollectionNotFound { collection, existing } => format!(
+            "Collection `{collection}` not found. \
+             Existing collections: [{}]. \
+             Use `get_schema_overview` for the full schema.",
+            existing.join(", ")
+        ),
+        ErrorContext::VectorDimMismatch { field, expected_dim, actual_dim } => format!(
+            "Field `{field}` expects vector of dim={expected_dim}; \
+             got length={actual_dim}."
+        ),
+        ErrorContext::OwnerFieldRequired { collection, field } => format!(
+            "Collection `{collection}` has owner_field=`{field}`. \
+             Populate this field on INSERT. \
+             (User-token INSERT auto-fills it from the authenticated user; \
+             service-token INSERT must set it explicitly.)"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +122,52 @@ mod tests {
         for &(k, v) in SUGGESTED_FIXES {
             assert!(!v.is_empty(), "{k} has empty fix");
         }
+    }
+
+    #[test]
+    fn contextual_field_not_found_lists_existing() {
+        let ctx = ErrorContext::FieldNotFound {
+            field: "xxx",
+            collection: "posts",
+            existing: &["title".into(), "body".into()],
+        };
+        let s = contextual_fix(&ctx);
+        assert!(s.contains("Field `xxx`"));
+        assert!(s.contains("collection `posts`"));
+        assert!(s.contains("title, body"));
+    }
+
+    #[test]
+    fn contextual_collection_not_found_lists_existing() {
+        let ctx = ErrorContext::CollectionNotFound {
+            collection: "ghost",
+            existing: &["posts".into(), "users".into()],
+        };
+        let s = contextual_fix(&ctx);
+        assert!(s.contains("`ghost`"));
+        assert!(s.contains("posts, users"));
+    }
+
+    #[test]
+    fn contextual_vector_dim_includes_numbers() {
+        let ctx = ErrorContext::VectorDimMismatch {
+            field: "embedding",
+            expected_dim: 1536,
+            actual_dim: 768,
+        };
+        let s = contextual_fix(&ctx);
+        assert!(s.contains("dim=1536"));
+        assert!(s.contains("length=768"));
+    }
+
+    #[test]
+    fn contextual_owner_field_required_names_field() {
+        let ctx = ErrorContext::OwnerFieldRequired {
+            collection: "posts",
+            field: "author_id",
+        };
+        let s = contextual_fix(&ctx);
+        assert!(s.contains("`posts`"));
+        assert!(s.contains("`author_id`"));
     }
 }
