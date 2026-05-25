@@ -229,6 +229,18 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             get(collections::get_schema_overview_handler),
         )
         .route(
+            "/t/{tenant}/openapi.json",
+            get(crate::codegen::handlers::openapi_handler),
+        )
+        .route(
+            "/t/{tenant}/types.ts",
+            get(crate::codegen::handlers::types_handler),
+        )
+        .route(
+            "/t/{tenant}/zod.ts",
+            get(crate::codegen::handlers::zod_handler),
+        )
+        .route(
             "/t/{tenant}/records/{coll}",
             get(records::list_handler).post({
                 let b = bus.clone();

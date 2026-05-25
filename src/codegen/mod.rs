@@ -9,6 +9,7 @@
 
 pub mod ir;
 pub mod filter_ast_schema;
+pub mod handlers;
 pub mod openapi;
 pub mod typescript;
 pub mod zod;
