@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod backups;
 pub mod browse;
+pub mod collection_list;
 pub mod docs;
 pub mod format;
 pub mod i18n;
