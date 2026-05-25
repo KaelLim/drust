@@ -407,20 +407,9 @@ placeholder = "Jump to tenant…"
 
 [collection_rows.anon]
 apply_btn = "apply changes"
-banner_body = "Capabilities below govern the REST /records/* API only. Anon tokens can still read this collection through POST /t/<tid>/query (free-form SELECT) regardless. To fully restrict anon read, revoke the anon token entirely."
-banner_title = "/records vs /query"
-cap_delete = "remove rows"
-cap_insert = "create rows"
-cap_select = "read rows (filtered)"
-cap_update = "modify existing"
-tip = "tip: click a tile to toggle"
 
 [collection_rows.explain]
-label = "select statement"
-placeholder_output = "click ▶ Explain to run."
-plan_title = "Plan"
 run_btn = "▶ Explain"
-running = "Running..."
 title = "Run EXPLAIN QUERY PLAN"
 
 [collection_rows.head]
@@ -446,28 +435,8 @@ title = "Indexes"
 unique_check = "unique"
 unique_pill = "unique"
 
-[collection_rows.realtime]
-banner_title = "SSE realtime broadcast"
-pill_disabled = "DISABLED — no broadcast"
-pill_enabled = "ENABLED — broadcasting"
-quickstart_title = "Quick start"
-tile_desc = "events: created · updated · deleted"
-tile_name = "Broadcast row changes"
-tip = "click the toggle to flip — saves immediately"
-
 [collection_rows.rows]
-empty_collection = "This collection is empty."
-empty_filtered = "Your filter returned no rows. Try loosening the predicate or reset."
-empty_title = "0 records"
-error_title = "Query error"
-filter_indicator = "filter"
-filter_label = "filter · sql where fragment"
-filter_placeholder = "e.g. created_at > '2026-01-01'"
-filter_prefix = "WHERE"
 per_page_label = "per page"
-reset_filter = "reset filter"
-sort_default = "— default (id desc) —"
-sort_label = "sort"
 
 [collection_rows.schema]
 col_constraints = "constraints"
@@ -482,12 +451,8 @@ primary_key = "primary key"
 title = "Schema"
 
 [collection_rows.tabs]
-anon = "Anon access"
 aria_label = "Collection view"
-explain = "Explain"
 indexes = "Indexes"
-realtime = "Realtime"
-rows = "Rows"
 schema = "Schema"
 
 [collection_sidebar.api_keys]
@@ -1238,3 +1203,32 @@ with_failure = "With failure"
 eyebrow = "Tenant · backend"
 subtitle = "Outbound notifications on record created / updated / deleted. Signed with HMAC-SHA256 in the X-Drust-Signature header. Retried up to 4× inline (0s / 1s / 5s / 30s)."
 title = "Webhooks"
+
+[collection_page.desc]
+add = "Add description"
+edit_aria = "Edit description"
+
+[collection_page.definition]
+fields_heading = "fields"
+indexes_heading = "indexes"
+
+[collection_page.footer]
+next = "Next"
+prev = "Prev"
+
+[collection_page.settings]
+run_explain = "Run EXPLAIN…"
+title = "Collection settings"
+
+[collection_page.settings.section]
+anon = "Anonymous access"
+developer = "Developer"
+realtime = "Realtime broadcast"
+
+[collection_page.toolbar]
+add_filter = "+ Filter"
+sort = "Sort"
+
+[collection_page.view]
+definition = "Definition"
+table = "Table"

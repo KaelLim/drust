@@ -425,20 +425,9 @@ placeholder = "跳至租戶…"
 
 [collection_rows.anon]
 apply_btn = "套用變更"
-banner_body = "下列權限僅控制 REST /records/* API。匿名 token 仍可透過 POST /t/<tid>/query（自由 SELECT）讀取此集合。若要完全禁止匿名讀取，請直接撤銷匿名 token。"
-banner_title = "/records 與 /query 的差異"
-cap_delete = "刪除資料列"
-cap_insert = "新增資料列"
-cap_select = "讀取資料列（可篩選）"
-cap_update = "修改既有資料"
-tip = "提示：點擊磚塊可切換狀態"
 
 [collection_rows.explain]
-label = "SELECT 敘述"
-placeholder_output = "點選 ▶ 解析以執行。"
-plan_title = "查詢計畫"
 run_btn = "▶ 解析"
-running = "執行中…"
 title = "執行 EXPLAIN QUERY PLAN"
 
 [collection_rows.head]
@@ -464,28 +453,8 @@ title = "索引"
 unique_check = "唯一"
 unique_pill = "唯一"
 
-[collection_rows.realtime]
-banner_title = "SSE 即時推送"
-pill_disabled = "已停用 — 無推送"
-pill_enabled = "啟用中 — 推送中"
-quickstart_title = "快速上手"
-tile_desc = "事件：created · updated · deleted"
-tile_name = "廣播資料列變更"
-tip = "點擊切換 — 會立即儲存"
-
 [collection_rows.rows]
-empty_collection = "此集合為空。"
-empty_filtered = "您的篩選條件未回傳任何資料列。試著放寬條件或重設。"
-empty_title = "0 筆記錄"
-error_title = "查詢錯誤"
-filter_indicator = "篩選"
-filter_label = "篩選 · SQL WHERE 片段"
-filter_placeholder = "例如 created_at > '2026-01-01'"
-filter_prefix = "WHERE"
 per_page_label = "每頁筆數"
-reset_filter = "重設篩選"
-sort_default = "— 預設（id 由大到小）—"
-sort_label = "排序"
 
 [collection_rows.schema]
 col_constraints = "限制"
@@ -500,12 +469,8 @@ primary_key = "主鍵"
 title = "結構"
 
 [collection_rows.tabs]
-anon = "匿名存取"
 aria_label = "集合視圖"
-explain = "查詢計畫"
 indexes = "索引"
-realtime = "即時推送"
-rows = "資料列"
 schema = "結構"
 
 [collection_sidebar.api_keys]
@@ -1271,3 +1236,32 @@ with_failure = "有失敗"
 eyebrow = "租戶 · 後端"
 subtitle = "對外通知於記錄 created / updated / deleted 時觸發。以 HMAC-SHA256 簽署於 X-Drust-Signature 標頭。同步重試最多 4 次（0s / 1s / 5s / 30s）。"
 title = "Webhooks"
+
+[collection_page.desc]
+add = "新增說明"
+edit_aria = "編輯說明"
+
+[collection_page.definition]
+fields_heading = "欄位"
+indexes_heading = "索引"
+
+[collection_page.footer]
+next = "下一頁"
+prev = "上一頁"
+
+[collection_page.settings]
+run_explain = "執行 EXPLAIN…"
+title = "集合設定"
+
+[collection_page.settings.section]
+anon = "匿名存取"
+developer = "開發者"
+realtime = "即時推播"
+
+[collection_page.toolbar]
+add_filter = "+ 篩選"
+sort = "排序"
+
+[collection_page.view]
+definition = "結構"
+table = "資料"
