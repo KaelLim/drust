@@ -682,7 +682,10 @@
   .pager .current{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-border)}
 
   /* ---------------- records-scroll (collection rows wide tables) ---------------- */
-  .records-scroll{overflow:auto;max-height:600px;border-radius:var(--r-md);border:1px solid var(--border-mid)}
+  /* v1.28 — collection page no longer constrains the rows table to its own
+     scroll surface. Single viewport scroll only. Rule kept (no max-height)
+     so any remaining .records-scroll wrapper renders as a passive border. */
+  .records-scroll{border-radius:var(--r-md);border:1px solid var(--border-mid)}
 
   /* ---------------- collection_rows toolbar layout ---------------- */
   /* .toolbar wraps a <form> with .field cards + .actions. Each .field is
@@ -1094,4 +1097,82 @@
   /* v1.17.1 — toolbar-v2 inline field-group (label above input) */
   .toolbar-v2 .field-group{display:inline-flex;flex-direction:column;gap:4px}
   .toolbar-v2 .field-group .field-label{margin-bottom:0}
+
+  /* ---------------- v1.28 collection page (Supabase shell) ---------------- */
+  .coll-sticky-top{
+    position:sticky; top:0; z-index:20;
+    background:var(--bg); padding:14px 18px 10px;
+    border-bottom:1px solid var(--line-2);
+  }
+  .coll-sticky-top .row1{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .coll-sticky-top h1{font:600 18px/1.2 var(--sans);margin:0;flex:1;min-width:0}
+  .coll-sticky-top .gear-btn{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:32px;height:32px;border-radius:6px;
+    background:transparent;border:1px solid var(--line);cursor:pointer;
+  }
+  .coll-sticky-top .gear-btn:hover{background:var(--bg-soft)}
+  .coll-desc-inline{
+    font:400 13px/1.5 var(--sans);color:var(--muted);
+    display:flex;align-items:baseline;gap:6px;
+  }
+  .coll-desc-inline .desc-text{flex:1;min-width:0;white-space:pre-wrap}
+  .coll-desc-inline .desc-add{
+    display:inline-flex;align-items:center;gap:4px;
+    color:var(--muted-2);cursor:pointer;background:none;border:0;padding:0;
+    font:400 13px/1.5 var(--sans);
+  }
+  .coll-desc-inline .desc-add:hover{color:var(--text)}
+
+  .coll-toolbar{padding:12px 18px;display:flex;flex-direction:column;gap:8px}
+  .coll-toolbar .row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  .coll-chip{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:4px 8px;border-radius:14px;
+    background:var(--bg-soft);border:1px solid var(--line);
+    font:400 12px/1 var(--mono);
+  }
+  .coll-chip .chip-x{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:16px;height:16px;border-radius:50%;
+    background:transparent;border:0;cursor:pointer;color:var(--muted-2);
+  }
+  .coll-chip .chip-x:hover{background:var(--line);color:var(--text)}
+
+  .coll-table-wrap{padding:0 18px}
+  .coll-table-wrap table.data{width:100%}
+
+  .coll-sticky-bottom{
+    position:sticky; bottom:0; z-index:20;
+    background:var(--bg); padding:10px 18px;
+    border-top:1px solid var(--line-2);
+    display:flex;align-items:center;gap:14px;
+  }
+  .view-tabs{display:inline-flex;background:var(--bg-soft);border-radius:6px;padding:2px}
+  .view-tabs button{
+    padding:6px 12px;border-radius:4px;border:0;background:transparent;cursor:pointer;
+    font:500 13px/1 var(--sans);color:var(--muted);
+  }
+  .view-tabs button.active{background:var(--bg);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,0.06)}
+  .coll-sticky-bottom .pager-info{margin-left:auto;display:flex;align-items:center;gap:10px;color:var(--muted);font:400 13px/1 var(--sans)}
+  .coll-sticky-bottom .pager-info .btn{padding:6px 10px}
+
+  .settings-popover{
+    position:absolute; z-index:100;
+    background:var(--bg); border:1px solid var(--line);
+    border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.12);
+    padding:14px; min-width:280px; max-width:360px;
+  }
+  .settings-popover h3{font:600 11px/1 var(--sans);text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin:0 0 8px}
+  .settings-popover section + section{margin-top:14px;padding-top:14px;border-top:1px solid var(--line-2)}
+
+  .filter-popover{
+    position:absolute; z-index:100;
+    background:var(--bg); border:1px solid var(--line);
+    border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.12);
+    padding:12px; min-width:320px;
+    display:flex;flex-direction:column;gap:8px;
+  }
+  .filter-popover .row{display:flex;gap:6px;align-items:center}
+  .filter-popover select,.filter-popover input{padding:6px 8px;border:1px solid var(--line);border-radius:4px;font:400 13px/1.4 var(--sans)}
 </style>
