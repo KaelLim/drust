@@ -123,6 +123,20 @@ pub struct DropIndexArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RecentWritesArgs {
+    /// 1..=200; defaults to 50.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Optional filter — only entries whose collection matches.
+    #[serde(default)]
+    pub collection: Option<String>,
+    /// Optional ISO-8601 timestamp. Only entries with `ts > since_ts`
+    /// are returned. Use this to poll incrementally.
+    #[serde(default)]
+    pub since_ts: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetAnonCapsArgs {
     pub collection: String,
     /// Subset of `["select", "insert", "update", "delete"]`. Empty array
@@ -1418,6 +1432,29 @@ impl DrustMcpService {
         match webhook_tools::delete_webhook(&self.state.inner().pool, id).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.26 — Recent write events for this tenant. \
+        Returns ts/op/collection/status/error_code for the latest \
+        insert/update/delete/DDL operations. Use this to replan after \
+        errors or to confirm what the previous tool calls actually \
+        changed. Service-key + MCP only (anon and user tokens are \
+        rejected by the MCP layer).")]
+    async fn recent_writes(
+        &self,
+        Parameters(RecentWritesArgs { limit, collection, since_ts }): Parameters<RecentWritesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let tenant_id = self.state.inner().tenant_id.clone();
+        match crate::safety::recent_writes::query_recent(
+            &self.state.inner().audit_meta_read,
+            &tenant_id,
+            limit.unwrap_or(50),
+            collection.as_deref(),
+            since_ts.as_deref(),
+        ).await {
+            Ok(rows) => json_content(serde_json::to_value(rows).expect("serialise")),
+            Err(e) => bail_mcp(anyhow::anyhow!("RECENT_WRITES_UNAVAILABLE: {e}")),
         }
     }
 }
