@@ -566,6 +566,133 @@ for (;;) {
   document.getElementById('per-page-select').value = String(state.per_page);
   refresh();
 
+  // ── Filter popover ───────────────────────────────────────────────────
+  const OPS_BY_TYPE = {
+    text:      ['eq','ne','contains','starts_with','ends_with','is_null','is_not_null'],
+    integer:   ['eq','ne','gt','gte','lt','lte','between','is_null','is_not_null'],
+    real:      ['eq','ne','gt','gte','lt','lte','between','is_null','is_not_null'],
+    timestamp: ['eq','ne','gt','gte','lt','lte','between','is_null','is_not_null'],
+    boolean:   ['is_true','is_false','is_null','is_not_null'],
+  };
+  const OP_LABELS = {
+    eq:'=', ne:'≠', gt:'>', gte:'≥', lt:'<', lte:'≤',
+    contains:'contains', starts_with:'starts with', ends_with:'ends with',
+    between:'between', is_null:'is null', is_not_null:'is not null',
+    is_true:'is true', is_false:'is false',
+  };
+
+  function inferType(field){
+    const sqlType = (field.sql_type || '').toLowerCase();
+    if (sqlType.includes('int'))                                  return 'integer';
+    if (sqlType.includes('real') || sqlType.includes('float'))    return 'real';
+    if (field.name === 'created_at' || field.name === 'updated_at') return 'timestamp';
+    if (/^(is_|has_|can_)/.test(field.name) && sqlType.includes('int')) return 'boolean';
+    if (sqlType === 'blob' || sqlType.includes('blob'))            return 'text';
+    return 'text';
+  }
+
+  function renderChips(){
+    const row = document.getElementById('chip-row');
+    row.innerHTML = state.filters.map((f, i) => {
+      const valDisplay = (f.op === 'is_null' || f.op === 'is_not_null' || f.op === 'is_true' || f.op === 'is_false')
+        ? '' : ` ${JSON.stringify(f.value)}`;
+      return `<span class="coll-chip">${escapeHtml(f.field)} ${escapeHtml(OP_LABELS[f.op] || f.op)}${escapeHtml(valDisplay)}<button type="button" class="chip-x" data-chip-idx="${i}" aria-label="remove">×</button></span>`;
+    }).join('');
+    row.querySelectorAll('.chip-x').forEach(b => {
+      b.addEventListener('click', () => {
+        state.filters.splice(parseInt(b.dataset.chipIdx), 1);
+        state.page = 1;
+        renderChips();
+        refresh();
+      });
+    });
+  }
+
+  function openFilterPopover(){
+    const filterableFields = fields.filter(f => f.sql_type !== 'vector');
+    const pop = document.createElement('div');
+    pop.className = 'filter-popover';
+    const rect = document.getElementById('add-filter-btn').getBoundingClientRect();
+    pop.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+    pop.style.left = (rect.left   + window.scrollX) + 'px';
+    pop.innerHTML = `
+      <div class="row">
+        <select id="f-field">${filterableFields.map(f => `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)}</option>`).join('')}</select>
+        <select id="f-op"></select>
+      </div>
+      <div class="row" id="f-value-wrap"><input id="f-value" type="text" placeholder="value" style="flex:1;"></div>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btn btn-sm btn-ghost" id="f-cancel">Cancel</button>
+        <button class="btn btn-sm btn-primary" id="f-add">Add</button>
+      </div>`;
+    document.body.appendChild(pop);
+
+    const fieldSel = pop.querySelector('#f-field');
+    const opSel    = pop.querySelector('#f-op');
+    const valWrap  = pop.querySelector('#f-value-wrap');
+    function refreshOps(){
+      const fname = fieldSel.value;
+      const field = fields.find(f => f.name === fname);
+      const ops = OPS_BY_TYPE[inferType(field)] || OPS_BY_TYPE.text;
+      opSel.innerHTML = ops.map(o => `<option value="${o}">${OP_LABELS[o]}</option>`).join('');
+      refreshValueInput();
+    }
+    function refreshValueInput(){
+      const op = opSel.value;
+      if (['is_null','is_not_null','is_true','is_false'].includes(op)) {
+        valWrap.style.display = 'none';
+      } else if (op === 'between') {
+        valWrap.style.display = '';
+        valWrap.innerHTML = '<input id="f-value-lo" type="text" placeholder="from" style="flex:1;"><input id="f-value-hi" type="text" placeholder="to" style="flex:1;">';
+      } else {
+        valWrap.style.display = '';
+        valWrap.innerHTML = '<input id="f-value" type="text" placeholder="value" style="flex:1;">';
+      }
+    }
+    fieldSel.addEventListener('change', refreshOps);
+    opSel.addEventListener('change', refreshValueInput);
+    refreshOps();
+
+    pop.querySelector('#f-cancel').addEventListener('click', () => pop.remove());
+    pop.querySelector('#f-add').addEventListener('click', () => {
+      const op = opSel.value;
+      let value;
+      if (['is_null','is_not_null','is_true','is_false'].includes(op)) {
+        value = true;
+      } else if (op === 'between') {
+        const lo = pop.querySelector('#f-value-lo').value;
+        const hi = pop.querySelector('#f-value-hi').value;
+        value = [coerce(lo), coerce(hi)];
+      } else {
+        value = coerce(pop.querySelector('#f-value').value);
+      }
+      state.filters.push({ field: fieldSel.value, op, value });
+      state.page = 1;
+      renderChips();
+      pop.remove();
+      refresh();
+    });
+
+    setTimeout(() => {
+      const onDocClick = (ev) => {
+        if (!pop.contains(ev.target) && ev.target.id !== 'add-filter-btn') {
+          pop.remove();
+          document.removeEventListener('click', onDocClick);
+        }
+      };
+      document.addEventListener('click', onDocClick);
+    }, 0);
+  }
+  function coerce(raw){
+    if (raw === '') return '';
+    const n = Number(raw);
+    if (!isNaN(n) && raw.trim() !== '') return n;
+    return raw;
+  }
+
+  document.getElementById('add-filter-btn').addEventListener('click', openFilterPopover);
+  renderChips();  // initial (in case URL had ?filters=)
+
   // Expose for Task 17 (filter popover) + Task 18 (sort/settings/explain) wiring.
   window.drustColl = { state: state, refresh: refresh, fields: fields, tenantId: tenantId, collName: collName };
 })();
