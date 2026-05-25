@@ -38,7 +38,7 @@ pub struct DropCollectionBlastRadius {
     pub reverse_fks: Vec<ReverseFk>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct DropIndexBlastRadius {
     pub would_drop: bool,
     pub name: String,
