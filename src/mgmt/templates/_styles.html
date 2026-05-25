@@ -1152,7 +1152,18 @@
   .coll-chip .chip-x:hover{background:var(--line);color:var(--text)}
 
   .coll-table-wrap{padding:0 18px}
-  .coll-table-wrap table.data{width:100%}
+  .coll-table-wrap table.data{width:100%;table-layout:fixed}
+  /* v1.28.5 — every cell truncates to a single line with ellipsis.
+     Full content stays accessible via the per-td `title` attribute
+     the JS render sets. `table-layout:fixed` on the table itself is
+     what lets `max-width` on td actually take effect; without it the
+     auto-sizing algorithm widens columns to fit content. */
+  .coll-table-wrap td{
+    max-width:280px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
 
   .coll-sticky-bottom{
     position:sticky; bottom:0; z-index:20;
