@@ -91,3 +91,21 @@ async fn rest_delete_dry_run_does_not_delete() {
         .unwrap();
     assert_eq!(count, 1, "dry_run must not delete the row");
 }
+
+#[tokio::test]
+async fn drop_collection_dry_run_does_not_drop() {
+    let (pool, _dir) = helpers::make_tenant_with_posts();
+    let br = drop_collection_blast_radius(&pool, "posts").await.unwrap();
+    assert_eq!(br.row_count, 1);
+    let still_there: i64 = pool
+        .with_reader(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='posts'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(still_there, 1, "posts table must still exist after dry_run");
+}
