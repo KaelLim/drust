@@ -11,5 +11,6 @@ pub mod ir;
 pub mod filter_ast_schema;
 pub mod openapi;
 pub mod typescript;
+pub mod zod;
 
 pub use ir::{build_ir, CodegenIr, CollectionIr, DefaultValue, FieldIr, FieldType, IndexIr};
