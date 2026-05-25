@@ -722,6 +722,10 @@ impl MgmtState {
                 "/admin/tenants/{id}/collections/{coll}/_explain",
                 post(super::browse::explain_admin),
             )
+            .route(
+                "/admin/tenants/{id}/collections/{coll}/_list",
+                post(super::collection_list::admin_list_handler),
+            )
             .route("/admin/audit", get(super::audit::audit_host_page))
             .route(
                 "/admin/tenants/{id}/_logs",
