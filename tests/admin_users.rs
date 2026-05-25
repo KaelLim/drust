@@ -585,6 +585,9 @@ async fn mcp_set_self_register_tool() {
         Some(meta_arc.clone()),
         52_428_800,
         1_000_000,
+        Arc::new(Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
     ));
     let state = TenantAuthState::test_default(
         meta_arc.clone(),
