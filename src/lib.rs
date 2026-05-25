@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod bin_helpers;
+pub mod codegen;
 pub mod config;
 pub mod db;
 pub mod error;
