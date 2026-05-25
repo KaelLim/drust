@@ -1,3 +1,8 @@
+## [1.28.5] - 2026-05-25
+
+### Changed
+- Collection page Table rows truncate each cell to a single line with `…` ellipsis instead of wrapping long content. Hover the cell to read the full value (already exposed via `title=…` from the JS renderer). Uses `table-layout:fixed` + `max-width:280px` per td. Matches the pre-v1.28 `.trunc`-cell look.
+
 ## [1.28.4] - 2026-05-25
 
 ### Added
