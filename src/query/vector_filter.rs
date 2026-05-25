@@ -160,6 +160,12 @@ fn compile_leaf(
             let sql_op = if op == "in" { "IN" } else { "NOT IN" };
             Ok(format!("{col} {sql_op} ({placeholders})"))
         }
+        "is_null" | "is_not_null" => {
+            // No operand — accept any value (typically `true`) and ignore.
+            let _ = operand;
+            let sql_op = if op == "is_null" { "IS NULL" } else { "IS NOT NULL" };
+            Ok(format!("{col} {sql_op}"))
+        }
         other => Err(FilterError::Parse(format!(
             "field {field:?}: unknown operator {other:?}"
         ))),
@@ -328,5 +334,23 @@ mod tests {
         let ast = deep_not_chain(MAX_FILTER_DEPTH + 5);
         let err = compile(&s, &ast).unwrap_err();
         assert!(matches!(err, FilterError::TooDeep));
+    }
+
+    #[test]
+    fn is_null_compiles_to_is_null() {
+        let s = schema_with(&[("a", "TEXT")], &[]);
+        let ast = leaf(r#"{"a":{"is_null":true}}"#);
+        let (sql, binds) = compile(&s, &ast).unwrap();
+        assert_eq!(sql, r#""a" IS NULL"#);
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn is_not_null_compiles_to_is_not_null() {
+        let s = schema_with(&[("a", "TEXT")], &[]);
+        let ast = leaf(r#"{"a":{"is_not_null":true}}"#);
+        let (sql, binds) = compile(&s, &ast).unwrap();
+        assert_eq!(sql, r#""a" IS NOT NULL"#);
+        assert!(binds.is_empty());
     }
 }
