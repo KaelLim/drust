@@ -1,3 +1,8 @@
+## [1.28.3] - 2026-05-25
+
+### Changed
+- Collection page sticky-top `<h1>` font reverts to the pre-v1.28 `.view-title` look (34px `var(--font-display)`, 500 weight, -0.6px letter-spacing, 1.08 line-height) instead of the 18px sans the v1.28 redesign shipped with. Per user preference — keeps the page title visually anchored consistent with the rest of the admin UI.
+
 ## [1.28.2] - 2026-05-25
 
 ### Fixed

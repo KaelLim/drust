@@ -1105,7 +1105,19 @@
     border-bottom:1px solid var(--line-2);
   }
   .coll-sticky-top .row1{display:flex;align-items:center;gap:10px;margin-bottom:6px}
-  .coll-sticky-top h1{font:600 18px/1.2 var(--sans);margin:0;flex:1;min-width:0}
+  /* v1.28.3 — sticky-top h1 inherits the pre-v1.28 `.view-title` look
+     (34px display font, 500 weight, tight tracking). Only the layout
+     properties (flex:1 / min-width:0) are added on top so the title
+     shares row1 with the [⚙] gear and shrinks gracefully. */
+  .coll-sticky-top h1{
+    font-family:var(--font-display);
+    font-size:34px;
+    font-weight:500;
+    letter-spacing:-0.6px;
+    line-height:1.08;
+    margin:6px 0 0;
+    flex:1;min-width:0;
+  }
   .coll-sticky-top .gear-btn{
     display:inline-flex;align-items:center;justify-content:center;
     width:32px;height:32px;border-radius:6px;
