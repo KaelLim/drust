@@ -1,3 +1,13 @@
+## [1.27.0] - 2026-05-25
+
+### Added
+- Per-tenant schema codegen endpoints: `GET /t/<id>/openapi.json` (OpenAPI 3.1), `GET /t/<id>/types.ts` (TypeScript types), `GET /t/<id>/zod.ts` (Zod schemas). All three are generated live from `_system_collection_meta` + PRAGMA. Auth follows `/records/*` — anon and service both read schema shape; description text is only included for service bearers. Response header `X-Drust-Schema-Source: anon|service` declares the mode.
+- OpenAPI paths auto-emit `POST /records/<c>`, `POST /collections/<c>/list`, `GET/PUT/DELETE /records/<c>/{id}`, plus `POST /collections/<c>/search` for vector collections and `GET /records/<c>/subscribe` for realtime collections. FilterAst is a shared `$ref`.
+
+### Notes
+- RPC codegen deliberately out of scope for v1.27 — output column inference for arbitrary stored SELECTs is brittle (aggregates, JSON funcs, computed exprs). Will revisit when there's demand signal.
+- Schema codegen is read-only metadata: no writes, no audit emission, no webhook fires.
+
 ## [1.26.0] - 2026-05-25
 
 ### Added
