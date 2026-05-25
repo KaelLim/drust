@@ -94,6 +94,8 @@ pub struct DropFieldArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DropCollectionArgs {
     pub collection: String,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -566,14 +568,40 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Drop an entire collection (DROP TABLE plus its \
-        `_updated_at` trigger). Irreversible — all rows are destroyed. \
-        Rejected if any other collection still has a `foreign_key` column \
-        pointing at this one; drop those columns first.")]
+    #[tool(description = "Drop an entire collection (DROP TABLE + _updated_at trigger). \
+        Irreversible. Rejected if other collections still FK-reference this one. \
+        v1.26: pass `dry_run: true` to preview row_count + indexes + RPCs + \
+        reverse FK list without dropping.")]
     async fn drop_collection(
         &self,
-        Parameters(DropCollectionArgs { collection }): Parameters<DropCollectionArgs>,
+        Parameters(DropCollectionArgs { collection, dry_run }): Parameters<DropCollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
+        if dry_run.unwrap_or(false) {
+            if crate::storage::schema::is_protected_collection(&collection) {
+                return bail_mcp(anyhow::anyhow!("PROTECTED_COLLECTION: cannot drop {collection}"));
+            }
+            let coll_check = collection.clone();
+            let exists: i64 = self.state.inner().pool
+                .with_reader(move |c| {
+                    c.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                        rusqlite::params![coll_check],
+                        |r| r.get(0),
+                    )
+                })
+                .await
+                .unwrap_or(0);
+            if exists == 0 {
+                return bail_mcp(anyhow::anyhow!("COLLECTION_NOT_FOUND: {collection}"));
+            }
+            return match crate::storage::blast_radius::drop_collection_blast_radius(
+                &self.state.inner().pool,
+                &collection,
+            ).await {
+                Ok(br) => json_content(serde_json::to_value(br).expect("serialise")),
+                Err(e) => bail_mcp(e),
+            };
+        }
         match schema_tools::drop_collection(&self.state, &collection).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
