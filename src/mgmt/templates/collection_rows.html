@@ -448,6 +448,128 @@ for (;;) {
             <pre id="explain-output" class="explain" hidden style="margin-top:10px;max-height:300px;overflow:auto;"></pre>
           </div>
         </div>
+
+<script>
+(function(){
+  const tenantId = {{ tenant_id_json|safe }};
+  const collName = {{ coll_name_json|safe }};
+  const fields   = {{ fields_json|safe }};   // [{name, sql_type, nullable, pk, ...}]
+  const state = {
+    view: 'table',
+    filters: [],
+    sort: { field: 'id', dir: 'desc' },
+    page: 1,
+    per_page: 50,
+  };
+
+  function readUrl(){
+    const u = new URL(location.href);
+    state.view = u.searchParams.get('view') || 'table';
+    try { state.filters = JSON.parse(u.searchParams.get('filters') || '[]'); } catch(e) { state.filters = []; }
+    const sortRaw = u.searchParams.get('sort');
+    if (sortRaw) {
+      if (sortRaw.startsWith('-')) state.sort = { field: sortRaw.slice(1), dir: 'desc' };
+      else                          state.sort = { field: sortRaw,          dir: 'asc' };
+    }
+    state.page     = parseInt(u.searchParams.get('page'))     || 1;
+    state.per_page = parseInt(u.searchParams.get('per_page')) || 50;
+  }
+  function writeUrl(){
+    const u = new URL(location.href);
+    u.searchParams.set('view', state.view);
+    if (state.filters.length) u.searchParams.set('filters', JSON.stringify(state.filters));
+    else                       u.searchParams.delete('filters');
+    u.searchParams.set('sort', (state.sort.dir === 'desc' ? '-' : '') + state.sort.field);
+    u.searchParams.set('page', state.page);
+    u.searchParams.set('per_page', state.per_page);
+    history.replaceState(null, '', u.toString());
+  }
+
+  async function fetchList(){
+    const body = { filters: state.filters, sort: state.sort, page: state.page, per_page: state.per_page };
+    const r = await fetch('/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_list', {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(function(){ return {}; });
+      throw new Error(j.message || r.statusText);
+    }
+    return r.json();
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
+  }
+
+  function renderRows(resp){
+    const thead = document.getElementById('rows-thead');
+    const tbody = document.getElementById('rows-tbody');
+    const empty = document.getElementById('rows-empty');
+    thead.innerHTML = resp.columns.map(function(c){ return '<th>' + escapeHtml(c) + '</th>'; }).join('');
+    if (resp.rows.length === 0) {
+      tbody.innerHTML = '';
+      empty.hidden = false;
+    } else {
+      empty.hidden = true;
+      tbody.innerHTML = resp.rows.map(function(row){
+        return '<tr>' + row.map(function(cell){
+          var v = cell === null ? 'NULL' : String(cell);
+          var cls = cell === null ? ' class="null"' : '';
+          return '<td' + cls + ' title="' + escapeHtml(v) + '">' + escapeHtml(v) + '</td>';
+        }).join('') + '</tr>';
+      }).join('');
+    }
+    document.getElementById('pager-page-of').innerHTML =
+      'Page <b>' + resp.page + '</b> of ' + resp.total_pages + ' &middot; <b>' + resp.total + '</b> total';
+    document.getElementById('pager-prev').disabled = resp.page <= 1;
+    document.getElementById('pager-next').disabled = resp.page >= resp.total_pages;
+    var def = document.getElementById('def-row-count');
+    if (def) def.textContent = String(resp.total);
+  }
+
+  async function refresh(){
+    writeUrl();
+    if (state.view === 'definition') {
+      document.getElementById('view-table').hidden = true;
+      document.getElementById('view-definition').hidden = false;
+      var pi = document.getElementById('pager-info');
+      if (pi) pi.style.visibility = 'hidden';
+    } else {
+      document.getElementById('view-table').hidden = false;
+      document.getElementById('view-definition').hidden = true;
+      var pi = document.getElementById('pager-info');
+      if (pi) pi.style.visibility = 'visible';
+      try { renderRows(await fetchList()); }
+      catch(e) { console.error('list fetch failed', e); alert(e.message || 'fetch failed'); }
+    }
+    document.querySelectorAll('.view-tabs button').forEach(function(b){
+      b.classList.toggle('active', b.dataset.view === state.view);
+    });
+  }
+
+  // View-tabs.
+  document.querySelectorAll('.view-tabs button').forEach(function(b){
+    b.addEventListener('click', function(){ state.view = b.dataset.view; refresh(); });
+  });
+  // Pager.
+  document.getElementById('pager-prev').addEventListener('click', function(){ if (state.page > 1) { state.page--; refresh(); } });
+  document.getElementById('pager-next').addEventListener('click', function(){ state.page++; refresh(); });
+  // Per-page.
+  document.getElementById('per-page-select').addEventListener('change', function(e){
+    state.per_page = parseInt(e.target.value); state.page = 1; refresh();
+  });
+
+  // Boot.
+  readUrl();
+  document.getElementById('per-page-select').value = String(state.per_page);
+  refresh();
+
+  // Expose for Task 17 (filter popover) + Task 18 (sort/settings/explain) wiring.
+  window.drustColl = { state: state, refresh: refresh, fields: fields, tenantId: tenantId, collName: collName };
+})();
+</script>
 {% endblock %}
 
 {% block extra_scripts %}

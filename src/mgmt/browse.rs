@@ -78,6 +78,11 @@ struct RowsPage {
     /// v1.19.1 — error code surfaced when the description form bounced off
     /// the server-side validator. `None` on the plain GET render.
     desc_error: Option<String>,
+    /// v1.28 — pre-serialized JSON strings injected into the JS module so
+    /// the template avoids the non-existent `|json|safe` askama filter.
+    fields_json: String,
+    tenant_id_json: String,
+    coll_name_json: String,
     version: &'static str,
     t: Translator,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
@@ -536,6 +541,9 @@ pub async fn collection_rows_page(
         .collect();
 
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
+    let fields_json = serde_json::to_string(&schema.fields).unwrap_or_default();
+    let tenant_id_json = serde_json::to_string(&tenant_id).unwrap_or_default();
+    let coll_name_json = serde_json::to_string(&coll_name).unwrap_or_default();
     Html(
         RowsPage {
             tenant_id,
@@ -568,6 +576,9 @@ pub async fn collection_rows_page(
             realtime_enabled,
             collection_description: schema.description,
             desc_error: qs.desc_error.clone(),
+            fields_json,
+            tenant_id_json,
+            coll_name_json,
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
             palette_resolved: trc.palette_resolved,
