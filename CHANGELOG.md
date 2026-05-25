@@ -1,20 +1,5 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## Style for new entries
-
-- One entry = one short line; describe a user-visible change, not implementation.
-- Implementation detail (file paths, function names, line numbers, commit hashes) belongs in the spec/plan link, not here.
-- Use the 6 fixed categories: Added / Changed / Deprecated / Removed / Fixed / Security. Plus `Notes` for things that don't fit but matter.
-- Version header: `## [X.Y.Z] - YYYY-MM-DD` (square brackets, ASCII hyphen).
-- Spec/plan links collected at the end of the version section under `### Spec / Plan`.
-
-> **Gap note (2026-05-21):** entries for v1.14 / v1.15 / v1.16 / v1.17.0 were not landed in this file at release time. The features are documented in [`drust/CLAUDE.md`](CLAUDE.md) and their spec/plan docs under `docs/superpowers/`. Backfill is open work.
-
 ## [1.25.2] - 2026-05-24
 
 ### Removed
@@ -68,26 +53,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 - `/etc/logrotate.d/drust` (no-op for date-named files). Removed in v1.25.1.
 
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-23-drust-audit-sqlite-design.md)
-
 ## [1.23.0] - 2026-05-23
 
 ### Added
 - Server-side theming for the admin UI: three themes (`system` / `cozy-dark` / `soft-light`). `system` auto-switches via `prefers-color-scheme`. Persisted via `drust_theme` cookie + `admins.theme` column.
 - Palettes shipped as `themes/<code>.toml` embedded via `include_str!`. `build.rs` enforces structural validity at compile time.
 
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-23-drust-theme-design.md)
-
 ## [1.22.0] - 2026-05-22
 
 ### Added
 - Server-side i18n for the admin UI: English (default) and 繁體中文. Resolved from `drust_locale` cookie → `Accept-Language` → `en`. Topbar language switcher. Missing keys fall back to `en` with a dev-only warn.
 - Translation bundles compiled into the binary; `build.rs` panics on missing keys at compile time. 705+ keys across 25 templates.
-
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-22-drust-i18n-design.md)
 
 ## [1.20.0] - 2026-05-21
 
@@ -107,9 +83,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-IP rate limit (5/min) added to admin login + admin OAuth callback. Closes the parallel-thread argon2 grind window.
 - Webhook SSRF defense: redirect-following disabled; `check_url` resolves the registered host and rejects any private/loopback/link-local IP. Residual DNS-rebinding window queued for v1.21.
 
-### Spec / Plan
-- [Plan (combined v1.19.2 + v1.20)](../docs/superpowers/plans/2026-05-21-drust-v1192-v120-patch.md)
-
 ## [1.19.1] - 2026-05-21
 
 ### Fixed
@@ -125,9 +98,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live UTF-8 byte counter beside the description textarea; save button disables when over 2048 bytes.
 - Inline error banner on validator-failure redirect (`?desc_error=<code>`).
 
-### Spec / Plan
-- [Plan](../docs/superpowers/plans/2026-05-21-drust-v1191-patch.md)
-
 ## [1.19.0] - 2026-05-21
 
 ### Added
@@ -138,9 +108,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `Collection`, `Field`, `IndexInfo`, `CollectionSchema` gain optional `description` with `skip_serializing_if = "Option::is_none"` — payloads byte-identical when no description set.
-
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-21-drust-schema-description-design.md)
 
 ## [1.17.2] - 2026-05-21
 
@@ -165,10 +132,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/admin/backups` DB glyph rendered solid black (missing fill/stroke on inline SVG).
 - XSS via literal `</script>` inside the audit `op` string in the embedded JSON blob. Now `</` → `<\/` swapped before serialization.
 
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-20-drust-admin-ui-refresh-design.md)
-- [Plan](../docs/superpowers/plans/2026-05-20-drust-admin-ui-refresh.md)
-
 ## [1.13.0] - 2026-05-16
 
 ### Added
@@ -176,10 +139,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Service-only REST: `POST/GET/PATCH/DELETE /t/<id>/admin/webhooks[/<wid>]`. Secret returned plaintext exactly once; redacted as `●●●●` everywhere else. PATCH cannot rotate (rotate = delete + create).
 - MCP tools: `create_webhook` / `list_webhooks` / `update_webhook` / `delete_webhook`.
 - Admin UI virtual sidebar entry `🔔 _webhooks`; raw secret surfaced once via short-lived HttpOnly cookie + `Referrer-Policy: no-referrer`.
-
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-15-drust-outbound-webhook-design.md)
-- [Plan](../docs/superpowers/plans/2026-05-15-drust-outbound-webhook.md)
 
 ## [1.12.3] - 2026-05-15
 
@@ -218,9 +177,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-IP rate-limit (5/min) on `/callback`.
 - Audit rows enriched with `auth_method=oauth_<provider>`, `oauth_email`, `oauth_error_code`, `auth_user_id`.
 
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-15-drust-per-tenant-oauth-design.md)
-
 ## [1.11.1] - 2026-05-15
 
 ### Fixed
@@ -235,10 +191,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Email allowlist via `DRUST_ADMIN_OAUTH_ALLOWED_EMAILS`; provider `email_verified` flag required.
 - PKCE (RFC 7636 S256) + CSRF state cookie (constant-time compare); conformant to RFC 9700 OAuth 2.0 Security BCP.
 - New actor-agnostic OAuth library: `OauthProvider` trait + Google OIDC + GitHub OAuth 2.0 adapters. Reused by v1.12 per-tenant OAuth.
-
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-14-drust-admin-oauth-design.md)
-- Setup: [`docs/oauth-setup.md`](docs/oauth-setup.md)
 
 ## [1.10.1] - 2026-05-14
 
@@ -255,9 +207,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vector fields excluded from GET/list responses by default (v1 has no opt-in mechanism).
 - sqlite-vec registered as a SQLite auto-extension at process start. Side benefit: `vec_distance_*` is callable from `/query` (service token) and stored RPCs.
 
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-13-drust-vector-search-design.md)
-
 ## [1.9.0] - 2026-05-12
 
 ### Added
@@ -273,9 +222,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - User tokens denied on `/query`, `/query/explain`, `/mcp` (`403 QUERY_USER_DENIED` / `MCP_USER_DENIED`) — drust does not rewrite user-supplied SQL, so `owner_field` cannot be enforced on those surfaces.
 - Per-IP rate-limit: login 5/min, register 3/min. IP from `XFF[-2]` per the `.221 → :8793 → 127.0.0.1` hop chain.
-
-### Spec / Plan
-- [Spec](../docs/superpowers/specs/2026-05-09-drust-user-auth-design.md)
 
 ## [1.8.0] - 2026-05-08
 
