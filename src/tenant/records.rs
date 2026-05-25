@@ -846,13 +846,41 @@ pub async fn update_handler(
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct DeleteQs {
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+}
+
 pub async fn delete_handler(
     Extension(t): Extension<TenantRef>,
     Extension(ctx): Extension<AuthCtx>,
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
+    Query(q): Query<DeleteQs>,
     bus: EventBus,
     webhooks: Arc<WebhookDispatcher>,
 ) -> Response {
+    if q.dry_run.unwrap_or(false) {
+        if is_protected_collection(&coll) {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "PROTECTED_COLLECTION",
+                "cannot delete from _system_ collections",
+            );
+        }
+        let br =
+            match crate::storage::blast_radius::delete_blast_radius(&t.pool, &coll, id).await {
+                Ok(br) => br,
+                Err(e) => {
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "INTERNAL_ERROR",
+                        &e.to_string(),
+                    );
+                }
+            };
+        return Json(serde_json::to_value(br).expect("serialise")).into_response();
+    }
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Delete).await {
         Ok(s) => s,
         Err(r) => return r,
