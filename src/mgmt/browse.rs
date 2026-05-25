@@ -272,6 +272,34 @@ pub async fn collection_rows_page(
     Path((tenant_id, coll_name)): Path<(String, String)>,
     Query(qs): Query<BrowseQs>,
 ) -> Response {
+    // v1.28 back-compat: legacy ?tab=... values now map to ?view=... on the
+    // redesigned editor. ?tab=schema|indexes → ?view=definition; the other
+    // three tabs (anon, realtime, explain) live in the settings popover
+    // now, so we land users on the Table view.
+    if let Some(tab) = qs.tab.as_deref() {
+        let view = match tab {
+            "schema" | "indexes" => Some("definition"),
+            "anon" | "realtime" | "explain" => Some("table"),
+            _ => None,
+        };
+        if let Some(v) = view {
+            let to = format!(
+                "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?view={v}"
+            );
+            return Redirect::to(&to).into_response();
+        }
+    }
+
+    // v1.28 back-compat: ?filter=<raw SQL> is dropped — no safe translation
+    // exists. Log it so we can audit how many users hit it post-deploy.
+    if qs.filter.as_deref().filter(|s| !s.is_empty()).is_some() {
+        tracing::info!(
+            target: "drust::admin",
+            tenant_id = %tenant_id, coll_name = %coll_name, filter = ?qs.filter,
+            "v1.28 back-compat: legacy ?filter= seen; param dropped"
+        );
+    }
+
     let meta = state.session.meta.lock().await;
     let tenant_name = match tenant_name_lookup(&meta, &tenant_id) {
         Some(n) => n,
