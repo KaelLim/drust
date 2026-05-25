@@ -247,7 +247,9 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 .delete({
                     let b = bus.clone();
                     let wh = webhooks.clone();
-                    move |ext, ctx, p| records::delete_handler(ext, ctx, p, b.clone(), wh.clone())
+                    move |ext, ctx, p, q| {
+                        records::delete_handler(ext, ctx, p, q, b.clone(), wh.clone())
+                    }
                 }),
         )
         .route(

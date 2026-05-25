@@ -2,6 +2,9 @@
 //! must short-circuit before mutating storage, audit, or webhook
 //! state, and must return a blast-radius preview.
 
+#[path = "helpers.rs"]
+mod test_helpers;
+
 use drust::storage::blast_radius::*;
 
 mod helpers {
@@ -44,4 +47,47 @@ async fn drop_collection_blast_radius_lists_reverse_fks() {
     assert_eq!(br.row_count, 1);
     assert_eq!(br.reverse_fks.len(), 1);
     assert_eq!(br.reverse_fks[0].collection, "comments");
+}
+
+/// REST surface check: `?dry_run=true` on DELETE must return the
+/// blast-radius JSON and leave the row in place.
+#[tokio::test]
+async fn rest_delete_dry_run_does_not_delete() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, header};
+    use tower::ServiceExt;
+
+    let (app, svc_token, dir) =
+        test_helpers::spin_up_tenant_with_role("acme", "service").await;
+
+    // Seed a `posts` collection with one row by going through the same pool.
+    let pool = test_helpers::grab_pool("acme", &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL);
+             INSERT INTO posts (id, title) VALUES (1, 'hello');",
+        )
+    })
+    .await
+    .unwrap();
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/t/acme/records/posts/1?dry_run=true")
+        .header(header::AUTHORIZATION, format!("Bearer {svc_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["would_delete"], true);
+    assert_eq!(v["id"], 1);
+
+    // Row must still exist.
+    let count: i64 = pool
+        .with_reader(|c| c.query_row("SELECT COUNT(*) FROM posts WHERE id = 1", [], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "dry_run must not delete the row");
 }
