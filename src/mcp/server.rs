@@ -31,6 +31,11 @@ pub struct DrustMcpInner {
     /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
     /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
     pub index_large_table_rows: u64,
+    /// v1.26 — read-only handle to `meta_logs.sqlite`. Shared with the
+    /// admin UI's audit reader; no extra connection is opened. Tools
+    /// like `recent_writes` use this to surface recent write-op audit
+    /// rows for the bound tenant.
+    pub audit_meta_read: Arc<Mutex<Connection>>,
 }
 
 /// Newtype so we can hand out `Arc` without exposing the inner struct.
@@ -51,6 +56,7 @@ impl DrustMcp {
         meta: Option<Arc<Mutex<Connection>>>,
         max_upload_bytes: usize,
         index_large_table_rows: u64,
+        audit_meta_read: Arc<Mutex<Connection>>,
     ) -> Self {
         Self {
             inner: Arc::new(DrustMcpInner {
@@ -64,6 +70,7 @@ impl DrustMcp {
                 meta,
                 max_upload_bytes,
                 index_large_table_rows,
+                audit_meta_read,
             }),
         }
     }
@@ -109,6 +116,12 @@ pub struct McpRegistry {
     /// Row count threshold above which index creation is considered "large
     /// table". Forwarded to each `DrustMcp` instance on creation.
     index_large_table_rows: u64,
+    /// v1.26 — read-only `meta_logs.sqlite` handle threaded into every
+    /// `DrustMcp` for the `recent_writes` tool. Real prod path passes
+    /// the same Arc that `MgmtState` holds; test-only constructors
+    /// (`new`, `with_bus`) allocate an in-memory DB so test fixtures
+    /// don't have to.
+    audit_meta_read: Arc<Mutex<Connection>>,
     services: DashMap<String, DrustMcp>,
 }
 
@@ -125,6 +138,7 @@ impl McpRegistry {
             meta: None,
             max_upload_bytes: 52_428_800,
             index_large_table_rows: 1_000_000,
+            audit_meta_read: test_audit_conn(),
             services: DashMap::new(),
         }
     }
@@ -140,6 +154,7 @@ impl McpRegistry {
             meta: None,
             max_upload_bytes: 52_428_800,
             index_large_table_rows: 1_000_000,
+            audit_meta_read: test_audit_conn(),
             services: DashMap::new(),
         }
     }
@@ -153,6 +168,7 @@ impl McpRegistry {
         meta: Option<Arc<Mutex<Connection>>>,
         max_upload_bytes: usize,
         index_large_table_rows: u64,
+        audit_meta_read: Arc<Mutex<Connection>>,
     ) -> Self {
         Self {
             tenants,
@@ -164,6 +180,7 @@ impl McpRegistry {
             meta,
             max_upload_bytes,
             index_large_table_rows,
+            audit_meta_read,
             services: DashMap::new(),
         }
     }
@@ -183,6 +200,7 @@ impl McpRegistry {
             self.meta.clone(),
             self.max_upload_bytes,
             self.index_large_table_rows,
+            self.audit_meta_read.clone(),
         );
         self.services.insert(tenant_id.to_string(), svc.clone());
         Ok(svc)
@@ -190,4 +208,29 @@ impl McpRegistry {
     pub fn evict(&self, tenant_id: &str) {
         self.services.remove(tenant_id);
     }
+}
+
+/// v1.26 — used by the test-only `McpRegistry::new` / `with_bus`
+/// constructors. Allocates a fresh in-memory `meta_logs.sqlite` so
+/// the audit_meta_read field is always populated without forcing
+/// every test fixture to pass one in. Gated to test + debug builds —
+/// release `main.rs` always calls `with_bus_and_storage` with the
+/// real on-disk RO connection.
+#[cfg(any(test, debug_assertions))]
+fn test_audit_conn() -> Arc<Mutex<Connection>> {
+    Arc::new(Mutex::new(
+        crate::safety::audit_db::open_audit_db_memory()
+            .expect("open in-memory audit DB for test/debug McpRegistry"),
+    ))
+}
+
+/// Release-build fallback: `new` / `with_bus` are never expected to be
+/// called from `main.rs` (it always goes through `with_bus_and_storage`),
+/// but a panic-on-call stub keeps the API surface identical so anyone
+/// touching the release path gets a loud failure rather than a silent
+/// missing-conn at runtime.
+#[cfg(not(any(test, debug_assertions)))]
+fn test_audit_conn() -> Arc<Mutex<Connection>> {
+    panic!("McpRegistry::new / with_bus are test-only constructors; \
+            release code must use with_bus_and_storage");
 }
