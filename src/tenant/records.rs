@@ -1,5 +1,5 @@
 use crate::auth::middleware::AuthCtx;
-use crate::error::json_error;
+use crate::error::{json_error, json_error_with_context};
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
@@ -261,10 +261,24 @@ pub async fn list_handler(
         .await
         .unwrap_or(false);
     if !exists {
-        return json_error(
+        let existing: Vec<String> = pool
+            .with_reader(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '\\_system\\_%' ESCAPE '\\'"
+                )?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                rows.collect::<Result<Vec<_>, _>>()
+            })
+            .await
+            .unwrap_or_default();
+        return json_error_with_context(
             StatusCode::NOT_FOUND,
             "COLLECTION_NOT_FOUND",
             "no such collection",
+            &crate::safety::error_fixes::ErrorContext::CollectionNotFound {
+                collection: &coll,
+                existing: &existing,
+            },
         );
     }
     // Compute owner_filter: only for User tokens on collections with
@@ -451,10 +465,14 @@ pub async fn create_handler(
                     .map(|s| !s.is_empty())
                     .unwrap_or(false);
                 if !supplied {
-                    return json_error(
+                    return json_error_with_context(
                         StatusCode::CONFLICT,
                         "OWNER_FIELD_REQUIRED",
                         &format!("service token must supply '{owner_field}' on owner-scoped collection"),
+                        &crate::safety::error_fixes::ErrorContext::OwnerFieldRequired {
+                            collection: &coll,
+                            field: owner_field,
+                        },
                     );
                 }
             }
@@ -499,11 +517,16 @@ pub async fn create_handler(
                 Ok(bytes) => {
                     vector_bytes.insert(vf.name.clone(), bytes);
                 }
-                Err(crate::query::vector_codec::VectorCodecError::DimMismatch { .. }) => {
-                    return json_error(
+                Err(crate::query::vector_codec::VectorCodecError::DimMismatch { field, expected, got }) => {
+                    return json_error_with_context(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "VECTOR_DIM_MISMATCH",
                         &format!("vector field {:?} has wrong dim", vf.name),
+                        &crate::safety::error_fixes::ErrorContext::VectorDimMismatch {
+                            field: &field,
+                            expected_dim: expected,
+                            actual_dim: got as u32,
+                        },
                     );
                 }
                 Err(crate::query::vector_codec::VectorCodecError::NonFinite { .. }) => {
@@ -536,6 +559,11 @@ pub async fn create_handler(
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
+    // Capture submitted keys + schema field names BEFORE the closure
+    // moves `data` and `schema` — needed at the error point to identify
+    // which key was rejected as FIELD_NOT_FOUND.
+    let submitted_keys: Vec<String> = data.keys().cloned().collect();
+    let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
         .with_writer(move |c| -> rusqlite::Result<(i64, serde_json::Value)> {
             // Validate against schema
@@ -607,10 +635,20 @@ pub async fn create_handler(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("InvalidQuery") {
-                json_error(
+                let bad = submitted_keys
+                    .iter()
+                    .find(|k| !known_fields.iter().any(|f| f == *k))
+                    .cloned()
+                    .unwrap_or_default();
+                json_error_with_context(
                     StatusCode::BAD_REQUEST,
                     "FIELD_NOT_FOUND",
                     "unknown field or missing collection",
+                    &crate::safety::error_fixes::ErrorContext::FieldNotFound {
+                        field: &bad,
+                        collection: &coll,
+                        existing: &known_fields,
+                    },
                 )
             } else {
                 (StatusCode::BAD_REQUEST, msg).into_response()
@@ -666,11 +704,16 @@ pub async fn update_handler(
                 Ok(bytes) => {
                     vector_bytes.insert(vf.name.clone(), bytes);
                 }
-                Err(crate::query::vector_codec::VectorCodecError::DimMismatch { .. }) => {
-                    return json_error(
+                Err(crate::query::vector_codec::VectorCodecError::DimMismatch { field, expected, got }) => {
+                    return json_error_with_context(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "VECTOR_DIM_MISMATCH",
                         &format!("vector field {:?} has wrong dim", vf.name),
+                        &crate::safety::error_fixes::ErrorContext::VectorDimMismatch {
+                            field: &field,
+                            expected_dim: expected,
+                            actual_dim: got as u32,
+                        },
                     );
                 }
                 Err(crate::query::vector_codec::VectorCodecError::NonFinite { .. }) => {
@@ -699,6 +742,11 @@ pub async fn update_handler(
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
+    // Capture submitted keys + schema field names BEFORE the closure
+    // moves `data` and `schema` — needed at the error point to identify
+    // which key was rejected as FIELD_NOT_FOUND.
+    let submitted_keys: Vec<String> = data.keys().cloned().collect();
+    let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
         .with_writer(move |c| -> rusqlite::Result<serde_json::Value> {
             let schema = match describe_collection(c, &coll_clone)? {
@@ -776,7 +824,21 @@ pub async fn update_handler(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("InvalidQuery") {
-                json_error(StatusCode::BAD_REQUEST, "FIELD_NOT_FOUND", "unknown field")
+                let bad = submitted_keys
+                    .iter()
+                    .find(|k| !known_fields.iter().any(|f| f == *k))
+                    .cloned()
+                    .unwrap_or_default();
+                json_error_with_context(
+                    StatusCode::BAD_REQUEST,
+                    "FIELD_NOT_FOUND",
+                    "unknown field",
+                    &crate::safety::error_fixes::ErrorContext::FieldNotFound {
+                        field: &bad,
+                        collection: &coll,
+                        existing: &known_fields,
+                    },
+                )
             } else {
                 (StatusCode::BAD_REQUEST, msg).into_response()
             }
