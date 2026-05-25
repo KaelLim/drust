@@ -1,3 +1,18 @@
+## [1.28.0] - 2026-05-25
+
+### Added
+- `POST /admin/tenants/<id>/collections/<coll>/_list` — admin-session-protected JSON endpoint that backs the redesigned collection editor's chip filter. Accepts `{filters:[{field,op,value}], sort, page, per_page}`; bridges UI ops (`contains`, `starts_with`, `ends_with`, `between`, `is_true`, `is_false`, `is_null`, `is_not_null`) onto FilterAst and compiles to SQL with `?` binds. Returns `{columns, rows, total, page, per_page, total_pages}`.
+- `is_null` and `is_not_null` operators on `FilterAst` leaves (`src/query/vector_filter.rs`).
+
+### Changed
+- **Admin collection editor (`/drust/admin/tenants/<id>/collections/<coll>`) — Supabase-style redesign.** Six tabs collapse to two view modes (Table, Definition). Per-collection settings (anon caps, realtime toggle, SSE quickstart docs, EXPLAIN tool) move into a `[⚙]` popover anchored to the sticky header. Description renders inline in the header (no tile, no label). Pagination + view switcher move into the sticky footer; the duplicated meta-row is gone. Filter UI is a structured chip row (column × operator × value), backed by the new `_list` endpoint — no more raw SQL `WHERE` input.
+- Layout: single viewport scroll (removed `.records-scroll{max-height:600px}`); full-content-width (no central column cap).
+- URL params: `?tab=schema|indexes` → 302 to `?view=definition`; `?tab=anon|realtime|explain` → 302 to `?view=table`. `?filter=<raw SQL>` is dropped (no safe translation); a `tracing::info!` records each hit on the legacy URL.
+
+### Removed
+- Server-side rendering of rows from `collection_rows_page` — the template ships a shell and the browser fetches via `_list` (~170 LOC cleanup in `src/mgmt/browse.rs`).
+- 33 orphan i18n keys (deleted tab blocks).
+
 ## [1.27.0] - 2026-05-25
 
 ### Added
