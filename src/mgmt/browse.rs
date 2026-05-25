@@ -226,7 +226,7 @@ fn build_page_url(
 /// (e.g. password hashes). Returns the column names unchanged and the
 /// masked rows. When there are no sensitive columns for the given
 /// collection name this is a zero-cost passthrough.
-fn mask_sensitive_columns(
+pub(crate) fn mask_sensitive_columns(
     coll: &str,
     column_names: Vec<String>,
     rows: Vec<Vec<String>>,
