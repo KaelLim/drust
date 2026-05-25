@@ -1,8 +1,5 @@
 use crate::mgmt::i18n::{LocaleHint, Translator};
 use crate::mgmt::tenants::TenantsState;
-use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
-use crate::query::executor::{execute_read_query, execute_read_query_admin};
-use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{
     Collection, CollectionSchema, Field, IndexInfo, describe_collection, list_collections,
 };
@@ -41,30 +38,6 @@ struct RowsPage {
     /// `fields` × `indices` in the handler so the template can stay
     /// presentation-only.
     fields_with_badges: Vec<FieldRow>,
-    column_names: Vec<String>,
-    rows: Vec<Vec<String>>,
-    total_rows: i64,
-    page: u32,
-    total_pages: u32,
-    prev_url: Option<String>,
-    next_url: Option<String>,
-    filter_val: String,
-    sort_options: Vec<SortOption>,
-    per_page_options: Vec<PerPageOption>,
-    error: Option<String>,
-    /// `"rows"` (default) | `"schema"` | `"indexes"` | `"anon"` | `"realtime"` | `"explain"`.
-    /// The legacy `"data"` value is mapped to `"rows"` for back-compat with
-    /// bookmarks from before v1.14.
-    active_tab: String,
-    /// Pre-built tab anchors. Only the rows URL preserves filter/sort/page
-    /// (the other tabs ignore those params); each non-rows URL is
-    /// the canonical collection URL plus `?tab=<name>`.
-    tab_rows_url: String,
-    tab_schema_url: String,
-    tab_indexes_url: String,
-    tab_anon_url: String,
-    tab_realtime_url: String,
-    tab_explain_url: String,
     /// Pairs of `(verb, currently_enabled)` for the four DML verbs in
     /// canonical order. Drives the checkbox row in the Anon tab editor.
     anon_cap_choices: Vec<(&'static str, bool)>,
@@ -106,17 +79,6 @@ struct FieldRow {
     is_indexed: bool,
     /// v1.19 — per-field description, threaded from `Field::description`.
     description: Option<String>,
-}
-
-struct SortOption {
-    value: String,
-    label: String,
-    selected: bool,
-}
-
-struct PerPageOption {
-    value: u32,
-    selected: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -204,27 +166,6 @@ pub async fn collections_page(
         .unwrap(),
     )
     .into_response()
-}
-
-fn build_page_url(
-    tenant: &str,
-    coll: &str,
-    page: u32,
-    per_page: u32,
-    filter: &str,
-    sort: &str,
-) -> String {
-    let mut parts: Vec<String> = vec![format!("page={page}"), format!("per_page={per_page}")];
-    if !filter.is_empty() {
-        parts.push(format!("filter={}", urlencoding::encode(filter)));
-    }
-    if !sort.is_empty() {
-        parts.push(format!("sort={}", urlencoding::encode(sort)));
-    }
-    format!(
-        "/drust/admin/tenants/{tenant}/collections/{coll}?{}",
-        parts.join("&")
-    )
 }
 
 /// Replace cell values in columns that should never appear in HTML
@@ -328,181 +269,13 @@ pub async fn collection_rows_page(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    let filter_val = qs.filter.clone().unwrap_or_default();
-    let sort_val = qs.sort.clone().unwrap_or_default();
-    let per_page = qs.per_page.unwrap_or(20).clamp(1, 500);
-    let page = qs.page.unwrap_or(1).max(1);
-    let active_tab = match qs.tab.as_deref() {
-        Some("schema") => "schema".to_string(),
-        Some("indexes") => "indexes".to_string(),
-        Some("anon") => "anon".to_string(),
-        Some("realtime") => "realtime".to_string(),
-        Some("explain") => "explain".to_string(),
-        // `"data"` is the pre-v1.14 alias for `"rows"`. Anything else
-        // (None, unknown) defaults to rows.
-        _ => "rows".to_string(),
-    };
-
-    let (sort_field, sort_dir) = if sort_val.is_empty() {
-        ("id".to_string(), SortDir::Desc)
-    } else {
-        parse_sort(&sort_val)
-    };
-    let params = ListParams {
-        filter: if filter_val.is_empty() {
-            None
-        } else {
-            Some(filter_val.clone())
-        },
-        sort_field,
-        sort_dir,
-        page,
-        per_page,
-        owner_filter: None, // admin browse has no row-level owner filter
-    };
-
-    let list_sql = build_list_sql(&coll_name, &params);
-    let count_sql = build_count_sql(
-        &coll_name,
-        if filter_val.is_empty() {
-            None
-        } else {
-            Some(filter_val.as_str())
-        },
-        None,
-    );
-
-    let mut error: Option<String> = None;
-
-    // Admin UI is allowed to browse _system_* tables (e.g. _system_users). The
-    // read-only authorizer would block them, so bypass it for protected names —
-    // the connection is still SQLITE_OPEN_READONLY, so writes are impossible.
-    let rows_result = if crate::storage::schema::is_protected_collection(&coll_name) {
-        execute_read_query_admin(&conn, &list_sql, per_page as usize, 32_768)
-    } else {
-        execute_read_query(&conn, &list_sql, per_page as usize, 32_768)
-    };
-    let (column_names, rows): (Vec<String>, Vec<Vec<String>>) = match rows_result {
-        Ok(qr) => {
-            let cols = qr.column_names.clone();
-            let stringified: Vec<Vec<String>> = qr
-                .rows
-                .into_iter()
-                .map(|row| {
-                    row.into_iter()
-                        .map(|v| match v {
-                            serde_json::Value::Null => "NULL".to_string(),
-                            serde_json::Value::String(s) => s,
-                            other => other.to_string(),
-                        })
-                        .collect()
-                })
-                .collect();
-            (cols, stringified)
-        }
-        Err(e) => {
-            error = Some(format!(
-                "filter/sort 解析失敗：{}（常見原因：欄位名打錯、引號沒配、SQL 片段被 authorizer 擋）",
-                e
-            ));
-            (
-                schema.fields.iter().map(|f| f.name.clone()).collect(),
-                vec![],
-            )
-        }
-    };
-
-    // Mask sensitive columns so secrets never appear in the HTML response.
-    // Currently only _system_users.password_hash — the argon2 PHC string
-    // is security-irrelevant to display but could leak into logs/screenshots.
-    let (column_names, rows) = mask_sensitive_columns(&coll_name, column_names, rows);
-
-    // Count uses raw query_row. Skip the authorizer for protected system
-    // tables (admin-only route; connection is still SQLITE_OPEN_READONLY).
-    let total: i64 = {
-        if !crate::storage::schema::is_protected_collection(&coll_name) {
-            attach_readonly_authorizer(&conn);
-        }
-        let r = conn
-            .query_row(&count_sql, [], |r| r.get::<_, i64>(0))
-            .unwrap_or(schema.row_count);
-        detach_authorizer(&conn);
-        r
-    };
-
-    let total_pages = if total == 0 {
-        1
-    } else {
-        (total as u64).div_ceil(per_page as u64) as u32
-    };
-    let prev_url = if page > 1 {
-        Some(build_page_url(
-            &tenant_id,
-            &coll_name,
-            page - 1,
-            per_page,
-            &filter_val,
-            &sort_val,
-        ))
-    } else {
-        None
-    };
-    let next_url = if page < total_pages {
-        Some(build_page_url(
-            &tenant_id,
-            &coll_name,
-            page + 1,
-            per_page,
-            &filter_val,
-            &sort_val,
-        ))
-    } else {
-        None
-    };
-
-    let mut sort_options: Vec<SortOption> = Vec::with_capacity(schema.fields.len() * 2);
-    for f in &schema.fields {
-        let desc_value = format!("-{}", f.name);
-        sort_options.push(SortOption {
-            value: f.name.clone(),
-            label: format!("{} ↑", f.name),
-            selected: sort_val == f.name,
-        });
-        sort_options.push(SortOption {
-            value: desc_value.clone(),
-            label: format!("{} ↓", f.name),
-            selected: sort_val == desc_value,
-        });
-    }
-    let per_page_options: Vec<PerPageOption> = [20u32, 50, 100, 200, 500]
-        .into_iter()
-        .map(|v| PerPageOption {
-            value: v,
-            selected: v == per_page,
-        })
-        .collect();
-
-    // Build the five tab anchors. Only the rows link preserves
-    // filter/sort/page state — the schema, indexes, anon, and explain
-    // tabs ignore those params, so their URLs are kept clean.
-    let tab_rows_url =
-        build_page_url(&tenant_id, &coll_name, page, per_page, &filter_val, &sort_val);
-    let coll_base = format!(
-        "/drust/admin/tenants/{}/collections/{}",
-        tenant_id, coll_name
-    );
-    let tab_schema_url = format!("{coll_base}?tab=schema");
-    let tab_indexes_url = format!("{coll_base}?tab=indexes");
-    let tab_anon_url = format!("{coll_base}?tab=anon");
-    let tab_realtime_url = format!("{coll_base}?tab=realtime");
-    let tab_explain_url = format!("{coll_base}?tab=explain");
     // v1.16 — pull the current SSE broadcast flag off the same schema row
     // we already loaded above. `describe_collection` falls back to true
     // when no `_system_collection_meta` row exists yet.
     let realtime_enabled = schema.realtime_enabled;
 
     // Cross-reference indices to mark fields that participate in any
-    // explicit index. Used by the schema tab to render an IDX badge.
+    // explicit index. Used by the Definition view to render an IDX badge.
     let indexed_fields: std::collections::HashSet<String> = schema
         .indices
         .iter()
@@ -554,24 +327,6 @@ pub async fn collection_rows_page(
             fields: schema.fields,
             fields_with_badges,
             indices: schema.indices,
-            column_names,
-            rows,
-            total_rows: total,
-            page,
-            total_pages,
-            prev_url,
-            next_url,
-            filter_val,
-            sort_options,
-            per_page_options,
-            error,
-            active_tab,
-            tab_rows_url,
-            tab_schema_url,
-            tab_indexes_url,
-            tab_anon_url,
-            tab_realtime_url,
-            tab_explain_url,
             anon_cap_choices,
             realtime_enabled,
             collection_description: schema.description,
