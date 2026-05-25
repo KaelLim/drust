@@ -401,25 +401,39 @@ async fn login_submit(
     let mut resp = Redirect::to("/drust/admin/tenants").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
+    // v1.28.1: expire any pre-v1.28.1 cookies that login wrote with `Path=/`.
+    // Those bypassed the canonical Path=/drust path used by /admin/settings,
+    // so after Save the browser would hold both copies and CookieJar::get
+    // returned the stale Path=/ value — making Save look like a no-op.
+    // Sending Max-Age=0 with the same Path the bad cookie was written under
+    // deletes it from the browser jar; the new canonical cookie below then
+    // takes over cleanly.
+    let expire_legacy_locale = "drust_locale=; Path=/; Max-Age=0; SameSite=Lax";
+    let expire_legacy_theme  = "drust_theme=; Path=/; Max-Age=0; SameSite=Lax";
+    resp.headers_mut()
+        .append(header::SET_COOKIE, expire_legacy_locale.parse().unwrap());
+    resp.headers_mut()
+        .append(header::SET_COOKIE, expire_legacy_theme.parse().unwrap());
+
     // v1.22 — if this admin has a persisted locale, push it down as a cookie
     // so the next page renders in their preferred language regardless of
     // which device they signed in from. `append` not `insert` — must coexist
-    // with the session cookie above.
+    // with the session cookie above. v1.28.1: route through the canonical
+    // build_locale_cookie / build_theme_cookie helpers so attributes (Path,
+    // Secure, SameSite) match what /admin/settings writes — otherwise the
+    // two cookies coexist with different Paths and the Save-changed value
+    // gets shadowed by the stale login-set one.
     if let Some(loc) = admin_locale.as_deref()
-        && matches!(loc, "en" | "zh-TW")
+        && let Some(l) = crate::mgmt::i18n::Locale::from_tag(loc)
     {
-        let locale_cookie = format!(
-            "drust_locale={loc}; Path=/; Max-Age=31536000; SameSite=Lax"
-        );
+        let locale_cookie = crate::mgmt::i18n::build_locale_cookie(l);
         resp.headers_mut()
             .append(header::SET_COOKIE, locale_cookie.parse().unwrap());
     }
     if let Some(th) = admin_theme.as_deref()
-        && crate::mgmt::theme::Theme::from_tag(th).is_some()
+        && let Some(t) = crate::mgmt::theme::Theme::from_tag(th)
     {
-        let theme_cookie = format!(
-            "drust_theme={th}; Path=/; Max-Age=31536000; SameSite=Lax"
-        );
+        let theme_cookie = crate::mgmt::theme::build_theme_cookie(t);
         resp.headers_mut()
             .append(header::SET_COOKIE, theme_cookie.parse().unwrap());
     }

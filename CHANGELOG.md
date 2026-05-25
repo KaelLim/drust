@@ -1,3 +1,8 @@
+## [1.28.1] - 2026-05-25
+
+### Fixed
+- `/admin/settings` Save was a no-op for any admin who had logged in via the password flow. The login handler wrote `drust_locale` / `drust_theme` cookies with `Path=/` and no `Secure` flag, while `/admin/settings` writes them with `Path=/drust; Secure` (the canonical attributes). After Save, the browser kept both cookies; `axum_extra::CookieJar::get` then returned the stale `Path=/` value, masking the new one and making the page appear unchanged. Login now routes through `build_locale_cookie` / `build_theme_cookie` so attributes match, and proactively expires any pre-v1.28.1 `Path=/` cookies still in the browser jar via `Max-Age=0`.
+
 ## [1.28.0] - 2026-05-25
 
 ### Added
