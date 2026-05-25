@@ -242,10 +242,11 @@ impl AuditLog {
 }
 
 /// Stateless one-shot dispatch to the global SQLite audit writer.
-/// Used by code paths that don't carry the shared `Arc<AuditLog>`
-/// (currently: admin OAuth login). `_dir` is retained for caller-site
-/// compatibility after v1.25.2 retired the JSONL writer — see CHANGELOG;
-/// v1.25.3+ may drop the parameter.
+/// Used by auth flows that don't carry the shared `Arc<AuditLog>` —
+/// admin + per-tenant OAuth callbacks and admin login / password
+/// endpoints. `_dir` is retained for caller-site compatibility after
+/// v1.25.2 retired the JSONL writer — see CHANGELOG; v1.25.3+ may
+/// drop the parameter.
 pub async fn write_entry(_dir: &std::path::Path, entry: &AuditEntry) {
     crate::safety::audit_db::try_send(entry);
 }
