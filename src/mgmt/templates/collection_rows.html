@@ -38,104 +38,37 @@
           <a class="col-tab{% if active_tab == "explain" %} on{% endif %}"  href="{{ tab_explain_url }}">{{ t.s("collection_rows.tabs.explain") }}</a>
         </nav>
 
-        {# ============================== rows tab ============================== #}
-        {% if active_tab == "rows" %}
-        <div class="card">
-          <form method="get" class="toolbar">
-            <div class="field">
-              <label>{{ t.s("collection_rows.rows.filter_label") }}</label>
-              <div class="input-prefix">
-                <span class="prefix">{{ t.s("collection_rows.rows.filter_prefix") }}</span>
-                <input class="input" type="text" name="filter" value="{{ filter_val }}" placeholder="{{ t.s("collection_rows.rows.filter_placeholder") }}">
+        {# ============================== Table view ============================== #}
+        <div id="view-table" class="view-pane">
+          <div class="coll-toolbar">
+            <div class="row">
+              <button type="button" class="btn btn-sm" id="add-filter-btn">{{ t.s("collection_page.toolbar.add_filter") }}</button>
+              <div style="position:relative;">
+                <button type="button" class="btn btn-sm btn-ghost" id="sort-btn">
+                  {{ t.s("collection_page.toolbar.sort") }}: <span id="sort-current">id ↓</span>
+                </button>
               </div>
-            </div>
-            <div class="field">
-              <label>{{ t.s("collection_rows.rows.sort_label") }}</label>
-              <select class="select" name="sort">
-                <option value="">{{ t.s("collection_rows.rows.sort_default") }}</option>
-                {% for opt in sort_options %}
-                <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.label }}</option>
-                {% endfor %}
+              <select class="select" id="per-page-select" style="width:auto;">
+                <option value="20">20</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="500">500</option>
               </select>
             </div>
-            <div class="field">
-              <label>{{ t.s("collection_rows.rows.per_page_label") }}</label>
-              <select class="select" name="per_page">
-                {% for opt in per_page_options %}
-                <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="actions">
-              <button class="btn btn-primary" type="submit">{{ t.s("common.action.apply") }}</button>
-              <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">{{ t.s("common.action.reset") }}</a>
-            </div>
-          </form>
-
-          {% if let Some(err) = error %}
-          <div style="padding:14px 18px;border-bottom:1px solid var(--line-2);">
-            <div class="banner danger">
-              <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
-              <div class="b-body"><div class="b-title">{{ t.s("collection_rows.rows.error_title") }}</div><p>{{ err }}</p></div>
-            </div>
+            <div class="row" id="chip-row"></div>
           </div>
-          {% endif %}
-
-          <div class="meta-row">
-            <span><b>{{ total_rows }}</b> {{ t.s("common.stat.records") }}</span>
-            <span style="color:var(--line);">│</span>
-            <span>{{ t.s("common.pager.page") }} <b>{{ page }}</b> / {{ total_pages }}</span>
-            {% if !filter_val.is_empty() %}
-            <span style="color:var(--line);">│</span>
-            <span>{{ t.s("collection_rows.rows.filter_indicator") }} <b>{{ filter_val }}</b></span>
-            {% endif %}
-            <span class="spacer"></span>
-          </div>
-
-          <div class="records-scroll">
-            {% if rows.is_empty() %}
-            <div class="empty" style="padding:56px 24px 40px;">
-              <div style="margin-bottom:18px;display:grid;place-items:center;">
-                <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
-              </div>
-              <h3>{{ t.s("collection_rows.rows.empty_title") }}</h3>
-              <p>{% if !filter_val.is_empty() %}{{ t.s("collection_rows.rows.empty_filtered") }}{% else %}{{ t.s("collection_rows.rows.empty_collection") }}{% endif %}</p>
-              {% if !filter_val.is_empty() %}
-              <div class="suggest"><a class="btn btn-sm btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}">{{ t.s("collection_rows.rows.reset_filter") }}</a></div>
-              {% endif %}
-            </div>
-            {% else %}
-            <table class="data">
-              <thead>
-                <tr>{% for col in column_names %}<th>{{ col }}</th>{% endfor %}</tr>
-              </thead>
-              <tbody>
-                {% for row in rows %}
-                <tr>
-                  {% for cell in row %}
-                  <td class="{% if cell == "NULL" %}null{% endif %} trunc" title="{{ cell }}">{% if cell == "NULL" %}{{ t.s("common.cell.null") }}{% else %}{{ cell }}{% endif %}</td>
-                  {% endfor %}
-                </tr>
-                {% endfor %}
-              </tbody>
+          <div class="coll-table-wrap">
+            <table class="data" id="rows-table">
+              <thead><tr id="rows-thead"></tr></thead>
+              <tbody id="rows-tbody"></tbody>
             </table>
-            {% endif %}
-          </div>
-
-          {% if !rows.is_empty() %}
-          <div class="pager">
-            <div class="page-of">
-              {{ t.s("common.pager.page") }} <b>{{ page }}</b> {{ t.s("common.pager.of") }} {{ total_pages }} · <b>{{ total_rows }}</b> {{ t.s("common.pager.total") }}
-            </div>
-            <div class="pager-group">
-              {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.prev") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.prev") }}</span>{% endif %}
-              <span style="color:var(--muted);">{{ t.s("common.pager.page") }} <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
-              {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.next") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.next") }}</span>{% endif %}
+            <div id="rows-empty" hidden style="padding:56px 24px 40px;text-align:center;color:var(--muted);">
+              <canvas class="pix" data-chonk="curious" data-size="96" style="margin-bottom:18px;"></canvas>
+              <div>No rows.</div>
             </div>
           </div>
-          {% endif %}
         </div>
-        {% endif %}
 
         {# ============================== schema tab ============================== #}
         {% if active_tab == "schema" %}
