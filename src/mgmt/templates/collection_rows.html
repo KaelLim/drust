@@ -7,27 +7,24 @@
 {% block content %}
     <div class="page page-wide">
 
-        <div class="view-head">
-          <div class="grow">
-            <div class="eyebrow">{{ t.s("collection_rows.head.eyebrow") }}</div>
-            <h1 class="view-title">{{ coll_name }}</h1>
-            <p class="view-sub"><b>{{ total_rows }}</b> {{ t.s("common.stat.records") }} · <b>{{ fields.len() }}</b> {{ t.s("collection_rows.indexes.col_fields") }} · <b>{{ indices.len() }}</b> {{ t.s("common.stat.indexes") }}</p>
-          </div>
-        </div>
-
-        {# v1.19 — collection description tile #}
-        <div class="desc-tile" id="desc-tile-collection">
-          <div class="desc-tile-head">
-            <span class="muted">{{ t.s("common.desc.label") }}</span>
-            <button type="button" class="btn sm icon ghost" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')" title="{{ t.s("common.desc.edit_aria") }}" aria-label="{{ t.s("common.desc.edit_aria") }}">
-              <svg aria-hidden="true"><use href="#i-edit"/></svg>
+        <div class="coll-sticky-top">
+          <div class="row1">
+            <h1>{{ coll_name }}</h1>
+            <button type="button" class="gear-btn" id="coll-gear" aria-label="{{ t.s("collection_page.settings.title") }}" title="{{ t.s("collection_page.settings.title") }}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
           </div>
-          <div class="desc-tile-body" id="desc-body-collection">
+          <div class="coll-desc-inline" id="desc-body-collection">
             {% if let Some(desc) = collection_description %}
-              <p style="white-space: pre-wrap; margin:0;">{{ desc }}</p>
+              <span class="desc-text">{{ desc }}</span>
+              <button type="button" class="desc-add" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')" aria-label="{{ t.s("collection_page.desc.edit_aria") }}" title="{{ t.s("collection_page.desc.edit_aria") }}">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
             {% else %}
-              <em class="muted">{{ t.s("common.desc.none") }}</em>
+              <button type="button" class="desc-add" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                {{ t.s("collection_page.desc.add") }}
+              </button>
             {% endif %}
           </div>
         </div>
