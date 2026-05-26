@@ -170,6 +170,22 @@ pub async fn oauth_callback(
         .header(
             header::SET_COOKIE,
             oauth_state::clear_pkce_cookie().to_string(),
+        )
+        // v1.28.8: mirror the v1.28.1 login_submit cleanup (routes.rs:411-416).
+        // OAuth callbacks between 61fd078 (first drust_theme on callback) and
+        // 622b44f (2026-05-24 migration to the canonical Path=/drust builders)
+        // wrote these cookies with Path=/. The fresh Path=/drust cookies set
+        // below coexist with the legacy Path=/ ones; CookieJar::get returns
+        // the path-/ value on some browsers, masking the new value and making
+        // /admin/settings Save look like a no-op. Sending Max-Age=0 with the
+        // legacy attributes deletes those cookies from the browser jar.
+        .header(
+            header::SET_COOKIE,
+            "drust_locale=; Path=/; Max-Age=0; SameSite=Lax",
+        )
+        .header(
+            header::SET_COOKIE,
+            "drust_theme=; Path=/; Max-Age=0; SameSite=Lax",
         );
     if let Some(loc) = admin_locale.as_deref()
         && let Some(locale) = crate::mgmt::i18n::Locale::from_tag(loc)
