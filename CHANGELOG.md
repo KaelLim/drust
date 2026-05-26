@@ -1,3 +1,12 @@
+## [1.28.12] - 2026-05-26
+
+### Changed
+- Collection page footer is now a thin status bar pinned to the browser viewport bottom (was `position:sticky` inside the page scroll, which left the bar floating mid-air right below the table on short pages). New shape: 36px tall, `var(--bg-deep)` tint, single `var(--border-mid)` hairline on top, muted 12px sans typography — Excel / Supabase status-bar aesthetic. Left edge anchored at `248px` (matches `.app-shell` grid's sidebar column), right edge at viewport edge.
+- `[Table]` / `[Definition]` tabs (`.view-tabs`) removed from the footer markup. Definition view is still reachable via the `?view=definition` URL param (the JS init reads from `searchParams`, and the `.view-tabs button` querySelectorAll gracefully no-ops with the markup gone). A later release will decide whether to surface Definition view elsewhere or retire it entirely.
+
+### Internal
+- `.coll-sticky-bottom` swapped `var(--line-2)` (ghost var since v1.23) for `var(--border-mid)` on the top border.
+
 ## [1.28.11] - 2026-05-26
 
 ### Fixed

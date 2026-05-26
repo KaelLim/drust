@@ -332,11 +332,11 @@
         </div>
         </div>
 
+        {# v1.28.12 — view-tabs (Table / Definition) removed from this footer.
+           Definition view still reachable via ?view=definition URL param.
+           The footer is now a fixed-position status bar pinned to the
+           browser viewport bottom (see .coll-sticky-bottom in _styles.html). #}
         <div class="coll-sticky-bottom">
-          <div class="view-tabs" role="tablist">
-            <button type="button" data-view="table" class="active">{{ t.s("collection_page.view.table") }}</button>
-            <button type="button" data-view="definition">{{ t.s("collection_page.view.definition") }}</button>
-          </div>
           <div class="pager-info" id="pager-info">
             <span id="pager-page-of"></span>
             <button type="button" class="btn btn-sm btn-ghost" id="pager-prev" disabled>{{ t.s("collection_page.footer.prev") }}</button>
