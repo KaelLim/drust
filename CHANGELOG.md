@@ -1,3 +1,8 @@
+## [1.28.8] - 2026-05-26
+
+### Fixed
+- `/admin/settings` Save was still a no-op for admins who only ever signed in via OAuth (Google / GitHub). v1.28.1 added a `Max-Age=0` cleanup of legacy `Path=/` cookies inside the password-login handler (`routes.rs:411-416`), but the OAuth callback handler (`oauth_login.rs`) was not touched — so OAuth-only admins who logged in between `61fd078` (first `drust_theme` on callback) and `622b44f` (2026-05-24 migration to the canonical `Path=/drust` builders) still had the stale `Path=/` cookies in their jar after every OAuth sign-in. The fresh `Path=/drust` cookies coexisted with them, and `CookieJar::get` returned the stale value on some browsers, masking the Save. OAuth callback now mirrors the v1.28.1 cleanup: two extra `Set-Cookie` headers expire `drust_locale` / `drust_theme` at `Path=/`. Affected users see the bug clear after one fresh OAuth sign-in.
+
 ## [1.28.7] - 2026-05-26
 
 ### Changed
