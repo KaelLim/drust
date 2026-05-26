@@ -1,3 +1,14 @@
+## [1.28.7] - 2026-05-26
+
+### Changed
+- `/list` denial code for anon callers on owner-scoped collections is now `ANON_FORBIDDEN_OWNER_SCOPED`, matching `/records/*` and `/search`. The previous code `OWNER_SCOPED_ANON_DENIED` is removed. The HTTP status and the error message are unchanged. External clients pattern-matching the old string need to update.
+
+### Fixed
+- Webhook `x-drust-delivery-id` and `x-drust-timestamp` headers now match the corresponding fields in the HMAC-signed body for the same delivery. Previously `dispatch()` generated one UUID/timestamp pair for the body and `deliver_for_test()` generated a second pair for the headers, silently breaking log correlation between a subscriber's request log and drust's `last_failure_reason`. Both values are now generated once in `dispatch()` and threaded through.
+
+### Internal
+- `webhook_dispatcher::deliver_for_test` accepts an optional `PreCheckResolveFn` (`Arc<dyn Fn(String, u16) -> BoxFuture<Result<(), String>> + Send + Sync>`) for tests to fake the wrap-first DNS check. Production callers pass `None` — the path is bit-for-bit unchanged. Three previously-`#[ignore]`d integration tests in `tests/webhook_dns_rebind.rs` (`mixed_resolve_dials_only_public`, `ipv6_private_literal_terminal`, `dns_failure_terminal`) are now active.
+
 ## [1.28.6] - 2026-05-26
 
 ### Fixed
