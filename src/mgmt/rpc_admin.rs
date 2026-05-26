@@ -38,6 +38,7 @@ struct RpcPage {
     next_url: Option<String>,
     per_page_options: Vec<RpcPerPageOption>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -69,6 +70,7 @@ pub async fn rpc_index(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
     axum::extract::Query(qs): axum::extract::Query<RpcListQs>,
 ) -> Response {
@@ -150,6 +152,7 @@ pub async fn rpc_index(
             next_url,
             per_page_options,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -179,6 +182,7 @@ struct RpcForm {
     form_anon_callable: bool,
     error: Option<String>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -209,6 +213,7 @@ pub async fn rpc_new_form(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
@@ -233,6 +238,7 @@ pub async fn rpc_new_form(
             form_anon_callable: false,
             error: None,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -250,6 +256,7 @@ pub async fn rpc_edit_form(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
     let conn = match open_read(&state.data_dir, &tenant_id) {
@@ -286,6 +293,7 @@ pub async fn rpc_edit_form(
             form_anon_callable: existing.anon_callable,
             error: None,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -317,6 +325,7 @@ pub async fn rpc_save(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
     axum::Form(form): axum::Form<RpcFormBody>,
 ) -> Response {
@@ -336,7 +345,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme);
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme, admin.clone());
     }
 
     // Validate SQL through the read-only authorizer (uses a reader connection
@@ -357,7 +366,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme);
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme, admin.clone());
     }
 
     // Single writer transaction: lookup existence + create-or-update.
@@ -400,7 +409,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme);
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme, admin.clone());
     }
 
     Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_rpc")).into_response()
@@ -416,6 +425,7 @@ fn render_form_with_error(
     msg: String,
     locale: Locale,
     theme: crate::mgmt::theme::Theme,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
 ) -> Response {
     let collections = load_collections(state, tenant_id);
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
@@ -435,6 +445,7 @@ fn render_form_with_error(
             form_anon_callable: form.anon_callable.is_some(),
             error: Some(msg),
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -475,6 +486,7 @@ struct RpcTestPage {
     /// Set when the user has just clicked Run. None on the bare GET.
     outcome: Option<RpcTestOutcome>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -514,6 +526,7 @@ pub async fn rpc_test_form(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
     let tenant_name = match lookup_tenant_name(&state, &tenant_id).await {
@@ -561,6 +574,7 @@ pub async fn rpc_test_form(
                 .collect(),
             outcome: None,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -618,6 +632,7 @@ pub async fn rpc_test_run(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path((tenant_id, name)): Path<(String, String)>,
     axum::Form(form): axum::Form<RpcTestRunForm>,
 ) -> Response {
@@ -668,6 +683,7 @@ pub async fn rpc_test_run(
                 serde_json::to_string_pretty(&body_map).unwrap_or_default(),
                 locale,
                 theme,
+                admin,
             );
         }
     };
@@ -703,6 +719,7 @@ pub async fn rpc_test_run(
             bound_json,
             locale,
             theme,
+            admin,
         ),
         Err(e) => render_test_outcome(
             tenant_id,
@@ -716,6 +733,7 @@ pub async fn rpc_test_run(
             bound_json,
             locale,
             theme,
+            admin,
         ),
     }
 }
@@ -733,6 +751,7 @@ fn render_test_outcome(
     bound_json: String,
     locale: Locale,
     theme: crate::mgmt::theme::Theme,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
 ) -> Response {
     let result = exec.as_ref().ok().map(|qr| RpcTestResult {
         column_names: qr.column_names.clone(),
@@ -791,6 +810,7 @@ fn render_test_outcome(
                 explain_rows,
             }),
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,

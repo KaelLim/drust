@@ -107,6 +107,7 @@ struct TenantsListPage {
     /// Empty when no sampler tick has run yet on this boot.
     stats_age_display: String,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -199,6 +200,7 @@ pub async fn list_page_axum(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
 ) -> Response {
     // v1.15.0 — reads denormalized stats columns. Zero per-tenant SQLite
     // opens on the request path; the background sampler keeps them fresh.
@@ -267,6 +269,7 @@ pub async fn list_page_axum(
             stats_interval_min,
             stats_age_display,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -597,6 +600,7 @@ struct TenantFilesAdminPage {
     next_url: Option<String>,
     per_page_options: Vec<TenantFilesPerPageOption>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -676,6 +680,7 @@ struct TenantOverviewPage {
     webhook_failures: Vec<WebhookFailureRow>,
     recent_audit: Vec<RecentAuditRow>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -738,6 +743,7 @@ pub async fn tenant_overview_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
 ) -> Response {
     if validate_tenant_id(&tenant_id).is_err() {
@@ -890,6 +896,7 @@ pub async fn tenant_overview_page(
             webhook_failures,
             recent_audit,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -908,6 +915,7 @@ pub async fn tenant_files_admin_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
     axum::extract::Query(qs): axum::extract::Query<TenantFilesListQs>,
 ) -> Response {
@@ -980,6 +988,7 @@ pub async fn tenant_files_admin_page(
                 next_url: None,
                 per_page_options: per_page_options.clone(),
                 t: Translator::new(locale),
+                admin: admin.clone(),
                 palette_resolved: trc.palette_resolved,
                 mascot_json_static: trc.mascot_json_static,
                 mascot_json_light: trc.mascot_json_light,
@@ -1088,6 +1097,7 @@ pub async fn tenant_files_admin_page(
             next_url,
             per_page_options,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -1116,6 +1126,7 @@ struct TenantOauthProvidersPage {
     /// on the plain GET render.
     error: Option<String>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -1219,6 +1230,7 @@ async fn render_oauth_providers_page(
     error: Option<String>,
     locale: Locale,
     theme: crate::mgmt::theme::Theme,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
 ) -> Response {
     let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
         Ok(t) => t,
@@ -1249,6 +1261,7 @@ async fn render_oauth_providers_page(
             active_coll: "_oauth_providers".to_string(),
             error,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -1265,9 +1278,10 @@ pub async fn tenant_oauth_providers_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    render_oauth_providers_page(&state, tenant_id, None, locale, theme).await
+    render_oauth_providers_page(&state, tenant_id, None, locale, theme, admin).await
 }
 
 /// `POST /admin/tenants/{id}/_oauth_providers` — upsert. Splits the
@@ -1279,6 +1293,7 @@ pub async fn tenant_oauth_provider_upsert(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
     Form(form): Form<OauthProviderUpsertForm>,
 ) -> Response {
@@ -1305,7 +1320,7 @@ pub async fn tenant_oauth_provider_upsert(
         &form.client_secret,
         &uris,
     ) {
-        return render_oauth_providers_page(&state, tenant_id, Some(e.to_string()), locale, theme).await;
+        return render_oauth_providers_page(&state, tenant_id, Some(e.to_string()), locale, theme, admin.clone()).await;
     }
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
@@ -1329,7 +1344,7 @@ pub async fn tenant_oauth_provider_upsert(
             "/drust/admin/tenants/{tenant_id}/_oauth_providers"
         ))
         .into_response(),
-        Err(msg) => render_oauth_providers_page(&state, tenant_id, Some(msg), locale, theme).await,
+        Err(msg) => render_oauth_providers_page(&state, tenant_id, Some(msg), locale, theme, admin).await,
     }
 }
 
@@ -1386,6 +1401,7 @@ struct TenantWebhooksPage {
     /// cleared on the next response.
     secret_once: Option<WebhookSecretBanner>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -1523,6 +1539,7 @@ async fn render_webhooks_page(
     extra_header: Option<(axum::http::HeaderName, axum::http::HeaderValue)>,
     locale: Locale,
     theme: crate::mgmt::theme::Theme,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
 ) -> Response {
     let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
         Ok(t) => t,
@@ -1550,6 +1567,7 @@ async fn render_webhooks_page(
         form_url: ctx.form_url,
         secret_once: ctx.secret_once,
         t: Translator::new(locale),
+        admin,
         palette_resolved: trc.palette_resolved,
         mascot_json_static: trc.mascot_json_static,
         mascot_json_light: trc.mascot_json_light,
@@ -1571,6 +1589,7 @@ pub async fn tenant_webhooks_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -1588,6 +1607,7 @@ pub async fn tenant_webhooks_page(
         clear,
         locale,
         theme,
+        admin,
     )
     .await
 }
@@ -1602,6 +1622,7 @@ pub async fn tenant_webhook_create_form(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
     Form(form): Form<WebhookCreateForm>,
 ) -> Response {
@@ -1631,6 +1652,7 @@ pub async fn tenant_webhook_create_form(
             None,
             locale,
             theme,
+            admin.clone(),
         )
         .await;
     }
@@ -1648,6 +1670,7 @@ pub async fn tenant_webhook_create_form(
             None,
             locale,
             theme,
+            admin.clone(),
         )
         .await;
     }
@@ -1666,6 +1689,7 @@ pub async fn tenant_webhook_create_form(
             None,
             locale,
             theme,
+            admin.clone(),
         )
         .await;
     }
@@ -1692,6 +1716,7 @@ pub async fn tenant_webhook_create_form(
                 None,
                 locale,
                 theme,
+                admin.clone(),
             )
             .await;
         }
@@ -1751,6 +1776,7 @@ pub async fn tenant_webhook_create_form(
                 None,
                 locale,
                 theme,
+                admin,
             )
             .await
         }

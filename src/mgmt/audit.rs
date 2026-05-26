@@ -599,6 +599,7 @@ struct AuditHostPage {
     entries_json: String,
     top_slow_ops_view: Vec<AuditEntryView>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -812,6 +813,7 @@ pub async fn audit_host_page(
     State(state): State<crate::mgmt::tenants::TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
     let tenant_name_map = {
@@ -851,6 +853,7 @@ pub async fn audit_host_page(
         entries_json: body.entries_json,
         top_slow_ops_view: body.top_slow_ops_view,
         t: Translator::new(locale),
+        admin,
         palette_resolved: trc.palette_resolved,
         mascot_json_static: trc.mascot_json_static,
         mascot_json_light: trc.mascot_json_light,
@@ -890,6 +893,7 @@ struct AuditTenantPage {
     entries_json: String,
     top_slow_ops_view: Vec<AuditEntryView>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -900,6 +904,7 @@ pub async fn audit_tenant_page(
     State(state): State<crate::mgmt::tenants::TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     axum::extract::Path(tenant_id): axum::extract::Path<String>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
@@ -963,6 +968,7 @@ pub async fn audit_tenant_page(
         entries_json: body.entries_json,
         top_slow_ops_view: body.top_slow_ops_view,
         t: Translator::new(locale),
+        admin,
         palette_resolved: trc.palette_resolved,
         mascot_json_static: trc.mascot_json_static,
         mascot_json_light: trc.mascot_json_light,

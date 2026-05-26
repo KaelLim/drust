@@ -93,6 +93,7 @@ struct LoginPage {
 struct DesignShowcase {
     version: &'static str,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -102,12 +103,14 @@ struct DesignShowcase {
 async fn design_showcase(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
 ) -> Response {
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         DesignShowcase {
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -124,6 +127,7 @@ async fn design_showcase(
 struct SettingsPage {
     version: &'static str,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     available_locales: Vec<LocaleOption>,
     available_themes: Vec<crate::mgmt::theme::ThemeOption>,
     theme: crate::mgmt::theme::Theme,
@@ -140,12 +144,14 @@ struct SettingsPage {
 async fn settings_page(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
 ) -> Response {
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         SettingsPage {
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
+            admin,
             available_locales: Locale::options(),
             available_themes: crate::mgmt::theme::Theme::options(),
             theme,
