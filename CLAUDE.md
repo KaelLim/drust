@@ -5,8 +5,8 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-05-25
-version: 1.25.2
+updated: 2026-05-26
+version: 1.28.6
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -30,7 +30,7 @@ cargo test --test mcp_write_schema        # one test file
 cargo test set_anon_caps -- --nocapture   # one test, with stdout
 ```
 
-The `tests/` directory holds ~50 integration tests covering MCP, REST, auth, audit, backups, storage, and the SQL authorizer. Each module's `#[cfg(test)]` blocks compile as part of the lib — no separate unit-test layout. Test factories `TenantAuthState::test_default` / `TenantsState::test_default` / `TenantFilesState::test_default` (gated on `cfg(any(test, debug_assertions))`) keep inline struct literals out of test files; prefer them when adding new tests.
+The `tests/` directory holds 100+ integration test files covering MCP, REST, auth, audit, backups, storage, the SQL authorizer, schema codegen, and the admin `_list` endpoint. Each module's `#[cfg(test)]` blocks compile as part of the lib — no separate unit-test layout. Test factories `TenantAuthState::test_default` / `TenantsState::test_default` / `TenantFilesState::test_default` (gated on `cfg(any(test, debug_assertions))`) keep inline struct literals out of test files; prefer them when adding new tests.
 
 ## Architecture at a glance
 
@@ -57,6 +57,9 @@ Stored in per-tenant `_system_collection_meta` (one row per collection). Surface
 - **Structured `/records/*` list** (v1.21+): `POST /t/<id>/collections/<c>/list` + MCP `list_records`. Body `{filter, sort, page, per_page, select}` with `filter` as `vector_filter::FilterAst`; SQL built in `src/query/list_builder.rs` with `?` placeholders so `owner_field` enforcement is by construction. Service-only `/list/explain`.
 - **Vector similarity search** (v1.10+): `POST /t/<id>/collections/<c>/search` body `{field, vector, k, metric, where, select}`. drust builds SQL; `owner_field` auto-applied. MCP `search_collection` mirrors 1:1. v1 is brute-force scan; ~10⁵ rows is the practical ceiling.
 - **Per-tenant MCP** at `/t/<tenant>/mcp` — Streamable HTTP via `rmcp`, one `StreamableHttpService<DrustMcpService>` per tenant cached in `src/mcp/http_registry.rs`. Tool list in `src/mcp/handler.rs` (`#[tool]` annotations). **Service-key-only** — anon → `403 WRITE_DENIED`, user tokens → `403 MCP_USER_DENIED`. `whoami` returns tenant identity + both bearer tokens plaintext + REST/upload paths so models can hit the multipart upload route (which has no MCP tool by design).
+- **AI introspection helpers** (v1.26+): every REST error JSON includes a `suggested_fix` field with a context-aware remediation hint; same applied to MCP `ErrorData.data`. Destructive ops `delete_record` / `drop_collection` / `drop_index` accept `dry_run: true` and return `would_*` counts + blast radius without mutating. New `recent_writes` MCP tool (service-only) reads the last 100 mutation rows from `meta_logs.sqlite` filtered to the calling tenant — lets a retrying model recover what its previous attempt already did. Catalog of fixes in `src/safety/error_fixes.rs`; blast-radius probes in `src/storage/blast_radius.rs`.
+- **Per-tenant schema codegen** (v1.27+, `src/codegen/`): `GET /t/<id>/openapi.json` (OpenAPI 3.1, all CRUD + `/search` + `/subscribe` + FilterAst `$ref`), `GET /t/<id>/types.ts` (TypeScript Row / Insert / Update interfaces with FK JSDoc), `GET /t/<id>/zod.ts` (RowSchema / InsertSchema / UpdateSchema runtime validators; vector → `z.array(z.number()).length(N)`). Bearer-gated; anon vs service shapes differ — service surface includes per-collection / field / index descriptions, anon strips them. `X-Drust-Schema-Source: anon|service` response header records which view was rendered. Golden-file tests under `tests/codegen/golden/` regenerate with `DRUST_CODEGEN_REGENERATE=1`.
+- **Admin `_list` endpoint** (v1.28+, `src/mgmt/collection_list.rs`): `POST /admin/tenants/<id>/collections/<coll>/_list` body `{filters:[{field,op,value}], sort, page, per_page}` returns `{columns, rows, total, page, per_page, total_pages}`. Bridges UI ops (`contains` / `between` / `is_true` / `is_null` / etc.) onto `FilterAst` then compiles with `?` binds. Bypasses the read-only authorizer for `_system_*` tables (admin path; connection still `SQLITE_OPEN_READONLY`). Masks sensitive columns (`_system_users.password_hash`). Emits one audit row per call (op `admin.collection.list`). Backs the chip filter on the redesigned collection editor (see Admin UI section).
 
 ### Auth
 
@@ -80,9 +83,9 @@ Two pages (v1.5.1+): `/admin/tenants` (search-able list) and `/admin/tenants/{id
 
 - Every page renders inside a viewport-fixed `.macwin` with container-scoped scroll. 2-pane grid `var(--sidebar-w) minmax(0, 1fr)` lets right track shrink below content min-content (long URLs, wide tables). `/admin/tenants/{id}/collections` 302s to first collection; empty tenants get a dedicated empty-state page. **LiveChonk** pixel-cat mascot (`_mascot.html`) renders on any `<canvas class="pix" data-chonk=... data-size=...>`.
 - **Collection editor** (v1.28 rewritten): `/admin/tenants/<id>/collections/<coll>` renders a Supabase-style page with sticky header (title + `[⚙]` settings popover + inline description), a non-sticky Table-mode toolbar (`[+ Filter]` chip popover, `[Sort]`, `[Per page]`), and a sticky footer with `[Table] [Definition]` view tabs + pager. Two view modes only: `Table` fetches rows via `POST /admin/tenants/<id>/collections/<coll>/_list` (FilterAst-backed); `Definition` shows fields + indexes inline. Anon caps, realtime broadcast toggle, SSE quickstart docs, and the EXPLAIN tool live in the `[⚙]` popover. Legacy `?tab=…` URLs 302-redirect to `?view=…`.
-- **Audit UI** (v1.7+, rewritten v1.24+): `/admin/audit` (host) + `/admin/tenants/<id>/_logs` (per-tenant). SQL queries against `meta_logs.sqlite` via `src/mgmt/audit.rs` — total counts are honest by construction (no `MAX_ENTRIES` cap or in-memory scan cache). Browse-tab rows click-to-open via `drustUI.detail()` reading from an embedded `<script id="audit-entries">` JSON blob — the embed applies `</` → `<\/` swap (HTML5 §8.2.6.4 closes `<script>` on any literal `</script>` regardless of `type=`). Toolbar uses native `<datalist>` dropdowns sourced from meta. (v1.17.0's SVG chart grid was removed in v1.17.2 — palette mismatch.)
-- **i18n** (v1.22+): `drust_locale` cookie → `Accept-Language` → `en`. `src/mgmt/i18n.rs` (`Locale` + `Translator`) and `src/mgmt/locale_layer.rs` (outermost middleware on admin router). 20 admin Templates carry `pub t: Translator`. Bundles compiled in via `include_str!`; `build.rs` panics on missing keys at compile time. 705+ keys.
-- **Theming** (v1.23+, v1.25 hardened): three themes `system` / `cozy-dark` / `soft-light`. `drust_theme` cookie + `admins.theme` DB column. `src/mgmt/theme.rs` + `src/mgmt/theme_layer.rs` registered TWICE — outer cookie-only layer covers unauthenticated routes (`/login`, OAuth callback); inner DB-aware layer inside `protected` (after `admin_session_layer`) reads `admins.theme` when cookie is absent. Both share one resolver via `ThemeLayerState.allow_db_fallback: bool`. Palettes in `themes/<code>.toml`, embedded via `include_str!`; `build.rs` enforces drift vs `EXPECTED_THEMES`. Cookie attrs `Path=/drust + Secure` (dev override `DRUST_DEV_NO_SECURE_COOKIES=1`).
+- **Audit UI** (v1.7+, rewritten v1.24+): `/admin/audit` (host) + `/admin/tenants/<id>/_logs` (per-tenant). SQL queries against `meta_logs.sqlite` via `src/mgmt/audit.rs` — total counts are honest by construction (no `MAX_ENTRIES` cap or in-memory scan cache). Browse-tab rows click-to-open via `drustUI.detail()` reading from an embedded `<script id="audit-entries">` JSON blob — the embed applies `</` → `<\/` swap (HTML5 §8.2.6.4 closes `<script>` on any literal `</script>` regardless of `type=`). Toolbar uses native `<datalist>` dropdowns sourced from meta.
+- **i18n** (v1.22+): `drust_locale` cookie → `Accept-Language` → `en`. `src/mgmt/i18n.rs` (`Locale` + `Translator`) and `src/mgmt/locale_layer.rs` (outermost middleware on admin router). 20+ admin Templates carry `pub t: Translator`. Bundles compiled in via `include_str!`; `build.rs` panics on missing keys at compile time. ~690 keys.
+- **Theming** (v1.23+, v1.25 hardened, v1.28.1 cookie unified): three themes `system` / `cozy-dark` / `soft-light`. `drust_theme` cookie + `admins.theme` DB column. `src/mgmt/theme.rs` + `src/mgmt/theme_layer.rs` registered TWICE — outer cookie-only layer covers unauthenticated routes (`/login`, OAuth callback); inner DB-aware layer inside `protected` (after `admin_session_layer`) reads `admins.theme` when cookie is absent. Both share one resolver via `ThemeLayerState.allow_db_fallback: bool`. Palettes in `themes/<code>.toml`, embedded via `include_str!`; `build.rs` enforces drift vs `EXPECTED_THEMES`. Cookie attrs `Path=/drust + Secure` (dev override `DRUST_DEV_NO_SECURE_COOKIES=1`); login + `/admin/settings` both route through `build_theme_cookie` / `build_locale_cookie` so attributes match (otherwise duplicate-Path cookies shadow saves — v1.28.1 fix).
 - **CORS** (v1.5.1+) on tenant routes only, applied OUTSIDE `bearer_auth_layer` so OPTIONS preflight short-circuits before auth. Allow-list from `DRUST_CORS_ORIGINS` (exact origins or single-`*` patterns like `https://*.tzuchi.org` or `http://localhost:*`; multi-`*` rejected at parse). Wildcard tests in `tenant::origin_matches` cover suffix-injection + hyphen-confusion. Mgmt UI routes have no CORS layer.
 
 ## Storage integration (Garage client, v1.4.0+)
@@ -94,7 +97,7 @@ Optional. Activated by setting `GARAGE_S3_ENDPOINT` + friends in `.env`. When en
 - **SQLite-first upload / S3-first delete.** Upload inserts metadata row, puts to Garage, compensates by deleting row on S3 failure. Delete calls Garage first (idempotent on NotFound), then clears row. Orphans surfaced by `reconcile` page.
 - **`_system_*` drop-protected.** `storage::schema::is_protected_collection()` is consulted by `drop_collection` MCP tool, for both admin-level `_system_files` and per-tenant `_system_files`.
 
-## Per-tenant files (Y scope, v1.5.0+)
+## Per-tenant files (v1.5.0+)
 
 On tenant create, drust auto-provisions `tenant-<id>-pub` (website enabled) + `tenant-<id>-prv` (private) buckets and grants the drust-client key owner access. Rollback on partial failure is compensating; leftover local state captured in `_trash_pending_revokes` / `_orphan_buckets` for the `reconcile` page to retry.
 
@@ -119,4 +122,4 @@ Three further invariants are enforced in code; they don't need callouts but must
 
 ## Directory map
 
-See `docs/superpowers/plans/2026-04-20-drust.md` `## File layout this plan builds`.
+See [`docs/architecture.md`](docs/architecture.md) — auto-generated per-file index of what each `.rs` declares, imports, and is imported by. Rebuild with `bash docs/gen-architecture.sh`.
