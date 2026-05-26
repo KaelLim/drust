@@ -346,7 +346,9 @@
       </div>
 
         {# ============================== Settings popover ============================== #}
-        <div id="settings-popover" class="settings-popover" hidden>
+        <div id="settings-popover" class="settings-popover" hidden role="dialog" aria-modal="false" aria-labelledby="coll-settings-title">
+          <button type="button" class="drawer-close" aria-label="{{ t.s("collection_page.settings.close") }}" id="coll-settings-close">×</button>
+          <h2 id="coll-settings-title" style="position:absolute;left:-9999px;">{{ t.s("collection_page.settings.title") }}</h2>
           <section>
             <h3>{{ t.s("collection_page.settings.section.anon") }}</h3>
             <form id="anon-form" method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/anon-caps">
@@ -733,31 +735,48 @@ for (;;) {
   // Initial label sync.
   document.getElementById('sort-current').textContent = `${state.sort.field} ${state.sort.dir === 'desc' ? '↓' : '↑'}`;
 
-  // ── Settings popover ─────────────────────────────────────────────────
+  // ── Settings drawer (v1.28.9) ────────────────────────────────────────
+  // Right-side fixed drawer slides in/out via transform. Open via the gear
+  // button; close via ESC, click outside, or the [×] button. No backdrop —
+  // the table behind stays interactive.
   const settingsPop = document.getElementById('settings-popover');
   const gearBtn = document.getElementById('coll-gear');
-  function openSettings(){
-    const rect = gearBtn.getBoundingClientRect();
-    settingsPop.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
-    settingsPop.style.right = '18px';
+  const closeBtn = document.getElementById('coll-settings-close');
+  let outsideClickHandler = null;
+  let escHandler = null;
+  function openDrawer(){
     settingsPop.hidden = false;
-    setTimeout(() => {
-      const onClick = (ev) => {
-        if (!settingsPop.contains(ev.target) && ev.target !== gearBtn) {
-          settingsPop.hidden = true;
-          document.removeEventListener('click', onClick);
-        }
+    // Force a reflow so the transform transition runs from the hidden
+    // state. Without this, .is-open is added before the browser has
+    // computed translateX(100%) and the slide-in is invisible.
+    void settingsPop.offsetWidth;
+    settingsPop.classList.add('is-open');
+    closeBtn.focus();
+    escHandler = function(ev){ if (ev.key === 'Escape') closeDrawer(); };
+    document.addEventListener('keydown', escHandler);
+    setTimeout(function(){
+      outsideClickHandler = function(ev){
+        if (!settingsPop.contains(ev.target) && ev.target !== gearBtn) closeDrawer();
       };
-      document.addEventListener('click', onClick);
+      document.addEventListener('click', outsideClickHandler);
     }, 0);
   }
-  gearBtn.addEventListener('click', (e) => { e.stopPropagation(); settingsPop.hidden ? openSettings() : (settingsPop.hidden = true); });
+  function closeDrawer(){
+    settingsPop.classList.remove('is-open');
+    setTimeout(function(){ settingsPop.hidden = true; gearBtn.focus(); }, 220);
+    if (outsideClickHandler) { document.removeEventListener('click', outsideClickHandler); outsideClickHandler = null; }
+    if (escHandler) { document.removeEventListener('keydown', escHandler); escHandler = null; }
+  }
+  gearBtn.addEventListener('click', function(){
+    if (settingsPop.hidden) openDrawer(); else closeDrawer();
+  });
+  closeBtn.addEventListener('click', closeDrawer);
   // Intercept anon form to use fetch.
   document.getElementById('anon-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     await fetch(e.target.action, { method: 'POST', body: new URLSearchParams(fd) });
-    settingsPop.hidden = true;
+    closeDrawer();
   });
   // Realtime toggle: submit on change.
   document.getElementById('realtime-form').querySelector('input[type=checkbox]').addEventListener('change', async (e) => {
