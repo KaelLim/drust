@@ -1098,10 +1098,23 @@
   .toolbar-v2 .field-group{display:inline-flex;flex-direction:column;gap:4px}
   .toolbar-v2 .field-group .field-label{margin-bottom:0}
 
-  /* ---------------- v1.28 collection page (Supabase shell) ---------------- */
+  /* ---------------- v1.28 collection page (Supabase shell) ----------------
+     v1.28.6 — padding alignment fix. The .page wrapper provides 28/32/80
+     padding for every admin page; the .coll-* sections used 14/18 inside
+     that, so collection / end-users pages ended up with content at 50px
+     from the page edge while other admin pages sit at 32px. UX felt off.
+
+     Fix: negative-margin on the sticky chrome cancels .page's horizontal
+     padding so the bg + border are full-bleed; internal padding of 32px
+     restores content alignment to the canonical 32px edge. Middle
+     sections (.coll-toolbar / .coll-table-wrap) set horizontal padding
+     to 0 and inherit .page's 32px naturally.
+   */
   .coll-sticky-top{
     position:sticky; top:0; z-index:20;
-    background:var(--bg); padding:14px 18px 10px;
+    background:var(--bg);
+    margin:-28px -32px 0;       /* cancel .page padding-top + horizontal */
+    padding:14px 32px 10px;     /* internal padding aligns content to 32px */
     border-bottom:1px solid var(--line-2);
   }
   .coll-sticky-top .row1{display:flex;align-items:center;gap:10px;margin-bottom:6px}
@@ -1136,7 +1149,7 @@
   }
   .coll-desc-inline .desc-add:hover{color:var(--text)}
 
-  .coll-toolbar{padding:12px 18px;display:flex;flex-direction:column;gap:8px}
+  .coll-toolbar{padding:12px 0;display:flex;flex-direction:column;gap:8px}
   .coll-toolbar .row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
   .coll-chip{
     display:inline-flex;align-items:center;gap:6px;
@@ -1151,7 +1164,7 @@
   }
   .coll-chip .chip-x:hover{background:var(--line);color:var(--text)}
 
-  .coll-table-wrap{padding:0 18px}
+  .coll-table-wrap{padding:0}
   .coll-table-wrap table.data{width:100%;table-layout:fixed}
   /* v1.28.5 — every cell truncates to a single line with ellipsis.
      Full content stays accessible via the per-td `title` attribute
@@ -1167,7 +1180,9 @@
 
   .coll-sticky-bottom{
     position:sticky; bottom:0; z-index:20;
-    background:var(--bg); padding:10px 18px;
+    background:var(--bg-deep);
+    margin:0 -32px -80px;       /* cancel .page padding-bottom + horizontal */
+    padding:10px 32px;          /* internal padding aligns content to 32px */
     border-top:1px solid var(--line-2);
     display:flex;align-items:center;gap:14px;
   }

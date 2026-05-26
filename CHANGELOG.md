@@ -1,3 +1,12 @@
+## [1.28.6] - 2026-05-26
+
+### Fixed
+- Collection editor + end-users pages had content sitting at 50px from the page edge while every other admin page (overview, api_keys, rpc, files, oauth providers, webhooks, logs, audit) sits at 32px — the canonical `.page` horizontal padding. Caused by `.coll-sticky-top` / `.coll-toolbar` / `.coll-table-wrap` / `.coll-sticky-bottom` each adding their own 18px on top of `.page`'s 32px. UX felt off when navigating between sidebar entries (content jumped further in).
+- Fix: negative-margin on the sticky chrome cancels `.page`'s horizontal padding so background + border render full-bleed; internal 32px padding restores content alignment. Middle sections drop horizontal padding and inherit `.page`'s 32px. Net result: all admin pages share one content-edge position.
+
+### Changed
+- `.coll-sticky-bottom` background changes from `var(--bg)` to `var(--bg-deep)` for stronger visual separation from the scrolling content above.
+
 ## [1.28.5] - 2026-05-25
 
 ### Changed
