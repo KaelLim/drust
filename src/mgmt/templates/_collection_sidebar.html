@@ -101,10 +101,15 @@
   </nav>
 
   <div class="sidebar-foot">
-    <div class="who-av">AK</div>
+    {% match admin.picture_url %}
+      {% when Some with (url) %}
+        <img class="who-av who-av-img" src="{{ url }}" alt="" referrerpolicy="no-referrer">
+      {% when None %}
+        <div class="who-av">{{ admin.initials }}</div>
+    {% endmatch %}
     <div class="who">
-      <div class="who-name">{{ t.s("collection_sidebar.foot.admin") }}</div>
-      <div class="who-mail">{{ t.s("collection_sidebar.foot.scope") }}</div>
+      <div class="who-name">{{ admin.display_name.as_deref().unwrap_or("admin") }}</div>
+      <div class="who-mail">{{ admin.email.as_deref().unwrap_or("") }}</div>
     </div>
     <span class="status-pulse" title="{{ t.s("collection_sidebar.status.healthy") }}"></span>
   </div>
