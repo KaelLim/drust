@@ -77,8 +77,11 @@ async fn rebind_to_private_terminal_no_http() {
     let row = sample_row("https://10.0.0.5/hook");
     let outcome = deliver_for_test(
         mock_resolver(),
+        None,
         &row,
         b"{}".to_vec(),
+        "test-delivery-id".to_string(),
+        "1970-01-01T00:00:00Z".to_string(),
         DeliverySchedule::fast_for_tests(),
     )
     .await;
@@ -116,8 +119,11 @@ async fn all_private_resolve_terminal() {
     let row = sample_row("https://0.0.0.0/hook");
     let outcome = deliver_for_test(
         mock_resolver(),
+        None,
         &row,
         b"{}".to_vec(),
+        "test-delivery-id".to_string(),
+        "1970-01-01T00:00:00Z".to_string(),
         DeliverySchedule::fast_for_tests(),
     )
     .await;
@@ -141,8 +147,11 @@ async fn dev_loopback_http_bypasses_resolver() {
     let row = sample_row(hook.url()); // already http://127.0.0.1:<rand>/hook
     let outcome = deliver_for_test(
         mock_resolver(),
+        None,
         &row,
         b"{}".to_vec(),
+        "test-delivery-id".to_string(),
+        "1970-01-01T00:00:00Z".to_string(),
         DeliverySchedule::fast_for_tests(),
     )
     .await;
