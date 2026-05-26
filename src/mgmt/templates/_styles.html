@@ -1254,15 +1254,32 @@
     .settings-popover{width:100vw;}
   }
 
+  /* v1.28.11 — filter popover (chip filter + sort) form controls.
+     Previously referenced --line / --bg-soft (ghost vars since v1.23)
+     for borders, and the children rule was missing background + color
+     entirely — so selects/inputs reverted to UA defaults (white bg +
+     black text) which clashed with the popover's dark surface. Now
+     uses real theme tokens matching the canonical .input / .select. */
   .filter-popover{
     position:absolute; z-index:100;
-    background:var(--bg); border:1px solid var(--line);
-    border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.12);
+    background:var(--bg); border:1px solid var(--border-mid);
+    border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.35);
     padding:12px; min-width:320px;
     display:flex;flex-direction:column;gap:8px;
   }
   .filter-popover .row{display:flex;gap:6px;align-items:center}
-  .filter-popover select,.filter-popover input{padding:6px 8px;border:1px solid var(--line);border-radius:4px;font:400 13px/1.4 var(--sans)}
+  .filter-popover select,
+  .filter-popover input{
+    padding:6px 8px;
+    background:var(--bg-deep); color:var(--fg);
+    border:1px solid var(--border-mid); border-radius:6px;
+    font:400 13px/1.4 var(--sans); outline:0;
+    transition:border-color .12s, box-shadow .12s;
+  }
+  .filter-popover select:focus,
+  .filter-popover input:focus{
+    border-color:var(--accent-border); box-shadow:0 0 0 3px var(--accent-soft);
+  }
 
   /* v1.28.2 — modal styling lives on the .coll-modal class, NOT inline.
      The HTML `hidden` attribute (UA stylesheet → display:none) is the
