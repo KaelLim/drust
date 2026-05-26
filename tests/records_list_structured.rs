@@ -3,7 +3,7 @@
 //! Covers spec §4.2: happy paths × callers, owner_field strict
 //! enforcement, owner-field bypass attempts, SQL-injection attempts in
 //! filter/sort, vector-field blocks, _system_* 404, anon_caps denial,
-//! OWNER_SCOPED_ANON_DENIED, /list/explain smoke, page/per_page bounds.
+//! ANON_FORBIDDEN_OWNER_SCOPED, /list/explain smoke, page/per_page bounds.
 
 #[path = "helpers.rs"]
 mod helpers;
@@ -596,7 +596,7 @@ async fn anon_empty_caps_returns_anon_cap_denied() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Group 9 — OWNER_SCOPED_ANON_DENIED
+// Group 9 — ANON_FORBIDDEN_OWNER_SCOPED
 // ──────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -606,7 +606,7 @@ async fn anon_on_owner_scoped_returns_owner_scoped_anon_denied() {
     seed_owner_scoped_posts(&dir, &tid).await;
     let (status, v) = post_list(&app, &tid, &anon, "posts", json!({})).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(v["error_code"], "OWNER_SCOPED_ANON_DENIED");
+    assert_eq!(v["error_code"], "ANON_FORBIDDEN_OWNER_SCOPED");
 }
 
 // ──────────────────────────────────────────────────────────────────────
