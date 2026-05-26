@@ -1,3 +1,8 @@
+## [1.28.15] - 2026-05-27
+
+### Changed
+- `AdminProfileExt::compute_initials` now returns a single character instead of two. CJK names ("林宇軒") render as "林", Western names ("Kael Lim") as "K", email fallback ("kael1996@…") as "K". The two-char "林宇" / "KL" shape from v1.28.9 was visually noisy in the 28-px avatar circle; one character reads cleaner. Placeholder is now "?" (was "??").
+
 ## [1.28.14] - 2026-05-26
 
 ### Fixed
