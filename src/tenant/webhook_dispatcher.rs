@@ -16,6 +16,7 @@
 
 use crate::storage::pool::TenantRegistry;
 use crate::tenant::events::Event;
+use futures::future::BoxFuture;
 use hmac::{Hmac, Mac};
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -34,6 +35,21 @@ pub struct WebhookRow {
     pub secret: String,
     pub active: i64,
 }
+
+/// Optional pre-check resolver. Production passes `None` and lets
+/// `deliver_for_test` fall through to `webhook_resolver::resolve_public`
+/// (real stdlib DNS + public-IP filter). Tests pass `Some(f)` to inject
+/// a synthetic pass/fail outcome at the wrap-first stage so IPv6 literal,
+/// NXDOMAIN, and mixed-resolve cases stay deterministic.
+///
+/// The function takes `(host, port)` and returns `Ok(())` when the host
+/// would resolve to at least one public IP, or `Err(reason)` when the
+/// wrap-first short-circuit should fire. `reason` is logged only; the
+/// user-visible `body` stays "host_now_private_or_unresolvable" so the
+/// existing assertion contract from v1.21 (cases 1 and 3) keeps holding.
+pub type PreCheckResolveFn = std::sync::Arc<
+    dyn Fn(String, u16) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
+>;
 
 /// Returns true if `events_json` (a serialized JSON array of event-name
 /// strings) contains the given event name.
@@ -157,11 +173,15 @@ impl WebhookDispatcher {
                 let resolver2 = resolver.clone();
                 let pool2 = pool.clone();
                 let tenant2 = tenant.clone();
+                let delivery_id2 = delivery_id.clone();
+                let timestamp2 = timestamp.clone();
                 tokio::spawn(async move {
                     if let Err(e) = deliver(
                         resolver2,
                         &sub,
                         body_bytes,
+                        delivery_id2,
+                        timestamp2,
                         DeliverySchedule::default(),
                         &pool2,
                         &tenant2,
@@ -265,15 +285,20 @@ impl std::fmt::Display for DeliveryError {
 /// Production entry: one delivery, 4 attempts, fail-then-record_failure.
 /// Uses the shared `TenantRegistry` pool so failure writes go through the
 /// per-tenant writer mutex — same serialization guarantee as all other writes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn deliver(
     resolver: Arc<dyn reqwest::dns::Resolve + Send + Sync>,
     row: &WebhookRow,
     body_bytes: Vec<u8>,
+    delivery_id: String,
+    timestamp: String,
     sched: DeliverySchedule,
     pool: &TenantRegistry,
     tenant_id: &str,
 ) -> Result<(), DeliveryError> {
-    let outcome = deliver_for_test(resolver, row, body_bytes, sched).await;
+    let outcome = deliver_for_test(
+        resolver, None, row, body_bytes, delivery_id, timestamp, sched,
+    ).await;
     if let Err(ref e) = outcome {
         let reason = e.to_string();
         let id = row.id;
@@ -303,10 +328,22 @@ pub(crate) async fn deliver(
 /// on loopback. Every other host gets a fresh, single-shot reqwest::Client
 /// per attempt wired to the injected resolver so no DNS cache survives an
 /// attempt boundary.
+///
+/// v1.28.7: the new `pre_check` argument is `None` in production —
+/// `deliver()` always passes `None` so the path is bit-for-bit unchanged
+/// (`resolve_public` via stdlib DNS as above). Tests pass `Some(f)` to
+/// inject a deterministic pass/fail outcome at the wrap-first stage
+/// without touching real DNS — see `PreCheckResolveFn` for the contract.
+/// `delivery_id` and `timestamp` are caller-supplied (also v1.28.7) so
+/// the HMAC-signed body and the `x-drust-delivery-id` / `x-drust-timestamp`
+/// headers agree for the same logical delivery.
 pub async fn deliver_for_test(
     resolver: Arc<dyn reqwest::dns::Resolve + Send + Sync>,
+    pre_check: Option<PreCheckResolveFn>,
     row: &WebhookRow,
     body_bytes: Vec<u8>,
+    delivery_id: String,
+    timestamp: String,
     sched: DeliverySchedule,
 ) -> Result<(), DeliveryError> {
     use std::time::Duration;
@@ -330,11 +367,17 @@ pub async fn deliver_for_test(
     // host still maps to at least one public IP. A rebinding between
     // registration and dispatch hits here as a terminal NonRetryable.
     if !is_loopback_dev {
-        if let Err(e) = crate::tenant::webhook_resolver::resolve_public(host.clone(), port).await {
+        let pre_check_result = match &pre_check {
+            Some(f) => f(host.clone(), port).await,
+            None => crate::tenant::webhook_resolver::resolve_public(host.clone(), port)
+                .await
+                .map(|_| ()),
+        };
+        if let Err(reason) = pre_check_result {
             tracing::warn!(
                 webhook_id = %row.id,
                 url = %row.url,
-                error = %e,
+                error = %reason,
                 "deliver: wrap-first resolve rejected — terminal"
             );
             return Err(DeliveryError::NonRetryable {
@@ -345,8 +388,6 @@ pub async fn deliver_for_test(
     }
 
     let sig = compute_signature(&row.secret, &body_bytes);
-    let delivery_id = uuid::Uuid::new_v4().to_string();
-    let timestamp = chrono::Utc::now().to_rfc3339();
     let mut last_err = String::new();
     for (attempt_idx, wait_secs) in sched.backoffs.iter().enumerate() {
         if *wait_secs > 0 {

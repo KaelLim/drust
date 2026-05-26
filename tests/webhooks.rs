@@ -78,15 +78,32 @@ async fn deliver_happy_path_signature_matches() {
     let expected_sig = compute_signature("topsecret", &body_bytes);
     let outcome = deliver_for_test(
         mock_resolver(),
+        None,
         &fake_row(hook.url()),
         body_bytes.clone(),
+        "test-delivery-id".to_string(),
+        "1970-01-01T00:00:00Z".to_string(),
         DeliverySchedule::fast_for_tests(),
     )
     .await;
     assert!(outcome.is_ok(), "happy path must succeed");
     let received = hook.requests().await;
     assert_eq!(received.len(), 1);
-    assert_eq!(received[0].headers.get("x-drust-signature").unwrap(), &expected_sig);
+    assert_eq!(
+        received[0].headers.get("x-drust-signature").map(|s| s.as_str()),
+        Some(expected_sig.as_str()),
+        "header must echo the computed HMAC signature",
+    );
+    assert_eq!(
+        received[0].headers.get("x-drust-delivery-id").map(|s| s.as_str()),
+        Some("test-delivery-id"),
+        "header must echo the caller-supplied delivery_id",
+    );
+    assert_eq!(
+        received[0].headers.get("x-drust-timestamp").map(|s| s.as_str()),
+        Some("1970-01-01T00:00:00Z"),
+        "header must echo the caller-supplied timestamp",
+    );
 }
 
 #[tokio::test]
@@ -94,8 +111,11 @@ async fn deliver_retries_on_5xx_then_succeeds() {
     let hook = FakeHook::start_scripted(vec![500, 503]).await; // then 200
     let outcome = deliver_for_test(
         mock_resolver(),
+        None,
         &fake_row(hook.url()),
         b"{}".to_vec(),
+        "test-delivery-id".to_string(),
+        "1970-01-01T00:00:00Z".to_string(),
         DeliverySchedule::fast_for_tests(),
     )
     .await;
@@ -108,8 +128,11 @@ async fn deliver_stops_on_4xx() {
     let hook = FakeHook::start_scripted(vec![401]).await;
     let outcome = deliver_for_test(
         mock_resolver(),
+        None,
         &fake_row(hook.url()),
         b"{}".to_vec(),
+        "test-delivery-id".to_string(),
+        "1970-01-01T00:00:00Z".to_string(),
         DeliverySchedule::fast_for_tests(),
     )
     .await;
@@ -122,8 +145,11 @@ async fn deliver_all_four_attempts_fail_returns_err() {
     let hook = FakeHook::start_scripted(vec![500, 500, 500, 500]).await;
     let outcome = deliver_for_test(
         mock_resolver(),
+        None,
         &fake_row(hook.url()),
         b"{}".to_vec(),
+        "test-delivery-id".to_string(),
+        "1970-01-01T00:00:00Z".to_string(),
         DeliverySchedule::fast_for_tests(),
     )
     .await;
