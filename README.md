@@ -2,7 +2,7 @@
 type: index
 name: drust
 status: production
-updated: 2026-05-22
+updated: 2026-05-26
 ---
 
 # drust
@@ -31,10 +31,10 @@ updated: 2026-05-22
 - **End-user auth + per-tenant OAuth.** Per-tenant `_system_users` with Google / GitHub OAuth providers configured per tenant; opt-in self-registration; row-level filter via `owner_field` + `read_scope`; argon2id password hashing with timing-equalized login.
 - **Outbound webhooks.** Per-tenant CRUD-event subscriptions, HMAC-SHA256-signed POST with 4-attempt retry (+0s / +1s / +5s / +30s); admin UI + REST + MCP write surfaces; SSRF guard rejects private/loopback IPs.
 - **Schema descriptions for LLM bootstrap.** Optional plain-text `description` on every collection / field / index / RPC, surfaced through `describe_collection` and `get_schema_overview` so an LLM can read the schema's intent in one MCP call.
-- **Admin UI.** Two-page web UI (`/admin/tenants` + per-tenant `/admin/tenants/<id>/<datatable>`) with a terminal aesthetic, file management, RPC editor + test playground, anon capability matrix, MCP setup snippets, audit log with inline-SVG charts, backup browser with single-tenant restore.
+- **Admin UI.** Two-page web UI (`/admin/tenants` + per-tenant `/admin/tenants/<id>/<datatable>`) with a terminal aesthetic, file management, RPC editor + test playground, anon capability matrix, MCP setup snippets, audit log browser, backup browser with single-tenant restore.
 - **S3 file storage (optional).** When configured, every tenant gets two S3 buckets — `<id>-pub` (website-enabled) and `<id>-prv` (private) — provisioned automatically. Implemented against [Garage](https://garagehq.deuxfleurs.fr/) but the data path is plain S3 (`object_store::aws::AmazonS3`).
 - **Admin OAuth.** `/admin/login` accepts Google / GitHub OAuth alongside username + password; controlled via env allowlist.
-- **Operational basics.** Per-tenant rate limiting, JSONL audit log per request, daily `VACUUM INTO` snapshots with 30-day retention, soft-delete with 7-day grace, CORS allow-list with subdomain wildcards.
+- **Operational basics.** Per-tenant rate limiting, SQLite-backed audit log per request, daily `VACUUM INTO` snapshots with 30-day retention, soft-delete with 7-day grace, CORS allow-list with subdomain wildcards.
 
 ## Architecture at a glance
 
@@ -114,12 +114,15 @@ src/
   main.rs            entry point, router assembly
   config.rs          env-driven configuration
   auth/              cookie sessions, bearer tokens, argon2id hashing
+  oauth/             OAuth provider library (Google + GitHub adapters)
+  db/                meta.sqlite migrations
   mgmt/              admin UI handlers + askama templates
   tenant/            tenant lifecycle, REST router, bearer middleware
   storage/           sqlite pool, schema, file/object metadata, Garage client
-  query/             SQL authorizer whitelist for read-only access
+  query/             SQL authorizer whitelist + structured filter AST
   rpc/               stored RPC: prepare, registry, REST + MCP handlers
   mcp/               rmcp tool definitions, Streamable HTTP service registry
+  codegen/           per-tenant OpenAPI / TypeScript / Zod schema generators
   safety/            audit log, rate limiter
   bin/set_admin_password.rs  out-of-band password rotation CLI
 docs/
@@ -130,7 +133,7 @@ CLAUDE.md            internal guide for AI coding agents
 
 ## Status
 
-Production. Currently `v1.20.0`. See [CHANGELOG.md](CHANGELOG.md) for full history.
+Production. Currently `v1.28.6`. See [CHANGELOG.md](CHANGELOG.md) for full history.
 
 ## License
 
