@@ -212,6 +212,16 @@ fn apply_migrations(conn: &Connection) -> anyhow::Result<()> {
     // so themes can be renamed in code without a DB cascade.
     crate::db::migrations::add_column_if_missing(conn, "admins", "theme", "TEXT")?;
 
+    // v1.28.9: admins.display_name — nullable, mirrored from OAuth provider
+    // `name` claim (Google id_token, GitHub userinfo). NULL until first OAuth
+    // login after upgrade; sidebar falls back to email local-part initials.
+    crate::db::migrations::add_column_if_missing(conn, "admins", "display_name", "TEXT")?;
+
+    // v1.28.9: admins.picture_url — nullable, mirrored from OAuth provider
+    // `picture` claim. Same posture as display_name; sidebar renders text
+    // initials when NULL, <img> when populated.
+    crate::db::migrations::add_column_if_missing(conn, "admins", "picture_url", "TEXT")?;
+
     Ok(())
 }
 
