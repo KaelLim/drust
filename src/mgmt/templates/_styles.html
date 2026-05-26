@@ -1206,23 +1206,16 @@
     text-overflow:ellipsis;
   }
 
-  /* v1.28.12 — collection page footer is now a thin status bar pinned
-     to the browser viewport bottom (was sticky-inside-page, which
-     floated mid-air on short tables). Excel / Supabase aesthetic:
-     36px tall, --bg-deep tint, --border-mid hairline on top, muted
-     12px sans typography. The .app-shell grid is `248px minmax(0,1fr)`,
-     so left:248px aligns the fixed bar with the right pane's left edge
-     and right:0 reaches the viewport right edge. z-index 30 sits above
-     sticky-top (z=20) but below the settings drawer (z=100) so the
-     drawer slides over it normally.
-     The [Table] / [Definition] tabs (`.view-tabs`) were removed from
-     markup in this version. Definition view is still reachable via
-     `?view=definition` URL param — the JS reads from searchParams and
-     the querySelectorAll('.view-tabs button') gracefully no-ops when
-     the markup is gone. */
+  /* v1.28.13 — collection page footer is a thin status bar pinned to
+     the browser viewport bottom. Height matches `.sidebar-foot` (46px)
+     so the sidebar's profile block and the page's pager visually
+     anchor as a single horizontal band at the very bottom of the
+     screen. .app-shell grid is `248px minmax(0,1fr)`, so left:248px
+     aligns the fixed bar with the right pane's left edge. z=30 sits
+     above sticky-top (z=20) and below settings drawer (z=100). */
   .coll-sticky-bottom{
     position:fixed; left:248px; right:0; bottom:0; z-index:30;
-    height:36px; padding:0 24px;
+    height:46px; padding:0 24px;
     background:var(--bg-deep);
     border-top:1px solid var(--border-mid);
     display:flex; align-items:center; gap:14px;
@@ -1235,11 +1228,29 @@
   }
   .coll-sticky-bottom .pager-info b{color:var(--fg); font-weight:500;}
   .coll-sticky-bottom .pager-info .btn{
-    padding:0 10px; height:24px; font-size:12px; border-radius:5px;
+    padding:0 10px; height:26px; font-size:12px; border-radius:5px;
   }
-  /* .view-tabs is retired in v1.28.12. Markup removed; CSS kept as
-     `display:none` so any stale include collapses cleanly. */
-  .view-tabs{display:none}
+  /* v1.28.13 — view-tabs restored after the v1.28.12 over-deletion.
+     Slim segmented control: 26px tall, transparent default, surface
+     fill when active, no chunky 6px pill border like the v1.28.x
+     earlier shape. Sits on the footer's left side; pager-info still
+     pushes itself to the right via margin-left:auto. */
+  .coll-sticky-bottom .view-tabs{
+    display:inline-flex; align-items:center; gap:2px;
+  }
+  .coll-sticky-bottom .view-tabs button{
+    padding:0 10px; height:26px;
+    background:transparent; border:0; cursor:pointer;
+    font:500 12px/1 var(--sans); color:var(--muted);
+    border-radius:5px;
+    transition:background .12s, color .12s;
+  }
+  .coll-sticky-bottom .view-tabs button:hover{
+    background:var(--surface); color:var(--fg);
+  }
+  .coll-sticky-bottom .view-tabs button.active{
+    background:var(--surface); color:var(--fg);
+  }
 
   /* v1.28.9 — right-side drawer (replaces v1.28 absolute popover).
      Fixed full-height column slides in from the right edge. No backdrop

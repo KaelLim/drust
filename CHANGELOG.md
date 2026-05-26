@@ -1,3 +1,11 @@
+## [1.28.13] - 2026-05-26
+
+### Fixed
+- v1.28.12 dropped the `[Table]` / `[Definition]` tabs from the collection page footer based on a user comment about not needing tabs. The intent was to slim the bar; the result was that Definition view became reachable only by typing `?view=definition` into the URL. Tabs restored as a slim segmented control on the footer's left side: 26px tall, transparent default, `var(--surface)` fill when active — not the chunky 6px-padding pill of the v1.28.x earlier shape.
+
+### Changed
+- Collection page footer height bumped 36px → 46px so it matches `.sidebar-foot` exactly. The sidebar's profile block and the page's pager now anchor as one horizontal band at the viewport bottom instead of two slightly-different rectangles. Pager button height bumped 24px → 26px in step.
+
 ## [1.28.12] - 2026-05-26
 
 ### Changed
