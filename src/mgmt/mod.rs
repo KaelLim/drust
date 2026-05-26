@@ -1,3 +1,4 @@
+pub mod admin_profile;
 pub mod audit;
 pub mod backups;
 pub mod browse;
