@@ -135,6 +135,19 @@ pub async fn oauth_callback(
             return redirect_login_error("oauth_provider_error");
         }
     };
+    // v1.28.9: mirror Google/GitHub `name` + `picture` claims onto the admins
+    // row so the sidebar can render the real identity instead of the literal
+    // "AK" placeholder. Soft-fail: a UPDATE error here must NOT block sign-in.
+    if let Err(e) = conn.execute(
+        "UPDATE admins SET display_name = ?1, picture_url = ?2 WHERE id = ?3",
+        rusqlite::params![user.name, user.picture, admin_id],
+    ) {
+        tracing::warn!(
+            admin_id,
+            error = ?e,
+            "oauth: failed to persist display_name/picture_url — continuing sign-in"
+        );
+    }
     let ttl_secs = (s.session_ttl_days * 86_400) as i64;
     let token = match create_session(&mut conn, admin_id, ttl_secs) {
         Ok(t) => t,
