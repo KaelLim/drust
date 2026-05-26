@@ -23,6 +23,7 @@ struct DocsPage {
     version: &'static str,
     active: &'static str,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -37,6 +38,7 @@ pub struct NavItem {
 pub async fn changelog_page(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
 ) -> Response {
     let path = "CHANGELOG.md";
     let md = match tokio::fs::read_to_string(path).await {
@@ -59,6 +61,7 @@ pub async fn changelog_page(
         version: env!("CARGO_PKG_VERSION"),
         active: "changelog",
         t: Translator::new(locale),
+        admin,
         palette_resolved: trc.palette_resolved,
         mascot_json_static: trc.mascot_json_static,
         mascot_json_light: trc.mascot_json_light,

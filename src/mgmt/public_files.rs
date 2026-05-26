@@ -91,6 +91,7 @@ struct FilesPage {
     counts: Counts,
     disk: DiskView,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -137,6 +138,7 @@ struct ReconcilePage {
     pending_revokes: Vec<PendingRevokeRow>,
     orphan_buckets: Vec<OrphanBucketRow>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -170,6 +172,7 @@ pub async fn list_page(
     State(state): State<PublicFilesState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Query(qs): Query<ListQs>,
 ) -> Response {
     let per_page = qs
@@ -239,6 +242,7 @@ pub async fn list_page(
         counts,
         disk,
         t: Translator::new(locale),
+        admin,
         palette_resolved: trc.palette_resolved,
         mascot_json_static: trc.mascot_json_static,
         mascot_json_light: trc.mascot_json_light,
@@ -581,6 +585,7 @@ pub async fn reconcile_page(
     State(state): State<PublicFilesState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
 ) -> Response {
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
@@ -680,6 +685,7 @@ pub async fn reconcile_page(
             pending_revokes,
             orphan_buckets,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,

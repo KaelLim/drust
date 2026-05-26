@@ -36,6 +36,7 @@ struct BackupsPage {
     backup_dir: String,
     total_size_human: String,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -65,6 +66,7 @@ struct BackupInspectPage {
     flash: Option<RestoreFlash>,
     error: Option<String>,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -130,6 +132,7 @@ pub async fn list_page(
     State(state): State<BackupsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
 ) -> Response {
     let dir = state.data_dir.join("backups");
     let mut rows: Vec<BackupRow> = Vec::new();
@@ -178,6 +181,7 @@ pub async fn list_page(
             backup_dir: dir.display().to_string(),
             total_size_human: humanize_bytes(total),
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -253,6 +257,7 @@ pub async fn inspect(
     State(state): State<BackupsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(filename): Path<String>,
     Query(qs): Query<InspectQs>,
 ) -> Response {
@@ -280,10 +285,10 @@ pub async fn inspect(
     let (meta_tmp, sizes) = match extract_result {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, e.to_string(), locale, theme);
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, e.to_string(), locale, theme, admin);
         }
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("join error: {e}"), locale, theme);
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("join error: {e}"), locale, theme, admin.clone());
         }
     };
 
@@ -294,7 +299,7 @@ pub async fn inspect(
     let conn = match conn_res {
         Ok(c) => c,
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("open meta.sqlite: {e}"), locale, theme);
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("open meta.sqlite: {e}"), locale, theme, admin.clone());
         }
     };
 
@@ -329,7 +334,7 @@ pub async fn inspect(
             })
             .unwrap_or_default(),
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("query: {e}"), locale, theme);
+            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("query: {e}"), locale, theme, admin.clone());
         }
     };
 
@@ -360,6 +365,7 @@ pub async fn inspect(
             flash,
             error: None,
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -378,6 +384,7 @@ fn render_inspect_error(
     msg: String,
     locale: Locale,
     theme: crate::mgmt::theme::Theme,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
 ) -> Response {
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
@@ -390,6 +397,7 @@ fn render_inspect_error(
             flash: None,
             error: Some(msg),
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,

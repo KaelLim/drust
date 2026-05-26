@@ -18,6 +18,7 @@ struct CollectionsPage {
     tenant_name: String,
     version: &'static str,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -58,6 +59,7 @@ struct RowsPage {
     coll_name_json: String,
     version: &'static str,
     t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
     mascot_json_static: String,
     mascot_json_light: String,
@@ -124,6 +126,7 @@ pub async fn collections_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let meta = state.session.meta.lock().await;
@@ -157,6 +160,7 @@ pub async fn collections_page(
             tenant_name,
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
@@ -215,6 +219,7 @@ pub async fn collection_rows_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path((tenant_id, coll_name)): Path<(String, String)>,
     Query(qs): Query<BrowseQs>,
 ) -> Response {
@@ -336,6 +341,7 @@ pub async fn collection_rows_page(
             coll_name_json,
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
+            admin,
             palette_resolved: trc.palette_resolved,
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
