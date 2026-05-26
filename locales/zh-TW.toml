@@ -221,10 +221,7 @@ public = "公開"
 subtitle = "管理主控台"
 
 [admin_sidebar.foot]
-scope = "範圍：主機"
 status_title = "系統運作正常"
-# REVIEW (low confidence): literal admin username, likely should stay "admin"
-username = "admin"
 
 [admin_sidebar.nav]
 audit_log = "稽核紀錄"
@@ -489,9 +486,6 @@ title = "已註冊終端使用者"
 title = "檔案儲存 (S3)"
 
 [collection_sidebar.foot]
-# REVIEW (low confidence): literal admin username, likely should stay "admin"
-admin = "管理員"
-scope = "範圍：此租戶"
 
 [collection_sidebar.logs]
 title = "稽核 · 請求歷史"

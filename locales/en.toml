@@ -215,9 +215,7 @@ public = "public"
 subtitle = "admin console"
 
 [admin_sidebar.foot]
-scope = "scope: host"
 status_title = "all systems nominal"
-username = "admin"
 
 [admin_sidebar.nav]
 audit_log = "Audit log"
@@ -471,8 +469,6 @@ title = "registered end-users"
 title = "file storage (S3)"
 
 [collection_sidebar.foot]
-admin = "admin"
-scope = "scope: this tenant"
 
 [collection_sidebar.logs]
 title = "audit · request history"
