@@ -17,42 +17,29 @@ pub struct AdminProfileExt {
 }
 
 impl AdminProfileExt {
-    /// Initials derivation:
-    /// 1. display_name with ≥2 whitespace-separated tokens → first char of
-    ///    first token + first char of last token, uppercased.
-    /// 2. display_name with ≥1 char → first 2 chars of the whole string,
-    ///    uppercased.
-    /// 3. email present → first 2 chars of the local-part (before '@'),
-    ///    uppercased.
-    /// 4. Both NULL → "??". Never expected in production (admin always
-    ///    has at least an email or a username) but keeps the type total.
+    /// Initials derivation (v1.28.15 — single-char):
+    /// 1. display_name present → first char, uppercased.
+    /// 2. email present → first char of the local-part, uppercased.
+    /// 3. Both NULL → "?". Never expected in production but keeps the
+    ///    type total.
+    ///
+    /// CJK names ("林宇軒") render as "林" — single CJK char reads cleaner
+    /// in a 28-px avatar circle than the previous "林宇" two-char shape.
+    /// Western names ("Kael Lim") render as "K".
     pub fn compute_initials(display_name: Option<&str>, email: Option<&str>) -> String {
         if let Some(name) = display_name {
             let trimmed = name.trim();
-            if !trimmed.is_empty() {
-                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-                if tokens.len() >= 2 {
-                    let first = tokens.first().and_then(|s| s.chars().next());
-                    let last = tokens.last().and_then(|s| s.chars().next());
-                    if let (Some(a), Some(b)) = (first, last) {
-                        return format!("{a}{b}").to_uppercase();
-                    }
-                }
-                // Single token: take first 2 chars
-                let chars: String = trimmed.chars().take(2).collect();
-                if !chars.is_empty() {
-                    return chars.to_uppercase();
-                }
+            if let Some(c) = trimmed.chars().next() {
+                return c.to_uppercase().to_string();
             }
         }
         if let Some(e) = email {
             let local = e.split('@').next().unwrap_or("");
-            let chars: String = local.chars().take(2).collect();
-            if !chars.is_empty() {
-                return chars.to_uppercase();
+            if let Some(c) = local.chars().next() {
+                return c.to_uppercase().to_string();
             }
         }
-        "??".to_string()
+        "?".to_string()
     }
 
     /// Default profile when the DB lookup fails or the session points to a
@@ -63,7 +50,7 @@ impl AdminProfileExt {
             display_name: None,
             email: None,
             picture_url: None,
-            initials: "??".to_string(),
+            initials: "?".to_string(),
         }
     }
 }
@@ -152,19 +139,19 @@ mod tests {
     #[test]
     fn initials_from_two_word_name() {
         let r = AdminProfileExt::compute_initials(Some("Kael Lim"), None);
-        assert_eq!(r, "KL");
+        assert_eq!(r, "K");
     }
 
     #[test]
-    fn initials_from_multi_word_uses_first_and_last() {
+    fn initials_from_multi_word_uses_first_char() {
         let r = AdminProfileExt::compute_initials(Some("Mary Anne Smith"), None);
-        assert_eq!(r, "MS");
+        assert_eq!(r, "M");
     }
 
     #[test]
-    fn initials_from_one_word_takes_first_two() {
+    fn initials_from_single_word() {
         let r = AdminProfileExt::compute_initials(Some("Kael"), None);
-        assert_eq!(r, "KA");
+        assert_eq!(r, "K");
     }
 
     #[test]
@@ -174,21 +161,27 @@ mod tests {
     }
 
     #[test]
+    fn initials_from_cjk_name() {
+        let r = AdminProfileExt::compute_initials(Some("林宇軒"), None);
+        assert_eq!(r, "林");
+    }
+
+    #[test]
     fn initials_fall_back_to_email_local_part() {
         let r = AdminProfileExt::compute_initials(None, Some("kael1996@tzuchi-org.tw"));
-        assert_eq!(r, "KA");
+        assert_eq!(r, "K");
     }
 
     #[test]
     fn initials_empty_name_falls_through_to_email() {
         let r = AdminProfileExt::compute_initials(Some("   "), Some("alice@example.com"));
-        assert_eq!(r, "AL");
+        assert_eq!(r, "A");
     }
 
     #[test]
     fn initials_both_none_returns_placeholder() {
         let r = AdminProfileExt::compute_initials(None, None);
-        assert_eq!(r, "??");
+        assert_eq!(r, "?");
     }
 
     #[test]
