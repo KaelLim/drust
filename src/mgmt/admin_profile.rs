@@ -102,6 +102,41 @@ pub fn load_admin_profile(
     }))
 }
 
+// ─── middleware ──────────────────────────────────────────────────────────────
+
+use axum::{extract::Request, middleware::Next, response::Response};
+
+/// State the profile middleware needs to look up `admins`. Mirrors
+/// `ThemeLayerState` but with no fallback flag — we always want the DB
+/// lookup when an admin is signed in.
+#[derive(Clone)]
+pub struct AdminProfileLayerState {
+    pub meta: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+}
+
+pub async fn admin_profile_layer(
+    axum::extract::State(state): axum::extract::State<AdminProfileLayerState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let admin_id = req
+        .extensions()
+        .get::<crate::auth::middleware::AdminId>()
+        .map(|a| a.0);
+    let profile = match admin_id {
+        Some(id) => {
+            let conn = state.meta.lock().await;
+            match load_admin_profile(&conn, id) {
+                Ok(Some(p)) => p,
+                _ => AdminProfileExt::placeholder(),
+            }
+        }
+        None => AdminProfileExt::placeholder(),
+    };
+    req.extensions_mut().insert(profile);
+    next.run(req).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
