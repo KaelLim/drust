@@ -1,3 +1,8 @@
+## [1.28.10] - 2026-05-26
+
+### Fixed
+- Checkbox border was effectively invisible after v1.28.9. The new custom skin referenced `var(--bg-soft)` for the unchecked background and `var(--line)` for the border, but those CSS custom properties have had no definition in any theme since the v1.23 palette refactor (`09af66a` removed the legacy `--line: oklch(…)` declarations without sweeping the 19 remaining references across `_styles.html`). With both vars undefined, the background fell back to `transparent` and the border to `currentColor`, which in most contexts rendered as a barely-visible hairline against the page bg. Checkbox now uses real theme tokens: `var(--bg-deep)` for the unchecked fill and `var(--border-strong)` for the border, with `var(--accent-border)` on hover — clearly visible in cozy-dark, soft-light, and system tracking either. The other ~14 ghost-variable references elsewhere in `_styles.html` (chips, popovers, view-tabs) are unaffected by this commit and remain a separate cleanup target.
+
 ## [1.28.9] - 2026-05-26
 
 ### Added
