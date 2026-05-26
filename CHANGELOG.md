@@ -1,3 +1,19 @@
+## [1.28.9] - 2026-05-26
+
+### Added
+- Admin sidebar now renders the real Google/GitHub profile (display name + avatar URL) instead of the hardcoded `AK` placeholder. Both OAuth callbacks (`oauth_login.rs`) persist `name` + `picture` claims onto two new `admins` columns (`display_name`, `picture_url`) on every sign-in; sidebar resolves to an `<img referrerpolicy="no-referrer">` when `picture_url` is set, else a `<div>{{ initials }}</div>` derived from name (`Kael Lim` → `KL`) or email local-part (`kael1996@…` → `KA`). New `AdminProfileExt` extension + `admin_profile_layer` middleware inside the protected scope.
+
+### Changed
+- Collection page settings popover (gear button) is now a right-side drawer: `min(420px, 33vw)`, no backdrop dim, 220ms slide-in via transform, independent scroll. The page behind stays interactive (`aria-modal="false"`). Close via `[×]`, ESC, or click outside.
+- All admin checkboxes now have a custom CSS-only skin (`appearance: none`). Unchecked = `--bg-soft` + line border (no more stark-white square against dark themes); checked = `--accent` fill + white check mark drawn as a rotated rectangle via `::after`. `:focus-visible` and `:disabled` states included.
+
+### Internal
+- Two new nullable columns on `admins` (`display_name`, `picture_url`) via the existing `add_column_if_missing` migration helper.
+- New `src/mgmt/admin_profile.rs` — `AdminProfileExt` struct + `compute_initials` + `load_admin_profile` + `admin_profile_layer`. 8 unit tests cover the initials algorithm.
+- Every askama admin page struct gains a sibling `pub admin: AdminProfileExt` field next to `pub t: Translator`. Handlers extract `Extension<AdminProfileExt>` and pass it through.
+- Four orphan i18n keys retired: `admin_sidebar.foot.username`, `admin_sidebar.foot.scope`, `collection_sidebar.foot.admin`, `collection_sidebar.foot.scope`. Values are now derived from the admin profile, not translated strings.
+- `design.html`'s sample `<div class="who-av">AK</div>` at line 451 is kept as a literal — it's the design-system reference, not tied to a live session. (`design.html`'s role-badge showcase at line 249 was migrated to `common.role.admin` since `admin_sidebar.foot.username` no longer exists.)
+
 ## [1.28.8] - 2026-05-26
 
 ### Fixed
