@@ -76,7 +76,7 @@ pub async fn post_list(
         (AuthCtx::Anon, Some(_), _) => {
             return json_error(
                 StatusCode::FORBIDDEN,
-                "OWNER_SCOPED_ANON_DENIED",
+                "ANON_FORBIDDEN_OWNER_SCOPED",
                 "anon cannot read owner-scoped collection — register a user",
             );
         }
