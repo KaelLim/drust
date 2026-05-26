@@ -582,20 +582,23 @@
   }
   .select:focus{border-color:var(--accent-border)}
   .check{display:flex;align-items:center;gap:9px;cursor:pointer;font-size:13px;color:var(--fg-2)}
-  /* v1.28.9 — global checkbox skin. Replaces the single `accent-color`
+  /* v1.28.10 — global checkbox skin. Replaces the single `accent-color`
      rule that left the unchecked state to the browser default (white).
-     Unchecked: bg-soft + 1px border matching --line. Checked: accent
+     Unchecked: bg-deep + 1px border-strong (clearly visible in both
+     themes — v1.28.9 originally referenced --bg-soft / --line which
+     have no theme definition since v1.23, so the border fell back to
+     `currentColor` and was effectively invisible). Checked: accent
      fill + CSS-only white check mark via ::after (rotated rectangle).
      Applies to every <input type=checkbox> across admin. */
   input[type="checkbox"]{
     appearance:none; -webkit-appearance:none;
     width:16px; height:16px;
-    background:var(--bg-soft); border:1px solid var(--line); border-radius:3px;
+    background:var(--bg-deep); border:1px solid var(--border-strong); border-radius:4px;
     cursor:pointer; flex-shrink:0;
     position:relative;
     transition:background 120ms, border-color 120ms;
   }
-  input[type="checkbox"]:hover{border-color:var(--border-mid, var(--accent-border));}
+  input[type="checkbox"]:hover{border-color:var(--accent-border);}
   input[type="checkbox"]:checked{background:var(--accent); border-color:var(--accent);}
   input[type="checkbox"]:checked::after{
     content:""; display:block; position:absolute;
