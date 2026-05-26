@@ -1213,6 +1213,7 @@ next = "Next"
 prev = "Prev"
 
 [collection_page.settings]
+close = "Close settings"
 run_explain = "Run EXPLAIN…"
 title = "Collection settings"
 

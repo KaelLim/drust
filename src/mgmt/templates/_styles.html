@@ -1196,14 +1196,36 @@
   .coll-sticky-bottom .pager-info{margin-left:auto;display:flex;align-items:center;gap:10px;color:var(--muted);font:400 13px/1 var(--sans)}
   .coll-sticky-bottom .pager-info .btn{padding:6px 10px}
 
+  /* v1.28.9 — right-side drawer (replaces v1.28 absolute popover).
+     Fixed full-height column slides in from the right edge. No backdrop
+     dim — the table behind stays visible/interactive so users can keep
+     cross-referencing rows while toggling settings. */
   .settings-popover{
-    position:absolute; z-index:100;
-    background:var(--bg); border:1px solid var(--line);
-    border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.12);
-    padding:14px; min-width:280px; max-width:360px;
+    position:fixed; top:0; right:0; bottom:0; z-index:100;
+    width:min(420px, 33vw);
+    background:var(--bg); border-left:1px solid var(--line);
+    box-shadow:-8px 0 24px rgba(0,0,0,0.12);
+    padding:18px 18px 24px 18px;
+    overflow-y:auto;
+    transform:translateX(100%);
+    transition:transform 220ms ease-out;
   }
+  .settings-popover.is-open{transform:translateX(0);}
+  .settings-popover[hidden]{display:none;}
   .settings-popover h3{font:600 11px/1 var(--sans);text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin:0 0 8px}
   .settings-popover section + section{margin-top:14px;padding-top:14px;border-top:1px solid var(--line-2)}
+  .settings-popover .drawer-close{
+    position:absolute; top:10px; right:10px;
+    width:28px; height:28px; padding:0;
+    background:transparent; border:1px solid var(--line);
+    border-radius:6px; cursor:pointer;
+    display:grid; place-items:center;
+    color:var(--fg);
+  }
+  .settings-popover .drawer-close:hover{background:var(--bg-soft);}
+  @media (max-width: 600px) {
+    .settings-popover{width:100vw;}
+  }
 
   .filter-popover{
     position:absolute; z-index:100;
