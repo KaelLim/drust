@@ -1,4 +1,11 @@
-## [1.28.13] - 2026-05-26
+## [1.28.14] - 2026-05-26
+
+### Fixed
+- Admin sidebar profile always rendered the placeholder (`??` avatar + `admin` name + empty email) even after the OAuth UPDATE wrote `display_name` + `picture_url` into the `admins` row. Two stacked bugs:
+  1. **Middleware order inverted.** The `protected` router applied layers as `.layer(session_layer).layer(profile_layer).layer(theme_layer)`. axum's `.layer()` makes the LAST-applied layer the OUTERMOST — request flow was `theme → profile → session → handler`. `admin_profile_layer` read `Extension<AdminId>` BEFORE `admin_session_layer` had set it, so `load_admin_profile` always saw `None` and inserted `AdminProfileExt::placeholder()`. The "runs after admin_session_layer" comment was aspirational — the code didn't match. Order reversed: theme/profile applied first (innermost), session applied last (outermost). `theme_layer` had the same latent issue but never exposed because the `drust_theme` cookie short-circuits the AdminId-dependent path.
+  2. **Empty strings ≠ NULL.** rusqlite maps SQL `NULL → None` but stores SQL `'' → Some("")`. OAuth providers occasionally return `picture`/`name` as empty strings (e.g. Google user with no avatar) which then hit the template's `Some(url)` arm and rendered `<img src="">`. `load_admin_profile` now trims and normalizes blank strings to `None` for `display_name`, `email`, and `picture_url` so the sidebar's `{% match %}` falls through to the initials block as intended.
+
+
 
 ### Fixed
 - v1.28.12 dropped the `[Table]` / `[Definition]` tabs from the collection page footer based on a user comment about not needing tabs. The intent was to slim the bar; the result was that Definition view became reachable only by typing `?view=definition` into the URL. Tabs restored as a slim segmented control on the footer's left side: 26px tall, transparent default, `var(--surface)` fill when active — not the chunky 6px-padding pill of the v1.28.x earlier shape.
