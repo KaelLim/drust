@@ -859,6 +859,13 @@ impl MgmtState {
             meta: self.meta.clone(),
             allow_db_fallback: true,
         };
+        // v1.28.9 — admin profile layer: runs after admin_session_layer so
+        // AdminId is in extensions, then loads display_name/email/picture_url
+        // from admins and injects Extension<AdminProfileExt>. Sidebar
+        // templates read this through every page struct's `pub admin` field.
+        let profile_state = crate::mgmt::admin_profile::AdminProfileLayerState {
+            meta: self.meta.clone(),
+        };
         let protected = tenants_router
             .merge(public_files_router)
             .merge(admin_tenant_files_router)
@@ -868,6 +875,10 @@ impl MgmtState {
             .layer(axum::middleware::from_fn_with_state(
                 session,
                 admin_session_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                profile_state,
+                crate::mgmt::admin_profile::admin_profile_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
                 inner_theme_state,
