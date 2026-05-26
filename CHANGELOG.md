@@ -1,3 +1,8 @@
+## [1.28.11] - 2026-05-26
+
+### Fixed
+- Collection page filter popover (chip [+ Filter] and [Sort]) form controls had no background or text color set. The `.filter-popover select, .filter-popover input` rule only declared padding + border + radius + font, and the border itself referenced `var(--line)` (no theme definition — same ghost-var class as v1.28.10's checkbox fix). Browsers fell back to UA defaults: white background + black text. Against the popover's dark `var(--bg)` shell this looked unstyled. Selects and inputs now mirror the canonical `.input` / `.select` token shape — `var(--bg-deep)` background, `var(--fg)` text, `var(--border-mid)` border, with an `--accent-border` focus ring matching the rest of the admin forms. The popover container border also swapped from `var(--line)` to `var(--border-mid)`, and the box shadow opacity went from 0.12 to 0.35 (the v1.28.x dark themes need a punchier shadow to read as a layered surface).
+
 ## [1.28.10] - 2026-05-26
 
 ### Fixed
