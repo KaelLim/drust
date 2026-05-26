@@ -76,6 +76,13 @@ pub fn load_admin_profile(
     conn: &Connection,
     admin_id: i64,
 ) -> rusqlite::Result<Option<AdminProfileExt>> {
+    // v1.28.14: rusqlite maps NULL → None but empty-string → Some("").
+    // OAuth providers occasionally return picture/name as "" (e.g. Google
+    // user with no avatar) — without this normalization the sidebar
+    // template's `Some(url)` arm fires and renders `<img src="">`.
+    fn blank_to_none(o: Option<String>) -> Option<String> {
+        o.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
     let row = conn
         .query_row(
             "SELECT display_name, email, picture_url FROM admins WHERE id = ?1",
@@ -87,7 +94,8 @@ pub fn load_admin_profile(
                 Ok((display_name, email, picture_url))
             },
         )
-        .ok();
+        .ok()
+        .map(|(d, e, p)| (blank_to_none(d), blank_to_none(e), blank_to_none(p)));
     Ok(row.map(|(display_name, email, picture_url)| {
         let initials = AdminProfileExt::compute_initials(
             display_name.as_deref(),

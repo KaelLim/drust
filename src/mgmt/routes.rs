@@ -872,6 +872,13 @@ impl MgmtState {
         let profile_state = crate::mgmt::admin_profile::AdminProfileLayerState {
             meta: self.meta.clone(),
         };
+        // v1.28.14 — axum's `.layer()` makes the LAST-applied layer the
+        // OUTERMOST (runs FIRST on request descent). For profile/theme to
+        // read `Extension<AdminId>` they must run AFTER session_layer sets
+        // it — which means session must be applied LAST and the readers
+        // applied FIRST. Previous order (session first, theme last) had
+        // profile_layer always seeing an empty extensions map and falling
+        // back to `placeholder()` → "??" + "admin" in the sidebar.
         let protected = tenants_router
             .merge(public_files_router)
             .merge(admin_tenant_files_router)
@@ -879,16 +886,16 @@ impl MgmtState {
             .merge(design_router)
             .merge(settings_router)
             .layer(axum::middleware::from_fn_with_state(
-                session,
-                admin_session_layer,
+                inner_theme_state,
+                crate::mgmt::theme_layer::theme_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
                 profile_state,
                 crate::mgmt::admin_profile::admin_profile_layer,
             ))
             .layer(axum::middleware::from_fn_with_state(
-                inner_theme_state,
-                crate::mgmt::theme_layer::theme_layer,
+                session,
+                admin_session_layer,
             ));
 
         // Outer theme layer: cookie-only (allow_db_fallback=false). Covers
