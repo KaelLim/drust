@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod admin_token;
 pub mod bearer;
 pub mod middleware;
 pub mod oauth_sentinel;

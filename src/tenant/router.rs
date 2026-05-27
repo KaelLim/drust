@@ -248,6 +248,35 @@ pub async fn bearer_auth_layer(
             });
             return next.run(req).await;
         }
+        // --- v1.29 step 6: per-admin PAT lookup ---
+        {
+            let conn = state.meta.lock().await;
+            let hit = crate::auth::admin_token::lookup(&conn, &bearer).ok().flatten();
+            drop(conn);
+            if let Some(crate::auth::admin_token::AdminTokenHit { token_id, admin_id }) = hit {
+                // Best-effort throttled last_used_at update
+                let meta_for_bump = state.meta.clone();
+                tokio::spawn(async move {
+                    let conn = meta_for_bump.lock().await;
+                    let _ = conn.execute(
+                        "UPDATE _admin_tokens SET last_used_at = datetime('now') \
+                         WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < datetime('now', '-60 seconds'))",
+                        rusqlite::params![token_id],
+                    );
+                });
+                let ctx = AuthCtx::Service { admin_id: Some(admin_id) };
+                resolved_auth_ctx = Some(ctx.clone());
+                req.extensions_mut().insert(ctx);
+                req.extensions_mut().insert(crate::auth::middleware::AdminId(admin_id));
+                req.extensions_mut().insert(TenantRef {
+                    tenant_id: tenant_id.clone(),
+                    token_hint: token_hint(&bearer),
+                    pool,
+                    role: TokenRole::Service,
+                });
+                return next.run(req).await;
+            }
+        }
         // --- Service / Anon path (meta.sqlite tokens table) ---
         // Verify: (token active) AND (tenant active). Fetch role alongside.
         let conn = state.meta.lock().await;
@@ -361,6 +390,21 @@ pub async fn bearer_auth_layer(
     } else {
         entry
     };
+    // v1.29: top-level actor attribution columns (SQL queryable).
+    // Populate when the resolved context is a PAT/OAuth-bound service call.
+    let mut entry = entry;
+    if let Some(AuthCtx::Service { admin_id: Some(id) }) = &resolved_auth_ctx {
+        entry.actor_admin_id = Some(*id);
+        let conn = state.meta.lock().await;
+        entry.actor_email_snapshot = conn
+            .query_row(
+                "SELECT email FROM admins WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .ok();
+        drop(conn);
+    }
     audit_sink.append(entry);
     resp
 }
