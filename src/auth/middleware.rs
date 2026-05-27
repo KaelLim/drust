@@ -19,7 +19,11 @@ pub struct AdminSessionState {
 #[derive(Clone, Debug)]
 pub enum AuthCtx {
     Anon,
-    Service,
+    /// Service-equivalent caller. `admin_id` is `Some` for per-admin tokens
+    /// (PAT or OAuth) and `None` for the shared per-tenant `service` token.
+    /// All three sources have identical authorization power; `admin_id` is
+    /// purely for audit attribution.
+    Service { admin_id: Option<i64> },
     User { user_id: String, token_hash: String },
 }
 
@@ -27,13 +31,20 @@ impl AuthCtx {
     pub fn kind(&self) -> &'static str {
         match self {
             AuthCtx::Anon => "anon",
-            AuthCtx::Service => "service",
+            AuthCtx::Service { .. } => "service",
             AuthCtx::User { .. } => "user",
         }
     }
     pub fn user_id(&self) -> Option<&str> {
         match self {
             AuthCtx::User { user_id, .. } => Some(user_id),
+            _ => None,
+        }
+    }
+    /// New helper for v1.29 attribution paths.
+    pub fn admin_id(&self) -> Option<i64> {
+        match self {
+            AuthCtx::Service { admin_id } => *admin_id,
             _ => None,
         }
     }
@@ -134,7 +145,7 @@ impl<S: Send + Sync> FromRequestParts<S> for ServiceTid {
         })?;
 
         // 2. Service role only.
-        if !matches!(ctx, AuthCtx::Service) {
+        if !matches!(ctx, AuthCtx::Service { .. }) {
             return Err(json_error(
                 StatusCode::FORBIDDEN,
                 "SERVICE_ONLY",
@@ -170,18 +181,26 @@ mod ctx_tests {
     #[test]
     fn auth_ctx_kind_strings() {
         assert_eq!(AuthCtx::Anon.kind(), "anon");
-        assert_eq!(AuthCtx::Service.kind(), "service");
+        assert_eq!(AuthCtx::Service { admin_id: None }.kind(), "service");
         assert_eq!(AuthCtx::User { user_id: "u".into(), token_hash: "h".into() }.kind(), "user");
     }
 
     #[test]
     fn auth_ctx_user_id_extracts_only_for_user_variant() {
         assert_eq!(AuthCtx::Anon.user_id(), None);
-        assert_eq!(AuthCtx::Service.user_id(), None);
+        assert_eq!(AuthCtx::Service { admin_id: None }.user_id(), None);
         assert_eq!(
             AuthCtx::User { user_id: "u-42".into(), token_hash: "h".into() }.user_id(),
             Some("u-42"),
         );
+    }
+
+    #[test]
+    fn admin_id_returned_only_for_service_with_some() {
+        assert_eq!(AuthCtx::Service { admin_id: None }.admin_id(), None);
+        assert_eq!(AuthCtx::Service { admin_id: Some(7) }.admin_id(), Some(7));
+        assert_eq!(AuthCtx::Anon.admin_id(), None);
+        assert_eq!(AuthCtx::User { user_id: "u".into(), token_hash: "h".into() }.admin_id(), None);
     }
 
     /// Admin session cookie MUST be SameSite=Lax, not Strict — Strict

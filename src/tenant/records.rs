@@ -455,7 +455,7 @@ pub async fn create_handler(
                     "anon tokens may not write to owner-scoped collections",
                 );
             }
-            AuthCtx::Service => {
+            AuthCtx::Service { .. } => {
                 // Service must explicitly supply the owner field so the row
                 // is attributed to a real user; missing it is a caller error.
                 let data_obj = body.data.as_object();

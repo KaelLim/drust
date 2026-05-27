@@ -27,7 +27,7 @@ pub async fn set_owner_field_handler(
     Extension(t): Extension<TenantRef>,
     Json(body): Json<SetOwnerFieldBody>,
 ) -> Response {
-    if !matches!(ctx, AuthCtx::Service) {
+    if !matches!(ctx, AuthCtx::Service { .. }) {
         return json_error(
             StatusCode::FORBIDDEN,
             "SERVICE_ONLY",
@@ -88,7 +88,7 @@ pub async fn clear_owner_field_handler(
     Extension(ctx): Extension<AuthCtx>,
     Extension(t): Extension<TenantRef>,
 ) -> Response {
-    if !matches!(ctx, AuthCtx::Service) {
+    if !matches!(ctx, AuthCtx::Service { .. }) {
         return json_error(
             StatusCode::FORBIDDEN,
             "SERVICE_ONLY",

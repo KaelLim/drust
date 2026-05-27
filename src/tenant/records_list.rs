@@ -70,7 +70,7 @@ pub async fn post_list(
         schema.read_scope.as_deref(),
     ) {
         // Service — bypass everything.
-        (AuthCtx::Service, _, _) => None,
+        (AuthCtx::Service { .. }, _, _) => None,
 
         // Anon on owner-scoped → typed deny.
         (AuthCtx::Anon, Some(_), _) => {
@@ -139,7 +139,7 @@ pub async fn post_list(
     debug_assert!(
         match (&ctx, t.role) {
             (AuthCtx::Anon, TokenRole::Anon)
-            | (AuthCtx::Service, TokenRole::Service)
+            | (AuthCtx::Service { .. }, TokenRole::Service)
             | (AuthCtx::User { .. }, TokenRole::User) => true,
             _ => false,
         },
@@ -255,7 +255,7 @@ pub async fn post_list_explain(
     Path((_tenant, coll)): Path<(String, String)>,
     Json(req): Json<ListRequest>,
 ) -> Response {
-    if !matches!(ctx, AuthCtx::Service) {
+    if !matches!(ctx, AuthCtx::Service { .. }) {
         return json_error(
             StatusCode::FORBIDDEN,
             "EXPLAIN_REQUIRES_SERVICE",
