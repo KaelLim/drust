@@ -392,9 +392,14 @@ pub async fn bearer_auth_layer(
         // `Service { admin_id: None }` reach this point.  Both are denied on
         // `/t/<id>/mcp` paths per v1.29 BREAKING design.
         if is_mcp_path(&path_for_audit) {
+            // v1.29.1 — point WWW-Authenticate at the per-tenant well-known so the
+            // `resource` field in the served metadata matches the URL the client
+            // actually tried to access (MCP SDKs strict-compare this and reject
+            // the placeholder `{tenant}` literal that the root endpoint serves).
             let resource_metadata_url = format!(
-                "{}/drust/.well-known/oauth-protected-resource",
-                state.public_url.trim_end_matches('/')
+                "{}/drust/t/{}/.well-known/oauth-protected-resource",
+                state.public_url.trim_end_matches('/'),
+                tenant_id,
             );
             let body = serde_json::json!({
                 "error_code": "MCP_REQUIRES_ADMIN_AUTH",
