@@ -253,11 +253,15 @@ revoke = "撤銷"
 revoked = "已撤銷"
 subtitle = "經由 Dynamic Client Registration 註冊的 MCP clients"
 title = "OAuth clients"
+confirm_revoke = "撤銷 client「{name}」？這會立即作廢所有已發行的 access + refresh tokens。"
 
 [admin_oauth_clients.col]
+actions = "操作"
+client = "Client"
 client_id = "Client ID"
 created = "建立時間"
 name = "名稱"
+registered = "註冊時間"
 status = "狀態"
 tokens = "Active tokens"
 
@@ -266,6 +270,7 @@ copy = "複製"
 revoke = "撤銷"
 
 [admin_tokens.col]
+action = "操作"
 created = "建立時間"
 last_used = "最後使用"
 name = "名稱"
@@ -278,8 +283,17 @@ generate = "建立 token"
 subtitle = "用於 headless API 存取。明文僅在建立時顯示一次。"
 title = "個人 access token"
 
+[admin_tokens.error]
+name_taken = "Token 名稱已存在"
+
+[admin_tokens.last_used]
+never = "從未"
+
 [admin_tokens.modal.generate]
 title = "建立 token"
+warning = "此 token 僅此一次顯示，請妥善保存。"
+copy = "複製"
+done = "完成"
 
 [admin_tokens.modal.revoke]
 body = "撤銷 token"
@@ -290,16 +304,35 @@ warning = "此 token 僅此一次顯示，請立即複製。"
 
 [admin_team.action]
 view = "檢視"
+promote = "提升為 Owner"
+demote = "降為 Member"
+remove = "移除"
+confirm_demote = "將 {email} 降為 Member？"
+confirm_remove = "輸入 {email} 確認移除"
 
 [admin_team.col]
 email = "Email"
 name = "名稱"
 role = "角色"
+last_seen = "最後上線"
+tokens = "Tokens"
+
+[admin_team.error]
+not_owner = "只有 Owner 可執行此操作"
+last_owner = "無法降級／移除最後一位 Owner"
+email_taken = "Email 已存在 admins 中"
+invalid_role = "角色必須是 owner 或 member"
 
 [admin_team.head]
 add = "新增 admin"
 subtitle = "管理 admin 與角色"
 title = "團隊"
+
+[admin_team.role]
+owner = "Owner"
+member = "Member"
+owner_hint = "Owner 可管理 admins"
+member_hint = "完整資料存取，無法管理 admins"
 
 [audit_body.aria]
 # REVIEW (low confidence): aria-label with template var, please verify wording
