@@ -1,6 +1,83 @@
 use rusqlite::Connection;
 use std::path::Path;
 
+pub const SQL_CREATE_ADMIN_TOKENS_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS _admin_tokens (
+    id              INTEGER PRIMARY KEY,
+    admin_id        INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    name            TEXT    NOT NULL,
+    token_hash      TEXT    NOT NULL UNIQUE,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_used_at    TEXT,
+    UNIQUE(admin_id, name)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_admin_tokens_admin ON _admin_tokens(admin_id);
+"#;
+
+pub const SQL_CREATE_OAUTH_CLIENTS_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS _oauth_clients (
+    id                  TEXT PRIMARY KEY,
+    client_name         TEXT NOT NULL,
+    redirect_uris_json  TEXT NOT NULL,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by_admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+    revoked_at          TEXT,
+    revoked_by_admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_oauth_clients_revoked ON _oauth_clients(revoked_at);
+"#;
+
+pub const SQL_CREATE_OAUTH_CODES_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS _oauth_authorization_codes (
+    code_hash               TEXT PRIMARY KEY,
+    client_id               TEXT NOT NULL REFERENCES _oauth_clients(id) ON DELETE CASCADE,
+    admin_id                INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    redirect_uri            TEXT NOT NULL,
+    pkce_challenge          TEXT NOT NULL,
+    pkce_challenge_method   TEXT NOT NULL,
+    resource_uri            TEXT NOT NULL,
+    scope                   TEXT,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at              TEXT NOT NULL,
+    consumed_at             TEXT,
+    CHECK (pkce_challenge_method = 'S256')
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_oauth_codes_expires ON _oauth_authorization_codes(expires_at);
+"#;
+
+pub const SQL_CREATE_OAUTH_ACCESS_TOKENS_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS _oauth_access_tokens (
+    token_hash      TEXT PRIMARY KEY,
+    client_id       TEXT NOT NULL REFERENCES _oauth_clients(id) ON DELETE CASCADE,
+    admin_id        INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    resource_uri    TEXT NOT NULL,
+    scope           TEXT,
+    issued_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at      TEXT NOT NULL,
+    last_used_at    TEXT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_oauth_at_expires ON _oauth_access_tokens(expires_at);
+"#;
+
+pub const SQL_CREATE_OAUTH_REFRESH_TOKENS_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS _oauth_refresh_tokens (
+    token_hash          TEXT PRIMARY KEY,
+    client_id           TEXT NOT NULL REFERENCES _oauth_clients(id) ON DELETE CASCADE,
+    admin_id            INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    resource_uri        TEXT NOT NULL,
+    scope               TEXT,
+    issued_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at          TEXT NOT NULL,
+    rotated_to_hash     TEXT,
+    rotated_at          TEXT
+) STRICT;
+
+"#;
+
 pub const SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS: &str = r#"
 CREATE TABLE IF NOT EXISTS _system_users (
   id            TEXT PRIMARY KEY,
@@ -135,6 +212,25 @@ pub fn run_migrations(
     add_column_if_missing(meta, "tenants", "files_bytes",
         "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(meta, "tenants", "stats_updated_at", "TEXT")?;
+
+    // v1.29.0 — team management: role column + backfill
+    add_column_if_missing(meta, "admins", "role", "TEXT NOT NULL DEFAULT 'member'")?;
+    let any_owner: bool = meta
+        .query_row("SELECT 1 FROM admins WHERE role='owner' LIMIT 1", [], |_| Ok(()))
+        .is_ok();
+    if !any_owner {
+        meta.execute("UPDATE admins SET role='owner'", [])?;
+    }
+
+    // v1.29.0 — PAT table for headless admin attribution
+    meta.execute_batch(SQL_CREATE_ADMIN_TOKENS_IF_NOT_EXISTS)?;
+
+    // v1.29.0 — OAuth 2.1 Authorization Server tables
+    meta.execute_batch(SQL_CREATE_OAUTH_CLIENTS_IF_NOT_EXISTS)?;
+    meta.execute_batch(SQL_CREATE_OAUTH_CODES_IF_NOT_EXISTS)?;
+    meta.execute_batch(SQL_CREATE_OAUTH_ACCESS_TOKENS_IF_NOT_EXISTS)?;
+    meta.execute_batch(SQL_CREATE_OAUTH_REFRESH_TOKENS_IF_NOT_EXISTS)?;
+
     report.meta_done = true;
 
     let mut stmt = meta.prepare("SELECT id FROM tenants")?;
@@ -158,9 +254,112 @@ pub fn run_migrations(
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use tempfile::TempDir;
 
     fn fresh() -> Connection {
         Connection::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn v129_admins_role_column_added_and_backfilled_to_owner() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Mimic pre-v1.29 admins table shape + minimal meta tables run_migrations needs
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
+            CREATE TABLE admins (
+                id INTEGER PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                email TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO admins (username, password_hash, email) VALUES ('alice', 'hash', 'a@x');
+            INSERT INTO admins (username, password_hash, email) VALUES ('bob',   'hash', 'b@x');"
+        ).unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        run_migrations(&conn, tmp.path()).unwrap();
+
+        // Column exists
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(admins)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert!(cols.contains(&"role".to_string()), "missing role column: {cols:?}");
+
+        // All existing admins backfilled to 'owner'
+        let roles: Vec<String> = conn
+            .prepare("SELECT role FROM admins ORDER BY id").unwrap()
+            .query_map([], |r| r.get::<_, String>(0)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(roles, vec!["owner", "owner"], "backfill should lift all existing admins");
+
+        // Idempotent: second run is a no-op
+        run_migrations(&conn, tmp.path()).unwrap();
+        let roles: Vec<String> = conn
+            .prepare("SELECT role FROM admins ORDER BY id").unwrap()
+            .query_map([], |r| r.get::<_, String>(0)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(roles, vec!["owner", "owner"]);
+    }
+
+    #[test]
+    fn v129_admin_tokens_table_created() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
+            CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT NOT NULL, email TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        ).unwrap();
+        let tmp = TempDir::new().unwrap();
+        run_migrations(&conn, tmp.path()).unwrap();
+
+        let row: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_admin_tokens'",
+                [], |r| r.get(0)
+            ).unwrap();
+        assert_eq!(row, 1);
+
+        // Schema check
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(_admin_tokens)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        for expected in ["id", "admin_id", "name", "token_hash", "created_at", "last_used_at"] {
+            assert!(cols.contains(&expected.to_string()), "missing {expected} in {cols:?}");
+        }
+    }
+
+    #[test]
+    fn v129_oauth_tables_created() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
+            CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT NOT NULL, email TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        ).unwrap();
+        let tmp = TempDir::new().unwrap();
+        run_migrations(&conn, tmp.path()).unwrap();
+
+        for table in &[
+            "_oauth_clients",
+            "_oauth_authorization_codes",
+            "_oauth_access_tokens",
+            "_oauth_refresh_tokens",
+        ] {
+            let row: i64 = conn
+                .query_row(
+                    &format!("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='{table}'"),
+                    [], |r| r.get(0)
+                ).unwrap();
+            assert_eq!(row, 1, "table {table} missing");
+        }
+
+        // refresh tokens has rotated_to_hash column for reuse detection
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(_oauth_refresh_tokens)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert!(cols.contains(&"rotated_to_hash".to_string()));
     }
 
     #[test]
@@ -400,7 +599,8 @@ mod tests {
         let meta = Connection::open(&meta_path).unwrap();
         meta.execute_batch(
             "CREATE TABLE tenants (id TEXT PRIMARY KEY); \
-             INSERT INTO tenants VALUES ('t-ok'), ('t-locked');",
+             INSERT INTO tenants VALUES ('t-ok'), ('t-locked'); \
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT NOT NULL, email TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));",
         ).unwrap();
 
         // t-ok has a normal data.sqlite with the old _system_collection_meta

@@ -14,20 +14,22 @@ use tokio::sync::mpsc;
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS audit (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts               TEXT    NOT NULL,
-  tenant           TEXT    NOT NULL DEFAULT '-',
-  token_hint       TEXT    NOT NULL DEFAULT '-',
-  op               TEXT    NOT NULL,
-  status           TEXT    NOT NULL,
-  duration_ms      INTEGER NOT NULL DEFAULT 0,
-  error_code       TEXT,
-  auth_method      TEXT,
-  oauth_email      TEXT,
-  oauth_error_code TEXT,
-  caller_ip        TEXT,
-  user_agent       TEXT,
-  extra            TEXT
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                   TEXT    NOT NULL,
+  tenant               TEXT    NOT NULL DEFAULT '-',
+  token_hint           TEXT    NOT NULL DEFAULT '-',
+  op                   TEXT    NOT NULL,
+  status               TEXT    NOT NULL,
+  duration_ms          INTEGER NOT NULL DEFAULT 0,
+  error_code           TEXT,
+  auth_method          TEXT,
+  oauth_email          TEXT,
+  oauth_error_code     TEXT,
+  caller_ip            TEXT,
+  user_agent           TEXT,
+  extra                TEXT,
+  actor_admin_id       INTEGER,
+  actor_email_snapshot TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_audit_ts        ON audit(ts DESC);
@@ -60,8 +62,9 @@ const FLUSH_BATCH_SIZE: usize = 100;
 const INSERT_SQL: &str = "
 INSERT INTO audit (ts, tenant, token_hint, op, status, duration_ms,
                    error_code, auth_method, oauth_email, oauth_error_code,
-                   caller_ip, user_agent, extra)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)";
+                   caller_ip, user_agent, extra,
+                   actor_admin_id, actor_email_snapshot)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)";
 
 /// Open the audit DB in read-write mode and apply schema + write PRAGMAs.
 /// Idempotent: CREATE TABLE IF NOT EXISTS + index CREATE IF NOT EXISTS.
@@ -72,6 +75,12 @@ pub fn open_audit_db_write(path: &Path) -> anyhow::Result<Connection> {
         .with_context(|| format!("opening audit DB at {}", path.display()))?;
     conn.execute_batch(SCHEMA_SQL)
         .with_context(|| format!("opening audit DB at {}", path.display()))?;
+
+    // v1.29.0 — idempotent migrations for existing DBs that lack these columns
+    crate::db::migrations::add_column_if_missing(&conn, "audit", "actor_admin_id", "INTEGER")
+        .with_context(|| "adding actor_admin_id column to audit")?;
+    crate::db::migrations::add_column_if_missing(&conn, "audit", "actor_email_snapshot", "TEXT")
+        .with_context(|| "adding actor_email_snapshot column to audit")?;
 
     Ok(conn)
 }
@@ -410,6 +419,8 @@ fn flush(conn: &mut Connection, buf: &mut Vec<crate::safety::audit::AuditEntry>)
                 hoist.caller_ip,
                 hoist.user_agent,
                 hoist.remaining_json,
+                Option::<i64>::None,   // actor_admin_id — populated in Task 3
+                Option::<String>::None, // actor_email_snapshot — populated in Task 3
             ]);
             if let Err(e) = r {
                 tracing::error!(err=?e, "audit flush: insert");
@@ -445,6 +456,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test_audit.sqlite");
         (dir, path)
+    }
+
+    #[test]
+    fn schema_includes_actor_attribution_columns() {
+        let conn = open_audit_db_memory().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(audit)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert!(cols.contains(&"actor_admin_id".to_string()), "missing actor_admin_id in {cols:?}");
+        assert!(cols.contains(&"actor_email_snapshot".to_string()), "missing actor_email_snapshot");
     }
 
     #[test]
