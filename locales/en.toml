@@ -244,6 +244,7 @@ copy = "Copy"
 revoke = "Revoke"
 
 [admin_tokens.col]
+action = "Actions"
 created = "Created"
 last_used = "Last used"
 name = "Name"
@@ -256,8 +257,17 @@ generate = "Generate token"
 subtitle = "Tokens for headless API access. Plaintext shown once at creation."
 title = "Personal access tokens"
 
+[admin_tokens.error]
+name_taken = "Token name already used"
+
+[admin_tokens.last_used]
+never = "never"
+
 [admin_tokens.modal.generate]
 title = "Generate token"
+warning = "This is the only time you'll see the full token. Save it somewhere safe."
+copy = "Copy"
+done = "Done"
 
 [admin_tokens.modal.revoke]
 body = "Revoke token"
@@ -273,26 +283,49 @@ revoke = "Revoke"
 revoked = "Revoked"
 subtitle = "MCP clients registered via Dynamic Client Registration"
 title = "OAuth clients"
+confirm_revoke = "Revoke client '{name}'? This immediately invalidates all access + refresh tokens issued to it."
 
 [admin_oauth_clients.col]
+actions = "Actions"
+client = "Client"
 client_id = "Client ID"
 created = "Created"
 name = "Name"
+registered = "Registered"
 status = "Status"
 tokens = "Active tokens"
 
 [admin_team.action]
 view = "View"
+promote = "Promote to Owner"
+demote = "Demote to Member"
+remove = "Remove"
+confirm_demote = "Demote {email} to Member?"
+confirm_remove = "Type {email} to confirm removal"
 
 [admin_team.col]
 email = "Email"
 name = "Name"
 role = "Role"
+last_seen = "Last seen"
+tokens = "Tokens"
+
+[admin_team.error]
+not_owner = "Only Owner can perform this action"
+last_owner = "Cannot demote/remove the last Owner"
+email_taken = "Email already in admins"
+invalid_role = "Role must be owner or member"
 
 [admin_team.head]
 add = "Add admin"
 subtitle = "Manage admins and roles"
 title = "Team"
+
+[admin_team.role]
+owner = "Owner"
+member = "Member"
+owner_hint = "Owner can manage admins"
+member_hint = "Full data access, cannot manage admins"
 
 [audit_body.aria]
 show_details_for = "show details for {op}"
