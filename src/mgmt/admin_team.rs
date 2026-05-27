@@ -1,0 +1,513 @@
+//! Admin team management — list/invite/role-change/remove.
+//!
+//! Owner guard: only admins with `role = 'owner'` may invite, promote/demote,
+//! or remove team members. PATCH and DELETE enforce the ≥1 Owner invariant
+//! TOCTOU-safely inside a write transaction on `meta.sqlite`.
+//!
+//! Audit ops: `admin.team.invite`, `admin.team.role_change`, `admin.team.remove`.
+//!
+//! v1.29.0.
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use rusqlite::params;
+use serde::{Deserialize, Serialize};
+
+use crate::auth::middleware::AdminId;
+use crate::error::json_error;
+use crate::mgmt::admin_profile::AdminProfileExt;
+use crate::mgmt::routes::MgmtState;
+use crate::safety::audit::AuditEntry;
+
+// ─── wire shapes ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct AdminRow {
+    pub id: i64,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub role: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InviteBody {
+    pub email: String,
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RoleBody {
+    pub role: String,
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// Synthetic password hash for invited admins who have no password yet.
+/// Identical sentinel used by per-tenant OAuth-only users.
+const OAUTH_ONLY_SENTINEL: &str = "$oauth-only$";
+
+/// Valid role strings.
+fn is_valid_role(r: &str) -> bool {
+    matches!(r, "owner" | "member")
+}
+
+/// Return 403 NOT_OWNER when the caller does not have the owner role.
+fn owner_guard(profile: &AdminProfileExt) -> Result<(), Response> {
+    if !profile.is_owner {
+        return Err(json_error(
+            StatusCode::FORBIDDEN,
+            "NOT_OWNER",
+            "owner role required",
+        ));
+    }
+    Ok(())
+}
+
+/// Email basic sanity check — must contain exactly one '@' and something on
+/// both sides.  No RFC-5321 deep validation; the invite flow is Owner-only
+/// so this is good-faith input.
+fn validate_email(email: &str) -> bool {
+    let parts: Vec<&str> = email.splitn(2, '@').collect();
+    parts.len() == 2 && !parts[0].is_empty() && parts[1].contains('.')
+}
+
+// ─── handlers ────────────────────────────────────────────────────────────────
+
+/// `GET /admin/team` — list all admins (any authenticated admin may read).
+pub async fn list_admins(State(s): State<MgmtState>) -> Response {
+    // All DB work must finish before any await point, so collect into a
+    // result while holding the lock, then drop the lock.
+    let result: Result<Vec<AdminRow>, String> = {
+        let conn = s.meta.lock().await;
+        let mut stmt = match conn.prepare(
+            "SELECT id, email, display_name, role, created_at FROM admins ORDER BY id",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+                )
+                    .into_response();
+            }
+        };
+        stmt.query_map([], |r| {
+            Ok(AdminRow {
+                id: r.get(0)?,
+                email: r.get(1)?,
+                display_name: r.get(2)?,
+                role: r.get(3)?,
+                created_at: r.get(4)?,
+            })
+        })
+        .and_then(|iter| iter.collect())
+        .map_err(|e| e.to_string())
+    };
+
+    match result {
+        Ok(admins) => Json(serde_json::json!({ "admins": admins })).into_response(),
+        Err(msg) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error_code": "INTERNAL", "message": msg })),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /admin/team` — invite a new admin (Owner-only).
+///
+/// The invited admin is created with the OAuth-only sentinel password so
+/// they can only sign in via OAuth (or have their password set out-of-band).
+/// A username is auto-derived from the email local-part.
+pub async fn invite_admin(
+    State(s): State<MgmtState>,
+    axum::Extension(AdminId(caller_id)): axum::Extension<AdminId>,
+    axum::Extension(profile): axum::Extension<AdminProfileExt>,
+    Json(body): Json<InviteBody>,
+) -> Response {
+    if let Err(r) = owner_guard(&profile) {
+        return r;
+    }
+
+    let role = body.role.as_deref().unwrap_or("member");
+    if !is_valid_role(role) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "INVALID_ROLE",
+            "role must be 'owner' or 'member'",
+        );
+    }
+
+    let email = body.email.trim().to_ascii_lowercase();
+    if !validate_email(&email) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "INVALID_EMAIL",
+            "email must be a valid address",
+        );
+    }
+
+    let username_base = email
+        .split('@')
+        .next()
+        .unwrap_or("admin")
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+
+    // Collect all DB results, drop the guard before any .await.
+    let db_result: Result<(i64, Option<String>), Response> = {
+        let conn = s.meta.lock().await;
+
+        // Uniqueness check for email.
+        let existing: bool = conn
+            .query_row(
+                "SELECT 1 FROM admins WHERE email = ?1 COLLATE NOCASE",
+                params![email],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if existing {
+            return json_error(
+                StatusCode::CONFLICT,
+                "ADMIN_EMAIL_TAKEN",
+                "an admin with that email already exists",
+            );
+        }
+
+        // Build a unique username.
+        let username = {
+            let mut candidate = username_base.clone();
+            let mut suffix = 2u32;
+            loop {
+                let taken: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM admins WHERE username = ?1",
+                        params![candidate],
+                        |_| Ok(()),
+                    )
+                    .is_ok();
+                if !taken {
+                    break candidate;
+                }
+                candidate = format!("{username_base}{suffix}");
+                suffix += 1;
+            }
+        };
+
+        let result = conn.execute(
+            "INSERT INTO admins (username, password_hash, email, role) VALUES (?1, ?2, ?3, ?4)",
+            params![username, OAUTH_ONLY_SENTINEL, email, role],
+        );
+
+        let new_id = match result {
+            Ok(_) => conn.last_insert_rowid(),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("UNIQUE") {
+                    return json_error(
+                        StatusCode::CONFLICT,
+                        "ADMIN_EMAIL_TAKEN",
+                        "an admin with that email already exists",
+                    );
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": msg })),
+                )
+                    .into_response();
+            }
+        };
+
+        // Fetch caller email for audit attribution.
+        let caller_email: Option<String> = conn
+            .query_row(
+                "SELECT email FROM admins WHERE id = ?1",
+                params![caller_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        Ok((new_id, caller_email))
+        // conn guard drops here — before any .await
+    };
+
+    let (new_id, caller_email) = match db_result {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    // Emit audit (async — safe; lock already released).
+    let mut entry = AuditEntry::success("-", "-", "admin.team.invite", 0);
+    entry.actor_admin_id = Some(caller_id);
+    entry.actor_email_snapshot = caller_email;
+    entry = entry.with_extra(serde_json::json!({
+        "invited_admin_id": new_id,
+        "invited_email": email,
+        "role": role,
+    }));
+    crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+
+    let mut resp = Json(serde_json::json!({
+        "id": new_id,
+        "email": email,
+        "role": role,
+    }))
+    .into_response();
+    *resp.status_mut() = StatusCode::CREATED;
+    resp
+}
+
+/// `PATCH /admin/team/{id}/role` — change an admin's role (Owner-only).
+///
+/// Invariant: demoting the last Owner is rejected with 409 LAST_OWNER.
+/// Enforced TOCTOU-safely inside an `unchecked_transaction`.
+pub async fn change_role(
+    State(s): State<MgmtState>,
+    Path(target_id): Path<i64>,
+    axum::Extension(AdminId(caller_id)): axum::Extension<AdminId>,
+    axum::Extension(profile): axum::Extension<AdminProfileExt>,
+    Json(body): Json<RoleBody>,
+) -> Response {
+    if let Err(r) = owner_guard(&profile) {
+        return r;
+    }
+
+    let new_role = body.role.clone();
+    if !is_valid_role(&new_role) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "INVALID_ROLE",
+            "role must be 'owner' or 'member'",
+        );
+    }
+
+    // All DB work inside a single sync block before any .await.
+    let db_result: Result<(String, Option<String>), Response> = {
+        let mut conn = s.meta.lock().await;
+
+        // Check target exists.
+        let current_role: Option<String> = conn
+            .query_row(
+                "SELECT role FROM admins WHERE id = ?1",
+                params![target_id],
+                |r| r.get(0),
+            )
+            .ok();
+        let current_role = match current_role {
+            Some(r) => r,
+            None => {
+                return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "admin not found")
+            }
+        };
+
+        // If the role isn't actually changing, succeed immediately.
+        if current_role == new_role {
+            return Json(serde_json::json!({ "id": target_id, "role": new_role })).into_response();
+        }
+
+        // TOCTOU-safe invariant check.
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+                )
+                    .into_response();
+            }
+        };
+
+        if new_role == "member" && current_role == "owner" {
+            let other_owner: bool = tx
+                .query_row(
+                    "SELECT 1 FROM admins WHERE role = 'owner' AND id != ?1 LIMIT 1",
+                    params![target_id],
+                    |_| Ok(()),
+                )
+                .is_ok();
+            if !other_owner {
+                return json_error(
+                    StatusCode::CONFLICT,
+                    "LAST_OWNER",
+                    "cannot demote the last owner",
+                );
+            }
+        }
+
+        if let Err(e) = tx.execute(
+            "UPDATE admins SET role = ?1 WHERE id = ?2",
+            params![new_role, target_id],
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
+        if let Err(e) = tx.commit() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
+        // Fetch caller email for attribution.
+        let caller_email: Option<String> = conn
+            .query_row(
+                "SELECT email FROM admins WHERE id = ?1",
+                params![caller_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        Ok((current_role, caller_email))
+        // conn guard drops here — before any .await
+    };
+
+    let (old_role, caller_email) = match db_result {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    // Emit audit (async — safe; lock already released).
+    let mut entry = AuditEntry::success("-", "-", "admin.team.role_change", 0);
+    entry.actor_admin_id = Some(caller_id);
+    entry.actor_email_snapshot = caller_email;
+    entry = entry.with_extra(serde_json::json!({
+        "target_admin_id": target_id,
+        "old_role": old_role,
+        "new_role": new_role,
+    }));
+    crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+
+    Json(serde_json::json!({ "id": target_id, "role": new_role })).into_response()
+}
+
+/// `DELETE /admin/team/{id}` — remove an admin (Owner-only).
+///
+/// Invariant: removing the last Owner is rejected with 409 LAST_OWNER.
+/// Enforced TOCTOU-safely inside an `unchecked_transaction`.
+/// Admin sessions are deleted manually; `_admin_tokens` CASCADE on FK delete.
+pub async fn remove_admin(
+    State(s): State<MgmtState>,
+    Path(target_id): Path<i64>,
+    axum::Extension(AdminId(caller_id)): axum::Extension<AdminId>,
+    axum::Extension(profile): axum::Extension<AdminProfileExt>,
+) -> Response {
+    if let Err(r) = owner_guard(&profile) {
+        return r;
+    }
+
+    // All DB work inside a single sync block before any .await.
+    let db_result: Result<(String, Option<String>, Option<String>), Response> = {
+        let mut conn = s.meta.lock().await;
+
+        // Snapshot target role + email BEFORE the DELETE so the audit row
+        // can identify who was removed even after the admins row is gone.
+        let target_snap: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT role, email FROM admins WHERE id = ?1",
+                params![target_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .ok();
+        let (target_role, target_email) = match target_snap {
+            Some(s) => s,
+            None => {
+                return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "admin not found")
+            }
+        };
+
+        // TOCTOU-safe invariant check inside a transaction.
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+                )
+                    .into_response();
+            }
+        };
+
+        if target_role == "owner" {
+            let other_owner: bool = tx
+                .query_row(
+                    "SELECT 1 FROM admins WHERE role = 'owner' AND id != ?1 LIMIT 1",
+                    params![target_id],
+                    |_| Ok(()),
+                )
+                .is_ok();
+            if !other_owner {
+                return json_error(
+                    StatusCode::CONFLICT,
+                    "LAST_OWNER",
+                    "cannot remove the last owner",
+                );
+            }
+        }
+
+        // Delete sessions manually (_admin_tokens cascade via FK ON DELETE CASCADE).
+        if let Err(e) = tx.execute(
+            "DELETE FROM sessions WHERE admin_id = ?1",
+            params![target_id],
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
+        if let Err(e) = tx.execute("DELETE FROM admins WHERE id = ?1", params![target_id]) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
+        if let Err(e) = tx.commit() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
+        // Fetch caller email for attribution.
+        let caller_email: Option<String> = conn
+            .query_row(
+                "SELECT email FROM admins WHERE id = ?1",
+                params![caller_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        Ok((target_role, target_email, caller_email))
+        // conn guard drops here — before any .await
+    };
+
+    let (removed_role, removed_email, caller_email) = match db_result {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    // Emit audit (async — safe; lock already released).
+    let mut entry = AuditEntry::success("-", "-", "admin.team.remove", 0);
+    entry.actor_admin_id = Some(caller_id);
+    entry.actor_email_snapshot = caller_email;
+    entry = entry.with_extra(serde_json::json!({
+        "removed_admin_id": target_id,
+        "removed_role": removed_role,
+        "removed_email": removed_email,
+    }));
+    crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+
+    Json(serde_json::json!({ "removed": true })).into_response()
+}

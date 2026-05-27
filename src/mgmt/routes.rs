@@ -858,6 +858,22 @@ impl MgmtState {
             .route("/admin/settings/theme", post(settings_theme_save))
             .with_state(settings_state);
 
+        // v1.29.0 — admin team management CRUD.
+        let team_router = Router::new()
+            .route(
+                "/admin/team",
+                get(super::admin_team::list_admins).post(super::admin_team::invite_admin),
+            )
+            .route(
+                "/admin/team/{id}",
+                axum::routing::delete(super::admin_team::remove_admin),
+            )
+            .route(
+                "/admin/team/{id}/role",
+                axum::routing::patch(super::admin_team::change_role),
+            )
+            .with_state(self.clone());
+
         // v1.25 — inner theme layer: runs after admin_session_layer so
         // AdminId is in request extensions. Falls back cookie → DB → System.
         // Overwrites whatever the outer layer set. (F5/F6 from v1.23 review.)
@@ -885,6 +901,7 @@ impl MgmtState {
             .merge(backups_router)
             .merge(design_router)
             .merge(settings_router)
+            .merge(team_router)
             .layer(axum::middleware::from_fn_with_state(
                 inner_theme_state,
                 crate::mgmt::theme_layer::theme_layer,
