@@ -230,6 +230,7 @@ changelog = "更新紀錄"
 design_system = "設計系統"
 host_files = "主機檔案"
 settings = "設定"
+team = "團隊"
 tenants = "租戶"
 
 [admin_sidebar.plane]
@@ -242,6 +243,19 @@ scope = "主機層級範圍"
 [admin_sidebar.section]
 organization = "組織"
 resources = "資源"
+
+[admin_team.action]
+view = "檢視"
+
+[admin_team.col]
+email = "Email"
+name = "名稱"
+role = "角色"
+
+[admin_team.head]
+add = "新增 admin"
+subtitle = "管理 admin 與角色"
+title = "團隊"
 
 [audit_body.aria]
 # REVIEW (low confidence): aria-label with template var, please verify wording

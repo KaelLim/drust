@@ -862,7 +862,7 @@ impl MgmtState {
         let team_router = Router::new()
             .route(
                 "/admin/team",
-                get(super::admin_team::list_admins).post(super::admin_team::invite_admin),
+                get(super::admin_team::team_page_or_json).post(super::admin_team::invite_admin),
             )
             .route(
                 "/admin/team/{id}",
