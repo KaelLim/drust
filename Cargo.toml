@@ -59,6 +59,7 @@ flate2             = { version = "1", default-features = false, features = ["rus
 tar                = { version = "0.4", default-features = false }
 zstd               = { version = "0.13", default-features = false }
 tempfile           = "3"
+regex-lite         = "0.1"
 
 [dev-dependencies]
 serial_test        = "3"

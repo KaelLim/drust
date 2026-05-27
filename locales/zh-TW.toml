@@ -1273,6 +1273,15 @@ eyebrow = "租戶 · 後端"
 subtitle = "對外通知於記錄 created / updated / deleted 時觸發。以 HMAC-SHA256 簽署於 X-Drust-Signature 標頭。同步重試最多 4 次（0s / 1s / 5s / 30s）。"
 title = "Webhooks"
 
+[oauth_consent]
+title = "授權存取"
+requesting = "正在請求存取你的 drust tenant"
+on_behalf_of = "代表"
+resource = "資源"
+permissions = "權限"
+authorize = "授權"
+cancel = "取消"
+
 [collection_page.desc]
 add = "新增說明"
 edit_aria = "編輯說明"
