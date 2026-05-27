@@ -40,7 +40,6 @@ async fn build_login_router(rl_capacity: u32) -> Router {
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(ProviderRegistry::from_env_empty()),
-        oauth_allowlist: Arc::new(std::collections::HashSet::new()),
         admin_login_rl: Arc::new(IpRateLimit::new(rl_capacity, Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };

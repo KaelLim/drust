@@ -60,10 +60,6 @@ pub struct MgmtState {
     /// Cloned per request, so wrapped in `Arc`. When `enabled_names()` is
     /// empty, the admin login page hides the OAuth button.
     pub oauth_registry: std::sync::Arc<crate::oauth::ProviderRegistry>,
-    /// Lower-case email allowlist for admin OAuth login. Sourced from
-    /// `DRUST_ADMIN_OAUTH_ALLOWED_EMAILS` (comma-separated). Empty when
-    /// unset, which disables OAuth login.
-    pub oauth_allowlist: std::sync::Arc<std::collections::HashSet<String>>,
     /// Per-IP rate limiter for POST /drust/login admin password attempts.
     /// Default: 5 per 60 s. Same shape as tenant `login_rl` in
     /// `TenantAuthState`. Defends against parallel-thread argon2 grind.

@@ -17,7 +17,7 @@ use drust::oauth::github::GitHubAdapter;
 use drust::oauth::google::GoogleAdapter;
 use drust::oauth::provider::OauthProvider;
 use drust::storage::meta::{bootstrap_admin, open_meta};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::{TempDir, tempdir};
 use tokio::sync::Mutex;
@@ -30,7 +30,6 @@ fn build_state(
     data_dir: std::path::PathBuf,
     log_dir: std::path::PathBuf,
     registry: ProviderRegistry,
-    allowlist: HashSet<String>,
 ) -> MgmtState {
     let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir, 2));
     let bus = drust::tenant::events::EventBus::new();
@@ -54,7 +53,6 @@ fn build_state(
         index_large_table_rows: 1_000_000,
         public_url: "http://test".to_string(),
         oauth_registry: Arc::new(registry),
-        oauth_allowlist: Arc::new(allowlist),
         admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
     }
@@ -108,15 +106,14 @@ pub async fn spin_up_admin_with_google_fake(
     providers.insert("google", Arc::new(google));
     let registry = ProviderRegistry::from_providers(providers);
 
-    let allow: HashSet<String> = ["kael@example.com".to_string()].into_iter().collect();
-    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry, allow);
+    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry);
     (state.with_data_dir(data_dir), dir, log_dir)
 }
 
 /// Variant of `spin_up_admin_with_google_fake` whose admin row has NO email
-/// column populated. The allowlist still contains `kael@example.com` so the
-/// callback gets past step 6 (allowlist check) before step 7 fails on
-/// `find_admin_id_by_email`.
+/// column populated. With DB-driven allowlist (v1.29.0+), `kael@example.com`
+/// is not found in `admins.email` so step 6 returns `oauth_not_allowed` —
+/// the `oauth_admin_email_missing` path is now unreachable without an email.
 pub async fn spin_up_admin_with_google_fake_no_email(
     fake: &Arc<FakeProvider>,
 ) -> (axum::Router, TempDir, std::path::PathBuf) {
@@ -136,8 +133,7 @@ pub async fn spin_up_admin_with_google_fake_no_email(
     providers.insert("google", Arc::new(google));
     let registry = ProviderRegistry::from_providers(providers);
 
-    let allow: HashSet<String> = ["kael@example.com".to_string()].into_iter().collect();
-    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry, allow);
+    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry);
     (state.with_data_dir(data_dir), dir, log_dir)
 }
 
@@ -163,8 +159,7 @@ pub async fn spin_up_admin_with_github_fake(
     providers.insert("github", Arc::new(github));
     let registry = ProviderRegistry::from_providers(providers);
 
-    let allow: HashSet<String> = ["kael@example.com".to_string()].into_iter().collect();
-    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry, allow);
+    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry);
     (state.with_data_dir(data_dir), dir, log_dir)
 }
 
@@ -178,8 +173,7 @@ pub async fn spin_up_admin_no_oauth() -> (axum::Router, TempDir, std::path::Path
     let conn = bootstrap_meta_with_email(&data_dir, "kael@example.com");
 
     let registry = ProviderRegistry::from_env_empty();
-    let allow: HashSet<String> = HashSet::new();
-    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry, allow);
+    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry);
     (state.with_data_dir(data_dir), dir, log_dir)
 }
 
@@ -432,8 +426,11 @@ async fn oauth_admin_email_missing_rejected() {
         provider_user_id: "sub-1".into(),
         picture: "https://example.test/avatar.png".into(),
     };
-    // Email IS in allowlist (step 6 passes) but no admin row matches —
-    // admin row was created without an email column value.
+    // v1.29.0: DB-driven allowlist. Admin row was created WITHOUT an email
+    // column value, so `SELECT 1 FROM admins WHERE email = ?` returns nothing
+    // → step 6 (DB allowlist check) fails with `oauth_not_allowed`.
+    // Previously this would reach step 7 (oauth_admin_email_missing); now
+    // the two checks collapse into one: no email in admins = not allowed.
     let (app, _dir, _log) = spin_up_admin_with_google_fake_no_email(&fake).await;
 
     let start_resp = app
@@ -461,7 +458,7 @@ async fn oauth_admin_email_missing_rejected() {
         )
         .await
         .unwrap();
-    assert_redirect_contains(&resp, "oauth_error=oauth_admin_email_missing");
+    assert_redirect_contains(&resp, "oauth_error=oauth_not_allowed");
 }
 
 // ---------- T23: button hidden + audit logged + password regression ----------

@@ -227,25 +227,35 @@ async fn main() -> anyhow::Result<()> {
 
     let public_url = std::env::var("DRUST_PUBLIC_URL").unwrap_or_default();
     let oauth_registry_inner = drust::oauth::ProviderRegistry::from_env();
-    let oauth_allowlist_inner = drust::oauth::config::parse_allowlist(
-        &std::env::var("DRUST_ADMIN_OAUTH_ALLOWED_EMAILS").unwrap_or_default(),
-    );
 
-    // Defensive: if any provider is configured but public_url/allowlist
-    // is missing, disable all OAuth (button hidden, /start returns
-    // oauth_misconfigured).
+    // v1.29.0: DRUST_ADMIN_OAUTH_ALLOWED_EMAILS is deprecated. The allowlist
+    // is now derived from admins.email (managed via /admin/team). Parse it
+    // here only to emit a deprecation warning; it no longer flows into state.
+    {
+        let legacy_allowlist = drust::oauth::config::parse_allowlist(
+            &std::env::var("DRUST_ADMIN_OAUTH_ALLOWED_EMAILS").unwrap_or_default(),
+        );
+        if !legacy_allowlist.is_empty() {
+            tracing::warn!(
+                "DRUST_ADMIN_OAUTH_ALLOWED_EMAILS is deprecated since v1.29.0; \
+                 allowlist is now derived from admins.email (manage via /admin/team). \
+                 Remove this env var from .env to silence this warning."
+            );
+        }
+    }
+
+    // Defensive: if any provider is configured but public_url is missing,
+    // disable all OAuth (button hidden, /start returns oauth_misconfigured).
     let oauth_registry = if !oauth_registry_inner.enabled_names().is_empty()
-        && (public_url.is_empty() || oauth_allowlist_inner.is_empty())
+        && public_url.is_empty()
     {
         tracing::warn!(
-            "OAuth provider(s) configured but DRUST_PUBLIC_URL or \
-             DRUST_ADMIN_OAUTH_ALLOWED_EMAILS missing; disabling OAuth"
+            "OAuth provider(s) configured but DRUST_PUBLIC_URL missing; disabling OAuth"
         );
         std::sync::Arc::new(drust::oauth::ProviderRegistry::from_env_empty())
     } else {
         std::sync::Arc::new(oauth_registry_inner)
     };
-    let oauth_allowlist = std::sync::Arc::new(oauth_allowlist_inner);
 
     let mgmt_state = MgmtState {
         meta: meta.clone(),
@@ -264,7 +274,6 @@ async fn main() -> anyhow::Result<()> {
         index_large_table_rows: cfg.index_large_table_rows,
         public_url: public_url.clone(),
         oauth_registry,
-        oauth_allowlist,
         admin_login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
     };
