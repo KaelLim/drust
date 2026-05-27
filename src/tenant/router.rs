@@ -5,12 +5,14 @@ use crate::safety::audit::{AuditEntry, AuditLog, DefaultAuditExtra};
 use crate::safety::rate_limit::RateLimiter;
 use crate::safety::rate_limit_ip::IpRateLimit;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
+use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rusqlite::Connection;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
@@ -121,6 +123,19 @@ pub struct TenantRef {
     pub token_hint: String,
     pub pool: SharedTenantPool,
     pub role: TokenRole,
+}
+
+/// Returns `true` when the path is `/t/<tenant>/mcp` or a sub-path thereof
+/// (e.g. `/t/<id>/mcp/`, `/t/<id>/mcp/stream`).
+///
+/// Used by the v1.29 MCP transport gate that requires OAuth or PAT (i.e.
+/// tokens carrying an `admin_id`).  Shared per-tenant service tokens and
+/// anon tokens are rejected at this path with 401 + `WWW-Authenticate`.
+fn is_mcp_path(path: &str) -> bool {
+    static MCP_RE: OnceLock<regex_lite::Regex> = OnceLock::new();
+    MCP_RE
+        .get_or_init(|| regex_lite::Regex::new(r"^/t/[^/]+/mcp(/|$)").unwrap())
+        .is_match(path)
 }
 
 pub async fn bearer_auth_layer(
@@ -368,6 +383,37 @@ pub async fn bearer_auth_layer(
             TokenRole::User => unreachable!("user sessions are resolved before meta lookup"),
         };
         resolved_auth_ctx = Some(ctx.clone());
+
+        // v1.29: MCP transport gate — require admin attribution (OAuth or PAT,
+        // NOT the shared per-tenant service token / anon token).
+        //
+        // OAuth (drust_at_*) and PAT (drust_pat_*) paths already early-returned
+        // above with `Service { admin_id: Some(_) }`.  Only Anon and the shared
+        // `Service { admin_id: None }` reach this point.  Both are denied on
+        // `/t/<id>/mcp` paths per v1.29 BREAKING design.
+        if is_mcp_path(&path_for_audit) {
+            let resource_metadata_url = format!(
+                "{}/drust/.well-known/oauth-protected-resource",
+                state.public_url.trim_end_matches('/')
+            );
+            let body = serde_json::json!({
+                "error_code": "MCP_REQUIRES_ADMIN_AUTH",
+                "message": "MCP endpoint requires OAuth or PAT, not the shared service token.",
+                "suggested_fix": "Configure your MCP client to use OAuth (recommended) or mint a PAT at /admin/settings/tokens.",
+            });
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header(
+                    "WWW-Authenticate",
+                    format!(
+                        r#"Bearer realm="drust", resource_metadata="{resource_metadata_url}", error="invalid_token""#
+                    ),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+        }
+
         req.extensions_mut().insert(ctx);
         req.extensions_mut().insert(TenantRef {
             tenant_id: tenant_id.clone(),
