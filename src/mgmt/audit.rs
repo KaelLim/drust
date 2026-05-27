@@ -1082,7 +1082,8 @@ pub fn aggregate_via_sql(
         let mut stmt = match conn.prepare(
             "SELECT ts, tenant, token_hint, op, status, duration_ms,
                     error_code, auth_method, oauth_email, oauth_error_code,
-                    caller_ip, user_agent, extra
+                    caller_ip, user_agent, extra,
+                    actor_admin_id, actor_email_snapshot
              FROM audit
              WHERE ts >= ?1
                AND (?2 IS NULL OR tenant = ?2)
@@ -1129,7 +1130,8 @@ pub fn query_browse(
 ) -> Vec<AuditEntry> {
     let sql = "SELECT ts, tenant, token_hint, op, status, duration_ms,
                       error_code, auth_method, oauth_email, oauth_error_code,
-                      caller_ip, user_agent, extra
+                      caller_ip, user_agent, extra,
+                      actor_admin_id, actor_email_snapshot
                FROM audit
                WHERE ts >= ?1
                  AND (?2 IS NULL OR tenant = ?2)
@@ -1197,6 +1199,8 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<AuditEntry> {
         auth_method: r.get(7)?,
         oauth_email: r.get(8)?,
         oauth_error_code: r.get(9)?,
+        actor_admin_id: r.get(13).unwrap_or(None),
+        actor_email_snapshot: r.get(14).unwrap_or(None),
         extra,
     })
 }

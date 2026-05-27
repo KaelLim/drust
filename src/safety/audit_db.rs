@@ -59,7 +59,7 @@ const CHANNEL_CAPACITY: usize = 1000;
 const FLUSH_INTERVAL_MS: u64 = 100;
 const FLUSH_BATCH_SIZE: usize = 100;
 
-const INSERT_SQL: &str = "
+pub(crate) const INSERT_SQL: &str = "
 INSERT INTO audit (ts, tenant, token_hint, op, status, duration_ms,
                    error_code, auth_method, oauth_email, oauth_error_code,
                    caller_ip, user_agent, extra,
@@ -112,12 +112,13 @@ pub struct HoistResult {
 }
 
 /// Remove `caller_ip` and `user_agent` (if present as strings) from the
-/// passed-in `extra` map and return them as separate fields. The
+/// entry's `extra` map and return them as separate fields. The
 /// remaining map serialises as JSON for the `extra` column. Non-string
 /// values for those keys are left in the map (will go into `extra`).
 pub fn hoist_indexed_fields(
-    mut extra: serde_json::Map<String, serde_json::Value>,
+    entry: &crate::safety::audit::AuditEntry,
 ) -> HoistResult {
+    let mut extra = entry.extra.clone();
     let caller_ip = take_string_key(&mut extra, "caller_ip");
     let user_agent = take_string_key(&mut extra, "user_agent");
     let remaining_json = if extra.is_empty() {
@@ -404,7 +405,7 @@ fn flush(conn: &mut Connection, buf: &mut Vec<crate::safety::audit::AuditEntry>)
             }
         };
         for entry in buf.drain(..) {
-            let hoist = hoist_indexed_fields(entry.extra);
+            let hoist = hoist_indexed_fields(&entry);
             let r = stmt.execute(params![
                 entry.ts,
                 entry.tenant,
@@ -419,8 +420,8 @@ fn flush(conn: &mut Connection, buf: &mut Vec<crate::safety::audit::AuditEntry>)
                 hoist.caller_ip,
                 hoist.user_agent,
                 hoist.remaining_json,
-                Option::<i64>::None,   // actor_admin_id — populated in Task 3
-                Option::<String>::None, // actor_email_snapshot — populated in Task 3
+                entry.actor_admin_id,
+                entry.actor_email_snapshot.as_deref(),
             ]);
             if let Err(e) = r {
                 tracing::error!(err=?e, "audit flush: insert");
@@ -521,13 +522,22 @@ mod tests {
         assert!(res.is_err(), "read-only conn must reject writes");
     }
 
+    fn mk_extra_entry(pairs: &[(&str, serde_json::Value)]) -> crate::safety::audit::AuditEntry {
+        let mut e = crate::safety::audit::AuditEntry::success("t", "-", "op", 0);
+        for (k, v) in pairs {
+            e.extra.insert(k.to_string(), v.clone());
+        }
+        e
+    }
+
     #[test]
     fn hoist_extracts_caller_ip_and_user_agent_strings() {
-        let mut extra = serde_json::Map::new();
-        extra.insert("caller_ip".into(), serde_json::json!("203.0.113.5"));
-        extra.insert("user_agent".into(), serde_json::json!("curl/8.0"));
-        extra.insert("auth_kind".into(), serde_json::json!("admin"));
-        let result = hoist_indexed_fields(extra);
+        let e = mk_extra_entry(&[
+            ("caller_ip", serde_json::json!("203.0.113.5")),
+            ("user_agent", serde_json::json!("curl/8.0")),
+            ("auth_kind", serde_json::json!("admin")),
+        ]);
+        let result = hoist_indexed_fields(&e);
         assert_eq!(result.caller_ip.as_deref(), Some("203.0.113.5"));
         assert_eq!(result.user_agent.as_deref(), Some("curl/8.0"));
         // remaining holds only auth_kind
@@ -539,7 +549,8 @@ mod tests {
 
     #[test]
     fn hoist_empty_extra_returns_all_none() {
-        let result = hoist_indexed_fields(serde_json::Map::new());
+        let e = crate::safety::audit::AuditEntry::success("t", "-", "op", 0);
+        let result = hoist_indexed_fields(&e);
         assert!(result.caller_ip.is_none());
         assert!(result.user_agent.is_none());
         assert!(result.remaining_json.is_none());
@@ -547,10 +558,11 @@ mod tests {
 
     #[test]
     fn hoist_leaves_non_string_caller_ip_in_remaining() {
-        let mut extra = serde_json::Map::new();
-        // Wrong type — `caller_ip` is a number for some reason.
-        extra.insert("caller_ip".into(), serde_json::json!(12345));
-        let result = hoist_indexed_fields(extra);
+        let e = mk_extra_entry(&[
+            // Wrong type — `caller_ip` is a number for some reason.
+            ("caller_ip", serde_json::json!(12345)),
+        ]);
+        let result = hoist_indexed_fields(&e);
         assert!(result.caller_ip.is_none(), "non-string ignored");
         // The number stays in remaining so the bug is visible in extra.
         let remaining_json = result.remaining_json.expect("remaining");
@@ -559,9 +571,10 @@ mod tests {
 
     #[test]
     fn hoist_empty_after_extraction_returns_none_for_remaining() {
-        let mut extra = serde_json::Map::new();
-        extra.insert("caller_ip".into(), serde_json::json!("1.2.3.4"));
-        let result = hoist_indexed_fields(extra);
+        let e = mk_extra_entry(&[
+            ("caller_ip", serde_json::json!("1.2.3.4")),
+        ]);
+        let result = hoist_indexed_fields(&e);
         assert_eq!(result.caller_ip.as_deref(), Some("1.2.3.4"));
         assert!(result.remaining_json.is_none(), "empty map → None, not 'null'");
     }
@@ -613,5 +626,29 @@ mod tests {
         let r = open_audit_db_read(&path).unwrap();
         let count: i64 = r.query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 100);
+    }
+
+    #[test]
+    fn writer_persists_actor_attribution_columns() {
+        let conn = open_audit_db_memory().unwrap();
+        let mut e = crate::safety::audit::AuditEntry::success("t", "h", "op", 0);
+        e.actor_admin_id = Some(42);
+        e.actor_email_snapshot = Some("x@y".into());
+        let extracted = crate::safety::audit_db::hoist_indexed_fields(&e);
+        conn.execute(
+            crate::safety::audit_db::INSERT_SQL,
+            rusqlite::params![
+                e.ts, e.tenant, e.token_hint, e.op, e.status, e.duration_ms,
+                e.error_code, e.auth_method, e.oauth_email, e.oauth_error_code,
+                extracted.caller_ip.as_deref(), extracted.user_agent.as_deref(),
+                serde_json::to_string(&e.extra).unwrap_or_default(),
+                e.actor_admin_id, e.actor_email_snapshot.as_deref(),
+            ],
+        ).unwrap();
+        let row: (Option<i64>, Option<String>) = conn
+            .query_row("SELECT actor_admin_id, actor_email_snapshot FROM audit", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            }).unwrap();
+        assert_eq!(row, (Some(42), Some("x@y".to_string())));
     }
 }
