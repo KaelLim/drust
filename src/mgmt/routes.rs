@@ -919,6 +919,18 @@ impl MgmtState {
             )
             .with_state(self.clone());
 
+        // v1.29.0 — Owner-only OAuth client admin: list + revoke.
+        let oauth_clients_router = Router::new()
+            .route(
+                "/admin/oauth/clients",
+                get(super::oauth_clients_admin::list_or_render),
+            )
+            .route(
+                "/admin/oauth/clients/{id}",
+                axum::routing::delete(super::oauth_clients_admin::revoke_client),
+            )
+            .with_state(self.clone());
+
         // v1.29.0 — per-admin PAT mint/list/revoke (self-service).
         let tokens_router = Router::new()
             .route(
@@ -961,6 +973,7 @@ impl MgmtState {
             .merge(settings_router)
             .merge(team_router)
             .merge(tokens_router)
+            .merge(oauth_clients_router)
             .layer(axum::middleware::from_fn_with_state(
                 inner_theme_state,
                 crate::mgmt::theme_layer::theme_layer,

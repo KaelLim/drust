@@ -1,0 +1,94 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ t.s("admin_oauth_clients.title") }} · drust{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.s("admin_oauth_clients.subtitle") }}">{% endblock %}
+{% block body_attrs %} data-section="oauth_clients"{% endblock %}
+
+{% block content %}
+<div class="page">
+
+  <div class="view-head">
+    <div class="grow">
+      <div class="eyebrow">admin console</div>
+      <h1 class="view-title">{{ t.s("admin_oauth_clients.title") }}</h1>
+      <p class="view-sub">{{ t.s("admin_oauth_clients.subtitle") }}</p>
+    </div>
+  </div>
+
+  <div class="card" style="overflow:hidden;">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>{{ t.s("admin_oauth_clients.col.name") }}</th>
+          <th>{{ t.s("admin_oauth_clients.col.client_id") }}</th>
+          <th>{{ t.s("admin_oauth_clients.col.created") }}</th>
+          <th style="width:100px;">{{ t.s("admin_oauth_clients.col.tokens") }}</th>
+          <th style="width:100px;">{{ t.s("admin_oauth_clients.col.status") }}</th>
+          <th style="width:80px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in clients %}
+        <tr>
+          <td>{{ c.client_name }}</td>
+          <td class="mono-cell"><code>{{ c.client_id }}</code></td>
+          <td>{{ c.created_at }}</td>
+          <td>{{ c.active_tokens }}</td>
+          <td>
+            {% match c.revoked_at %}
+            {% when Some with (_) %}<span class="pill muted">{{ t.s("admin_oauth_clients.revoked") }}</span>
+            {% when None %}<span class="pill accent">{{ t.s("admin_oauth_clients.active") }}</span>
+            {% endmatch %}
+          </td>
+          <td>
+            {% match c.revoked_at %}
+            {% when Some with (_) %}<span class="muted-cell">—</span>
+            {% when None %}
+            <button
+              type="button"
+              class="btn danger-outline btn-sm"
+              data-revoke-client="{{ c.client_id }}"
+              data-revoke-name="{{ c.client_name }}">
+              {{ t.s("admin_oauth_clients.revoke") }}
+            </button>
+            {% endmatch %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if clients.is_empty() %}
+        <tr>
+          <td colspan="6" class="muted-cell" style="text-align:center;padding:2rem 0;">
+            {{ t.s("admin_oauth_clients.empty") }}
+          </td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "_mascot.html" %}
+{% include "_cmdk.html" %}
+{% include "_modal.html" %}
+<script>
+(function () {
+  document.querySelectorAll('[data-revoke-client]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var cid  = btn.getAttribute('data-revoke-client');
+      var name = btn.getAttribute('data-revoke-name');
+      if (!confirm('Revoke client "' + name + '"? All tokens will be deleted.')) return;
+      fetch('/drust/admin/oauth/clients/' + encodeURIComponent(cid), {
+        method: 'DELETE',
+        headers: { 'Accept': 'application/json' },
+      }).then(function (r) {
+        if (r.ok) { location.reload(); }
+        else { r.json().then(function (j) { alert('Error: ' + (j.message || r.status)); }); }
+      });
+    });
+  });
+}());
+</script>
+{% endblock %}

@@ -223,6 +223,7 @@ backups = "Backups"
 changelog = "Changelog"
 design_system = "Design system"
 host_files = "Host files"
+oauth_clients = "OAuth clients"
 settings = "Settings"
 team = "Team"
 tenants = "Tenants"
@@ -264,6 +265,21 @@ title = "Revoke token"
 
 [admin_tokens.plaintext]
 warning = "This is the only time this token will be shown. Copy it now."
+
+[admin_oauth_clients]
+active = "Active"
+empty = "No OAuth clients registered yet."
+revoke = "Revoke"
+revoked = "Revoked"
+subtitle = "MCP clients registered via Dynamic Client Registration"
+title = "OAuth clients"
+
+[admin_oauth_clients.col]
+client_id = "Client ID"
+created = "Created"
+name = "Name"
+status = "Status"
+tokens = "Active tokens"
 
 [admin_team.action]
 view = "View"

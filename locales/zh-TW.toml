@@ -229,6 +229,7 @@ backups = "備份"
 changelog = "更新紀錄"
 design_system = "設計系統"
 host_files = "主機檔案"
+oauth_clients = "OAuth clients"
 settings = "設定"
 team = "團隊"
 tenants = "租戶"
@@ -244,6 +245,21 @@ scope = "主機層級範圍"
 [admin_sidebar.section]
 organization = "組織"
 resources = "資源"
+
+[admin_oauth_clients]
+active = "啟用中"
+empty = "尚無已註冊的 OAuth clients。"
+revoke = "撤銷"
+revoked = "已撤銷"
+subtitle = "經由 Dynamic Client Registration 註冊的 MCP clients"
+title = "OAuth clients"
+
+[admin_oauth_clients.col]
+client_id = "Client ID"
+created = "建立時間"
+name = "名稱"
+status = "狀態"
+tokens = "Active tokens"
 
 [admin_tokens.action]
 copy = "複製"
