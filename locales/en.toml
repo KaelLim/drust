@@ -1242,6 +1242,15 @@ eyebrow = "Tenant · backend"
 subtitle = "Outbound notifications on record created / updated / deleted. Signed with HMAC-SHA256 in the X-Drust-Signature header. Retried up to 4× inline (0s / 1s / 5s / 30s)."
 title = "Webhooks"
 
+[oauth_consent]
+title = "Authorize access"
+requesting = "is requesting access to your drust tenant"
+on_behalf_of = "Acting on behalf of"
+resource = "Resource"
+permissions = "Permissions"
+authorize = "Authorize"
+cancel = "Cancel"
+
 [collection_page.desc]
 add = "Add description"
 edit_aria = "Edit description"

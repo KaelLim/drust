@@ -641,6 +641,15 @@ impl MgmtState {
                 "/oauth/register",
                 axum::routing::post(super::oauth_server::register::register_client),
             )
+            // v1.29.0 — OAuth 2.1 /authorize. Lives in public so the GET
+            // can do its own session-absent handling (intent cookie + redirect
+            // to /login) instead of being unconditionally 302'd by
+            // admin_session_layer before the handler runs.
+            .route(
+                "/oauth/authorize",
+                axum::routing::get(super::oauth_server::authorize::authorize_get)
+                    .post(super::oauth_server::authorize::authorize_post),
+            )
             .with_state(self.clone());
 
         // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require
