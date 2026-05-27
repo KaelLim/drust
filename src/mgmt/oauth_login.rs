@@ -185,10 +185,19 @@ pub async fn oauth_callback(
     let session_cookie = build_session_cookie(&token, s.session_ttl_days * 86_400);
     audit_oauth_success(&s, &provider, &user.email, admin_id).await;
 
+    let secure = std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_err();
+    let target = crate::mgmt::oauth_server::return_url::read(&headers)
+        .filter(|p| p.starts_with('/'))
+        .map(|p| format!("/drust{p}"))
+        .unwrap_or_else(|| "/drust/admin/tenants".to_string());
     let mut builder = Response::builder()
         .status(StatusCode::FOUND)
-        .header(header::LOCATION, "/drust/admin/tenants")
+        .header(header::LOCATION, target)
         .header(header::SET_COOKIE, session_cookie)
+        .header(
+            header::SET_COOKIE,
+            crate::mgmt::oauth_server::return_url::build_clear(secure),
+        )
         .header(
             header::SET_COOKIE,
             oauth_state::clear_state_cookie().to_string(),
