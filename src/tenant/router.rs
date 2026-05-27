@@ -248,7 +248,56 @@ pub async fn bearer_auth_layer(
             });
             return next.run(req).await;
         }
-        // --- v1.29 step 6: per-admin PAT lookup ---
+        // --- v1.29 step 6 (OAuth access token, RFC 8707-bound) ---
+        // Recognized by the `drust_at_` prefix; resolved from _oauth_access_tokens.
+        // Must come before PAT lookup: expired-token fail-fast is cheaper than a
+        // PAT DB round-trip when the prefix already signals "not a PAT".
+        {
+            let conn = state.meta.lock().await;
+            let hit = crate::mgmt::oauth_server::storage::lookup_access_token(&conn, &bearer)
+                .ok()
+                .flatten();
+            drop(conn);
+            if let Some(crate::mgmt::oauth_server::storage::OauthAccessTokenHit {
+                admin_id,
+                resource_uri,
+                ..
+            }) = hit
+            {
+                // RFC 8707: validate request URL is within the token's bound resource.
+                // resource_uri shape: {base}/drust/t/<tenant>/mcp
+                // Accept exact match OR request under a sub-path (e.g. /mcp/foo).
+                let request_url = format!(
+                    "{}/drust{}",
+                    state.public_url.trim_end_matches('/'),
+                    req.uri().path()
+                );
+                let matches = request_url == resource_uri
+                    || request_url.starts_with(&format!("{resource_uri}/"));
+                if !matches {
+                    return json_error(
+                        StatusCode::FORBIDDEN,
+                        "INVALID_RESOURCE",
+                        "token bound to a different resource",
+                    );
+                }
+                let ctx = AuthCtx::Service {
+                    admin_id: Some(admin_id),
+                };
+                resolved_auth_ctx = Some(ctx.clone());
+                req.extensions_mut().insert(ctx);
+                req.extensions_mut()
+                    .insert(crate::auth::middleware::AdminId(admin_id));
+                req.extensions_mut().insert(TenantRef {
+                    tenant_id: tenant_id.clone(),
+                    token_hint: token_hint(&bearer),
+                    pool,
+                    role: TokenRole::Service,
+                });
+                return next.run(req).await;
+            }
+        }
+        // --- v1.29 step 7: per-admin PAT lookup ---
         {
             let conn = state.meta.lock().await;
             let hit = crate::auth::admin_token::lookup(&conn, &bearer).ok().flatten();
