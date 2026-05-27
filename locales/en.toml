@@ -226,6 +226,7 @@ host_files = "Host files"
 settings = "Settings"
 team = "Team"
 tenants = "Tenants"
+tokens = "Tokens"
 
 [admin_sidebar.plane]
 jump_title = "jump (⌘K)"
@@ -236,6 +237,33 @@ scope = "host-level scope"
 [admin_sidebar.section]
 organization = "Organization"
 resources = "Resources"
+
+[admin_tokens.action]
+copy = "Copy"
+revoke = "Revoke"
+
+[admin_tokens.col]
+created = "Created"
+last_used = "Last used"
+name = "Name"
+
+[admin_tokens.empty]
+no_tokens = "No personal access tokens yet."
+
+[admin_tokens.head]
+generate = "Generate token"
+subtitle = "Tokens for headless API access. Plaintext shown once at creation."
+title = "Personal access tokens"
+
+[admin_tokens.modal.generate]
+title = "Generate token"
+
+[admin_tokens.modal.revoke]
+body = "Revoke token"
+title = "Revoke token"
+
+[admin_tokens.plaintext]
+warning = "This is the only time this token will be shown. Copy it now."
 
 [admin_team.action]
 view = "View"
