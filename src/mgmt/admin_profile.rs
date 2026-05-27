@@ -14,6 +14,11 @@ pub struct AdminProfileExt {
     pub picture_url: Option<String>,
     /// Computed at load time. Total — never empty. See `compute_initials`.
     pub initials: String,
+    /// v1.29: 'owner' | 'member'. Read from admins.role at request time
+    /// (no caching) so a demote takes effect on the target's next nav.
+    pub role: String,
+    /// Convenience flag; mirrors `role == "owner"` for template `{% if admin.is_owner %}` use.
+    pub is_owner: bool,
 }
 
 impl AdminProfileExt {
@@ -51,6 +56,8 @@ impl AdminProfileExt {
             email: None,
             picture_url: None,
             initials: "?".to_string(),
+            role: "member".to_string(),
+            is_owner: false,
         }
     }
 }
@@ -72,27 +79,31 @@ pub fn load_admin_profile(
     }
     let row = conn
         .query_row(
-            "SELECT display_name, email, picture_url FROM admins WHERE id = ?1",
+            "SELECT display_name, email, picture_url, role FROM admins WHERE id = ?1",
             rusqlite::params![admin_id],
             |r| {
                 let display_name: Option<String> = r.get(0)?;
                 let email: Option<String> = r.get(1)?;
                 let picture_url: Option<String> = r.get(2)?;
-                Ok((display_name, email, picture_url))
+                let role: String = r.get(3)?;
+                Ok((display_name, email, picture_url, role))
             },
         )
         .ok()
-        .map(|(d, e, p)| (blank_to_none(d), blank_to_none(e), blank_to_none(p)));
-    Ok(row.map(|(display_name, email, picture_url)| {
+        .map(|(d, e, p, r)| (blank_to_none(d), blank_to_none(e), blank_to_none(p), r));
+    Ok(row.map(|(display_name, email, picture_url, role)| {
         let initials = AdminProfileExt::compute_initials(
             display_name.as_deref(),
             email.as_deref(),
         );
+        let is_owner = role == "owner";
         AdminProfileExt {
             display_name,
             email,
             picture_url,
             initials,
+            role,
+            is_owner,
         }
     }))
 }
@@ -188,5 +199,28 @@ mod tests {
     fn initials_email_with_single_char_local() {
         let r = AdminProfileExt::compute_initials(None, Some("z@example.com"));
         assert_eq!(r, "Z");
+    }
+
+    #[test]
+    fn load_admin_profile_includes_role_field() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE admins (id INTEGER PRIMARY KEY, display_name TEXT, email TEXT, picture_url TEXT, role TEXT NOT NULL DEFAULT 'member');
+             INSERT INTO admins (id, display_name, email, role) VALUES (1, 'Kael', 'k@x', 'owner');
+             INSERT INTO admins (id, display_name, email, role) VALUES (2, 'Phx', 'p@x', 'member');"
+        ).unwrap();
+        let p1 = load_admin_profile(&conn, 1).unwrap().unwrap();
+        assert_eq!(p1.role, "owner");
+        assert!(p1.is_owner);
+        let p2 = load_admin_profile(&conn, 2).unwrap().unwrap();
+        assert_eq!(p2.role, "member");
+        assert!(!p2.is_owner);
+    }
+
+    #[test]
+    fn placeholder_defaults_to_member_role() {
+        let p = AdminProfileExt::placeholder();
+        assert_eq!(p.role, "member");
+        assert!(!p.is_owner);
     }
 }
