@@ -657,6 +657,18 @@ impl MgmtState {
                 "/oauth/token",
                 axum::routing::post(super::oauth_server::token::token_endpoint),
             )
+            // v1.29.0 — RFC 9728 Protected Resource Metadata. Public; no auth.
+            // MCP clients fetch this to discover the authorization server.
+            .route(
+                "/.well-known/oauth-protected-resource",
+                axum::routing::get(super::oauth_server::metadata::protected_resource),
+            )
+            // v1.29.0 — RFC 8414 Authorization Server Metadata. Public; no auth.
+            // MCP clients fetch this to discover authorize/token/register endpoints.
+            .route(
+                "/.well-known/oauth-authorization-server",
+                axum::routing::get(super::oauth_server::metadata::authorization_server),
+            )
             .with_state(self.clone());
 
         // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require
