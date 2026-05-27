@@ -153,6 +153,15 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // v1.29: in-process janitor for expired OAuth codes + tokens (host-level
+    // meta.sqlite; per-tenant _system_sessions are handled by drust_session_janitor).
+    {
+        let oauth_meta = meta.clone();
+        tokio::spawn(async move {
+            drust::mgmt::oauth_janitor::run_oauth_token_janitor(oauth_meta).await;
+        });
+    }
+
     let tenants = Arc::new(TenantRegistry::new(
         cfg.data_dir.clone(),
         cfg.tenant_read_pool_size,

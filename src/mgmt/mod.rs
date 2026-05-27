@@ -10,6 +10,7 @@ pub mod docs;
 pub mod format;
 pub mod i18n;
 pub mod locale_layer;
+pub mod oauth_janitor;
 pub mod oauth_login;
 pub mod oauth_server;
 pub mod public_files;
