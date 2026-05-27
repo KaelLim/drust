@@ -59,7 +59,7 @@ impl TestAuditDb {
             )
             .unwrap();
         for entry in scan.entries {
-            let hoist = drust::safety::audit_db::hoist_indexed_fields(entry.extra);
+            let hoist = drust::safety::audit_db::hoist_indexed_fields(&entry);
             stmt.execute(rusqlite::params![
                 entry.ts,
                 entry.tenant,
