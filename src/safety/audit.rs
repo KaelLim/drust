@@ -46,6 +46,18 @@ pub struct AuditEntry {
     pub oauth_email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_error_code: Option<String>,
+    /// Admin attribution for service-equivalent callers (v1.29+).
+    /// Populated by `bearer_auth_layer` when the bearer is a PAT (`drust_pat_*`)
+    /// or an OAuth access token (`drust_at_*`). `None` for shared per-tenant
+    /// service tokens (no admin identity available). Top-level (NOT inside
+    /// `extra`) so SQL queries can `WHERE actor_admin_id = ?`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_admin_id: Option<i64>,
+    /// Email snapshot at the moment of audit emission, paired with
+    /// `actor_admin_id`. Snapshot rather than FK so historical rows survive
+    /// admin row deletion. `None` when `actor_admin_id` is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_email_snapshot: Option<String>,
     /// Extra top-level keys for op-specific metadata (index_name, row_count, etc.).
     /// Flattened on serialisation; empty map is skipped.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -69,6 +81,8 @@ impl AuditEntry {
             auth_method: None,
             oauth_email: None,
             oauth_error_code: None,
+            actor_admin_id: None,
+            actor_email_snapshot: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -95,6 +109,8 @@ impl AuditEntry {
             auth_method: None,
             oauth_email: None,
             oauth_error_code: None,
+            actor_admin_id: None,
+            actor_email_snapshot: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -249,6 +265,29 @@ impl AuditLog {
 /// drop the parameter.
 pub async fn write_entry(_dir: &std::path::Path, entry: &AuditEntry) {
     crate::safety::audit_db::try_send(entry);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_entry_carries_actor_attribution_fields() {
+        let mut e = AuditEntry::success("tenant-x", "abcd", "GET /thing", 5);
+        e.actor_admin_id = Some(7);
+        e.actor_email_snapshot = Some("kael@example.com".into());
+        let j: serde_json::Value = serde_json::to_value(&e).unwrap();
+        assert_eq!(j["actor_admin_id"], serde_json::json!(7));
+        assert_eq!(j["actor_email_snapshot"], serde_json::json!("kael@example.com"));
+    }
+
+    #[test]
+    fn audit_entry_omits_actor_fields_when_none() {
+        let e = AuditEntry::success("tenant-x", "abcd", "GET /thing", 5);
+        let j: serde_json::Value = serde_json::to_value(&e).unwrap();
+        assert!(j.get("actor_admin_id").is_none(),  "actor_admin_id should be skipped when None");
+        assert!(j.get("actor_email_snapshot").is_none(),  "actor_email_snapshot should be skipped when None");
+    }
 }
 
 #[cfg(test)]
