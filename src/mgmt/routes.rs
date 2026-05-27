@@ -400,9 +400,20 @@ async fn login_submit(
     entry.auth_method = Some("password".to_string());
     crate::safety::audit::write_entry(&state.log_dir, &entry).await;
     let cookie = build_session_cookie(&token, state.session_ttl_days * 86_400);
-    let mut resp = Redirect::to("/drust/admin/tenants").into_response();
+    let secure = std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_err();
+    let target = crate::mgmt::oauth_server::return_url::read(&headers)
+        .filter(|p| p.starts_with('/'))
+        .map(|p| format!("/drust{p}"))
+        .unwrap_or_else(|| "/drust/admin/tenants".to_string());
+    let mut resp = Redirect::to(&target).into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
+    resp.headers_mut().append(
+        header::SET_COOKIE,
+        crate::mgmt::oauth_server::return_url::build_clear(secure)
+            .parse()
+            .unwrap(),
+    );
     // v1.28.1: expire any pre-v1.28.1 cookies that login wrote with `Path=/`.
     // Those bypassed the canonical Path=/drust path used by /admin/settings,
     // so after Save the browser would hold both copies and CookieJar::get
