@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "drust_session_janitor"
 path = "src/bin/drust_session_janitor.rs"
 
+[[bin]]
+name = "set_admin_role"
+path = "src/bin/set_admin_role.rs"
+
 [dependencies]
 tokio              = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "fs", "process"] }
 axum               = { version = "0.8", features = ["macros", "multipart"] }
