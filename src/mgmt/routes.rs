@@ -650,6 +650,13 @@ impl MgmtState {
                 axum::routing::get(super::oauth_server::authorize::authorize_get)
                     .post(super::oauth_server::authorize::authorize_post),
             )
+            // v1.29.0 — OAuth 2.1 /token. Public; PKCE + client_id validate in
+            // handler; no admin session cookie needed (code + verifier are the
+            // credentials). Both authorization_code + refresh_token grants.
+            .route(
+                "/oauth/token",
+                axum::routing::post(super::oauth_server::token::token_endpoint),
+            )
             .with_state(self.clone());
 
         // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require
