@@ -1,3 +1,27 @@
+## [1.29.0] - 2026-05-27 — admin team + MCP OAuth 2.1
+
+### Added
+- **Admin team management** — `/admin/team` with Owner + Member roles. Owner can invite/promote/demote/remove other admins via UI. Existing admins backfilled to Owner on migration. `≥1 Owner` invariant enforced TOCTOU-safely inside the writer mutex. New `set_admin_role` recovery CLI for break-glass restoration when all owners get locked out.
+- **Personal access tokens** — `/admin/settings/tokens` lets every admin mint named `drust_pat_*` tokens for headless attribution (cron, scripts, CI). PAT carries `admin_id` through `bearer_auth_layer`; audit log shows `actor_admin_id` + `actor_email_snapshot`.
+- **OAuth 2.1 Authorization Server** for MCP — drust is now an OAuth 2.1 AS conforming to MCP spec 2025-06-18 §Authorization. Endpoints: `/oauth/authorize` (with consent screen), `/oauth/token` (PKCE S256, refresh rotation, reuse detection per RFC 6819 §5.2.2.3), `/oauth/register` (RFC 7591 Dynamic Client Registration, IP-rate-limited 10/hour), `/.well-known/oauth-authorization-server` (RFC 8414), `/.well-known/oauth-protected-resource` (RFC 9728). Token TTLs: access 1h, refresh 30d sliding. Resource-bound per RFC 8707.
+- `/admin/oauth/clients` Owner page — list + revoke OAuth clients. Revoke soft-marks the client and hard-deletes all access + refresh + authorization codes for it in one transaction.
+- Audit columns `actor_admin_id` + `actor_email_snapshot` on the `audit` table; matching top-level `AuditEntry` struct fields (NOT inside `extra` so SQL queries can `WHERE actor_admin_id = ?`). `bearer_auth_layer` populates them for PAT and OAuth-bound calls.
+- 11 new audit ops: `admin.team.{invite,role_change,remove}`, `admin.token.{mint,revoke}`, `admin.oauth.{client_register,consent,token_issue,token_refresh,token_refresh_reuse_detected,client_revoke}`.
+- ~50 new i18n keys for the v1.29 UI surfaces (en + zh-TW).
+- In-process daily janitor (`src/mgmt/oauth_janitor.rs`) sweeps expired OAuth codes + access + refresh tokens at 03:00 UTC. Pattern mirrors the audit-retention loop; OAuth tables live host-level in `meta.sqlite` (the existing `drust_session_janitor` bin still handles per-tenant `_system_sessions` only).
+
+### Changed
+- `AuthCtx::Service` is now a struct variant `Service { admin_id: Option<i64> }`. Three bearer sources resolve to it: shared per-tenant service token (`None`), PAT (`Some`), OAuth-issued access token (`Some`). 17 match sites updated mechanically across 9 files — no behavioral change for existing callers.
+- OAuth admin allowlist is now derived from `admins.email` instead of `DRUST_ADMIN_OAUTH_ALLOWED_EMAILS` env var. Adds/removes are immediate via `/admin/team` — no restart needed.
+- Login flow (`login_submit` + admin OAuth `oauth_callback`) honors a short-lived `drust_oauth_intent` cookie set by `/oauth/authorize` when bouncing unauthenticated callers through `/login`. Without the cookie, behavior unchanged (redirects to `/drust/admin/tenants`).
+
+### Deprecated
+- `DRUST_ADMIN_OAUTH_ALLOWED_EMAILS` env var. Still parsed for compatibility; if non-empty, drust logs a `WARN` at boot pointing admins to `/admin/team`. Will be removed in v1.31.
+
+### Breaking
+- **MCP transport gate now rejects the shared per-tenant service token.** `/t/<tenant>/mcp` requests must use either a personal access token (`drust_pat_*`) or an OAuth-issued access token (`drust_at_*`). The 401 response includes a `WWW-Authenticate: Bearer realm="drust", resource_metadata="…/.well-known/oauth-protected-resource", error="invalid_token"` header so spec-compliant MCP clients (Claude Desktop, Cursor, Claude Code) follow the OAuth flow automatically. REST endpoints (`/records/*`, `/query`, `/list`, `/search`, etc.) still accept the shared service token for backwards compat — only `/mcp` is gated.
+- **Operational note:** existing MCP clients configured with the per-tenant service token will need to reconnect after v1.29 deploys (~3 minutes per admin via browser-based OAuth flow).
+
 ## [1.28.11] - 2026-05-27 — admin profile fixes
 
 > Consolidates the prior patch tags `v1.28.14` + `v1.28.15` into one release line. Those tags are removed; this entry covers their combined scope.
