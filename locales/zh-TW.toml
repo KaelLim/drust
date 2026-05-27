@@ -232,6 +232,7 @@ host_files = "主機檔案"
 settings = "設定"
 team = "團隊"
 tenants = "租戶"
+tokens = "Tokens"
 
 [admin_sidebar.plane]
 jump_title = "跳轉（⌘K）"
@@ -243,6 +244,33 @@ scope = "主機層級範圍"
 [admin_sidebar.section]
 organization = "組織"
 resources = "資源"
+
+[admin_tokens.action]
+copy = "複製"
+revoke = "撤銷"
+
+[admin_tokens.col]
+created = "建立時間"
+last_used = "最後使用"
+name = "名稱"
+
+[admin_tokens.empty]
+no_tokens = "尚無個人 access token。"
+
+[admin_tokens.head]
+generate = "建立 token"
+subtitle = "用於 headless API 存取。明文僅在建立時顯示一次。"
+title = "個人 access token"
+
+[admin_tokens.modal.generate]
+title = "建立 token"
+
+[admin_tokens.modal.revoke]
+body = "撤銷 token"
+title = "撤銷 token"
+
+[admin_tokens.plaintext]
+warning = "此 token 僅此一次顯示，請立即複製。"
 
 [admin_team.action]
 view = "檢視"
