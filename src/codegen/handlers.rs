@@ -16,7 +16,7 @@ fn base_url() -> String {
 
 fn source_value(ctx: &AuthCtx) -> &'static str {
     match ctx {
-        AuthCtx::Service => "service",
+        AuthCtx::Service { .. } => "service",
         AuthCtx::Anon | AuthCtx::User { .. } => "anon",
     }
 }
@@ -26,7 +26,7 @@ pub async fn openapi_handler(
     Extension(ctx): Extension<AuthCtx>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    let include = matches!(ctx, AuthCtx::Service);
+    let include = matches!(ctx, AuthCtx::Service { .. });
     match build_ir(&t.pool, &tenant_id, &base_url(), include).await {
         Ok(ir) => {
             let body = openapi::render_openapi(&ir);
@@ -48,7 +48,7 @@ pub async fn types_handler(
     Extension(ctx): Extension<AuthCtx>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    let include = matches!(ctx, AuthCtx::Service);
+    let include = matches!(ctx, AuthCtx::Service { .. });
     match build_ir(&t.pool, &tenant_id, &base_url(), include).await {
         Ok(ir) => {
             let body = typescript::render_typescript(&ir);
@@ -74,7 +74,7 @@ pub async fn zod_handler(
     Extension(ctx): Extension<AuthCtx>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    let include = matches!(ctx, AuthCtx::Service);
+    let include = matches!(ctx, AuthCtx::Service { .. });
     match build_ir(&t.pool, &tenant_id, &base_url(), include).await {
         Ok(ir) => {
             let body = zod::render_zod(&ir);

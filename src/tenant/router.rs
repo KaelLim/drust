@@ -286,7 +286,7 @@ pub async fn bearer_auth_layer(
         };
         let ctx = match role {
             TokenRole::Anon => AuthCtx::Anon,
-            TokenRole::Service => AuthCtx::Service,
+            TokenRole::Service => AuthCtx::Service { admin_id: None }, // shared per-tenant token, no attribution
             TokenRole::User => unreachable!("user sessions are resolved before meta lookup"),
         };
         resolved_auth_ctx = Some(ctx.clone());
@@ -336,7 +336,13 @@ pub async fn bearer_auth_layer(
                 "auth_kind": "user",
                 "auth_user_id": user_id,
             }),
-            AuthCtx::Service => serde_json::json!({"auth_kind": "service"}),
+            AuthCtx::Service { admin_id } => {
+                let mut obj = serde_json::json!({"auth_kind": "service"});
+                if let Some(id) = admin_id {
+                    obj["auth_admin_id"] = serde_json::json!(id);
+                }
+                obj
+            }
             AuthCtx::Anon => serde_json::json!({"auth_kind": "anon"}),
         };
         entry.with_extra(default_fields)

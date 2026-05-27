@@ -79,7 +79,7 @@ pub async fn call_rpc(
             //    Service: always allowed.
             //    Anon / User: allowed only when anon_callable = true.
             let allowed = match &ctx_for_closure {
-                AuthCtx::Service => true,
+                AuthCtx::Service { .. } => true,
                 AuthCtx::Anon | AuthCtx::User { .. } => stored.anon_callable,
             };
             if !allowed {
