@@ -41,6 +41,7 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
         admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        oauth_register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(10, std::time::Duration::from_secs(3600), 4096)),
     };
     (state.with_data_dir(data_dir.clone()), tok, dir)
 }
@@ -165,6 +166,7 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
         admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        oauth_register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(10, std::time::Duration::from_secs(3600), 4096)),
     };
     let app = state.with_data_dir(data_dir);
 

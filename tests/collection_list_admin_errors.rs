@@ -65,6 +65,11 @@ async fn app_with_tenant() -> (axum::Router, tempfile::TempDir) {
             std::time::Duration::from_secs(60),
             4096,
         )),
+        oauth_register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            10,
+            std::time::Duration::from_secs(3600),
+            4096,
+        )),
     };
     let router = state.with_data_dir(data_dir);
     (router, dir)

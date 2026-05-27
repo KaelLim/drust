@@ -55,6 +55,7 @@ fn build_state(
         oauth_registry: Arc::new(registry),
         admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        oauth_register_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(10, std::time::Duration::from_secs(3600), 4096)),
     }
 }
 
