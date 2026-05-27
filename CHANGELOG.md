@@ -1,41 +1,28 @@
-## [1.28.15] - 2026-05-27
+## [1.28.11] - 2026-05-27 — admin profile fixes
 
-### Changed
-- `AdminProfileExt::compute_initials` now returns a single character instead of two. CJK names ("林宇軒") render as "林", Western names ("Kael Lim") as "K", email fallback ("kael1996@…") as "K". The two-char "林宇" / "KL" shape from v1.28.9 was visually noisy in the 28-px avatar circle; one character reads cleaner. Placeholder is now "?" (was "??").
-
-## [1.28.14] - 2026-05-26
+> Consolidates the prior patch tags `v1.28.14` + `v1.28.15` into one release line. Those tags are removed; this entry covers their combined scope.
 
 ### Fixed
-- Admin sidebar profile always rendered the placeholder (`??` avatar + `admin` name + empty email) even after the OAuth UPDATE wrote `display_name` + `picture_url` into the `admins` row. Two stacked bugs:
-  1. **Middleware order inverted.** The `protected` router applied layers as `.layer(session_layer).layer(profile_layer).layer(theme_layer)`. axum's `.layer()` makes the LAST-applied layer the OUTERMOST — request flow was `theme → profile → session → handler`. `admin_profile_layer` read `Extension<AdminId>` BEFORE `admin_session_layer` had set it, so `load_admin_profile` always saw `None` and inserted `AdminProfileExt::placeholder()`. The "runs after admin_session_layer" comment was aspirational — the code didn't match. Order reversed: theme/profile applied first (innermost), session applied last (outermost). `theme_layer` had the same latent issue but never exposed because the `drust_theme` cookie short-circuits the AdminId-dependent path.
-  2. **Empty strings ≠ NULL.** rusqlite maps SQL `NULL → None` but stores SQL `'' → Some("")`. OAuth providers occasionally return `picture`/`name` as empty strings (e.g. Google user with no avatar) which then hit the template's `Some(url)` arm and rendered `<img src="">`. `load_admin_profile` now trims and normalizes blank strings to `None` for `display_name`, `email`, and `picture_url` so the sidebar's `{% match %}` falls through to the initials block as intended.
+- v1.28.9 sidebar always rendered the placeholder (`??` avatar + `admin` name + empty email) even after the OAuth UPDATE wrote `display_name` / `picture_url` into the `admins` row. Two stacked bugs:
+  1. **Middleware order inverted.** The `protected` router applied layers as `.layer(session_layer).layer(profile_layer).layer(theme_layer)`. axum's `.layer()` makes the LAST-applied layer the OUTERMOST — request flow was `theme → profile → session → handler`. `admin_profile_layer` read `Extension<AdminId>` BEFORE `admin_session_layer` had set it, so `load_admin_profile` always saw `None` and fell back to `AdminProfileExt::placeholder()`. The "runs after admin_session_layer" comment was aspirational — the code didn't match. Order reversed: theme/profile applied first (innermost), session applied last (outermost). `theme_layer` had the same latent issue but stayed hidden because the `drust_theme` cookie short-circuits its AdminId-dependent path.
+  2. **Empty strings ≠ NULL.** rusqlite maps SQL `NULL → None` but `'' → Some("")`. OAuth providers occasionally return `picture` / `name` as empty strings (e.g. Google user with no avatar) which then hit the template's `Some(url)` arm and rendered `<img src="">`. `load_admin_profile` now trims and normalizes blank strings to `None` for `display_name`, `email`, and `picture_url` so the sidebar's `{% match %}` falls through to the initials block.
 
+### Changed
+- `AdminProfileExt::compute_initials` returns a single character instead of two. CJK names ("林宇軒") render as "林", Western names ("Kael Lim") as "K", email fallback ("kael1996@…") as "K". The two-char "林宇" / "KL" shape from v1.28.9 was visually noisy in the 28-px avatar circle; one character reads cleaner. Placeholder is now "?" (was "??").
 
+## [1.28.10] - 2026-05-26 — collection page polish
+
+> Consolidates the prior patch tags `v1.28.10` (original) + `v1.28.11` + `v1.28.12` + `v1.28.13` into one release line. The `v1.28.10` tag now points at the original `v1.28.13` commit (final state of the polish wave); intermediate tags removed.
 
 ### Fixed
-- v1.28.12 dropped the `[Table]` / `[Definition]` tabs from the collection page footer based on a user comment about not needing tabs. The intent was to slim the bar; the result was that Definition view became reachable only by typing `?view=definition` into the URL. Tabs restored as a slim segmented control on the footer's left side: 26px tall, transparent default, `var(--surface)` fill when active — not the chunky 6px-padding pill of the v1.28.x earlier shape.
-
-### Changed
-- Collection page footer height bumped 36px → 46px so it matches `.sidebar-foot` exactly. The sidebar's profile block and the page's pager now anchor as one horizontal band at the viewport bottom instead of two slightly-different rectangles. Pager button height bumped 24px → 26px in step.
-
-## [1.28.12] - 2026-05-26
-
-### Changed
-- Collection page footer is now a thin status bar pinned to the browser viewport bottom (was `position:sticky` inside the page scroll, which left the bar floating mid-air right below the table on short pages). New shape: 36px tall, `var(--bg-deep)` tint, single `var(--border-mid)` hairline on top, muted 12px sans typography — Excel / Supabase status-bar aesthetic. Left edge anchored at `248px` (matches `.app-shell` grid's sidebar column), right edge at viewport edge.
-- `[Table]` / `[Definition]` tabs (`.view-tabs`) removed from the footer markup. Definition view is still reachable via the `?view=definition` URL param (the JS init reads from `searchParams`, and the `.view-tabs button` querySelectorAll gracefully no-ops with the markup gone). A later release will decide whether to surface Definition view elsewhere or retire it entirely.
+- v1.28.9 collection editor shipped four visual rough edges that the new component skin exposed:
+  - **Checkbox border invisible.** Custom skin referenced `var(--bg-soft)` + `var(--line)` — both ghost vars with no theme definition since the v1.23 palette refactor (`09af66a` removed the legacy `--line: oklch(…)` declarations without sweeping the 19 remaining references). With both undefined, background fell back to `transparent` and border to `currentColor`. Now uses `var(--bg-deep)` + `var(--border-strong)` with `var(--accent-border)` hover — clearly visible across all three themes.
+  - **Filter popover form controls unstyled.** `<select>` + `<input>` inside `.filter-popover` had no background/text color set — UA defaults (white bg + black text) read as broken against the dark popover shell. Now mirrors canonical `.input` / `.select` tokens (`var(--bg-deep)` + `var(--fg)` + `var(--border-mid)` + `var(--accent-soft)` focus ring). Popover container border swapped from `var(--line)` to `var(--border-mid)`; box shadow opacity bumped 0.12 → 0.35 for dark themes.
+  - **Footer not pinned to viewport.** `.coll-sticky-bottom` was `position:sticky` inside the page scroll — on short pages it floated mid-air below the table. Now `position:fixed` to viewport bottom, Excel/Supabase status-bar shape (46px tall, `var(--bg-deep)`, single hairline top border). Left edge anchored at 248px to match `.app-shell` sidebar column; right edge at viewport edge. Height matches `.sidebar-foot` so both anchor points read as one continuous horizontal band.
+  - **Table / Definition tabs.** v1.28.12 briefly buried them entirely (reachable only via `?view=definition` URL hack); v1.28.13 restored as a slim segmented control on the footer's left side — 26px tall, transparent default, `var(--surface)` fill when active, not the chunky 6px-padding pill of earlier shapes.
 
 ### Internal
-- `.coll-sticky-bottom` swapped `var(--line-2)` (ghost var since v1.23) for `var(--border-mid)` on the top border.
-
-## [1.28.11] - 2026-05-26
-
-### Fixed
-- Collection page filter popover (chip [+ Filter] and [Sort]) form controls had no background or text color set. The `.filter-popover select, .filter-popover input` rule only declared padding + border + radius + font, and the border itself referenced `var(--line)` (no theme definition — same ghost-var class as v1.28.10's checkbox fix). Browsers fell back to UA defaults: white background + black text. Against the popover's dark `var(--bg)` shell this looked unstyled. Selects and inputs now mirror the canonical `.input` / `.select` token shape — `var(--bg-deep)` background, `var(--fg)` text, `var(--border-mid)` border, with an `--accent-border` focus ring matching the rest of the admin forms. The popover container border also swapped from `var(--line)` to `var(--border-mid)`, and the box shadow opacity went from 0.12 to 0.35 (the v1.28.x dark themes need a punchier shadow to read as a layered surface).
-
-## [1.28.10] - 2026-05-26
-
-### Fixed
-- Checkbox border was effectively invisible after v1.28.9. The new custom skin referenced `var(--bg-soft)` for the unchecked background and `var(--line)` for the border, but those CSS custom properties have had no definition in any theme since the v1.23 palette refactor (`09af66a` removed the legacy `--line: oklch(…)` declarations without sweeping the 19 remaining references across `_styles.html`). With both vars undefined, the background fell back to `transparent` and the border to `currentColor`, which in most contexts rendered as a barely-visible hairline against the page bg. Checkbox now uses real theme tokens: `var(--bg-deep)` for the unchecked fill and `var(--border-strong)` for the border, with `var(--accent-border)` on hover — clearly visible in cozy-dark, soft-light, and system tracking either. The other ~14 ghost-variable references elsewhere in `_styles.html` (chips, popovers, view-tabs) are unaffected by this commit and remain a separate cleanup target.
+- `.coll-sticky-bottom` top border swapped `var(--line-2)` (ghost var since v1.23) → `var(--border-mid)`. ~14 other ghost-var references (`var(--line)` / `var(--line-2)` / `var(--bg-soft)`) remain in `_styles.html` — see `project_drust_ghost_css_vars.md`. Cleanup deferred to a future sweep.
 
 ## [1.28.9] - 2026-05-26
 
