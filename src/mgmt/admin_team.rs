@@ -8,9 +8,10 @@
 //!
 //! v1.29.0.
 
+use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::middleware::AdminId;
 use crate::error::json_error;
 use crate::mgmt::admin_profile::AdminProfileExt;
+use crate::mgmt::i18n::{LocaleHint, Translator};
 use crate::mgmt::routes::MgmtState;
 use crate::safety::audit::AuditEntry;
 
@@ -42,6 +44,30 @@ pub struct InviteBody {
 #[derive(Debug, Deserialize)]
 pub struct RoleBody {
     pub role: String,
+}
+
+// ─── HTML page structs ───────────────────────────────────────────────────────
+
+/// One row displayed in the /admin/team table.
+struct AdminTeamRow {
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+    pub picture_url: Option<String>,
+    pub initials: String,
+    pub role: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin_team.html")]
+struct AdminTeamPage {
+    version: &'static str,
+    t: Translator,
+    admin: AdminProfileExt,
+    admins: Vec<AdminTeamRow>,
+    palette_resolved: crate::mgmt::theme::ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -76,6 +102,97 @@ fn validate_email(email: &str) -> bool {
 }
 
 // ─── handlers ────────────────────────────────────────────────────────────────
+
+/// `GET /admin/team` — dispatches to HTML or JSON based on `Accept` header.
+///
+/// Browsers (no `Accept: application/json`) get the Askama page.
+/// API clients (`Accept: application/json`) get the JSON list.
+/// The existing JSON CRUD tests do not set an Accept header, so they still hit
+/// this handler and get JSON via `list_admins_json` below.
+pub async fn team_page_or_json(
+    state: State<MgmtState>,
+    locale_hint: LocaleHint,
+    theme_hint: crate::mgmt::theme::ThemeHint,
+    admin_ext: axum::Extension<AdminProfileExt>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let accept = headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    // Browsers send "text/html" in Accept; API clients either omit it or
+    // send "application/json".  Default to JSON when unclear so the
+    // existing tests (which set no Accept header) keep working.
+    if accept.contains("text/html") && !accept.contains("application/json") {
+        team_page(state, locale_hint, theme_hint, admin_ext).await
+    } else {
+        list_admins(state).await
+    }
+}
+
+/// Render the HTML team page.
+async fn team_page(
+    State(s): State<MgmtState>,
+    LocaleHint(locale): LocaleHint,
+    crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
+    axum::Extension(admin): axum::Extension<AdminProfileExt>,
+) -> Response {
+    let rows: Vec<AdminTeamRow> = {
+        let conn = s.meta.lock().await;
+        let mut stmt = match conn.prepare(
+            "SELECT display_name, email, picture_url, role FROM admins ORDER BY id",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+                )
+                    .into_response();
+            }
+        };
+        stmt.query_map([], |r| {
+            let display_name: Option<String> = r.get(0)?;
+            let email: Option<String> = r.get(1)?;
+            let picture_url: Option<String> = r.get(2)?;
+            let role: String = r.get(3)?;
+            Ok((display_name, email, picture_url, role))
+        })
+        .and_then(|iter| iter.collect::<rusqlite::Result<Vec<_>>>())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(display_name, email, picture_url, role)| {
+            let initials = AdminProfileExt::compute_initials(
+                display_name.as_deref(),
+                email.as_deref(),
+            );
+            AdminTeamRow {
+                display_name,
+                email,
+                picture_url,
+                initials,
+                role,
+            }
+        })
+        .collect()
+    };
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
+    Html(
+        AdminTeamPage {
+            version: env!("CARGO_PKG_VERSION"),
+            t: Translator::new(locale),
+            admin,
+            admins: rows,
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
+        }
+        .render()
+        .unwrap_or_default(),
+    )
+    .into_response()
+}
 
 /// `GET /admin/team` — list all admins (any authenticated admin may read).
 pub async fn list_admins(State(s): State<MgmtState>) -> Response {

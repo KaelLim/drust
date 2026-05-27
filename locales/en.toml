@@ -224,6 +224,7 @@ changelog = "Changelog"
 design_system = "Design system"
 host_files = "Host files"
 settings = "Settings"
+team = "Team"
 tenants = "Tenants"
 
 [admin_sidebar.plane]
@@ -235,6 +236,19 @@ scope = "host-level scope"
 [admin_sidebar.section]
 organization = "Organization"
 resources = "Resources"
+
+[admin_team.action]
+view = "View"
+
+[admin_team.col]
+email = "Email"
+name = "Name"
+role = "Role"
+
+[admin_team.head]
+add = "Add admin"
+subtitle = "Manage admins and roles"
+title = "Team"
 
 [audit_body.aria]
 show_details_for = "show details for {op}"
