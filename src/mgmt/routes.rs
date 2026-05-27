@@ -68,6 +68,10 @@ pub struct MgmtState {
     /// Default: 5 per 60 s. Defends the provider-exchange path from being
     /// flooded with attacker-supplied (code, state) pairs.
     pub admin_oauth_callback_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
+    /// Per-IP rate limiter for POST /oauth/register (RFC 7591 DCR).
+    /// Default: 10 per 3600 s. Prevents bulk client-ID minting from a
+    /// single IP.
+    pub oauth_register_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
 }
 
 #[derive(Template)]
@@ -630,6 +634,12 @@ impl MgmtState {
             .route(
                 "/admin/oauth/{provider}/callback",
                 get(crate::mgmt::oauth_login::oauth_callback),
+            )
+            // v1.29.0 — RFC 7591 Dynamic Client Registration. Public; no auth.
+            // Rate-limited at 10/hour per IP (oauth_register_rl).
+            .route(
+                "/oauth/register",
+                axum::routing::post(super::oauth_server::register::register_client),
             )
             .with_state(self.clone());
 

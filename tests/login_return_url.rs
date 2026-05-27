@@ -60,6 +60,11 @@ async fn build_app() -> axum::Router {
             Duration::from_secs(60),
             4096,
         )),
+        oauth_register_rl: Arc::new(IpRateLimit::new(
+            10,
+            Duration::from_secs(3600),
+            4096,
+        )),
     };
     build_mgmt_router(state)
 }

@@ -276,6 +276,7 @@ async fn main() -> anyhow::Result<()> {
         oauth_registry,
         admin_login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        oauth_register_rl: Arc::new(IpRateLimit::new(10, Duration::from_secs(3600), 4096)),
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 

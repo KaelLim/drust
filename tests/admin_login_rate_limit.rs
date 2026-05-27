@@ -42,6 +42,7 @@ async fn build_login_router(rl_capacity: u32) -> Router {
         oauth_registry: Arc::new(ProviderRegistry::from_env_empty()),
         admin_login_rl: Arc::new(IpRateLimit::new(rl_capacity, Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        oauth_register_rl: Arc::new(IpRateLimit::new(10, Duration::from_secs(3600), 4096)),
     };
     // Keep the tempdir alive for the duration of the test by leaking it.
     std::mem::forget(dir);
