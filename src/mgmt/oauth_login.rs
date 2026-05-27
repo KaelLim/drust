@@ -112,10 +112,23 @@ pub async fn oauth_callback(
         audit_oauth_failure(&s, &provider, Some(&user.email), "oauth_email_unverified").await;
         return redirect_login_error("oauth_email_unverified");
     }
-    // 6. allowlist
-    if !s.oauth_allowlist.contains(&user.email) {
-        audit_oauth_failure(&s, &provider, Some(&user.email), "oauth_not_allowed").await;
-        return redirect_login_error("oauth_not_allowed");
+    // 6. DB-driven allowlist: email must match an admins row (v1.29.0+).
+    // Previously checked a static env-var HashSet; now checks admins.email
+    // directly so /admin/team invites take effect without a restart.
+    {
+        let conn = s.meta.lock().await;
+        let admin_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM admins WHERE email = ?1",
+                rusqlite::params![&user.email],
+                |_| Ok(()),
+            )
+            .is_ok();
+        drop(conn);
+        if !admin_exists {
+            audit_oauth_failure(&s, &provider, Some(&user.email), "oauth_not_allowed").await;
+            return redirect_login_error("oauth_not_allowed");
+        }
     }
     // 7. admin row + 8. session — both touch the meta connection, so hold
     // the mutex for both. Matches the locking shape of `login_submit` in
