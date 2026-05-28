@@ -1,6 +1,6 @@
 use crate::auth::bearer::{hash_token, token_hint};
 use crate::auth::middleware::AuthCtx;
-use crate::error::json_error;
+use crate::error::{json_error, json_error_with_aliases};
 use crate::safety::audit::{AuditEntry, AuditLog, DefaultAuditExtra};
 use crate::safety::rate_limit::RateLimiter;
 use crate::safety::rate_limit_ip::IpRateLimit;
@@ -414,13 +414,12 @@ pub async fn bearer_auth_layer(
 #[allow(clippy::result_large_err)]
 pub fn require_service(t: &TenantRef) -> Result<(), Response> {
     if matches!(t.role, TokenRole::Anon | TokenRole::User) {
-        let body = axum::Json(serde_json::json!({
-            "error_code": "WRITE_DENIED",
-            "message": "anon/user key cannot write; use a service key"
-        }));
-        let mut r = body.into_response();
-        *r.status_mut() = StatusCode::FORBIDDEN;
-        return Err(r);
+        return Err(json_error_with_aliases(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
+            "anon/user key cannot write; use a service key",
+        ));
     }
     Ok(())
 }
