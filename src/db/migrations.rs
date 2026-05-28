@@ -143,6 +143,10 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
              WHERE callable_by = '[]'",
             [],
         )?;
+        // v1.29.5 — _system_rpc.user_calls (H3-2 phase 1). Defaults to 0;
+        // v1.30 RPC v2 will write user-role counts here instead of
+        // lumping them into anon_calls.
+        add_column_if_missing(&tx, "_system_rpc", "user_calls", "INTEGER NOT NULL DEFAULT 0")?;
     }
     tx.commit()
 }
@@ -776,6 +780,35 @@ mod tests {
         let svc_cb: String = c.query_row("SELECT callable_by FROM _system_rpc WHERE name='service_fn'", [], |r| r.get(0)).unwrap();
         assert_eq!(pub_cb, r#"["anon","user"]"#);
         assert_eq!(svc_cb, "[]");
+    }
+
+    #[test]
+    fn v1295_user_calls_column_added_default_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-uc");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT);
+                 CREATE TABLE _system_rpc (
+                    name TEXT PRIMARY KEY, sql TEXT NOT NULL, params_json TEXT NOT NULL,
+                    description TEXT, anon_callable INTEGER NOT NULL DEFAULT 0,
+                    anon_calls INTEGER NOT NULL DEFAULT 0, service_calls INTEGER NOT NULL DEFAULT 0,
+                    last_called_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO _system_rpc (name, sql, params_json) VALUES ('x', 'SELECT 1', '[]');"
+            ).unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-uc").unwrap();
+        migrate_tenant_db(dir.path(), "t-uc").unwrap(); // idempotent
+
+        let c = Connection::open(&p).unwrap();
+        let uc: i64 = c.query_row("SELECT user_calls FROM _system_rpc WHERE name='x'", [], |r| r.get(0)).unwrap();
+        assert_eq!(uc, 0);
     }
 
     #[test]

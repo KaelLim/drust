@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS "_system_rpc" (
   anon_callable     INTEGER NOT NULL DEFAULT 0,
   callable_by       TEXT NOT NULL DEFAULT '[]',
   anon_calls        INTEGER NOT NULL DEFAULT 0,
+  user_calls        INTEGER NOT NULL DEFAULT 0,
   service_calls     INTEGER NOT NULL DEFAULT 0,
   last_called_at    TEXT,
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
