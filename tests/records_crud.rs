@@ -175,3 +175,72 @@ async fn list_with_filter() {
     assert_eq!(v["records"].as_array().unwrap().len(), 1);
     assert_eq!(v["records"][0]["title"], "b");
 }
+
+// H5-1 phase 1: legacy ?filter / ?sort must emit Deprecation + Sunset
+// headers so clients can discover the migration path before phase 2 refuses
+// the params entirely (post 2027-01-01 sunset).
+#[tokio::test]
+async fn legacy_filter_emits_deprecation_headers() {
+    let (app, tok, d) = spin_up_tenant("blog").await;
+    seed_posts(&d).await;
+    // Seed one row so the list response is a real 200, not a zero-row edge case.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/t/blog/records/posts")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"data":{"title":"dep-test"}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // ?filter= present → should get Deprecation + Sunset + Link
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/t/blog/records/posts?filter=title='dep-test'")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers().get("deprecation").map(|v| v.as_bytes()), Some(b"true".as_ref()));
+    assert!(r.headers().get("sunset").is_some(), "expected Sunset header");
+    assert!(r.headers().get("link").is_some(), "expected Link header");
+
+    // ?sort= present → also deprecated
+    let r2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/t/blog/records/posts?sort=title:asc")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r2.status(), StatusCode::OK);
+    assert_eq!(r2.headers().get("deprecation").map(|v| v.as_bytes()), Some(b"true".as_ref()));
+
+    // No legacy params → no deprecation headers
+    let r3 = app
+        .oneshot(
+            Request::builder()
+                .uri("/t/blog/records/posts")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r3.status(), StatusCode::OK);
+    assert!(r3.headers().get("deprecation").is_none(), "no Deprecation on clean request");
+}
