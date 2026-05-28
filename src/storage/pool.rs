@@ -59,6 +59,8 @@ impl TenantPool {
     ///
     /// Single-statement writes can stay on `with_writer` for the smaller API
     /// surface — both helpers acquire the same per-tenant writer mutex.
+    /// A failed `commit()` also returns `Err`; SQLite rolls the transaction
+    /// back internally in that case.
     pub async fn with_writer_tx<F, T>(&self, f: F) -> rusqlite::Result<T>
     where
         F: for<'a> FnOnce(&'a Transaction<'a>) -> rusqlite::Result<T> + Send,
@@ -145,23 +147,25 @@ mod tx_tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn pool() -> (TempDir, TenantPool) {
+    async fn pool() -> (TempDir, TenantPool) {
         let tmp = TempDir::new().unwrap();
         let pool = TenantPool::new(tmp.path().to_path_buf(), "txtest", 2).unwrap();
         // Seed a trivial collection so we can write to it.
-        let _ = futures::executor::block_on(pool.with_writer(|c| {
+        pool.with_writer(|c| {
             c.execute(
                 "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)",
                 [],
             )?;
             Ok(())
-        }));
+        })
+        .await
+        .unwrap();
         (tmp, pool)
     }
 
     #[tokio::test]
     async fn with_writer_tx_commits_on_ok() {
-        let (_t, pool) = pool();
+        let (_t, pool) = pool().await;
         let n: i64 = pool
             .with_writer_tx(|tx| -> rusqlite::Result<i64> {
                 tx.execute(
@@ -188,7 +192,7 @@ mod tx_tests {
 
     #[tokio::test]
     async fn with_writer_tx_rolls_back_on_err() {
-        let (_t, pool) = pool();
+        let (_t, pool) = pool().await;
         // First insert succeeds, second is forced to fail. Whole tx must roll back.
         let res: rusqlite::Result<()> = pool
             .with_writer_tx(|tx| -> rusqlite::Result<()> {
