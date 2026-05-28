@@ -308,3 +308,48 @@ async fn member_cannot_remove() {
     let body = body_json(resp).await;
     assert_eq!(body["error_code"], "NOT_OWNER");
 }
+
+#[tokio::test]
+async fn invite_atomically_creates_pat_for_new_admin() {
+    let (app, dir) = spin_up().await;
+    let cookie = login(&app, "root", "hunter2").await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/team")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "email": "newbie@example.com", "role": "member" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "invite should return 201");
+
+    let body = body_json(resp).await;
+    let new_id = body["id"].as_i64().expect("invite response should carry new admin id");
+
+    // Verify PAT row exists directly in meta.sqlite.
+    let meta_path = dir.path().join("meta.sqlite");
+    let conn = rusqlite::Connection::open(&meta_path).unwrap();
+    let row: (String, Option<String>) = conn
+        .query_row(
+            "SELECT token_hash, plaintext FROM _admin_tokens \
+             WHERE admin_id = ?1 AND revoked_at IS NULL",
+            params![new_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("new admin must have an active PAT row");
+
+    let plaintext = row.1.expect("PAT row must carry plaintext after v1.29.3");
+    assert!(
+        plaintext.starts_with("drust_pat_"),
+        "plaintext prefix wrong: {}",
+        plaintext
+    );
+}

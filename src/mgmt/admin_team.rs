@@ -317,29 +317,60 @@ pub async fn invite_admin(
             }
         };
 
-        let result = conn.execute(
-            "INSERT INTO admins (username, password_hash, email, role) VALUES (?1, ?2, ?3, ?4)",
-            params![username, OAUTH_ONLY_SENTINEL, email, role],
-        );
-
-        let new_id = match result {
-            Ok(_) => conn.last_insert_rowid(),
+        // v1.29.3 — atomic admin + PAT creation. Same pattern as change_role.
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
             Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("UNIQUE") {
-                    return json_error(
-                        StatusCode::CONFLICT,
-                        "ADMIN_EMAIL_TAKEN",
-                        "an admin with that email already exists",
-                    );
-                }
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": msg })),
+                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
                 )
                     .into_response();
             }
         };
+
+        if let Err(e) = tx.execute(
+            "INSERT INTO admins (username, password_hash, email, role) VALUES (?1, ?2, ?3, ?4)",
+            params![username, OAUTH_ONLY_SENTINEL, email, role],
+        ) {
+            let msg = e.to_string();
+            if msg.contains("UNIQUE") {
+                return json_error(
+                    StatusCode::CONFLICT,
+                    "ADMIN_EMAIL_TAKEN",
+                    "an admin with that email already exists",
+                );
+            }
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": msg })),
+            )
+                .into_response();
+        }
+
+        let new_id = tx.last_insert_rowid();
+
+        // PAT for the freshly-created admin.
+        let pat_plaintext = crate::auth::admin_token::generate_token();
+        let pat_hash = crate::auth::admin_token::hash_token(&pat_plaintext);
+        if let Err(e) = tx.execute(
+            "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext) VALUES (?1, ?2, ?3)",
+            params![new_id, pat_hash, pat_plaintext],
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
+        if let Err(e) = tx.commit() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
 
         // Fetch caller email for audit attribution.
         let caller_email: Option<String> = conn
