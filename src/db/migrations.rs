@@ -125,6 +125,25 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         "index_descriptions_json",
         "TEXT NOT NULL DEFAULT '{}'",
     )?;
+    // v1.29.5 — _system_rpc.callable_by (H3-1 phase 1). Idempotent
+    // backfill from anon_callable: 1 → ["anon","user"], 0 → [].
+    // Guarded by table existence — _system_rpc only exists on tenants
+    // that have shipped it. The WHERE callable_by = '[]' clause on the
+    // UPDATE makes the backfill idempotent (second migration is no-op
+    // for already-set rows).
+    let has_rpc: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_system_rpc'",
+        [], |r| r.get(0)
+    ).unwrap_or(0);
+    if has_rpc > 0 {
+        add_column_if_missing(&tx, "_system_rpc", "callable_by", "TEXT NOT NULL DEFAULT '[]'")?;
+        tx.execute(
+            "UPDATE _system_rpc SET callable_by = \
+                CASE WHEN anon_callable = 1 THEN '[\"anon\",\"user\"]' ELSE '[]' END \
+             WHERE callable_by = '[]'",
+            [],
+        )?;
+    }
     tx.commit()
 }
 
@@ -724,5 +743,56 @@ mod tests {
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_users'",
             [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn v1295_callable_by_column_added_and_backfilled() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-rpc");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT);
+                 CREATE TABLE _system_rpc (
+                    name TEXT PRIMARY KEY, sql TEXT NOT NULL, params_json TEXT NOT NULL,
+                    description TEXT, anon_callable INTEGER NOT NULL DEFAULT 0,
+                    anon_calls INTEGER NOT NULL DEFAULT 0,
+                    service_calls INTEGER NOT NULL DEFAULT 0,
+                    last_called_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO _system_rpc (name, sql, params_json, anon_callable) VALUES ('public_fn', 'SELECT 1', '[]', 1);
+                 INSERT INTO _system_rpc (name, sql, params_json, anon_callable) VALUES ('service_fn', 'SELECT 2', '[]', 0);"
+            ).unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-rpc").unwrap();
+        migrate_tenant_db(dir.path(), "t-rpc").unwrap(); // idempotent — second run no-op
+
+        let c = Connection::open(&p).unwrap();
+        let pub_cb: String = c.query_row("SELECT callable_by FROM _system_rpc WHERE name='public_fn'", [], |r| r.get(0)).unwrap();
+        let svc_cb: String = c.query_row("SELECT callable_by FROM _system_rpc WHERE name='service_fn'", [], |r| r.get(0)).unwrap();
+        assert_eq!(pub_cb, r#"["anon","user"]"#);
+        assert_eq!(svc_cb, "[]");
+    }
+
+    #[test]
+    fn v1295_callable_by_skipped_when_rpc_table_absent() {
+        // Confirm migration doesn't fail on tenant DBs that never
+        // shipped _system_rpc (legacy edge case).
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-norpc");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT);"
+            ).unwrap();
+        }
+        // Must not panic / error.
+        migrate_tenant_db(dir.path(), "t-norpc").unwrap();
     }
 }
