@@ -906,31 +906,6 @@ impl MgmtState {
             )
             .with_state(self.clone());
 
-        // v1.29.0 — per-admin PAT mint/list/revoke (self-service).
-        let tokens_router = Router::new()
-            .route(
-                "/admin/settings/tokens",
-                get(super::admin_tokens::tokens_page_or_json)
-                    .post(super::admin_tokens::mint),
-            )
-            .route(
-                "/admin/settings/tokens/{id}",
-                axum::routing::delete(super::admin_tokens::revoke_self),
-            )
-            .with_state(self.clone());
-
-        // v1.29.2 — per-admin auto-MCP PAT ensure/remint (S3b).
-        let mcp_pat_router = Router::new()
-            .route(
-                "/admin/me/mcp-pat/ensure",
-                post(super::admin_mcp_pat::ensure),
-            )
-            .route(
-                "/admin/me/mcp-pat/remint",
-                post(super::admin_mcp_pat::remint),
-            )
-            .with_state(self.clone());
-
         // v1.25 — inner theme layer: runs after admin_session_layer so
         // AdminId is in request extensions. Falls back cookie → DB → System.
         // Overwrites whatever the outer layer set. (F5/F6 from v1.23 review.)
@@ -959,8 +934,6 @@ impl MgmtState {
             .merge(design_router)
             .merge(settings_router)
             .merge(team_router)
-            .merge(tokens_router)
-            .merge(mcp_pat_router)
             .layer(axum::middleware::from_fn_with_state(
                 inner_theme_state,
                 crate::mgmt::theme_layer::theme_layer,

@@ -232,8 +232,6 @@ host_files = "主機檔案"
 settings = "設定"
 team = "團隊"
 tenants = "租戶"
-tokens = "Tokens"
-
 [admin_sidebar.plane]
 jump_title = "跳轉（⌘K）"
 # REVIEW (low confidence): "plane" UI term unclear in context, please verify "層級"
@@ -244,53 +242,6 @@ scope = "主機層級範圍"
 [admin_sidebar.section]
 organization = "組織"
 resources = "資源"
-
-[admin_tokens.action]
-copy = "複製"
-revoke = "撤銷"
-
-[admin_tokens.col]
-action = "操作"
-created = "建立時間"
-last_used = "最後使用"
-name = "名稱"
-
-[admin_tokens.empty]
-no_tokens = "尚無個人 access token。"
-
-[admin_tokens.head]
-generate = "建立 token"
-subtitle = "用於 headless API 存取。明文僅在建立時顯示一次。"
-title = "個人 access token"
-
-[admin_tokens.error]
-name_taken = "Token 名稱已存在"
-
-[admin_tokens.last_used]
-never = "從未"
-
-[admin_tokens.modal.generate]
-title = "建立 token"
-warning = "此 token 僅此一次顯示，請妥善保存。"
-copy = "複製"
-done = "完成"
-
-[admin_tokens.confirm]
-revoke_text = "撤銷後這把 PAT 立即無效。如果你把它寫進過 mcp.json 或當成環境變數設定在任何機器上，那些地方會回 401，必須換一把 PAT 或重新 mint。確定要撤銷嗎？"
-revoke_title = "撤銷 PAT"
-
-[admin_tokens.plaintext]
-warning = "此 token 僅此一次顯示，請立即複製。"
-
-[mcp_pat.modal]
-title_minted = "已建立 MCP PAT"
-title_existing = "已有 MCP PAT"
-body_minted = "已自動建立你的 MCP PAT。請按下方圖示複製安裝指令，並貼到終端機執行。對話框關閉後 token 即從頁面上消失；若 mcp.json 遺失，可按「重抽 PAT」再產一組。"
-body_existing = "你已經有 MCP PAT（指紋 {fingerprint}）。如果你的 mcp.json 還在，繼續用即可。"
-remint = "重抽 PAT"
-
-[mcp_pat.confirm]
-remint = "重抽會立即讓舊的 MCP PAT 失效。若有其他機器仍在使用舊的 mcp.json，下次 MCP 請求會回 401。確定要重抽嗎？"
 
 [mcp_pat.alert]
 pat_failed_title = "MCP PAT 操作失敗"
