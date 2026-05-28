@@ -288,6 +288,8 @@ remint = "Reminting immediately invalidates the previous MCP PAT. Any other mach
 [mcp_pat.alert]
 pat_failed_title = "MCP PAT request failed"
 pat_failed_body = "The server returned an error. Refresh the page and try again; if the problem persists, check the audit log."
+no_pat_title = "No PAT available"
+no_pat_body = "Visit /drust/admin/settings to view your PAT, then click here again."
 
 [admin_team.action]
 view = "View"
@@ -863,6 +865,22 @@ card_sub = "Choose how the admin UI looks."
 [settings.preferences]
 card_title = "Preferences"
 unsaved = "Unsaved"
+
+[settings.tokens]
+card_title = "Personal MCP token"
+desc = "One PAT per admin, bound to your Claude Code mcp.json and any tenant's MCP endpoint. Reroll invalidates the current PAT on every machine you've pasted it into."
+fingerprint = "Fingerprint"
+last_used = "Last used"
+last_used_never = "never"
+btn_reveal = "Reveal"
+btn_hide = "Hide"
+btn_copy = "Copy"
+btn_reroll = "Reroll"
+legacy_plaintext_unavailable = "Plaintext unavailable for legacy PAT — press Reroll to regenerate."
+
+[settings.tokens.confirm]
+reroll_text = "Rerolling immediately invalidates your current PAT. Every Claude Code mcp.json, environment variable, or script using this PAT will return 401 — you'll have to update the token on each machine. Continue?"
+reroll_title = "Reroll PAT"
 
 [tenant_api_keys.alert]
 service_required_body = "Reroll or generate the service key above to enable the one-click MCP command."
