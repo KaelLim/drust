@@ -133,8 +133,8 @@ pub async fn insert_record(
 
     let webhooks = s.inner().webhooks.clone();
     let (id, record) = pool
-        .with_writer(move |c| -> rusqlite::Result<(i64, serde_json::Value)> {
-            let schema = describe_collection(c, &coll)?.ok_or_else(|| {
+        .with_writer_tx(move |tx| -> rusqlite::Result<(i64, serde_json::Value)> {
+            let schema = describe_collection(tx, &coll)?.ok_or_else(|| {
                 invalid_input(format!("unknown collection: '{}'", coll))
             })?;
             let allowed: std::collections::HashSet<&str> =
@@ -180,9 +180,9 @@ pub async fn insert_record(
                 .collect();
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            c.execute(&sql, &refs[..])?;
-            let id = c.last_insert_rowid();
-            let rec = read_record(c, &coll, id, &vector_names)?;
+            tx.execute(&sql, &refs[..])?;
+            let id = tx.last_insert_rowid();
+            let rec = read_record(tx, &coll, id, &vector_names)?;
             Ok((id, rec))
         })
         .await?;
@@ -227,8 +227,8 @@ pub async fn update_record(
         .collect();
 
     let record = pool
-        .with_writer(move |c| -> rusqlite::Result<serde_json::Value> {
-            let schema = describe_collection(c, &coll)?.ok_or_else(|| {
+        .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
+            let schema = describe_collection(tx, &coll)?.ok_or_else(|| {
                 invalid_input(format!("unknown collection: '{}'", coll))
             })?;
             let allowed: std::collections::HashSet<&str> =
@@ -266,11 +266,11 @@ pub async fn update_record(
             params.push(Value::Integer(id));
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            let n = c.execute(&sql, &refs[..])?;
+            let n = tx.execute(&sql, &refs[..])?;
             if n == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
-            read_record(c, &coll, id, &vector_names)
+            read_record(tx, &coll, id, &vector_names)
         })
         .await?;
     let ev = Event::Updated { record: record.clone() };
@@ -324,12 +324,12 @@ pub async fn delete_record(
     let bus = s.inner().bus.clone();
     let webhooks = s.inner().webhooks.clone();
     let n = pool
-        .with_writer(move |c| {
+        .with_writer_tx(move |tx| {
             let sql = format!(
                 "DELETE FROM \"{}\" WHERE id = ?1",
                 coll.replace('"', "\"\"")
             );
-            c.execute(&sql, rusqlite::params![id])
+            tx.execute(&sql, rusqlite::params![id])
         })
         .await?;
     if n == 0 {
