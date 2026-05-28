@@ -15,69 +15,6 @@ CREATE TABLE IF NOT EXISTS _admin_tokens (
 CREATE INDEX IF NOT EXISTS idx_admin_tokens_admin ON _admin_tokens(admin_id);
 "#;
 
-pub const SQL_CREATE_OAUTH_CLIENTS_IF_NOT_EXISTS: &str = r#"
-CREATE TABLE IF NOT EXISTS _oauth_clients (
-    id                  TEXT PRIMARY KEY,
-    client_name         TEXT NOT NULL,
-    redirect_uris_json  TEXT NOT NULL,
-    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-    created_by_admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL,
-    revoked_at          TEXT,
-    revoked_by_admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_oauth_clients_revoked ON _oauth_clients(revoked_at);
-"#;
-
-pub const SQL_CREATE_OAUTH_CODES_IF_NOT_EXISTS: &str = r#"
-CREATE TABLE IF NOT EXISTS _oauth_authorization_codes (
-    code_hash               TEXT PRIMARY KEY,
-    client_id               TEXT NOT NULL REFERENCES _oauth_clients(id) ON DELETE CASCADE,
-    admin_id                INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
-    redirect_uri            TEXT NOT NULL,
-    pkce_challenge          TEXT NOT NULL,
-    pkce_challenge_method   TEXT NOT NULL,
-    resource_uri            TEXT NOT NULL,
-    scope                   TEXT,
-    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at              TEXT NOT NULL,
-    consumed_at             TEXT,
-    CHECK (pkce_challenge_method = 'S256')
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_oauth_codes_expires ON _oauth_authorization_codes(expires_at);
-"#;
-
-pub const SQL_CREATE_OAUTH_ACCESS_TOKENS_IF_NOT_EXISTS: &str = r#"
-CREATE TABLE IF NOT EXISTS _oauth_access_tokens (
-    token_hash      TEXT PRIMARY KEY,
-    client_id       TEXT NOT NULL REFERENCES _oauth_clients(id) ON DELETE CASCADE,
-    admin_id        INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
-    resource_uri    TEXT NOT NULL,
-    scope           TEXT,
-    issued_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at      TEXT NOT NULL,
-    last_used_at    TEXT
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_oauth_at_expires ON _oauth_access_tokens(expires_at);
-"#;
-
-pub const SQL_CREATE_OAUTH_REFRESH_TOKENS_IF_NOT_EXISTS: &str = r#"
-CREATE TABLE IF NOT EXISTS _oauth_refresh_tokens (
-    token_hash          TEXT PRIMARY KEY,
-    client_id           TEXT NOT NULL REFERENCES _oauth_clients(id) ON DELETE CASCADE,
-    admin_id            INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
-    resource_uri        TEXT NOT NULL,
-    scope               TEXT,
-    issued_at           TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at          TEXT NOT NULL,
-    rotated_to_hash     TEXT,
-    rotated_at          TEXT
-) STRICT;
-
-"#;
-
 pub const SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS: &str = r#"
 CREATE TABLE IF NOT EXISTS _system_users (
   id            TEXT PRIMARY KEY,
@@ -225,11 +162,15 @@ pub fn run_migrations(
     // v1.29.0 — PAT table for headless admin attribution
     meta.execute_batch(SQL_CREATE_ADMIN_TOKENS_IF_NOT_EXISTS)?;
 
-    // v1.29.0 — OAuth 2.1 Authorization Server tables
-    meta.execute_batch(SQL_CREATE_OAUTH_CLIENTS_IF_NOT_EXISTS)?;
-    meta.execute_batch(SQL_CREATE_OAUTH_CODES_IF_NOT_EXISTS)?;
-    meta.execute_batch(SQL_CREATE_OAUTH_ACCESS_TOKENS_IF_NOT_EXISTS)?;
-    meta.execute_batch(SQL_CREATE_OAUTH_REFRESH_TOKENS_IF_NOT_EXISTS)?;
+    // v1.29.2 — retract v1.29.0 OAuth AS bundle. Drop tables in dependency
+    // order (FK children before parents). Idempotent: no-op when tables are
+    // already absent (fresh installs that never saw v1.29.0).
+    meta.execute_batch(
+        "DROP TABLE IF EXISTS _oauth_refresh_tokens;
+         DROP TABLE IF EXISTS _oauth_access_tokens;
+         DROP TABLE IF EXISTS _oauth_authorization_codes;
+         DROP TABLE IF EXISTS _oauth_clients;"
+    )?;
 
     report.meta_done = true;
 
@@ -331,11 +272,17 @@ mod tests {
     }
 
     #[test]
-    fn v129_oauth_tables_created() {
+    fn v1292_oauth_tables_dropped() {
+        // Simulate a v1.29.0 install: meta has the 4 OAuth tables.
+        // After run_migrations, they MUST be dropped.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
-            CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT NOT NULL, email TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));"
+            CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT NOT NULL, email TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE _oauth_clients (id TEXT PRIMARY KEY);
+            CREATE TABLE _oauth_authorization_codes (code_hash TEXT PRIMARY KEY);
+            CREATE TABLE _oauth_access_tokens (token_hash TEXT PRIMARY KEY);
+            CREATE TABLE _oauth_refresh_tokens (token_hash TEXT PRIMARY KEY);"
         ).unwrap();
         let tmp = TempDir::new().unwrap();
         run_migrations(&conn, tmp.path()).unwrap();
@@ -351,15 +298,8 @@ mod tests {
                     &format!("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='{table}'"),
                     [], |r| r.get(0)
                 ).unwrap();
-            assert_eq!(row, 1, "table {table} missing");
+            assert_eq!(row, 0, "table {table} should have been dropped");
         }
-
-        // refresh tokens has rotated_to_hash column for reuse detection
-        let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(_oauth_refresh_tokens)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert!(cols.contains(&"rotated_to_hash".to_string()));
     }
 
     #[test]
