@@ -5,14 +5,12 @@ use crate::safety::audit::{AuditEntry, AuditLog, DefaultAuditExtra};
 use crate::safety::rate_limit::RateLimiter;
 use crate::safety::rate_limit_ip::IpRateLimit;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
-use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rusqlite::Connection;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
@@ -123,19 +121,6 @@ pub struct TenantRef {
     pub token_hint: String,
     pub pool: SharedTenantPool,
     pub role: TokenRole,
-}
-
-/// Returns `true` when the path is `/t/<tenant>/mcp` or a sub-path thereof
-/// (e.g. `/t/<id>/mcp/`, `/t/<id>/mcp/stream`).
-///
-/// Used by the v1.29 MCP transport gate that requires OAuth or PAT (i.e.
-/// tokens carrying an `admin_id`).  Shared per-tenant service tokens and
-/// anon tokens are rejected at this path with 401 + `WWW-Authenticate`.
-fn is_mcp_path(path: &str) -> bool {
-    static MCP_RE: OnceLock<regex_lite::Regex> = OnceLock::new();
-    MCP_RE
-        .get_or_init(|| regex_lite::Regex::new(r"^/t/[^/]+/mcp(/|$)").unwrap())
-        .is_match(path)
 }
 
 pub async fn bearer_auth_layer(
@@ -263,56 +248,7 @@ pub async fn bearer_auth_layer(
             });
             return next.run(req).await;
         }
-        // --- v1.29 step 6 (OAuth access token, RFC 8707-bound) ---
-        // Recognized by the `drust_at_` prefix; resolved from _oauth_access_tokens.
-        // Must come before PAT lookup: expired-token fail-fast is cheaper than a
-        // PAT DB round-trip when the prefix already signals "not a PAT".
-        {
-            let conn = state.meta.lock().await;
-            let hit = crate::mgmt::oauth_server::storage::lookup_access_token(&conn, &bearer)
-                .ok()
-                .flatten();
-            drop(conn);
-            if let Some(crate::mgmt::oauth_server::storage::OauthAccessTokenHit {
-                admin_id,
-                resource_uri,
-                ..
-            }) = hit
-            {
-                // RFC 8707: validate request URL is within the token's bound resource.
-                // resource_uri shape: {base}/drust/t/<tenant>/mcp
-                // Accept exact match OR request under a sub-path (e.g. /mcp/foo).
-                let request_url = format!(
-                    "{}/drust{}",
-                    state.public_url.trim_end_matches('/'),
-                    req.uri().path()
-                );
-                let matches = request_url == resource_uri
-                    || request_url.starts_with(&format!("{resource_uri}/"));
-                if !matches {
-                    return json_error(
-                        StatusCode::FORBIDDEN,
-                        "INVALID_RESOURCE",
-                        "token bound to a different resource",
-                    );
-                }
-                let ctx = AuthCtx::Service {
-                    admin_id: Some(admin_id),
-                };
-                resolved_auth_ctx = Some(ctx.clone());
-                req.extensions_mut().insert(ctx);
-                req.extensions_mut()
-                    .insert(crate::auth::middleware::AdminId(admin_id));
-                req.extensions_mut().insert(TenantRef {
-                    tenant_id: tenant_id.clone(),
-                    token_hint: token_hint(&bearer),
-                    pool,
-                    role: TokenRole::Service,
-                });
-                return next.run(req).await;
-            }
-        }
-        // --- v1.29 step 7: per-admin PAT lookup ---
+        // --- v1.29 step 6: per-admin PAT lookup ---
         {
             let conn = state.meta.lock().await;
             let hit = crate::auth::admin_token::lookup(&conn, &bearer).ok().flatten();
@@ -383,42 +319,6 @@ pub async fn bearer_auth_layer(
             TokenRole::User => unreachable!("user sessions are resolved before meta lookup"),
         };
         resolved_auth_ctx = Some(ctx.clone());
-
-        // v1.29: MCP transport gate — require admin attribution (OAuth or PAT,
-        // NOT the shared per-tenant service token / anon token).
-        //
-        // OAuth (drust_at_*) and PAT (drust_pat_*) paths already early-returned
-        // above with `Service { admin_id: Some(_) }`.  Only Anon and the shared
-        // `Service { admin_id: None }` reach this point.  Both are denied on
-        // `/t/<id>/mcp` paths per v1.29 BREAKING design.
-        if is_mcp_path(&path_for_audit) {
-            // v1.29.1 — point WWW-Authenticate at the per-tenant well-known so the
-            // `resource` field in the served metadata matches the URL the client
-            // actually tried to access (MCP SDKs strict-compare this and reject
-            // the placeholder `{tenant}` literal that the root endpoint serves).
-            let resource_metadata_url = format!(
-                "{}/drust/t/{}/.well-known/oauth-protected-resource",
-                state.public_url.trim_end_matches('/'),
-                tenant_id,
-            );
-            let body = serde_json::json!({
-                "error_code": "MCP_REQUIRES_ADMIN_AUTH",
-                "message": "MCP endpoint requires OAuth or PAT, not the shared service token.",
-                "suggested_fix": "Configure your MCP client to use OAuth (recommended) or mint a PAT at /admin/settings/tokens.",
-            });
-            return Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header(
-                    "WWW-Authenticate",
-                    format!(
-                        r#"Bearer realm="drust", resource_metadata="{resource_metadata_url}", error="invalid_token""#
-                    ),
-                )
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap();
-        }
-
         req.extensions_mut().insert(ctx);
         req.extensions_mut().insert(TenantRef {
             tenant_id: tenant_id.clone(),
