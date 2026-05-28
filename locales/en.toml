@@ -275,6 +275,20 @@ title = "Revoke token"
 [admin_tokens.plaintext]
 warning = "This is the only time this token will be shown. Copy it now."
 
+[mcp_pat.modal]
+title_minted = "MCP PAT created"
+title_existing = "MCP PAT already exists"
+body_minted = "An MCP PAT has been created for you. Copy the install command below (click the icon) and paste it into your terminal. The plaintext disappears when this dialog closes; if you lose your mcp.json, remint via this button."
+body_existing = "You already have an MCP PAT (fingerprint {fingerprint}). If your existing mcp.json still works, keep using it."
+remint = "Remint PAT"
+
+[mcp_pat.confirm]
+remint = "Reminting immediately invalidates the previous MCP PAT. Any other machine still using the old mcp.json will return 401 on its next MCP request. Continue?"
+
+[mcp_pat.alert]
+pat_failed_title = "MCP PAT request failed"
+pat_failed_body = "The server returned an error. Refresh the page and try again; if the problem persists, check the audit log."
+
 [admin_team.action]
 view = "View"
 promote = "Promote to Owner"

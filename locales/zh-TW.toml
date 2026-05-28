@@ -282,6 +282,20 @@ title = "撤銷 token"
 [admin_tokens.plaintext]
 warning = "此 token 僅此一次顯示，請立即複製。"
 
+[mcp_pat.modal]
+title_minted = "已建立 MCP PAT"
+title_existing = "已有 MCP PAT"
+body_minted = "已自動建立你的 MCP PAT。請按下方圖示複製安裝指令，並貼到終端機執行。對話框關閉後 token 即從頁面上消失；若 mcp.json 遺失，可按「重抽 PAT」再產一組。"
+body_existing = "你已經有 MCP PAT（指紋 {fingerprint}）。如果你的 mcp.json 還在，繼續用即可。"
+remint = "重抽 PAT"
+
+[mcp_pat.confirm]
+remint = "重抽會立即讓舊的 MCP PAT 失效。若有其他機器仍在使用舊的 mcp.json，下次 MCP 請求會回 401。確定要重抽嗎？"
+
+[mcp_pat.alert]
+pat_failed_title = "MCP PAT 操作失敗"
+pat_failed_body = "伺服器回應錯誤。請重新整理頁面再試一次；若仍有問題，請到 audit log 查看原因。"
+
 [admin_team.action]
 view = "檢視"
 promote = "提升為 Owner"
