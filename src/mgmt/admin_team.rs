@@ -50,6 +50,7 @@ pub struct RoleBody {
 
 /// One row displayed in the /admin/team table.
 struct AdminTeamRow {
+    pub id: i64,
     pub display_name: Option<String>,
     pub email: Option<String>,
     pub picture_url: Option<String>,
@@ -140,7 +141,7 @@ async fn team_page(
     let rows: Vec<AdminTeamRow> = {
         let conn = s.meta.lock().await;
         let mut stmt = match conn.prepare(
-            "SELECT display_name, email, picture_url, role FROM admins ORDER BY id",
+            "SELECT id, display_name, email, picture_url, role FROM admins ORDER BY id",
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -152,21 +153,23 @@ async fn team_page(
             }
         };
         stmt.query_map([], |r| {
-            let display_name: Option<String> = r.get(0)?;
-            let email: Option<String> = r.get(1)?;
-            let picture_url: Option<String> = r.get(2)?;
-            let role: String = r.get(3)?;
-            Ok((display_name, email, picture_url, role))
+            let id: i64 = r.get(0)?;
+            let display_name: Option<String> = r.get(1)?;
+            let email: Option<String> = r.get(2)?;
+            let picture_url: Option<String> = r.get(3)?;
+            let role: String = r.get(4)?;
+            Ok((id, display_name, email, picture_url, role))
         })
         .and_then(|iter| iter.collect::<rusqlite::Result<Vec<_>>>())
         .unwrap_or_default()
         .into_iter()
-        .map(|(display_name, email, picture_url, role)| {
+        .map(|(id, display_name, email, picture_url, role)| {
             let initials = AdminProfileExt::compute_initials(
                 display_name.as_deref(),
                 email.as_deref(),
             );
             AdminTeamRow {
+                id,
                 display_name,
                 email,
                 picture_url,

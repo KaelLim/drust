@@ -29,11 +29,12 @@
           <th>{{ t.s("admin_team.col.name") }}</th>
           <th>{{ t.s("admin_team.col.email") }}</th>
           <th style="width:120px;">{{ t.s("admin_team.col.role") }}</th>
+          {% if admin.is_owner %}<th style="width:220px;text-align:right;"></th>{% endif %}
         </tr>
       </thead>
       <tbody>
         {% for row in admins %}
-        <tr>
+        <tr data-admin-id="{{ row.id }}" data-admin-email="{% match row.email %}{% when Some with (e) %}{{ e }}{% when None %}{% endmatch %}" data-admin-role="{{ row.role }}">
           <td>
             {% match row.picture_url %}
               {% when Some with (url) %}
@@ -51,6 +52,16 @@
               <span class="pill muted">member</span>
             {% endif %}
           </td>
+          {% if admin.is_owner %}
+          <td style="text-align:right;">
+            {% if row.role == "owner" %}
+              <button type="button" class="btn sm ghost btn-demote">{{ t.s("admin_team.action.demote") }}</button>
+            {% else %}
+              <button type="button" class="btn sm ghost btn-promote">{{ t.s("admin_team.action.promote") }}</button>
+            {% endif %}
+            <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>
+          </td>
+          {% endif %}
         </tr>
         {% endfor %}
       </tbody>
@@ -64,4 +75,104 @@
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
 {% include "_modal.html" %}
+<script>
+(function () {
+  function alertError(res) {
+    res.json().then(function (j) {
+      drustUI.alert({
+        title: '{{ t.s("common.modal.title_notice") }}',
+        body:  (j && (j.message || j.error_code)) || ('HTTP ' + res.status)
+      });
+    }).catch(function () {
+      drustUI.alert({
+        title: '{{ t.s("common.modal.title_notice") }}',
+        body:  'HTTP ' + res.status
+      });
+    });
+  }
+
+  // Invite admin.
+  var btnInvite = document.getElementById('btn-invite');
+  if (btnInvite) {
+    btnInvite.addEventListener('click', async function () {
+      var email = await drustUI.prompt({
+        title:       '{{ t.s("admin_team.head.add") }}',
+        body:        '{{ t.s("admin_team.head.subtitle") }}',
+        placeholder: 'name@example.com',
+        okText:      '{{ t.s("admin_team.head.add") }}'
+      });
+      if (!email) return;
+      email = email.trim();
+      if (!email) return;
+      var res = await fetch('/drust/admin/team', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body:    JSON.stringify({ email: email, role: 'member' })
+      });
+      if (res.ok) { window.location.reload(); return; }
+      alertError(res);
+    });
+  }
+
+  function patchRole(id, newRole) {
+    return fetch('/drust/admin/team/' + id + '/role', {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body:    JSON.stringify({ role: newRole })
+    });
+  }
+  function deleteAdmin(id) {
+    return fetch('/drust/admin/team/' + id, {
+      method:  'DELETE',
+      headers: { 'Accept': 'application/json' }
+    });
+  }
+
+  document.querySelectorAll('tr[data-admin-id]').forEach(function (tr) {
+    var id    = tr.getAttribute('data-admin-id');
+    var email = tr.getAttribute('data-admin-email') || '(no email)';
+
+    var bp = tr.querySelector('.btn-promote');
+    if (bp) bp.addEventListener('click', async function () {
+      var res = await patchRole(id, 'owner');
+      if (res.ok) { window.location.reload(); return; }
+      alertError(res);
+    });
+
+    var bd = tr.querySelector('.btn-demote');
+    if (bd) bd.addEventListener('click', async function () {
+      var ok = await drustUI.confirm({
+        title:  '{{ t.s("admin_team.action.demote") }}',
+        body:   '{{ t.s("admin_team.action.confirm_demote") }}'.replace('{email}', email),
+        danger: true
+      });
+      if (!ok) return;
+      var res = await patchRole(id, 'member');
+      if (res.ok) { window.location.reload(); return; }
+      alertError(res);
+    });
+
+    var br = tr.querySelector('.btn-remove');
+    if (br) br.addEventListener('click', async function () {
+      var typed = await drustUI.prompt({
+        title:       '{{ t.s("admin_team.action.remove") }}',
+        body:        '{{ t.s("admin_team.action.confirm_remove") }}'.replace('{email}', email),
+        placeholder: email,
+        okText:      '{{ t.s("admin_team.action.remove") }}'
+      });
+      if (typed === null) return;
+      if (typed.trim() !== email) {
+        drustUI.alert({
+          title: '{{ t.s("common.modal.title_notice") }}',
+          body:  '{{ t.s("admin_team.action.confirm_remove") }}'.replace('{email}', email)
+        });
+        return;
+      }
+      var res = await deleteAdmin(id);
+      if (res.ok) { window.location.reload(); return; }
+      alertError(res);
+    });
+  });
+})();
+</script>
 {% endblock %}
