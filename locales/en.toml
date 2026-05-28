@@ -268,10 +268,6 @@ warning = "This is the only time you'll see the full token. Save it somewhere sa
 copy = "Copy"
 done = "Done"
 
-[admin_tokens.modal.revoke]
-body = "Revoke token"
-title = "Revoke token"
-
 [admin_tokens.confirm]
 revoke_text = "Revoking this PAT invalidates it immediately. If you've pasted it into mcp.json or set it as an environment variable on any machine, those usages will return 401 — you'll need to mint a new PAT and update them. Continue?"
 revoke_title = "Revoke PAT"

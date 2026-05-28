@@ -275,10 +275,6 @@ warning = "此 token 僅此一次顯示，請妥善保存。"
 copy = "複製"
 done = "完成"
 
-[admin_tokens.modal.revoke]
-body = "撤銷 token"
-title = "撤銷 token"
-
 [admin_tokens.confirm]
 revoke_text = "撤銷後這把 PAT 立即無效。如果你把它寫進過 mcp.json 或當成環境變數設定在任何機器上，那些地方會回 401，必須換一把 PAT 或重新 mint。確定要撤銷嗎？"
 revoke_title = "撤銷 PAT"
