@@ -1,5 +1,5 @@
 use crate::auth::middleware::AuthCtx;
-use crate::error::{json_error, json_error_with_context};
+use crate::error::{json_error, json_error_with_aliases, json_error_with_context};
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
@@ -87,9 +87,10 @@ async fn require_dml_cap(
         ));
     }
     if !has_dml_cap(tenant.role, verb, &schema) {
-        return Err(json_error(
+        return Err(json_error_with_aliases(
             StatusCode::FORBIDDEN,
-            "ANON_DENIED",
+            "ANON_CAP_DENIED",
+            &["ANON_DENIED"],
             &format!(
                 "anon role lacks '{}' on collection '{}'",
                 verb.as_str(),
@@ -151,9 +152,10 @@ async fn require_write_cap(
     }
     // Standard anon_caps gate (also allows User/Service through unconditionally).
     if !has_dml_cap(tenant.role, verb, &schema) {
-        return Err(json_error(
+        return Err(json_error_with_aliases(
             StatusCode::FORBIDDEN,
-            "ANON_DENIED",
+            "ANON_CAP_DENIED",
+            &["ANON_DENIED"],
             &format!(
                 "anon role lacks '{}' on collection '{}'",
                 verb.as_str(),

@@ -576,5 +576,5 @@ async fn user_can_read_but_not_write_when_anon_caps_is_select_only() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     let bytes = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
-    assert!(String::from_utf8_lossy(&bytes).contains("ANON_DENIED"));
+    assert!(String::from_utf8_lossy(&bytes).contains("ANON_CAP_DENIED"));
 }
