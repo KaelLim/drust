@@ -1,3 +1,29 @@
+## v1.29.5 — 2026-05-29
+
+Post-review fix cycle, release 2 of 3. Schema additions laying
+groundwork for v1.30 RPC v2 + admin-session-cookie-hash.
+
+### Added (schema, backward-compat)
+
+- `meta.sqlite.sessions.token_hash` (H4-2 phase 1) — SHA-256 of the
+  cookie. create_session writes both `token` and `token_hash`;
+  validate_session and revoke_session match either column. Legacy
+  plaintext-only rows still resolve. Phase 2-4 (v1.31+): lookup
+  hash-first → stop writing plaintext → drop `token` column.
+- `_system_rpc.callable_by` (H3-1 phase 1) — JSON array
+  (`["anon","user"]` etc.). Backfill: anon_callable=1 →
+  `["anon","user"]`, =0 → `[]`. Service implicit. v1.30 RPC v2
+  reads from this; v1.29 handler unchanged.
+- `_system_rpc.user_calls` (H3-2 phase 1) — per-role counter column.
+  v1.30 RPC v2 splits User+Anon attribution; v1.29 still lumps to
+  `anon_calls`.
+
+### Migration
+
+All 3 column additions go through idempotent `add_column_if_missing`.
+Existing tenants migrate automatically on next drust boot. No data loss,
+no client-facing API changes.
+
 ## v1.29.4 — 2026-05-28
 
 Post-review fix cycle, release 1 of 3. Closes 9 of 16 🟠 high findings
