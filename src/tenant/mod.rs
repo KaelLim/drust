@@ -7,7 +7,6 @@ pub mod webhook_resolver;
 pub use webhook_dispatcher::WebhookDispatcher;
 pub mod mcp_dispatch;
 pub mod oauth_admin_routes;
-pub mod oauth_metadata;
 pub mod oauth_config;
 pub mod oauth_routes;
 pub mod owner_field;
@@ -386,12 +385,6 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .route(
             "/t/{tenant}/oauth/{provider}/callback",
             get(oauth_routes::oauth_callback),
-        )
-        // v1.29.1 — per-tenant RFC 9728 protected-resource metadata.  Public;
-        // no bearer auth (auth_router is not wrapped in bearer_auth_layer).
-        .route(
-            "/t/{tenant}/.well-known/oauth-protected-resource",
-            get(oauth_metadata::protected_resource_for_tenant),
         )
         .with_state(auth_state);
 

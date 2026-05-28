@@ -1,8 +1,3 @@
-## [1.29.1] - 2026-05-27 — per-tenant protected-resource metadata
-
-### Fixed
-- **MCP OAuth discovery rejected by spec-compliant SDKs.** v1.29.0 served `/.well-known/oauth-protected-resource` only at the host root with `resource: ".../t/{tenant}/mcp"` — a literal `{tenant}` placeholder, NOT the actual tenant id. The Claude Code MCP SDK strict-compares this against the URL it tried to access (per RFC 9728) and rejected with `Protected resource ...%7Btenant%7D/mcp does not match expected ...`. Fix: added per-tenant endpoint `/t/<tenant>/.well-known/oauth-protected-resource` that fills in the actual tenant id, and pointed the MCP gate's `WWW-Authenticate: resource_metadata=...` header at this per-tenant URL so spec-compliant clients land on the correct document. Per-tenant endpoint is public (no bearer required). Host-level endpoint retained for back-compat but no longer referenced by the gate.
-
 ## [1.29.0] - 2026-05-27 — admin team + MCP OAuth 2.1
 
 ### Added

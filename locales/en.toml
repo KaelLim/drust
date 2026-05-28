@@ -223,7 +223,6 @@ backups = "Backups"
 changelog = "Changelog"
 design_system = "Design system"
 host_files = "Host files"
-oauth_clients = "OAuth clients"
 settings = "Settings"
 team = "Team"
 tenants = "Tenants"
@@ -275,25 +274,6 @@ title = "Revoke token"
 
 [admin_tokens.plaintext]
 warning = "This is the only time this token will be shown. Copy it now."
-
-[admin_oauth_clients]
-active = "Active"
-empty = "No OAuth clients registered yet."
-revoke = "Revoke"
-revoked = "Revoked"
-subtitle = "MCP clients registered via Dynamic Client Registration"
-title = "OAuth clients"
-confirm_revoke = "Revoke client '{name}'? This immediately invalidates all access + refresh tokens issued to it."
-
-[admin_oauth_clients.col]
-actions = "Actions"
-client = "Client"
-client_id = "Client ID"
-created = "Created"
-name = "Name"
-registered = "Registered"
-status = "Status"
-tokens = "Active tokens"
 
 [admin_team.action]
 view = "View"
@@ -1290,15 +1270,6 @@ with_failure = "With failure"
 eyebrow = "Tenant · backend"
 subtitle = "Outbound notifications on record created / updated / deleted. Signed with HMAC-SHA256 in the X-Drust-Signature header. Retried up to 4× inline (0s / 1s / 5s / 30s)."
 title = "Webhooks"
-
-[oauth_consent]
-title = "Authorize access"
-requesting = "is requesting access to your drust tenant"
-on_behalf_of = "Acting on behalf of"
-resource = "Resource"
-permissions = "Permissions"
-authorize = "Authorize"
-cancel = "Cancel"
 
 [collection_page.desc]
 add = "Add description"

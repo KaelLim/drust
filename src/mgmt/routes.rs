@@ -68,10 +68,6 @@ pub struct MgmtState {
     /// Default: 5 per 60 s. Defends the provider-exchange path from being
     /// flooded with attacker-supplied (code, state) pairs.
     pub admin_oauth_callback_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
-    /// Per-IP rate limiter for POST /oauth/register (RFC 7591 DCR).
-    /// Default: 10 per 3600 s. Prevents bulk client-ID minting from a
-    /// single IP.
-    pub oauth_register_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
 }
 
 #[derive(Template)]
@@ -404,20 +400,9 @@ async fn login_submit(
     entry.auth_method = Some("password".to_string());
     crate::safety::audit::write_entry(&state.log_dir, &entry).await;
     let cookie = build_session_cookie(&token, state.session_ttl_days * 86_400);
-    let secure = std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_err();
-    let target = crate::mgmt::oauth_server::return_url::read(&headers)
-        .filter(|p| p.starts_with('/'))
-        .map(|p| format!("/drust{p}"))
-        .unwrap_or_else(|| "/drust/admin/tenants".to_string());
-    let mut resp = Redirect::to(&target).into_response();
+    let mut resp = Redirect::to("/drust/admin/tenants").into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
-    resp.headers_mut().append(
-        header::SET_COOKIE,
-        crate::mgmt::oauth_server::return_url::build_clear(secure)
-            .parse()
-            .unwrap(),
-    );
     // v1.28.1: expire any pre-v1.28.1 cookies that login wrote with `Path=/`.
     // Those bypassed the canonical Path=/drust path used by /admin/settings,
     // so after Save the browser would hold both copies and CookieJar::get
@@ -634,40 +619,6 @@ impl MgmtState {
             .route(
                 "/admin/oauth/{provider}/callback",
                 get(crate::mgmt::oauth_login::oauth_callback),
-            )
-            // v1.29.0 — RFC 7591 Dynamic Client Registration. Public; no auth.
-            // Rate-limited at 10/hour per IP (oauth_register_rl).
-            .route(
-                "/oauth/register",
-                axum::routing::post(super::oauth_server::register::register_client),
-            )
-            // v1.29.0 — OAuth 2.1 /authorize. Lives in public so the GET
-            // can do its own session-absent handling (intent cookie + redirect
-            // to /login) instead of being unconditionally 302'd by
-            // admin_session_layer before the handler runs.
-            .route(
-                "/oauth/authorize",
-                axum::routing::get(super::oauth_server::authorize::authorize_get)
-                    .post(super::oauth_server::authorize::authorize_post),
-            )
-            // v1.29.0 — OAuth 2.1 /token. Public; PKCE + client_id validate in
-            // handler; no admin session cookie needed (code + verifier are the
-            // credentials). Both authorization_code + refresh_token grants.
-            .route(
-                "/oauth/token",
-                axum::routing::post(super::oauth_server::token::token_endpoint),
-            )
-            // v1.29.0 — RFC 9728 Protected Resource Metadata. Public; no auth.
-            // MCP clients fetch this to discover the authorization server.
-            .route(
-                "/.well-known/oauth-protected-resource",
-                axum::routing::get(super::oauth_server::metadata::protected_resource),
-            )
-            // v1.29.0 — RFC 8414 Authorization Server Metadata. Public; no auth.
-            // MCP clients fetch this to discover authorize/token/register endpoints.
-            .route(
-                "/.well-known/oauth-authorization-server",
-                axum::routing::get(super::oauth_server::metadata::authorization_server),
             )
             .with_state(self.clone());
 
@@ -919,18 +870,6 @@ impl MgmtState {
             )
             .with_state(self.clone());
 
-        // v1.29.0 — Owner-only OAuth client admin: list + revoke.
-        let oauth_clients_router = Router::new()
-            .route(
-                "/admin/oauth/clients",
-                get(super::oauth_clients_admin::list_or_render),
-            )
-            .route(
-                "/admin/oauth/clients/{id}",
-                axum::routing::delete(super::oauth_clients_admin::revoke_client),
-            )
-            .with_state(self.clone());
-
         // v1.29.0 — per-admin PAT mint/list/revoke (self-service).
         let tokens_router = Router::new()
             .route(
@@ -973,7 +912,6 @@ impl MgmtState {
             .merge(settings_router)
             .merge(team_router)
             .merge(tokens_router)
-            .merge(oauth_clients_router)
             .layer(axum::middleware::from_fn_with_state(
                 inner_theme_state,
                 crate::mgmt::theme_layer::theme_layer,

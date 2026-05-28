@@ -229,7 +229,6 @@ backups = "備份"
 changelog = "更新紀錄"
 design_system = "設計系統"
 host_files = "主機檔案"
-oauth_clients = "OAuth clients"
 settings = "設定"
 team = "團隊"
 tenants = "租戶"
@@ -245,25 +244,6 @@ scope = "主機層級範圍"
 [admin_sidebar.section]
 organization = "組織"
 resources = "資源"
-
-[admin_oauth_clients]
-active = "啟用中"
-empty = "尚無已註冊的 OAuth clients。"
-revoke = "撤銷"
-revoked = "已撤銷"
-subtitle = "經由 Dynamic Client Registration 註冊的 MCP clients"
-title = "OAuth clients"
-confirm_revoke = "撤銷 client「{name}」？這會立即作廢所有已發行的 access + refresh tokens。"
-
-[admin_oauth_clients.col]
-actions = "操作"
-client = "Client"
-client_id = "Client ID"
-created = "建立時間"
-name = "名稱"
-registered = "註冊時間"
-status = "狀態"
-tokens = "Active tokens"
 
 [admin_tokens.action]
 copy = "複製"
@@ -1321,15 +1301,6 @@ with_failure = "有失敗"
 eyebrow = "租戶 · 後端"
 subtitle = "對外通知於記錄 created / updated / deleted 時觸發。以 HMAC-SHA256 簽署於 X-Drust-Signature 標頭。同步重試最多 4 次（0s / 1s / 5s / 30s）。"
 title = "Webhooks"
-
-[oauth_consent]
-title = "授權存取"
-requesting = "正在請求存取你的 drust tenant"
-on_behalf_of = "代表"
-resource = "資源"
-permissions = "權限"
-authorize = "授權"
-cancel = "取消"
 
 [collection_page.desc]
 add = "新增說明"
