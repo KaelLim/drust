@@ -168,19 +168,70 @@
     var el = document.getElementById(id);
     navigator.clipboard.writeText(el.getAttribute('data-plain')).then(function () { _setOk(btn); });
   }
-  function copyMcpCommand(btn) {
-    var urlEl = document.getElementById('mcp-url');
-    var keyEl = document.getElementById('key-service');
-    var tenantId = urlEl && urlEl.getAttribute('data-tenant');
-    var token = keyEl && keyEl.getAttribute('data-plain');
-    if (!tenantId || !token) {
-      drustUI.alert({title:'{{ t.s("tenant_api_keys.alert.service_required_title") }}', body:'{{ t.s("tenant_api_keys.alert.service_required_body") }}'});
+  // Builds the full `claude mcp add-json` command. Called only when the
+  // PAT plaintext is freshly minted; the resulting string is handed to
+  // drustUI.alert's codeBlock, which renders it inside a <pre> with a
+  // built-in clipboard-copy icon. The plaintext lives in this scope and
+  // in modal-body DOM until the modal closes (then GC'd) — never persisted
+  // server-side beyond the hash row.
+  function buildMcpSnippet(tenantId, token) {
+    var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
+    var serverCfg = { type: 'http', url: url, headers: { Authorization: 'Bearer ' + token } };
+    return "claude mcp add-json drust-" + tenantId + " '" + JSON.stringify(serverCfg) + "'";
+  }
+
+  async function copyMcpCommand(_btn) {
+    var tenantId = document.getElementById('mcp-url').getAttribute('data-tenant');
+    var body;
+    try {
+      var res = await fetch('/drust/admin/me/mcp-pat/ensure', { method: 'POST' });
+      if (!res.ok) throw new Error('http ' + res.status);
+      body = await res.json();
+    } catch (e) {
+      drustUI.alert({
+        title: '{{ t.s("mcp_pat.alert.pat_failed_title") }}',
+        body:  '{{ t.s("mcp_pat.alert.pat_failed_body") }}'
+      });
       return;
     }
-    var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
-    var serverCfg = { type:'http', url:url, headers:{ Authorization:'Bearer ' + token } };
-    var cmd = "claude mcp add-json drust-" + tenantId + " '" + JSON.stringify(serverCfg) + "'";
-    navigator.clipboard.writeText(cmd).then(function () { _setOk(btn); });
+
+    if (body.token) {
+      // Just-minted: render the snippet in a code block (drustUI.alert's
+      // codeBlock has its own copy-to-clipboard icon). The plaintext
+      // leaves the DOM when the modal closes — see _modal.html close().
+      drustUI.alert({
+        title: '{{ t.s("mcp_pat.modal.title_minted") }}',
+        body:  '{{ t.s("mcp_pat.modal.body_minted") }}',
+        codeBlock: buildMcpSnippet(tenantId, body.token)
+      });
+    } else {
+      // Already minted, plaintext gone. Ask whether to remint (which
+      // invalidates the old mcp.json everywhere).
+      var fp = body.hash_prefix || '';
+      var bodyText = '{{ t.s("mcp_pat.modal.body_existing") }}'.replace('{fingerprint}', fp);
+      var ok = await drustUI.confirm({
+        title:  '{{ t.s("mcp_pat.modal.title_existing") }}',
+        body:   bodyText + '\n\n' + '{{ t.s("mcp_pat.confirm.remint") }}',
+        okText: '{{ t.s("mcp_pat.modal.remint") }}',
+        danger: true
+      });
+      if (!ok) return;
+      try {
+        var res2 = await fetch('/drust/admin/me/mcp-pat/remint', { method: 'POST' });
+        if (!res2.ok) throw new Error('http ' + res2.status);
+        var body2 = await res2.json();
+        drustUI.alert({
+          title: '{{ t.s("mcp_pat.modal.title_minted") }}',
+          body:  '{{ t.s("mcp_pat.modal.body_minted") }}',
+          codeBlock: buildMcpSnippet(tenantId, body2.token)
+        });
+      } catch (e) {
+        drustUI.alert({
+          title: '{{ t.s("mcp_pat.alert.pat_failed_title") }}',
+          body:  '{{ t.s("mcp_pat.alert.pat_failed_body") }}'
+        });
+      }
+    }
   }
   function _setSelfRegPill(enabled) {
     var pill = document.getElementById('self-reg-pill');
