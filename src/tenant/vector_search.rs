@@ -6,7 +6,7 @@
 //! /query but allowed on /search" for rationale.
 
 use crate::auth::middleware::AuthCtx;
-use crate::error::json_error;
+use crate::error::{json_error, json_error_with_aliases};
 use crate::query::vector_codec;
 use crate::query::vector_filter::{self, FilterAst, FilterError};
 use crate::storage::schema::DmlVerb;
@@ -97,9 +97,10 @@ pub async fn search_handler(
         );
     }
     if !crate::storage::schema::has_dml_cap(tenant.role, DmlVerb::Select, &schema) {
-        return json_error(
+        return json_error_with_aliases(
             StatusCode::FORBIDDEN,
-            "ANON_DENIED",
+            "ANON_CAP_DENIED",
+            &["ANON_DENIED"],
             &format!("role lacks 'select' on collection '{coll}'"),
         );
     }

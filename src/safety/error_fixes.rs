@@ -7,6 +7,7 @@
 
 /// Sorted (by error code) catalog. Add new entries in alphabetical order.
 pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
+    ("ANON_CAP_DENIED", "Anonymous role lacks the required DML capability on this collection. Either authenticate with a user/service token, or have the tenant owner widen anon_caps."),
     ("COLLECTION_NOT_FOUND", "Collection does not exist. Call `get_schema_overview` or `list_collections` to see existing collections."),
     ("DESCRIPTION_INVALID", "Description failed validation. Strip control characters and ensure UTF-8."),
     ("DESCRIPTION_TOO_LONG", "Descriptions are capped at 2048 bytes. Shorten the text and retry."),
