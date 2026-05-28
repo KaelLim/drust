@@ -315,6 +315,9 @@ pub async fn create_collection_with_desc(
     );
     // Collect vector fields up front so the writer closure can persist
     // them in the same transaction as the table DDL + anon_caps seed.
+    // v1.29.4: collection / field descriptions are also written here in
+    // the same tx — partial create_collection states (table without meta)
+    // are no longer possible.
     let vector_fields: Vec<crate::storage::schema::VectorField> = fields
         .iter()
         .filter(|f| f.sql_type == "vector")
@@ -326,21 +329,30 @@ pub async fn create_collection_with_desc(
     let pool = s.inner().pool.clone();
     let pool2 = pool.clone();
     let meta_name = name.to_string();
-    let vfields_for_writer = vector_fields.clone();
-    pool.with_writer(move |c| -> rusqlite::Result<()> {
-        c.execute_batch(&format!("{sql}\n{trigger}"))?;
-        // Seed the anon_caps row so REST / cache lookups don't have to
+    pool.with_writer_tx(move |tx| -> rusqlite::Result<()> {
+        // 1. Table DDL + AFTER UPDATE trigger.
+        tx.execute_batch(&format!("{sql}\n{trigger}"))?;
+        // 2. Seed the anon_caps row so REST / cache lookups don't have to
         // fall back to defaults the first time around.
-        write_anon_caps(c, &meta_name, &default_anon_caps())?;
-        // v1.16: opt-in posture. Existing collections were backfilled to
+        write_anon_caps(tx, &meta_name, &default_anon_caps())?;
+        // 3. v1.16: opt-in posture. Existing collections were backfilled to
         // 1 by the migration; brand-new collections start at 0.
-        crate::storage::schema::write_realtime_enabled(c, &meta_name, false)?;
-        if !vfields_for_writer.is_empty() {
+        crate::storage::schema::write_realtime_enabled(tx, &meta_name, false)?;
+        // 4. Vector fields (if any).
+        if !vector_fields.is_empty() {
             crate::storage::schema::write_vector_fields(
-                c,
+                tx,
                 &meta_name,
-                &vfields_for_writer,
+                &vector_fields,
             )?;
+        }
+        // 5. v1.19.1 — collection-level description from the pre-validated value.
+        if let Some(val) = &validated_coll_desc {
+            write_collection_description(tx, &meta_name, Some(val))?;
+        }
+        // 6. v1.19.1 — per-field descriptions from the pre-validated list.
+        for (fname, val) in &validated_field_descs {
+            write_field_description(tx, &meta_name, fname, Some(val))?;
         }
         Ok(())
     })
@@ -349,22 +361,6 @@ pub async fn create_collection_with_desc(
     // Schema cache must drop any pre-existing entry for this name so the
     // next describe_collection / REST request loads the fresh table.
     pool.schema_cache.invalidate(name);
-
-    // v1.19.1 — persist collection-level description from the pre-validated value.
-    if let Some(val) = validated_coll_desc {
-        let coll = name.to_string();
-        pool.with_writer(move |c| write_collection_description(c, &coll, Some(&val)))
-            .await?;
-    }
-
-    // v1.19.1 — persist per-field descriptions from the pre-validated list.
-    for (fname, val) in validated_field_descs {
-        let coll = name.to_string();
-        pool.with_writer(move |c| {
-            write_field_description(c, &coll, &fname, Some(&val))
-        })
-        .await?;
-    }
 
     let schema = pool2
         .with_reader(move |c| describe_collection(c, &table))
