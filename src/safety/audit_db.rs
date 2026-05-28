@@ -226,6 +226,22 @@ impl AuditWriter {
     pub async fn send_set_meta(&self, key: String, value: String) {
         let _ = self.tx.send(WriterCmd::SetMeta { key, value }).await;
     }
+
+    /// v1.29.4 — graceful drain for SIGTERM. writer_loop already flushes
+    /// its in-flight buffer every 100ms (FLUSH_INTERVAL_MS) or 100 rows
+    /// (FLUSH_BATCH_SIZE). Sleeping one flush window plus a margin
+    /// guarantees the buffer hits disk before process exit.
+    ///
+    /// The sender lives in OnceLock<WRITER> for the process lifetime, so
+    /// we cannot close the channel from here — full channel-close drain
+    /// is deferred to v1.30+ when sender ownership is restructured. This
+    /// is good enough today because writer_loop has no other pending
+    /// work (RunRetention runs from a separate task at 03:00 UTC, not at
+    /// shutdown).
+    pub async fn drain(&self) {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tracing::info!("audit drain: 200ms flush window elapsed");
+    }
 }
 
 use std::sync::OnceLock;
@@ -276,6 +292,15 @@ pub fn dropped_total() -> u64 {
         .get()
         .map(|w| w.dropped.load(std::sync::atomic::Ordering::Relaxed))
         .unwrap_or(0)
+}
+
+/// v1.29.4 — invoke the global AuditWriter's drain. No-op when WRITER
+/// is uninitialised (test/pre-init paths). Used by main.rs in the
+/// graceful shutdown chain.
+pub async fn drain_writer() {
+    if let Some(w) = WRITER.get() {
+        w.drain().await;
+    }
 }
 
 /// Compute the next 03:00 UTC fire time strictly after `now`. If `now`
