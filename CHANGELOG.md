@@ -1,3 +1,59 @@
+## [1.29.3] — 2026-05-28
+
+Simplifies the PAT model: one PAT per admin, plaintext-retrievable from
+/admin/settings, auto-created on admin invite + bootstrap. The
+v1.29.0 Task 8 /admin/settings/tokens multi-PAT page and the v1.29.2
+/admin/me/mcp-pat/* ensure/remint endpoints are deleted.
+
+### Breaking
+- `_admin_tokens.kind` and `_admin_tokens.name` columns dropped. Any
+  caller reading them via raw SQL must update.
+- All v1.29.0 / v1.29.2 PATs are soft-revoked on first boot — admins
+  must visit /admin/settings to view their fresh plaintext-bearing
+  PAT and re-paste into mcp.json on every machine that was using a
+  v1.29.0 or v1.29.2 PAT.
+- bearer_auth_layer now filters `AND revoked_at IS NULL` on the PAT
+  lookup. Soft-revoked PATs no longer authenticate.
+
+### Removed
+- `/drust/admin/settings/tokens` page + POST/DELETE handlers
+  (v1.29.0 Task 8).
+- `/drust/admin/me/mcp-pat/{ensure,remint}` endpoints (v1.29.2 S3b).
+- `[admin_tokens.*]` and `[mcp_pat.modal]` + `[mcp_pat.confirm]` i18n
+  sections.
+- Sidebar "Tokens" nav-item (now lives as a card on /admin/settings).
+
+### Added
+- `_admin_tokens.plaintext` column (mirrors `tokens.plaintext` for
+  service/anon).
+- Partial unique index `uniq_admin_tokens_active ON _admin_tokens(admin_id)
+  WHERE revoked_at IS NULL` — at-most-one-active-PAT-per-admin invariant.
+- `POST /drust/admin/settings/token/reroll` — atomic revoke-current +
+  mint-new.
+- "Personal MCP token" card on `/drust/admin/settings`: PAT plaintext
+  with [Reveal] / [Copy] / [Reroll] (rotation warning mirrors v1.29.2
+  S4 service-token reroll text).
+- `tenant_api_keys.html` "Copy MCP config" reads the caller's PAT
+  from a server-injected `<span data-plain>` and writes the
+  `claude mcp add-json` snippet to clipboard — single-click, same
+  shape as the existing service-token copy.
+- Admin invite (`POST /admin/team`) now creates the admin and their
+  PAT atomically in a single unchecked_transaction. Bootstrap admin
+  (DRUST_INIT_ADMIN_*) gets its PAT via the run_migrations backfill
+  loop (no transaction needed — single-threaded boot).
+
+### Migration notes
+- **From v1.29.2**: schema migrates automatically. All existing PATs
+  (manual + auto_mcp) are soft-revoked. Each admin gets one fresh PAT
+  with plaintext on first boot. Admins log in, copy from
+  /admin/settings, paste into mcp.json on every machine that was
+  using a v1.29.0 or v1.29.2 PAT.
+- **From v1.28.x**: same as v1.29.2 path plus the new schema. No
+  legacy PATs to revoke (none existed).
+- **Rollback to v1.29.2**: not safe in general — `kind` and `name`
+  columns are gone. Restore meta.sqlite from `drust-backup.timer`
+  (30-day retention) if needed.
+
 ## [1.29.2] — 2026-05-28
 
 Retracts the v1.29.0 OAuth 2.1 Authorization Server bundle for MCP and
