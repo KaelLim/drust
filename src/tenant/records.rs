@@ -223,6 +223,28 @@ fn record_as_json(
     Ok(row)
 }
 
+/// Attach RFC 8594 Deprecation + Sunset + Link headers to a response.
+/// Called by `list_handler` when the legacy `?filter` / `?sort` query
+/// params are present.  The headers are informational only (phase 1);
+/// phase 2 will start refusing these params after the sunset date.
+fn attach_deprecation_headers(resp: &mut Response) {
+    let h = resp.headers_mut();
+    h.insert(
+        axum::http::header::HeaderName::from_static("deprecation"),
+        axum::http::header::HeaderValue::from_static("true"),
+    );
+    h.insert(
+        axum::http::header::HeaderName::from_static("sunset"),
+        axum::http::header::HeaderValue::from_static("Wed, 01 Jan 2027 00:00:00 GMT"),
+    );
+    h.insert(
+        axum::http::header::HeaderName::from_static("link"),
+        axum::http::header::HeaderValue::from_static(
+            "</docs/migration/list-filter.md>; rel=\"deprecation\"",
+        ),
+    );
+}
+
 pub async fn list_handler(
     Extension(t): Extension<TenantRef>,
     Extension(ctx): Extension<AuthCtx>,
@@ -362,14 +384,24 @@ pub async fn list_handler(
         .collect();
     let per_page = params.per_page.clamp(1, 500) as u64;
     let total_pages = (total as u64).div_ceil(per_page.max(1));
-    Json(json!({
+    let mut resp = Json(json!({
         "records": records_out,
         "page": params.page,
         "perPage": per_page,
         "total": total,
         "totalPages": total_pages,
     }))
-    .into_response()
+    .into_response();
+    // H5-1 phase 1: advertise deprecation when the legacy raw-SQL query
+    // params (?filter / ?sort) are present. Behavior is unchanged for now.
+    // Phase 2 (after 2027-01-01) will refuse these params entirely.
+    // Clients should migrate to POST /collections/<c>/list with a
+    // structured FilterAst body — drust builds the SQL with ? binds, so
+    // owner_field is always enforced and there is no injection surface.
+    if qs.filter.is_some() || qs.sort.is_some() {
+        attach_deprecation_headers(&mut resp);
+    }
+    resp
 }
 
 pub async fn get_handler(
