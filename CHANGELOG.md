@@ -1,3 +1,54 @@
+## v1.29.4 — 2026-05-28
+
+Post-review fix cycle, release 1 of 3. Closes 9 of 16 🟠 high findings
+from the 2026-05-28 code review notes
+(docs/superpowers/notes/2026-05-28-drust-pre-v130-code-review.md).
+
+### Added
+
+- `pool::with_writer_tx` — canonical multi-statement-write helper that
+  wraps writer mutex + SQLite transaction. Commits on `Ok`, rolls back
+  on `Err` (or panic, via `Transaction::drop` rollback default). Pure
+  addition; no caller of `with_writer` was touched.
+
+### Fixed
+
+- **Partial-state risk on `create_collection`** (H1-3, the highest-risk
+  site identified in the review). The pre-existing comment "in the same
+  transaction as the table DDL + anon_caps seed" claimed atomicity that
+  the code did NOT provide — failure between the table DDL and the
+  anon_caps / realtime / vector_fields / description writes left a
+  half-created collection with default fallbacks that looked normal.
+  All 6 write steps now run inside one `with_writer_tx`.
+- **Multi-statement writes on `tenant/records.rs` + `mcp/tools/write.rs`**
+  (H1-2, H1-4). DESCRIBE → INSERT/UPDATE/DELETE → readback sequences
+  now atomic; a mid-sequence panic rolls back instead of returning 500
+  with the row already persisted.
+- **Pool-writer sites in `mgmt/rpc_admin.rs`** (H1-5). admin_team.rs and
+  meta.sqlite paths keep `unchecked_transaction` for v1.29.4; a parallel
+  `with_meta_tx` helper is deferred.
+- **Event dispatch timing** (H5-2). `bus.publish` + `webhooks.dispatch`
+  now run AFTER the response payload is constructed, eliminating the
+  phantom-event window where subscribers would see an event but the
+  client would see 500.
+- **Audit drain on SIGTERM** (H5-4). `main.rs` graceful shutdown now
+  flushes the SQLite audit writer's in-flight buffer (200ms flush
+  window) before exit. Previously only the JSONL writer was drained;
+  the dual-write path masked the gap until JSONL retirement (v1.25.2,
+  scheduled 2026-06-22).
+- **PAT plaintext leak defense-in-depth** (H5-3). `reroll` endpoint now
+  emits `X-Drust-Sensitive: true` response header; `should_log_body()`
+  blacklist extended to `/admin/settings/token/*` paths.
+- **Admin session pruning** (H4-1). `drust_session_janitor` now sweeps
+  `meta.sqlite.sessions` in addition to per-tenant `_system_sessions`.
+  Admin browser sessions previously accumulated forever (zero production
+  caller of `auth::session::purge_expired`).
+
+### Migration
+
+None — no schema changes, no client-facing API changes. `with_writer_tx`
+is purely additive; existing `with_writer` callers unchanged.
+
 ## [1.29.3] — 2026-05-28
 
 Simplifies the PAT model: one PAT per admin, plaintext-retrievable from
