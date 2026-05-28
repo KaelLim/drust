@@ -369,18 +369,18 @@ pub async fn rpc_save(
         return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme, admin.clone());
     }
 
-    // Single writer transaction: lookup existence + create-or-update.
+    // Atomic writer transaction: lookup existence + create-or-update.
     let form_for_writer = form.clone();
     let writer_res = pool
-        .with_writer(move |c| -> rusqlite::Result<bool> {
-            let exists_now = registry::lookup(c, &form_for_writer.name)
+        .with_writer_tx(move |tx| -> rusqlite::Result<bool> {
+            let exists_now = registry::lookup(tx, &form_for_writer.name)
                 .ok()
                 .flatten()
                 .is_some();
             let anon_callable = form_for_writer.anon_callable.is_some();
             let result = if exists_now {
                 registry::update(
-                    c,
+                    tx,
                     &form_for_writer.name,
                     Some(&form_for_writer.sql),
                     Some(&form_for_writer.params_json),
@@ -389,7 +389,7 @@ pub async fn rpc_save(
                 )
             } else {
                 registry::create(
-                    c,
+                    tx,
                     &form_for_writer.name,
                     &form_for_writer.sql,
                     &form_for_writer.params_json,
