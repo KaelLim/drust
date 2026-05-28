@@ -1,3 +1,44 @@
+## v1.29.6 — 2026-05-29
+
+Post-review fix cycle, release 3 of 3. Error-code namespace
+harmonisation + legacy GET filter deprecation. All changes backward-
+compatible — clients catching existing codes keep working.
+
+### Added
+
+- `error::json_error_with_aliases` helper — emits both primary
+  `error_code` and an `error_aliases` JSON array. Lets the wire format
+  carry "this code === that code" during code-namespace migration
+  without breaking existing clients.
+- Suggested-fix catalog entries for `SERVICE_REQUIRED` (canonical for
+  v1.30+ service-only rejection) and `ANON_CAP_DENIED` (canonical for
+  cap-denial responses).
+
+### Changed
+
+- **Service-only WRITE_DENIED sites** (H2-1, mcp_dispatch + router
+  `require_service` + realtime + collections description handlers +
+  schema overview) now emit `error_aliases: ["SERVICE_REQUIRED"]`
+  alongside the primary `error_code: "WRITE_DENIED"`. The genuine
+  "anon can't write to this collection" path on `/records/*` keeps
+  `WRITE_DENIED` only.
+- **`vector_search.rs` + `records.rs` ANON_DENIED sites** (H2-2 + C3.1)
+  now emit canonical `ANON_CAP_DENIED` with `ANON_DENIED` as alias
+  for backward compat. Harmonises with `records_list.rs` (v1.21).
+  `rpc/handler.rs::ANON_DENIED` (RPC callability gate, different
+  semantic) deferred to v1.30 RPC v2.
+- **GET `/t/<id>/records/<coll>?filter=` / `?sort=`** (H5-1 phase 1)
+  now responds with `Deprecation: true` + `Sunset: Wed, 01 Jan 2027
+  00:00:00 GMT` + `Link` headers. Behavior unchanged; phase 2 (post-
+  sunset) will refuse raw filter strings.
+
+### Migration
+
+No schema changes. Client error-code matchers continue to work via
+`error_code`; new code can read `error_aliases`. GET `?filter=` callers
+should plan migration to POST `/collections/<c>/list` with FilterAst
+before 2027-01-01.
+
 ## v1.29.5 — 2026-05-29
 
 Post-review fix cycle, release 2 of 3. Schema additions laying
