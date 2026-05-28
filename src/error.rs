@@ -49,6 +49,37 @@ pub fn json_error_with_context(
     resp
 }
 
+/// v1.29.6 — same as `json_error` but additionally emits an
+/// `error_aliases` JSON array of semantically-equivalent codes.
+/// Use during error-code migration so old clients continue catching
+/// the primary `error_code` while new clients can switch to the
+/// canonical name.
+///
+/// Wire shape:
+/// ```json
+/// {"error_code": "WRITE_DENIED",
+///  "error_aliases": ["SERVICE_REQUIRED"],
+///  "message": "...",
+///  "suggested_fix": "..."}
+/// ```
+pub fn json_error_with_aliases(
+    status: StatusCode,
+    code: &str,
+    aliases: &[&str],
+    message: &str,
+) -> Response {
+    let mut body = serde_json::Map::new();
+    body.insert("error_code".into(), json!(code));
+    body.insert("error_aliases".into(), json!(aliases));
+    body.insert("message".into(), json!(message));
+    if let Some(fix) = crate::safety::error_fixes::lookup(code) {
+        body.insert("suggested_fix".into(), json!(fix));
+    }
+    let mut resp = Json(serde_json::Value::Object(body)).into_response();
+    *resp.status_mut() = status;
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +121,34 @@ mod tests {
         assert!(fix.contains("`xyz`"));
         assert!(fix.contains("`posts`"));
         assert!(fix.contains("id, title"));
+    }
+
+    #[tokio::test]
+    async fn json_error_with_aliases_emits_array() {
+        let resp = json_error_with_aliases(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
+            "service required",
+        );
+        let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error_code"], "WRITE_DENIED");
+        assert_eq!(v["error_aliases"], serde_json::json!(["SERVICE_REQUIRED"]));
+        assert_eq!(v["message"], "service required");
+    }
+
+    #[tokio::test]
+    async fn json_error_with_aliases_emits_suggested_fix() {
+        let resp = json_error_with_aliases(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
+            "service required",
+        );
+        let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // WRITE_DENIED is in the suggested_fix catalog
+        assert!(v["suggested_fix"].as_str().unwrap().contains("service"));
     }
 }
