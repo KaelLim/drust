@@ -186,10 +186,12 @@ pub async fn insert_record(
             Ok((id, rec))
         })
         .await?;
-    let ev = Event::Created { record: record.clone() };
+    // Build response first; dispatch only after payload exists.
+    let response_payload = json!({ "id": id, "record": record.clone() });
+    let ev = Event::Created { record };
     bus.publish(&tenant, collection, ev.clone());
     webhooks.dispatch(&tenant, collection, ev);
-    Ok(json!({ "id": id, "record": record }))
+    Ok(response_payload)
 }
 
 pub async fn update_record(
@@ -273,10 +275,12 @@ pub async fn update_record(
             read_record(tx, &coll, id, &vector_names)
         })
         .await?;
-    let ev = Event::Updated { record: record.clone() };
+    // Build response first; dispatch only after payload exists.
+    let response_payload = json!({ "record": record.clone() });
+    let ev = Event::Updated { record };
     bus.publish(&tenant, collection, ev.clone());
     webhooks.dispatch(&tenant, collection, ev);
-    Ok(json!({ "record": record }))
+    Ok(response_payload)
 }
 
 /// v1.26 — Validation half of `delete_record`, used by dry_run mode.
@@ -335,8 +339,10 @@ pub async fn delete_record(
     if n == 0 {
         return Ok(json!({ "ok": false, "error_code": "RECORD_NOT_FOUND", "message": format!("record with id {} not found in collection {:?}", id, collection) }));
     }
+    // Build response first; dispatch only after payload exists.
+    let response_payload = json!({ "ok": true });
     let ev = Event::Deleted { id };
     bus.publish(&tenant, collection, ev.clone());
     webhooks.dispatch(&tenant, collection, ev);
-    Ok(json!({ "ok": true }))
+    Ok(response_payload)
 }

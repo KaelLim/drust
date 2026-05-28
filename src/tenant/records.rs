@@ -625,11 +625,12 @@ pub async fn create_handler(
         .await;
     match res {
         Ok((id, rec)) => {
-            let ev = Event::Created { record: rec.clone() };
+            // Build response first; dispatch only after payload exists.
+            let mut r = Json(json!({ "id": id, "record": rec.clone() })).into_response();
+            *r.status_mut() = StatusCode::CREATED;
+            let ev = Event::Created { record: rec };
             bus.publish(&tenant_id, &coll, ev.clone());
             webhooks.dispatch(&tenant_id, &coll, ev);
-            let mut r = Json(json!({ "id": id, "record": rec })).into_response();
-            *r.status_mut() = StatusCode::CREATED;
             r
         }
         Err(e) => {
@@ -813,10 +814,12 @@ pub async fn update_handler(
         .await;
     match res {
         Ok(rec) => {
-            let ev = Event::Updated { record: rec.clone() };
+            // Build response first; dispatch only after payload exists.
+            let r = Json(json!({ "record": rec.clone() })).into_response();
+            let ev = Event::Updated { record: rec };
             bus.publish(&tenant_id, &coll, ev.clone());
             webhooks.dispatch(&tenant_id, &coll, ev);
-            Json(json!({ "record": rec })).into_response()
+            r
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             (StatusCode::NOT_FOUND, "no such record").into_response()
@@ -911,10 +914,12 @@ pub async fn delete_handler(
     match res {
         Ok(0) => (StatusCode::NOT_FOUND, "no such record").into_response(),
         Ok(_) => {
+            // Build response first; dispatch only after payload exists.
+            let r = StatusCode::NO_CONTENT.into_response();
             let ev = Event::Deleted { id };
             bus.publish(&tenant_id, &coll, ev.clone());
             webhooks.dispatch(&tenant_id, &coll, ev);
-            StatusCode::NO_CONTENT.into_response()
+            r
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
