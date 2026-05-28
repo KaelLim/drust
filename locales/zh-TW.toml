@@ -279,6 +279,10 @@ done = "完成"
 body = "撤銷 token"
 title = "撤銷 token"
 
+[admin_tokens.confirm]
+revoke_text = "撤銷後這把 PAT 立即無效。如果你把它寫進過 mcp.json 或當成環境變數設定在任何機器上，那些地方會回 401，必須換一把 PAT 或重新 mint。確定要撤銷嗎？"
+revoke_title = "撤銷 PAT"
+
 [admin_tokens.plaintext]
 warning = "此 token 僅此一次顯示，請立即複製。"
 
@@ -908,7 +912,7 @@ service_scopes = "略過 anon_caps 與 owner-field・僅限可信後端使用"
 
 [tenant_api_keys.confirm]
 reroll_ok = "重新產生"
-reroll_text = "要重新產生 {role} 金鑰嗎？目前的金鑰會立即失效。"
+reroll_text = "重抽會立即讓目前的 {role} key 失效。所有正在使用此 key 的網站、Claude Code mcp.json、自動化腳本都會回 401，必須到每一個 client 更新 token。確定要繼續嗎？"
 reroll_title = "重新產生金鑰"
 
 [tenant_api_keys.head]

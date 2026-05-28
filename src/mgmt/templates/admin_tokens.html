@@ -86,15 +86,15 @@
 <dialog id="dlg-revoke" class="modal">
   <form method="dialog" class="modal-card">
     <div class="modal-head">
-      <span class="modal-title">{{ t.s("admin_tokens.modal.revoke.title") }}</span>
+      <span class="modal-title" id="revoke-modal-title">{{ t.s("admin_tokens.confirm.revoke_title") }}</span>
       <button type="submit" class="btn ghost sm" value="cancel">✕</button>
     </div>
     <div class="modal-body">
-      <p>{{ t.s("admin_tokens.modal.revoke.body") }} <strong id="revoke-name"></strong>?</p>
+      <p id="revoke-modal-body">{{ t.s("admin_tokens.confirm.revoke_text") }}</p>
     </div>
     <div class="modal-foot">
       <button type="submit" class="btn ghost" value="cancel">{{ t.s("common.button.cancel") }}</button>
-      <button type="button" class="btn danger" id="btn-revoke-confirm">{{ t.s("admin_tokens.action.revoke") }}</button>
+      <button type="button" class="btn danger" id="btn-revoke-confirm">{{ t.s("admin_tokens.confirm.revoke_title") }}</button>
     </div>
   </form>
 </dialog>
@@ -151,7 +151,6 @@
   document.querySelectorAll('[data-revoke-id]').forEach(function(btn) {
     btn.addEventListener('click', function() {
       pendingRevokeId = btn.getAttribute('data-revoke-id');
-      document.getElementById('revoke-name').textContent = btn.getAttribute('data-revoke-name');
       dlgRevoke.showModal();
     });
   });
