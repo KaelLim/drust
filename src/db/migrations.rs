@@ -257,6 +257,24 @@ pub fn run_migrations(
         }
     }
 
+    // v1.29.5 — admin session token_hash column (H4-2 phase 1).
+    // Dual-write phase: code writes both `token` (plaintext) and
+    // `token_hash` (hex SHA-256). Reads accept either. v1.31+ will
+    // drop the `token` column after a stability window.
+    // Guard: `sessions` is always present on a real DB (created by
+    // SCHEMA_SQL before run_migrations), but tests that seed only a
+    // minimal subset of tables skip this step safely.
+    let sessions_exists: bool = meta.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'",
+        [], |_| Ok(())
+    ).is_ok();
+    if sessions_exists {
+        add_column_if_missing(meta, "sessions", "token_hash", "TEXT")?;
+        meta.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);"
+        )?;
+    }
+
     report.meta_done = true;
 
     let mut stmt = meta.prepare("SELECT id FROM tenants")?;
