@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS _admin_tokens (
     token_hash      TEXT    NOT NULL UNIQUE,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     last_used_at    TEXT,
+    revoked_at      TEXT,
     UNIQUE(admin_id, name)
 ) STRICT;
 
@@ -172,6 +173,27 @@ pub fn run_migrations(
          DROP TABLE IF EXISTS _oauth_clients;"
     )?;
 
+    // v1.29.2 — per-admin auto-MCP PAT discriminator. Column with CHECK
+    // ensures `kind` is one of two known values; the partial unique index
+    // enforces at-most-one active 'auto_mcp' PAT per admin.
+    add_column_if_missing(
+        meta,
+        "_admin_tokens",
+        "revoked_at",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        meta,
+        "_admin_tokens",
+        "kind",
+        "TEXT NOT NULL DEFAULT 'manual' CHECK (kind IN ('manual','auto_mcp'))",
+    )?;
+    meta.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_admin_tokens_auto_mcp \
+           ON _admin_tokens(admin_id) \
+           WHERE kind='auto_mcp' AND revoked_at IS NULL;"
+    )?;
+
     report.meta_done = true;
 
     let mut stmt = meta.prepare("SELECT id FROM tenants")?;
@@ -300,6 +322,60 @@ mod tests {
                 ).unwrap();
             assert_eq!(row, 0, "table {table} should have been dropped");
         }
+    }
+
+    #[test]
+    fn v1292_admin_tokens_kind_column_and_partial_unique_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT NOT NULL, email TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));"
+        ).unwrap();
+        let tmp = TempDir::new().unwrap();
+        run_migrations(&conn, tmp.path()).unwrap();
+
+        // `kind` column exists on _admin_tokens with default 'manual'.
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(_admin_tokens)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert!(cols.contains(&"kind".to_string()), "kind column must exist, got {:?}", cols);
+
+        // Partial unique index exists.
+        let idx_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='uniq_admin_tokens_auto_mcp'",
+            [], |r| r.get(0)
+        ).expect("uniq_admin_tokens_auto_mcp index present");
+        assert!(idx_sql.contains("kind='auto_mcp'"), "index must be partial on kind='auto_mcp', got {}", idx_sql);
+        assert!(idx_sql.contains("revoked_at IS NULL"), "index must be partial on revoked_at IS NULL, got {}", idx_sql);
+
+        // Insert one admin + one auto_mcp PAT — succeeds.
+        conn.execute("INSERT INTO admins (id, password_hash) VALUES (7, 'x')", []).unwrap();
+        conn.execute(
+            "INSERT INTO _admin_tokens (admin_id, name, token_hash, kind) VALUES (7, 'auto-mcp', 'h1', 'auto_mcp')",
+            []
+        ).unwrap();
+
+        // Second active auto_mcp PAT for the SAME admin — fails (partial unique).
+        let err = conn.execute(
+            "INSERT INTO _admin_tokens (admin_id, name, token_hash, kind) VALUES (7, 'auto-mcp-2', 'h2', 'auto_mcp')",
+            []
+        ).unwrap_err();
+        assert!(err.to_string().contains("UNIQUE"), "expected UNIQUE constraint, got {}", err);
+
+        // After revoking the first, second insert succeeds (partial index excludes revoked).
+        conn.execute("UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE id=1", []).unwrap();
+        conn.execute(
+            "INSERT INTO _admin_tokens (admin_id, name, token_hash, kind) VALUES (7, 'auto-mcp-2', 'h2', 'auto_mcp')",
+            []
+        ).unwrap();
+
+        // CHECK constraint rejects unknown kind values.
+        let err2 = conn.execute(
+            "INSERT INTO _admin_tokens (admin_id, name, token_hash, kind) VALUES (7, 'x', 'h3', 'bogus')",
+            []
+        ).unwrap_err();
+        assert!(err2.to_string().contains("CHECK"), "expected CHECK constraint, got {}", err2);
     }
 
     #[test]
