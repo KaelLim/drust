@@ -150,6 +150,8 @@ impl AuditEntry {
 /// Spec S6: path whitelist gating future body logging. Auth bodies must never be persisted.
 pub fn should_log_body(path: &str) -> bool {
     !path.contains("/auth/")
+        && !path.contains("/admin/settings/token/reroll")
+        && !path.contains("/admin/settings/token") // defense-in-depth: future siblings
 }
 
 /// Audit-log writer. Non-blocking append: callers send entries through
@@ -305,5 +307,12 @@ mod sanitize_tests {
         assert!(should_log_body("/t/abc/records/posts"));
         assert!(should_log_body("/t/abc/me"));
         assert!(should_log_body("/t/abc/query"));
+    }
+    #[test]
+    fn pat_reroll_path_blocks_body_logging() {
+        assert!(!should_log_body("/drust/admin/settings/token/reroll"));
+        assert!(!should_log_body("/admin/settings/token/reroll"));
+        // Any future endpoint under /admin/settings/token also blocked.
+        assert!(!should_log_body("/admin/settings/token"));
     }
 }
