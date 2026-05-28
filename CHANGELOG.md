@@ -1,3 +1,71 @@
+## [1.29.2] — 2026-05-28
+
+Retracts the v1.29.0 OAuth 2.1 Authorization Server bundle for MCP and
+replaces it with per-admin PAT auto-binding. Same attribution outcome,
+one-click UX instead of a browser-OAuth dance.
+
+### Removed (retracts v1.29.0 bundle C — MCP OAuth 2.1 AS)
+- `_oauth_clients`, `_oauth_authorization_codes`, `_oauth_access_tokens`,
+  `_oauth_refresh_tokens` tables. Dropped on startup via idempotent
+  migration; fresh installs never see them.
+- `/drust/oauth/{register,authorize,token}` endpoints and the
+  `/.well-known/oauth-{authorization-server,protected-resource}`
+  metadata endpoints (host-level and per-tenant). All return 404.
+- `/drust/admin/oauth/clients` Owner-only UI.
+- In-process `oauth_janitor` daily sweep task.
+- MCP transport gate that rejected shared per-tenant service tokens on
+  `/t/<id>/mcp`. **The gate is gone — shared service tokens work again
+  on MCP**, matching v1.28.11 behavior. Existing Claude Code / Cursor
+  configurations continue to work without changes.
+- All v1.29.0 OAuth-AS tests and the `tests/login_return_url.rs` test
+  for `drust_oauth_intent`.
+
+### Added
+- `_admin_tokens.kind` column (`'manual'` | `'auto_mcp'`, default
+  `'manual'`, CHECK-constrained) + partial unique index
+  `uniq_admin_tokens_auto_mcp` enforcing at most one active `auto_mcp`
+  PAT per admin. Also added `_admin_tokens.revoked_at` column to
+  support the partial-index `WHERE revoked_at IS NULL` clause.
+- `POST /drust/admin/me/mcp-pat/ensure` — idempotent. Mints a fresh
+  `auto_mcp` PAT on first call, returns hash fingerprint on subsequent
+  calls.
+- `POST /drust/admin/me/mcp-pat/remint` — revokes existing `auto_mcp`
+  PAT, mints new, returns plaintext.
+- "Copy MCP config" button on `/drust/admin/tenants/<id>/_api_keys` now
+  (a) calls `ensure` server-side to obtain a per-admin PAT, (b) embeds
+  the PAT in the copied `claude mcp add-json` snippet inside the
+  drustUI.alert codeBlock (plaintext lives only in modal DOM until
+  close), and (c) offers a [Remint] confirm flow for the lost-mcp.json
+  case. Admins never mint PATs by hand.
+- Key-rotation warning copy on service / anon reroll buttons, manual
+  PAT revoke buttons, and the Copy-MCP-config [Remint] button —
+  explicitly states that running websites / Claude Code clients /
+  scripts will receive 401 until the token is updated on each client.
+
+### Kept from v1.29.0
+- Admin team (Owner / Member), `/drust/admin/team` CRUD + UI + sidebar
+  entry.
+- DB-driven OAuth admin allowlist; env var
+  `DRUST_ADMIN_OAUTH_ALLOWED_EMAILS` remains deprecated (warning logged
+  on startup if set).
+- Personal access tokens (`_admin_tokens`),
+  `/drust/admin/settings/tokens` self-mint UI — now coexists with the
+  auto_mcp path via the `kind` column.
+- Audit attribution columns `actor_admin_id` + `actor_email_snapshot`.
+- `set_admin_role` break-glass CLI.
+- `AuthCtx::Service { admin_id: Option<i64> }` struct variant.
+
+### Migration notes
+- **Upgrade from v1.29.0 / v1.29.1**: the four `_oauth_*` tables are
+  dropped on first startup. Any registered OAuth clients are lost
+  (Claude Code re-uses MCP via shared service token or per-admin
+  auto-MCP PAT). No data loss otherwise.
+- **Upgrade from v1.28.x**: full v1.29 schema (`admins.role`,
+  `_admin_tokens` with `kind` column, audit attribution) plus the new
+  auto-MCP PAT plumbing. OAuth-AS tables are never created.
+- **Rollback to v1.28.11**: safe — v1.28.11 ignores `admins.role`,
+  `_admin_tokens`, `audit.actor_admin_id`. Existing data preserved.
+
 ## [1.29.0] - 2026-05-27 — admin team + MCP OAuth 2.1
 
 ### Added
