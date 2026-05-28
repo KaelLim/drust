@@ -75,7 +75,12 @@ pub async fn reroll(
     emit_audit_revoke(caller_id);
     emit_audit_mint(caller_id);
 
-    Json(RerollResponse { plaintext: plaintext_new }).into_response()
+    let mut resp = Json(RerollResponse { plaintext: plaintext_new }).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("x-drust-sensitive"),
+        axum::http::header::HeaderValue::from_static("true"),
+    );
+    resp
 }
 
 // ─── internal helpers ─────────────────────────────────────────────────────────
