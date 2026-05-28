@@ -251,5 +251,63 @@ pub fn bootstrap_admin(
         "INSERT INTO admins (username, password_hash) VALUES (?1, ?2)",
         rusqlite::params![username, hash],
     )?;
+    let new_id = conn.last_insert_rowid();
+
+    // v1.29.3 — bootstrap admin also gets a PAT so /admin/settings Tokens
+    // card has something to show on first login. No transaction needed:
+    // bootstrap runs before the server binds, so no concurrency.
+    let plaintext = crate::auth::admin_token::generate_token();
+    let pat_hash = crate::auth::admin_token::hash_token(&plaintext);
+    conn.execute(
+        "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext) VALUES (?1, ?2, ?3)",
+        rusqlite::params![new_id, pat_hash, plaintext],
+    )?;
+
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn bootstrap_admin_also_creates_pat() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE admins (
+                id INTEGER PRIMARY KEY,
+                username TEXT,
+                password_hash TEXT NOT NULL,
+                email TEXT
+             );
+             CREATE TABLE _admin_tokens (
+                id INTEGER PRIMARY KEY,
+                admin_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                plaintext TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_used_at TEXT,
+                revoked_at TEXT
+             );"
+        ).unwrap();
+
+        let inserted = bootstrap_admin(&mut conn, "kael", "mysecret").unwrap();
+        assert!(inserted, "first call inserts the admin");
+
+        let row: (i64, String) = conn.query_row(
+            "SELECT id, plaintext FROM _admin_tokens WHERE revoked_at IS NULL",
+            [], |r| Ok((r.get(0)?, r.get(1)?))
+        ).expect("a PAT row should exist after bootstrap");
+        assert!(row.0 > 0);
+        assert!(row.1.starts_with("drust_pat_"), "plaintext must have PAT prefix: {}", row.1);
+
+        // Second call is a no-op.
+        let inserted2 = bootstrap_admin(&mut conn, "other", "x").unwrap();
+        assert!(!inserted2);
+        let cnt: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM _admin_tokens", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(cnt, 1, "second bootstrap must not insert another PAT");
+    }
 }
