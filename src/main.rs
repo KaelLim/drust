@@ -334,13 +334,15 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    tracing::info!("drust http server stopped; draining audit queue");
+    tracing::info!("drust http server stopped; draining audit queues");
     // axum::serve has dropped its Service, so all the Arc<AuditLog>
     // clones threaded into request state are gone. Drop our local Arc
     // to release the last sender; the writer's rx.recv() will then
     // return None and drain the remaining queue before exiting.
     drop(audit);
     audit_handle.join().await;
+    // v1.29.4: also flush the SQLite audit writer's in-flight buffer.
+    drust::safety::audit_db::drain_writer().await;
     tracing::info!("audit drain complete; exit");
     Ok(())
 }
