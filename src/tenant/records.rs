@@ -565,9 +565,9 @@ pub async fn create_handler(
     let submitted_keys: Vec<String> = data.keys().cloned().collect();
     let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
-        .with_writer(move |c| -> rusqlite::Result<(i64, serde_json::Value)> {
+        .with_writer_tx(move |tx| -> rusqlite::Result<(i64, serde_json::Value)> {
             // Validate against schema
-            let schema = match describe_collection(c, &coll_clone)? {
+            let schema = match describe_collection(tx, &coll_clone)? {
                 Some(s) => s,
                 None => return Err(rusqlite::Error::InvalidQuery),
             };
@@ -607,11 +607,11 @@ pub async fn create_handler(
                 .collect();
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            c.execute(&sql, &refs[..])?;
-            let id = c.last_insert_rowid();
+            tx.execute(&sql, &refs[..])?;
+            let id = tx.last_insert_rowid();
             // Read back the row excluding vector columns so the response
             // is small and the BLOB never leaks as {"__blob_bytes": n}.
-            let mut stmt = c.prepare(&format!(
+            let mut stmt = tx.prepare(&format!(
                 "SELECT * FROM \"{}\" WHERE id = ?1",
                 coll_clone.replace('"', "\"\"")
             ))?;
@@ -748,8 +748,8 @@ pub async fn update_handler(
     let submitted_keys: Vec<String> = data.keys().cloned().collect();
     let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
-        .with_writer(move |c| -> rusqlite::Result<serde_json::Value> {
-            let schema = match describe_collection(c, &coll_clone)? {
+        .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
+            let schema = match describe_collection(tx, &coll_clone)? {
                 Some(s) => s,
                 None => return Err(rusqlite::Error::InvalidQuery),
             };
@@ -795,11 +795,11 @@ pub async fn update_handler(
             params.push(Value::Integer(id));
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            let n = c.execute(&sql, &refs[..])?;
+            let n = tx.execute(&sql, &refs[..])?;
             if n == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
-            let mut stmt = c.prepare(&format!(
+            let mut stmt = tx.prepare(&format!(
                 "SELECT * FROM \"{}\" WHERE id = ?1",
                 coll_clone.replace('"', "\"\"")
             ))?;
@@ -890,7 +890,7 @@ pub async fn delete_handler(
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
     let res = pool
-        .with_writer(move |c| {
+        .with_writer_tx(move |tx| {
             let owner_clause = if let Some((field, user_id)) = &owner_filter {
                 format!(
                     " AND \"{}\" = '{}'",
@@ -905,7 +905,7 @@ pub async fn delete_handler(
                 coll_clone.replace('"', "\"\""),
                 owner_clause,
             );
-            c.execute(&sql, rusqlite::params![id])
+            tx.execute(&sql, rusqlite::params![id])
         })
         .await;
     match res {
