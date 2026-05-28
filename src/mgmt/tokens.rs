@@ -32,6 +32,10 @@ struct ApiKeysPage {
     mascot_json_static: String,
     mascot_json_light: String,
     mascot_json_dark: String,
+    /// v1.29.3 — caller admin's active PAT plaintext, server-injected into
+    /// the page as `<span id="key-mcp-pat" data-plain="...">` so the
+    /// "Copy MCP config" button can build the snippet without a fetch.
+    pat_plaintext: Option<String>,
 }
 
 pub struct TokenSlotInfo {
@@ -198,6 +202,9 @@ pub async fn api_keys_page(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path(tenant_id): Path<String>,
 ) -> Response {
     let conn = state.session.meta.lock().await;
@@ -214,6 +221,19 @@ pub async fn api_keys_page(
     };
     let anon = read_slot(&conn, &tenant_id, "anon");
     let service = read_slot(&conn, &tenant_id, "service");
+
+    // v1.29.3 — fetch caller's PAT plaintext for the server-injected
+    // <span id="key-mcp-pat" data-plain="..."> element.
+    let pat_plaintext: Option<String> = conn
+        .query_row(
+            "SELECT plaintext FROM _admin_tokens \
+             WHERE admin_id = ?1 AND revoked_at IS NULL",
+            rusqlite::params![caller_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+
     drop(conn);
 
     // Load collections for the sidebar. A failure here (DB missing, fresh
@@ -242,6 +262,7 @@ pub async fn api_keys_page(
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
             mascot_json_dark: trc.mascot_json_dark,
+            pat_plaintext,
         }
         .render()
         .unwrap(),

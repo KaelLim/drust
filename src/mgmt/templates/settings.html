@@ -163,9 +163,110 @@
       })();
       </script>
 
+        <div class="card" style="margin-top:18px;">
+          <div class="card-head">
+            <div>
+              <div class="card-title">{{ t.s("settings.tokens.card_title") }}</div>
+              <div class="card-sub">{{ t.s("settings.tokens.desc") }}</div>
+            </div>
+          </div>
+          <div class="card-body" style="padding:14px 16px;">
+            <div class="key-row">
+              <code class="key-val"
+                    id="key-mcp-pat"
+                    {% match pat_plaintext %}
+                      {% when Some with (pt) %}data-plain="{{ pt }}"
+                      {% when None %}data-plain=""
+                    {% endmatch %}
+                    data-revealed="0">&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;</code>
+              <div class="row" style="gap:6px;">
+                <button class="btn sm" type="button"
+                        onclick="togglePatReveal('key-mcp-pat', this)">
+                  {{ t.s("settings.tokens.btn_reveal") }}
+                </button>
+                <button class="btn sm" type="button"
+                        onclick="copyPat('key-mcp-pat', this)">
+                  {{ t.s("settings.tokens.btn_copy") }}
+                </button>
+                <form method="post" action="/drust/admin/settings/token/reroll"
+                      class="pat-reroll-form"
+                      data-confirm-title="{{ t.s("settings.tokens.confirm.reroll_title") }}"
+                      data-confirm-text="{{ t.s("settings.tokens.confirm.reroll_text") }}"
+                      style="margin:0;display:inline;">
+                  <button class="btn sm danger" type="submit">
+                    {{ t.s("settings.tokens.btn_reroll") }}
+                  </button>
+                </form>
+              </div>
+            </div>
+            <div class="key-meta muted" style="margin-top:8px;">
+              {% match pat_hash_prefix %}
+                {% when Some with (fp) %}
+                  {{ t.s("settings.tokens.fingerprint") }}: <code>{{ fp }}</code> ·
+                {% when None %}
+              {% endmatch %}
+              {{ t.s("settings.tokens.last_used") }}:
+              {% match pat_last_used_at %}
+                {% when Some with (ts) %}<code>{{ ts }}</code>
+                {% when None %}{{ t.s("settings.tokens.last_used_never") }}
+              {% endmatch %}
+              {% match pat_plaintext %}
+                {% when None %}
+                  <div style="margin-top:6px;color:var(--warn);">{{ t.s("settings.tokens.legacy_plaintext_unavailable") }}</div>
+                {% when Some with (_) %}
+              {% endmatch %}
+            </div>
+          </div>
+        </div>
+
     </div>
 {% endblock %}
 
 {% block extra_scripts %}
 {% include "_mascot.html" %}
+{% include "_modal.html" %}
+<script>
+  function togglePatReveal(id, btn) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (el.getAttribute('data-revealed') === '1') {
+      el.textContent = '••••••••••••••••••••••••••••••••';
+      el.setAttribute('data-revealed', '0');
+      btn.textContent = '{{ t.s("settings.tokens.btn_reveal") }}';
+    } else {
+      var pt = el.getAttribute('data-plain');
+      if (!pt) return;
+      el.textContent = pt;
+      el.setAttribute('data-revealed', '1');
+      btn.textContent = '{{ t.s("settings.tokens.btn_hide") }}';
+    }
+  }
+  function copyPat(id, btn) {
+    var el = document.getElementById(id);
+    var pt = el && el.getAttribute('data-plain');
+    if (!pt) return;
+    var orig = btn.textContent;
+    navigator.clipboard.writeText(pt).then(function () {
+      btn.textContent = '✓';
+      setTimeout(function () { btn.textContent = orig; }, 1500);
+    });
+  }
+  document.querySelectorAll('form.pat-reroll-form').forEach(function (f) {
+    f.addEventListener('submit', function (e) {
+      e.preventDefault();
+      drustUI.confirm({
+        title:  f.getAttribute('data-confirm-title') || 'Reroll',
+        body:   f.getAttribute('data-confirm-text')  || 'Continue?',
+        okText: f.getAttribute('data-confirm-title') || 'Reroll',
+        danger: true,
+      }).then(function (ok) {
+        if (!ok) return;
+        fetch(f.getAttribute('action'), { method: 'POST' }).then(function (r) {
+          if (r.ok) window.location.reload();
+          else drustUI.alert({title:'Error', body:'HTTP ' + r.status});
+        });
+      });
+    });
+  });
+</script>
 {% endblock %}

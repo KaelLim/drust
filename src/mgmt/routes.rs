@@ -135,13 +135,42 @@ struct SettingsPage {
     /// settings page client-side live-preview. Consumed by inline JS in
     /// settings.html via `|safe`.
     all_themes_json: String,
+    /// v1.29.3 — caller's active PAT plaintext for the Tokens card.
+    pat_plaintext: Option<String>,
+    /// First 8 chars of token_hash, shown as fingerprint regardless of plaintext.
+    pat_hash_prefix: Option<String>,
+    /// Caller's PAT last-used timestamp; `None` if the PAT has never authenticated.
+    pat_last_used_at: Option<String>,
 }
 
 async fn settings_page(
+    State(state): State<MgmtState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
 ) -> Response {
+    let pat_row: Option<(Option<String>, String, Option<String>)> = {
+        let conn = state.meta.lock().await;
+        conn.query_row(
+            "SELECT plaintext, token_hash, last_used_at FROM _admin_tokens \
+             WHERE admin_id = ?1 AND revoked_at IS NULL",
+            rusqlite::params![caller_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).ok()
+    };
+
+    let (pat_plaintext, pat_hash_prefix, pat_last_used_at) = match pat_row {
+        Some((plain, hash, last)) => (
+            plain,
+            Some(hash.chars().take(8).collect::<String>()),
+            last,
+        ),
+        None => (None, None, None),
+    };
+
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         SettingsPage {
@@ -156,6 +185,9 @@ async fn settings_page(
             mascot_json_light: trc.mascot_json_light,
             mascot_json_dark: trc.mascot_json_dark,
             all_themes_json: crate::mgmt::theme::build_all_themes_json(),
+            pat_plaintext,
+            pat_hash_prefix,
+            pat_last_used_at,
         }
         .render()
         .unwrap_or_default(),
