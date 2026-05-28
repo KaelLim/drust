@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS "_system_rpc" (
   params_json       TEXT NOT NULL,
   description       TEXT,
   anon_callable     INTEGER NOT NULL DEFAULT 0,
+  callable_by       TEXT NOT NULL DEFAULT '[]',
   anon_calls        INTEGER NOT NULL DEFAULT 0,
   service_calls     INTEGER NOT NULL DEFAULT 0,
   last_called_at    TEXT,
