@@ -23,6 +23,7 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
     ("RATE_LIMITED", "Too many requests in the window. Wait for the `Retry-After` seconds and retry."),
     ("RECENT_WRITES_UNAVAILABLE", "Audit log is temporarily unreadable. Retry in a few seconds."),
     ("RECORD_NOT_FOUND", "Row id does not exist in this collection (or it was already deleted)."),
+    ("SERVICE_REQUIRED", "Operation requires a service-key bearer token. This is the canonical code; older responses may use WRITE_DENIED as the primary."),
     ("TENANT_NOT_FOUND", "Tenant id is not registered or has been deleted. Check the tenant id in the URL path."),
     ("UNAUTHENTICATED", "Bearer token missing or invalid. Set `Authorization: Bearer <token>` and check the token has not been revoked."),
     ("USER_FILTER_DENIED_ON_OWNER_SCOPED", "User tokens cannot pass raw `?filter` / `?sort` against owner-scoped collections. Use `/list` POST body with FilterAst."),

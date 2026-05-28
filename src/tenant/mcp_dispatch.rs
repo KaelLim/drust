@@ -5,7 +5,7 @@
 //! extensions and the token has already been validated, rate-limited,
 //! and audited.
 
-use crate::error::json_error;
+use crate::error::{json_error, json_error_with_aliases};
 use crate::mcp::http_registry::McpHttpRegistry;
 use crate::tenant::router::{TenantRef, TokenRole};
 use axum::Extension;
@@ -34,9 +34,10 @@ pub async fn dispatch(
             );
         }
         TokenRole::Anon => {
-            return json_error(
+            return json_error_with_aliases(
                 StatusCode::FORBIDDEN,
                 "WRITE_DENIED",
+                &["SERVICE_REQUIRED"],
                 "MCP requires a service key; anon keys cannot open an MCP session",
             );
         }

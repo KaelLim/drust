@@ -2,7 +2,7 @@
 //! a single collection. Cache-invalidates and evicts the broadcast
 //! channel so the toggle takes effect immediately.
 
-use crate::error::json_error;
+use crate::error::{json_error, json_error_with_aliases};
 use crate::storage::schema::{
     collection_exists, is_protected_collection, write_realtime_enabled,
 };
@@ -30,9 +30,10 @@ pub async fn put_realtime_handler(
 ) -> Response {
     // 1. service-only.
     if !matches!(t.role, TokenRole::Service) {
-        return json_error(
+        return json_error_with_aliases(
             StatusCode::FORBIDDEN,
             "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
             "service token required",
         )
         .into_response();

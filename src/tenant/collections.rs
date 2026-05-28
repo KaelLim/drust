@@ -1,4 +1,4 @@
-use crate::error::json_error;
+use crate::error::{json_error, json_error_with_aliases};
 use crate::storage::schema::{describe_collection, list_collections};
 use crate::tenant::router::{TenantAuthState, TenantRef, TokenRole, require_service};
 use axum::extract::{Path, Query, State};
@@ -164,9 +164,10 @@ pub async fn put_collection_description_handler(
     Json(body): Json<DescriptionBody>,
 ) -> Response {
     if !matches!(t.role, TokenRole::Service) {
-        return json_error(
+        return json_error_with_aliases(
             StatusCode::FORBIDDEN,
             "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
             "service token required to edit descriptions",
         );
     }
@@ -210,9 +211,10 @@ pub async fn put_field_description_handler(
     Json(body): Json<DescriptionBody>,
 ) -> Response {
     if !matches!(t.role, TokenRole::Service) {
-        return json_error(
+        return json_error_with_aliases(
             StatusCode::FORBIDDEN,
             "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
             "service token required to edit descriptions",
         );
     }
@@ -258,9 +260,10 @@ pub async fn put_index_description_handler(
     Json(body): Json<DescriptionBody>,
 ) -> Response {
     if !matches!(t.role, TokenRole::Service) {
-        return json_error(
+        return json_error_with_aliases(
             StatusCode::FORBIDDEN,
             "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
             "service token required to edit descriptions",
         );
     }
@@ -305,9 +308,10 @@ pub async fn get_schema_overview_handler(
     Extension(t): Extension<TenantRef>,
 ) -> Response {
     if !matches!(t.role, TokenRole::Service) {
-        return json_error(
+        return json_error_with_aliases(
             StatusCode::FORBIDDEN,
             "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
             "service token required for schema overview",
         );
     }
