@@ -272,6 +272,10 @@ done = "Done"
 body = "Revoke token"
 title = "Revoke token"
 
+[admin_tokens.confirm]
+revoke_text = "Revoking this PAT invalidates it immediately. If you've pasted it into mcp.json or set it as an environment variable on any machine, those usages will return 401 — you'll need to mint a new PAT and update them. Continue?"
+revoke_title = "Revoke PAT"
+
 [admin_tokens.plaintext]
 warning = "This is the only time this token will be shown. Copy it now."
 
@@ -886,7 +890,7 @@ service_scopes = "Bypasses anon_caps and owner-field · use only in trusted back
 
 [tenant_api_keys.confirm]
 reroll_ok = "Reroll"
-reroll_text = "Reroll {role} key? The current key will be invalidated immediately."
+reroll_text = "Rerolling immediately invalidates the current {role} key. Every website, Claude Code mcp.json, or automation script using this key will return 401 — you'll have to update the token on each client. Continue?"
 reroll_title = "Reroll key"
 
 [tenant_api_keys.head]
