@@ -41,11 +41,19 @@ async fn app_with_pat(tenant: &str) -> (axum::Router, String, i64, tempfile::Tem
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
 
+    // Soft-revoke any PAT the v1.29.3 migration backfill created for this
+    // admin so we can insert a known plaintext (uniq_admin_tokens_active
+    // forbids two active rows per admin).
+    conn.execute(
+        "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE admin_id = ?1 AND revoked_at IS NULL",
+        params![admin_id],
+    ).unwrap();
+
     // Mint a PAT and insert its hash (must come after run_migrations creates _admin_tokens)
     let plaintext = admin_token::generate_token();
     let hash = admin_token::hash_token(&plaintext);
     conn.execute(
-        "INSERT INTO _admin_tokens (admin_id, name, token_hash) VALUES (?1, 'test-pat', ?2)",
+        "INSERT INTO _admin_tokens (admin_id, token_hash) VALUES (?1, ?2)",
         params![admin_id, hash],
     ).unwrap();
 
