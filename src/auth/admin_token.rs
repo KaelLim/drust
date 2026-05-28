@@ -34,7 +34,8 @@ pub fn lookup(conn: &Connection, bearer: &str) -> rusqlite::Result<Option<AdminT
     }
     let h = hash_token(bearer);
     match conn.query_row(
-        "SELECT id, admin_id FROM _admin_tokens WHERE token_hash = ?1",
+        "SELECT id, admin_id FROM _admin_tokens \
+         WHERE token_hash = ?1 AND revoked_at IS NULL",
         params![h],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
     ) {
@@ -70,5 +71,37 @@ mod tests {
         conn.execute_batch(crate::db::migrations::SQL_CREATE_ADMIN_TOKENS_IF_NOT_EXISTS).unwrap();
         assert!(lookup(&conn, "drust_user_xyz").unwrap().is_none());
         assert!(lookup(&conn, "literal-shared-token").unwrap().is_none());
+    }
+
+    #[test]
+    fn lookup_ignores_soft_revoked_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _admin_tokens (
+                id INTEGER PRIMARY KEY,
+                admin_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                revoked_at TEXT
+            ) STRICT;"
+        ).unwrap();
+        let plaintext = generate_token();
+        let h = hash_token(&plaintext);
+        conn.execute(
+            "INSERT INTO _admin_tokens (admin_id, token_hash) VALUES (7, ?1)",
+            rusqlite::params![h],
+        ).unwrap();
+
+        // Active row resolves.
+        assert!(lookup(&conn, &plaintext).unwrap().is_some());
+
+        // Soft-revoked row does NOT resolve.
+        conn.execute(
+            "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE token_hash = ?1",
+            rusqlite::params![h],
+        ).unwrap();
+        assert!(
+            lookup(&conn, &plaintext).unwrap().is_none(),
+            "soft-revoked PAT must not authenticate"
+        );
     }
 }
