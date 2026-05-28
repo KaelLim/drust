@@ -1,8 +1,6 @@
-pub mod admin_mcp_pat;
 pub mod admin_pat;
 pub mod admin_profile;
 pub mod admin_team;
-pub mod admin_tokens;
 pub mod audit;
 pub mod backups;
 pub mod browse;

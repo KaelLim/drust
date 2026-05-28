@@ -226,8 +226,6 @@ host_files = "Host files"
 settings = "Settings"
 team = "Team"
 tenants = "Tenants"
-tokens = "Tokens"
-
 [admin_sidebar.plane]
 jump_title = "jump (⌘K)"
 label = "plane · admin"
@@ -237,53 +235,6 @@ scope = "host-level scope"
 [admin_sidebar.section]
 organization = "Organization"
 resources = "Resources"
-
-[admin_tokens.action]
-copy = "Copy"
-revoke = "Revoke"
-
-[admin_tokens.col]
-action = "Actions"
-created = "Created"
-last_used = "Last used"
-name = "Name"
-
-[admin_tokens.empty]
-no_tokens = "No personal access tokens yet."
-
-[admin_tokens.head]
-generate = "Generate token"
-subtitle = "Tokens for headless API access. Plaintext shown once at creation."
-title = "Personal access tokens"
-
-[admin_tokens.error]
-name_taken = "Token name already used"
-
-[admin_tokens.last_used]
-never = "never"
-
-[admin_tokens.modal.generate]
-title = "Generate token"
-warning = "This is the only time you'll see the full token. Save it somewhere safe."
-copy = "Copy"
-done = "Done"
-
-[admin_tokens.confirm]
-revoke_text = "Revoking this PAT invalidates it immediately. If you've pasted it into mcp.json or set it as an environment variable on any machine, those usages will return 401 — you'll need to mint a new PAT and update them. Continue?"
-revoke_title = "Revoke PAT"
-
-[admin_tokens.plaintext]
-warning = "This is the only time this token will be shown. Copy it now."
-
-[mcp_pat.modal]
-title_minted = "MCP PAT created"
-title_existing = "MCP PAT already exists"
-body_minted = "An MCP PAT has been created for you. Copy the install command below (click the icon) and paste it into your terminal. The plaintext disappears when this dialog closes; if you lose your mcp.json, remint via this button."
-body_existing = "You already have an MCP PAT (fingerprint {fingerprint}). If your existing mcp.json still works, keep using it."
-remint = "Remint PAT"
-
-[mcp_pat.confirm]
-remint = "Reminting immediately invalidates the previous MCP PAT. Any other machine still using the old mcp.json will return 401 on its next MCP request. Continue?"
 
 [mcp_pat.alert]
 pat_failed_title = "MCP PAT request failed"
