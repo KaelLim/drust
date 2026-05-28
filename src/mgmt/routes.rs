@@ -852,6 +852,10 @@ impl MgmtState {
             )
             .route("/admin/settings/locale", post(settings_locale_save))
             .route("/admin/settings/theme", post(settings_theme_save))
+            .route(
+                "/admin/settings/token/reroll",
+                axum::routing::post(super::admin_pat::reroll),
+            )
             .with_state(settings_state);
 
         // v1.29.0 — admin team management CRUD.
