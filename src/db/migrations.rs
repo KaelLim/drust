@@ -5,12 +5,11 @@ pub const SQL_CREATE_ADMIN_TOKENS_IF_NOT_EXISTS: &str = r#"
 CREATE TABLE IF NOT EXISTS _admin_tokens (
     id              INTEGER PRIMARY KEY,
     admin_id        INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
-    name            TEXT    NOT NULL,
     token_hash      TEXT    NOT NULL UNIQUE,
+    plaintext       TEXT,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     last_used_at    TEXT,
-    revoked_at      TEXT,
-    UNIQUE(admin_id, name)
+    revoked_at      TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_admin_tokens_admin ON _admin_tokens(admin_id);
@@ -173,26 +172,90 @@ pub fn run_migrations(
          DROP TABLE IF EXISTS _oauth_clients;"
     )?;
 
-    // v1.29.2 — per-admin auto-MCP PAT discriminator. Column with CHECK
-    // ensures `kind` is one of two known values; the partial unique index
-    // enforces at-most-one active 'auto_mcp' PAT per admin.
-    add_column_if_missing(
-        meta,
-        "_admin_tokens",
-        "revoked_at",
-        "TEXT",
-    )?;
-    add_column_if_missing(
-        meta,
-        "_admin_tokens",
-        "kind",
-        "TEXT NOT NULL DEFAULT 'manual' CHECK (kind IN ('manual','auto_mcp'))",
-    )?;
+    // v1.29.3 — collapse the two-PAT model (Task 8 manual + v1.29.2 auto_mcp)
+    // into a single plaintext-retrievable PAT per admin. See spec
+    // docs/superpowers/specs/2026-05-28-drust-v1293-one-pat-per-admin-design.md.
+
+    // 1. Ensure revoked_at column exists (it does on v1.29.2; this is a
+    //    defense-in-depth no-op for the constant-update path).
+    add_column_if_missing(meta, "_admin_tokens", "revoked_at", "TEXT")?;
+
+    // 2. Add plaintext column (NULL for any pre-existing hash-only rows).
+    add_column_if_missing(meta, "_admin_tokens", "plaintext", "TEXT")?;
+
+    // 3. Soft-revoke EVERY active legacy row (both kind='manual' from Task 8
+    //    and kind='auto_mcp' from v1.29.2 — neither has plaintext stored).
+    //    The backfill loop below produces fresh plaintext-bearing rows.
     meta.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_admin_tokens_auto_mcp \
-           ON _admin_tokens(admin_id) \
-           WHERE kind='auto_mcp' AND revoked_at IS NULL;"
+        "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE revoked_at IS NULL;"
     )?;
+
+    // 4. Swap the partial unique index: drop the kind-based one, create one
+    //    that enforces at-most-one-active-PAT-per-admin via revoked_at.
+    meta.execute_batch(
+        "DROP INDEX IF EXISTS uniq_admin_tokens_auto_mcp;
+         CREATE UNIQUE INDEX IF NOT EXISTS uniq_admin_tokens_active \
+             ON _admin_tokens(admin_id) WHERE revoked_at IS NULL;"
+    )?;
+
+    // 5 & 6. Drop the `kind` and `name` columns.
+    //    SQLite 3.35+ supports DROP COLUMN but rejects it when the column
+    //    is referenced by a constraint (UNIQUE(admin_id, name) blocks dropping
+    //    `name` directly). We use the classic rename-create-insert-drop
+    //    table rebuild when either column is present.
+    let has_kind: i64 = meta.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('_admin_tokens') WHERE name = 'kind'",
+        [], |r| r.get(0)
+    ).unwrap_or(0);
+    let has_name: i64 = meta.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('_admin_tokens') WHERE name = 'name'",
+        [], |r| r.get(0)
+    ).unwrap_or(0);
+    if has_kind > 0 || has_name > 0 {
+        // Rebuild the table without the obsolete columns, preserving all rows.
+        meta.execute_batch(
+            "ALTER TABLE _admin_tokens RENAME TO _admin_tokens_legacy;
+             CREATE TABLE _admin_tokens (
+                 id              INTEGER PRIMARY KEY,
+                 admin_id        INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+                 token_hash      TEXT    NOT NULL UNIQUE,
+                 plaintext       TEXT,
+                 created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                 last_used_at    TEXT,
+                 revoked_at      TEXT
+             ) STRICT;
+             INSERT INTO _admin_tokens
+                 (id, admin_id, token_hash, plaintext, created_at, last_used_at, revoked_at)
+             SELECT id, admin_id, token_hash, plaintext, created_at, last_used_at, revoked_at
+             FROM _admin_tokens_legacy;
+             DROP TABLE _admin_tokens_legacy;
+             CREATE INDEX IF NOT EXISTS idx_admin_tokens_admin ON _admin_tokens(admin_id);
+             CREATE UNIQUE INDEX IF NOT EXISTS uniq_admin_tokens_active
+                 ON _admin_tokens(admin_id) WHERE revoked_at IS NULL;"
+        )?;
+    }
+
+    // 7. Backfill: every admin missing an active PAT gets a fresh one.
+    //    Idempotent — admins that already have an active row are skipped.
+    let admin_ids: Vec<i64> = {
+        let mut stmt = meta.prepare("SELECT id FROM admins")?;
+        stmt.query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?
+    };
+    for aid in admin_ids {
+        let has_active: bool = meta.query_row(
+            "SELECT 1 FROM _admin_tokens WHERE admin_id = ?1 AND revoked_at IS NULL",
+            rusqlite::params![aid], |_| Ok(())
+        ).is_ok();
+        if !has_active {
+            let plaintext = crate::auth::admin_token::generate_token();
+            let hash = crate::auth::admin_token::hash_token(&plaintext);
+            meta.execute(
+                "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext) VALUES (?1, ?2, ?3)",
+                rusqlite::params![aid, hash, plaintext],
+            )?;
+        }
+    }
 
     report.meta_done = true;
 
@@ -267,33 +330,6 @@ mod tests {
     }
 
     #[test]
-    fn v129_admin_tokens_table_created() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
-            CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT NOT NULL, email TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));"
-        ).unwrap();
-        let tmp = TempDir::new().unwrap();
-        run_migrations(&conn, tmp.path()).unwrap();
-
-        let row: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_admin_tokens'",
-                [], |r| r.get(0)
-            ).unwrap();
-        assert_eq!(row, 1);
-
-        // Schema check
-        let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(_admin_tokens)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        for expected in ["id", "admin_id", "name", "token_hash", "created_at", "last_used_at"] {
-            assert!(cols.contains(&expected.to_string()), "missing {expected} in {cols:?}");
-        }
-    }
-
-    #[test]
     fn v1292_oauth_tables_dropped() {
         // Simulate a v1.29.0 install: meta has the 4 OAuth tables.
         // After run_migrations, they MUST be dropped.
@@ -325,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn v1292_admin_tokens_kind_column_and_partial_unique_index() {
+    fn v1293_fresh_admin_tokens_table_shape() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
@@ -334,48 +370,80 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         run_migrations(&conn, tmp.path()).unwrap();
 
-        // `kind` column exists on _admin_tokens with default 'manual'.
         let cols: Vec<String> = conn
             .prepare("PRAGMA table_info(_admin_tokens)").unwrap()
             .query_map([], |r| r.get::<_, String>(1)).unwrap()
             .collect::<rusqlite::Result<_>>().unwrap();
-        assert!(cols.contains(&"kind".to_string()), "kind column must exist, got {:?}", cols);
+        assert!(cols.contains(&"plaintext".to_string()), "plaintext column missing: {:?}", cols);
+        assert!(!cols.contains(&"kind".to_string()), "kind column should be dropped: {:?}", cols);
+        assert!(!cols.contains(&"name".to_string()), "name column should be dropped: {:?}", cols);
+    }
 
-        // Partial unique index exists.
-        let idx_sql: String = conn.query_row(
-            "SELECT sql FROM sqlite_master WHERE type='index' AND name='uniq_admin_tokens_auto_mcp'",
+    #[test]
+    fn v1293_migration_drops_kind_softrevokes_legacy_and_backfills() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Seed a v1.29.2-shaped DB.
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT NOT NULL, email TEXT, role TEXT NOT NULL DEFAULT 'member', created_at TEXT NOT NULL DEFAULT (datetime('now')));
+             CREATE TABLE _admin_tokens (
+                id INTEGER PRIMARY KEY,
+                admin_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_used_at TEXT,
+                revoked_at TEXT,
+                kind TEXT NOT NULL DEFAULT 'manual',
+                UNIQUE(admin_id, name)
+             );
+             CREATE UNIQUE INDEX uniq_admin_tokens_auto_mcp ON _admin_tokens(admin_id) WHERE kind='auto_mcp' AND revoked_at IS NULL;
+             INSERT INTO admins (id, username, password_hash, email, role) VALUES (1, 'alice', 'h', 'a@x', 'owner');
+             INSERT INTO admins (id, username, password_hash, email, role) VALUES (2, 'bob',   'h', 'b@x', 'member');
+             INSERT INTO _admin_tokens (admin_id, name, token_hash, kind) VALUES (1, 'legacy', 'hash_legacy', 'manual');"
+        ).unwrap();
+        let tmp = TempDir::new().unwrap();
+        run_migrations(&conn, tmp.path()).unwrap();
+
+        // (a) kind column dropped.
+        let cols: Vec<String> = conn.prepare("PRAGMA table_info(_admin_tokens)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert!(!cols.contains(&"kind".to_string()), "kind should be dropped");
+        assert!(cols.contains(&"plaintext".to_string()), "plaintext should be added");
+
+        // (b) Old auto_mcp index gone, new active index present.
+        let old: Option<String> = conn.query_row(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='uniq_admin_tokens_auto_mcp'",
             [], |r| r.get(0)
-        ).expect("uniq_admin_tokens_auto_mcp index present");
-        assert!(idx_sql.contains("kind='auto_mcp'"), "index must be partial on kind='auto_mcp', got {}", idx_sql);
-        assert!(idx_sql.contains("revoked_at IS NULL"), "index must be partial on revoked_at IS NULL, got {}", idx_sql);
+        ).ok();
+        assert!(old.is_none(), "old auto_mcp index should be dropped");
+        let new_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='uniq_admin_tokens_active'",
+            [], |r| r.get(0)
+        ).expect("new uniq_admin_tokens_active index should exist");
+        assert!(new_sql.contains("revoked_at IS NULL"));
 
-        // Insert one admin + one auto_mcp PAT — succeeds.
-        conn.execute("INSERT INTO admins (id, password_hash) VALUES (7, 'x')", []).unwrap();
+        // (c) Legacy hash_legacy row was soft-revoked.
+        let legacy_revoked: Option<String> = conn.query_row(
+            "SELECT revoked_at FROM _admin_tokens WHERE token_hash = 'hash_legacy'",
+            [], |r| r.get(0)
+        ).ok().flatten();
+        assert!(legacy_revoked.is_some(), "legacy PAT must be soft-revoked");
+
+        // (d) Backfill: both admins have one active PAT with non-NULL plaintext.
+        for aid in [1, 2] {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM _admin_tokens WHERE admin_id = ?1 AND revoked_at IS NULL AND plaintext IS NOT NULL",
+                rusqlite::params![aid], |r| r.get(0)
+            ).unwrap();
+            assert_eq!(count, 1, "admin {} must have exactly 1 active plaintext PAT, got {}", aid, count);
+        }
+
+        // (e) Partial unique index prevents a second active row.
         conn.execute(
-            "INSERT INTO _admin_tokens (admin_id, name, token_hash, kind) VALUES (7, 'auto-mcp', 'h1', 'auto_mcp')",
-            []
-        ).unwrap();
-
-        // Second active auto_mcp PAT for the SAME admin — fails (partial unique).
-        let err = conn.execute(
-            "INSERT INTO _admin_tokens (admin_id, name, token_hash, kind) VALUES (7, 'auto-mcp-2', 'h2', 'auto_mcp')",
-            []
-        ).unwrap_err();
-        assert!(err.to_string().contains("UNIQUE"), "expected UNIQUE constraint, got {}", err);
-
-        // After revoking the first, second insert succeeds (partial index excludes revoked).
-        conn.execute("UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE id=1", []).unwrap();
-        conn.execute(
-            "INSERT INTO _admin_tokens (admin_id, name, token_hash, kind) VALUES (7, 'auto-mcp-2', 'h2', 'auto_mcp')",
-            []
-        ).unwrap();
-
-        // CHECK constraint rejects unknown kind values.
-        let err2 = conn.execute(
-            "INSERT INTO _admin_tokens (admin_id, name, token_hash, kind) VALUES (7, 'x', 'h3', 'bogus')",
-            []
-        ).unwrap_err();
-        assert!(err2.to_string().contains("CHECK"), "expected CHECK constraint, got {}", err2);
+            "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext) VALUES (1, 'h2', 'p2')", []
+        ).expect_err("second active row should violate uniq_admin_tokens_active");
     }
 
     #[test]
