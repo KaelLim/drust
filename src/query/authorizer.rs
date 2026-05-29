@@ -69,6 +69,87 @@ pub fn attach_readonly_authorizer(conn: &Connection) {
     }));
 }
 
+/// v1.30 — writable authorizer for stored RPC `mode='write'` bodies.
+///
+/// Mirrors [`attach_readonly_authorizer`] EXACTLY for every action except
+/// Insert/Update/Delete: those are Allowed for tables that are neither
+/// `sqlite_*` nor [`crate::storage::schema::is_protected_collection`].
+/// Triggers, views, vtables, DDL, ATTACH, transaction control, savepoint
+/// control, and pragma-writable_schema are all Denied (same as the
+/// readonly variant).
+///
+/// Pair with a writer connection (NOT `SQLITE_OPEN_READONLY`). The caller
+/// is responsible for:
+///   1. Issuing `SAVEPOINT drust_rpc_v2` BEFORE calling this fn (the
+///      Savepoint action would be Denied otherwise).
+///   2. Calling `detach_authorizer(conn)` AFTER the RPC body and BEFORE
+///      `RELEASE drust_rpc_v2` / `ROLLBACK TO drust_rpc_v2` (same reason).
+pub fn attach_writable_authorizer(conn: &Connection) {
+    conn.authorizer(Some(|ctx: AuthContext<'_>| -> Authorization {
+        match ctx.action {
+            AuthAction::Select => Authorization::Allow,
+            AuthAction::Read { table_name, .. } => {
+                if table_name.starts_with("sqlite_")
+                    || crate::storage::schema::is_protected_collection(table_name)
+                {
+                    Authorization::Deny
+                } else {
+                    Authorization::Allow
+                }
+            }
+            AuthAction::Function { .. } => Authorization::Allow,
+            AuthAction::Pragma { pragma_name, .. } => match pragma_name {
+                "table_info" | "index_list" | "index_info" | "foreign_key_list" | "table_xinfo" => {
+                    Authorization::Allow
+                }
+                _ => Authorization::Ignore,
+            },
+            AuthAction::Recursive => Authorization::Allow,
+
+            // === v1.30 mutation surface ===
+            AuthAction::Insert { table_name, .. }
+            | AuthAction::Update { table_name, .. }
+            | AuthAction::Delete { table_name, .. } => {
+                if table_name.starts_with("sqlite_")
+                    || crate::storage::schema::is_protected_collection(table_name)
+                {
+                    Authorization::Deny
+                } else {
+                    Authorization::Allow
+                }
+            }
+
+            // === Everything else Denied ===
+            AuthAction::Attach { .. }
+            | AuthAction::Detach { .. }
+            | AuthAction::CreateTable { .. }
+            | AuthAction::CreateTempTable { .. }
+            | AuthAction::CreateIndex { .. }
+            | AuthAction::CreateTempIndex { .. }
+            | AuthAction::CreateVtable { .. }
+            | AuthAction::CreateView { .. }
+            | AuthAction::CreateTempView { .. }
+            | AuthAction::CreateTrigger { .. }
+            | AuthAction::CreateTempTrigger { .. }
+            | AuthAction::DropTable { .. }
+            | AuthAction::DropTempTable { .. }
+            | AuthAction::DropIndex { .. }
+            | AuthAction::DropTempIndex { .. }
+            | AuthAction::DropTrigger { .. }
+            | AuthAction::DropTempTrigger { .. }
+            | AuthAction::DropView { .. }
+            | AuthAction::DropTempView { .. }
+            | AuthAction::DropVtable { .. }
+            | AuthAction::AlterTable { .. }
+            | AuthAction::Reindex { .. }
+            | AuthAction::Analyze { .. }
+            | AuthAction::Transaction { .. }
+            | AuthAction::Savepoint { .. } => Authorization::Deny,
+            _ => Authorization::Deny,
+        }
+    }));
+}
+
 #[cfg(test)]
 mod auth_tests {
     use super::*;
