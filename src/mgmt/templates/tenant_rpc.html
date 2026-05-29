@@ -69,6 +69,7 @@
               <div class="rpc-name">{{ r.name }}</div>
               {% if let Some(d) = r.description %}<div class="rpc-desc">{{ d }}</div>{% endif %}
               <div class="rpc-tags">
+                {% if r.mode.as_str() == "write" %}<span class="pill warn"><span class="dot"></span>{{ t.s("tenant_rpc.row_pill.mode_write") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_rpc.row_pill.mode_read") }}</span>{% endif %}
                 {% if r.anon_callable %}<span class="pill accent"><span class="dot"></span>{{ t.s("tenant_rpc.row_pill.anon_ok") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_rpc.row_pill.service_only") }}</span>{% endif %}
               </div>
               <pre class="sql-block" style="margin-top:10px;font-size:11.5px;">{{ r.sql }}</pre>

@@ -14,9 +14,12 @@
           <a class="btn ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("tenant_rpc_form.actions.back") }}</a>
         </div>
         {% if let Some(err) = error %}
-        <div class="banner danger" style="margin-bottom:14px;">
+        <div class="banner danger" style="margin-bottom:14px;"{% if let Some(code) = error_code %} data-error-code="{{ code }}"{% endif %}>
           <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
-          <div class="b-body"><div class="b-title">{{ t.s("tenant_rpc_form.error.save_failed") }}</div><p>{{ err }}</p></div>
+          <div class="b-body">
+            <div class="b-title">{% if let Some(_code) = error_code %}{{ t.s("tenant_rpc.errors.invalid_sql_for_mode") }}{% else %}{{ t.s("tenant_rpc_form.error.save_failed") }}{% endif %}</div>
+            <p>{{ err }}</p>
+          </div>
         </div>
         {% endif %}
         <form method="post" action="{% if editing %}/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/save{% else %}/drust/admin/tenants/{{ tenant_id }}/_rpc/new{% endif %}" class="card" style="padding:18px;display:grid;gap:14px;">
@@ -39,6 +42,14 @@
           <div class="field">
             <label>params (JSON array, e.g. <code>[{"name":"id","type":"integer","required":true}]</code>)</label>
             <textarea class="textarea" name="params_json" rows="6" required>{{ form_params_json }}</textarea>
+          </div>
+          <div class="field">
+            <label>{{ t.s("tenant_rpc_form.field.mode.label") }}</label>
+            <div style="display:flex;gap:18px;flex-wrap:wrap;">
+              <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="mode" value="read"{% if form_mode == "read" %} checked{% endif %}> {{ t.s("tenant_rpc_form.field.mode.read") }}</label>
+              <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="mode" value="write"{% if form_mode == "write" %} checked{% endif %}> {{ t.s("tenant_rpc_form.field.mode.write") }}</label>
+            </div>
+            <small class="muted" style="display:block;margin-top:6px;">{{ t.s("tenant_rpc_form.field.mode.help_owner_field") }}</small>
           </div>
           <div class="field">
             <label><input type="checkbox" name="anon_callable" value="1"{% if form_anon_callable %} checked{% endif %}> {{ t.s("tenant_rpc_form.field.anon_callable") }}</label>

@@ -1046,6 +1046,11 @@ new = "New RPC"
 body = 'Delete RPC "{name}"? This cannot be undone.'
 title = "Delete RPC"
 
+[tenant_rpc.errors]
+invalid_sql_for_mode = "RPC body contains SQL not allowed for this mode"
+statement_failed = "Statement {index} failed"
+user_id_binding_required = ":user_id binding requires a user token (anon cannot call this RPC)"
+
 [tenant_rpc.empty]
 body = "Stored RPCs are named SELECT queries that frontends and MCP clients call by name. Click New RPC to create one."
 title = "No functions yet"
@@ -1067,6 +1072,8 @@ service = "service"
 
 [tenant_rpc.row_pill]
 anon_ok = "ANON OK"
+mode_read = "read"
+mode_write = "write"
 service_only = "service-only"
 
 [tenant_rpc.stats_anon]
@@ -1102,6 +1109,12 @@ description = "description (optional)"
 name = "name (snake_case, unique)"
 sql = "sql (use :name for params)"
 
+[tenant_rpc_form.field.mode]
+help_owner_field = "Mutation RPCs writing to a collection with owner_field must bind :user_id (drust auto-binds from the caller's session)."
+label = "Mode"
+read = "Read (SELECT only)"
+write = "Write (INSERT/UPDATE/DELETE)"
+
 [tenant_rpc_form.title]
 new = "New function"
 
@@ -1133,6 +1146,12 @@ value = "value"
 [tenant_rpc_test.params_placeholder]
 optional = "optional · null"
 required = "required"
+
+[tenant_rpc_test.playground]
+actually_commit_label = "Actually commit (uncheck for dry-run)"
+committed_result_banner = "Committed — changes are persisted."
+dry_run_result_banner = "Dry run — changes were rolled back."
+write_warning = "This RPC will modify data on commit."
 
 [tenant_rpc_test.result]
 columns_unit = "columns"

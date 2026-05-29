@@ -189,15 +189,10 @@ pub async fn call_rpc(
         }
         crate::rpc::registry::RpcMode::Write => {
             // ═══════════════════════════════════════════════════════
-            // WRITE ARM — v1.30. Critical-path ordering (do not reorder):
-            //   1. detach_authorizer        (defensive; spec §14 Q4)
-            //   2. SAVEPOINT (raw)          (authorizer would deny Savepoint)
-            //   3. attach_writable_authorizer
-            //   4. split + execute_one loop
-            //   5. detach_authorizer        (MANDATORY before step 6 —
-            //                                RELEASE would be denied otherwise)
-            //   6. ROLLBACK TO (if err|dry_run) + RELEASE
-            //   7. return outcome
+            // WRITE ARM — v1.30. The 8-step SAVEPOINT-around-authorizer
+            // dance lives in `crate::rpc::exec_write::run_write_rpc`;
+            // both this REST path and the admin playground call it so
+            // they share one executor — see exec_write.rs doc comment.
             // ═══════════════════════════════════════════════════════
 
             // 0. Role allow-list. Write-mode emits RPC_DENIED instead
@@ -258,117 +253,19 @@ pub async fn call_rpc(
                     );
                 }
 
-                let sql_for_closure = stored.sql.clone();
-                pool
-                    .with_writer(move |conn| {
-                        // ── STEP 1: defensive detach. spec §14 Q4 confirms
-                        //    with_writer does NOT auto-detach. If any prior
-                        //    closure left an authorizer attached it would
-                        //    prevent step 2 (Savepoint is Denied).
-                        crate::query::authorizer::detach_authorizer(conn);
-
-                        // ── STEP 2: SAVEPOINT (raw, no authorizer).
-                        conn.execute("SAVEPOINT drust_rpc_v2", [])?;
-
-                        // ── STEP 3: attach writable authorizer. From here,
-                        //    every conn.prepare is gated.
-                        crate::query::authorizer::attach_writable_authorizer(conn);
-
-                        // ── STEP 4: split + execute loop.
-                        let stmts = match crate::rpc::exec_write::split_statements(
-                            &sql_for_closure,
-                        ) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                // Split itself failed (incomplete body / NUL).
-                                // Undo savepoint cleanly: detach FIRST (RELEASE
-                                // would be Denied otherwise) then ROLLBACK + RELEASE.
-                                crate::query::authorizer::detach_authorizer(conn);
-                                let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
-                                // C4 follow-up F1: mirror the normal-path
-                                // RELEASE handling — if RELEASE fails, the
-                                // savepoint stack is the operator-visible
-                                // problem; report TxCommitFailed rather than
-                                // hiding it behind the split error.
-                                if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
-                                    return Ok(RpcOutcome::TxCommitFailed(rel.to_string()));
-                                }
-                                return Ok(RpcOutcome::StatementFailed(e));
-                            }
-                        };
-
-                        let mut last_rows: Option<QueryResult> = None;
-                        let mut combined_affected: i64 = 0;
-                        let mut last_insert_rowid: Option<i64> = None;
-                        let mut exec_error:
-                            Option<crate::rpc::exec_write::RpcStatementError> = None;
-                        let mut statement_count: usize = 0;
-
-                        // C4 follow-up F2 — INVARIANT: execute_one MUST NOT
-                        // panic. A panic here would leave the writer
-                        // connection with an open SAVEPOINT drust_rpc_v2;
-                        // tokio::sync::Mutex does not poison and
-                        // rusqlite::Connection's Drop only runs at process
-                        // exit, so the next request's STEP 2 would nest a
-                        // savepoint with the same name. The subsequent
-                        // RELEASE only releases the innermost — the leaked
-                        // savepoint would persist until process restart,
-                        // holding any pre-panic mutations in limbo.
-                        // execute_one returns Err on all known SQL-error
-                        // paths; this invariant is asserted by the
-                        // execute_one_never_panics_on_bad_sql test in
-                        // exec_write::tests.
-                        for (i, stmt) in stmts.iter().enumerate() {
-                            statement_count += 1;
-                            match crate::rpc::exec_write::execute_one(
-                                conn,
-                                stmt,
-                                &bound,
-                                i + 1,
-                            ) {
-                                Ok(o) => {
-                                    if o.rows.is_some() {
-                                        last_rows = o.rows;
-                                    }
-                                    combined_affected += o.affected_rows;
-                                    if let Some(rid) = o.last_insert_rowid {
-                                        last_insert_rowid = Some(rid);
-                                    }
-                                }
-                                Err(e) => {
-                                    exec_error = Some(e);
-                                    break;
-                                }
-                            }
-                        }
-
-                        // ── STEP 5: MANDATORY detach BEFORE savepoint resolution.
-                        crate::query::authorizer::detach_authorizer(conn);
-
-                        // ── STEP 6: resolve savepoint.
-                        let should_rollback = exec_error.is_some() || dry_run;
-                        if should_rollback {
-                            let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
-                        }
-                        if let Err(e) = conn.execute("RELEASE drust_rpc_v2", []) {
-                            return Ok(RpcOutcome::TxCommitFailed(e.to_string()));
-                        }
-
-                        // ── STEP 7: return outcome.
-                        match exec_error {
-                            Some(e) => Ok(RpcOutcome::StatementFailed(e)),
-                            None => Ok(RpcOutcome::OkWrite(
-                                crate::rpc::exec_write::WriteRpcOutcome {
-                                    last_rows,
-                                    affected_rows: combined_affected,
-                                    last_insert_rowid,
-                                    statement_count,
-                                    dry_run,
-                                },
-                            )),
-                        }
-                    })
-                    .await
+                let outcome = match crate::rpc::exec_write::run_write_rpc(
+                    &pool,
+                    stored.sql.clone(),
+                    bound,
+                    dry_run,
+                )
+                .await
+                {
+                    Ok(Ok(w)) => RpcOutcome::OkWrite(w),
+                    Ok(Err(stmt_err)) => RpcOutcome::StatementFailed(stmt_err),
+                    Err(commit_err) => RpcOutcome::TxCommitFailed(commit_err.0),
+                };
+                Ok::<RpcOutcome, rusqlite::Error>(outcome)
             }
         }
     };
