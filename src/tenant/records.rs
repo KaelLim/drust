@@ -240,7 +240,7 @@ fn attach_deprecation_headers(resp: &mut Response) {
     h.insert(
         axum::http::header::HeaderName::from_static("link"),
         axum::http::header::HeaderValue::from_static(
-            "</docs/migration/list-filter.md>; rel=\"deprecation\"",
+            "<https://github.com/KaelLim/drust/blob/main/docs/migration/list-filter.md>; rel=\"deprecation\"",
         ),
     );
 }
