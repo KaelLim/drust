@@ -114,6 +114,8 @@ fn build_router(state: TenantAuthState) -> Router {
         auth: state,
         bus,
         bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
+        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp,
         files: None,
         webhooks,

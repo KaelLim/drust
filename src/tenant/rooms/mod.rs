@@ -11,10 +11,15 @@
 //! No DB schema, no replay, no per-room ACL. See spec
 //! `docs/superpowers/specs/2026-05-29-drust-v131-broadcast-rooms-design.md`.
 
+pub mod audit;
 pub mod bus;
 pub mod envelope;
 pub mod policy;
+pub mod rest;
+pub mod state;
 
 pub use bus::{RoomBus, RoomMessage};
-pub use envelope::{ClientOp, ServerMessage};
+pub use envelope::{ClientOp, ServerMessage, codes};
 pub use policy::{PublishBucket, validate_room_name};
+pub use rest::{publish_handler, publish_into_bus, PublishCtx, PublishError};
+pub use state::RoomsConfig;
