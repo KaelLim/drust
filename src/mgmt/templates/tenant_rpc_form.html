@@ -17,7 +17,7 @@
         <div class="banner danger" style="margin-bottom:14px;"{% if let Some(code) = error_code %} data-error-code="{{ code }}"{% endif %}>
           <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
           <div class="b-body">
-            <div class="b-title">{% if let Some(_code) = error_code %}{{ t.s("tenant_rpc.errors.invalid_sql_for_mode") }}{% else %}{{ t.s("tenant_rpc_form.error.save_failed") }}{% endif %}</div>
+            <div class="b-title">{% if let Some(code) = error_code %}{% if code == "INVALID_SQL_FOR_MODE" %}{{ t.s("tenant_rpc.errors.invalid_sql_for_mode") }}{% else %}{{ t.s("tenant_rpc_form.error.save_failed") }}{% endif %}{% else %}{{ t.s("tenant_rpc_form.error.save_failed") }}{% endif %}</div>
             <p>{{ err }}</p>
           </div>
         </div>

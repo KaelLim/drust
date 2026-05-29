@@ -767,18 +767,32 @@ pub async fn rpc_test_run(
     }
 
     // Validate + bind. On failure, surface as outcome.error.
+    //
+    // Special-case `Missing("user_id")` to the friendly i18n message — REST
+    // auto-binds :user_id from AuthCtx, but the admin playground runs as
+    // service and never carries a user identity, so a generic "param
+    // user_id required" message is confusing. C6.1: route through
+    // `tenant_rpc.errors.user_id_binding_required` (zh-TW-aware).
     let bound_result = crate::rpc::params::validate_and_bind(&stored.params, &body_map);
     let bound = match bound_result {
         Ok(b) => b,
         Err(e) => {
             let is_write = matches!(stored.mode, registry::RpcMode::Write);
+            let msg = match &e {
+                crate::rpc::params::ParamError::Missing(name) if name == "user_id" => {
+                    Translator::new(locale)
+                        .s("tenant_rpc.errors.user_id_binding_required")
+                        .into_owned()
+                }
+                _ => e.to_string(),
+            };
             return render_test_outcome(
                 tenant_id,
                 tenant_name,
                 collections,
                 &stored,
                 visible_inputs,
-                Err(e.to_string()),
+                Err(msg),
                 Vec::new(),
                 0,
                 serde_json::to_string_pretty(&body_map).unwrap_or_default(),
@@ -912,16 +926,24 @@ pub async fn rpc_test_run(
                         admin,
                     )
                 }
-                Ok(Err(stmt_err)) => render_test_outcome(
+                Ok(Err(stmt_err)) => {
+                    // i18n: "Statement {index} failed" + raw rusqlite message.
+                    // Locale-aware so zh-TW users get a localized prefix; the
+                    // underlying sqlite text stays English (rusqlite produces
+                    // English; localizing those is out of scope).
+                    let t = Translator::new(locale);
+                    let prefix = t.fmt1(
+                        "tenant_rpc.errors.statement_failed",
+                        "index",
+                        stmt_err.statement_index,
+                    );
+                    render_test_outcome(
                     tenant_id,
                     tenant_name,
                     collections,
                     &stored,
                     visible_inputs,
-                    Err(format!(
-                        "statement {} failed: {}",
-                        stmt_err.statement_index, stmt_err.message
-                    )),
+                    Err(format!("{prefix}: {}", stmt_err.message)),
                     explain_rows,
                     duration_ms,
                     bound_json,
@@ -934,7 +956,8 @@ pub async fn rpc_test_run(
                     locale,
                     theme,
                     admin,
-                ),
+                )
+                }
                 Err(commit_err) => render_test_outcome(
                     tenant_id,
                     tenant_name,
