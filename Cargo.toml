@@ -1,6 +1,6 @@
 [package]
 name = "drust"
-version = "1.29.7"
+version = "1.30.0"
 edition = "2024"
 rust-version = "1.92"
 
