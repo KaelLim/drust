@@ -1,3 +1,87 @@
+## v1.30.0 — 2026-05-29
+
+Stored RPC v2 — multi-statement mutation support. Backward-compatible
+for v1.6 SELECT RPCs (response shape byte-for-byte unchanged).
+
+### Added
+
+- **`_system_rpc.mode`** column (`TEXT NOT NULL DEFAULT 'read' CHECK(mode IN ('read','write'))`).
+  Fresh DBs get the CHECK constraint; upgrade DBs rely on the
+  application-layer `RpcMode` enum being the only insert surface.
+  Existing rows backfill to `mode='read'` on first start.
+- **`attach_writable_authorizer`** in `src/query/authorizer.rs` — sibling
+  to `attach_readonly_authorizer`. Allows Insert/Update/Delete on
+  non-`sqlite_*`, non-`_system_*` tables; denies everything else
+  including `Transaction` / `Savepoint` / DDL / ATTACH / triggers /
+  vtables / views / AlterTable / Reindex / Analyze. Default arm Deny.
+- **`src/rpc/exec_write.rs`** module with `split_statements`
+  (`sqlite3_complete`-validated, handles `;` inside string literals
+  and comments correctly), `execute_one`, `StatementOutcome`,
+  `WriteRpcOutcome`, `RpcStatementError`. Plus the shared
+  `run_write_rpc` helper called from both REST and admin playground.
+- **`POST /t/<id>/rpc/<name>?dry_run=true`** for `mode='write'` RPCs —
+  SAVEPOINT auto-rolled-back; response carries `dry_run:true` +
+  `would_commit:<bool>` so callers can preview a mutation.
+- **Admin UI mode radio** on `_rpc/new` and `_rpc/<name>/edit` forms;
+  per-row mode pill on the `_rpc` list; "Actually commit" checkbox on
+  the playground with amber dry-run / green committed result banners.
+  PrepareError on create-time validation surfaces `error_code=INVALID_SQL_FOR_MODE`
+  via `data-error-code` attribute on the form's error banner.
+- **Audit `rpc.call` extension**: every audit row now carries
+  `rpc_mode` (`'read'` or `'write'`). Write-mode rows additionally
+  carry `rpc_affected_rows`, `rpc_dry_run`, `rpc_statement_count`.
+  Write-mode error rows (StatementFailed, WriteRoleDenied,
+  UserIdBindingRequired, TxCommitFailed) all carry `rpc_mode:"write"`
+  for cross-arm uniformity. Stored in the existing JSON `extra` blob
+  — no `meta_logs.sqlite` migration.
+- **Suggested-fix catalog entries** for `INVALID_SQL_FOR_MODE`,
+  `MODE_MISMATCH`, `RPC_DENIED`, `RPC_STATEMENT_FAILED`,
+  `TX_COMMIT_FAILED`, `USER_ID_BINDING_REQUIRED`.
+
+### Changed
+
+- **`src/rpc/handler.rs::call_rpc`** now branches on `stored.mode`.
+  Read arm is the unchanged v1.6 implementation (case-1 regression
+  test guards byte-for-byte response equality). Write arm enters
+  `pool.with_writer` and executes the critical-ordering sequence:
+  defensive `detach_authorizer` → `SAVEPOINT drust_rpc_v2` →
+  `attach_writable_authorizer` → statement loop → `detach_authorizer`
+  → `RELEASE` (commit) or `ROLLBACK TO` + `RELEASE` (dry-run / failure).
+  Logic extracted into reusable `exec_write::run_write_rpc` helper.
+- **`registry::create`** and **`registry::update`** signatures gain
+  a `mode: RpcMode` (resp. `Option<RpcMode>`) parameter.
+- **`validate_rpc_sql`** signature gains `mode: RpcMode`; write-mode
+  bodies are validated under `attach_writable_authorizer`. Multi-statement
+  bodies validated per-statement.
+
+### Security invariants (preserved)
+
+- `_system_*` tables remain unwritable from any RPC (denied by
+  `is_protected_collection` in BOTH `attach_writable_authorizer` and
+  create-time validation — defense-in-depth ≥2 layers).
+- DDL, ATTACH/DETACH, triggers, vtables, views, AlterTable are
+  denied in BOTH authorizers.
+- `:user_id` auto-bind from `AuthCtx` cannot be spoofed via body;
+  anon callers of RPCs declaring `:user_id` get
+  `403 USER_ID_BINDING_REQUIRED` before any SQL runs.
+- SAVEPOINT rollback runs on EVERY error path; drust never
+  partially commits a multi-statement RPC.
+- Dry-run unconditionally rolls back even on success.
+- `execute_one` documented panic-free contract + asserting test
+  (`execute_one_never_panics_on_bad_sql`); a panic would leak the
+  SAVEPOINT into the next request because tokio Mutex doesn't poison.
+
+### Migration
+
+- **Single-release rollout, no feature flag.** First-boot
+  `migrate_tenant_db` adds the `mode` column with `DEFAULT 'read'`;
+  all existing RPCs become `mode='read'` and route to the unchanged
+  v1.6 path. Migration is idempotent.
+- **No client-visible wire format break** for existing read RPCs.
+  Write RPCs surface the new fields (`affected_rows`,
+  `last_insert_rowid`, `statement_count`) only when the RPC is
+  `mode='write'`.
+
 ## v1.29.7 — 2026-05-29
 
 Bugfix release closing three correctness findings from the v1.29.6
