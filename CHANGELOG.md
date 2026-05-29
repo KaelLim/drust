@@ -1,3 +1,53 @@
+## v1.29.7 — 2026-05-29
+
+Bugfix release closing three correctness findings from the v1.29.6
+code review. All changes backward-compatible — no client breakage.
+
+### Fixed
+
+- **Sunset day-of-week** (`tenant/records.rs::attach_deprecation_headers`)
+  — `Wed, 01 Jan 2027` was wrong (2027-01-01 is a Friday). Strict
+  RFC 7231 IMF-fixdate parsers reject malformed dates and either drop
+  the Sunset header or escalate as malformed. Corrected to
+  `Fri, 01 Jan 2027 00:00:00 GMT`. The v1.29.6 CHANGELOG quoted line
+  is updated to match the new wire output.
+- **CORS expose_headers** (`tenant/mod.rs::build_cors_layer`) — added
+  `Access-Control-Expose-Headers: deprecation, sunset, link` so
+  cross-origin browser SPAs can actually read the H5-1 phase 1
+  deprecation signal via `response.headers.get('deprecation')`.
+  Without this, the browser strips them from the JS-visible response
+  even though the bytes arrive.
+- **Link header URL** (`tenant/records.rs::attach_deprecation_headers`)
+  — v1.29.6 pointed at `/docs/migration/list-filter.md`, which did not
+  exist. Replaced with the GitHub blob URL of the new
+  `docs/migration/list-filter.md` (added in this release), so
+  clients following RFC 8288 `rel="deprecation"` resolve to a real,
+  versioned migration guide instead of 404.
+
+### Added
+
+- `docs/migration/list-filter.md` — migration guide for
+  `GET ?filter`/`?sort` → `POST /list` with FilterAst. Public via the
+  Link header above. Covers operator grammar (nested-object shape),
+  before/after curl examples, permissions matrix, sunset timeline.
+
+### Testing
+
+- `tests/records_crud.rs::legacy_filter_emits_deprecation_headers`
+  rewritten to assert **exact** header values for Deprecation, Sunset
+  and Link instead of only `is_some()`. Future day-of-week or URL
+  regressions are now caught by `cargo test`.
+- `src/tenant/mod.rs::cors_tests::cors_exposes_deprecation_headers`
+  added — mounts the CORS layer on a stub axum service and asserts
+  `Access-Control-Expose-Headers` lists all three RFC 8594 headers.
+
+### Migration
+
+No schema, error-code, or wire-format change. Existing clients keep
+working unchanged. Cross-origin browser clients on the affected
+endpoint will *now* see the Deprecation/Sunset/Link headers they
+should already have been seeing in v1.29.6.
+
 ## v1.29.6 — 2026-05-29
 
 Post-review fix cycle, release 3 of 3. Error-code namespace
