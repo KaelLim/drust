@@ -386,6 +386,7 @@ pub async fn rpc_save(
                     Some(&form_for_writer.params_json),
                     Some(form_for_writer.description.as_deref()),
                     Some(anon_callable),
+                    None,
                 )
             } else {
                 registry::create(
@@ -395,6 +396,7 @@ pub async fn rpc_save(
                     &form_for_writer.params_json,
                     form_for_writer.description.as_deref(),
                     anon_callable,
+                    registry::RpcMode::Read,
                 )
             };
             result.map(|_| exists_now).map_err(|e| rusqlite::Error::SqliteFailure(

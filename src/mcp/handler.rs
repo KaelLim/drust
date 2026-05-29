@@ -950,6 +950,7 @@ impl DrustMcpService {
                 &params_json,
                 description.as_deref(),
                 anon_callable,
+                crate::rpc::registry::RpcMode::Read,
             )
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(
@@ -1004,6 +1005,7 @@ impl DrustMcpService {
                 params_json.as_deref(),
                 description.as_ref().map(|d| d.as_deref()),
                 anon_callable,
+                None,
             )
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(

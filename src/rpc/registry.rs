@@ -5,6 +5,35 @@ use crate::tenant::router::TokenRole;
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
+/// Stored-RPC dispatch mode. Decided at create time, stored on the row.
+/// `Read` (default) → v1.6 path: pool.with_reader + read-only authorizer.
+/// `Write` (v1.30+) → pool.with_writer + writable authorizer + SAVEPOINT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RpcMode {
+    Read,
+    Write,
+}
+
+impl RpcMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RpcMode::Read => "read",
+            RpcMode::Write => "write",
+        }
+    }
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "write" => RpcMode::Write,
+            _ => RpcMode::Read,
+        }
+    }
+}
+
+impl Default for RpcMode {
+    fn default() -> Self { RpcMode::Read }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredRpc {
     pub name: String,
@@ -12,6 +41,7 @@ pub struct StoredRpc {
     pub params: Vec<ParamSpec>,
     pub description: Option<String>,
     pub anon_callable: bool,
+    pub mode: RpcMode,
     pub anon_calls: i64,
     pub service_calls: i64,
     pub last_called_at: Option<String>,
@@ -35,7 +65,8 @@ pub fn lookup(conn: &Connection, name: &str) -> Result<Option<StoredRpc>, Regist
     let row = conn.query_row(
         "SELECT name, sql, params_json, description, anon_callable,
                 anon_calls, service_calls, last_called_at,
-                created_at, updated_at
+                created_at, updated_at,
+                COALESCE(mode, 'read') AS mode
            FROM _system_rpc WHERE name = ?1",
         params![name],
         |r| {
@@ -50,10 +81,11 @@ pub fn lookup(conn: &Connection, name: &str) -> Result<Option<StoredRpc>, Regist
                 r.get::<_, Option<String>>(7)?,
                 r.get::<_, String>(8)?,
                 r.get::<_, String>(9)?,
+                r.get::<_, String>(10)?,
             ))
         },
     );
-    let (n, sql, pj, desc, anon_cb, ac, sc, lca, ca, ua) = match row {
+    let (n, sql, pj, desc, anon_cb, ac, sc, lca, ca, ua, mode_s) = match row {
         Ok(t) => t,
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
         Err(e) => return Err(e.into()),
@@ -66,6 +98,7 @@ pub fn lookup(conn: &Connection, name: &str) -> Result<Option<StoredRpc>, Regist
         params,
         description: desc,
         anon_callable: anon_cb != 0,
+        mode: RpcMode::from_db_str(&mode_s),
         anon_calls: ac,
         service_calls: sc,
         last_called_at: lca,
@@ -78,7 +111,8 @@ pub fn list(conn: &Connection) -> Result<Vec<StoredRpc>, RegistryError> {
     let mut stmt = conn.prepare(
         "SELECT name, sql, params_json, description, anon_callable,
                 anon_calls, service_calls, last_called_at,
-                created_at, updated_at
+                created_at, updated_at,
+                COALESCE(mode, 'read') AS mode
            FROM _system_rpc ORDER BY name",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -93,11 +127,12 @@ pub fn list(conn: &Connection) -> Result<Vec<StoredRpc>, RegistryError> {
             r.get::<_, Option<String>>(7)?,
             r.get::<_, String>(8)?,
             r.get::<_, String>(9)?,
+            r.get::<_, String>(10)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (n, sql, pj, desc, anon_cb, ac, sc, lca, ca, ua) = row?;
+        let (n, sql, pj, desc, anon_cb, ac, sc, lca, ca, ua, mode_s) = row?;
         let params = crate::rpc::params::parse_params_json(&pj)
             .map_err(|e| RegistryError::BadParams(e.to_string()))?;
         out.push(StoredRpc {
@@ -106,6 +141,7 @@ pub fn list(conn: &Connection) -> Result<Vec<StoredRpc>, RegistryError> {
             params,
             description: desc,
             anon_callable: anon_cb != 0,
+            mode: RpcMode::from_db_str(&mode_s),
             anon_calls: ac,
             service_calls: sc,
             last_called_at: lca,
@@ -123,13 +159,14 @@ pub fn create(
     params_json: &str,
     description: Option<&str>,
     anon_callable: bool,
+    mode: RpcMode,
 ) -> Result<(), RegistryError> {
     let res = conn.execute(
         "INSERT INTO _system_rpc
-            (name, sql, params_json, description, anon_callable,
+            (name, sql, params_json, description, anon_callable, mode,
              created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))",
-        params![name, sql, params_json, description, anon_callable as i64],
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
+        params![name, sql, params_json, description, anon_callable as i64, mode.as_str()],
     );
     match res {
         Ok(_) => Ok(()),
@@ -148,6 +185,7 @@ pub fn update(
     params_json: Option<&str>,
     description: Option<Option<&str>>,
     anon_callable: Option<bool>,
+    mode: Option<RpcMode>,
 ) -> Result<(), RegistryError> {
     let mut clauses: Vec<&'static str> = Vec::new();
     let mut binds: Vec<rusqlite::types::Value> = Vec::new();
@@ -169,6 +207,10 @@ pub fn update(
     if let Some(b) = anon_callable {
         clauses.push("anon_callable = ?");
         binds.push(rusqlite::types::Value::Integer(b as i64));
+    }
+    if let Some(m) = mode {
+        clauses.push("mode = ?");
+        binds.push(rusqlite::types::Value::Text(m.as_str().into()));
     }
     if clauses.is_empty() {
         return Ok(()); // no-op
@@ -229,7 +271,7 @@ mod tests {
     #[test]
     fn create_then_lookup() {
         let (_t, conn) = fresh();
-        create(&conn, "echo", "SELECT 1", "[]", Some("trivial"), false).unwrap();
+        create(&conn, "echo", "SELECT 1", "[]", Some("trivial"), false, RpcMode::Read).unwrap();
         let r = lookup(&conn, "echo").unwrap().unwrap();
         assert_eq!(r.name, "echo");
         assert_eq!(r.sql, "SELECT 1");
@@ -237,13 +279,14 @@ mod tests {
         assert!(!r.anon_callable);
         assert_eq!(r.anon_calls, 0);
         assert_eq!(r.service_calls, 0);
+        assert_eq!(r.mode, RpcMode::Read);
     }
 
     #[test]
     fn duplicate_create_errors() {
         let (_t, conn) = fresh();
-        create(&conn, "x", "SELECT 1", "[]", None, false).unwrap();
-        let err = create(&conn, "x", "SELECT 2", "[]", None, false).unwrap_err();
+        create(&conn, "x", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
+        let err = create(&conn, "x", "SELECT 2", "[]", None, false, RpcMode::Read).unwrap_err();
         assert!(matches!(err, RegistryError::AlreadyExists(_)));
     }
 
@@ -256,8 +299,8 @@ mod tests {
     #[test]
     fn list_returns_sorted() {
         let (_t, conn) = fresh();
-        create(&conn, "b", "SELECT 1", "[]", None, false).unwrap();
-        create(&conn, "a", "SELECT 1", "[]", None, false).unwrap();
+        create(&conn, "b", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
+        create(&conn, "a", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
         let v = list(&conn).unwrap();
         assert_eq!(v.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
     }
@@ -265,8 +308,8 @@ mod tests {
     #[test]
     fn update_partial_changes() {
         let (_t, conn) = fresh();
-        create(&conn, "x", "SELECT 1", "[]", None, false).unwrap();
-        update(&conn, "x", Some("SELECT 2"), None, None, Some(true)).unwrap();
+        create(&conn, "x", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
+        update(&conn, "x", Some("SELECT 2"), None, None, Some(true), None).unwrap();
         let r = lookup(&conn, "x").unwrap().unwrap();
         assert_eq!(r.sql, "SELECT 2");
         assert!(r.anon_callable);
@@ -275,7 +318,7 @@ mod tests {
     #[test]
     fn update_missing_errors() {
         let (_t, conn) = fresh();
-        let err = update(&conn, "nope", Some("SELECT 1"), None, None, None).unwrap_err();
+        let err = update(&conn, "nope", Some("SELECT 1"), None, None, None, None).unwrap_err();
         assert!(matches!(err, RegistryError::NotFound(_)));
     }
 
@@ -289,7 +332,7 @@ mod tests {
     #[test]
     fn increment_picks_correct_column() {
         let (_t, conn) = fresh();
-        create(&conn, "x", "SELECT 1", "[]", None, false).unwrap();
+        create(&conn, "x", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
         increment(&conn, "x", TokenRole::Anon).unwrap();
         increment(&conn, "x", TokenRole::Service).unwrap();
         increment(&conn, "x", TokenRole::Anon).unwrap();
