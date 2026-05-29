@@ -937,7 +937,13 @@ impl DrustMcpService {
         let anon_callable = p.anon_callable.unwrap_or(false);
 
         pool.with_writer(move |c| {
-            crate::rpc::prepare::validate_rpc_sql(c, &sql).map_err(|e| {
+            // C5: mode = Read until create_rpc accepts a `mode` param
+            // (queued follow-up). Same default as the admin form.
+            crate::rpc::prepare::validate_rpc_sql(
+                c,
+                &sql,
+                crate::rpc::registry::RpcMode::Read,
+            ).map_err(|e| {
                 rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(1),
                     Some(e.to_string()),
@@ -991,7 +997,13 @@ impl DrustMcpService {
 
         pool.with_writer(move |c| {
             if let Some(s) = sql.as_deref() {
-                crate::rpc::prepare::validate_rpc_sql(c, s).map_err(|e| {
+                // C5: mode = Read for update_rpc until the tool accepts
+                // an explicit mode param. Matches create_rpc.
+                crate::rpc::prepare::validate_rpc_sql(
+                    c,
+                    s,
+                    crate::rpc::registry::RpcMode::Read,
+                ).map_err(|e| {
                     rusqlite::Error::SqliteFailure(
                         rusqlite::ffi::Error::new(1),
                         Some(e.to_string()),

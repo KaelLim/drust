@@ -285,7 +285,14 @@ pub async fn call_rpc(
                                 // would be Denied otherwise) then ROLLBACK + RELEASE.
                                 crate::query::authorizer::detach_authorizer(conn);
                                 let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
-                                let _ = conn.execute("RELEASE drust_rpc_v2", []);
+                                // C4 follow-up F1: mirror the normal-path
+                                // RELEASE handling — if RELEASE fails, the
+                                // savepoint stack is the operator-visible
+                                // problem; report TxCommitFailed rather than
+                                // hiding it behind the split error.
+                                if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
+                                    return Ok(RpcOutcome::TxCommitFailed(rel.to_string()));
+                                }
                                 return Ok(RpcOutcome::StatementFailed(e));
                             }
                         };
@@ -297,6 +304,20 @@ pub async fn call_rpc(
                             Option<crate::rpc::exec_write::RpcStatementError> = None;
                         let mut statement_count: usize = 0;
 
+                        // C4 follow-up F2 — INVARIANT: execute_one MUST NOT
+                        // panic. A panic here would leave the writer
+                        // connection with an open SAVEPOINT drust_rpc_v2;
+                        // tokio::sync::Mutex does not poison and
+                        // rusqlite::Connection's Drop only runs at process
+                        // exit, so the next request's STEP 2 would nest a
+                        // savepoint with the same name. The subsequent
+                        // RELEASE only releases the innermost — the leaked
+                        // savepoint would persist until process restart,
+                        // holding any pre-panic mutations in limbo.
+                        // execute_one returns Err on all known SQL-error
+                        // paths; this invariant is asserted by the
+                        // execute_one_never_panics_on_bad_sql test in
+                        // exec_write::tests.
                         for (i, stmt) in stmts.iter().enumerate() {
                             statement_count += 1;
                             match crate::rpc::exec_write::execute_one(
