@@ -648,6 +648,49 @@ async fn case10_audit_extra_carries_all_four_new_fields() {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// CASE 10b — read-mode RPC tags its audit row with rpc_mode:"read" and
+// MUST NOT carry the write-mode-only fields. Locks in v1.30 C7's
+// read-arm AuditExtra insertion against regression.
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn case10b_read_rpc_audit_has_rpc_mode_read_no_write_fields() {
+    let (app, tid, svc, _anon, dir) =
+        helpers::spin_up_dual_role_self_register("t-rpc-c10b").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_rpc(&pool, "ping", "SELECT 1 AS x", "[]", false, "read").await;
+
+    let r = app
+        .oneshot(req("POST", &tid, "/rpc/ping", Some(json!({})), &svc))
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+
+    let lines = read_audit_lines(dir.path()).await;
+    let row = lines
+        .iter()
+        .find(|l| l["op"].as_str().unwrap_or("").contains("/rpc/ping"))
+        .expect("audit row");
+    assert_eq!(row["rpc_mode"].as_str(), Some("read"), "{row}");
+    assert!(
+        row.get("rpc_affected_rows").is_none(),
+        "read-mode audit must not carry rpc_affected_rows: {row}"
+    );
+    assert!(
+        row.get("rpc_dry_run").is_none(),
+        "read-mode audit must not carry rpc_dry_run: {row}"
+    );
+    assert!(
+        row.get("rpc_statement_count").is_none(),
+        "read-mode audit must not carry rpc_statement_count: {row}"
+    );
+    assert!(
+        row.get("rpc_statement_index").is_none(),
+        "read-mode audit must not carry rpc_statement_index: {row}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
 // Q3 — :user_id inside a string literal is NOT auto-bound; the SQLite
 // lexer does not recognise `:user_id` as a bind token inside `'...'`.
 // ────────────────────────────────────────────────────────────────────

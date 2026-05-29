@@ -378,16 +378,30 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
             "ANON_DENIED",
             &format!("anon role cannot call rpc '{name}'"),
         ),
-        RpcOutcome::WriteRoleDenied => json_error(
-            StatusCode::FORBIDDEN,
-            "RPC_DENIED",
-            &format!("role cannot call rpc '{name}'"),
-        ),
-        RpcOutcome::UserIdBindingRequired => json_error(
-            StatusCode::FORBIDDEN,
-            "USER_ID_BINDING_REQUIRED",
-            ":user_id binding requires a user token (anon cannot call this RPC)",
-        ),
+        RpcOutcome::WriteRoleDenied => {
+            // v1.30 C7: tag with rpc_mode:"write" for cross-arm audit uniformity.
+            let mut resp = json_error(
+                StatusCode::FORBIDDEN,
+                "RPC_DENIED",
+                &format!("role cannot call rpc '{name}'"),
+            );
+            resp.extensions_mut().insert(
+                crate::safety::audit::AuditExtra(json!({"rpc_mode": "write"})),
+            );
+            resp
+        }
+        RpcOutcome::UserIdBindingRequired => {
+            // v1.30 C7: tag with rpc_mode:"write" for cross-arm audit uniformity.
+            let mut resp = json_error(
+                StatusCode::FORBIDDEN,
+                "USER_ID_BINDING_REQUIRED",
+                ":user_id binding requires a user token (anon cannot call this RPC)",
+            );
+            resp.extensions_mut().insert(
+                crate::safety::audit::AuditExtra(json!({"rpc_mode": "write"})),
+            );
+            resp
+        }
         RpcOutcome::Param(e) => match e {
             ParamError::Missing(_) => {
                 json_error(StatusCode::BAD_REQUEST, "PARAM_MISSING", &e.to_string())
@@ -455,11 +469,18 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
             );
             resp
         }
-        RpcOutcome::TxCommitFailed(msg) => json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "TX_COMMIT_FAILED",
-            &msg,
-        ),
+        RpcOutcome::TxCommitFailed(msg) => {
+            // v1.30 C7: tag with rpc_mode:"write" for cross-arm audit uniformity.
+            let mut resp = json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "TX_COMMIT_FAILED",
+                &msg,
+            );
+            resp.extensions_mut().insert(
+                crate::safety::audit::AuditExtra(json!({"rpc_mode": "write"})),
+            );
+            resp
+        }
         RpcOutcome::Registry(e) => match e {
             RegistryError::NotFound(_) => json_error(
                 StatusCode::NOT_FOUND,
