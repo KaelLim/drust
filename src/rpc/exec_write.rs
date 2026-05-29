@@ -1,11 +1,17 @@
-//! v1.30 — mutation-RPC executor. Used by `src/rpc/handler.rs::call_rpc`
-//! when the looked-up RPC has `mode = RpcMode::Write`. The caller is
-//! responsible for the SAVEPOINT plumbing (raw conn.execute before
-//! attach, after detach); this module only handles the inside of the
-//! authorizer-guarded region.
+//! v1.30 — mutation-RPC executor. Two layers:
+//!
+//! - [`split_statements`] + [`execute_one`] are the inner primitives used
+//!   inside the authorizer-guarded region.
+//! - [`run_write_rpc`] is the high-level helper: it acquires the per-tenant
+//!   writer mutex via the pool and runs the entire 8-step SAVEPOINT-
+//!   around-authorizer dance. Both `src/rpc/handler.rs::call_rpc` (REST)
+//!   and `src/mgmt/rpc_admin.rs::rpc_test_run` (admin playground) call it
+//!   so the two surfaces share the same execution path — no behavior
+//!   drift, same audit/error shape.
 
 use crate::query::executor::QueryResult;
 use crate::rpc::params::BoundValue;
+use crate::storage::pool::SharedTenantPool;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -212,6 +218,150 @@ fn classify(err: rusqlite::Error, statement_index: usize) -> RpcStatementError {
         statement_index,
         message: msg,
         authorizer_denied: denied,
+    }
+}
+
+/// SAVEPOINT RELEASE failed after the authorizer was detached — the
+/// connection's savepoint stack is the operator-visible problem; the
+/// caller turns this into HTTP 500 / `TX_COMMIT_FAILED`.
+#[derive(Debug, thiserror::Error)]
+#[error("savepoint release failed: {0}")]
+pub struct TxCommitError(pub String);
+
+/// High-level helper: run a write-mode stored RPC. Acquires the
+/// per-tenant writer mutex, then executes the 8-step ordering:
+///
+/// 1. defensive `detach_authorizer` (spec §14 Q4 — `with_writer` does
+///    not auto-detach; previous closures may have leaked one).
+/// 2. raw `SAVEPOINT drust_rpc_v2` (authorizer would Deny Savepoint).
+/// 3. `attach_writable_authorizer` — from here every prepare is gated.
+/// 4. split + execute loop. On split or execute_one failure we record
+///    the error but DO NOT short-circuit step 5/6 — the savepoint must
+///    be resolved cleanly.
+/// 5. MANDATORY `detach_authorizer` BEFORE step 6 (RELEASE would be
+///    Denied otherwise).
+/// 6. `ROLLBACK TO` (if error or `dry_run`) then `RELEASE`.
+/// 7. return outcome.
+///
+/// Return shape:
+/// - `Ok(Ok(WriteRpcOutcome))` — every statement succeeded; on `dry_run`
+///   the SAVEPOINT was rolled back but `outcome.dry_run == true`.
+/// - `Ok(Err(RpcStatementError))` — one statement failed (split or
+///   execute_one). All effects were rolled back.
+/// - `Err(TxCommitError)` — `RELEASE drust_rpc_v2` itself failed; the
+///   savepoint state is undefined and the operator needs to look.
+///
+/// Connection-level errors (writer mutex acquisition, raw SAVEPOINT
+/// command fail) surface as the inner `rusqlite::Result::Err` from
+/// `pool.with_writer`; we re-wrap them as `TxCommitError` so callers
+/// only deal with three arms.
+pub async fn run_write_rpc(
+    pool: &SharedTenantPool,
+    stored_sql: String,
+    bound: BTreeMap<String, BoundValue>,
+    dry_run: bool,
+) -> Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError> {
+    let res: rusqlite::Result<Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError>> =
+        pool
+            .with_writer(move |conn| {
+                // ── STEP 1: defensive detach. spec §14 Q4 confirms
+                //    with_writer does NOT auto-detach. If any prior
+                //    closure left an authorizer attached it would
+                //    prevent step 2 (Savepoint is Denied).
+                crate::query::authorizer::detach_authorizer(conn);
+
+                // ── STEP 2: SAVEPOINT (raw, no authorizer). If this
+                //    fails we have nothing to roll back; surface as
+                //    TxCommitError so the caller's 500 path is uniform.
+                if let Err(e) = conn.execute("SAVEPOINT drust_rpc_v2", []) {
+                    return Ok(Err(TxCommitError(e.to_string())));
+                }
+
+                // ── STEP 3: attach writable authorizer. From here,
+                //    every conn.prepare is gated.
+                crate::query::authorizer::attach_writable_authorizer(conn);
+
+                // ── STEP 4: split + execute loop.
+                let stmts = match split_statements(&stored_sql) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // Split failed. Mirror the inline path: detach
+                        // first, ROLLBACK + RELEASE, return statement err.
+                        crate::query::authorizer::detach_authorizer(conn);
+                        let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
+                        if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
+                            return Ok(Err(TxCommitError(rel.to_string())));
+                        }
+                        return Ok(Ok(Err(e)));
+                    }
+                };
+
+                let mut last_rows: Option<QueryResult> = None;
+                let mut combined_affected: i64 = 0;
+                let mut last_insert_rowid: Option<i64> = None;
+                let mut exec_error: Option<RpcStatementError> = None;
+                let mut statement_count: usize = 0;
+
+                // INVARIANT: execute_one MUST NOT panic. A panic here
+                // would leave the writer connection with an open
+                // SAVEPOINT drust_rpc_v2; tokio::sync::Mutex does not
+                // poison and rusqlite::Connection's Drop only runs at
+                // process exit, so the next request's STEP 2 would nest
+                // a savepoint with the same name. The subsequent RELEASE
+                // only releases the innermost — the leaked savepoint
+                // would persist until process restart, holding any
+                // pre-panic mutations in limbo. execute_one returns Err
+                // on all known SQL-error paths; this invariant is
+                // asserted by the `execute_one_never_panics_on_bad_sql`
+                // test below.
+                for (i, stmt) in stmts.iter().enumerate() {
+                    statement_count += 1;
+                    match execute_one(conn, stmt, &bound, i + 1) {
+                        Ok(o) => {
+                            if o.rows.is_some() {
+                                last_rows = o.rows;
+                            }
+                            combined_affected += o.affected_rows;
+                            if let Some(rid) = o.last_insert_rowid {
+                                last_insert_rowid = Some(rid);
+                            }
+                        }
+                        Err(e) => {
+                            exec_error = Some(e);
+                            break;
+                        }
+                    }
+                }
+
+                // ── STEP 5: MANDATORY detach BEFORE savepoint resolution.
+                crate::query::authorizer::detach_authorizer(conn);
+
+                // ── STEP 6: resolve savepoint.
+                let should_rollback = exec_error.is_some() || dry_run;
+                if should_rollback {
+                    let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
+                }
+                if let Err(e) = conn.execute("RELEASE drust_rpc_v2", []) {
+                    return Ok(Err(TxCommitError(e.to_string())));
+                }
+
+                // ── STEP 7: return outcome.
+                Ok(Ok(match exec_error {
+                    Some(e) => Err(e),
+                    None => Ok(WriteRpcOutcome {
+                        last_rows,
+                        affected_rows: combined_affected,
+                        last_insert_rowid,
+                        statement_count,
+                        dry_run,
+                    }),
+                }))
+            })
+            .await;
+
+    match res {
+        Ok(inner) => inner,
+        Err(e) => Err(TxCommitError(e.to_string())),
     }
 }
 

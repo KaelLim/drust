@@ -180,7 +180,15 @@ struct RpcForm {
     form_sql: String,
     form_params_json: String,
     form_anon_callable: bool,
+    /// "read" or "write" — drives the mode radio. Always set; defaults
+    /// to "read" on new-form / unrecognised input.
+    form_mode: String,
     error: Option<String>,
+    /// Spec §6 wire-contract — when present, surfaces as a
+    /// `data-error-code="..."` attribute on the rendered banner so
+    /// scrapers / e2e tests see the canonical error code (e.g.
+    /// `INVALID_SQL_FOR_MODE`) alongside the human-readable message.
+    error_code: Option<String>,
     t: Translator,
     admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
@@ -236,7 +244,9 @@ pub async fn rpc_new_form(
             form_sql: String::new(),
             form_params_json: "[]".into(),
             form_anon_callable: false,
+            form_mode: registry::RpcMode::Read.as_str().to_string(),
             error: None,
+            error_code: None,
             t: Translator::new(locale),
             admin,
             palette_resolved: trc.palette_resolved,
@@ -291,7 +301,9 @@ pub async fn rpc_edit_form(
             form_sql: existing.sql,
             form_params_json: params_json_string,
             form_anon_callable: existing.anon_callable,
+            form_mode: existing.mode.as_str().to_string(),
             error: None,
+            error_code: None,
             t: Translator::new(locale),
             admin,
             palette_resolved: trc.palette_resolved,
@@ -315,6 +327,11 @@ pub struct RpcFormBody {
     /// Checkbox: present (`"1"`) when checked, absent otherwise.
     #[serde(default)]
     pub anon_callable: Option<String>,
+    /// Radio: "read" or "write". `None` (omitted from POST) falls back
+    /// to "read" so older submissions / e2e fixtures that pre-date C6
+    /// keep working — same default as `RpcMode::Read`.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 /// `POST /admin/tenants/{id}/_rpc/new` (create) and
@@ -338,6 +355,15 @@ pub async fn rpc_save(
         .await
         .unwrap_or_else(|| tenant_id.clone());
 
+    // C6: parse the mode radio early so it feeds both validate_rpc_sql
+    // (C5) and registry::create/update (C1). Unknown / missing values
+    // fall back to Read — matches RpcMode::default() so legacy form
+    // submissions without the mode radio still work.
+    let form_mode = match form.mode.as_deref() {
+        Some("write") => registry::RpcMode::Write,
+        _ => registry::RpcMode::Read,
+    };
+
     // Pre-validate params_json before taking the writer lock (no DB needed).
     if let Err(e) = crate::rpc::params::parse_params_json(&form.params_json) {
         let name_for_lookup = form.name.clone();
@@ -345,7 +371,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme, admin.clone());
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), None, locale, theme, admin.clone());
     }
 
     // Validate SQL through the mode-matched authorizer (uses a reader
@@ -353,30 +379,49 @@ pub async fn rpc_save(
     // a writer mutex is unnecessary; SQLite's authorizer fires at prepare
     // time regardless of the open-mode flag).
     //
-    // mode = RpcMode::Read here; C6 will wire the form's mode radio
-    // through to this call site. MCP create_rpc / update_rpc receive
-    // the same Read default for the same reason.
+    // PrepareError → INVALID_SQL_FOR_MODE on the form (spec §6 wire
+    // contract). We surface the error_code as a data-attribute on the
+    // rendered banner so e2e scrapers see the canonical code even
+    // though the human-readable message is the SQLite text.
     let sql_for_validate = form.sql.clone();
-    let validate_res = pool
+    let validate_res: rusqlite::Result<Result<(), crate::rpc::prepare::PrepareError>> = pool
         .with_reader(move |c| {
-            crate::rpc::prepare::validate_rpc_sql(
+            Ok(crate::rpc::prepare::validate_rpc_sql(
                 c,
                 &sql_for_validate,
-                crate::rpc::registry::RpcMode::Read,
-            )
-                .map_err(|e| rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(1),
-                    Some(e.to_string()),
-                ))
+                form_mode,
+            ))
         })
         .await;
-    if let Err(e) = validate_res {
-        let name_for_lookup = form.name.clone();
-        let exists_now = pool
-            .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
-            .await
-            .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme, admin.clone());
+    match validate_res {
+        Ok(Ok(())) => {}
+        Ok(Err(prep_err)) => {
+            let name_for_lookup = form.name.clone();
+            let exists_now = pool
+                .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
+                .await
+                .unwrap_or(false);
+            return render_form_with_error(
+                &state,
+                &tenant_id,
+                &tenant_name,
+                &form,
+                exists_now,
+                prep_err.to_string(),
+                Some("INVALID_SQL_FOR_MODE".to_string()),
+                locale,
+                theme,
+                admin.clone(),
+            );
+        }
+        Err(e) => {
+            let name_for_lookup = form.name.clone();
+            let exists_now = pool
+                .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
+                .await
+                .unwrap_or(false);
+            return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), None, locale, theme, admin.clone());
+        }
     }
 
     // Atomic writer transaction: lookup existence + create-or-update.
@@ -396,7 +441,7 @@ pub async fn rpc_save(
                     Some(&form_for_writer.params_json),
                     Some(form_for_writer.description.as_deref()),
                     Some(anon_callable),
-                    None,
+                    Some(form_mode),
                 )
             } else {
                 registry::create(
@@ -406,7 +451,7 @@ pub async fn rpc_save(
                     &form_for_writer.params_json,
                     form_for_writer.description.as_deref(),
                     anon_callable,
-                    registry::RpcMode::Read,
+                    form_mode,
                 )
             };
             result.map(|_| exists_now).map_err(|e| rusqlite::Error::SqliteFailure(
@@ -421,7 +466,7 @@ pub async fn rpc_save(
             .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme, admin.clone());
+        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), None, locale, theme, admin.clone());
     }
 
     Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_rpc")).into_response()
@@ -435,12 +480,17 @@ fn render_form_with_error(
     form: &RpcFormBody,
     editing: bool,
     msg: String,
+    error_code: Option<String>,
     locale: Locale,
     theme: crate::mgmt::theme::Theme,
     admin: crate::mgmt::admin_profile::AdminProfileExt,
 ) -> Response {
     let collections = load_collections(state, tenant_id);
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
+    let form_mode = match form.mode.as_deref() {
+        Some("write") => "write".to_string(),
+        _ => "read".to_string(),
+    };
     Html(
         RpcForm {
             tenant_id: tenant_id.to_string(),
@@ -455,7 +505,9 @@ fn render_form_with_error(
             form_sql: form.sql.clone(),
             form_params_json: form.params_json.clone(),
             form_anon_callable: form.anon_callable.is_some(),
+            form_mode,
             error: Some(msg),
+            error_code,
             t: Translator::new(locale),
             admin,
             palette_resolved: trc.palette_resolved,
@@ -494,6 +546,9 @@ struct RpcTestPage {
     description: Option<String>,
     sql: String,
     anon_callable: bool,
+    /// "read" or "write" — drives the mode pill and the write-only
+    /// commit banner / checkbox.
+    mode: String,
     params: Vec<RpcTestParam>,
     /// Set when the user has just clicked Run. None on the bare GET.
     outcome: Option<RpcTestOutcome>,
@@ -515,6 +570,18 @@ struct RpcTestOutcome {
     error: Option<String>,
     /// Rows from `EXPLAIN QUERY PLAN <sql>`. Empty on early failures.
     explain_rows: Vec<String>,
+    /// Write-mode RPCs only: true when the run rolled the SAVEPOINT
+    /// back (either explicit dry-run, or an exec error before the
+    /// statement loop finished). Drives the amber/green result banner.
+    dry_run: bool,
+    /// True when the underlying RPC is write-mode. Drives the
+    /// "committed" green banner in the result region (only meaningful
+    /// when `dry_run == false`).
+    is_write_mode: bool,
+    /// Affected rows aggregated across all statements (write-mode only).
+    affected_rows: i64,
+    /// Statements that completed before the loop ended (write-mode only).
+    statement_count: usize,
 }
 
 struct RpcTestResult {
@@ -529,6 +596,18 @@ pub struct RpcTestRunForm {
     /// Each param submitted as `p_<name>=<string>`. We collect dynamically.
     #[serde(flatten)]
     fields: std::collections::BTreeMap<String, String>,
+}
+
+impl RpcTestRunForm {
+    /// HTML checkbox semantics: present (any non-empty value) → user
+    /// asked to actually commit; absent → dry-run. Write-mode only;
+    /// read-mode ignores this flag.
+    fn actually_commit(&self) -> bool {
+        self.fields
+            .get("actually_commit")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    }
 }
 
 /// `GET /admin/tenants/{id}/_rpc/{name}/test` — render the test playground
@@ -558,6 +637,7 @@ pub async fn rpc_test_form(
     drop(conn);
 
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
+    let mode_str = stored.mode.as_str().to_string();
     Html(
         RpcTestPage {
             tenant_id,
@@ -569,6 +649,7 @@ pub async fn rpc_test_form(
             description: stored.description.clone(),
             sql: stored.sql.clone(),
             anon_callable: stored.anon_callable,
+            mode: mode_str,
             params: stored
                 .params
                 .iter()
@@ -640,6 +721,13 @@ fn coerce_form_string(ty: crate::rpc::params::ParamType, s: &str) -> serde_json:
 
 /// `POST /admin/tenants/{id}/_rpc/{name}/test/run` — execute the RPC with
 /// the submitted form values and re-render the page with the result.
+///
+/// Branches on `stored.mode`:
+/// - `Read` → opens a reader and runs `execute_read_query_with_named`
+///   (unchanged from v1.6).
+/// - `Write` → reads the `actually_commit` checkbox (absent → dry-run)
+///   and delegates to `exec_write::run_write_rpc` so the playground
+///   shares the same execution path as the REST endpoint.
 pub async fn rpc_test_run(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
@@ -683,6 +771,7 @@ pub async fn rpc_test_run(
     let bound = match bound_result {
         Ok(b) => b,
         Err(e) => {
+            let is_write = matches!(stored.mode, registry::RpcMode::Write);
             return render_test_outcome(
                 tenant_id,
                 tenant_name,
@@ -693,6 +782,13 @@ pub async fn rpc_test_run(
                 Vec::new(),
                 0,
                 serde_json::to_string_pretty(&body_map).unwrap_or_default(),
+                // Failed before SQL ran. Mark dry_run=true for write-mode
+                // so the result region shows the amber "no changes
+                // persisted" banner instead of the green committed one.
+                is_write,
+                is_write,
+                0,
+                0,
                 locale,
                 theme,
                 admin,
@@ -701,52 +797,167 @@ pub async fn rpc_test_run(
     };
 
     let bound_json = serde_json::to_string_pretty(&body_map).unwrap_or_default();
+    let is_write_mode = matches!(stored.mode, registry::RpcMode::Write);
 
-    // EXPLAIN QUERY PLAN — best-effort. Failures here are non-fatal; we
-    // still attempt the real query so the user sees whichever signal is
-    // more informative.
-    let explain_rows = explain_plan(&conn, &stored.sql, &bound).unwrap_or_default();
+    match stored.mode {
+        registry::RpcMode::Read => {
+            // EXPLAIN QUERY PLAN — best-effort. Failures here are
+            // non-fatal; we still attempt the real query so the user sees
+            // whichever signal is more informative.
+            let explain_rows = explain_plan(&conn, &stored.sql, &bound).unwrap_or_default();
 
-    // Real execution.
-    let started = std::time::Instant::now();
-    let exec_result = crate::query::executor::execute_read_query_with_named(
-        &conn,
-        &stored.sql,
-        &bound,
-        1_000,
-        1_048_576,
-    );
-    let duration_ms = started.elapsed().as_millis();
+            let started = std::time::Instant::now();
+            let exec_result = crate::query::executor::execute_read_query_with_named(
+                &conn,
+                &stored.sql,
+                &bound,
+                1_000,
+                1_048_576,
+            );
+            let duration_ms = started.elapsed().as_millis();
 
-    match exec_result {
-        Ok(qr) => render_test_outcome(
-            tenant_id,
-            tenant_name,
-            collections,
-            &stored,
-            visible_inputs,
-            Ok(qr),
-            explain_rows,
-            duration_ms,
-            bound_json,
-            locale,
-            theme,
-            admin,
-        ),
-        Err(e) => render_test_outcome(
-            tenant_id,
-            tenant_name,
-            collections,
-            &stored,
-            visible_inputs,
-            Err(e.to_string()),
-            explain_rows,
-            duration_ms,
-            bound_json,
-            locale,
-            theme,
-            admin,
-        ),
+            match exec_result {
+                Ok(qr) => render_test_outcome(
+                    tenant_id,
+                    tenant_name,
+                    collections,
+                    &stored,
+                    visible_inputs,
+                    Ok(qr),
+                    explain_rows,
+                    duration_ms,
+                    bound_json,
+                    false,
+                    false,
+                    0,
+                    0,
+                    locale,
+                    theme,
+                    admin,
+                ),
+                Err(e) => render_test_outcome(
+                    tenant_id,
+                    tenant_name,
+                    collections,
+                    &stored,
+                    visible_inputs,
+                    Err(e.to_string()),
+                    explain_rows,
+                    duration_ms,
+                    bound_json,
+                    false,
+                    false,
+                    0,
+                    0,
+                    locale,
+                    theme,
+                    admin,
+                ),
+            }
+        }
+        registry::RpcMode::Write => {
+            // Write-mode: invoke the shared executor so the playground
+            // and REST path share one code path. `actually_commit`
+            // checkbox absent → dry_run=true.
+            let dry_run = !form.actually_commit();
+            let explain_rows = explain_plan(&conn, &stored.sql, &bound).unwrap_or_default();
+            // Drop the reader handle before grabbing the writer mutex —
+            // the read handle holds a connection-pool slot we want
+            // released before run_write_rpc's mutex acquisition.
+            drop(conn);
+
+            let pool = match state.tenants.get_or_open(&tenant_id) {
+                Ok(p) => p,
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            };
+
+            let started = std::time::Instant::now();
+            let run_res = crate::rpc::exec_write::run_write_rpc(
+                &pool,
+                stored.sql.clone(),
+                bound,
+                dry_run,
+            )
+            .await;
+            let duration_ms = started.elapsed().as_millis();
+
+            match run_res {
+                Ok(Ok(w)) => {
+                    let qr_opt = w.last_rows;
+                    render_test_outcome(
+                        tenant_id,
+                        tenant_name,
+                        collections,
+                        &stored,
+                        visible_inputs,
+                        match qr_opt {
+                            Some(qr) => Ok(qr),
+                            None => Ok(crate::query::executor::QueryResult {
+                                column_names: Vec::new(),
+                                column_types: Vec::new(),
+                                rows: Vec::new(),
+                                truncated: false,
+                                sql_hash: String::new(),
+                            }),
+                        },
+                        explain_rows,
+                        duration_ms,
+                        bound_json,
+                        w.dry_run,
+                        is_write_mode,
+                        w.affected_rows,
+                        w.statement_count,
+                        locale,
+                        theme,
+                        admin,
+                    )
+                }
+                Ok(Err(stmt_err)) => render_test_outcome(
+                    tenant_id,
+                    tenant_name,
+                    collections,
+                    &stored,
+                    visible_inputs,
+                    Err(format!(
+                        "statement {} failed: {}",
+                        stmt_err.statement_index, stmt_err.message
+                    )),
+                    explain_rows,
+                    duration_ms,
+                    bound_json,
+                    // Statement failed → SAVEPOINT rolled back. Banner
+                    // shows amber "no changes persisted".
+                    true,
+                    is_write_mode,
+                    0,
+                    stmt_err.statement_index,
+                    locale,
+                    theme,
+                    admin,
+                ),
+                Err(commit_err) => render_test_outcome(
+                    tenant_id,
+                    tenant_name,
+                    collections,
+                    &stored,
+                    visible_inputs,
+                    Err(format!("TX_COMMIT_FAILED: {}", commit_err.0)),
+                    explain_rows,
+                    duration_ms,
+                    bound_json,
+                    // Commit itself failed — savepoint state is
+                    // undefined; treat as dry_run for the banner so the
+                    // user doesn't see a misleading green "committed".
+                    true,
+                    is_write_mode,
+                    0,
+                    0,
+                    locale,
+                    theme,
+                    admin,
+                ),
+            }
+        }
     }
 }
 
@@ -761,6 +972,10 @@ fn render_test_outcome(
     explain_rows: Vec<String>,
     duration_ms: u128,
     bound_json: String,
+    dry_run: bool,
+    is_write_mode: bool,
+    affected_rows: i64,
+    statement_count: usize,
     locale: Locale,
     theme: crate::mgmt::theme::Theme,
     admin: crate::mgmt::admin_profile::AdminProfileExt,
@@ -802,6 +1017,7 @@ fn render_test_outcome(
         .collect();
 
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
+    let mode_str = stored.mode.as_str().to_string();
     Html(
         RpcTestPage {
             tenant_id,
@@ -813,6 +1029,7 @@ fn render_test_outcome(
             description: stored.description.clone(),
             sql: stored.sql.clone(),
             anon_callable: stored.anon_callable,
+            mode: mode_str,
             params,
             outcome: Some(RpcTestOutcome {
                 duration_ms,
@@ -820,6 +1037,10 @@ fn render_test_outcome(
                 result,
                 error,
                 explain_rows,
+                dry_run,
+                is_write_mode,
+                affected_rows,
+                statement_count,
             }),
             t: Translator::new(locale),
             admin,

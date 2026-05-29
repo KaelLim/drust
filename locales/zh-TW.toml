@@ -1070,6 +1070,11 @@ new = "新增 RPC"
 body = "確定要刪除 RPC「{name}」？此操作無法復原。"
 title = "刪除 RPC"
 
+[tenant_rpc.errors]
+invalid_sql_for_mode = "RPC body 內含此模式不允許的 SQL"
+statement_failed = "第 {index} 條 statement 失敗"
+user_id_binding_required = "RPC 綁定了 :user_id；anon token 無法滿足此綁定，請改用 user 或 service token"
+
 [tenant_rpc.empty]
 body = "預存 RPC 是具名的 SELECT 查詢，前端與 MCP 客戶端可依名稱呼叫。點擊「新增 RPC」即可建立一筆。"
 title = "尚未建立任何函式"
@@ -1091,6 +1096,8 @@ service = "service"
 
 [tenant_rpc.row_pill]
 anon_ok = "ANON 可呼叫"
+mode_read = "讀"
+mode_write = "寫"
 service_only = "僅限 service"
 
 [tenant_rpc.stats_anon]
@@ -1126,6 +1133,12 @@ description = "描述（選填）"
 name = "名稱（snake_case，需唯一）"
 sql = "SQL（使用 :name 代表參數）"
 
+[tenant_rpc_form.field.mode]
+help_owner_field = "若 collection 有 owner_field，mutation RPC 的 SQL 內必須綁定 :user_id（drust 會從登入者 session 自動代入）。"
+label = "模式"
+read = "讀（只允許 SELECT）"
+write = "寫（INSERT / UPDATE / DELETE）"
+
 [tenant_rpc_form.title]
 new = "新增函式"
 
@@ -1157,6 +1170,12 @@ value = "值"
 [tenant_rpc_test.params_placeholder]
 optional = "選填 · null"
 required = "必填"
+
+[tenant_rpc_test.playground]
+actually_commit_label = "確定 commit（不勾代表 dry-run）"
+committed_result_banner = "已 commit — 修改已寫入。"
+dry_run_result_banner = "Dry run — 修改已 rollback。"
+write_warning = "這支 RPC 一旦 commit 會修改資料。"
 
 [tenant_rpc_test.result]
 columns_unit = "欄"
