@@ -253,6 +253,32 @@ mod tests {
     }
 
     #[test]
+    fn execute_one_never_panics_on_bad_sql() {
+        // C4 follow-up F2 — assert handler.rs's panic-free contract.
+        // SQL-injection-shaped strings, malformed binds, etc. must return
+        // Err, not panic. handler.rs:300-322 relies on this for
+        // SAVEPOINT lifecycle safety (a panic mid-loop would leak the
+        // savepoint until process restart).
+        use crate::rpc::params::BoundValue;
+        use std::collections::BTreeMap;
+        let d = tempfile::tempdir().unwrap();
+        let conn = crate::storage::tenant_db::open_write(d.path(), "t").unwrap();
+        conn.execute_batch("CREATE TABLE t (x INTEGER);").unwrap();
+        let binds: BTreeMap<String, BoundValue> = BTreeMap::new();
+        for sql in [
+            ";",                            // empty after semicolon strip
+            "DROP TABLE t",                 // DDL: prepare may succeed without authorizer
+            "INSERT INTO nope VALUES (1)",  // unknown table
+            "SELECT ÿþ BAD",                // non-ASCII garbage
+        ] {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                execute_one(&conn, sql, &binds, 1)
+            }));
+            assert!(result.is_ok(), "execute_one panicked on: {sql:?}");
+        }
+    }
+
+    #[test]
     fn split_incomplete_trailing_chunk_errors() {
         // Unclosed string literal — `sqlite3_complete` is lexical (it
         // catches dangling strings/comments/triggers), not syntactic, so

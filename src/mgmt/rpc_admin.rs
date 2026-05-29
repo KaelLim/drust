@@ -348,12 +348,22 @@ pub async fn rpc_save(
         return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), locale, theme, admin.clone());
     }
 
-    // Validate SQL through the read-only authorizer (uses a reader connection
-    // so the authorizer is never attached to the writer).
+    // Validate SQL through the mode-matched authorizer (uses a reader
+    // connection — see src/rpc/prepare.rs::validate_rpc_sql doc for why
+    // a writer mutex is unnecessary; SQLite's authorizer fires at prepare
+    // time regardless of the open-mode flag).
+    //
+    // mode = RpcMode::Read here; C6 will wire the form's mode radio
+    // through to this call site. MCP create_rpc / update_rpc receive
+    // the same Read default for the same reason.
     let sql_for_validate = form.sql.clone();
     let validate_res = pool
         .with_reader(move |c| {
-            crate::rpc::prepare::validate_rpc_sql(c, &sql_for_validate)
+            crate::rpc::prepare::validate_rpc_sql(
+                c,
+                &sql_for_validate,
+                crate::rpc::registry::RpcMode::Read,
+            )
                 .map_err(|e| rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(1),
                     Some(e.to_string()),
