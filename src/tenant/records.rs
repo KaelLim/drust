@@ -235,7 +235,7 @@ fn attach_deprecation_headers(resp: &mut Response) {
     );
     h.insert(
         axum::http::header::HeaderName::from_static("sunset"),
-        axum::http::header::HeaderValue::from_static("Wed, 01 Jan 2027 00:00:00 GMT"),
+        axum::http::header::HeaderValue::from_static("Fri, 01 Jan 2027 00:00:00 GMT"),
     );
     h.insert(
         axum::http::header::HeaderName::from_static("link"),
