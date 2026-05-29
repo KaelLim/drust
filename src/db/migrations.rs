@@ -147,6 +147,13 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         // v1.30 RPC v2 will write user-role counts here instead of
         // lumping them into anon_calls.
         add_column_if_missing(&tx, "_system_rpc", "user_calls", "INTEGER NOT NULL DEFAULT 0")?;
+        // v1.30 — _system_rpc.mode (S1). 'read' default keeps every v1.29 RPC
+        // on the existing v1.6 SELECT path. CHECK constraint is *not* applied
+        // by ALTER TABLE ADD COLUMN (SQLite ignores it on alter); the constraint
+        // is enforced on fresh DBs from SCHEMA SQL. For upgraded DBs we rely on
+        // the application-layer registry::create signature taking RpcMode, so
+        // invalid strings can't be inserted via our code path.
+        add_column_if_missing(&tx, "_system_rpc", "mode", "TEXT NOT NULL DEFAULT 'read'")?;
     }
     tx.commit()
 }
@@ -827,5 +834,136 @@ mod tests {
         }
         // Must not panic / error.
         migrate_tenant_db(dir.path(), "t-norpc").unwrap();
+    }
+
+    // ----- v1.30 S1: _system_rpc.mode column -----
+
+    #[test]
+    fn v130_fresh_db_has_mode_column_defaulting_to_read() {
+        // Fresh tenant DB through open_write → SCHEMA SQL applies; migrate is
+        // a defense-in-depth idempotent pass on top.
+        let tmp = TempDir::new().unwrap();
+        let conn = crate::storage::tenant_db::open_write(tmp.path(), "fresh130").unwrap();
+        drop(conn);
+        migrate_tenant_db(tmp.path(), "fresh130").unwrap();
+
+        let c = Connection::open(tmp.path().join("tenants").join("fresh130").join("data.sqlite")).unwrap();
+        // (a) Column present.
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(_system_rpc)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert!(cols.contains(&"mode".to_string()),
+            "_system_rpc.mode column missing on fresh DB; cols = {cols:?}");
+
+        // (b) Default-value check: insert omitting `mode`, then read it back.
+        c.execute(
+            "INSERT INTO _system_rpc (name, sql, params_json) VALUES ('m1', 'SELECT 1', '[]')",
+            [],
+        ).unwrap();
+        let m: String = c.query_row(
+            "SELECT mode FROM _system_rpc WHERE name = 'm1'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(m, "read", "fresh-DB default for _system_rpc.mode must be 'read'");
+    }
+
+    #[test]
+    fn v130_upgrade_preserves_existing_rpcs_as_read() {
+        // Build a pre-v1.30 _system_rpc by hand (no `mode` column), populate
+        // two rows, then run the migration. Existing rows must report 'read'.
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-up130");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT);
+                 CREATE TABLE _system_rpc (
+                    name TEXT PRIMARY KEY, sql TEXT NOT NULL, params_json TEXT NOT NULL,
+                    description TEXT, anon_callable INTEGER NOT NULL DEFAULT 0,
+                    anon_calls INTEGER NOT NULL DEFAULT 0,
+                    service_calls INTEGER NOT NULL DEFAULT 0,
+                    last_called_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO _system_rpc (name, sql, params_json) VALUES ('old_a', 'SELECT 1', '[]');
+                 INSERT INTO _system_rpc (name, sql, params_json) VALUES ('old_b', 'SELECT 2', '[]');"
+            ).unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-up130").unwrap();
+
+        let c = Connection::open(&p).unwrap();
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(_system_rpc)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert!(cols.contains(&"mode".to_string()),
+            "mode column missing after upgrade; cols = {cols:?}");
+
+        for name in ["old_a", "old_b"] {
+            let m: String = c.query_row(
+                "SELECT mode FROM _system_rpc WHERE name = ?1",
+                rusqlite::params![name], |r| r.get(0)
+            ).unwrap();
+            assert_eq!(m, "read", "pre-v1.30 row {name} should default to 'read', got {m:?}");
+        }
+    }
+
+    #[test]
+    fn v130_migration_idempotent() {
+        // Running migrate_tenant_db twice on the same DB must succeed.
+        // add_column_if_missing silently skips re-adding existing columns.
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-idem130");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT);
+                 CREATE TABLE _system_rpc (
+                    name TEXT PRIMARY KEY, sql TEXT NOT NULL, params_json TEXT NOT NULL,
+                    description TEXT, anon_callable INTEGER NOT NULL DEFAULT 0,
+                    anon_calls INTEGER NOT NULL DEFAULT 0,
+                    service_calls INTEGER NOT NULL DEFAULT 0,
+                    last_called_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );"
+            ).unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-idem130").unwrap();
+        migrate_tenant_db(dir.path(), "t-idem130").unwrap(); // second run = no-op
+
+        // Sanity: column exists exactly once.
+        let c = Connection::open(&p).unwrap();
+        let mode_count: i64 = c.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('_system_rpc') WHERE name = 'mode'",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(mode_count, 1, "mode column must appear exactly once after double-migrate");
+    }
+
+    #[test]
+    fn v130_fresh_db_check_constraint_rejects_invalid_mode() {
+        // Fresh DB via open_write → SCHEMA SQL's CHECK(mode IN ('read','write'))
+        // must reject an out-of-set value.
+        let tmp = TempDir::new().unwrap();
+        let conn = crate::storage::tenant_db::open_write(tmp.path(), "chkmode").unwrap();
+        let err = conn.execute(
+            "INSERT INTO _system_rpc (name, sql, params_json, mode)
+             VALUES ('x', 'SELECT 1', '[]', 'execute')",
+            [],
+        ).unwrap_err();
+        // Any SQLite error is acceptable; the test guarantees the row was
+        // not accepted. We additionally assert the message mentions CHECK
+        // to catch a future drift where the constraint silently disappears.
+        let msg = err.to_string().to_ascii_lowercase();
+        assert!(
+            msg.contains("check") || msg.contains("constraint"),
+            "expected CHECK constraint violation, got: {err}"
+        );
     }
 }

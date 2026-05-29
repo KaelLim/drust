@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS "_system_rpc" (
   user_calls        INTEGER NOT NULL DEFAULT 0,
   service_calls     INTEGER NOT NULL DEFAULT 0,
   last_called_at    TEXT,
+  mode              TEXT NOT NULL DEFAULT 'read' CHECK (mode IN ('read','write')),
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
