@@ -148,18 +148,66 @@ pub fn execute_one(
             last_insert_rowid: last_id,
         })
     } else {
-        // Rows-returning (SELECT or RETURNING). C4 fills this in by mirroring
+        // Rows-returning (SELECT or RETURNING). Mirrors
         // execute_read_query_with_named_inner (src/query/executor.rs).
-        todo!("collect rows like execute_read_query_with_named_inner; \
-               set affected_rows = rows.len() as i64, last_insert_rowid \
-               = Some(conn.last_insert_rowid()) when sql starts with INSERT")
+        let column_names: Vec<String> = stmt
+            .column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let col_count = column_names.len();
+        let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+        let mut types: Vec<String> = vec!["null".into(); col_count];
+        let mut rows_iter = stmt
+            .query(refs.as_slice())
+            .map_err(|e| classify(e, statement_index))?;
+        let mut truncated = false;
+        while let Some(r) = rows_iter
+            .next()
+            .map_err(|e| classify(e, statement_index))?
+        {
+            if rows.len() >= 1_000 {
+                truncated = true;
+                break;
+            }
+            let mut row = Vec::with_capacity(col_count);
+            for (i, col_type) in types.iter_mut().enumerate() {
+                let v = r.get_ref(i).map_err(|e| classify(e, statement_index))?;
+                if col_type == "null" {
+                    *col_type = crate::query::executor::type_name(v);
+                }
+                row.push(crate::query::executor::value_to_json(v));
+            }
+            rows.push(row);
+        }
+        let affected_rows = rows.len() as i64;
+        let last_id = if sql.trim_start().to_ascii_uppercase().starts_with("INSERT") {
+            Some(conn.last_insert_rowid())
+        } else {
+            None
+        };
+        Ok(StatementOutcome {
+            rows: Some(QueryResult {
+                column_names,
+                column_types: types,
+                rows,
+                truncated,
+                sql_hash: crate::query::executor::sql_hash(sql),
+            }),
+            affected_rows,
+            last_insert_rowid: last_id,
+        })
     }
 }
 
 fn classify(err: rusqlite::Error, statement_index: usize) -> RpcStatementError {
     let msg = err.to_string();
     let lc = msg.to_lowercase();
-    let denied = lc.contains("authoriz") || lc.contains("not authorized") || lc.contains("prohibited");
+    // "not authorized" is a substring of "authoriz" + "ed" — keep the
+    // two distinct phrasings the codepath actually emits (drust's
+    // authorizer "prohibited" + sqlite's "not authorized") and let
+    // "authoriz" catch the rest.
+    let denied = lc.contains("authoriz") || lc.contains("prohibited");
     RpcStatementError {
         statement_index,
         message: msg,
@@ -194,6 +242,14 @@ mod tests {
     fn split_semicolon_in_line_comment_not_split() {
         let r = split_statements("-- ;\nSELECT 1;").unwrap();
         assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn split_empty_body_returns_empty_vec() {
+        let r = split_statements("").unwrap();
+        assert!(r.is_empty(), "empty body must split to empty vec");
+        let r = split_statements("   \n\t  ").unwrap();
+        assert!(r.is_empty(), "whitespace-only body must split to empty vec");
     }
 
     #[test]
