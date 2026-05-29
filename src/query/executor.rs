@@ -34,7 +34,7 @@ pub fn sql_hash(sql: &str) -> String {
     s
 }
 
-fn value_to_json(v: ValueRef<'_>) -> serde_json::Value {
+pub(crate) fn value_to_json(v: ValueRef<'_>) -> serde_json::Value {
     match v {
         ValueRef::Null => serde_json::Value::Null,
         ValueRef::Integer(i) => serde_json::json!(i),
@@ -44,7 +44,7 @@ fn value_to_json(v: ValueRef<'_>) -> serde_json::Value {
     }
 }
 
-fn type_name(v: ValueRef<'_>) -> String {
+pub(crate) fn type_name(v: ValueRef<'_>) -> String {
     match v {
         ValueRef::Null => "null".into(),
         ValueRef::Integer(_) => "integer".into(),
