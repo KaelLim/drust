@@ -119,6 +119,15 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
                 Method::HEAD,
             ])
             .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+            // v1.29.7 C3 — RFC 8594 deprecation headers must be visible to
+            // cross-origin browser SPAs. Without this, `response.headers
+            // .get('deprecation')` returns null even though the bytes arrive,
+            // defeating the discovery audience H5-1 phase 1 was designed for.
+            .expose_headers([
+                axum::http::header::HeaderName::from_static("deprecation"),
+                axum::http::header::HeaderName::from_static("sunset"),
+                axum::http::header::HeaderName::from_static("link"),
+            ])
             .max_age(Duration::from_secs(600)),
     )
 }
@@ -162,6 +171,55 @@ mod cors_tests {
         assert!(origin_matches(p, "http://localhost:8080"));
         // Empty after `:` rejected (wildcard requires content).
         assert!(!origin_matches(p, "http://localhost:"));
+    }
+
+    /// v1.29.7 C3 — Cross-origin browser SPAs must be able to read the
+    /// new RFC 8594 deprecation headers (`Deprecation`, `Sunset`, `Link`).
+    /// Without `Access-Control-Expose-Headers`, the browser hides them
+    /// from `response.headers.get(...)` even though the bytes arrive.
+    #[test]
+    fn cors_exposes_deprecation_headers() {
+        // build_cors_layer is private; the test invokes it directly. We
+        // can't introspect CorsLayer internals, so instead we mount the
+        // layer on a stub axum Router and assert the actual response
+        // carries `Access-Control-Expose-Headers` listing all three.
+        use axum::body::Body;
+        use axum::http::{Method, Request, StatusCode, header};
+        use axum::{Router, routing::get};
+        use tower::ServiceExt;
+
+        let origins = vec!["https://app.tzuchi.org".to_string()];
+        let cors = super::build_cors_layer(&origins).expect("cors layer");
+        let app: Router = Router::new()
+            .route("/echo", get(|| async { "ok" }))
+            .layer(cors);
+
+        // Real GET (not preflight). Access-Control-Expose-Headers is set
+        // on the actual response, not just preflight.
+        let resp = tokio_test::block_on(async {
+            app.oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/echo")
+                    .header(header::ORIGIN, "https://app.tzuchi.org")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        });
+        assert_eq!(resp.status(), StatusCode::OK);
+        let exposed = resp
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        for hdr in ["deprecation", "sunset", "link"] {
+            assert!(
+                exposed.to_ascii_lowercase().contains(hdr),
+                "Access-Control-Expose-Headers must list `{hdr}` (got: `{exposed}`)"
+            );
+        }
     }
 }
 
