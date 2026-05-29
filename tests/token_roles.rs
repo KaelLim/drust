@@ -63,6 +63,7 @@ async fn tenant_with_two_tokens(tenant: &str) -> (axum::Router, String, String, 
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         mcp: test_mcp_http(tenants, bus),
         files: None,
         webhooks,

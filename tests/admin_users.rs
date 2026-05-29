@@ -597,6 +597,7 @@ async fn mcp_set_self_register_tool() {
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         mcp: Arc::new(McpHttpRegistry::new(mcp_reg)),
         files: None,
         webhooks,

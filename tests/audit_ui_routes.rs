@@ -113,6 +113,7 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, TestAuditDb, tempf
         tenants,
         mcp,
         bus,
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),

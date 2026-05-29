@@ -50,6 +50,7 @@ fn build_state(
         tenants,
         mcp,
         bus,
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         index_large_table_rows: 1_000_000,
         public_url: "http://test".to_string(),
         oauth_registry: Arc::new(registry),

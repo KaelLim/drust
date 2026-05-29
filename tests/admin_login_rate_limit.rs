@@ -37,6 +37,7 @@ async fn build_login_router(rl_capacity: u32) -> Router {
             )),
         ))),
         bus: drust::tenant::events::EventBus::new(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(ProviderRegistry::from_env_empty()),

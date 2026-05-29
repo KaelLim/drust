@@ -35,7 +35,8 @@ fn build_app() -> (Router, std::path::PathBuf, tempfile::TempDir) {
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
     )));
-    let state = TenantsState::test_default(meta, data_dir.clone(), tenants, mcp, bus);
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
+    let state = TenantsState::test_default(meta, data_dir.clone(), tenants, mcp, bus, bus_rooms);
     let app = Router::new()
         .route(
             "/admin/tenants/{id}/_oauth_providers",

@@ -18,7 +18,7 @@ path = "src/bin/set_admin_role.rs"
 
 [dependencies]
 tokio              = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "fs", "process"] }
-axum               = { version = "0.8", features = ["macros", "multipart"] }
+axum               = { version = "0.8", features = ["macros", "multipart", "ws"] }
 tower-http         = { version = "0.6", features = ["trace", "cors", "set-header"] }
 rmcp               = { version = "1.5", features = ["server", "transport-streamable-http-server", "transport-worker"] }
 schemars           = "1"
@@ -66,6 +66,8 @@ reqwest            = { version = "0.12", default-features = false, features = ["
 eventsource-stream = "0.2"
 serde_urlencoded   = "0.7"
 tokio-test         = "0.4"
+tokio-tungstenite  = "0.24"
+futures-util       = "0.3"
 
 [build-dependencies]
 toml       = "0.8"

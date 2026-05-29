@@ -188,6 +188,7 @@ async fn mcp_stack(tenant: &str) -> (axum::Router, String, tempfile::TempDir) {
     let app = build_tenant_router(TenantStack {
         auth: state,
         bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
         webhooks,

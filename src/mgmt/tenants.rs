@@ -35,6 +35,9 @@ pub struct TenantsState {
     /// SSE broadcast channels. Used by soft_delete_tenant to drop every
     /// channel keyed on the tenant.
     pub bus: crate::tenant::events::EventBus,
+    /// v1.31 broadcast rooms bus. Mirrors `bus` for ad-hoc per-room
+    /// WS multiplex channels. `soft_delete_tenant` evicts both.
+    pub bus_rooms: crate::tenant::rooms::RoomBus,
     /// Directory containing `audit-YYYY-MM-DD.jsonl` files. Sourced from
     /// `$DRUST_LOG_DIR` at boot; consumed by the admin audit UI handlers
     /// mounted under tenants_router.
@@ -69,6 +72,7 @@ impl TenantsState {
         tenants: std::sync::Arc<crate::storage::pool::TenantRegistry>,
         mcp: std::sync::Arc<crate::mcp::http_registry::McpHttpRegistry>,
         bus: crate::tenant::events::EventBus,
+        bus_rooms: crate::tenant::rooms::RoomBus,
     ) -> Self {
         use crate::auth::middleware::AdminSessionState;
         let log_dir = data_dir.join("logs");
@@ -87,6 +91,7 @@ impl TenantsState {
             tenants,
             mcp,
             bus,
+            bus_rooms,
             log_dir,
             audit_meta_read,
             index_large_table_rows: 1_000_000,
@@ -520,6 +525,7 @@ pub async fn soft_delete_tenant(
     state.tenants.evict(&id);
     state.mcp.evict(&id);
     state.bus.evict_tenant(&id);
+    state.bus_rooms.evict_tenant(&id);
     StatusCode::NO_CONTENT.into_response()
 }
 

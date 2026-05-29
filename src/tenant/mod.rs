@@ -13,6 +13,7 @@ pub mod owner_field;
 pub mod query_endpoint;
 pub mod realtime_routes;
 pub mod records;
+pub mod rooms;
 pub mod records_list;
 pub mod router;
 pub mod sse;
@@ -38,6 +39,9 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 pub struct TenantStack {
     pub auth: TenantAuthState,
     pub bus: EventBus,
+    /// v1.31 broadcast rooms bus — ad-hoc per-room WS multiplex channels.
+    /// `soft_delete_tenant` evicts both `bus` and `bus_rooms`.
+    pub bus_rooms: rooms::RoomBus,
     pub mcp: Arc<McpHttpRegistry>,
     pub files: Option<TenantFilesState>,
     pub webhooks: Arc<WebhookDispatcher>,

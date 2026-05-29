@@ -158,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.tenant_read_pool_size,
     ));
     let bus = EventBus::new();
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
 
     let garage = match &cfg.storage {
@@ -271,6 +272,7 @@ async fn main() -> anyhow::Result<()> {
         tenants: tenants.clone(),
         mcp: mcp_http.clone(),
         bus: bus.clone(),
+        bus_rooms: bus_rooms.clone(),
         index_large_table_rows: cfg.index_large_table_rows,
         public_url: public_url.clone(),
         oauth_registry,
@@ -313,6 +315,7 @@ async fn main() -> anyhow::Result<()> {
             oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
         },
         bus: bus.clone(),
+        bus_rooms: bus_rooms.clone(),
         mcp: mcp_http,
         files: tenant_files_state,
         webhooks: webhooks.clone(),
