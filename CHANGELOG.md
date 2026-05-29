@@ -28,7 +28,7 @@ compatible — clients catching existing codes keep working.
   `rpc/handler.rs::ANON_DENIED` (RPC callability gate, different
   semantic) deferred to v1.30 RPC v2.
 - **GET `/t/<id>/records/<coll>?filter=` / `?sort=`** (H5-1 phase 1)
-  now responds with `Deprecation: true` + `Sunset: Wed, 01 Jan 2027
+  now responds with `Deprecation: true` + `Sunset: Fri, 01 Jan 2027
   00:00:00 GMT` + `Link` headers. Behavior unchanged; phase 2 (post-
   sunset) will refuse raw filter strings.
 
