@@ -59,6 +59,7 @@ async fn app_with_tenant_and_coll() -> (axum::Router, tempfile::TempDir) {
         tenants,
         mcp,
         bus,
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),

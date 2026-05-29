@@ -48,6 +48,9 @@ pub struct MgmtState {
     /// drops every channel keyed on the tenant so subscribers receive
     /// `Closed` instead of dangling forever.
     pub bus: crate::tenant::events::EventBus,
+    /// v1.31 per-(tenant, room) broadcast channels for WebSocket multiplex
+    /// rooms. Mirrors `bus`; `soft_delete_tenant` evicts both.
+    pub bus_rooms: crate::tenant::rooms::RoomBus,
     /// Row count threshold above which index creation is considered "large
     /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
     /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
@@ -607,6 +610,7 @@ impl MgmtState {
             tenants: self.tenants.clone(),
             mcp: self.mcp.clone(),
             bus: self.bus.clone(),
+            bus_rooms: self.bus_rooms.clone(),
             log_dir: self.log_dir.clone(),
             audit_meta_read: self.audit_meta_read.clone(),
             index_large_table_rows: self.index_large_table_rows,

@@ -47,6 +47,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         mcp: test_mcp_http(tenants, bus),
         files: None,
         webhooks,
@@ -95,6 +96,7 @@ pub async fn spin_up_tenant_with_role(
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         mcp: test_mcp_http(tenants, bus),
         files: None,
         webhooks,
@@ -141,6 +143,7 @@ pub async fn spin_up_tenant_with_threshold(
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         mcp: test_mcp_http(tenants, bus),
         files: None,
         webhooks,

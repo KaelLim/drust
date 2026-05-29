@@ -113,6 +113,7 @@ fn build_router(state: TenantAuthState) -> Router {
     build_tenant_router(TenantStack {
         auth: state,
         bus,
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
         mcp,
         files: None,
         webhooks,

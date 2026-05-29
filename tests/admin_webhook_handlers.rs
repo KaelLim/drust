@@ -46,7 +46,8 @@ async fn build_app(tenant_id: &str) -> (Router, std::path::PathBuf, tempfile::Te
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
     )));
-    let state = TenantsState::test_default(meta, data_dir.clone(), tenants, mcp, bus);
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
+    let state = TenantsState::test_default(meta, data_dir.clone(), tenants, mcp, bus, bus_rooms);
     let app = Router::new()
         .route(
             "/admin/tenants/{id}/_api_keys",
