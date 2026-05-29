@@ -46,6 +46,8 @@ async fn app_with_audit(
         auth: state,
         bus: bus.clone(),
         bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
+        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
         webhooks,

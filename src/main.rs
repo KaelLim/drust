@@ -159,6 +159,28 @@ async fn main() -> anyhow::Result<()> {
     ));
     let bus = EventBus::new();
     let bus_rooms = drust::tenant::rooms::RoomBus::new();
+    let rooms_cfg = drust::tenant::rooms::RoomsConfig::from_env();
+    let bucket = rooms_cfg.bucket();
+
+    // v1.31 broadcast rooms sweeper — best-effort GC of empty channels.
+    // Runs every DRUST_BROADCAST_SWEEPER_INTERVAL_SECS (default 300, 0 disables).
+    // No correctness dependence; pure memory hygiene.
+    if rooms_cfg.sweeper_interval_secs > 0 {
+        let sweep_interval = rooms_cfg.sweeper_interval_secs;
+        let bus_for_sweeper = bus_rooms.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(sweep_interval));
+            tick.tick().await; // consume immediate tick
+            loop {
+                tick.tick().await;
+                let removed = bus_for_sweeper.sweep_empty();
+                if removed > 0 {
+                    tracing::debug!(removed, "broadcast rooms sweeper");
+                }
+            }
+        });
+    }
+
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
 
     let garage = match &cfg.storage {
@@ -316,6 +338,8 @@ async fn main() -> anyhow::Result<()> {
         },
         bus: bus.clone(),
         bus_rooms: bus_rooms.clone(),
+        bucket: bucket.clone(),
+        rooms_cfg: rooms_cfg.clone(),
         mcp: mcp_http,
         files: tenant_files_state,
         webhooks: webhooks.clone(),

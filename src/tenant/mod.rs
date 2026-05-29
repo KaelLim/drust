@@ -42,6 +42,12 @@ pub struct TenantStack {
     /// v1.31 broadcast rooms bus — ad-hoc per-room WS multiplex channels.
     /// `soft_delete_tenant` evicts both `bus` and `bus_rooms`.
     pub bus_rooms: rooms::RoomBus,
+    /// v1.31 per-tenant publish QPS bucket. Shared `Arc` so the same
+    /// bucket state lives across REST / WS / MCP publish callers.
+    pub bucket: Arc<rooms::PublishBucket>,
+    /// v1.31 broadcast rooms config (payload cap, subscriber caps).
+    /// Cloneable; tests use `RoomsConfig::test_defaults()`.
+    pub rooms_cfg: rooms::RoomsConfig,
     pub mcp: Arc<McpHttpRegistry>,
     pub files: Option<TenantFilesState>,
     pub webhooks: Arc<WebhookDispatcher>,
@@ -332,6 +338,20 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 let b = bus.clone();
                 move |ext, ctx, path| sse::subscribe_handler(b.clone(), ext, ctx, path)
             }),
+        )
+        .route(
+            "/t/{tenant}/rooms/{room}",
+            post({
+                let pc = rooms::PublishCtx {
+                    bus: state.bus_rooms.clone(),
+                    bucket: state.bucket.clone(),
+                    cfg: state.rooms_cfg.clone(),
+                };
+                move |ctx, path, json| {
+                    rooms::rest::publish_handler(pc.clone(), ctx, path, json)
+                }
+            })
+            .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
         )
         .route("/t/{tenant}/query", post(query_endpoint::query_handler))
         .route(
