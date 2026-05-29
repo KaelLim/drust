@@ -48,37 +48,50 @@ curl -X POST "https://drust.tzuchi-org.tw/t/blog/collections/posts/list" \
   -d '{
     "filter": {
       "and": [
-        {"eq": ["published", true]},
-        {"eq": ["author_id", "u-abc"]}
+        {"published": true},
+        {"author_id": "u-abc"}
       ]
     },
-    "sort": [{"field": "created_at", "dir": "desc"}],
+    "sort": {"field": "created_at", "dir": "desc"},
     "page": 2,
     "per_page": 20
   }'
 ```
 
-Response shape is identical (`{records, page, perPage, total, totalPages}`).
+Response shape:
+
+```json
+{"records": [...], "total": <int>, "page": <int>, "perPage": <int>}
+```
+
+> **Note:** POST `/list` does NOT return `totalPages` (the legacy GET `/records` does).
+> Compute it client-side as `Math.ceil(total / perPage)` if your UI needs it.
 
 ## FilterAst quick reference
 
-| Operator | JSON shape                                  | SQL                 |
-|----------|---------------------------------------------|---------------------|
-| eq       | `{"eq":[field, value]}`                     | `field = ?`         |
-| ne       | `{"ne":[field, value]}`                     | `field != ?`        |
-| gt       | `{"gt":[field, value]}`                     | `field > ?`         |
-| gte      | `{"gte":[field, value]}`                    | `field >= ?`        |
-| lt       | `{"lt":[field, value]}`                     | `field < ?`         |
-| lte      | `{"lte":[field, value]}`                    | `field <= ?`        |
-| in       | `{"in":[field, [v1, v2, ...]]}`             | `field IN (?,?,...)`|
-| like     | `{"like":[field, pattern]}`                 | `field LIKE ?`      |
-| isnull   | `{"isnull": field}`                         | `field IS NULL`     |
-| and      | `{"and":[clause1, clause2, ...]}`           | `clause AND clause` |
-| or       | `{"or":[clause1, clause2, ...]}`            | `clause OR clause`  |
-| not      | `{"not": clause}`                           | `NOT (clause)`      |
+| Operator        | JSON shape                                       | SQL                  |
+|-----------------|--------------------------------------------------|----------------------|
+| eq (shorthand)  | `{"field": value}`                               | `field = ?`          |
+| eq              | `{"field": {"eq": value}}`                       | `field = ?`          |
+| ne              | `{"field": {"ne": value}}`                       | `field != ?`         |
+| gt              | `{"field": {"gt": value}}`                       | `field > ?`          |
+| gte             | `{"field": {"gte": value}}`                      | `field >= ?`         |
+| lt              | `{"field": {"lt": value}}`                       | `field < ?`          |
+| lte             | `{"field": {"lte": value}}`                      | `field <= ?`         |
+| like            | `{"field": {"like": "%pat%"}}`                   | `field LIKE ?`       |
+| in              | `{"field": {"in": [v1, v2, ...]}}`               | `field IN (?,?,...)` |
+| nin             | `{"field": {"nin": [v1, v2, ...]}}`              | `field NOT IN (?,?,...)` |
+| is_null         | `{"field": {"is_null": true}}`                   | `field IS NULL`      |
+| is_not_null     | `{"field": {"is_not_null": true}}`               | `field IS NOT NULL`  |
+| and             | `{"and": [clause1, clause2, ...]}`               | `clause AND clause`  |
+| or              | `{"or": [clause1, clause2, ...]}`                | `clause OR clause`   |
+| not             | `{"not": clause}`                                | `NOT (clause)`       |
 
-Full grammar: see `src/query/vector_filter.rs::FilterAst` in the drust
-source tree.
+(Note: the operand for `is_null` / `is_not_null` is ignored by the AST but must be a JSON value — `true` is conventional.)
+
+Full grammar: see `src/query/vector_filter.rs::FilterAst` (Rust source) or
+fetch `GET /t/<id>/openapi.json` for the generated JSON-schema view of
+the filter shape (`src/codegen/filter_ast_schema.rs`).
 
 ## Permissions matrix
 
