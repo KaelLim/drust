@@ -4,7 +4,7 @@
 
 use dashmap::DashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Room name validation. See spec §Room name validation.
@@ -35,13 +35,13 @@ pub fn validate_room_name(name: &str) -> Result<(), &'static str> {
 /// per millisecond. Bucket capacity = `max_tokens`. Per-tenant, NOT
 /// per-token (a tenant with N service keys shares one bucket).
 pub struct PublishBucket {
-    inner: Arc<DashMap<String, BucketState>>,
+    inner: Arc<DashMap<String, Arc<Mutex<BucketState>>>>,
     max_tokens: i64,
 }
 
 struct BucketState {
-    tokens: AtomicI64,         // scaled by 1_000 so refill is integer-friendly
-    last_refill_ms: AtomicU64,
+    tokens: i64,         // scaled by 1_000 so refill is integer-friendly
+    last_refill_ms: u64,
 }
 
 impl PublishBucket {
@@ -65,29 +65,34 @@ impl PublishBucket {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        // Scale: tokens stored × 1_000. max_tokens × 1_000 capacity.
         let capacity_scaled = self.max_tokens.saturating_mul(1_000);
-        let entry = self
+        // v1.31.2 F9 — per-tenant Mutex so refill+compute+decrement is
+        // one atomic step. Pre-fix the load/compute/store were independent
+        // atomics and concurrent callers could both observe >= 1 token
+        // and both decrement.
+        let lock = self
             .inner
             .entry(tenant.to_string())
-            .or_insert_with(|| BucketState {
-                tokens: AtomicI64::new(capacity_scaled),
-                last_refill_ms: AtomicU64::new(now_ms),
-            });
-        // Refill: scaled tokens per ms = max_tokens (since bucket × 1_000, rate = max × ms).
-        let last = entry.last_refill_ms.swap(now_ms, Ordering::AcqRel);
-        let elapsed_ms = now_ms.saturating_sub(last) as i64;
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(BucketState {
+                    tokens: capacity_scaled,
+                    last_refill_ms: now_ms,
+                }))
+            })
+            .clone();
+        let mut g = lock.lock().expect("PublishBucket Mutex poisoned");
+        let elapsed_ms = now_ms.saturating_sub(g.last_refill_ms) as i64;
         let refill_scaled = elapsed_ms.saturating_mul(self.max_tokens);
-        let prev = entry.tokens.load(Ordering::Acquire);
-        let after_refill = (prev + refill_scaled).min(capacity_scaled);
+        let after_refill = (g.tokens + refill_scaled).min(capacity_scaled);
+        g.last_refill_ms = now_ms;
         if after_refill < 1_000 {
             // Less than 1 whole token available. Compute wait.
             let deficit = 1_000 - after_refill;
             let wait_ms = (deficit + self.max_tokens - 1) / self.max_tokens; // ceil div
-            entry.tokens.store(after_refill, Ordering::Release);
+            g.tokens = after_refill;
             return Err(Duration::from_millis(wait_ms.max(1) as u64));
         }
-        entry.tokens.store(after_refill - 1_000, Ordering::Release);
+        g.tokens = after_refill - 1_000;
         Ok(())
     }
 }
@@ -202,6 +207,44 @@ mod tests {
         assert!(
             ok_count >= 3 && ok_count <= 8,
             "refilled {ok_count} tokens after 50ms"
+        );
+    }
+
+    /// v1.31.2 F9 regression — `try_consume` must be atomic under
+    /// per-tenant concurrency. Pre-fix the load + compute + store steps
+    /// were independent atomics; two concurrent callers from the same
+    /// tenant could both observe tokens >= 1_000 and both decrement,
+    /// breaking the documented QPS cap.
+    #[test]
+    fn bucket_under_concurrent_burst_honors_max_tokens_exactly() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const MAX_TOKENS: i64 = 10;
+        const THREADS: usize = 50;
+
+        let b = Arc::new(PublishBucket::new(MAX_TOKENS));
+        let barrier = Arc::new(Barrier::new(THREADS));
+
+        let counters: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let b = b.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    if b.try_consume("t1").is_ok() {
+                        1
+                    } else {
+                        0
+                    }
+                })
+            })
+            .collect();
+
+        let total_ok: usize = counters.into_iter().map(|h| h.join().unwrap()).sum();
+        assert_eq!(
+            total_ok, MAX_TOKENS as usize,
+            "expected exactly {MAX_TOKENS} consumes; got {total_ok} (race?)"
         );
     }
 }
