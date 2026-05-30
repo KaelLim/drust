@@ -17,7 +17,10 @@ pub mod envelope;
 pub mod policy;
 pub mod rest;
 pub mod state;
+pub mod ws;
 pub mod ws_auth;
+
+pub use ws::ws_handler;
 
 pub use bus::{RoomBus, RoomMessage};
 pub use envelope::{ClientOp, ServerMessage, codes};
