@@ -55,6 +55,11 @@
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><path d="M17 14l4 3-4 3"/></svg></span>
       {{ t.s("collection_sidebar.nav.stored_rpc") }}
     </a>
+    <a class="nav-item{% if active_coll == "_broadcast" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_broadcast" title="{{ t.s("collection_sidebar.broadcast.title") }}">
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 11a8 8 0 0 1 16 0M7 14a5 5 0 0 1 10 0M10 17a2 2 0 0 1 4 0M12 19v2"/></svg></span>
+      {{ t.s("collection_sidebar.nav.broadcast") }}
+    </a>
 
     <div class="nav-section"><span>{{ t.s("collection_sidebar.section.backend") }}</span></div>
     <a class="nav-item{% if active_coll == "_system_files" %} on{% endif %}"

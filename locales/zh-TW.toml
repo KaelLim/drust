@@ -514,6 +514,9 @@ title = "anon · service · MCP 金鑰"
 [collection_sidebar.back]
 all_tenants = "返回所有租戶"
 
+[collection_sidebar.broadcast]
+title = "WebSocket 即時測試"
+
 [collection_sidebar.brand]
 meta = "租戶工作台"
 
@@ -530,6 +533,7 @@ title = "稽核 · 請求歷史"
 
 [collection_sidebar.nav]
 api_keys = "API 金鑰"
+broadcast = "廣播"
 end_users = "終端使用者"
 files = "檔案"
 logs = "日誌"
@@ -1339,3 +1343,51 @@ sort = "排序"
 [collection_page.view]
 definition = "結構"
 table = "資料"
+
+[broadcast_inspector]
+page_title = "Broadcast Inspector"
+view_eyebrow = "廣播"
+view_sub = "走 /realtime 的 WebSocket multiplex — 訂閱 room、即時 tail、送 JSON。Inspector 不會列出 room；自己輸入要觀察的名稱。"
+
+[broadcast_inspector.bearer_missing]
+title = "Service bearer 無法取得"
+body = "這個 tenant 的 service bearer 是 v1.1c 之前產生的（只存 hash）。請到 API keys 頁重新生成後再使用 Inspector。"
+cta = "前往 API keys"
+
+[broadcast_inspector.conn]
+state_disconnected = "未連線"
+state_connecting = "連線中…"
+state_connected = "已連線 · {n} room"
+state_bearer_rejected = "bearer 失效 — 請重新生成 service key"
+state_unreachable = "連線失敗 — server 無回應"
+state_server_closed = "被 server 關掉了"
+btn_connect = "連線"
+btn_disconnect = "斷線"
+
+[broadcast_inspector.subs]
+heading = "訂閱"
+placeholder = "room 名稱（例如 chat）"
+btn_subscribe = "訂閱"
+btn_unsub = "退訂"
+btn_evict = "Evict"
+caveat = "Inspector 不會列出活躍 room — 輸入你 app 用的 room 名稱。"
+confirm_evict = "把所有訂閱者從 room '{room}' 踢出去？此操作會留 admin audit。"
+
+[broadcast_inspector.publish]
+heading = "發送"
+room_label = "Room"
+payload_label = "Payload（JSON）"
+payload_invalid = "JSON 格式錯"
+btn_send = "送出"
+counter = "{used} / {cap} B"
+
+[broadcast_inspector.tail]
+heading = "Tail"
+btn_clear = "清空"
+btn_pause = "暫停"
+btn_resume = "繼續"
+empty = "（還沒有訊息 — 請先連線 + 訂閱）"
+new_pill = "▼ {n} 筆新訊息"
+self_tag = "me"
+lagged_row = "⚠ LAGGED — room {room} 漏掉 {n} 則；退訂再訂閱可恢復"
+paused_drop = "暫停期間丟掉 {n} 則"

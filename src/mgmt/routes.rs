@@ -708,6 +708,10 @@ impl MgmtState {
                 "/admin/tenants/{id}/_api_keys",
                 get(super::tokens::api_keys_page),
             )
+            .route(
+                "/admin/tenants/{id}/_broadcast",
+                get(super::tenant_broadcast::broadcast_inspector_page),
+            )
             .route("/admin/tenants/{id}/_rpc", get(super::rpc_admin::rpc_index))
             .route(
                 "/admin/tenants/{id}/_rpc/new",
