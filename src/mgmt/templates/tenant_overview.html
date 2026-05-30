@@ -62,6 +62,25 @@
           </div>
         </div>
 
+        {# v1.31 — broadcast rooms snapshot + evict-all action. #}
+        <div class="card" style="margin-bottom:18px;padding:14px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+          <div style="flex:1 1 auto;min-width:0;">
+            <div style="font:600 12.5px/1.2 var(--sans);color:var(--text);margin-bottom:4px;">{{ t.s("tenant_overview.broadcast.title") }}</div>
+            <div style="font:500 12px/1.4 var(--mono);color:var(--muted-2);">
+              {{ t.fmt2("tenant_overview.broadcast.summary", "rooms", broadcast_room_count, "subs", broadcast_subscriber_count) }}
+            </div>
+          </div>
+          {% if broadcast_room_count > 0 %}
+          <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/realtime/evict-all"
+                onsubmit="return confirm('{{ t.s("tenant_overview.broadcast.evict_confirm") }}')"
+                style="margin:0;">
+            <button type="submit" class="btn ghost" style="font-size:12px;">
+              {{ t.s("tenant_overview.broadcast.evict_btn") }}
+            </button>
+          </form>
+          {% endif %}
+        </div>
+
         {% if webhook_failures.len() > 0 %}
         <div class="banner danger" style="margin-bottom:18px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
