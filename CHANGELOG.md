@@ -1,3 +1,49 @@
+## v1.31.5 — 2026-05-30
+
+### Added
+
+- **Admin Broadcast Inspector** — new page at
+  `/admin/tenants/<id>/_broadcast` (sidebar entry `🛰 Broadcast`) for
+  exercising the v1.31 broadcast rooms surface end-to-end from the
+  browser. Connect a WS to the existing `/t/<id>/realtime` multiplex
+  endpoint, subscribe to any room by name, watch a live tail of
+  inbound messages, publish hand-crafted JSON payloads, and evict
+  misbehaving rooms (reuses the v1.31.3 admin evict endpoint with
+  `admin.broadcast.evict_room` audit). Service bearer is
+  server-injected into a hidden form field (same shape `_api_keys`
+  uses); tenants with hash-only service tokens get a "regenerate
+  service key" banner with the Connect button disabled. Inspector
+  does not enumerate active rooms — type the room name you want to
+  watch (fire-and-forget contract, same as Supabase Realtime
+  Inspector / Kafka topics / Redis pub/sub channels). Zero new wire
+  frames, zero new tenant-facing endpoints — everything composes
+  existing v1.31 surface. Vanilla JS, no framework. Design:
+  `docs/superpowers/specs/2026-05-30-drust-admin-broadcast-inspector-design.md`.
+
+### How to verify
+
+1. Open `/drust/admin/tenants/<id>/_broadcast` in a browser, click
+   `[Connect]` → connection pill turns green.
+2. Type `smoke-1` in Subscribe input, click `[Subscribe]` → chip
+   appears.
+3. Open a second browser tab (or `websocat`) to the same room with
+   the service bearer (`Authorization: Bearer $TOKEN`).
+4. In tab A: type `{"hello":"world"}` in payload, click `[Send]` →
+   both tabs see the message in their tail; tab A sees `←me` tag and
+   `delivered=2` ack row.
+5. Spam-publish ~300 fast frames → `RATE_LIMITED` red row appears in
+   tail; Send button briefly disables with a countdown.
+6. Resize payload textarea to 70 KiB of JSON → Send disables; byte
+   counter goes red at `70000 / 65536 B`.
+7. Click `[Evict]` on `smoke-1`, confirm → both tabs disconnect for
+   that room; meta_logs.sqlite has a fresh
+   `admin.broadcast.evict_room` row with `actor_admin_id` populated.
+
+### Compatibility
+
+None breaking. New admin page; existing routes unchanged; no DB
+migration; no env var; no bearer-shape change.
+
 ## v1.31.4 — 2026-05-30
 
 ### Changed
