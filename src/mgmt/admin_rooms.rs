@@ -30,7 +30,10 @@ pub async fn evict_all_rooms_handler(
     Path(tenant_id): Path<String>,
 ) -> Response {
     let subscribers_dropped = s.bus_rooms.tenant_subscriber_count(&tenant_id);
-    let rooms_evicted = s.bus_rooms.evict_tenant(&tenant_id);
+    // v1.31.1 F2 — snapshot BEFORE evict_tenant() returns (). Pre-fix
+    // we bound the unit value into the JSON field, serializing as null.
+    let rooms_evicted = s.bus_rooms.tenant_channel_count(&tenant_id);
+    s.bus_rooms.evict_tenant(&tenant_id);
     Json(json!({
         "tenant_id": tenant_id,
         "rooms_evicted": rooms_evicted,
@@ -67,4 +70,30 @@ pub async fn evict_room_handler(
         "subscribers_dropped": subscribers_dropped,
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tenant::rooms::RoomBus;
+
+    /// v1.31.1 F2 regression — `rooms_evicted` MUST be the count of rooms
+    /// dropped, not `null`. Pre-fix the handler bound `evict_tenant`'s `()`
+    /// return into the JSON field, serializing as `null`.
+    #[test]
+    fn evict_tenant_count_snapshot_returns_real_count() {
+        let bus = RoomBus::new();
+        let _a = bus.subscribe("t-alpha", "chat");
+        let _b = bus.subscribe("t-alpha", "presence");
+        let _c = bus.subscribe("t-alpha", "metrics");
+        // Channel for a different tenant — must NOT be counted.
+        let _x = bus.subscribe("t-beta", "chat");
+
+        // Snapshot before evict (this is the fix shape).
+        let rooms_evicted = bus.tenant_channel_count("t-alpha");
+        bus.evict_tenant("t-alpha");
+
+        assert_eq!(rooms_evicted, 3, "must report 3 rooms dropped");
+        assert_eq!(bus.tenant_channel_count("t-alpha"), 0, "alpha dropped");
+        assert_eq!(bus.tenant_channel_count("t-beta"), 1, "beta untouched");
+    }
 }

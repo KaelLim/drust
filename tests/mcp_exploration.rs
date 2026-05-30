@@ -118,6 +118,9 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         Arc::new(Mutex::new(
             drust::safety::audit_db::open_audit_db_memory().unwrap(),
         )),
+        drust::tenant::rooms::RoomBus::new(),
+        drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
+        drust::tenant::rooms::RoomsConfig::test_defaults(),
     );
     let svc = reg.get_or_create("blog").await.unwrap();
 

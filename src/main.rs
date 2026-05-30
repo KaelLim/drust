@@ -170,6 +170,9 @@ async fn main() -> anyhow::Result<()> {
         let bus_for_sweeper = bus_rooms.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(sweep_interval));
+            // v1.31.1 F13 — after VM suspend, Burst (default) fires N catch-up
+            // ticks back-to-back. Skip preserves "every N seconds" semantics.
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             tick.tick().await; // consume immediate tick
             loop {
                 tick.tick().await;
