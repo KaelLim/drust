@@ -180,6 +180,79 @@ mod tests {
         assert_eq!(body_string(r).await, "none");
     }
 
+    /// v1.31.7 regression: the WS sub-router puts `ws_query_token_adapter`
+    /// OUTER and the bearer-auth check INNER, so `?token=` is rewritten
+    /// into `Authorization` BEFORE auth runs. v1.31.2's F4 fix originally
+    /// regressed this by moving the adapter from a router-level outer
+    /// layer to a per-route INNER layer — combined with the production
+    /// `bearer_auth_layer` being applied at router-level OUTER, every WS
+    /// `?token=` upgrade got rejected as `UNAUTHENTICATED` because the
+    /// adapter never ran. axum layer ordering: `Router::layer(L)` runs
+    /// L OUTSIDE everything in the router (= first); per-route
+    /// `MethodRouter::layer(L)` runs L INSIDE the route's call stack
+    /// (= AFTER any outer router layer). This test pins both shapes so
+    /// the bug class can't silently regress.
+    #[tokio::test]
+    async fn ws_subrouter_layer_order_lets_query_token_reach_auth() {
+        // Synthetic auth check: 401 when no Authorization header.
+        async fn fake_auth(req: Request<Body>, next: axum::middleware::Next) -> axum::response::Response {
+            if req.headers().contains_key(axum::http::header::AUTHORIZATION) {
+                next.run(req).await
+            } else {
+                (StatusCode::UNAUTHORIZED, "missing bearer").into_response()
+            }
+        }
+        use axum::response::IntoResponse;
+
+        // POST-FIX shape: adapter OUTER + auth INNER on a sub-router.
+        // Mirrors the v1.31.7 `ws_router` build in src/tenant/mod.rs.
+        let good: Router = Router::new()
+            .route("/ws", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(fake_auth))
+            .layer(axum::middleware::from_fn(ws_query_token_adapter));
+        let resp = good
+            .oneshot(
+                Request::builder()
+                    .uri("/ws?token=svc_xyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "post-fix sub-router: ?token= must reach auth as Authorization"
+        );
+
+        // PRE-FIX shape (the buggy v1.31.5/6 production shape): per-route
+        // adapter INNER + router-level auth OUTER. Auth runs first, sees
+        // no Authorization, rejects 401; adapter never gets to rewrite.
+        let bad: Router = Router::new()
+            .route(
+                "/ws",
+                get(|| async { "ok" })
+                    .layer(axum::middleware::from_fn(ws_query_token_adapter)),
+            )
+            .layer(axum::middleware::from_fn(fake_auth));
+        let resp = bad
+            .oneshot(
+                Request::builder()
+                    .uri("/ws?token=svc_xyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "pre-fix shape MUST 401 — confirms the layer-order bug \
+             is what we think it is, and that the post-fix shape above \
+             is the actual fix, not a coincidence"
+        );
+    }
+
     /// v1.31.2 F4 regression: `?token=svc_xxx` on a non-WS / non-SSE route
     /// MUST NOT have its bearer rewritten into the Authorization header.
     /// The adapter was previously layered on the entire per-tenant `core`
