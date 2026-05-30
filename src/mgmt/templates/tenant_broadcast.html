@@ -66,22 +66,29 @@
   <div class="card" style="margin-bottom:14px;">
     <div class="card-head">{{ t.s("broadcast_inspector.publish.heading") }}</div>
     <div class="card-body">
-      <div style="display:grid;grid-template-columns:160px 1fr 120px;gap:10px;align-items:start;">
+      <div style="display:flex;flex-direction:column;gap:10px;">
         <label style="display:flex;flex-direction:column;font-size:12px;color:var(--muted);">
           {{ t.s("broadcast_inspector.publish.room_label") }}
-          <input id="pub-room" class="input" type="text" style="font-family:var(--mono);margin-top:4px;">
+          <input id="pub-room" class="input" type="text"
+                 placeholder="{{ t.s("broadcast_inspector.subs.placeholder") }}"
+                 pattern="^[a-zA-Z][a-zA-Z0-9_:.\-]{0,127}$"
+                 style="font-family:var(--mono);margin-top:4px;">
         </label>
         <label style="display:flex;flex-direction:column;font-size:12px;color:var(--muted);">
           {{ t.s("broadcast_inspector.publish.payload_label") }}
-          <textarea id="pub-payload" class="input" rows="3"
-                    style="font-family:var(--mono);margin-top:4px;resize:vertical;">{"hello":"world"}</textarea>
-          <div id="pub-payload-msg" class="muted" style="font-size:11px;margin-top:4px;"></div>
+          <textarea id="pub-payload" class="input" rows="5"
+                    spellcheck="false"
+                    style="font-family:var(--mono);margin-top:4px;resize:vertical;min-height:110px;">{"hello":"world"}</textarea>
         </label>
-        <div style="display:flex;flex-direction:column;gap:6px;align-items:stretch;">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+          <div id="pub-payload-msg" class="muted" style="font-size:12px;flex:1;min-width:120px;min-height:18px;"></div>
+          <div id="pub-counter" class="muted" style="font-size:11px;font-family:var(--mono);"></div>
           <button id="btn-send" type="button" class="btn btn-primary" disabled>
             {{ t.s("broadcast_inspector.publish.btn_send") }}
           </button>
-          <div id="pub-counter" class="muted" style="font-size:11px;text-align:right;font-family:var(--mono);"></div>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:-4px;">
+          {{ t.s("broadcast_inspector.publish.shortcut_hint") }}
         </div>
       </div>
     </div>
@@ -129,8 +136,11 @@
   const TAIL_BUFFER_MAX = 500;     // paused-buffer cap
   // i18n bundle pre-serialized in the handler — every value is a JSON
   // string AND the serialized form has `</` rewritten to `<\/`, so
-  // neither `"` nor a stray `</script>` in a translation can break out
-  // of this script element. Safe to embed verbatim.
+  // neither `"` nor a stray `<\/script>` in a translation can break
+  // out of this script element. Safe to embed verbatim. (NB: this
+  // very comment must say `<\/script>` not the literal — HTML5
+  // §8.2.4.6 terminates <script> on any literal `</script` regardless
+  // of JS string OR comment context.)
   const I18N = {{ i18n_js|safe }};
 
   let ws = null;
@@ -496,7 +506,19 @@
   });
   $("pub-payload").addEventListener("input", refreshSendEnabled);
   $("pub-payload").addEventListener("blur", validatePayload);
+  $("pub-payload").addEventListener("keydown", (e) => {
+    // Ctrl/Cmd + Enter sends. Plain Enter inserts a newline in the
+    // textarea (default behavior) so multi-line JSON payloads stay
+    // editable.
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !$("btn-send").disabled) {
+      e.preventDefault();
+      doSend();
+    }
+  });
   $("pub-room").addEventListener("input", refreshSendEnabled);
+  $("pub-room").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !$("btn-send").disabled) { e.preventDefault(); doSend(); }
+  });
   $("btn-send").onclick = doSend;
   $("btn-pause").onclick = togglePause;
   $("btn-clear").onclick = clearTail;

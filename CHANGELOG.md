@@ -1,3 +1,30 @@
+## v1.31.6 — 2026-05-30
+
+### Fixed
+
+- **Broadcast Inspector page broken on load** (`Uncaught SyntaxError:
+  Unexpected end of input`) — a JS comment inside
+  `tenant_broadcast.html` contained the literal string `</script>` to
+  describe the i18n escape rationale. HTML5 §8.2.4.6 terminates a
+  `<script>` element on any literal `</script` regardless of JS
+  string or comment context, so the browser truncated the inline JS
+  at the comment and the IIFE never closed. Rewrote the comment to
+  use `<\/script>` (which is NOT the script-end pattern). Connect /
+  Subscribe / Send all work again. v1.31.5 commit `454ccb0`
+  introduced the comment as part of fixing the same class of bug for
+  i18n_js values — got hoist by its own petard.
+
+### Changed
+
+- **Publish card UX rework** — replaced the cramped
+  `160px / 1fr / 120px` 3-column grid with a vertical-stack composer
+  (Supabase / Discord pattern): full-width Room input with placeholder
+  + regex `pattern`, full-width Payload textarea (5 rows, 110px min
+  height, `spellcheck=false`), and a bottom action bar with
+  `[validation msg]  [byte counter]  [Send]`. Added `Ctrl/⌘ + Enter`
+  keyboard shortcut on the payload textarea (plain Enter still inserts
+  a newline for multi-line JSON) and Enter on the Room input.
+
 ## v1.31.5 — 2026-05-30
 
 ### Added

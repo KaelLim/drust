@@ -1380,6 +1380,7 @@ payload_label = "Payload（JSON）"
 payload_invalid = "JSON 格式錯"
 btn_send = "送出"
 counter = "{used} / {cap} B"
+shortcut_hint = "Ctrl/⌘ + Enter 送出"
 
 [broadcast_inspector.tail]
 heading = "Tail"
