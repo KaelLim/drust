@@ -245,6 +245,9 @@ async fn main() -> anyhow::Result<()> {
         max_upload_bytes,
         cfg.index_large_table_rows,
         audit_meta_read.clone(),
+        bus_rooms.clone(),
+        bucket.clone(),
+        rooms_cfg.clone(),
     ));
     let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 

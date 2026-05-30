@@ -118,6 +118,12 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
     let mcp_path = format!("/drust/t/{tenant_id}/mcp");
     let files_upload = format!("/drust/t/{tenant_id}/files");
     let rpc_pattern = format!("/drust/t/{tenant_id}/rpc/<name>");
+    // v1.31 — broadcast room surfaces. realtime_ws expects WS upgrade; pass
+    // the service or anon token via `?token=<...>` (browsers can't set
+    // Authorization on WebSocket). rooms_publish_rest is service-only.
+    let realtime_ws = format!("/drust/t/{tenant_id}/realtime?token=<bearer>");
+    let rooms_publish_rest = format!("/drust/t/{tenant_id}/rooms/<room>");
+    let rooms_cfg = &inner.rooms_cfg;
 
     Ok(json!({
         "tenant_id": tenant_id,
@@ -132,9 +138,20 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
             "mcp": mcp_path,
             "files_upload": files_upload,
             "rpc": rpc_pattern,
+            "realtime_ws": realtime_ws,
+            "rooms_publish_rest": rooms_publish_rest,
         },
         "limits": {
             "max_upload_bytes": max_upload_bytes,
+            "broadcast_payload_max_bytes": rooms_cfg.payload_max_bytes,
+            "broadcast_publish_qps": rooms_cfg.publish_qps,
+            "broadcast_room_subscriber_max": rooms_cfg.room_subscriber_max,
+            "broadcast_client_room_max": rooms_cfg.client_room_max,
+        },
+        "broadcast": {
+            "note": "v1.31: publish via MCP tool `broadcast` or REST POST rooms_publish_rest \
+                     (service-only). Subscribe via WS upgrade at realtime_ws + send \
+                     {\"op\":\"subscribe\",\"room\":\"<name>\"} on the multiplex socket.",
         },
     }))
 }

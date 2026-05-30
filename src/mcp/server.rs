@@ -1,6 +1,7 @@
 use crate::storage::garage::GarageClient;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
 use crate::tenant::events::EventBus;
+use crate::tenant::rooms::{PublishBucket, RoomBus, RoomsConfig};
 use crate::tenant::WebhookDispatcher;
 use dashmap::DashMap;
 use rusqlite::Connection;
@@ -36,6 +37,17 @@ pub struct DrustMcpInner {
     /// like `recent_writes` use this to surface recent write-op audit
     /// rows for the bound tenant.
     pub audit_meta_read: Arc<Mutex<Connection>>,
+    /// v1.31 — broadcast-room bus shared with REST `/rooms/{room}` and
+    /// the `/realtime` WS handler. The `broadcast` MCP tool publishes
+    /// into this same bus.
+    pub bus_rooms: RoomBus,
+    /// v1.31 — per-tenant publish rate limiter, shared across REST /
+    /// WS / MCP publish surfaces so all three count toward one bucket.
+    pub bucket: Arc<PublishBucket>,
+    /// v1.31 — broadcast policy config (payload max, per-conn room cap,
+    /// per-room subscriber cap, refill rate). The MCP tool consults
+    /// `payload_max_bytes` directly.
+    pub rooms_cfg: RoomsConfig,
 }
 
 /// Newtype so we can hand out `Arc` without exposing the inner struct.
@@ -45,6 +57,7 @@ pub struct DrustMcp {
 }
 
 impl DrustMcp {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tenant_id: &str,
         pool: SharedTenantPool,
@@ -57,6 +70,9 @@ impl DrustMcp {
         max_upload_bytes: usize,
         index_large_table_rows: u64,
         audit_meta_read: Arc<Mutex<Connection>>,
+        bus_rooms: RoomBus,
+        bucket: Arc<PublishBucket>,
+        rooms_cfg: RoomsConfig,
     ) -> Self {
         Self {
             inner: Arc::new(DrustMcpInner {
@@ -71,6 +87,9 @@ impl DrustMcp {
                 max_upload_bytes,
                 index_large_table_rows,
                 audit_meta_read,
+                bus_rooms,
+                bucket,
+                rooms_cfg,
             }),
         }
     }
@@ -122,12 +141,20 @@ pub struct McpRegistry {
     /// (`new`, `with_bus`) allocate an in-memory DB so test fixtures
     /// don't have to.
     audit_meta_read: Arc<Mutex<Connection>>,
+    /// v1.31 — broadcast bus / bucket / config threaded into every
+    /// `DrustMcp` so the MCP `broadcast` tool shares the exact pipeline
+    /// as REST `/rooms/{room}` and the `/realtime` WS handler.
+    bus_rooms: RoomBus,
+    bucket: Arc<PublishBucket>,
+    rooms_cfg: RoomsConfig,
     services: DashMap<String, DrustMcp>,
 }
 
 impl McpRegistry {
     pub fn new(tenants: Arc<TenantRegistry>) -> Self {
         let webhooks = WebhookDispatcher::new(tenants.clone(), None);
+        let rooms_cfg = RoomsConfig::test_defaults();
+        let bucket = rooms_cfg.bucket();
         Self {
             tenants,
             bus: EventBus::new(),
@@ -139,11 +166,16 @@ impl McpRegistry {
             max_upload_bytes: 52_428_800,
             index_large_table_rows: 1_000_000,
             audit_meta_read: test_audit_conn(),
+            bus_rooms: RoomBus::new(),
+            bucket,
+            rooms_cfg,
             services: DashMap::new(),
         }
     }
     pub fn with_bus(tenants: Arc<TenantRegistry>, bus: EventBus) -> Self {
         let webhooks = WebhookDispatcher::new(tenants.clone(), None);
+        let rooms_cfg = RoomsConfig::test_defaults();
+        let bucket = rooms_cfg.bucket();
         Self {
             tenants,
             bus,
@@ -155,9 +187,13 @@ impl McpRegistry {
             max_upload_bytes: 52_428_800,
             index_large_table_rows: 1_000_000,
             audit_meta_read: test_audit_conn(),
+            bus_rooms: RoomBus::new(),
+            bucket,
+            rooms_cfg,
             services: DashMap::new(),
         }
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn with_bus_and_storage(
         tenants: Arc<TenantRegistry>,
         bus: EventBus,
@@ -169,6 +205,9 @@ impl McpRegistry {
         max_upload_bytes: usize,
         index_large_table_rows: u64,
         audit_meta_read: Arc<Mutex<Connection>>,
+        bus_rooms: RoomBus,
+        bucket: Arc<PublishBucket>,
+        rooms_cfg: RoomsConfig,
     ) -> Self {
         Self {
             tenants,
@@ -181,6 +220,9 @@ impl McpRegistry {
             max_upload_bytes,
             index_large_table_rows,
             audit_meta_read,
+            bus_rooms,
+            bucket,
+            rooms_cfg,
             services: DashMap::new(),
         }
     }
@@ -201,6 +243,9 @@ impl McpRegistry {
             self.max_upload_bytes,
             self.index_large_table_rows,
             self.audit_meta_read.clone(),
+            self.bus_rooms.clone(),
+            self.bucket.clone(),
+            self.rooms_cfg.clone(),
         );
         self.services.insert(tenant_id.to_string(), svc.clone());
         Ok(svc)
