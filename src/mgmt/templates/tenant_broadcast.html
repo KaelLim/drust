@@ -128,7 +128,9 @@
   const ROOM_RE = /^[a-zA-Z][a-zA-Z0-9_:.\-]{0,127}$/;
   const TAIL_BUFFER_MAX = 500;     // paused-buffer cap
   // i18n bundle pre-serialized in the handler — every value is a JSON
-  // string, safe to embed verbatim (no `"` or `</script>` injection).
+  // string AND the serialized form has `</` rewritten to `<\/`, so
+  // neither `"` nor a stray `</script>` in a translation can break out
+  // of this script element. Safe to embed verbatim.
   const I18N = {{ i18n_js|safe }};
 
   let ws = null;
@@ -139,7 +141,7 @@
   let autoScroll = true;                    // false once user scrolls up
   let pendingNewCount = 0;
   let nextClientRef = 1;
-  let pendingPublishRefs = new Map();       // client_ref → byte count (for self-tag)
+  let pendingPublishRefs = new Map();       // client_ref → {room, expires_at} (for self-tag)
   let rateLimitedUntil = 0;                 // epoch ms; Send re-enables when past
   let countdownTimer = null;
 
@@ -252,10 +254,11 @@
     const ts = formatTs(env.ts);
     const room = env.room;
     let meta = "";
-    const ref = env._our_publish_ref;
-    if (ref && pendingPublishRefs.has(ref)) {
+    // Consumption happens inside pendingPublishRefByRoom — by the time
+    // _our_publish_ref is stamped, the map entry is already deleted, so
+    // do NOT delete again here.
+    if (env._our_publish_ref) {
       meta = "←" + I18N.self_tag;
-      pendingPublishRefs.delete(ref);
     }
     let text;
     try { text = JSON.stringify(env.payload); }
@@ -303,6 +306,11 @@
       $("btn-connect").disabled = false;
       $("btn-connect").onclick = doConnect;
       ws = null;
+      // Stop the rate-limit countdown — without this the interval
+      // keeps firing refreshSendEnabled() against a closed socket
+      // forever after the user disconnects mid-cooldown.
+      if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+      rateLimitedUntil = 0;
       // 1006 = abnormal (network blip / bearer rejected); 1000 = clean.
       if (!opened) {
         // ev.code is 1006 in browsers when the upgrade was rejected with
@@ -329,7 +337,7 @@
     }
     if (subscribedRooms.has(room)) return;
     const ref = "sub-" + (nextClientRef++);
-    ws.send(JSON.stringify({ kind: "subscribe", room, ref }));
+    ws.send(JSON.stringify({ op: "subscribe", room, ref }));
     // Optimistic — server ack confirms or error reports.
     subscribedRooms.add(room);
     renderChips();
@@ -337,7 +345,7 @@
   }
   function doUnsub(room) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ kind: "unsubscribe", room }));
+      ws.send(JSON.stringify({ op: "unsubscribe", room }));
     }
     subscribedRooms.delete(room); renderChips();
   }
@@ -364,18 +372,18 @@
     const bytes = payloadBytes(JSON.stringify(payload));
     if (bytes > PAYLOAD_MAX) return;
     const ref = "pub-" + (nextClientRef++);
-    pendingPublishRefs.set(ref, bytes);
-    ws.send(JSON.stringify({ kind: "publish", room, payload, ref }));
+    pendingPublishRefs.set(ref, { room, expires_at: Date.now() + 500 });
+    ws.send(JSON.stringify({ op: "publish", room, payload, ref }));
   }
 
   function handleServerFrame(env) {
     if (env.kind === "message") {
-      // Stamp our_publish_ref BEFORE rowFromMessage drains it.
-      // We can't actually attach client_ref to a publish frame's
-      // returned message (wire doesn't carry it), so self-tag relies
-      // on matching room+payload heuristics — simplest correct: any
-      // message arriving within 500ms of our publish to that room gets
-      // tagged ←me if pendingPublishRefs has an entry for that room.
+      // Stamp our_publish_ref BEFORE rowFromMessage reads it. We can't
+      // attach client_ref to a publish frame's returned message (wire
+      // doesn't carry it), so self-tag relies on a room match: the
+      // oldest unconsumed pending publish to env.room (within 500ms)
+      // claims this message. pendingPublishRefByRoom consumes the
+      // matched ref atomically — rowFromMessage must NOT delete again.
       const ref = pendingPublishRefByRoom(env.room);
       if (ref) env._our_publish_ref = ref;
       flushTailRow(rowFromMessage(env));
@@ -392,10 +400,23 @@
       // ignore
     }
   }
-  // Heuristic: oldest pending ref for a publish to this room (within 500ms).
+  // Return-and-consume the oldest unexpired pending publish ref for
+  // `room`. Sweeps expired entries opportunistically (500ms TTL set in
+  // doSend) so the map doesn't grow without bound when our own publish
+  // never round-trips back (e.g. we publish to a room we're not
+  // subscribed to). Lookup order is Map insertion order = chronological.
   function pendingPublishRefByRoom(room) {
-    for (const [ref, _bytes] of pendingPublishRefs) {
-      if (ref.startsWith("pub-")) return ref;
+    const now = Date.now();
+    // Sweep expired entries first.
+    for (const [ref, info] of pendingPublishRefs) {
+      if (info.expires_at < now) pendingPublishRefs.delete(ref);
+    }
+    // Return the oldest matching ref for this room and consume it.
+    for (const [ref, info] of pendingPublishRefs) {
+      if (info.room === room && ref.startsWith("pub-")) {
+        pendingPublishRefs.delete(ref);
+        return ref;
+      }
     }
     return null;
   }

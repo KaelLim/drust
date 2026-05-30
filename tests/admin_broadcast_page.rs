@@ -183,10 +183,22 @@ async fn legacy_hash_only_tenant_renders_bearer_missing_banner() {
         html.contains(r#"data-state="bearer-missing""#),
         "bearer-missing banner not rendered"
     );
-    // Connect button disabled.
+    // Connect button disabled. `html.contains("disabled")` alone is
+    // meaningless — every page renders `disabled` on the optimistic
+    // btn-subscribe / btn-send slots. We need the assertion to point
+    // at the Connect button specifically, so window the search around
+    // the `id="btn-connect"` token and require `disabled` to appear
+    // inside that window (template binds it via the
+    // `{% if bearer_missing %}disabled{% endif %}` branch).
+    let connect_idx = html
+        .find(r#"id="btn-connect""#)
+        .expect("btn-connect element missing entirely");
+    let window_end = (connect_idx + 200).min(html.len());
+    let connect_window = &html[connect_idx..window_end];
     assert!(
-        html.contains(r#"id="btn-connect""#) && html.contains("disabled"),
-        "Connect button should be disabled when bearer is missing"
+        connect_window.contains("disabled"),
+        "Connect button should be disabled when bearer is missing — window:\n{}",
+        connect_window
     );
 }
 
