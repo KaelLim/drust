@@ -153,8 +153,7 @@ pub struct McpRegistry {
 impl McpRegistry {
     pub fn new(tenants: Arc<TenantRegistry>) -> Self {
         let webhooks = WebhookDispatcher::new(tenants.clone(), None);
-        let rooms_cfg = RoomsConfig::test_defaults();
-        let bucket = rooms_cfg.bucket();
+        let (bus_rooms, bucket, rooms_cfg) = test_rooms_defaults();
         Self {
             tenants,
             bus: EventBus::new(),
@@ -166,7 +165,7 @@ impl McpRegistry {
             max_upload_bytes: 52_428_800,
             index_large_table_rows: 1_000_000,
             audit_meta_read: test_audit_conn(),
-            bus_rooms: RoomBus::new(),
+            bus_rooms,
             bucket,
             rooms_cfg,
             services: DashMap::new(),
@@ -174,8 +173,7 @@ impl McpRegistry {
     }
     pub fn with_bus(tenants: Arc<TenantRegistry>, bus: EventBus) -> Self {
         let webhooks = WebhookDispatcher::new(tenants.clone(), None);
-        let rooms_cfg = RoomsConfig::test_defaults();
-        let bucket = rooms_cfg.bucket();
+        let (bus_rooms, bucket, rooms_cfg) = test_rooms_defaults();
         Self {
             tenants,
             bus,
@@ -187,7 +185,7 @@ impl McpRegistry {
             max_upload_bytes: 52_428_800,
             index_large_table_rows: 1_000_000,
             audit_meta_read: test_audit_conn(),
-            bus_rooms: RoomBus::new(),
+            bus_rooms,
             bucket,
             rooms_cfg,
             services: DashMap::new(),
@@ -276,6 +274,22 @@ fn test_audit_conn() -> Arc<Mutex<Connection>> {
 /// missing-conn at runtime.
 #[cfg(not(any(test, debug_assertions)))]
 fn test_audit_conn() -> Arc<Mutex<Connection>> {
+    panic!("McpRegistry::new / with_bus are test-only constructors; \
+            release code must use with_bus_and_storage");
+}
+
+/// v1.31 — same release/debug split for the broadcast bucket. `new` /
+/// `with_bus` are test-only; release path provides its own bucket via
+/// `with_bus_and_storage`.
+#[cfg(any(test, debug_assertions))]
+fn test_rooms_defaults() -> (RoomBus, Arc<PublishBucket>, RoomsConfig) {
+    let cfg = RoomsConfig::test_defaults();
+    let bucket = cfg.bucket();
+    (RoomBus::new(), bucket, cfg)
+}
+
+#[cfg(not(any(test, debug_assertions)))]
+fn test_rooms_defaults() -> (RoomBus, Arc<PublishBucket>, RoomsConfig) {
     panic!("McpRegistry::new / with_bus are test-only constructors; \
             release code must use with_bus_and_storage");
 }

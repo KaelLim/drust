@@ -1034,6 +1034,12 @@ total_rows_meta = "across every collection"
 webhooks_label = "Webhooks"
 webhooks_meta = "active subscriptions"
 
+[tenant_overview.broadcast]
+title = "Broadcast rooms"
+summary = "{rooms} active room(s) · {subs} WS subscriber(s)"
+evict_btn = "Evict all"
+evict_confirm = "Drop every WebSocket subscriber on this tenant's broadcast rooms? Clients can reconnect immediately."
+
 [tenant_overview.webhook_failures]
 body = "One or more outbound webhook subscriptions failed recently. Check the URL, secret, and target response."
 manage_button = "Manage webhooks →"

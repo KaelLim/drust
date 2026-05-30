@@ -1,5 +1,6 @@
 pub mod admin_pat;
 pub mod admin_profile;
+pub mod admin_rooms;
 pub mod admin_team;
 pub mod audit;
 pub mod backups;

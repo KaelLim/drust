@@ -695,6 +695,15 @@ impl MgmtState {
                 "/admin/tenants/{id}/_overview",
                 get(tenant_overview_page),
             )
+            // v1.31 — broadcast room operations (drop hung subscribers).
+            .route(
+                "/admin/tenants/{id}/realtime/evict-all",
+                post(super::admin_rooms::evict_all_rooms_handler),
+            )
+            .route(
+                "/admin/tenants/{id}/realtime/rooms/{room}/evict",
+                post(super::admin_rooms::evict_room_handler),
+            )
             .route(
                 "/admin/tenants/{id}/_api_keys",
                 get(super::tokens::api_keys_page),

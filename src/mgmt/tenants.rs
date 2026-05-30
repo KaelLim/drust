@@ -685,6 +685,12 @@ struct TenantOverviewPage {
     token_count: i64,
     webhook_failures: Vec<WebhookFailureRow>,
     recent_audit: Vec<RecentAuditRow>,
+    /// v1.31 — live count of broadcast rooms with at least one active
+    /// subscriber for this tenant. Snapshot at page-render time.
+    broadcast_room_count: usize,
+    /// v1.31 — sum of WS subscribers across all rooms for this tenant.
+    /// Snapshot at page-render time.
+    broadcast_subscriber_count: usize,
     t: Translator,
     admin: crate::mgmt::admin_profile::AdminProfileExt,
     palette_resolved: crate::mgmt::theme::ResolvedPalette,
@@ -901,6 +907,8 @@ pub async fn tenant_overview_page(
             token_count,
             webhook_failures,
             recent_audit,
+            broadcast_room_count: state.bus_rooms.tenant_channel_count(&tenant_id),
+            broadcast_subscriber_count: state.bus_rooms.tenant_subscriber_count(&tenant_id),
             t: Translator::new(locale),
             admin,
             palette_resolved: trc.palette_resolved,

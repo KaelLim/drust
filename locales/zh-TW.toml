@@ -1057,6 +1057,12 @@ total_rows_meta = "橫跨所有集合"
 webhooks_label = "Webhook"
 webhooks_meta = "啟用中的訂閱"
 
+[tenant_overview.broadcast]
+title = "廣播房間"
+summary = "{rooms} 個房間 · {subs} 個 WS 訂閱者"
+evict_btn = "全部清空"
+evict_confirm = "確定要中斷此租戶所有廣播房間的 WebSocket 訂閱者？用戶端可立即重連。"
+
 [tenant_overview.webhook_failures]
 body = "一個或多個對外 webhook 訂閱最近發生失敗。請檢查 URL、密鑰與目標端的回應。"
 manage_button = "管理 webhooks →"
