@@ -1,3 +1,23 @@
+## v1.31.8 — 2026-05-30
+
+### Changed
+
+- **Broadcast Inspector Tail — table layout + payload-first rendering.**
+  Rewrote the Tail from a `<div>` grid into a proper
+  `<table class="data">` (Time / Room / Source / Payload / →) so it
+  matches the rest of the admin data-table convention (`tenants_list`,
+  `collection_rows`, `_audit_body`). Payload column now shows the
+  actual JSON content. Ack rows for publishes to rooms you are NOT
+  subscribed to now render with the payload (pulled from a local
+  per-ref memory) so a "fire and check delivered_to" workflow shows
+  what you sent; ack rows for publishes to rooms you ARE subscribed
+  to are suppressed (the inbound `message` row already carries the
+  payload, tagged `me`). Source column uses pill chips: `me` for
+  self-publishes, `LAGGED` / `RATE_LIMITED` / `evict` / etc. for
+  control rows. Pre-v1.31.8 the row only said "delivered to N"
+  without ever showing what was actually published — first-time
+  users had no way to confirm their payload reached the wire.
+
 ## v1.31.7 — 2026-05-30
 
 ### Fixed

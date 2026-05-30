@@ -106,9 +106,25 @@
         </button>
       </span>
     </div>
-    <div id="tail-scroll" class="records-scroll" style="max-height:480px;font-family:var(--mono);font-size:12px;">
-      <div id="tail-empty" class="muted" style="padding:18px;">{{ t.s("broadcast_inspector.tail.empty") }}</div>
-      <div id="tail-rows"></div>
+    <div id="tail-scroll" class="records-scroll" style="max-height:480px;">
+      <table class="data" style="width:100%;table-layout:fixed;">
+        <thead>
+          <tr>
+            <th style="width:96px;">{{ t.s("broadcast_inspector.tail.col_time") }}</th>
+            <th style="width:140px;">{{ t.s("broadcast_inspector.tail.col_room") }}</th>
+            <th style="width:80px;">{{ t.s("broadcast_inspector.tail.col_source") }}</th>
+            <th>{{ t.s("broadcast_inspector.tail.col_payload") }}</th>
+            <th style="width:80px;text-align:right;">{{ t.s("broadcast_inspector.tail.col_delivered") }}</th>
+          </tr>
+        </thead>
+        <tbody id="tail-rows">
+          <tr id="tail-empty">
+            <td colspan="5" class="muted" style="text-align:center;padding:24px 12px;">
+              {{ t.s("broadcast_inspector.tail.empty") }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
     <div id="tail-new-pill" hidden
          style="position:sticky;bottom:6px;margin:0 auto;width:fit-content;
@@ -229,6 +245,11 @@
   }
 
   // -------- tail --------
+  // Row shape:
+  //   { kind: "message"|"ack"|"error"|"lagged"|"info",
+  //     ts: "HH:MM:SS.mmm", room: string, source: string|null,
+  //     payload: any (renders as JSON), text: string (fallback),
+  //     delivered: number|null }
   function flushTailRow(row) {
     if (paused) {
       pausedBuffer.push(row);
@@ -238,20 +259,69 @@
     appendTailRow(row);
   }
   function appendTailRow(row) {
-    $("tail-empty").hidden = true;
-    const el = document.createElement("div");
-    el.style.display = "grid";
-    el.style.gridTemplateColumns = "92px 140px 1fr 96px";
-    el.style.gap = "8px"; el.style.padding = "3px 12px"; el.style.borderTop = "1px solid var(--line)";
-    if (row.kind === "error") { el.style.background = "rgba(255,80,80,0.08)"; el.style.color = "var(--danger)"; }
-    if (row.kind === "lagged") { el.style.background = "rgba(255,80,80,0.08)"; el.style.color = "var(--danger)"; }
-    const ts  = document.createElement("span"); ts.textContent  = row.ts;
-    const rm  = document.createElement("span"); rm.textContent  = row.room || "—";
-    const pl  = document.createElement("span"); pl.textContent  = row.text; pl.style.whiteSpace = "pre-wrap"; pl.style.wordBreak = "break-word";
-    const meta= document.createElement("span"); meta.style.textAlign = "right"; meta.style.color = "var(--muted)";
-    meta.textContent = row.meta || "";
-    el.appendChild(ts); el.appendChild(rm); el.appendChild(pl); el.appendChild(meta);
-    $("tail-rows").appendChild(el);
+    const empty = $("tail-empty"); if (empty) empty.remove();
+    const tr = document.createElement("tr");
+    if (row.kind === "error" || row.kind === "lagged") {
+      tr.style.background = "rgba(255,80,80,0.06)";
+      tr.style.color = "var(--danger)";
+    }
+    // Time
+    const tdTime = document.createElement("td");
+    tdTime.textContent = row.ts;
+    tdTime.style.fontFamily = "var(--font-mono)";
+    tdTime.style.fontSize = "11.5px";
+    tdTime.style.color = "var(--muted)";
+    tdTime.style.whiteSpace = "nowrap";
+    // Room
+    const tdRoom = document.createElement("td");
+    tdRoom.textContent = row.room || "—";
+    tdRoom.style.fontFamily = "var(--font-mono)";
+    tdRoom.style.fontSize = "12px";
+    tdRoom.style.overflow = "hidden";
+    tdRoom.style.textOverflow = "ellipsis";
+    tdRoom.style.whiteSpace = "nowrap";
+    // Source pill
+    const tdSource = document.createElement("td");
+    if (row.source) {
+      const pill = document.createElement("span");
+      const pillClass = (row.kind === "error" || row.kind === "lagged") ? "danger"
+                       : (row.source === I18N.self_tag) ? "ok"
+                       : "muted";
+      pill.className = "pill " + pillClass;
+      pill.style.fontSize = "10.5px";
+      pill.textContent = row.source;
+      tdSource.appendChild(pill);
+    }
+    // Payload (structured JSON OR fallback text)
+    const tdPayload = document.createElement("td");
+    tdPayload.style.fontFamily = "var(--font-mono)";
+    tdPayload.style.fontSize = "12px";
+    tdPayload.style.whiteSpace = "pre-wrap";
+    tdPayload.style.wordBreak = "break-word";
+    if (row.payload !== undefined && row.payload !== null) {
+      let txt;
+      try { txt = JSON.stringify(row.payload); }
+      catch (_) { txt = String(row.payload); }
+      if (txt.length > 240) txt = txt.slice(0, 240) + "…";
+      tdPayload.textContent = txt;
+    } else if (row.text) {
+      tdPayload.textContent = row.text;
+    }
+    // Delivered
+    const tdDelivered = document.createElement("td");
+    tdDelivered.style.fontFamily = "var(--font-mono)";
+    tdDelivered.style.fontSize = "12px";
+    tdDelivered.style.textAlign = "right";
+    tdDelivered.style.color = "var(--muted)";
+    tdDelivered.textContent = (typeof row.delivered === "number") ? row.delivered : "—";
+
+    tr.appendChild(tdTime);
+    tr.appendChild(tdRoom);
+    tr.appendChild(tdSource);
+    tr.appendChild(tdPayload);
+    tr.appendChild(tdDelivered);
+    $("tail-rows").appendChild(tr);
+
     if (autoScroll) {
       const s = $("tail-scroll"); s.scrollTop = s.scrollHeight;
     } else {
@@ -261,20 +331,19 @@
     }
   }
   function rowFromMessage(env) {
-    const ts = formatTs(env.ts);
-    const room = env.room;
-    let meta = "";
-    // Consumption happens inside pendingPublishRefByRoom — by the time
-    // _our_publish_ref is stamped, the map entry is already deleted, so
-    // do NOT delete again here.
-    if (env._our_publish_ref) {
-      meta = "←" + I18N.self_tag;
-    }
-    let text;
-    try { text = JSON.stringify(env.payload); }
-    catch (_) { text = String(env.payload); }
-    if (text.length > 200) text = text.slice(0, 200) + "…";
-    return { kind: "message", ts, room, text, meta };
+    // Inbound message frame — payload is structured, delivered count
+    // is NOT carried on the wire (only ack carries it). If this is our
+    // own echo (room + payload matched a pending publish ref), tag
+    // source as "me".
+    const source = env._our_publish_ref ? I18N.self_tag : null;
+    return {
+      kind: "message",
+      ts: formatTs(env.ts),
+      room: env.room,
+      source,
+      payload: env.payload,
+      delivered: null,
+    };
   }
   function formatTs(epoch_ms) {
     const d = new Date(epoch_ms);
@@ -342,7 +411,7 @@
     const room = $("room-input").value.trim();
     if (!ROOM_RE.test(room)) {
       flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
-        text: "room name does not match ^[a-zA-Z][a-zA-Z0-9_:.-]{0,127}$", meta: "client" });
+        text: "room name does not match ^[a-zA-Z][a-zA-Z0-9_:.-]{0,127}$", source: "client" });
       return;
     }
     if (subscribedRooms.has(room)) return;
@@ -367,11 +436,12 @@
         + "/realtime/rooms/" + encodeURIComponent(room) + "/evict",
         { method: "POST", credentials: "same-origin" });
       const j = await res.json();
-      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
-        text: "evicted (subscribers_dropped=" + (j.subscribers_dropped ?? "?") + ")", meta: "admin" });
+      flushTailRow({ kind: "info", ts: formatTs(Date.now()), room,
+        text: "evicted (subscribers_dropped=" + (j.subscribers_dropped ?? "?") + ")",
+        source: "evict", delivered: j.subscribers_dropped ?? null });
     } catch (e) {
       flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
-        text: "evict failed: " + e.message, meta: "admin" });
+        text: "evict failed: " + e.message, source: "evict" });
     }
   }
   function doSend() {
@@ -382,33 +452,66 @@
     const bytes = payloadBytes(JSON.stringify(payload));
     if (bytes > PAYLOAD_MAX) return;
     const ref = "pub-" + (nextClientRef++);
-    pendingPublishRefs.set(ref, { room, expires_at: Date.now() + 500 });
+    // Store the payload + a 1500ms expiry so the corresponding ack
+    // frame can render the tail row with the actual payload content
+    // (the wire's ack frame only carries delivered_to, not payload).
+    // 1500ms covers slow round-trips; pending refs are also consumed
+    // on match so the map doesn't grow unbounded.
+    pendingPublishRefs.set(ref, { room, payload, expires_at: Date.now() + 1500 });
     ws.send(JSON.stringify({ op: "publish", room, payload, ref }));
   }
 
   function handleServerFrame(env) {
     if (env.kind === "message") {
-      // Stamp our_publish_ref BEFORE rowFromMessage reads it. We can't
-      // attach client_ref to a publish frame's returned message (wire
-      // doesn't carry it), so self-tag relies on a room match: the
-      // oldest unconsumed pending publish to env.room (within 500ms)
-      // claims this message. pendingPublishRefByRoom consumes the
-      // matched ref atomically — rowFromMessage must NOT delete again.
+      // Stamp our_publish_ref BEFORE rowFromMessage reads it. Wire
+      // doesn't carry client_ref on broadcast messages, so self-tag
+      // relies on a room match: the oldest unconsumed pending publish
+      // to env.room (within TTL) claims this message.
       const ref = pendingPublishRefByRoom(env.room);
       if (ref) env._our_publish_ref = ref;
       flushTailRow(rowFromMessage(env));
     } else if (env.kind === "ack") {
-      // op:subscribe / op:unsubscribe / op:publish acks. publish ack
-      // carries delivered_to.
+      // op:subscribe / op:unsubscribe / op:publish acks. We only
+      // render publish acks — sub/unsub acks would just be noise.
       if (env.op === "publish" && typeof env.delivered_to === "number") {
-        flushTailRow({ kind: "info", ts: formatTs(Date.now()), room: env.room || "",
-          text: "delivered to " + env.delivered_to, meta: "ack" });
+        const room = env.room || "";
+        // If we're subscribed to this room, we'll receive our own
+        // payload back via the broadcast subscription (rendered as a
+        // separate `message` row with source=me). Skip the ack row
+        // in that case to keep the tail clean. Only render the ack
+        // when we WON'T see an inbound echo — i.e. when we publish
+        // to a room we're not subscribed to.
+        if (subscribedRooms.has(room)) return;
+        // Peek (NOT consume) the pending payload so the user sees
+        // what they sent even though the wire didn't echo it back.
+        // We consume in pendingPublishRefByRoom only on `message`
+        // delivery; for ack-without-message we let the entry expire.
+        const peeked = peekPendingPayloadByRoom(room);
+        flushTailRow({
+          kind: "ack",
+          ts: formatTs(Date.now()),
+          room,
+          source: I18N.self_tag,
+          payload: peeked,
+          delivered: env.delivered_to,
+        });
       }
     } else if (env.kind === "error") {
       handleErrorFrame(env);
     } else if (env.kind === "pong") {
       // ignore
     }
+  }
+  // Like pendingPublishRefByRoom but does NOT consume the entry — used
+  // by the ack handler so a subsequent `message` arrival can still get
+  // the self-tag via the consuming lookup.
+  function peekPendingPayloadByRoom(room) {
+    const now = Date.now();
+    for (const [ref, info] of pendingPublishRefs) {
+      if (info.expires_at < now) continue;
+      if (info.room === room && ref.startsWith("pub-")) return info.payload;
+    }
+    return null;
   }
   // Return-and-consume the oldest unexpired pending publish ref for
   // `room`. Sweeps expired entries opportunistically (500ms TTL set in
@@ -437,17 +540,17 @@
     if (code === "LAGGED") {
       const n = (msg.match(/dropped (\d+)/) || [, "?"])[1];
       flushTailRow({ kind: "lagged", ts: formatTs(Date.now()), room,
-        text: I18N.lagged_tpl.replace("{n}", n).replace("{room}", room), meta: code });
+        text: I18N.lagged_tpl.replace("{n}", n).replace("{room}", room), source: code });
     } else if (code === "RATE_LIMITED") {
       const ms = (msg.match(/(\d+)ms/) || [, "1000"])[1];
       const until = Date.now() + Number(ms);
       if (until > rateLimitedUntil) rateLimitedUntil = until;
       flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
-        text: code + " · " + msg, meta: code });
+        text: msg, source: code });
       startRateLimitCountdown();
     } else {
       flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
-        text: code + " · " + msg, meta: code });
+        text: msg, source: code });
     }
   }
   function startRateLimitCountdown() {
@@ -470,13 +573,24 @@
       pausedBuffer = []; pausedDropped = 0;
       if (dropped > 0) {
         appendTailRow({ kind: "info", ts: formatTs(Date.now()), room: "",
-          text: I18N.paused_drop_tpl.replace("{n}", dropped), meta: "buffer" });
+          text: I18N.paused_drop_tpl.replace("{n}", dropped), source: "buffer" });
       }
     }
   }
   function clearTail() {
-    $("tail-rows").innerHTML = "";
-    $("tail-empty").hidden = false;
+    // Empty <tbody> then restore the empty-state placeholder row.
+    const tbody = $("tail-rows");
+    tbody.innerHTML = "";
+    const tr = document.createElement("tr");
+    tr.id = "tail-empty";
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    td.className = "muted";
+    td.style.textAlign = "center";
+    td.style.padding = "24px 12px";
+    td.textContent = I18N.tail_empty;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
     pendingNewCount = 0;
     $("tail-new-pill").hidden = true;
   }

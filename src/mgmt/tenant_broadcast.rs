@@ -150,6 +150,7 @@ pub async fn broadcast_inspector_page(
         ("new_pill_tpl",          "broadcast_inspector.tail.new_pill"),
         ("self_tag",              "broadcast_inspector.tail.self_tag"),
         ("connected_tpl",         "broadcast_inspector.conn.state_connected"),
+        ("tail_empty",            "broadcast_inspector.tail.empty"),
     ] {
         i18n_map.insert(
             js_key.to_string(),
