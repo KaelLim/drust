@@ -1,3 +1,35 @@
+## v1.31.3 — 2026-05-30
+
+### Fixed
+
+- **F11.5** — WS event-loop upstream arm collapsed `None` (clean client
+  disconnect) and `Some(Err(_))` (WebSocket protocol error — malformed
+  control frame, frame too large, etc.) into a silent `break`. Now
+  protocol errors log a `tracing::warn!` line carrying the error,
+  tenant, and token_hint. Clean disconnects continue to break silently.
+- **F12** — `broadcast.publish` audit rows reported `actor_admin_id: NULL`
+  even when the publish came from an admin PAT. Thread `ctx.admin_id()`
+  through both the REST `publish_handler` and the WS `handle_socket`
+  paths into the audit helpers. **Known limitation:** MCP `broadcast`
+  still reports `actor_admin_id: NULL` — rmcp's `#[tool]` macro doesn't
+  pass `AuthCtx` to the tool method, and threading it through requires
+  a substantive refactor. Tracked for a future patch.
+- **F14** — Admin broadcast endpoints (`POST /admin/tenants/{id}/realtime/
+  evict-all`, `POST /admin/tenants/{id}/realtime/rooms/{room}/evict`)
+  accepted any string as `tenant_id` and inserted it into the DashMap
+  key space. Reject malformed ids with `400 INVALID_TENANT_ID` via
+  `validate_tenant_id`.
+- **F15** — Same two admin broadcast endpoints emitted no audit row,
+  breaking the v1.24+ admin convention that every admin mutation gets
+  an `admin.<area>.<verb>` audit entry. Emit `admin.broadcast.evict_all`
+  and `admin.broadcast.evict_room` with `actor_admin_id`,
+  `rooms_evicted`, and `subscribers_dropped` extras.
+
+### Compatibility
+
+None breaking. Existing API responses are unchanged. The MCP `actor_admin_id`
+limitation is pre-existing — no regression.
+
 ## v1.31.2 — 2026-05-30
 
 ### Fixed
