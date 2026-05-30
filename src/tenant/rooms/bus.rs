@@ -39,12 +39,17 @@ impl RoomBus {
 
     pub fn subscribe(&self, tenant: &str, room: &str) -> broadcast::Receiver<RoomMessage> {
         let key = (tenant.to_string(), room.to_string());
-        let tx = self
+        // v1.31.2 F7 — hold the shard write lock across subscribe() so
+        // sweep_empty's retain can't observe a 0-receiver Sender between
+        // insert and Receiver registration. DashMap::entry returns a
+        // RefMut holding the shard's RwLock write half; the lock drops
+        // at end-of-expression. sweep_empty also takes the same shard
+        // write lock per shard via .retain, so they serialise correctly.
+        let entry = self
             .channels
             .entry(key)
-            .or_insert_with(|| broadcast::channel(BUFFER).0)
-            .clone();
-        tx.subscribe()
+            .or_insert_with(|| broadcast::channel(BUFFER).0);
+        entry.value().subscribe()
     }
 
     /// Snapshot of current subscriber count. Used for `ROOM_FULL` gate.
@@ -196,5 +201,59 @@ mod tests {
         let removed = bus.sweep_empty();
         assert_eq!(removed, 1);
         assert_eq!(bus.channel_count(), 1);
+    }
+
+    /// v1.31.2 F7 regression — subscribe must hold the shard write lock
+    /// across the broadcast::Sender::subscribe() call so sweep_empty
+    /// can't observe a 0-receiver Sender in the window between insert
+    /// and Receiver registration.
+    ///
+    /// Pre-fix: subscribe called entry().or_insert_with(...).clone() then
+    /// tx.subscribe() OUTSIDE the entry lock. sweep_empty.retain reads
+    /// receiver_count() under the shard lock; if it ran in that gap,
+    /// it removed the entry. The subscriber's Receiver was orphaned —
+    /// a subsequent publish allocated a fresh Sender and the orphan
+    /// Receiver never delivered.
+    ///
+    /// Stress test: spawn N subscribers + 1 hot sweeper for 200 ms, then
+    /// publish and assert every Receiver delivers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn subscribe_under_concurrent_sweep_does_not_lose_receivers() {
+        let bus = std::sync::Arc::new(RoomBus::new());
+
+        let bus_sweep = bus.clone();
+        let sweeper = tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(200);
+            while tokio::time::Instant::now() < deadline {
+                bus_sweep.sweep_empty();
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let mut handles = Vec::new();
+        for i in 0..50 {
+            let bus_sub = bus.clone();
+            handles.push(tokio::spawn(async move {
+                let room = format!("r{i}");
+                let mut rx = bus_sub.subscribe("t1", &room);
+                // Yield to let sweep observe the entry.
+                tokio::task::yield_now().await;
+                // Now publish — receiver should still be registered.
+                bus_sub.publish("t1", &room, msg("payload"));
+                let got = tokio::time::timeout(
+                    tokio::time::Duration::from_millis(500),
+                    rx.recv(),
+                )
+                .await
+                .expect("recv timed out — Receiver was likely orphaned by sweep")
+                .expect("recv error");
+                assert_eq!(got.payload["body"], "payload");
+            }));
+        }
+
+        for h in handles {
+            h.await.expect("subscribe task panicked");
+        }
+        sweeper.await.expect("sweeper task panicked");
     }
 }
