@@ -56,11 +56,11 @@ struct BroadcastInspectorPage {
     /// Collections list for the sidebar — empty Vec is fine.
     collections: Vec<crate::storage::schema::Collection>,
     /// JSON object literal of every i18n string the inline JS needs,
-    /// pre-serialized via `serde_json` so values containing `"` or
-    /// non-ASCII never break out of the JS string literal. Embed via
-    /// `const I18N = {{ i18n_js|safe }};` — `|safe` is sound because
-    /// the input came from a TOML bundle the build-time validator
-    /// already round-tripped.
+    /// pre-serialized via `serde_json` (handles `"`, `\`, non-ASCII)
+    /// then post-processed to replace `</` with `<\/` so a stray
+    /// `</script>` in a translation cannot break out of the surrounding
+    /// `<script>` element. Embed via `const I18N = {{ i18n_js|safe }};`
+    /// — `|safe` is sound by construction after both steps.
     i18n_js: String,
     t: Translator,
     admin: AdminProfileExt,
@@ -156,7 +156,16 @@ pub async fn broadcast_inspector_page(
             serde_json::Value::String(t_for_js.s(t_key).into_owned()),
         );
     }
-    let i18n_js = serde_json::Value::Object(i18n_map).to_string();
+    // Post-process `</` → `<\/` so a future translation containing
+    // `</script>` cannot break out of the surrounding <script> element
+    // (HTML5 §8.2.4.6: the script-data state terminates on any literal
+    // `</script` regardless of JS string-literal context). serde_json
+    // escapes `"`, `\`, and control chars but NOT `</`. With this line
+    // the "safe to embed verbatim" claim on `i18n_js` is true by
+    // construction, not by content audit of the TOML bundle.
+    let i18n_js = serde_json::Value::Object(i18n_map)
+        .to_string()
+        .replace("</", r"<\/");
 
     let page = BroadcastInspectorPage {
         version: env!("CARGO_PKG_VERSION"),
