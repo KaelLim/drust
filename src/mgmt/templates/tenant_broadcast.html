@@ -11,15 +11,9 @@
       <h1 class="view-title">{{ t.s("broadcast_inspector.page_title") }}</h1>
       <p class="view-sub">{{ t.s("broadcast_inspector.view_sub") }}</p>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;">
-      <span id="conn-pill" class="pill muted" data-state="disconnected">
-        <span class="dot"></span>{{ t.s("broadcast_inspector.conn.state_disconnected") }}
-      </span>
-      <button id="btn-connect" type="button" class="btn btn-primary"
-              {% if bearer_missing %}disabled{% endif %}>
-        {{ t.s("broadcast_inspector.conn.btn_connect") }}
-      </button>
-    </div>
+    <span id="conn-pill" class="pill muted" data-state="disconnected">
+      <span class="dot"></span>{{ t.s("broadcast_inspector.conn.state_disconnected") }}
+    </span>
   </div>
 
   {% if bearer_missing %}
@@ -43,95 +37,101 @@
     <input type="hidden" name="tenant_id" id="tenant-id-field" value="{{ tenant_id }}">
   </form>
 
+  {# Connect bar: Room input + Connect button. After connect the input is
+     locked (to change rooms, Disconnect first). #}
   <div class="card" style="margin-bottom:14px;">
-    <div class="card-head">
-      <span>{{ t.s("broadcast_inspector.subs.heading") }}
-        <span class="count" id="sub-count">0</span></span>
-    </div>
-    <div class="card-body">
-      <div style="display:flex;gap:8px;margin-bottom:10px;">
+    <div class="card-body" style="display:flex;gap:10px;align-items:flex-end;">
+      <label style="display:flex;flex-direction:column;font-size:12px;color:var(--muted);flex:1;min-width:200px;">
+        {{ t.s("broadcast_inspector.connect.room_label") }}
         <input id="room-input" class="input" type="text"
-               placeholder="{{ t.s("broadcast_inspector.subs.placeholder") }}"
+               placeholder="{{ t.s("broadcast_inspector.connect.placeholder") }}"
                pattern="^[a-zA-Z][a-zA-Z0-9_:.\-]{0,127}$"
-               style="flex:1;font-family:var(--mono);">
-        <button id="btn-subscribe" type="button" class="btn ghost" disabled>
-          {{ t.s("broadcast_inspector.subs.btn_subscribe") }}
-        </button>
-      </div>
-      <div id="sub-chips" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
-      <div class="muted" style="font-size:11px;margin-top:8px;">{{ t.s("broadcast_inspector.subs.caveat") }}</div>
+               style="font-family:var(--mono);margin-top:4px;"
+               {% if bearer_missing %}disabled{% endif %}>
+      </label>
+      <button id="btn-connect" type="button" class="btn btn-primary"
+              style="height:34px;min-width:110px;"
+              {% if bearer_missing %}disabled{% endif %}>
+        {{ t.s("broadcast_inspector.conn.btn_connect") }}
+      </button>
     </div>
   </div>
 
-  <div class="card" style="margin-bottom:14px;">
-    <div class="card-head">{{ t.s("broadcast_inspector.publish.heading") }}</div>
-    <div class="card-body">
-      <div style="display:flex;flex-direction:column;gap:10px;">
-        <label style="display:flex;flex-direction:column;font-size:12px;color:var(--muted);">
-          {{ t.s("broadcast_inspector.publish.room_label") }}
-          <input id="pub-room" class="input" type="text"
-                 placeholder="{{ t.s("broadcast_inspector.subs.placeholder") }}"
-                 pattern="^[a-zA-Z][a-zA-Z0-9_:.\-]{0,127}$"
-                 style="font-family:var(--mono);margin-top:4px;">
-        </label>
+  {# Two-column workspace: Publish (left, ~380px) + Tail (right, fills).
+     Below 900px the grid collapses to a single column. #}
+  <div class="broadcast-workspace">
+    <div class="card">
+      <div class="card-head">{{ t.s("broadcast_inspector.publish.heading") }}</div>
+      <div class="card-body">
         <label style="display:flex;flex-direction:column;font-size:12px;color:var(--muted);">
           {{ t.s("broadcast_inspector.publish.payload_label") }}
-          <textarea id="pub-payload" class="textarea" rows="5"
+          <textarea id="pub-payload" class="textarea" rows="8"
                     spellcheck="false"
-                    style="margin-top:4px;min-height:110px;">{"hello":"world"}</textarea>
+                    style="margin-top:4px;min-height:180px;"
+                    disabled>{"hello":"world"}</textarea>
         </label>
-        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:10px;">
           <div id="pub-payload-msg" class="muted" style="font-size:12px;flex:1;min-width:120px;min-height:18px;"></div>
           <div id="pub-counter" class="muted" style="font-size:11px;font-family:var(--mono);"></div>
           <button id="btn-send" type="button" class="btn btn-primary" disabled>
             {{ t.s("broadcast_inspector.publish.btn_send") }}
           </button>
         </div>
-        <div class="muted" style="font-size:11px;margin-top:-4px;">
+        <div class="muted" style="font-size:11px;margin-top:6px;">
           {{ t.s("broadcast_inspector.publish.shortcut_hint") }}
         </div>
       </div>
     </div>
-  </div>
 
-  <div class="card">
-    <div class="card-head">
-      <span>{{ t.s("broadcast_inspector.tail.heading") }}</span>
-      <span class="card-head-actions" style="display:flex;gap:6px;">
-        <button id="btn-pause" type="button" class="btn ghost btn-sm">
-          {{ t.s("broadcast_inspector.tail.btn_pause") }}
-        </button>
-        <button id="btn-clear" type="button" class="btn ghost btn-sm">
-          {{ t.s("broadcast_inspector.tail.btn_clear") }}
-        </button>
-      </span>
+    <div class="card">
+      <div class="card-head">
+        <span>{{ t.s("broadcast_inspector.tail.heading") }}</span>
+        <span class="card-head-actions" style="display:flex;gap:6px;">
+          <button id="btn-pause" type="button" class="btn ghost btn-sm">
+            {{ t.s("broadcast_inspector.tail.btn_pause") }}
+          </button>
+          <button id="btn-clear" type="button" class="btn ghost btn-sm">
+            {{ t.s("broadcast_inspector.tail.btn_clear") }}
+          </button>
+        </span>
+      </div>
+      <div id="tail-scroll" class="records-scroll" style="max-height:520px;">
+        <table class="data" style="width:100%;table-layout:fixed;">
+          <thead>
+            <tr>
+              <th style="width:96px;">{{ t.s("broadcast_inspector.tail.col_time") }}</th>
+              <th style="width:80px;">{{ t.s("broadcast_inspector.tail.col_source") }}</th>
+              <th>{{ t.s("broadcast_inspector.tail.col_payload") }}</th>
+              <th style="width:64px;text-align:right;">{{ t.s("broadcast_inspector.tail.col_delivered") }}</th>
+            </tr>
+          </thead>
+          <tbody id="tail-rows">
+            <tr id="tail-empty">
+              <td colspan="4" class="muted" style="text-align:center;padding:24px 12px;">
+                {{ t.s("broadcast_inspector.tail.empty") }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="tail-new-pill" hidden
+           style="position:sticky;bottom:6px;margin:0 auto;width:fit-content;
+                  background:var(--accent);color:#fff;padding:4px 10px;border-radius:999px;
+                  cursor:pointer;font-size:11px;font-family:var(--mono);"></div>
     </div>
-    <div id="tail-scroll" class="records-scroll" style="max-height:480px;">
-      <table class="data" style="width:100%;table-layout:fixed;">
-        <thead>
-          <tr>
-            <th style="width:96px;">{{ t.s("broadcast_inspector.tail.col_time") }}</th>
-            <th style="width:140px;">{{ t.s("broadcast_inspector.tail.col_room") }}</th>
-            <th style="width:80px;">{{ t.s("broadcast_inspector.tail.col_source") }}</th>
-            <th>{{ t.s("broadcast_inspector.tail.col_payload") }}</th>
-            <th style="width:80px;text-align:right;">{{ t.s("broadcast_inspector.tail.col_delivered") }}</th>
-          </tr>
-        </thead>
-        <tbody id="tail-rows">
-          <tr id="tail-empty">
-            <td colspan="5" class="muted" style="text-align:center;padding:24px 12px;">
-              {{ t.s("broadcast_inspector.tail.empty") }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <div id="tail-new-pill" hidden
-         style="position:sticky;bottom:6px;margin:0 auto;width:fit-content;
-                background:var(--accent);color:#fff;padding:4px 10px;border-radius:999px;
-                cursor:pointer;font-size:11px;font-family:var(--mono);"></div>
   </div>
 </div>
+
+<style>
+  .broadcast-workspace {
+    display: grid;
+    grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+    gap: 14px;
+  }
+  @media (max-width: 900px) {
+    .broadcast-workspace { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>
 {% endblock %}
 
 {% block extra_scripts %}
@@ -142,14 +142,17 @@
   // ------------------------------------------------------------------
   // Inspector — vanilla JS module. Module-scope singleton state. No
   // localStorage, no sessionStorage; closing the tab kills the WS.
+  // v1.31.9: single-room-per-session model. Connect implicitly subscribes
+  // to the typed Room; Disconnect implicitly unsubscribes. To watch a
+  // different room, Disconnect → change input → Connect again.
   // ------------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
   const wsPath   = $("ws-url").value;
   const bearer   = $("bearer-field").value;
-  const tenantId = $("tenant-id-field").value;
   const PAYLOAD_MAX = 65536;       // mirrors DRUST_BROADCAST_PAYLOAD_MAX_BYTES default
   const ROOM_RE = /^[a-zA-Z][a-zA-Z0-9_:.\-]{0,127}$/;
   const TAIL_BUFFER_MAX = 500;     // paused-buffer cap
+  const TAIL_COLS = 4;             // Time / Source / Payload / →
   // i18n bundle pre-serialized in the handler — every value is a JSON
   // string AND the serialized form has `</` rewritten to `<\/`, so
   // neither `"` nor a stray `<\/script>` in a translation can break
@@ -160,15 +163,18 @@
   const I18N = {{ i18n_js|safe }};
 
   let ws = null;
-  let subscribedRooms = new Set();          // authoritative — chips read from this
+  let currentRoom = null;          // the single room we're subscribed to (null when disconnected)
   let paused = false;
-  let pausedBuffer = [];                    // pending tail rows while paused
+  let pausedBuffer = [];           // pending tail rows while paused
   let pausedDropped = 0;
-  let autoScroll = true;                    // false once user scrolls up
+  let autoScroll = true;           // false once user scrolls up
   let pendingNewCount = 0;
   let nextClientRef = 1;
-  let pendingPublishRefs = new Map();       // client_ref → {room, expires_at} (for self-tag)
-  let rateLimitedUntil = 0;                 // epoch ms; Send re-enables when past
+  // Per-publish payload memory so the inbound message row can be tagged
+  // `me` even though the wire doesn't carry client_ref on broadcasts.
+  // value: { expires_at: number }
+  let pendingPublishRefs = new Map();
+  let rateLimitedUntil = 0;        // epoch ms; Send re-enables when past
   let countdownTimer = null;
 
   // -------- pill helpers --------
@@ -184,17 +190,17 @@
     p.innerHTML = '<span class="dot"></span>';
     p.appendChild(document.createTextNode(text));
   }
-  function updateConnectedPill() {
-    setPill("connected", I18N.connected_tpl.replace("{n}", subscribedRooms.size));
+  function setConnectedPill() {
+    setPill("connected", I18N.state_connected.replace("{room}", currentRoom || ""));
   }
 
-  // -------- byte counter --------
+  // -------- byte counter / payload validation --------
   function payloadBytes(s) { return new TextEncoder().encode(s).byteLength; }
   function refreshCounter() {
     const v = $("pub-payload").value;
     let bytes = 0;
     try { bytes = payloadBytes(JSON.stringify(JSON.parse(v))); }
-    catch (_) { bytes = payloadBytes(v); }   // raw bytes when not valid JSON
+    catch (_) { bytes = payloadBytes(v); }
     const el = $("pub-counter");
     el.textContent = I18N.counter_tpl
       .replace("{used}", bytes).replace("{cap}", PAYLOAD_MAX);
@@ -213,41 +219,15 @@
   function refreshSendEnabled() {
     const okPayload = validatePayload();
     const okBytes = refreshCounter() <= PAYLOAD_MAX;
-    const okRoom = ROOM_RE.test($("pub-room").value);
-    const okConn = ws && ws.readyState === WebSocket.OPEN;
+    const okConn = ws && ws.readyState === WebSocket.OPEN && currentRoom !== null;
     const notRateLimited = Date.now() >= rateLimitedUntil;
-    $("btn-send").disabled = !(okPayload && okBytes && okRoom && okConn && notRateLimited);
-  }
-
-  // -------- chips --------
-  function renderChips() {
-    const wrap = $("sub-chips"); wrap.innerHTML = "";
-    for (const room of subscribedRooms) {
-      const chip = document.createElement("span");
-      chip.className = "pill ok";
-      chip.style.display = "inline-flex"; chip.style.alignItems = "center"; chip.style.gap = "6px";
-      chip.innerHTML = '<span class="dot"></span>';
-      chip.appendChild(document.createTextNode(room));
-      const unsub = document.createElement("button");
-      unsub.type = "button"; unsub.className = "btn ghost btn-sm"; unsub.textContent = I18N.btn_unsub;
-      unsub.onclick = () => doUnsub(room);
-      const evict = document.createElement("button");
-      evict.type = "button"; evict.className = "btn btn-sm";
-      evict.style.background = "var(--danger)"; evict.style.color = "#fff";
-      evict.textContent = I18N.btn_evict;
-      evict.onclick = () => doEvict(room);
-      chip.appendChild(unsub); chip.appendChild(evict);
-      wrap.appendChild(chip);
-    }
-    $("sub-count").textContent = subscribedRooms.size;
-    updateConnectedPill();
-    refreshSendEnabled();
+    $("btn-send").disabled = !(okPayload && okBytes && okConn && notRateLimited);
   }
 
   // -------- tail --------
   // Row shape:
-  //   { kind: "message"|"ack"|"error"|"lagged"|"info",
-  //     ts: "HH:MM:SS.mmm", room: string, source: string|null,
+  //   { kind: "message"|"error"|"lagged"|"info",
+  //     ts: "HH:MM:SS.mmm", source: string|null,
   //     payload: any (renders as JSON), text: string (fallback),
   //     delivered: number|null }
   function flushTailRow(row) {
@@ -265,22 +245,12 @@
       tr.style.background = "rgba(255,80,80,0.06)";
       tr.style.color = "var(--danger)";
     }
-    // Time
     const tdTime = document.createElement("td");
     tdTime.textContent = row.ts;
     tdTime.style.fontFamily = "var(--font-mono)";
     tdTime.style.fontSize = "11.5px";
     tdTime.style.color = "var(--muted)";
     tdTime.style.whiteSpace = "nowrap";
-    // Room
-    const tdRoom = document.createElement("td");
-    tdRoom.textContent = row.room || "—";
-    tdRoom.style.fontFamily = "var(--font-mono)";
-    tdRoom.style.fontSize = "12px";
-    tdRoom.style.overflow = "hidden";
-    tdRoom.style.textOverflow = "ellipsis";
-    tdRoom.style.whiteSpace = "nowrap";
-    // Source pill
     const tdSource = document.createElement("td");
     if (row.source) {
       const pill = document.createElement("span");
@@ -292,7 +262,6 @@
       pill.textContent = row.source;
       tdSource.appendChild(pill);
     }
-    // Payload (structured JSON OR fallback text)
     const tdPayload = document.createElement("td");
     tdPayload.style.fontFamily = "var(--font-mono)";
     tdPayload.style.fontSize = "12px";
@@ -307,21 +276,17 @@
     } else if (row.text) {
       tdPayload.textContent = row.text;
     }
-    // Delivered
     const tdDelivered = document.createElement("td");
     tdDelivered.style.fontFamily = "var(--font-mono)";
     tdDelivered.style.fontSize = "12px";
     tdDelivered.style.textAlign = "right";
     tdDelivered.style.color = "var(--muted)";
     tdDelivered.textContent = (typeof row.delivered === "number") ? row.delivered : "—";
-
     tr.appendChild(tdTime);
-    tr.appendChild(tdRoom);
     tr.appendChild(tdSource);
     tr.appendChild(tdPayload);
     tr.appendChild(tdDelivered);
     $("tail-rows").appendChild(tr);
-
     if (autoScroll) {
       const s = $("tail-scroll"); s.scrollTop = s.scrollHeight;
     } else {
@@ -331,16 +296,14 @@
     }
   }
   function rowFromMessage(env) {
-    // Inbound message frame — payload is structured, delivered count
-    // is NOT carried on the wire (only ack carries it). If this is our
-    // own echo (room + payload matched a pending publish ref), tag
-    // source as "me".
-    const source = env._our_publish_ref ? I18N.self_tag : null;
+    // Inbound message frame. Self-tag if we have a matching pending
+    // publish for this room (room is always currentRoom in single-room
+    // mode, but check anyway for defense in depth).
+    const isSelf = env._our_publish_ref ? true : false;
     return {
       kind: "message",
       ts: formatTs(env.ts),
-      room: env.room,
-      source,
+      source: isSelf ? I18N.self_tag : null,
       payload: env.payload,
       delivered: null,
     };
@@ -360,19 +323,27 @@
   }
   function doConnect() {
     if (!bearer) return;
+    const room = $("room-input").value.trim();
+    if (!ROOM_RE.test(room)) {
+      setPill("danger", I18N.state_room_invalid);
+      return;
+    }
     setPill("connecting", I18N.state_connecting);
     $("btn-connect").disabled = true;
+    $("room-input").disabled = true;
     let opened = false;
     try { ws = new WebSocket(wsUrl()); }
-    catch (e) { setPill("danger", I18N.state_unreachable); $("btn-connect").disabled = false; return; }
+    catch (e) {
+      setPill("danger", I18N.state_unreachable);
+      $("btn-connect").disabled = false;
+      $("room-input").disabled = false;
+      return;
+    }
     ws.onopen = () => {
       opened = true;
-      updateConnectedPill();
-      $("btn-connect").textContent = I18N.btn_disconnect;
-      $("btn-connect").disabled = false;
-      $("btn-connect").onclick = doDisconnect;
-      $("btn-subscribe").disabled = false;
-      refreshSendEnabled();
+      // Implicit subscribe to the typed room. Ack flips us into the
+      // "connected" UI state.
+      ws.send(JSON.stringify({ op: "subscribe", room, ref: "sub-1" }));
     };
     ws.onmessage = (ev) => {
       let env; try { env = JSON.parse(ev.data); } catch (_) { return; }
@@ -380,17 +351,18 @@
     };
     ws.onerror = () => { if (!opened) setPill("danger", I18N.state_unreachable); };
     ws.onclose = (ev) => {
-      $("btn-subscribe").disabled = true;
+      currentRoom = null;
       $("btn-connect").textContent = I18N.btn_connect;
-      $("btn-connect").disabled = false;
       $("btn-connect").onclick = doConnect;
+      $("btn-connect").disabled = false;
+      $("room-input").disabled = false;
+      $("pub-payload").disabled = true;
       ws = null;
       // Stop the rate-limit countdown — without this the interval
       // keeps firing refreshSendEnabled() against a closed socket
       // forever after the user disconnects mid-cooldown.
       if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
       rateLimitedUntil = 0;
-      // 1006 = abnormal (network blip / bearer rejected); 1000 = clean.
       if (!opened) {
         // ev.code is 1006 in browsers when the upgrade was rejected with
         // 401/403; we can't read the status. Show bearer-rejected for the
@@ -407,94 +379,44 @@
   function doDisconnect() {
     if (ws) { try { ws.close(1000); } catch (_) {} }
   }
-  function doSubscribe() {
-    const room = $("room-input").value.trim();
-    if (!ROOM_RE.test(room)) {
-      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
-        text: "room name does not match ^[a-zA-Z][a-zA-Z0-9_:.-]{0,127}$", source: "client" });
-      return;
-    }
-    if (subscribedRooms.has(room)) return;
-    const ref = "sub-" + (nextClientRef++);
-    ws.send(JSON.stringify({ op: "subscribe", room, ref }));
-    // Optimistic — server ack confirms or error reports.
-    subscribedRooms.add(room);
-    renderChips();
-    $("room-input").value = "";
-  }
-  function doUnsub(room) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ op: "unsubscribe", room }));
-    }
-    subscribedRooms.delete(room); renderChips();
-  }
-  async function doEvict(room) {
-    if (!confirm(I18N.confirm_evict_tpl.replace("{room}", room))) return;
-    try {
-      const res = await fetch(
-        "/drust/admin/tenants/" + encodeURIComponent(tenantId)
-        + "/realtime/rooms/" + encodeURIComponent(room) + "/evict",
-        { method: "POST", credentials: "same-origin" });
-      const j = await res.json();
-      flushTailRow({ kind: "info", ts: formatTs(Date.now()), room,
-        text: "evicted (subscribers_dropped=" + (j.subscribers_dropped ?? "?") + ")",
-        source: "evict", delivered: j.subscribers_dropped ?? null });
-    } catch (e) {
-      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
-        text: "evict failed: " + e.message, source: "evict" });
-    }
+  function onSubscribeAck(env) {
+    // Server confirmed our subscribe. Lock in the connected UI state.
+    currentRoom = env.room || $("room-input").value.trim();
+    setConnectedPill();
+    $("btn-connect").textContent = I18N.btn_disconnect;
+    $("btn-connect").onclick = doDisconnect;
+    $("btn-connect").disabled = false;
+    $("pub-payload").disabled = false;
+    refreshSendEnabled();
   }
   function doSend() {
     if (!validatePayload()) return;
-    const room = $("pub-room").value.trim();
-    if (!ROOM_RE.test(room)) return;
+    if (!currentRoom) return;
     let payload; try { payload = JSON.parse($("pub-payload").value); } catch (_) { return; }
     const bytes = payloadBytes(JSON.stringify(payload));
     if (bytes > PAYLOAD_MAX) return;
     const ref = "pub-" + (nextClientRef++);
-    // Store the payload + a 1500ms expiry so the corresponding ack
-    // frame can render the tail row with the actual payload content
-    // (the wire's ack frame only carries delivered_to, not payload).
-    // 1500ms covers slow round-trips; pending refs are also consumed
-    // on match so the map doesn't grow unbounded.
-    pendingPublishRefs.set(ref, { room, payload, expires_at: Date.now() + 1500 });
-    ws.send(JSON.stringify({ op: "publish", room, payload, ref }));
+    // Store a TTL'd marker so the inbound echo can be tagged `me`.
+    // The inbound `message` frame from our own publish gets tagged via
+    // pendingPublishRefByRoom — payload itself comes from the wire,
+    // not from this memory (we always render the wire copy to confirm
+    // round-trip).
+    pendingPublishRefs.set(ref, { expires_at: Date.now() + 1500 });
+    ws.send(JSON.stringify({ op: "publish", room: currentRoom, payload, ref }));
   }
 
   function handleServerFrame(env) {
     if (env.kind === "message") {
-      // Stamp our_publish_ref BEFORE rowFromMessage reads it. Wire
-      // doesn't carry client_ref on broadcast messages, so self-tag
-      // relies on a room match: the oldest unconsumed pending publish
-      // to env.room (within TTL) claims this message.
-      const ref = pendingPublishRefByRoom(env.room);
+      const ref = pendingPublishRefByRoom();
       if (ref) env._our_publish_ref = ref;
       flushTailRow(rowFromMessage(env));
     } else if (env.kind === "ack") {
-      // op:subscribe / op:unsubscribe / op:publish acks. We only
-      // render publish acks — sub/unsub acks would just be noise.
-      if (env.op === "publish" && typeof env.delivered_to === "number") {
-        const room = env.room || "";
-        // If we're subscribed to this room, we'll receive our own
-        // payload back via the broadcast subscription (rendered as a
-        // separate `message` row with source=me). Skip the ack row
-        // in that case to keep the tail clean. Only render the ack
-        // when we WON'T see an inbound echo — i.e. when we publish
-        // to a room we're not subscribed to.
-        if (subscribedRooms.has(room)) return;
-        // Peek (NOT consume) the pending payload so the user sees
-        // what they sent even though the wire didn't echo it back.
-        // We consume in pendingPublishRefByRoom only on `message`
-        // delivery; for ack-without-message we let the entry expire.
-        const peeked = peekPendingPayloadByRoom(room);
-        flushTailRow({
-          kind: "ack",
-          ts: formatTs(Date.now()),
-          room,
-          source: I18N.self_tag,
-          payload: peeked,
-          delivered: env.delivered_to,
-        });
+      // subscribe ack → flip UI to connected; publish ack is suppressed
+      // because the inbound `message` row (which always arrives since
+      // we're always subscribed in single-room mode) already carries
+      // the payload + `me` tag.
+      if (env.op === "subscribe") {
+        onSubscribeAck(env);
       }
     } else if (env.kind === "error") {
       handleErrorFrame(env);
@@ -502,31 +424,13 @@
       // ignore
     }
   }
-  // Like pendingPublishRefByRoom but does NOT consume the entry — used
-  // by the ack handler so a subsequent `message` arrival can still get
-  // the self-tag via the consuming lookup.
-  function peekPendingPayloadByRoom(room) {
+  function pendingPublishRefByRoom() {
     const now = Date.now();
-    for (const [ref, info] of pendingPublishRefs) {
-      if (info.expires_at < now) continue;
-      if (info.room === room && ref.startsWith("pub-")) return info.payload;
-    }
-    return null;
-  }
-  // Return-and-consume the oldest unexpired pending publish ref for
-  // `room`. Sweeps expired entries opportunistically (500ms TTL set in
-  // doSend) so the map doesn't grow without bound when our own publish
-  // never round-trips back (e.g. we publish to a room we're not
-  // subscribed to). Lookup order is Map insertion order = chronological.
-  function pendingPublishRefByRoom(room) {
-    const now = Date.now();
-    // Sweep expired entries first.
     for (const [ref, info] of pendingPublishRefs) {
       if (info.expires_at < now) pendingPublishRefs.delete(ref);
     }
-    // Return the oldest matching ref for this room and consume it.
     for (const [ref, info] of pendingPublishRefs) {
-      if (info.room === room && ref.startsWith("pub-")) {
+      if (ref.startsWith("pub-")) {
         pendingPublishRefs.delete(ref);
         return ref;
       }
@@ -535,22 +439,27 @@
   }
   function handleErrorFrame(env) {
     const code = env.code || "ERROR";
-    const room = env.room || "—";
     const msg = env.msg || "";
     if (code === "LAGGED") {
       const n = (msg.match(/dropped (\d+)/) || [, "?"])[1];
-      flushTailRow({ kind: "lagged", ts: formatTs(Date.now()), room,
-        text: I18N.lagged_tpl.replace("{n}", n).replace("{room}", room), source: code });
+      flushTailRow({ kind: "lagged",
+        ts: formatTs(Date.now()),
+        text: I18N.lagged_tpl.replace("{n}", n),
+        source: code });
+      // Auto-resubscribe — single-room mode means LAGGED dropped our
+      // only stream, leaving the conn alive but silent. Recover
+      // transparently so the user doesn't think the page froze.
+      if (ws && ws.readyState === WebSocket.OPEN && currentRoom) {
+        ws.send(JSON.stringify({ op: "subscribe", room: currentRoom, ref: "resub-" + (nextClientRef++) }));
+      }
     } else if (code === "RATE_LIMITED") {
       const ms = (msg.match(/(\d+)ms/) || [, "1000"])[1];
       const until = Date.now() + Number(ms);
       if (until > rateLimitedUntil) rateLimitedUntil = until;
-      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
-        text: msg, source: code });
+      flushTailRow({ kind: "error", ts: formatTs(Date.now()), text: msg, source: code });
       startRateLimitCountdown();
     } else {
-      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
-        text: msg, source: code });
+      flushTailRow({ kind: "error", ts: formatTs(Date.now()), text: msg, source: code });
     }
   }
   function startRateLimitCountdown() {
@@ -572,19 +481,18 @@
       for (const row of pausedBuffer) appendTailRow(row);
       pausedBuffer = []; pausedDropped = 0;
       if (dropped > 0) {
-        appendTailRow({ kind: "info", ts: formatTs(Date.now()), room: "",
+        appendTailRow({ kind: "info", ts: formatTs(Date.now()),
           text: I18N.paused_drop_tpl.replace("{n}", dropped), source: "buffer" });
       }
     }
   }
   function clearTail() {
-    // Empty <tbody> then restore the empty-state placeholder row.
     const tbody = $("tail-rows");
     tbody.innerHTML = "";
     const tr = document.createElement("tr");
     tr.id = "tail-empty";
     const td = document.createElement("td");
-    td.colSpan = 5;
+    td.colSpan = TAIL_COLS;
     td.className = "muted";
     td.style.textAlign = "center";
     td.style.padding = "24px 12px";
@@ -611,27 +519,16 @@
 
   // -------- wire-up --------
   $("btn-connect").onclick = doConnect;
-  $("btn-subscribe").onclick = doSubscribe;
-  $("room-input").addEventListener("input", () => {
-    $("btn-subscribe").disabled = !(ws && ws.readyState === WebSocket.OPEN && ROOM_RE.test($("room-input").value));
-  });
   $("room-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !$("btn-subscribe").disabled) doSubscribe();
+    if (e.key === "Enter" && !$("btn-connect").disabled) { e.preventDefault(); doConnect(); }
   });
   $("pub-payload").addEventListener("input", refreshSendEnabled);
   $("pub-payload").addEventListener("blur", validatePayload);
   $("pub-payload").addEventListener("keydown", (e) => {
-    // Ctrl/Cmd + Enter sends. Plain Enter inserts a newline in the
-    // textarea (default behavior) so multi-line JSON payloads stay
-    // editable.
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !$("btn-send").disabled) {
       e.preventDefault();
       doSend();
     }
-  });
-  $("pub-room").addEventListener("input", refreshSendEnabled);
-  $("pub-room").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !$("btn-send").disabled) { e.preventDefault(); doSend(); }
   });
   $("btn-send").onclick = doSend;
   $("btn-pause").onclick = togglePause;
