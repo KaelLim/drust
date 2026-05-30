@@ -9,11 +9,14 @@
 //!   4. Cross-tenant render leak: render for tenant A, body contains no
 //!      string of tenant B's id and no string of tenant B's service bearer.
 //!   5. Invalid tenant id (validate_tenant_id rejects) → 400.
+//!   6. Unauthenticated request → 303 redirect to /drust/login (regression
+//!      of the `admin_session_layer` gate on this specific route).
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{header, Request, StatusCode};
 use axum::routing::get;
 use axum::Router;
+use drust::auth::middleware::{admin_session_layer, AdminSessionState};
 use drust::mgmt::admin_profile::AdminProfileExt;
 use drust::mgmt::tenant_broadcast::broadcast_inspector_page;
 use drust::mgmt::tenants::TenantsState;
@@ -231,4 +234,89 @@ async fn invalid_tenant_id_returns_400() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Spec Testing/integration #2: unauthenticated request → 303 redirect to
+/// `/drust/login`.
+///
+/// This is the regression net for `admin_session_layer` on this specific
+/// route. The other 5 tests in this file mount the handler directly (no
+/// session layer) because they assert handler-level behaviour; if someone
+/// were to accidentally hoist `_broadcast` outside `admin_session_layer`
+/// in `src/mgmt/routes.rs`, those tests would not notice.
+///
+/// We mount the real `admin_session_layer` over the broadcast handler
+/// route — same shape as `tests/session_middleware.rs::redirects_without_cookie`,
+/// the canonical proof-of-pattern for this middleware — and send a request
+/// with no `drust_session` cookie. The middleware must short-circuit with
+/// `303 See Other` + `Location: /drust/login` before the handler ever
+/// runs, exactly the way it does for every other admin page.
+#[tokio::test]
+async fn unauthenticated_request_redirects_to_drust_login() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
+    let meta = Arc::new(Mutex::new(conn));
+
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
+    let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
+        drust::mcp::server::McpRegistry::new(tenants.clone()),
+    )));
+    let bus = drust::tenant::events::EventBus::new();
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
+    let state = TenantsState::test_default(
+        meta.clone(),
+        data_dir.clone(),
+        tenants,
+        mcp,
+        bus,
+        bus_rooms,
+    );
+    let session_state = AdminSessionState { meta };
+
+    // Same shape as the production protected router: the broadcast route
+    // sits inside a sub-router that gets `admin_session_layer` applied via
+    // `.layer(from_fn_with_state(...))`. Mirrors src/mgmt/routes.rs:962-965.
+    let app = Router::new()
+        .route(
+            "/drust/admin/tenants/{id}/_broadcast",
+            get(broadcast_inspector_page),
+        )
+        .with_state(state)
+        .layer(axum::Extension(AdminProfileExt::placeholder()))
+        .layer(axum::middleware::from_fn_with_state(
+            session_state,
+            admin_session_layer,
+        ));
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/drust/admin/tenants/tenant-a-1234/_broadcast")
+                // No drust_session cookie → admin_session_layer short-circuits.
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        res.status(),
+        StatusCode::SEE_OTHER,
+        "unauthenticated request should 303-redirect, got {}",
+        res.status()
+    );
+    let loc = res
+        .headers()
+        .get(header::LOCATION)
+        .expect("redirect must set Location header")
+        .to_str()
+        .expect("Location header must be ASCII");
+    assert_eq!(
+        loc, "/drust/login",
+        "redirect target must be /drust/login (the browser-facing /drust prefix is load-bearing)"
+    );
 }
