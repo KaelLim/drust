@@ -16,12 +16,11 @@ use crate::tenant::rooms::bus::RoomMessage;
 use crate::tenant::rooms::envelope::{codes, ClientOp, ServerMessage};
 use crate::tenant::rooms::policy::validate_room_name;
 use crate::tenant::rooms::rest::{publish_into_bus, PublishCtx, PublishError};
-use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Path};
 use axum::response::Response;
 use futures::stream::{SplitSink, StreamExt};
 use futures::SinkExt;
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use tokio::time::interval;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
@@ -35,8 +34,14 @@ pub async fn ws_handler(
     Path((tenant,)): Path<(String,)>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.max_message_size(128 * 1024)
-        .max_frame_size(128 * 1024)
+    // v1.31.2 F10 — honor DRUST_BROADCAST_PAYLOAD_MAX_BYTES at the WS
+    // frame layer. Pre-fix this was hardcoded 128 KiB, silently capping
+    // below env config. The wire-level PAYLOAD_TOO_LARGE error in
+    // handle_text_frame::Publish stays — it gives clean errors below
+    // this hard ceiling.
+    let cap = pc.cfg.payload_max_bytes;
+    ws.max_message_size(cap)
+        .max_frame_size(cap)
         .on_upgrade(move |socket| handle_socket(socket, ctx, pc, tenant))
 }
 
@@ -45,7 +50,11 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, ctx: AuthCtx, pc: PublishCtx, tenant: String) {
     let (mut sink, mut stream) = socket.split();
 
-    let mut subscribed: HashSet<String> = HashSet::new();
+    // v1.31.2 F6 — drop the separate `subscribed: HashSet<String>`. The
+    // StreamMap itself IS the source of truth for which rooms this
+    // connection is subscribed to. Pre-fix, evict_tenant could drop the
+    // StreamMap entry while the HashSet still claimed it, making
+    // re-Subscribe a silent no-op.
     let mut stream_map: StreamMap<String, BroadcastStream<RoomMessage>> = StreamMap::new();
     let mut ka = interval(Duration::from_secs(30));
     ka.tick().await; // consume immediate first tick
@@ -65,7 +74,7 @@ async fn handle_socket(socket: WebSocket, ctx: AuthCtx, pc: PublishCtx, tenant: 
                     Message::Text(text) => {
                         if !handle_text_frame(
                             text.as_str(), &ctx, &pc, &tenant, token_hint,
-                            &mut subscribed, &mut stream_map, &mut sink,
+                            &mut stream_map, &mut sink,
                         ).await {
                             break;
                         }
@@ -77,8 +86,12 @@ async fn handle_socket(socket: WebSocket, ctx: AuthCtx, pc: PublishCtx, tenant: 
                     Message::Binary(_) | Message::Pong(_) => {}
                 }
             }
-            // Branch (b): downstream broadcast fan-in
-            maybe_msg = stream_map.next() => {
+            // Branch (b): downstream broadcast fan-in.
+            // v1.31.2 F5 — `, if !stream_map.is_empty()` gate. Empty
+            // StreamMap's `.next()` returns Poll::Ready(None) immediately;
+            // pre-fix `continue` made this a hot loop pegging a CPU core
+            // until the client subscribed to its first room.
+            maybe_msg = stream_map.next(), if !stream_map.is_empty() => {
                 let Some((room, item)) = maybe_msg else { continue; };
                 match item {
                     Ok(rmsg) => {
@@ -89,19 +102,21 @@ async fn handle_socket(socket: WebSocket, ctx: AuthCtx, pc: PublishCtx, tenant: 
                         };
                         if send_json(&mut sink, &env).await.is_err() { break; }
                     }
+                    // v1.31.2 F8 — per-room recovery instead of conn-wide
+                    // break. A single noisy room used to drop all of the
+                    // client's other subscriptions. Now the lagging room
+                    // is removed from the StreamMap; client can op:subscribe
+                    // again with the same name to resync.
                     Err(BroadcastStreamRecvError::Lagged(n)) => {
                         let env = ServerMessage::Error {
                             client_ref: None,
                             code: codes::LAGGED,
-                            msg: format!("dropped {n} messages on room {room}; reconnect"),
+                            msg: format!("dropped {n} messages on room {room}; resubscribe to recover"),
                             room: Some(room.clone()),
                         };
-                        let _ = send_json(&mut sink, &env).await;
-                        let _ = sink.send(Message::Close(Some(CloseFrame {
-                            code: 1011,
-                            reason: Utf8Bytes::from_static("lagged"),
-                        }))).await;
-                        break;
+                        if send_json(&mut sink, &env).await.is_err() { break; }
+                        // Drop the lagging stream; keep the connection.
+                        stream_map.remove(&room);
                     }
                 }
             }
@@ -121,7 +136,6 @@ async fn handle_text_frame(
     pc: &PublishCtx,
     tenant: &str,
     token_hint: &'static str,
-    subscribed: &mut HashSet<String>,
     stream_map: &mut StreamMap<String, BroadcastStream<RoomMessage>>,
     sink: &mut SplitSink<WebSocket, Message>,
 ) -> bool {
@@ -153,7 +167,8 @@ async fn handle_text_frame(
                 .await
                 .is_ok();
             }
-            if !subscribed.contains(&room) && subscribed.len() >= pc.cfg.client_room_max {
+            // v1.31.2 F6 — use stream_map.len() instead of a separate set.
+            if !stream_map.contains_key(&room) && stream_map.len() >= pc.cfg.client_room_max {
                 return send_error(
                     sink,
                     client_ref,
@@ -164,9 +179,9 @@ async fn handle_text_frame(
                 .await
                 .is_ok();
             }
-            // Per-room subscriber cap. We exempt re-subscribe (already in set)
-            // so idempotent subscribes don't fail at the cap edge.
-            if !subscribed.contains(&room) {
+            // Per-room subscriber cap. We exempt re-subscribe (already in
+            // map) so idempotent subscribes don't fail at the cap edge.
+            if !stream_map.contains_key(&room) {
                 let current = pc.bus.current_subscriber_count(tenant, &room);
                 if current >= pc.cfg.room_subscriber_max {
                     return send_error(
@@ -181,16 +196,14 @@ async fn handle_text_frame(
                 }
                 let rx = pc.bus.subscribe(tenant, &room);
                 stream_map.insert(room.clone(), BroadcastStream::new(rx));
-                subscribed.insert(room.clone());
             }
             send_ack(sink, client_ref, "subscribe", Some(room), None)
                 .await
                 .is_ok()
         }
         ClientOp::Unsubscribe { room, client_ref } => {
-            if subscribed.remove(&room) {
-                stream_map.remove(&room);
-            }
+            // v1.31.2 F6 — stream_map is authoritative.
+            stream_map.remove(&room);
             send_ack(sink, client_ref, "unsubscribe", Some(room), None)
                 .await
                 .is_ok()
