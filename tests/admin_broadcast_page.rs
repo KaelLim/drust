@@ -139,6 +139,24 @@ async fn renders_with_drust_prefixed_ws_url_and_hidden_bearer() {
     // tenant-a-1234 appears in the bound positions (ws-url, tenant-id-field,
     // sidebar header, Evict URL template, etc.).
     assert!(html.contains("tenant-a-1234"));
+
+    // v1.31.6 regression — the inline JS block must contain NO literal
+    // `</script>` (HTML5 §8.2.4.6 terminates <script> on that pattern
+    // regardless of JS comment/string context). The marker `(function ()`
+    // narrows to the inspector's own IIFE, skipping the cmdk / mascot
+    // inline scripts which legitimately don't contain stray closers.
+    let inspector_start = html
+        .rfind("<script>\n(function () {")
+        .expect("inspector IIFE <script> opener missing");
+    let inspector_end_rel = html[inspector_start..]
+        .find("\n})();\n</script>")
+        .expect("inspector IIFE close marker missing");
+    let inspector_body = &html[inspector_start..inspector_start + inspector_end_rel];
+    assert!(
+        !inspector_body.contains("</script>"),
+        "inline JS block contains literal </script> — will truncate at \
+         the browser HTML parser. Use <\\/script> instead."
+    );
 }
 
 #[tokio::test]

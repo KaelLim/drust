@@ -1349,6 +1349,7 @@ payload_label = "Payload (JSON)"
 payload_invalid = "invalid JSON"
 btn_send = "Send"
 counter = "{used} / {cap} B"
+shortcut_hint = "Ctrl/⌘ + Enter to send"
 
 [broadcast_inspector.tail]
 heading = "Tail"
