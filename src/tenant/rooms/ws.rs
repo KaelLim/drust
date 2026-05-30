@@ -64,16 +64,29 @@ async fn handle_socket(socket: WebSocket, ctx: AuthCtx, pc: PublishCtx, tenant: 
         AuthCtx::User { .. } => "user",
         AuthCtx::Anon => "anon",
     };
+    let admin_id = ctx.admin_id();
 
     loop {
         tokio::select! {
             // Branch (a): upstream WS frame
             maybe_frame = stream.next() => {
-                let Some(Ok(frame)) = maybe_frame else { break; };
+                let frame = match maybe_frame {
+                    None => break,                                   // clean disconnect
+                    Some(Ok(f)) => f,                                // normal frame
+                    Some(Err(e)) => {                                // v1.31.3 F11.5
+                        tracing::warn!(
+                            error = ?e,
+                            tenant = %tenant,
+                            token_hint = %token_hint,
+                            "ws protocol error",
+                        );
+                        break;
+                    }
+                };
                 match frame {
                     Message::Text(text) => {
                         if !handle_text_frame(
-                            text.as_str(), &ctx, &pc, &tenant, token_hint,
+                            text.as_str(), &ctx, &pc, &tenant, token_hint, admin_id,
                             &mut stream_map, &mut sink,
                         ).await {
                             break;
@@ -136,6 +149,7 @@ async fn handle_text_frame(
     pc: &PublishCtx,
     tenant: &str,
     token_hint: &'static str,
+    admin_id: Option<i64>,
     stream_map: &mut StreamMap<String, BroadcastStream<RoomMessage>>,
     sink: &mut SplitSink<WebSocket, Message>,
 ) -> bool {
@@ -229,7 +243,7 @@ async fn handle_text_frame(
             match publish_into_bus(pc, tenant, &room, payload, "ws") {
                 Ok(n) => {
                     let ms = started.elapsed().as_millis() as u64;
-                    write_publish_audit(tenant, token_hint, ms, &room, byte_count, "ws", n);
+                    write_publish_audit(tenant, token_hint, ms, &room, byte_count, "ws", n, admin_id);
                     send_ack(sink, client_ref, "publish", Some(room), Some(n))
                         .await
                         .is_ok()
@@ -253,7 +267,7 @@ async fn handle_text_frame(
                     };
                     let ms = started.elapsed().as_millis() as u64;
                     write_publish_audit_failure(
-                        tenant, token_hint, ms, &room, byte_count, "ws", code,
+                        tenant, token_hint, ms, &room, byte_count, "ws", code, admin_id,
                     );
                     send_error(sink, client_ref, code, &msg, Some(room))
                         .await

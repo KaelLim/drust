@@ -38,6 +38,7 @@ pub async fn publish_handler(
         AuthCtx::User { .. } => "user",
         AuthCtx::Anon => "anon",
     };
+    let admin_id = ctx.admin_id();
 
     // Auth: Service only.
     if !matches!(ctx, AuthCtx::Service { .. }) {
@@ -63,6 +64,7 @@ pub async fn publish_handler(
                 byte_count,
                 "rest",
                 delivered_to,
+                admin_id,
             );
             (
                 StatusCode::OK,
@@ -79,6 +81,7 @@ pub async fn publish_handler(
                 byte_count,
                 "rest",
                 codes::ROOM_NAME_INVALID,
+                admin_id,
             );
             json_error(
                 StatusCode::BAD_REQUEST,
@@ -95,6 +98,7 @@ pub async fn publish_handler(
                 byte_count,
                 "rest",
                 codes::PROTECTED_ROOM,
+                admin_id,
             );
             json_error(
                 StatusCode::FORBIDDEN,
@@ -111,6 +115,7 @@ pub async fn publish_handler(
                 byte_count,
                 "rest",
                 codes::PAYLOAD_TOO_LARGE,
+                admin_id,
             );
             json_error(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -127,6 +132,7 @@ pub async fn publish_handler(
                 byte_count,
                 "rest",
                 codes::RATE_LIMITED,
+                admin_id,
             );
             let secs = wait.as_secs().max(1);
             let body = serde_json::json!({

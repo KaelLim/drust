@@ -12,13 +12,20 @@
 //! Eviction drops the broadcast channel sender; every subscriber's
 //! `BroadcastStream` yields `None` on the next poll and the WS handler's
 //! select loop terminates the connection cleanly.
+//!
+//! v1.31.3 — F14 validate_tenant_id at handler entry (400 on malformed
+//! id rather than silent zero-count). F15 emit admin.broadcast.evict_*
+//! audit rows with actor_admin_id for attribution.
 
+use crate::auth::middleware::AdminId;
 use crate::mgmt::tenants::TenantsState;
+use crate::safety::audit::AuditEntry;
+use crate::storage::tenant_db::validate_tenant_id;
 use crate::tenant::rooms::policy::validate_room_name;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::{Extension, Json};
 use serde_json::json;
 
 /// `POST /admin/tenants/{id}/realtime/evict-all` — drop every broadcast
@@ -27,13 +34,44 @@ use serde_json::json;
 /// returns zero/zero.
 pub async fn evict_all_rooms_handler(
     State(s): State<TenantsState>,
+    Extension(AdminId(caller_id)): Extension<AdminId>,
     Path(tenant_id): Path<String>,
 ) -> Response {
+    // v1.31.3 F14 — reject malformed tenant ids at the door instead of
+    // silently inserting them into the DashMap key space.
+    if let Err(e) = validate_tenant_id(&tenant_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error_code": "INVALID_TENANT_ID",
+                "message": e.to_string(),
+            })),
+        )
+            .into_response();
+    }
+
     let subscribers_dropped = s.bus_rooms.tenant_subscriber_count(&tenant_id);
-    // v1.31.1 F2 — snapshot BEFORE evict_tenant() returns (). Pre-fix
-    // we bound the unit value into the JSON field, serializing as null.
     let rooms_evicted = s.bus_rooms.tenant_channel_count(&tenant_id);
     s.bus_rooms.evict_tenant(&tenant_id);
+
+    // v1.31.3 F15 — admin audit row with actor_admin_id attribution.
+    let mut e = AuditEntry::success(
+        &tenant_id,
+        "admin",
+        "admin.broadcast.evict_all",
+        0,
+    );
+    e.actor_admin_id = Some(caller_id);
+    e.extra.insert(
+        "rooms_evicted".into(),
+        serde_json::Value::Number(rooms_evicted.into()),
+    );
+    e.extra.insert(
+        "subscribers_dropped".into(),
+        serde_json::Value::Number(subscribers_dropped.into()),
+    );
+    crate::safety::audit_db::try_send(&e);
+
     Json(json!({
         "tenant_id": tenant_id,
         "rooms_evicted": rooms_evicted,
@@ -49,8 +87,19 @@ pub async fn evict_all_rooms_handler(
 /// `PROTECTED_ROOM` shape as the publish surface for consistency.
 pub async fn evict_room_handler(
     State(s): State<TenantsState>,
+    Extension(AdminId(caller_id)): Extension<AdminId>,
     Path((tenant_id, room)): Path<(String, String)>,
 ) -> Response {
+    if let Err(e) = validate_tenant_id(&tenant_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error_code": "INVALID_TENANT_ID",
+                "message": e.to_string(),
+            })),
+        )
+            .into_response();
+    }
     if let Err(code) = validate_room_name(&room) {
         return (
             StatusCode::BAD_REQUEST,
@@ -63,6 +112,28 @@ pub async fn evict_room_handler(
     }
     let subscribers_dropped = s.bus_rooms.current_subscriber_count(&tenant_id, &room);
     let evicted = s.bus_rooms.evict_room(&tenant_id, &room);
+
+    let mut e = AuditEntry::success(
+        &tenant_id,
+        "admin",
+        "admin.broadcast.evict_room",
+        0,
+    );
+    e.actor_admin_id = Some(caller_id);
+    e.extra.insert(
+        "room".into(),
+        serde_json::Value::String(room.clone()),
+    );
+    e.extra.insert(
+        "evicted".into(),
+        serde_json::Value::Bool(evicted),
+    );
+    e.extra.insert(
+        "subscribers_dropped".into(),
+        serde_json::Value::Number(subscribers_dropped.into()),
+    );
+    crate::safety::audit_db::try_send(&e);
+
     Json(json!({
         "tenant_id": tenant_id,
         "room": room,
@@ -76,24 +147,21 @@ pub async fn evict_room_handler(
 mod tests {
     use crate::tenant::rooms::RoomBus;
 
-    /// v1.31.1 F2 regression — `rooms_evicted` MUST be the count of rooms
-    /// dropped, not `null`. Pre-fix the handler bound `evict_tenant`'s `()`
-    /// return into the JSON field, serializing as `null`.
+    /// Carried forward from v1.31.1 F2 regression — `rooms_evicted` MUST
+    /// be the count of rooms dropped, not `null`.
     #[test]
     fn evict_tenant_count_snapshot_returns_real_count() {
         let bus = RoomBus::new();
         let _a = bus.subscribe("t-alpha", "chat");
         let _b = bus.subscribe("t-alpha", "presence");
         let _c = bus.subscribe("t-alpha", "metrics");
-        // Channel for a different tenant — must NOT be counted.
         let _x = bus.subscribe("t-beta", "chat");
 
-        // Snapshot before evict (this is the fix shape).
         let rooms_evicted = bus.tenant_channel_count("t-alpha");
         bus.evict_tenant("t-alpha");
 
         assert_eq!(rooms_evicted, 3, "must report 3 rooms dropped");
-        assert_eq!(bus.tenant_channel_count("t-alpha"), 0, "alpha dropped");
-        assert_eq!(bus.tenant_channel_count("t-beta"), 1, "beta untouched");
+        assert_eq!(bus.tenant_channel_count("t-alpha"), 0);
+        assert_eq!(bus.tenant_channel_count("t-beta"), 1);
     }
 }
