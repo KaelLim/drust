@@ -1,3 +1,83 @@
+## v1.31.0 — 2026-05-30
+
+Broadcast rooms — WebSocket multiplex publish/subscribe for tenant
+event fan-out. Service-key publish (REST + WS + MCP), tenant-public
+subscribe (anon-callable), fire-and-forget, per-tenant rate-limited.
+Backward-compatible: zero changes to existing record / RPC / file /
+SSE routes; new bus is independent of the v1.10 SSE record channels.
+
+### Added
+
+- **`RoomBus`** (`src/tenant/rooms/bus.rs`) — `DashMap<(tenant, room),
+  tokio::sync::broadcast::Sender<RoomMessage>>` with `BUFFER = 256`.
+  Methods: `publish`, `subscribe`, `evict_tenant`, `evict_room`,
+  `sweep_empty`, per-tenant `channel_count` / `subscriber_count`.
+- **`POST /t/<id>/rooms/<room>`** REST publish — service-key only.
+  Body is any JSON; replies `{room, delivered_to, byte_count}`.
+  Room-name regex `^[a-zA-Z][a-zA-Z0-9_:.-]{0,127}$`; `_system_`
+  prefix returns 403 PROTECTED_ROOM. Per-tenant 100 msg/s token bucket
+  (`DRUST_BROADCAST_PUBLISH_QPS`), payload cap 64 KiB
+  (`DRUST_BROADCAST_PAYLOAD_MAX_BYTES`).
+- **`GET /t/<id>/realtime`** WebSocket multiplex — one socket ⇒ N rooms.
+  Wire protocol (text JSON frames):
+    - client → `{op:subscribe|unsubscribe|publish|ping, room, payload?, ref?}`
+    - server → `{kind:ack|message|pong|error, room?, payload?, code?, msg?, delivered_to?, ref?}`
+  Service / anon / user tokens may subscribe; only service may publish
+  (anon/user `op:publish` → WS_PUBLISH_DENIED). LAGGED subscribers
+  receive a 1011 close. Per-conn cap 100 rooms; per-room subscriber
+  cap 1000.
+- **`?token=<bearer>`** query-string auth on all per-tenant routes —
+  rewritten to `Authorization: Bearer <…>` by `ws_query_token_adapter`
+  before `bearer_auth_layer`. Lets browsers open WS (native
+  WebSocket API can't set custom headers) and EventSource SSE
+  (`/records/<coll>/subscribe`). Explicit header wins over query;
+  param is stripped from URI before tracing spans / access logs.
+- **MCP `broadcast` tool** — publishes through the same
+  `publish_into_bus` pipeline as REST + WS. Service-only via existing
+  MCP dispatch gate. `whoami` now surfaces `endpoints.realtime_ws`,
+  `endpoints.rooms_publish_rest`, and four `limits.broadcast_*`
+  fields.
+- **Admin evict endpoints** — `POST /admin/tenants/<id>/realtime/evict-all`
+  and `…/rooms/<room>/evict` drop hung subscribers without bouncing
+  systemd. Tenant overview page gains a compact broadcast card
+  (room + subscriber count snapshot + "Evict all" button when > 0).
+- **Background sweeper** — every `DRUST_BROADCAST_SWEEPER_INTERVAL_SECS`
+  (default 300, 0 disables) `bus_rooms.sweep_empty()` removes channels
+  with zero subscribers so DashMap doesn't accumulate stale rooms.
+- **`broadcast.publish` audit row** on every successful + failed
+  publish across REST / WS / MCP, with `source` ∈ {`rest`, `ws`,
+  `mcp`} so operators can attribute throughput.
+- **i18n** — 4 new keys × 2 locales:
+  `tenant_overview.broadcast.{title,summary,evict_btn,evict_confirm}`.
+
+### Environment variables
+
+| Var | Default |
+|---|---|
+| `DRUST_BROADCAST_PUBLISH_QPS` | 100 |
+| `DRUST_BROADCAST_PAYLOAD_MAX_BYTES` | 65536 |
+| `DRUST_BROADCAST_ROOM_SUBSCRIBER_MAX` | 1000 |
+| `DRUST_BROADCAST_CLIENT_ROOM_MAX` | 100 |
+| `DRUST_BROADCAST_SWEEPER_INTERVAL_SECS` | 300 |
+
+### Migration
+
+No DB migration. No schema changes. No breaking changes to existing
+routes. Upgrading just by restarting drust on the new binary enables
+the bus and routes; clients opt-in by connecting to `/realtime` or
+calling the new endpoints. Existing `realtime_enabled` per-collection
+SSE behavior is independent.
+
+### Known issues
+
+- `tests/rooms_ws.rs` integration tests ship `#[ignore]` due to
+  tokio-rs/tokio#2374 (per-test runtime starvation under
+  `cargo test` parallelism — spawned `axum::serve` on_upgrade closure
+  gets starved between HTTP 101 and the WS read loop). Each test
+  passes individually:
+  `cargo test --test rooms_ws <name> -- --ignored --nocapture`.
+  Follow-up will migrate to a shared-runtime harness.
+
 ## v1.30.0 — 2026-05-29
 
 Stored RPC v2 — multi-statement mutation support. Backward-compatible
