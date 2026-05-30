@@ -1,3 +1,56 @@
+## v1.31.2 — 2026-05-30
+
+### Fixed
+
+- **F4 (security)** — `?token=<bearer>` query-string adapter was layered on
+  the entire per-tenant `core` router, meaning every REST + admin + MCP
+  per-tenant route accepted the bearer in the URL. Tokens ended up in
+  browser history, Referer headers, and Caddy access logs. Narrowed to
+  the two routes that actually need it: `/t/{tenant}/realtime` (WebSocket
+  upgrade) and `/t/{tenant}/records/{coll}/subscribe` (SSE) — both of which
+  browsers cannot send custom headers on.
+- **F5** — Empty `StreamMap` in the WS event loop returned
+  `Poll::Ready(None)` immediately, and combined with `continue` this select
+  arm fired every poll. An idle WS connection (post-upgrade, pre-`Subscribe`)
+  pegged a CPU core. Added `if !stream_map.is_empty()` precondition to the
+  arm.
+- **F6** — A separate `subscribed: HashSet<String>` could drift out of sync
+  with `StreamMap`. When admin `evict_tenant` dropped a channel, the stream
+  yielded `None` and `StreamMap` removed the entry, but the `HashSet` still
+  claimed the room — re-`Subscribe` became a silent no-op. Dropped the
+  `HashSet` entirely; `StreamMap` is the single source of truth.
+- **F7** — `RoomBus::subscribe` released the DashMap entry's write lock
+  before calling `Sender::subscribe()`, so the sweeper's
+  `retain(|_, tx| tx.receiver_count() > 0)` could observe a 0-receiver
+  Sender and remove it. The subscribe call appeared to succeed but the
+  Receiver was orphaned. Hold the `RefMut` across `subscribe()`.
+- **F8** — `BroadcastStreamRecvError::Lagged(n)` on any one room closed
+  the entire multiplex connection. A single noisy room (e.g. `metrics`)
+  dropped the client's `chat` and `notifications` subscriptions too.
+  Send a `LAGGED` error frame with `room=<lagging room>`, remove that
+  room from the `StreamMap`, and continue the loop. Client can
+  `op:subscribe` again to resync.
+- **F9** — `PublishBucket::try_consume` did `swap(last_refill_ms) →
+  load(tokens) → compute → store(tokens)` as three independent atomics;
+  concurrent callers from the same tenant could both observe tokens
+  available and both decrement. Documented 100 QPS cap drifted to
+  120–140 QPS at 10 concurrent publishers. Replaced atomics with per-tenant
+  `Arc<std::sync::Mutex<BucketState>>`; critical section is non-await
+  compute so `std::sync::Mutex` is correct.
+- **F10** — `WebSocketUpgrade::max_message_size(128 * 1024)` was hardcoded,
+  silently overriding `DRUST_BROADCAST_PAYLOAD_MAX_BYTES`. Setting the env
+  to 256 KiB made REST + MCP publish accept larger payloads but WS rejected
+  at the frame layer with a generic close. Thread `RoomsConfig::
+  payload_max_bytes` into both `max_message_size` and `max_frame_size`.
+
+### Compatibility
+
+`?token=<bearer>` on routes other than `/realtime` and
+`/records/{coll}/subscribe` now returns 401 (Authorization header required).
+This was a documented-as-incorrect surface — the bearer was always supposed
+to travel in the header. Any clients depending on the broken behavior
+should move the bearer to the `Authorization: Bearer <token>` header.
+
 ## [1.31.1] — 2026-05-30
 
 ### Fixed
