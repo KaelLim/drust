@@ -1508,7 +1508,7 @@ impl DrustMcpService {
         match publish_into_bus(&pc, &tenant, &room, payload, "mcp") {
             Ok(delivered_to) => {
                 let ms = started.elapsed().as_millis() as u64;
-                write_publish_audit(&tenant, "service", ms, &room, byte_count, "mcp", delivered_to);
+                write_publish_audit(&tenant, "service", ms, &room, byte_count, "mcp", delivered_to, None);
                 json_content(serde_json::json!({
                     "room": room,
                     "delivered_to": delivered_to,
@@ -1532,7 +1532,7 @@ impl DrustMcpService {
                     }
                 };
                 let ms = started.elapsed().as_millis() as u64;
-                write_publish_audit_failure(&tenant, "service", ms, &room, byte_count, "mcp", code);
+                write_publish_audit_failure(&tenant, "service", ms, &room, byte_count, "mcp", code, None);
                 bail_mcp(anyhow::anyhow!("{code}: {msg}"))
             }
         }
