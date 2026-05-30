@@ -1,3 +1,26 @@
+## v1.31.4 — 2026-05-30
+
+### Changed
+
+- **MCP `initialize.instructions` rewrite** — Replaced the legacy 50-tool-name
+  conga line with a structured onboarding map: `START HERE` pointers, 5
+  capability groups (Schema / Data / Storage / Identity+Integrations /
+  Observability), per-group tool lists with 1-line "when to use me" notes,
+  6 task recipes ("Look around" → `get_schema_overview`, "Write rows
+  safely" → `<op>_record` with `dry_run: true`, …), and a notes block
+  covering `dry_run`, `suggested_fix`, and irreversibility. Industry
+  pattern (Phil Schmid / Anthropic GitHub MCP) — the `initialize.instructions`
+  string is the natural server prologue: zero round-trip, every client sees
+  it once. Extracted to `build_instructions(tenant_id, base)` so a unit test
+  pins the structure (5 group headings, recipes, no cross-tenant leaks).
+  No tool surface change, no wire-format change, no DB / schema / env
+  change. Design: `docs/superpowers/specs/2026-05-30-drust-mcp-instructions-onboarding-design.md`.
+
+### Compatibility
+
+None breaking. `instructions` is an opaque string per MCP spec; clients
+display or forward it to the model verbatim.
+
 ## v1.31.3 — 2026-05-30
 
 ### Fixed

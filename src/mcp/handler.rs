@@ -1539,45 +1539,126 @@ impl DrustMcpService {
     }
 }
 
+// v1.31.4 — onboarding map for LLM clients. Replaces the legacy 50-name
+// conga line. Industry pattern (Phil Schmid, Anthropic GitHub MCP): the
+// `initialize.instructions` string is the natural server prologue — zero
+// round-trip, every client sees it once. Structured by capability group
+// + recipes so the LLM can map intent → tool without exhausting tools/list.
+fn build_instructions(tenant_id: &str, base: &str) -> String {
+    format!(
+        r#"drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.
+
+START HERE
+  • `get_schema_overview` — collections + fields + indexes + RPCs + AI hints in one call
+  • `whoami` — tenant identity + bearer tokens + REST/upload base URLs
+
+CAPABILITY GROUPS
+
+1. SCHEMA (inspect + DDL)
+   Inspect:  get_schema_overview, list_collections, describe_collection
+   Mutate:   create_collection, add_field, drop_field, drop_collection
+   Indexes:  create_index, drop_index
+   Docs:     set_collection_description, set_field_description, set_index_description
+   Gates:    set_realtime, set_anon_caps, set_owner_field, clear_owner_field
+
+2. DATA (per-collection CRUD + search)
+   Read structured: list_records (FilterAst), sample_rows, count_rows
+   Read raw SQL:    query (SELECT only) + explain
+   Vector search:   search_collection
+   Write:           insert_record, update_record, delete_record   (all accept dry_run: true)
+   Procedures:      create_rpc, update_rpc, delete_rpc, list_rpc, call_rpc
+
+3. STORAGE (per-tenant Garage buckets — public + private)
+   Manage: list_files, delete_file, get_file_url  (pass download=true for attachment disposition)
+   Upload: MCP has no upload tool by design. Use REST:
+     POST {base}/drust/t/{tenant_id}/files
+     Header: Authorization: Bearer $DRUST_TOKEN
+     Body:   multipart/form-data
+       file          (required — bytes)
+       visibility    (required — 'public' | 'private')
+       disposition   (optional — 'inline' | 'attachment', default 'inline')
+       cache_control (optional — default 'public, max-age=86400' (public) / 'private, no-store' (private))
+       meta          (optional — JSON object)
+
+4. IDENTITY + INTEGRATIONS
+   Users:    create_user, list_users, get_user, update_user, delete_user, revoke_user_sessions
+   OAuth:    list_oauth_providers, set_oauth_provider, delete_oauth_provider, set_self_register
+   Webhooks: create_webhook, list_webhooks, update_webhook, delete_webhook   (CRUD events fan out)
+   Broadcast (v1.31+): broadcast — publish JSON to a WS room; fire-and-forget, no replay
+
+5. OBSERVABILITY (service-only)
+   recent_writes — last 100 mutations for THIS tenant. Use after a retry to see what the previous attempt wrote.
+
+RECIPES
+  "Look around"           → get_schema_overview
+  "Read a collection"     → list_records (filter + select + sort + page)
+  "Run my own SELECT"     → query (read-only; no system tables)
+  "Find by similarity"    → search_collection (vector field + metric)
+  "Write rows safely"     → <op>_record with dry_run: true first, then again without
+  "Recover after a retry" → recent_writes
+  "Live broadcast"        → broadcast  (room name regex ^[a-zA-Z][a-zA-Z0-9_:.-]{{0,127}}$)
+
+NOTES
+  • All destructive tools (delete_record, drop_collection, drop_index) accept dry_run: true and return would_* counts.
+  • Every error JSON includes a `suggested_fix` hint tailored to the failure.
+  • Schema drops and delete_file are irreversible.
+  • Call `tools/list` for the canonical input schema of every tool listed above."#
+    )
+}
+
 #[tool_handler]
 impl ServerHandler for DrustMcpService {
     fn get_info(&self) -> ServerInfo {
         let tenant_id = self.state.tenant_id();
         let base = self.state.public_base_url();
-        let instructions = format!(
-            "drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.\n\n\
-             Tools: `whoami`, `list_collections`, `describe_collection`, `get_schema_overview`, `sample_rows`, \
-             `count_rows`, `list_records`, `query`, `explain`, `insert_record`, `update_record`, \
-             `delete_record`, `create_collection`, `add_field`, `drop_field`, \
-             `drop_collection`, `set_anon_caps`, `set_collection_description`, \
-             `set_field_description`, `set_index_description`, `set_realtime`, \
-             `create_index`, `drop_index`, \
-             `search_collection`, `list_files`, `delete_file`, `get_file_url`, \
-             `create_rpc`, `update_rpc`, `delete_rpc`, `list_rpc`, `call_rpc`, \
-             `create_user`, `list_users`, `get_user`, `update_user`, `delete_user`, \
-             `revoke_user_sessions`, `set_owner_field`, `clear_owner_field`, \
-             `set_self_register`, `list_oauth_providers`, `set_oauth_provider`, \
-             `delete_oauth_provider`, `create_webhook`, `list_webhooks`, \
-             `update_webhook`, `delete_webhook`. \
-             (Call `tools/list` for the canonical schema-and-list.)\n\n\
-             Files are stored in the tenant's Garage buckets (tenant-{tenant_id}-pub / \
-             tenant-{tenant_id}-prv). MCP does NOT expose an upload tool — use the REST \
-             endpoint instead:\n\n  \
-             POST {base}/drust/t/{tenant_id}/files\n  \
-             Header: Authorization: Bearer $DRUST_TOKEN\n  \
-             Body: multipart/form-data with fields:\n    \
-             - file        (required — the bytes)\n    \
-             - visibility  (required — 'public' or 'private')\n    \
-             - disposition (optional — 'inline' or 'attachment', default inline)\n    \
-             - cache_control (optional — default 'public, max-age=86400' for public / \
-             'private, no-store' for private)\n    \
-             - meta        (optional — JSON object for custom metadata)\n\n\
-             After upload, use `list_files` to discover, `get_file_url` to produce a \
-             public or pre-signed URL (pass download=true for attachment), and \
-             `delete_file` to remove. Schema drops and delete_file are irreversible."
-        );
+        let instructions = build_instructions(tenant_id, base);
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("drust", env!("CARGO_PKG_VERSION")))
             .with_instructions(instructions)
+    }
+}
+
+#[cfg(test)]
+mod instructions_tests {
+    use super::build_instructions;
+
+    #[test]
+    fn instructions_includes_all_groups_and_tenant_id() {
+        let s = build_instructions("test-tenant-abc", "https://example.test");
+        assert!(s.contains("'test-tenant-abc'"), "tenant id not in identity line");
+        assert!(s.contains("https://example.test"), "base url not interpolated");
+        assert!(s.contains("START HERE"), "missing START HERE");
+        for group in &[
+            "1. SCHEMA",
+            "2. DATA",
+            "3. STORAGE",
+            "4. IDENTITY",
+            "5. OBSERVABILITY",
+        ] {
+            assert!(s.contains(group), "missing group heading: {group}");
+        }
+        assert!(s.contains("RECIPES"), "missing RECIPES section");
+        assert!(s.contains("dry_run"), "missing dry_run note");
+        assert!(s.contains("broadcast"), "missing v1.31 broadcast surface");
+        assert!(s.contains("recent_writes"), "missing observability tool");
+        // Regex range survived format! escaping (literal {0,127}, not a placeholder error)
+        assert!(s.contains("{0,127}"), "regex range escaped wrong");
+    }
+
+    #[test]
+    fn instructions_does_not_leak_other_tenant_ids() {
+        let s = build_instructions("alpha", "https://example.test");
+        // Defense vs cross-tenant leak: prologue is per-instance; no static
+        // literals from other tenants should ever appear in the rendered text.
+        for forbidden in &[
+            "00000000-0000-0000-0000-000000000000",
+            "beta-tenant",
+            "gamma-tenant",
+            "11111111-1111-1111-1111-111111111111",
+        ] {
+            assert!(!s.contains(forbidden), "prologue leaks literal: {forbidden}");
+        }
+        // Tenant id must appear (identity line + upload URL = at least once).
+        assert!(s.contains("alpha"), "own tenant id must appear");
     }
 }
