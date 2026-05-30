@@ -229,4 +229,72 @@ mod tests {
         assert!(!bearer_missing);
         assert_eq!(bearer, "drust_service_test123");
     }
+
+    /// Spec Testing/unit #1: the template payload struct round-trips
+    /// fixture values into rendered HTML directly via `.render()`,
+    /// without touching the meta DB, the tenant pool, the
+    /// `tokens::read_slot` helper, or any handler-side env var. The
+    /// integration tests already exercise the full handler stack;
+    /// this is the focused, in-process regression for the template
+    /// layer itself — flipping a field on the struct here is the
+    /// cheapest possible signal that the askama template still
+    /// compiles and still binds the load-bearing fields.
+    ///
+    /// (`Translator::new` internally calls `init_bundles()`, which
+    /// is a `OnceLock::get_or_init` — that's a transitive dep of
+    /// the i18n layer and unavoidable. The point of this test is
+    /// that nothing else in the rendering path reaches outside the
+    /// struct literal: no DB, no env, no process-wide state owned
+    /// by `tenant_broadcast` itself.)
+    #[test]
+    fn render_roundtrips_fixture_struct_to_html_without_handler_state() {
+        let tenant_id = "fixture-tenant-zzz";
+        let bearer = "drust_service_fixture_BEARER";
+        let ws_path = BroadcastInspectorPage::build_ws_path(tenant_id);
+        let trc = ThemeRenderCtx::build(crate::mgmt::theme::Theme::System);
+
+        let page = BroadcastInspectorPage {
+            version: "test-version",
+            tenant_id: tenant_id.to_string(),
+            tenant_name: "Fixture Tenant".to_string(),
+            ws_path: ws_path.clone(),
+            bearer: bearer.to_string(),
+            bearer_missing: false,
+            active_coll: "_broadcast".to_string(),
+            collections: Vec::new(),
+            i18n_js: "{}".to_string(),
+            t: Translator::new(crate::mgmt::i18n::Locale::En),
+            admin: AdminProfileExt::placeholder(),
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
+        };
+
+        let html = page.render().expect("template renders from struct alone");
+
+        // Fixture tenant id appears in the rendered HTML at least once
+        // (template binds it into ws-url, tenant-id-field, sidebar links).
+        assert!(
+            html.contains(tenant_id),
+            "rendered HTML should bind the fixture tenant id; not found"
+        );
+
+        // The full /drust-prefixed ws path appears verbatim as the
+        // hidden ws-url input's value — proves `build_ws_path` output
+        // flows through the template unchanged.
+        assert!(
+            html.contains(&format!(
+                r#"id="ws-url" value="/drust/t/{}/realtime""#,
+                tenant_id
+            )),
+            "rendered HTML should bind the load-bearing /drust-prefixed ws path"
+        );
+
+        // Bearer plaintext appears inside the hidden bearer field.
+        assert!(
+            html.contains(&format!(r#"id="bearer-field" value="{}""#, bearer)),
+            "rendered HTML should bind the fixture bearer into id=\"bearer-field\""
+        );
+    }
 }
