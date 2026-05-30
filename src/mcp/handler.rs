@@ -354,6 +354,16 @@ pub struct WebhookIdArgs {
     pub id: i64,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BroadcastArgs {
+    /// Room name. Must match `^[a-zA-Z][a-zA-Z0-9_:.-]{0,127}$`. The
+    /// `_system_` prefix is reserved and returns PROTECTED_ROOM.
+    pub room: String,
+    /// Any JSON value. Bound to the per-tenant `payload_max_bytes`
+    /// (default 64 KiB) measured against the serialised payload.
+    pub payload: Value,
+}
+
 // --- Handler -----------------------------------------------------------
 
 #[derive(Clone)]
@@ -1469,6 +1479,62 @@ impl DrustMcpService {
         ).await {
             Ok(rows) => json_content(serde_json::to_value(rows).expect("serialise")),
             Err(e) => bail_mcp(anyhow::anyhow!("RECENT_WRITES_UNAVAILABLE: {e}")),
+        }
+    }
+
+    #[tool(description = "v1.31 — Publish a JSON payload to a broadcast room. \
+        Service-key only (MCP dispatch already gates this). Fans out to every \
+        WebSocket subscriber currently connected to /t/<tenant>/realtime on the \
+        same room name. Fire-and-forget: messages are not persisted; subscribers \
+        connected later receive nothing. Returns `{room, delivered_to, byte_count}`. \
+        Errors: ROOM_NAME_INVALID, PROTECTED_ROOM (`_system_` prefix), PAYLOAD_TOO_LARGE, \
+        RATE_LIMITED.")]
+    async fn broadcast(
+        &self,
+        Parameters(BroadcastArgs { room, payload }): Parameters<BroadcastArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::tenant::rooms::rest::{publish_into_bus, PublishCtx, PublishError};
+        use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
+        use crate::tenant::rooms::envelope::codes;
+        let inner = self.state.inner();
+        let tenant = inner.tenant_id.clone();
+        let pc = PublishCtx {
+            bus: inner.bus_rooms.clone(),
+            bucket: inner.bucket.clone(),
+            cfg: inner.rooms_cfg.clone(),
+        };
+        let started = std::time::Instant::now();
+        let byte_count = serde_json::to_vec(&payload).map(|v| v.len()).unwrap_or(0);
+        match publish_into_bus(&pc, &tenant, &room, payload, "mcp") {
+            Ok(delivered_to) => {
+                let ms = started.elapsed().as_millis() as u64;
+                write_publish_audit(&tenant, "service", ms, &room, byte_count, "mcp", delivered_to);
+                json_content(serde_json::json!({
+                    "room": room,
+                    "delivered_to": delivered_to,
+                    "byte_count": byte_count,
+                }))
+            }
+            Err(e) => {
+                let (code, msg) = match e {
+                    PublishError::RoomNameInvalid => {
+                        (codes::ROOM_NAME_INVALID, "room name does not match ^[a-zA-Z][a-zA-Z0-9_:.-]{0,127}$".to_string())
+                    }
+                    PublishError::ProtectedRoom => {
+                        (codes::PROTECTED_ROOM, "`_system_` prefix is reserved".to_string())
+                    }
+                    PublishError::PayloadTooLarge => {
+                        let max = inner.rooms_cfg.payload_max_bytes;
+                        (codes::PAYLOAD_TOO_LARGE, format!("payload {byte_count} bytes exceeds cap {max}"))
+                    }
+                    PublishError::RateLimited(d) => {
+                        (codes::RATE_LIMITED, format!("per-tenant publish quota exhausted; retry after {} ms", d.as_millis()))
+                    }
+                };
+                let ms = started.elapsed().as_millis() as u64;
+                write_publish_audit_failure(&tenant, "service", ms, &room, byte_count, "mcp", code);
+                bail_mcp(anyhow::anyhow!("{code}: {msg}"))
+            }
         }
     }
 }
