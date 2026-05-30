@@ -156,7 +156,7 @@ pub async fn reroll_token_form(
     .into_response()
 }
 
-fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option<TokenSlotInfo> {
+pub(crate) fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option<TokenSlotInfo> {
     let row: Option<(i64, String, Option<String>)> = conn
         .query_row(
             "SELECT id, created_at, plaintext FROM tokens \

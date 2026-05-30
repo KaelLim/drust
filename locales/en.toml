@@ -497,6 +497,9 @@ title = "anon · service · MCP keys"
 [collection_sidebar.back]
 all_tenants = "Back to all tenants"
 
+[collection_sidebar.broadcast]
+title = "live WebSocket testing"
+
 [collection_sidebar.brand]
 meta = "tenant studio"
 
@@ -513,6 +516,7 @@ title = "audit · request history"
 
 [collection_sidebar.nav]
 api_keys = "API keys"
+broadcast = "Broadcast"
 end_users = "End-users"
 files = "Files"
 logs = "Logs"
@@ -1308,3 +1312,51 @@ sort = "Sort"
 [collection_page.view]
 definition = "Definition"
 table = "Table"
+
+[broadcast_inspector]
+page_title = "Broadcast Inspector"
+view_eyebrow = "BROADCAST"
+view_sub = "WebSocket multiplex over /realtime — subscribe to rooms, watch the live tail, publish JSON. Inspector does not enumerate rooms; type the name you want to watch."
+
+[broadcast_inspector.bearer_missing]
+title = "Service bearer not retrievable"
+body = "This tenant's service bearer was minted before v1.1c (hash-only). Regenerate it from the API keys page to use the Inspector."
+cta = "Go to API keys"
+
+[broadcast_inspector.conn]
+state_disconnected = "disconnected"
+state_connecting = "connecting…"
+state_connected = "connected · {n} rooms"
+state_bearer_rejected = "bearer rejected — regenerate service key"
+state_unreachable = "connect failed — server unreachable"
+state_server_closed = "disconnected by server"
+btn_connect = "Connect"
+btn_disconnect = "Disconnect"
+
+[broadcast_inspector.subs]
+heading = "Subscriptions"
+placeholder = "room name (e.g. chat)"
+btn_subscribe = "Subscribe"
+btn_unsub = "Unsub"
+btn_evict = "Evict"
+caveat = "Inspector does not enumerate active rooms — type the name your app uses."
+confirm_evict = "Drop room '{room}' for ALL subscribers? This is an admin-audited destructive op."
+
+[broadcast_inspector.publish]
+heading = "Publish"
+room_label = "Room"
+payload_label = "Payload (JSON)"
+payload_invalid = "invalid JSON"
+btn_send = "Send"
+counter = "{used} / {cap} B"
+
+[broadcast_inspector.tail]
+heading = "Tail"
+btn_clear = "Clear"
+btn_pause = "Pause"
+btn_resume = "Resume"
+empty = "(no messages yet — connect + subscribe)"
+new_pill = "▼ {n} new"
+self_tag = "me"
+lagged_row = "⚠ LAGGED — dropped {n} messages on room {room}; unsub + resub to recover"
+paused_drop = "dropped {n} while paused"

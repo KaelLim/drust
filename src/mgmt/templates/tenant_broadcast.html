@@ -1,0 +1,489 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ t.s("broadcast_inspector.page_title") }} · {{ tenant_name }}{% endblock %}
+{% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
+
+{% block content %}
+<div class="page page-wide">
+  <div class="view-head">
+    <div class="grow">
+      <div class="eyebrow">{{ t.s("broadcast_inspector.view_eyebrow") }}</div>
+      <h1 class="view-title">{{ t.s("broadcast_inspector.page_title") }}</h1>
+      <p class="view-sub">{{ t.s("broadcast_inspector.view_sub") }}</p>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <span id="conn-pill" class="pill muted" data-state="disconnected">
+        <span class="dot"></span>{{ t.s("broadcast_inspector.conn.state_disconnected") }}
+      </span>
+      <button id="btn-connect" type="button" class="btn btn-primary"
+              {% if bearer_missing %}disabled{% endif %}>
+        {{ t.s("broadcast_inspector.conn.btn_connect") }}
+      </button>
+    </div>
+  </div>
+
+  {% if bearer_missing %}
+  <div class="banner danger" style="margin-bottom:14px;" data-state="bearer-missing">
+    <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.86l-7.78 13.5A2 2 0 0 0 4.24 21h15.5a2 2 0 0 0 1.74-3.64l-7.78-13.5a2 2 0 0 0-3.4 0z"/></svg></span>
+    <div class="b-body">
+      <div class="b-title">{{ t.s("broadcast_inspector.bearer_missing.title") }}</div>
+      <p>{{ t.s("broadcast_inspector.bearer_missing.body") }}</p>
+      <a class="btn ghost btn-sm" href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">
+        {{ t.s("broadcast_inspector.bearer_missing.cta") }}
+      </a>
+    </div>
+  </div>
+  {% endif %}
+
+  {# Hidden form holding the bearer + ws path. Never a <a href> — keeps
+     referrer/clipboard surface clean. #}
+  <form id="ws-bootstrap" hidden onsubmit="return false;">
+    <input type="hidden" name="bearer" id="bearer-field" value="{{ bearer }}">
+    <input type="hidden" name="ws_path" id="ws-url" value="{{ ws_path }}">
+    <input type="hidden" name="tenant_id" id="tenant-id-field" value="{{ tenant_id }}">
+  </form>
+
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-head">
+      <span>{{ t.s("broadcast_inspector.subs.heading") }}
+        <span class="count" id="sub-count">0</span></span>
+    </div>
+    <div class="card-body">
+      <div style="display:flex;gap:8px;margin-bottom:10px;">
+        <input id="room-input" class="input" type="text"
+               placeholder="{{ t.s("broadcast_inspector.subs.placeholder") }}"
+               pattern="^[a-zA-Z][a-zA-Z0-9_:.\-]{0,127}$"
+               style="flex:1;font-family:var(--mono);">
+        <button id="btn-subscribe" type="button" class="btn ghost" disabled>
+          {{ t.s("broadcast_inspector.subs.btn_subscribe") }}
+        </button>
+      </div>
+      <div id="sub-chips" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+      <div class="muted" style="font-size:11px;margin-top:8px;">{{ t.s("broadcast_inspector.subs.caveat") }}</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-head">{{ t.s("broadcast_inspector.publish.heading") }}</div>
+    <div class="card-body">
+      <div style="display:grid;grid-template-columns:160px 1fr 120px;gap:10px;align-items:start;">
+        <label style="display:flex;flex-direction:column;font-size:12px;color:var(--muted);">
+          {{ t.s("broadcast_inspector.publish.room_label") }}
+          <input id="pub-room" class="input" type="text" style="font-family:var(--mono);margin-top:4px;">
+        </label>
+        <label style="display:flex;flex-direction:column;font-size:12px;color:var(--muted);">
+          {{ t.s("broadcast_inspector.publish.payload_label") }}
+          <textarea id="pub-payload" class="input" rows="3"
+                    style="font-family:var(--mono);margin-top:4px;resize:vertical;">{"hello":"world"}</textarea>
+          <div id="pub-payload-msg" class="muted" style="font-size:11px;margin-top:4px;"></div>
+        </label>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:stretch;">
+          <button id="btn-send" type="button" class="btn btn-primary" disabled>
+            {{ t.s("broadcast_inspector.publish.btn_send") }}
+          </button>
+          <div id="pub-counter" class="muted" style="font-size:11px;text-align:right;font-family:var(--mono);"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span>{{ t.s("broadcast_inspector.tail.heading") }}</span>
+      <span class="card-head-actions" style="display:flex;gap:6px;">
+        <button id="btn-pause" type="button" class="btn ghost btn-sm">
+          {{ t.s("broadcast_inspector.tail.btn_pause") }}
+        </button>
+        <button id="btn-clear" type="button" class="btn ghost btn-sm">
+          {{ t.s("broadcast_inspector.tail.btn_clear") }}
+        </button>
+      </span>
+    </div>
+    <div id="tail-scroll" class="records-scroll" style="max-height:480px;font-family:var(--mono);font-size:12px;">
+      <div id="tail-empty" class="muted" style="padding:18px;">{{ t.s("broadcast_inspector.tail.empty") }}</div>
+      <div id="tail-rows"></div>
+    </div>
+    <div id="tail-new-pill" hidden
+         style="position:sticky;bottom:6px;margin:0 auto;width:fit-content;
+                background:var(--accent);color:#fff;padding:4px 10px;border-radius:999px;
+                cursor:pointer;font-size:11px;font-family:var(--mono);"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "_mascot.html" %}
+{% include "_cmdk.html" %}
+<script>
+(function () {
+  // ------------------------------------------------------------------
+  // Inspector — vanilla JS module. Module-scope singleton state. No
+  // localStorage, no sessionStorage; closing the tab kills the WS.
+  // ------------------------------------------------------------------
+  const $ = (id) => document.getElementById(id);
+  const wsPath   = $("ws-url").value;
+  const bearer   = $("bearer-field").value;
+  const tenantId = $("tenant-id-field").value;
+  const PAYLOAD_MAX = 65536;       // mirrors DRUST_BROADCAST_PAYLOAD_MAX_BYTES default
+  const ROOM_RE = /^[a-zA-Z][a-zA-Z0-9_:.\-]{0,127}$/;
+  const TAIL_BUFFER_MAX = 500;     // paused-buffer cap
+  // i18n bundle pre-serialized in the handler — every value is a JSON
+  // string, safe to embed verbatim (no `"` or `</script>` injection).
+  const I18N = {{ i18n_js|safe }};
+
+  let ws = null;
+  let subscribedRooms = new Set();          // authoritative — chips read from this
+  let paused = false;
+  let pausedBuffer = [];                    // pending tail rows while paused
+  let pausedDropped = 0;
+  let autoScroll = true;                    // false once user scrolls up
+  let pendingNewCount = 0;
+  let nextClientRef = 1;
+  let pendingPublishRefs = new Map();       // client_ref → byte count (for self-tag)
+  let rateLimitedUntil = 0;                 // epoch ms; Send re-enables when past
+  let countdownTimer = null;
+
+  // -------- pill helpers --------
+  function setPill(state, text) {
+    const p = $("conn-pill");
+    p.dataset.state = state;
+    p.className = "pill " + (
+      state === "connected"        ? "ok"
+      : state === "connecting"     ? "warn"
+      : state === "disconnected"   ? "muted"
+      : "danger"
+    );
+    p.innerHTML = '<span class="dot"></span>';
+    p.appendChild(document.createTextNode(text));
+  }
+  function updateConnectedPill() {
+    setPill("connected", I18N.connected_tpl.replace("{n}", subscribedRooms.size));
+  }
+
+  // -------- byte counter --------
+  function payloadBytes(s) { return new TextEncoder().encode(s).byteLength; }
+  function refreshCounter() {
+    const v = $("pub-payload").value;
+    let bytes = 0;
+    try { bytes = payloadBytes(JSON.stringify(JSON.parse(v))); }
+    catch (_) { bytes = payloadBytes(v); }   // raw bytes when not valid JSON
+    const el = $("pub-counter");
+    el.textContent = I18N.counter_tpl
+      .replace("{used}", bytes).replace("{cap}", PAYLOAD_MAX);
+    el.style.color = bytes > PAYLOAD_MAX ? "var(--danger)" : "";
+    return bytes;
+  }
+  function validatePayload() {
+    const v = $("pub-payload").value;
+    const msg = $("pub-payload-msg");
+    try { JSON.parse(v); msg.textContent = ""; msg.style.color = ""; return true; }
+    catch (_) {
+      msg.textContent = I18N.payload_invalid; msg.style.color = "var(--danger)";
+      return false;
+    }
+  }
+  function refreshSendEnabled() {
+    const okPayload = validatePayload();
+    const okBytes = refreshCounter() <= PAYLOAD_MAX;
+    const okRoom = ROOM_RE.test($("pub-room").value);
+    const okConn = ws && ws.readyState === WebSocket.OPEN;
+    const notRateLimited = Date.now() >= rateLimitedUntil;
+    $("btn-send").disabled = !(okPayload && okBytes && okRoom && okConn && notRateLimited);
+  }
+
+  // -------- chips --------
+  function renderChips() {
+    const wrap = $("sub-chips"); wrap.innerHTML = "";
+    for (const room of subscribedRooms) {
+      const chip = document.createElement("span");
+      chip.className = "pill ok";
+      chip.style.display = "inline-flex"; chip.style.alignItems = "center"; chip.style.gap = "6px";
+      chip.innerHTML = '<span class="dot"></span>';
+      chip.appendChild(document.createTextNode(room));
+      const unsub = document.createElement("button");
+      unsub.type = "button"; unsub.className = "btn ghost btn-sm"; unsub.textContent = I18N.btn_unsub;
+      unsub.onclick = () => doUnsub(room);
+      const evict = document.createElement("button");
+      evict.type = "button"; evict.className = "btn btn-sm";
+      evict.style.background = "var(--danger)"; evict.style.color = "#fff";
+      evict.textContent = I18N.btn_evict;
+      evict.onclick = () => doEvict(room);
+      chip.appendChild(unsub); chip.appendChild(evict);
+      wrap.appendChild(chip);
+    }
+    $("sub-count").textContent = subscribedRooms.size;
+    updateConnectedPill();
+    refreshSendEnabled();
+  }
+
+  // -------- tail --------
+  function flushTailRow(row) {
+    if (paused) {
+      pausedBuffer.push(row);
+      if (pausedBuffer.length > TAIL_BUFFER_MAX) { pausedBuffer.shift(); pausedDropped++; }
+      return;
+    }
+    appendTailRow(row);
+  }
+  function appendTailRow(row) {
+    $("tail-empty").hidden = true;
+    const el = document.createElement("div");
+    el.style.display = "grid";
+    el.style.gridTemplateColumns = "92px 140px 1fr 96px";
+    el.style.gap = "8px"; el.style.padding = "3px 12px"; el.style.borderTop = "1px solid var(--line)";
+    if (row.kind === "error") { el.style.background = "rgba(255,80,80,0.08)"; el.style.color = "var(--danger)"; }
+    if (row.kind === "lagged") { el.style.background = "rgba(255,80,80,0.08)"; el.style.color = "var(--danger)"; }
+    const ts  = document.createElement("span"); ts.textContent  = row.ts;
+    const rm  = document.createElement("span"); rm.textContent  = row.room || "—";
+    const pl  = document.createElement("span"); pl.textContent  = row.text; pl.style.whiteSpace = "pre-wrap"; pl.style.wordBreak = "break-word";
+    const meta= document.createElement("span"); meta.style.textAlign = "right"; meta.style.color = "var(--muted)";
+    meta.textContent = row.meta || "";
+    el.appendChild(ts); el.appendChild(rm); el.appendChild(pl); el.appendChild(meta);
+    $("tail-rows").appendChild(el);
+    if (autoScroll) {
+      const s = $("tail-scroll"); s.scrollTop = s.scrollHeight;
+    } else {
+      pendingNewCount++;
+      const pill = $("tail-new-pill"); pill.hidden = false;
+      pill.textContent = I18N.new_pill_tpl.replace("{n}", pendingNewCount);
+    }
+  }
+  function rowFromMessage(env) {
+    const ts = formatTs(env.ts);
+    const room = env.room;
+    let meta = "";
+    const ref = env._our_publish_ref;
+    if (ref && pendingPublishRefs.has(ref)) {
+      meta = "←" + I18N.self_tag;
+      pendingPublishRefs.delete(ref);
+    }
+    let text;
+    try { text = JSON.stringify(env.payload); }
+    catch (_) { text = String(env.payload); }
+    if (text.length > 200) text = text.slice(0, 200) + "…";
+    return { kind: "message", ts, room, text, meta };
+  }
+  function formatTs(epoch_ms) {
+    const d = new Date(epoch_ms);
+    const pad = (n, w) => String(n).padStart(w, "0");
+    return pad(d.getHours(),2)+":"+pad(d.getMinutes(),2)+":"+pad(d.getSeconds(),2)
+      +"."+pad(d.getMilliseconds(),3);
+  }
+
+  // -------- WS --------
+  function wsUrl() {
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    return scheme + "//" + location.host + wsPath
+      + "?token=" + encodeURIComponent(bearer);
+  }
+  function doConnect() {
+    if (!bearer) return;
+    setPill("connecting", I18N.state_connecting);
+    $("btn-connect").disabled = true;
+    let opened = false;
+    try { ws = new WebSocket(wsUrl()); }
+    catch (e) { setPill("danger", I18N.state_unreachable); $("btn-connect").disabled = false; return; }
+    ws.onopen = () => {
+      opened = true;
+      updateConnectedPill();
+      $("btn-connect").textContent = I18N.btn_disconnect;
+      $("btn-connect").disabled = false;
+      $("btn-connect").onclick = doDisconnect;
+      $("btn-subscribe").disabled = false;
+      refreshSendEnabled();
+    };
+    ws.onmessage = (ev) => {
+      let env; try { env = JSON.parse(ev.data); } catch (_) { return; }
+      handleServerFrame(env);
+    };
+    ws.onerror = () => { if (!opened) setPill("danger", I18N.state_unreachable); };
+    ws.onclose = (ev) => {
+      $("btn-subscribe").disabled = true;
+      $("btn-connect").textContent = I18N.btn_connect;
+      $("btn-connect").disabled = false;
+      $("btn-connect").onclick = doConnect;
+      ws = null;
+      // 1006 = abnormal (network blip / bearer rejected); 1000 = clean.
+      if (!opened) {
+        // ev.code is 1006 in browsers when the upgrade was rejected with
+        // 401/403; we can't read the status. Show bearer-rejected for the
+        // first failure; user can retry to distinguish unreachable.
+        setPill("danger", I18N.state_bearer_rejected);
+      } else if (ev.code === 1000 || ev.wasClean) {
+        setPill("disconnected", I18N.state_disconnected);
+      } else {
+        setPill("danger", I18N.state_server_closed);
+      }
+      refreshSendEnabled();
+    };
+  }
+  function doDisconnect() {
+    if (ws) { try { ws.close(1000); } catch (_) {} }
+  }
+  function doSubscribe() {
+    const room = $("room-input").value.trim();
+    if (!ROOM_RE.test(room)) {
+      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
+        text: "room name does not match ^[a-zA-Z][a-zA-Z0-9_:.-]{0,127}$", meta: "client" });
+      return;
+    }
+    if (subscribedRooms.has(room)) return;
+    const ref = "sub-" + (nextClientRef++);
+    ws.send(JSON.stringify({ kind: "subscribe", room, ref }));
+    // Optimistic — server ack confirms or error reports.
+    subscribedRooms.add(room);
+    renderChips();
+    $("room-input").value = "";
+  }
+  function doUnsub(room) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ kind: "unsubscribe", room }));
+    }
+    subscribedRooms.delete(room); renderChips();
+  }
+  async function doEvict(room) {
+    if (!confirm(I18N.confirm_evict_tpl.replace("{room}", room))) return;
+    try {
+      const res = await fetch(
+        "/drust/admin/tenants/" + encodeURIComponent(tenantId)
+        + "/realtime/rooms/" + encodeURIComponent(room) + "/evict",
+        { method: "POST", credentials: "same-origin" });
+      const j = await res.json();
+      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
+        text: "evicted (subscribers_dropped=" + (j.subscribers_dropped ?? "?") + ")", meta: "admin" });
+    } catch (e) {
+      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
+        text: "evict failed: " + e.message, meta: "admin" });
+    }
+  }
+  function doSend() {
+    if (!validatePayload()) return;
+    const room = $("pub-room").value.trim();
+    if (!ROOM_RE.test(room)) return;
+    let payload; try { payload = JSON.parse($("pub-payload").value); } catch (_) { return; }
+    const bytes = payloadBytes(JSON.stringify(payload));
+    if (bytes > PAYLOAD_MAX) return;
+    const ref = "pub-" + (nextClientRef++);
+    pendingPublishRefs.set(ref, bytes);
+    ws.send(JSON.stringify({ kind: "publish", room, payload, ref }));
+  }
+
+  function handleServerFrame(env) {
+    if (env.kind === "message") {
+      // Stamp our_publish_ref BEFORE rowFromMessage drains it.
+      // We can't actually attach client_ref to a publish frame's
+      // returned message (wire doesn't carry it), so self-tag relies
+      // on matching room+payload heuristics — simplest correct: any
+      // message arriving within 500ms of our publish to that room gets
+      // tagged ←me if pendingPublishRefs has an entry for that room.
+      const ref = pendingPublishRefByRoom(env.room);
+      if (ref) env._our_publish_ref = ref;
+      flushTailRow(rowFromMessage(env));
+    } else if (env.kind === "ack") {
+      // op:subscribe / op:unsubscribe / op:publish acks. publish ack
+      // carries delivered_to.
+      if (env.op === "publish" && typeof env.delivered_to === "number") {
+        flushTailRow({ kind: "info", ts: formatTs(Date.now()), room: env.room || "",
+          text: "delivered to " + env.delivered_to, meta: "ack" });
+      }
+    } else if (env.kind === "error") {
+      handleErrorFrame(env);
+    } else if (env.kind === "pong") {
+      // ignore
+    }
+  }
+  // Heuristic: oldest pending ref for a publish to this room (within 500ms).
+  function pendingPublishRefByRoom(room) {
+    for (const [ref, _bytes] of pendingPublishRefs) {
+      if (ref.startsWith("pub-")) return ref;
+    }
+    return null;
+  }
+  function handleErrorFrame(env) {
+    const code = env.code || "ERROR";
+    const room = env.room || "—";
+    const msg = env.msg || "";
+    if (code === "LAGGED") {
+      const n = (msg.match(/dropped (\d+)/) || [, "?"])[1];
+      flushTailRow({ kind: "lagged", ts: formatTs(Date.now()), room,
+        text: I18N.lagged_tpl.replace("{n}", n).replace("{room}", room), meta: code });
+    } else if (code === "RATE_LIMITED") {
+      const ms = (msg.match(/(\d+)ms/) || [, "1000"])[1];
+      const until = Date.now() + Number(ms);
+      if (until > rateLimitedUntil) rateLimitedUntil = until;
+      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
+        text: code + " · " + msg, meta: code });
+      startRateLimitCountdown();
+    } else {
+      flushTailRow({ kind: "error", ts: formatTs(Date.now()), room,
+        text: code + " · " + msg, meta: code });
+    }
+  }
+  function startRateLimitCountdown() {
+    if (countdownTimer) return;
+    countdownTimer = setInterval(() => {
+      refreshSendEnabled();
+      if (Date.now() >= rateLimitedUntil) {
+        clearInterval(countdownTimer); countdownTimer = null;
+      }
+    }, 250);
+  }
+
+  // -------- pause / clear / scroll --------
+  function togglePause() {
+    paused = !paused;
+    $("btn-pause").textContent = paused ? I18N.btn_resume : I18N.btn_pause;
+    if (!paused) {
+      const dropped = pausedDropped;
+      for (const row of pausedBuffer) appendTailRow(row);
+      pausedBuffer = []; pausedDropped = 0;
+      if (dropped > 0) {
+        appendTailRow({ kind: "info", ts: formatTs(Date.now()), room: "",
+          text: I18N.paused_drop_tpl.replace("{n}", dropped), meta: "buffer" });
+      }
+    }
+  }
+  function clearTail() {
+    $("tail-rows").innerHTML = "";
+    $("tail-empty").hidden = false;
+    pendingNewCount = 0;
+    $("tail-new-pill").hidden = true;
+  }
+  function onTailScroll() {
+    const s = $("tail-scroll");
+    const atBottom = (s.scrollHeight - s.scrollTop - s.clientHeight) < 4;
+    autoScroll = atBottom;
+    if (atBottom) {
+      pendingNewCount = 0;
+      $("tail-new-pill").hidden = true;
+    }
+  }
+  function jumpToBottom() {
+    const s = $("tail-scroll"); s.scrollTop = s.scrollHeight;
+    autoScroll = true; pendingNewCount = 0;
+    $("tail-new-pill").hidden = true;
+  }
+
+  // -------- wire-up --------
+  $("btn-connect").onclick = doConnect;
+  $("btn-subscribe").onclick = doSubscribe;
+  $("room-input").addEventListener("input", () => {
+    $("btn-subscribe").disabled = !(ws && ws.readyState === WebSocket.OPEN && ROOM_RE.test($("room-input").value));
+  });
+  $("room-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !$("btn-subscribe").disabled) doSubscribe();
+  });
+  $("pub-payload").addEventListener("input", refreshSendEnabled);
+  $("pub-payload").addEventListener("blur", validatePayload);
+  $("pub-room").addEventListener("input", refreshSendEnabled);
+  $("btn-send").onclick = doSend;
+  $("btn-pause").onclick = togglePause;
+  $("btn-clear").onclick = clearTail;
+  $("tail-scroll").addEventListener("scroll", onTailScroll);
+  $("tail-new-pill").onclick = jumpToBottom;
+
+  refreshCounter();
+  refreshSendEnabled();
+})();
+</script>
+{% endblock %}
