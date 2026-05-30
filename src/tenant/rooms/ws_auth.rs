@@ -179,4 +179,61 @@ mod tests {
         let r = auth_app().oneshot(req).await.unwrap();
         assert_eq!(body_string(r).await, "none");
     }
+
+    /// v1.31.2 F4 regression: `?token=svc_xxx` on a non-WS / non-SSE route
+    /// MUST NOT have its bearer rewritten into the Authorization header.
+    /// The adapter was previously layered on the entire per-tenant `core`
+    /// router; the fix narrows it to just /realtime + /subscribe.
+    #[tokio::test]
+    async fn non_ws_route_does_not_get_query_token_rewritten() {
+        use axum::routing::post;
+
+        // Router shape mirrors the post-fix `core` shape: adapter mounted
+        // ONLY on /ws; a sibling /records route has no layer.
+        let app: Router = Router::new()
+            .route("/records", post(probe_auth))
+            .route(
+                "/ws",
+                get(probe_auth).layer(axum::middleware::from_fn(
+                    super::ws_query_token_adapter,
+                )),
+            );
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/records?token=svc_secret_xyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            std::str::from_utf8(&body).unwrap(),
+            "none",
+            "POST /records?token=… must NOT see Authorization populated"
+        );
+
+        // /ws should still rewrite (adapter is mounted there).
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ws?token=svc_secret_xyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(
+            std::str::from_utf8(&body).unwrap(),
+            "Bearer svc_secret_xyz",
+            "GET /ws?token=… must rewrite"
+        );
+    }
 }

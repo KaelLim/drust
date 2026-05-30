@@ -337,7 +337,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             get({
                 let b = bus.clone();
                 move |ext, ctx, path| sse::subscribe_handler(b.clone(), ext, ctx, path)
-            }),
+            })
+            .layer(axum::middleware::from_fn(
+                rooms::ws_auth::ws_query_token_adapter,
+            )),
         )
         .route(
             "/t/{tenant}/rooms/{room}",
@@ -362,7 +365,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     cfg: state.rooms_cfg.clone(),
                 };
                 move |ctx, path, ws| rooms::ws::ws_handler(pc.clone(), ctx, path, ws)
-            }),
+            })
+            .layer(axum::middleware::from_fn(
+                rooms::ws_auth::ws_query_token_adapter,
+            )),
         )
         .route("/t/{tenant}/query", post(query_endpoint::query_handler))
         .route(
@@ -427,14 +433,6 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             auth_state.clone(),
             router::bearer_auth_layer,
-        ))
-        // v1.31 — query-string-to-Authorization adapter applied OUTSIDE
-        // bearer_auth_layer so `?token=` is rewritten BEFORE auth runs.
-        // Applies to all per-tenant routes (cheap noop when no `?token=`);
-        // browsers using EventSource at `/records/<coll>/subscribe` also
-        // benefit. Token strip from URI happens before tracing spans.
-        .layer(axum::middleware::from_fn(
-            rooms::ws_auth::ws_query_token_adapter,
         ))
         .with_state(auth_state.clone());
 
