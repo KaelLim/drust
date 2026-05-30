@@ -1,3 +1,33 @@
+## [1.31.1] — 2026-05-30
+
+### Fixed
+
+- **F1** — `cargo check --tests` compile break in `tests/mcp_exploration.rs` and
+  `tests/admin_users.rs`. v1.31.0 widened `McpRegistry::with_bus_and_storage`
+  from 10 to 13 args; two test call sites were not updated. Append the three
+  new args via `RoomBus::new()` + `RoomsConfig::test_defaults().bucket()` +
+  `RoomsConfig::test_defaults()`.
+- **F2** — `POST /admin/tenants/{id}/realtime/evict-all` returned
+  `rooms_evicted: null`. `RoomBus::evict_tenant` returns `()`; the handler
+  bound the unit value into the JSON field. Snapshot `tenant_channel_count`
+  before the evict call.
+- **F11** — Admin "evict all WebSocket subscribers" on the English locale
+  silently destroyed every subscriber without showing the confirmation
+  dialog. The string `"… this tenant's broadcast rooms …"` was inlined into
+  an `onsubmit="return confirm('…')"` attribute; Askama escapes `'` to
+  `&#39;` which the browser parses back to `'`, breaking the JS string.
+  Rewritten to avoid the apostrophe.
+- **F13** — Broadcast rooms sweeper used `tokio::time::interval` with the
+  default `MissedTickBehavior::Burst`. After VM suspend/resume, this fires
+  N catch-up `tick()` events back-to-back. Set `MissedTickBehavior::Skip`
+  to preserve "every N seconds" semantics.
+
+### Compatibility
+
+None breaking. `rooms_evicted: null` → `rooms_evicted: <integer>` restores
+the documented response contract; clients reading the field as nullable
+continue to work.
+
 ## v1.31.0 — 2026-05-30
 
 Broadcast rooms — WebSocket multiplex publish/subscribe for tenant
