@@ -1,3 +1,39 @@
+## v1.31.7 — 2026-05-30
+
+### Fixed
+
+- **WebSocket / SSE `?token=` auth broken since v1.31.2** — browsers'
+  native WebSocket and EventSource APIs cannot set custom headers, so
+  drust accepts the bearer in `?token=<value>` and rewrites it into
+  `Authorization` via the `ws_query_token_adapter` middleware. v1.31.2
+  F4 moved the adapter from a router-level outer layer to a per-route
+  inner layer to avoid auto-rewriting `?token=` on non-WS routes —
+  but reversed its position relative to `bearer_auth_layer` (which is
+  applied router-level → runs OUTERMOST). Every WS / SSE upgrade with
+  `?token=` was rejected as `UNAUTHENTICATED` before the adapter
+  could rewrite. The `tests/rooms_ws.rs` integration suite that would
+  have caught this was `#[ignore]`d due to tokio runtime contention
+  (see file header), and the unit tests in `ws_auth.rs` exercised the
+  adapter in isolation. The Broadcast Inspector shipped in v1.31.5
+  surfaced the bug on first browser smoke. **Fix:** isolate the two
+  affected routes (`/t/<id>/realtime` + `/t/<id>/records/<coll>/subscribe`)
+  in a dedicated `ws_router` sub-router with `bearer_auth_layer`
+  INNER + `ws_query_token_adapter` OUTER, then `.merge()` with the
+  main `core` router. New regression test
+  `ws_subrouter_layer_order_lets_query_token_reach_auth` in
+  `src/tenant/rooms/ws_auth.rs` pins both the post-fix shape (200
+  OK) and the buggy pre-fix shape (401) so the bug class can't
+  silently re-regress.
+
+### Changed
+
+- **Publish form textarea uses `.textarea` class instead of `.input`**
+  — `.input` is `padding: 0 11px` (designed for single-line height-34px
+  inputs), which made the textarea content stick to the top edge.
+  `.textarea` is `padding: 10px 12px` + line-height 1.55 + mono font
+  by default — the existing design-system class for this exact
+  purpose.
+
 ## v1.31.6 — 2026-05-30
 
 ### Fixed

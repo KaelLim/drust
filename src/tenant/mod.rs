@@ -332,16 +332,12 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     }
                 }),
         )
-        .route(
-            "/t/{tenant}/records/{coll}/subscribe",
-            get({
-                let b = bus.clone();
-                move |ext, ctx, path| sse::subscribe_handler(b.clone(), ext, ctx, path)
-            })
-            .layer(axum::middleware::from_fn(
-                rooms::ws_auth::ws_query_token_adapter,
-            )),
-        )
+        // /t/{tenant}/records/{coll}/subscribe lives on `ws_router` below,
+        // NOT on `core` — its outer layer must be `ws_query_token_adapter`
+        // (running BEFORE bearer_auth_layer) so browsers can pass the bearer
+        // via `?token=`. Keeping it on `core` would put bearer_auth_layer
+        // outermost, which rejects the request with 401 before the adapter
+        // can rewrite the query into an Authorization header.
         .route(
             "/t/{tenant}/rooms/{room}",
             post({
@@ -356,20 +352,8 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             })
             .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
         )
-        .route(
-            "/t/{tenant}/realtime",
-            get({
-                let pc = rooms::PublishCtx {
-                    bus: state.bus_rooms.clone(),
-                    bucket: state.bucket.clone(),
-                    cfg: state.rooms_cfg.clone(),
-                };
-                move |ctx, path, ws| rooms::ws::ws_handler(pc.clone(), ctx, path, ws)
-            })
-            .layer(axum::middleware::from_fn(
-                rooms::ws_auth::ws_query_token_adapter,
-            )),
-        )
+        // /t/{tenant}/realtime lives on `ws_router` below — see the SSE
+        // subscribe note above for the layer-order rationale.
         .route("/t/{tenant}/query", post(query_endpoint::query_handler))
         .route(
             "/t/{tenant}/query/explain",
@@ -485,9 +469,48 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             "/t/{tenant}/oauth/{provider}/callback",
             get(oauth_routes::oauth_callback),
         )
+        .with_state(auth_state.clone());
+
+    // v1.31.7 — WebSocket / SSE sub-router. These two routes accept the
+    // bearer via `?token=` (browsers' native WebSocket / EventSource APIs
+    // can't set custom headers), so the `ws_query_token_adapter` MUST run
+    // BEFORE `bearer_auth_layer` to rewrite the query into an Authorization
+    // header. axum applies router-level `.layer(...)` outermost (= runs
+    // first); per-route `.layer(...)` is INNER (= runs after the outer
+    // router layer). Putting both on `core` reversed the desired order and
+    // every WS upgrade with `?token=` got rejected as `UNAUTHENTICATED`.
+    // The fix: isolate these two routes in their own sub-router, applying
+    // `bearer_auth_layer` INNER + `ws_query_token_adapter` OUTER, then
+    // merge.
+    let ws_router = Router::new()
+        .route(
+            "/t/{tenant}/records/{coll}/subscribe",
+            get({
+                let b = bus.clone();
+                move |ext, ctx, path| sse::subscribe_handler(b.clone(), ext, ctx, path)
+            }),
+        )
+        .route(
+            "/t/{tenant}/realtime",
+            get({
+                let pc = rooms::PublishCtx {
+                    bus: state.bus_rooms.clone(),
+                    bucket: state.bucket.clone(),
+                    cfg: state.rooms_cfg.clone(),
+                };
+                move |ctx, path, ws| rooms::ws::ws_handler(pc.clone(), ctx, path, ws)
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            router::bearer_auth_layer,
+        ))
+        .layer(axum::middleware::from_fn(
+            rooms::ws_auth::ws_query_token_adapter,
+        ))
         .with_state(auth_state);
 
-    let merged = core.merge(files_router).merge(auth_router);
+    let merged = core.merge(files_router).merge(auth_router).merge(ws_router);
     // CORS layer goes OUTSIDE bearer_auth_layer (= applied last) so OPTIONS
     // preflight is intercepted by tower_http before reaching auth, returning
     // 200 + ACA* headers without seeing the bearer token. Real GET/POST/etc.
