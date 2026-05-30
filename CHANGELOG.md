@@ -1,3 +1,39 @@
+## v1.31.9 — 2026-05-30
+
+### Changed
+
+- **Broadcast Inspector — single-room workspace redesign (Supabase
+  style).** First-time-user testing surfaced that the prior layout
+  conflated three things into one page (multi-room subscription
+  manager, publisher, tail) and the labels did not match user
+  expectations: "Subscriptions 0" read as "0 other people are
+  subscribed" rather than "0 rooms I've subscribed to", and the
+  per-chip `Evict` button was a destructive admin op that 99% of
+  users never touch. Rewrote the page as a Supabase-Realtime-Inspector
+  shape:
+  - **Top bar:** Room textbox + `[Connect]` button + connection
+    pill. Connect implicitly subscribes; Disconnect implicitly
+    unsubscribes. Room field locks when connected (to change rooms,
+    Disconnect first).
+  - **Two-column workspace** (≥900px wide): Publish card on the left
+    (~380px), Tail card on the right (fills). Below 900px the grid
+    collapses to a single column.
+  - **Payload textarea + Send disabled until Connect succeeds.**
+    Subscribe ack is the gate event.
+  - **Removed entirely:** the Subscriptions card, per-chip Evict
+    button, Subscriptions count badge. The admin REST endpoint
+    `POST /admin/tenants/<id>/realtime/rooms/<room>/evict` is
+    unchanged — operators who need to drop hung subscribers `curl`
+    directly.
+  - **Connection pill** now reads `connected · room <name>` (was
+    `connected · N rooms` which was confusing in any room count).
+  - **Tail table** drops the `Room` column (single-room session
+    makes it redundant) → 4 columns now: Time / Source / Payload / →.
+  - **LAGGED auto-recovery**: a LAGGED frame now auto-resubscribes
+    to the room transparently (single-room mode means LAGGED
+    otherwise leaves the WS alive but silent forever). Prior UX
+    asked the user to manually unsub + resub.
+
 ## v1.31.8 — 2026-05-30
 
 ### Changed
