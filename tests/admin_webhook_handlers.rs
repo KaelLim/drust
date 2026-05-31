@@ -48,6 +48,14 @@ async fn build_app(tenant_id: &str) -> (Router, std::path::PathBuf, tempfile::Te
     )));
     let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let state = TenantsState::test_default(meta, data_dir.clone(), tenants, mcp, bus, bus_rooms);
+    let admin_profile = drust::mgmt::admin_profile::AdminProfileExt {
+        display_name: Some("root".into()),
+        email: None,
+        picture_url: None,
+        initials: "R".into(),
+        role: "owner".into(),
+        is_owner: true,
+    };
     let app = Router::new()
         .route(
             "/admin/tenants/{id}/_api_keys",
@@ -69,6 +77,8 @@ async fn build_app(tenant_id: &str) -> (Router, std::path::PathBuf, tempfile::Te
             "/admin/tenants/{id}/_webhooks/{wid}/delete",
             post(tenant_webhook_delete_form),
         )
+        .layer(axum::Extension(admin_profile))
+        .layer(axum::Extension(drust::auth::middleware::AdminId(1)))
         .with_state(state);
     (app, data_dir, dir)
 }

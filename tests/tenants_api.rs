@@ -13,6 +13,7 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
     let data_dir = dir.path().to_path_buf();
     let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
+    drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     let tok = create_session(&mut conn, 1, 3600).unwrap();
     let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
         data_dir.clone(),
@@ -122,6 +123,7 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
     let data_dir = dir.path().to_path_buf();
     let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
+    drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     let tok = create_session(&mut conn, 1, 3600).unwrap();
     conn.execute(
         "INSERT INTO tenants (id, name) VALUES ('blog', 'Blog')",

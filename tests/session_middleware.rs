@@ -14,6 +14,7 @@ async fn test_app() -> (Router, String) {
     let dir = tempdir().unwrap();
     let mut conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
     let token = create_session(&mut conn, 1, 3600).unwrap();
     let state = AdminSessionState {
         meta: Arc::new(Mutex::new(conn)),

@@ -247,35 +247,42 @@ async fn password_hash_is_masked_in_system_users_page() {
     let router = state.with_data_dir(data_dir);
     let cookie = login_cookie(&router).await;
 
+    // v1.28: the collection editor fetches rows via POST /_list (FilterAst-
+    // backed JSON), not inline-rendered HTML. Masking lives in the _list
+    // handler — assert against that JSON, which is the surface admins
+    // actually see for _system_users rows.
     let resp = router
         .oneshot(
             Request::builder()
+                .method("POST")
                 .uri(format!(
-                    "/admin/tenants/{TENANT}/collections/_system_users"
+                    "/admin/tenants/{TENANT}/collections/_system_users/_list"
                 ))
                 .header(header::COOKIE, &cookie)
-                .body(Body::empty())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
                 .unwrap(),
         )
         .await
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    let html = body_string(resp).await;
+    let body = body_string(resp).await;
 
     // The email should be visible.
     assert!(
-        html.contains("user@example.com"),
-        "user email should appear in the table"
+        body.contains("user@example.com"),
+        "user email should appear in the _list response; body excerpt:\n{}",
+        &body.chars().take(400).collect::<String>()
     );
-    // The argon2 PHC string must NOT appear anywhere in the HTML.
+    // The argon2 PHC string must NOT appear anywhere in the response.
     assert!(
-        !html.contains("$argon2"),
-        "argon2 PHC string must not appear in HTML — it should be masked"
+        !body.contains("$argon2"),
+        "argon2 PHC string must not appear in masked _list response"
     );
     // The masked sentinel must appear.
     assert!(
-        html.contains('\u{25cf}'),
+        body.contains('\u{25cf}'),
         "masked sentinel (●) must appear in place of password_hash"
     );
 }

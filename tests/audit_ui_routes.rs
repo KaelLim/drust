@@ -85,6 +85,7 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, TestAuditDb, tempf
     let data_dir = dir.path().to_path_buf();
     let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, ADMIN, PWD).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     // Insert a test tenant so the per-tenant route can find it.
     conn.execute(
         "INSERT INTO tenants (id, name) VALUES (?1, ?2)",

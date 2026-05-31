@@ -13,6 +13,7 @@ async fn app() -> axum::Router {
     let data_dir = dir.path().to_path_buf();
     let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "hunter2").unwrap();
+    drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     std::mem::forget(dir);
     let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir, 2));
     let bus = drust::tenant::events::EventBus::new();
