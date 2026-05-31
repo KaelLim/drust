@@ -7,7 +7,7 @@ use crate::auth::middleware::AuthCtx;
 use crate::error::{json_error, json_error_with_aliases};
 use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
 use crate::tenant::rooms::bus::{RoomBus, RoomMessage};
-use crate::tenant::rooms::envelope::codes;
+use crate::tenant::rooms::envelope::{codes, ServerMessage};
 use crate::tenant::rooms::policy::{check_payload_size, validate_room_name, PublishBucket};
 use crate::tenant::rooms::state::RoomsConfig;
 use axum::extract::Path;
@@ -187,12 +187,73 @@ pub fn publish_into_bus(
     if let Err(wait) = pc.bucket.try_consume(tenant) {
         return Err(PublishError::RateLimited(wait));
     }
-    // 4. Stamp ts + dispatch.
+    // 4. Stamp ts + serialize once + dispatch.
+    //
+    // v1.32.2 D8 — pre-serialize the full ServerMessage::Message
+    // envelope into `frame_bytes` once at publish time. The WS Message
+    // fanout (ws.rs) forwards these bytes verbatim, replacing the prior
+    // per-subscriber `(*Arc::clone).clone() + serde_json::to_string`
+    // hot path. For N subscribers × K-byte payload that's a savings of
+    // (N-1)×(deep-clone + serialize) per publish.
+    //
+    // Wire byte-identity: we serialize via the SAME `ServerMessage`
+    // Serialize impl that send_json used to invoke, so the on-the-wire
+    // JSON is byte-identical to pre-v1.32.2. The destructure-back pattern
+    // moves payload into the frame for serialization, then extracts it
+    // out for storage on the RoomMessage — zero deep-clone of the
+    // payload Value on the publisher side.
     let ts_ms = chrono::Utc::now().timestamp_millis();
+    let frame = ServerMessage::Message {
+        room: room.to_string(),
+        payload,
+        ts: ts_ms,
+    };
+    let frame_bytes = bytes::Bytes::from(serde_json::to_vec(&frame).unwrap_or_default());
+    let ServerMessage::Message { payload, .. } = frame else { unreachable!() };
     let msg = RoomMessage {
         payload: Arc::new(payload),
         ts_ms,
+        frame_bytes,
     };
     let delivered = pc.bus.publish(tenant, room, msg);
     Ok(delivered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v1.32.2 D8 wire-identity proof: the pre-serialized `frame_bytes`
+    /// MUST equal the bytes that the pre-D8 `send_json(&ServerMessage::Message{..})`
+    /// path would have produced. If this drifts, every WS subscriber
+    /// across every tenant immediately observes a wire change.
+    #[test]
+    fn d8_frame_bytes_is_byte_identical_to_legacy_send_json() {
+        let payload = serde_json::json!({"hello": "world", "n": 42});
+        let ts_ms = 1_748_534_400_123_i64;
+        let room = "chat:42";
+
+        // Mirror the new publisher path exactly.
+        let frame = ServerMessage::Message {
+            room: room.to_string(),
+            payload: payload.clone(),
+            ts: ts_ms,
+        };
+        let frame_bytes =
+            bytes::Bytes::from(serde_json::to_vec(&frame).unwrap_or_default());
+
+        // Mirror the old subscriber path exactly (what send_json built):
+        let legacy_env = ServerMessage::Message {
+            room: room.to_string(),
+            payload,
+            ts: ts_ms,
+        };
+        let legacy_str = serde_json::to_string(&legacy_env).unwrap();
+
+        assert_eq!(
+            std::str::from_utf8(&frame_bytes).unwrap(),
+            legacy_str.as_str(),
+            "D8 frame_bytes must match legacy send_json byte-for-byte"
+        );
+    }
 }

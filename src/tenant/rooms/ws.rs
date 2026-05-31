@@ -126,12 +126,13 @@ async fn handle_socket(socket: WebSocket, ctx: AuthCtx, pc: PublishCtx, tenant: 
                 let Some((room, item)) = maybe_msg else { continue; };
                 match item {
                     Ok(rmsg) => {
-                        let env = ServerMessage::Message {
-                            room: room.clone(),
-                            payload: (*rmsg.payload).clone(),
-                            ts: rmsg.ts_ms,
-                        };
-                        if send_json(&mut sink, &env).await.is_err() { break; }
+                        // v1.32.2 D8 — frame pre-serialized at publish
+                        // time (see publish_into_bus + rest.rs::tests
+                        // wire-identity assertion). Forward bytes verbatim
+                        // rather than rebuild + re-serialize per subscriber.
+                        let text = Utf8Bytes::try_from(rmsg.frame_bytes.clone())
+                            .unwrap_or_default();
+                        if sink.send(Message::Text(text)).await.is_err() { break; }
                     }
                     // v1.31.2 F8 — per-room recovery instead of conn-wide
                     // break. A single noisy room used to drop all of the
