@@ -4,9 +4,16 @@ use tokio::sync::broadcast;
 
 /// Mirror of [`crate::tenant::events::EventBus`] for ad-hoc broadcast
 /// rooms. Per-tenant in-memory channels keyed by `(tenant_id, room)`.
+///
+/// Nested `DashMap<Arc<str>, DashMap<Arc<str>, _>>` (v1.32.1 D2): the
+/// `publish()` hot path looks up via `&str` directly so no `String`
+/// alloc happens per event; only first-subscribe on a `(tenant, room)`
+/// pair pays the `Arc<str>` clone (amortized across every subsequent
+/// subscriber + every publish on that pair).
 #[derive(Clone, Default)]
 pub struct RoomBus {
-    channels: Arc<DashMap<(String, String), broadcast::Sender<RoomMessage>>>,
+    channels:
+        Arc<DashMap<Arc<str>, DashMap<Arc<str>, broadcast::Sender<RoomMessage>>>>,
 }
 
 /// Carried by the broadcast channel. `payload` is `Arc`-wrapped so
@@ -30,35 +37,38 @@ impl RoomBus {
     /// Returns the receiver count at send time (== `delivered_to`).
     /// 0 receivers ⇒ noop. Send errors are mapped to 0 (channel closed).
     pub fn publish(&self, tenant: &str, room: &str, msg: RoomMessage) -> usize {
-        let key = (tenant.to_string(), room.to_string());
-        if let Some(tx) = self.channels.get(&key) {
-            return tx.send(msg).unwrap_or(0);
+        if let Some(outer) = self.channels.get(tenant) {
+            if let Some(tx) = outer.value().get(room) {
+                return tx.value().send(msg).unwrap_or(0);
+            }
         }
         0
     }
 
     pub fn subscribe(&self, tenant: &str, room: &str) -> broadcast::Receiver<RoomMessage> {
-        let key = (tenant.to_string(), room.to_string());
-        // v1.31.2 F7 — hold the shard write lock across subscribe() so
-        // sweep_empty's retain can't observe a 0-receiver Sender between
-        // insert and Receiver registration. DashMap::entry returns a
-        // RefMut holding the shard's RwLock write half; the lock drops
-        // at end-of-expression. sweep_empty also takes the same shard
-        // write lock per shard via .retain, so they serialise correctly.
-        let entry = self
-            .channels
-            .entry(key)
+        // v1.31.2 F7 (mirrored at v1.32.0 A4 for EventBus) — hold the
+        // shard write lock across subscribe() so sweep_empty's retain
+        // can't observe a 0-receiver Sender between insert and Receiver
+        // registration. Nested map: both the outer entry guard AND the
+        // inner entry guard are held across `.subscribe()` (v1.32.1 D2).
+        // DashMap::entry returns a RefMut holding the shard's RwLock
+        // write half; both guards drop at end-of-expression. sweep_empty
+        // walks the inner map under the same shard lock per shard via
+        // .retain, so they serialise correctly.
+        let outer_entry = self.channels.entry(Arc::<str>::from(tenant)).or_default();
+        let inner_entry = outer_entry
+            .value()
+            .entry(Arc::<str>::from(room))
             .or_insert_with(|| broadcast::channel(BUFFER).0);
-        entry.value().subscribe()
+        inner_entry.value().subscribe()
     }
 
     /// Snapshot of current subscriber count. Used for `ROOM_FULL` gate.
     /// 0 if the channel doesn't exist yet.
     pub fn current_subscriber_count(&self, tenant: &str, room: &str) -> usize {
-        let key = (tenant.to_string(), room.to_string());
         self.channels
-            .get(&key)
-            .map(|tx| tx.receiver_count())
+            .get(tenant)
+            .and_then(|outer| outer.value().get(room).map(|tx| tx.value().receiver_count()))
             .unwrap_or(0)
     }
 
@@ -66,41 +76,63 @@ impl RoomBus {
     /// `RecvError::Closed` on next recv. Called from `soft_delete_tenant`
     /// + admin `DELETE …/realtime/rooms`.
     pub fn evict_tenant(&self, tenant: &str) {
-        self.channels.retain(|(t, _r), _| t != tenant);
+        self.channels.remove(tenant);
     }
 
-    /// Drop one `(tenant, room)` channel.
+    /// Drop one `(tenant, room)` channel. The empty inner DashMap is
+    /// left in place — saves churn on re-subscribe, and `sweep_empty`
+    /// will reclaim it if it stays empty long enough to matter.
     pub fn evict_room(&self, tenant: &str, room: &str) -> bool {
-        let key = (tenant.to_string(), room.to_string());
-        self.channels.remove(&key).is_some()
+        if let Some(outer) = self.channels.get(tenant) {
+            return outer.value().remove(room).is_some();
+        }
+        false
     }
 
     /// Channels currently allocated (tests + admin overview card).
+    /// Sums every inner map's len — empty inner maps contribute 0, so
+    /// post-evict_room residue is invisible to callers.
     pub fn channel_count(&self) -> usize {
-        self.channels.len()
+        self.channels.iter().map(|kv| kv.value().len()).sum()
     }
 
     /// Channels keyed on `tenant` (admin overview per-tenant card).
     pub fn tenant_channel_count(&self, tenant: &str) -> usize {
-        self.channels.iter().filter(|kv| kv.key().0 == tenant).count()
+        self.channels
+            .get(tenant)
+            .map(|outer| outer.value().len())
+            .unwrap_or(0)
     }
 
     /// Sum of subscriber counts across this tenant's channels.
     pub fn tenant_subscriber_count(&self, tenant: &str) -> usize {
         self.channels
-            .iter()
-            .filter(|kv| kv.key().0 == tenant)
-            .map(|kv| kv.value().receiver_count())
-            .sum()
+            .get(tenant)
+            .map(|outer| {
+                outer
+                    .value()
+                    .iter()
+                    .map(|kv| kv.value().receiver_count())
+                    .sum::<usize>()
+            })
+            .unwrap_or(0)
     }
 
     /// Sweeper helper — retain only channels with live receivers.
     /// Called by the 5-minute sweeper task in `main.rs`. Returns the
-    /// number of channels removed.
+    /// number of channels removed. Also reclaims fully-empty outer
+    /// entries (tenants with no remaining rooms).
     pub fn sweep_empty(&self) -> usize {
-        let before = self.channels.len();
-        self.channels.retain(|_, tx| tx.receiver_count() > 0);
-        before - self.channels.len()
+        let mut removed = 0usize;
+        for outer in self.channels.iter() {
+            let before = outer.value().len();
+            outer.value().retain(|_, tx| tx.receiver_count() > 0);
+            removed += before - outer.value().len();
+        }
+        // Reclaim outer entries whose inner map is now empty so
+        // tenant_channel_count etc. don't keep returning the empty husk.
+        self.channels.retain(|_, inner| !inner.is_empty());
+        removed
     }
 }
 

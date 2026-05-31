@@ -21,9 +21,15 @@ impl Event {
     }
 }
 
+/// Nested `DashMap<Arc<str>, DashMap<Arc<str>, _>>` (v1.32.1 D2): the
+/// `publish()` hot path is hit on every record CRUD, so we avoid the
+/// per-call `(String, String)` allocation. Reads pass `&str` directly;
+/// only first-subscribe on a `(tenant, collection)` pair pays the
+/// `Arc<str>` clone (amortized across every subsequent subscriber and
+/// every publish on that pair).
 #[derive(Clone, Default)]
 pub struct EventBus {
-    channels: Arc<DashMap<(String, String), broadcast::Sender<Event>>>,
+    channels: Arc<DashMap<Arc<str>, DashMap<Arc<str>, broadcast::Sender<Event>>>>,
 }
 
 impl EventBus {
@@ -32,25 +38,27 @@ impl EventBus {
     }
 
     pub fn publish(&self, tenant: &str, collection: &str, ev: Event) {
-        let key = (tenant.to_string(), collection.to_string());
-        if let Some(tx) = self.channels.get(&key) {
-            let _ = tx.send(ev);
+        if let Some(outer) = self.channels.get(tenant) {
+            if let Some(tx) = outer.value().get(collection) {
+                let _ = tx.value().send(ev);
+            }
         }
     }
 
     pub fn subscribe(&self, tenant: &str, collection: &str) -> broadcast::Receiver<Event> {
-        let key = (tenant.to_string(), collection.to_string());
         // v1.32 A4 — hold the shard write lock across subscribe() so a
         // parallel evict_collection cannot remove the entry between
         // or_insert_with and Receiver registration. Mirror of the v1.31.2
-        // F7 fix in rooms/bus.rs. DashMap::entry returns a RefMut holding
-        // the shard's RwLock write half; drop happens after .subscribe()
-        // completes, so evict_collection's .remove() serialises correctly.
-        let entry = self
-            .channels
-            .entry(key)
+        // F7 fix in rooms/bus.rs. Nested map (v1.32.1 D2): BOTH the outer
+        // entry guard AND the inner entry guard are held across the
+        // `.subscribe()` call so neither a tenant-level nor a
+        // collection-level evict can race the Receiver registration.
+        let outer_entry = self.channels.entry(Arc::<str>::from(tenant)).or_default();
+        let inner_entry = outer_entry
+            .value()
+            .entry(Arc::<str>::from(collection))
             .or_insert_with(|| broadcast::channel(256).0);
-        entry.value().subscribe()
+        inner_entry.value().subscribe()
     }
 
     /// Drop every broadcast channel for `tenant`. Existing subscribers
@@ -58,22 +66,25 @@ impl EventBus {
     /// soft_delete_tenant path so a deleted tenant doesn't leave channels
     /// hanging in memory until process restart.
     pub fn evict_tenant(&self, tenant: &str) {
-        self.channels.retain(|(t, _coll), _| t != tenant);
+        self.channels.remove(tenant);
     }
 
     /// Drop the broadcast channel for one `(tenant, collection)`. Existing
     /// subscribers receive `Closed` on their next recv. Called from the
     /// realtime-toggle path so disabling broadcast on a collection takes
-    /// effect immediately for in-flight SSE connections.
+    /// effect immediately for in-flight SSE connections. The empty inner
+    /// DashMap is left in place — saves churn on re-subscribe.
     pub fn evict_collection(&self, tenant: &str, collection: &str) {
-        let key = (tenant.to_string(), collection.to_string());
-        self.channels.remove(&key);
+        if let Some(outer) = self.channels.get(tenant) {
+            outer.value().remove(collection);
+        }
     }
 
     /// How many `(tenant, collection)` channels are currently allocated.
-    /// Test/observability hook.
+    /// Test/observability hook. Sums every inner map's len — empty inner
+    /// maps contribute 0 so post-evict residue is invisible to callers.
     pub fn channel_count(&self) -> usize {
-        self.channels.len()
+        self.channels.iter().map(|kv| kv.value().len()).sum()
     }
 }
 
