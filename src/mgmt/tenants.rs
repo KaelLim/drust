@@ -428,7 +428,7 @@ pub async fn create_tenant_json(
 
     // v1.15.0 — immediate stats sample so the new row renders with real
     // numbers on the next dashboard load, without waiting for a sampler tick.
-    crate::mgmt::stats::sample_one(&state.session.meta, &state.data_dir, &id).await;
+    crate::mgmt::stats::sample_one(&state.session.meta, &state.tenants, &id).await;
 
     // Storage is fully shared (two buckets host-wide: `public` + `private`);
     // per-tenant bucket provisioning is no longer needed. The new tenant's
@@ -449,7 +449,7 @@ pub async fn create_tenant_form(
     match created {
         Ok(_) => {
             // v1.15.0 immediate sample so the new row renders with stats next load.
-            crate::mgmt::stats::sample_one(&state.session.meta, &state.data_dir, &id).await;
+            crate::mgmt::stats::sample_one(&state.session.meta, &state.tenants, &id).await;
             Redirect::to("/drust/admin/tenants").into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
