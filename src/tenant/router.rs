@@ -42,6 +42,12 @@ pub struct TenantAuthState {
     /// adapters pointed at a local `spawn_fake_google()` HTTP server.
     pub oauth_adapter_override:
         Arc<std::collections::HashMap<String, Arc<dyn crate::oauth::provider::OauthProvider>>>,
+    /// HMAC-SHA256 key used to bind per-tenant OAuth `state` to the
+    /// frontend's `redirect_uri`. Generated once at boot (32 random bytes,
+    /// in-memory only). A restart invalidates any in-flight OAuth
+    /// round-trips — acceptable given the 5-minute cookie TTL on PKCE.
+    /// See [`crate::oauth::state::TenantOauthStateToken`] for the wire format.
+    pub tenant_oauth_state_secret: Arc<[u8; 32]>,
 }
 
 /// Test-only constructor available in debug builds (integration tests run
@@ -81,6 +87,10 @@ impl TenantAuthState {
             oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
             public_url: String::new(),
             oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
+            // Tests use a fixed secret: differences between TenantAuthState
+            // instances would break the OAuth chain in any test that calls
+            // /start and /callback on the same router (which they all do).
+            tenant_oauth_state_secret: Arc::new(*b"drust-test-state-secret-32bytesx"),
         }
     }
 }
