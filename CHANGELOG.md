@@ -1,3 +1,58 @@
+## v1.32.4 — 2026-05-31
+
+### Performance
+
+- **D10: webhook reqwest::Client reuse with per-Request DNS.**
+  Pre-D10 each delivery attempt rebuilt a `reqwest::Client` inside
+  the per-attempt loop in `deliver_for_test` — rustls context +
+  connection pool state + `dns_resolver` wiring (~5–20ms cold per
+  build). At N webhooks × 4 attempts that was 4N constructions per
+  CRUD event; Client setup dominated dispatch CPU at moderate
+  webhook volume.
+
+  Now `WebhookDispatcher` holds a `cached_client: Arc<reqwest::Client>`
+  built once at construction with `pool_max_idle_per_host(0)` (no
+  keep-alive — every request opens a fresh TCP connection, which
+  forces a fresh `dns_resolver` call) and the resolver
+  (`PinnedPublicResolver` in production, the test override if
+  injected) baked in. `dispatch` threads `cached_client.clone()`
+  through the spawn chain to `deliver`; `deliver_inner` (the
+  renamed body of `deliver_for_test`) uses the shared client on the
+  production fast path and falls back to per-attempt construction
+  for loopback-dev hosts (127.0.0.1 / localhost / ::1).
+
+  **DNS-rebind defense preserved** by:
+  1. `pool_max_idle_per_host(0)` on the cached client (fresh TCP
+     per Request).
+  2. `dns_resolver(ResolverHandle(PinnedPublicResolver))` baked
+     into the cached client — called on every connect, applies the
+     public-IP filter to every attempt.
+  3. `redirect::Policy::none()` — no in-band redirect can smuggle
+     past the resolver.
+  4. `webhook_resolver::resolve_public` wrap-first pre-check
+     (unchanged) provides the second layer; the register-time
+     `check_url` provides the third.
+
+  Research note proving reqwest 0.12.28's `DynResolver` is called
+  per-Request (not per-Client cached):
+  `docs/superpowers/notes/2026-05-30-reqwest-resolver-lifecycle.md`.
+
+  `deliver_for_test` stays public + signature-stable for the 10+
+  test callsites; it now wraps `deliver_inner` with `None` so every
+  test keeps building per-attempt Clients with its injected
+  resolver — no test behaviour change.
+
+  Wire shape on the receiver: unchanged. HMAC signature, headers,
+  body, HTTP status, retry classification — all unchanged.
+
+### Notes
+
+- 444 lib pass. `webhook_dns_rebind` (DNS-rebind regression
+  critical) 6/6 pass. `webhook_url_validation` 6/6 pass. `webhooks`
+  17/17 pass. 41 pre-existing integration failures unchanged.
+
+---
+
 ## v1.32.3 — 2026-05-31
 
 ### Performance
