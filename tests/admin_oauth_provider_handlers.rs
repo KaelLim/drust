@@ -37,6 +37,14 @@ fn build_app() -> (Router, std::path::PathBuf, tempfile::TempDir) {
     )));
     let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let state = TenantsState::test_default(meta, data_dir.clone(), tenants, mcp, bus, bus_rooms);
+    let admin_profile = drust::mgmt::admin_profile::AdminProfileExt {
+        display_name: Some("root".into()),
+        email: None,
+        picture_url: None,
+        initials: "R".into(),
+        role: "owner".into(),
+        is_owner: true,
+    };
     let app = Router::new()
         .route(
             "/admin/tenants/{id}/_oauth_providers",
@@ -46,6 +54,8 @@ fn build_app() -> (Router, std::path::PathBuf, tempfile::TempDir) {
             "/admin/tenants/{id}/_oauth_providers/{provider}/delete",
             post(tenant_oauth_provider_delete),
         )
+        .layer(axum::Extension(admin_profile))
+        .layer(axum::Extension(drust::auth::middleware::AdminId(1)))
         .with_state(state);
     (app, data_dir, dir)
 }

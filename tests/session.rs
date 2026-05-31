@@ -6,6 +6,7 @@ fn make_db() -> (tempfile::TempDir, rusqlite::Connection) {
     let dir = tempdir().unwrap();
     let mut conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
     (dir, conn)
 }
 

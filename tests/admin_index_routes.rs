@@ -23,6 +23,7 @@ async fn app_with_tenant_and_coll() -> (axum::Router, tempfile::TempDir) {
     let data_dir = dir.path().to_path_buf();
     let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, ADMIN, PWD).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     conn.execute(
         "INSERT INTO tenants (id, name) VALUES (?1, ?2)",
         rusqlite::params!["acme", "Acme Inc"],

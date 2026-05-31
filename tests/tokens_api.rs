@@ -13,6 +13,7 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
     let data = dir.path().to_path_buf();
     let mut conn = open_meta(&data.join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tok = create_session(&mut conn, 1, 3600).unwrap();
     conn.execute("INSERT INTO tenants (id, name) VALUES ('blog', 'b')", [])
         .unwrap();
