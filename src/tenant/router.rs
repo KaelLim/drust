@@ -127,12 +127,14 @@ pub async fn bearer_auth_layer(
     next: Next,
 ) -> Response {
     let start = Instant::now();
-    let method_for_audit = req.method().clone();
-    let path_for_audit = req.uri().path().to_string();
-    let tenant_for_audit = params.get("tenant").cloned().unwrap_or_default();
-    let hint_for_audit = extract_bearer(&req)
-        .map(|b| token_hint(&b))
-        .unwrap_or_else(|| "-".to_string());
+    // v1.32.1 D5: defer alloc to audit-emit branch — cheap captures only pre-next.run.
+    // Method is small enum-like and Uri is internally Arc-shared (path-and-query),
+    // so both clone in O(1). The bearer needs one alloc to outlive `next.run(req)`
+    // (which consumes `req`); the auth path inside the closure re-extracts on its own.
+    // path / tenant / hint String allocs are pushed below to the audit-emit site.
+    let method_captured = req.method().clone();
+    let uri_captured = req.uri().clone();
+    let bearer_captured: Option<String> = extract_bearer(&req);
 
     // Resolved during auth; captured here so the audit-emit code below can
     // attach `auth_kind` / `auth_user_id` without re-reading request extensions
@@ -337,10 +339,19 @@ pub async fn bearer_auth_layer(
     .await;
 
     let duration_ms = start.elapsed().as_millis() as u64;
+    // v1.32.1 D5: deferred String allocs — only computed here, post-next.run.
+    // The hot path inside the closure (auth lookup, handler dispatch) no longer
+    // pays for these; the C1 denial counters use static labels and don't need them.
+    let path_for_audit = uri_captured.path().to_string();
+    let tenant_for_audit = params.get("tenant").cloned().unwrap_or_default();
+    let hint_for_audit = bearer_captured
+        .as_deref()
+        .map(token_hint)
+        .unwrap_or_else(|| "-".to_string());
     let op_path = path_for_audit
         .strip_prefix(&format!("/t/{tenant_for_audit}"))
         .unwrap_or(&path_for_audit);
-    let op = format!("{method_for_audit} {op_path}");
+    let op = format!("{method_captured} {op_path}");
     let status = resp.status();
     // Read handler-supplied extras BEFORE consuming `resp`.
     let handler_extra: Option<crate::safety::audit::AuditExtra> = resp
