@@ -1,3 +1,59 @@
+## v1.32.3 — 2026-05-31
+
+### Performance
+
+- **D9: bearer_auth_layer meta lock × 4 → 1 CTE.** Pre-D9 every
+  tenant request acquired the `meta.sqlite` mutex 3–4 times in
+  sequence: tenant-exists check, per-admin PAT lookup, shared
+  service/anon tokens lookup, and a 4th post-handler lock for the
+  admin email snapshot in the audit branch. `meta` is the single
+  global serializer for ALL tenant traffic — under cross-tenant load
+  this was the top contention point.
+
+  Now: one CTE returns `(tenant_ok, kind, pat_token_id,
+  pat_admin_id, bound_tenant, email)` in a single round-trip.
+  PAT and service/anon use different hash schemes
+  (`base64-no-pad` vs `hex`) so the two UNION branches can never
+  match the same bearer — `LIMIT 1` on the scalar subqueries is
+  defensive. PAT prefix check stays in Rust to avoid wasting a hash
+  compute on non-PAT bearers. The email snapshot is now carried to
+  the audit branch via a captured local rather than re-locking
+  meta after `next.run`.
+
+  Wire shape preserved:
+  - 401 UNAUTHENTICATED for bearer that doesn't resolve.
+  - 404 TENANT_NOT_FOUND for invalid tenant.
+  - 404 TENANT_NOT_FOUND for cross-tenant bearer (token matched
+    but for a DIFFERENT tenant — Rust-side `bound_tenant` guard
+    preserves pre-D9 behavior).
+  - AuthCtx variants emitted: unchanged.
+  - bearer_denied_total counter labels: unchanged.
+
+  User-session path (`_system_sessions` via pool reader, separate
+  connection — not covered by the meta CTE) is unchanged. Resolved
+  AFTER the CTE for clarity; user-session bearers whose hash
+  doesn't match any meta row still take precedence over the None
+  CTE result.
+
+### Tests
+
+- **`tests/meta_lock_contention.rs` (D9 pre-work).** 1000
+  concurrent oneshot requests with mixed bearer shapes (valid
+  service / valid anon / invalid bearer / invalid tenant) against
+  a single tenant. Asserts zero false-allow + zero false-deny.
+  Passes pre-D9 (0.57s) AND post-D9 (0.92s) — pins the auth-layer
+  correctness invariant across the refactor.
+
+### Notes
+
+- 444 lib tests pass (unchanged). Targeted auth integration
+  (admin_pat_bearer, auth_bearer_resolution, auth_me,
+  auth_mcp_blocked, auth_audit, authorizer) all pass.
+  41 pre-existing integration failures verified to fail identically
+  pre- and post-D9 — zero new regressions.
+
+---
+
 ## v1.32.2 — 2026-05-31
 
 ### Performance
