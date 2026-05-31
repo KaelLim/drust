@@ -254,9 +254,12 @@ async fn tenant_oauth_happy_path_google() {
     assert_eq!(start_resp.status(), StatusCode::FOUND);
     let state = extract_set_cookie(&start_resp, "drust_t_oauth_state").expect("state cookie");
     let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce cookie");
-    let red = extract_set_cookie(&start_resp, "drust_t_oauth_redirect_uri")
-        .expect("redirect cookie");
-    assert_eq!(red, frontend);
+    // v1.32.1 (D7): redirect_uri is no longer round-tripped via cookie —
+    // it lives inside the HMAC-bound `state` value. No `red` cookie to read.
+    assert!(
+        extract_set_cookie(&start_resp, "drust_t_oauth_redirect_uri").is_none(),
+        "redirect_uri cookie was retired in v1.32.1 D7"
+    );
 
     let cb_uri = format!("/t/{tid}/oauth/google/callback?code=CODE-G&state={state}");
     let cb_resp = app
@@ -265,9 +268,7 @@ async fn tenant_oauth_happy_path_google() {
                 .uri(&cb_uri)
                 .header(
                     header::COOKIE,
-                    format!(
-                        "drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}; drust_t_oauth_redirect_uri={red}"
-                    ),
+                    format!("drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}"),
                 )
                 .body(Body::empty())
                 .unwrap(),
@@ -315,8 +316,6 @@ async fn tenant_oauth_happy_path_github() {
     assert_eq!(start_resp.status(), StatusCode::FOUND);
     let state = extract_set_cookie(&start_resp, "drust_t_oauth_state").expect("state cookie");
     let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce cookie");
-    let red = extract_set_cookie(&start_resp, "drust_t_oauth_redirect_uri")
-        .expect("redirect cookie");
 
     let cb_uri = format!("/t/{tid}/oauth/github/callback?code=CODE-H&state={state}");
     let cb_resp = app
@@ -325,9 +324,7 @@ async fn tenant_oauth_happy_path_github() {
                 .uri(&cb_uri)
                 .header(
                     header::COOKIE,
-                    format!(
-                        "drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}; drust_t_oauth_redirect_uri={red}"
-                    ),
+                    format!("drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}"),
                 )
                 .body(Body::empty())
                 .unwrap(),
@@ -352,7 +349,7 @@ async fn tenant_oauth_state_mismatch_rejected() {
                 .uri(&cb_uri)
                 .header(
                     header::COOKIE,
-                    "drust_t_oauth_state=ORIGINAL; drust_t_oauth_pkce=V; drust_t_oauth_redirect_uri=https://app.example.com/auth/callback",
+                    "drust_t_oauth_state=ORIGINAL; drust_t_oauth_pkce=V",
                 )
                 .body(Body::empty())
                 .unwrap(),
@@ -447,8 +444,6 @@ async fn drive_callback(
         .unwrap();
     let state = extract_set_cookie(&start_resp, "drust_t_oauth_state").expect("state cookie");
     let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce cookie");
-    let red = extract_set_cookie(&start_resp, "drust_t_oauth_redirect_uri")
-        .expect("redirect cookie");
 
     let cb_uri = format!("/t/{tid}/oauth/{provider}/callback?code=C&state={state}");
     app.clone()
@@ -457,9 +452,7 @@ async fn drive_callback(
                 .uri(&cb_uri)
                 .header(
                     header::COOKIE,
-                    format!(
-                        "drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}; drust_t_oauth_redirect_uri={red}"
-                    ),
+                    format!("drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}"),
                 )
                 .body(Body::empty())
                 .unwrap(),
@@ -553,7 +546,6 @@ async fn tenant_oauth_toctou_invalid_redirect_at_callback() {
     assert_eq!(start_resp.status(), StatusCode::FOUND);
     let state = extract_set_cookie(&start_resp, "drust_t_oauth_state").expect("state");
     let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce");
-    let red = extract_set_cookie(&start_resp, "drust_t_oauth_redirect_uri").expect("red");
 
     // 3. Admin shrinks the allowlist out from under the in-flight request.
     let tconn = drust::storage::tenant_db::open_write(dir.path(), &tid).unwrap();
@@ -568,7 +560,9 @@ async fn tenant_oauth_toctou_invalid_redirect_at_callback() {
     drop(tconn);
 
     // 4. /callback must 400 with oauth_invalid_redirect — Step 4 fires
-    //    AFTER state+PKCE checks but BEFORE token exchange.
+    //    AFTER state+PKCE checks but BEFORE token exchange. The recovered
+    //    redirect_uri from the state envelope is checked against the
+    //    fresh-from-DB allowlist (TOCTOU-safe).
     let cb_uri = format!("/t/{tid}/oauth/google/callback?code=C&state={state}");
     let cb_resp = app
         .oneshot(
@@ -576,9 +570,7 @@ async fn tenant_oauth_toctou_invalid_redirect_at_callback() {
                 .uri(&cb_uri)
                 .header(
                     header::COOKIE,
-                    format!(
-                        "drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}; drust_t_oauth_redirect_uri={red}"
-                    ),
+                    format!("drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}"),
                 )
                 .body(Body::empty())
                 .unwrap(),
@@ -1068,10 +1060,20 @@ async fn tenant_oauth_spin_up_compiles_and_serves_start() {
     assert_eq!(resp.status(), StatusCode::FOUND);
     assert!(extract_set_cookie(&resp, "drust_t_oauth_state").is_some());
     assert!(extract_set_cookie(&resp, "drust_t_oauth_pkce").is_some());
-    assert_eq!(
-        extract_set_cookie(&resp, "drust_t_oauth_redirect_uri").as_deref(),
-        Some(frontend)
+    // v1.32.1 (D7): the redirect_uri cookie was retired; the value is now
+    // embedded in `state` via HMAC. The state cookie must decode to the
+    // frontend URI under the same secret used by /callback.
+    assert!(
+        extract_set_cookie(&resp, "drust_t_oauth_redirect_uri").is_none(),
+        "redirect_uri cookie was retired"
     );
+    let state = extract_set_cookie(&resp, "drust_t_oauth_state").unwrap();
+    let token = drust::oauth::state::TenantOauthStateToken::decode(
+        &state,
+        b"drust-test-state-secret-32bytesx",
+    )
+    .expect("state must decode under the test secret");
+    assert_eq!(token.redirect_uri, frontend);
     let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
     assert!(loc.contains("/authorize?"), "loc={loc}");
 }
@@ -1172,15 +1174,13 @@ async fn tenant_oauth_concurrent_callbacks_same_email() {
     );
     let start_a = start_a.unwrap();
     let start_b = start_b.unwrap();
-    let (state_a, pkce_a, red_a) = (
+    let (state_a, pkce_a) = (
         extract_set_cookie(&start_a, "drust_t_oauth_state").unwrap(),
         extract_set_cookie(&start_a, "drust_t_oauth_pkce").unwrap(),
-        extract_set_cookie(&start_a, "drust_t_oauth_redirect_uri").unwrap(),
     );
-    let (state_b, pkce_b, red_b) = (
+    let (state_b, pkce_b) = (
         extract_set_cookie(&start_b, "drust_t_oauth_state").unwrap(),
         extract_set_cookie(&start_b, "drust_t_oauth_pkce").unwrap(),
-        extract_set_cookie(&start_b, "drust_t_oauth_redirect_uri").unwrap(),
     );
 
     let cb_a = format!("/t/{tid}/oauth/google/callback?code=CODE-A&state={state_a}");
@@ -1189,9 +1189,7 @@ async fn tenant_oauth_concurrent_callbacks_same_email() {
         .uri(&cb_a)
         .header(
             header::COOKIE,
-            format!(
-                "drust_t_oauth_state={state_a}; drust_t_oauth_pkce={pkce_a}; drust_t_oauth_redirect_uri={red_a}"
-            ),
+            format!("drust_t_oauth_state={state_a}; drust_t_oauth_pkce={pkce_a}"),
         )
         .body(Body::empty())
         .unwrap();
@@ -1199,9 +1197,7 @@ async fn tenant_oauth_concurrent_callbacks_same_email() {
         .uri(&cb_b)
         .header(
             header::COOKIE,
-            format!(
-                "drust_t_oauth_state={state_b}; drust_t_oauth_pkce={pkce_b}; drust_t_oauth_redirect_uri={red_b}"
-            ),
+            format!("drust_t_oauth_state={state_b}; drust_t_oauth_pkce={pkce_b}"),
         )
         .body(Body::empty())
         .unwrap();
@@ -1439,5 +1435,241 @@ async fn tenant_oauth_success_carries_auth_kind_user() {
         row["auth_kind"].as_str().unwrap_or(""),
         "user",
         "tenant OAuth success row must carry auth_kind=user: {row}"
+    );
+}
+
+// ---------- v1.32.1 D7: state ↔ redirect_uri HMAC binding ----------
+
+/// Two parallel OAuth starts in different tabs, EACH for a different
+/// allowlisted frontend. Pre-D7 the second /start clobbered the first's
+/// `drust_t_oauth_redirect_uri` cookie, so callback A redirected to B's
+/// frontend. Post-D7 each /start mints its own HMAC-bound state envelope
+/// carrying its own URI — the redirects must NOT cross.
+#[tokio::test]
+async fn two_parallel_oauth_starts_each_returns_to_their_own_redirect() {
+    let fake = spawn_fake_google().await;
+    *fake.script.lock().await = FakeScript {
+        email: "alice@example.com".into(),
+        email_verified: true,
+        provider_user_id: "sub-parallel".into(),
+        picture: "https://example.test/avatar.png".into(),
+    };
+    // Bootstrap with TWO allowlisted frontends.
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake_opts(
+        &fake,
+        true,
+        &[
+            "https://app-a.example.com/auth/callback",
+            "https://app-b.example.com/auth/callback",
+        ],
+    )
+    .await;
+    let frontend_a = "https://app-a.example.com/auth/callback";
+    let frontend_b = "https://app-b.example.com/auth/callback";
+
+    // Two independent /start calls — distinct frontends.
+    let start_uri_a = format!(
+        "/t/{tid}/oauth/google/start?redirect_uri={u}",
+        u = urlencoding::encode(frontend_a)
+    );
+    let start_uri_b = format!(
+        "/t/{tid}/oauth/google/start?redirect_uri={u}",
+        u = urlencoding::encode(frontend_b)
+    );
+    let (start_a, start_b) = tokio::join!(
+        app.clone()
+            .oneshot(Request::builder().uri(&start_uri_a).body(Body::empty()).unwrap()),
+        app.clone()
+            .oneshot(Request::builder().uri(&start_uri_b).body(Body::empty()).unwrap()),
+    );
+    let start_a = start_a.unwrap();
+    let start_b = start_b.unwrap();
+    assert_eq!(start_a.status(), StatusCode::FOUND);
+    assert_eq!(start_b.status(), StatusCode::FOUND);
+    let state_a = extract_set_cookie(&start_a, "drust_t_oauth_state").unwrap();
+    let pkce_a = extract_set_cookie(&start_a, "drust_t_oauth_pkce").unwrap();
+    let state_b = extract_set_cookie(&start_b, "drust_t_oauth_state").unwrap();
+    let pkce_b = extract_set_cookie(&start_b, "drust_t_oauth_pkce").unwrap();
+    // State envelopes must be distinct (different URI + different nonce).
+    assert_ne!(state_a, state_b, "two starts must mint distinct state envelopes");
+
+    // Two callbacks back-to-back, each carrying its own state+pkce.
+    let cb_a = format!("/t/{tid}/oauth/google/callback?code=CODE-A&state={state_a}");
+    let cb_b = format!("/t/{tid}/oauth/google/callback?code=CODE-B&state={state_b}");
+    let req_a = Request::builder()
+        .uri(&cb_a)
+        .header(
+            header::COOKIE,
+            format!("drust_t_oauth_state={state_a}; drust_t_oauth_pkce={pkce_a}"),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let req_b = Request::builder()
+        .uri(&cb_b)
+        .header(
+            header::COOKIE,
+            format!("drust_t_oauth_state={state_b}; drust_t_oauth_pkce={pkce_b}"),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let (resp_a, resp_b) = tokio::join!(app.clone().oneshot(req_a), app.clone().oneshot(req_b));
+    let resp_a = resp_a.unwrap();
+    let resp_b = resp_b.unwrap();
+    assert_eq!(resp_a.status(), StatusCode::FOUND, "A must 302");
+    assert_eq!(resp_b.status(), StatusCode::FOUND, "B must 302");
+
+    // Critical assertion: each callback returned to ITS OWN frontend.
+    let loc_a = resp_a.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc_b = resp_b.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(
+        loc_a.starts_with(frontend_a),
+        "A must redirect to A's frontend, got: {loc_a}"
+    );
+    assert!(
+        loc_b.starts_with(frontend_b),
+        "B must redirect to B's frontend, got: {loc_b}"
+    );
+    // And the two carry distinct access_tokens.
+    let tok_of = |loc: &str| -> String {
+        let frag = loc.split_once('#').expect("fragment").1;
+        frag.split('&')
+            .find_map(|kv| kv.strip_prefix("access_token="))
+            .expect("access_token")
+            .to_string()
+    };
+    let tok_a = tok_of(loc_a);
+    let tok_b = tok_of(loc_b);
+    assert!(tok_a.starts_with("drust_user_"), "got {tok_a}");
+    assert!(tok_b.starts_with("drust_user_"), "got {tok_b}");
+    assert_ne!(tok_a, tok_b, "two callbacks must mint distinct sessions");
+}
+
+/// /callback must reject a state whose redirect_uri has been tampered to
+/// point at an off-allowlist host. The HMAC is the first gate (any
+/// tampering breaks the envelope); the allowlist re-check is the second
+/// gate (defense-in-depth even if HMAC somehow survives). Either rejection
+/// is acceptable as long as the response is 400 oauth_*.
+#[tokio::test]
+async fn oauth_callback_rejects_state_with_tampered_redirect_uri() {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let fake = spawn_fake_google().await;
+    let frontend = "https://app.example.com/auth/callback";
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let start_uri = format!(
+        "/t/{tid}/oauth/google/start?redirect_uri={u}",
+        u = urlencoding::encode(frontend)
+    );
+    let start_resp = app
+        .clone()
+        .oneshot(Request::builder().uri(&start_uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(start_resp.status(), StatusCode::FOUND);
+    let state = extract_set_cookie(&start_resp, "drust_t_oauth_state").expect("state");
+    let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce");
+
+    // Tamper the redirect_uri region (bytes 18..18+len). Flipping the
+    // first URI byte both invalidates the HMAC AND points at a different
+    // (off-allowlist) string. The handler must 400 regardless.
+    let mut raw = URL_SAFE_NO_PAD.decode(state.as_bytes()).unwrap();
+    raw[18] ^= 0x01;
+    let tampered_state = URL_SAFE_NO_PAD.encode(&raw);
+
+    let cb_uri = format!(
+        "/t/{tid}/oauth/google/callback?code=C&state={state}",
+        state = tampered_state
+    );
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&cb_uri)
+                // Cookie carries the ORIGINAL (untampered) state so the
+                // Step-2 cookie-vs-query equality check fails first — this
+                // is the standard CSRF gate. That alone is enough to 400.
+                .header(
+                    header::COOKIE,
+                    format!("drust_t_oauth_state={state}; drust_t_oauth_pkce={pkce}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let body_str = std::str::from_utf8(&body).unwrap();
+    assert!(
+        body_str.contains("oauth_state_mismatch"),
+        "expected state-mismatch rejection, got: {body_str}"
+    );
+}
+
+/// Even if an attacker somehow learned the cookie state value (e.g. via
+/// XSS that exfiltrates the cookie) and could replay it, tampering the
+/// state envelope's redirect_uri while keeping the cookie equal to the
+/// query MUST still 400 — the HMAC verify catches it.
+///
+/// Setup: forge a state where cookie == query (so Step 2 passes), but the
+/// state was minted by THIS test under a DIFFERENT secret + an
+/// off-allowlist redirect_uri. Step 4 (HMAC verify) must reject.
+#[tokio::test]
+async fn oauth_callback_rejects_state_minted_under_wrong_secret() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    // Mint a state under a WRONG secret pointing at an off-allowlist URI.
+    // We use the public TenantOauthStateToken API.
+    let wrong_secret: [u8; 32] = *b"unit-test-secret-32-bytes-foo!!!";
+    let bad_token =
+        drust::oauth::state::TenantOauthStateToken::new("https://attacker.example/cb");
+    let bad_state = bad_token.encode(&wrong_secret);
+
+    // We need a matching PKCE cookie so Step 3 doesn't short-circuit on
+    // missing PKCE before we reach the HMAC verify. Run /start once to
+    // collect a valid pkce cookie value (any value works since the test
+    // GoogleAdapter doesn't actually validate it against the auth grant).
+    let frontend = "https://app.example.com/auth/callback";
+    let start_uri = format!(
+        "/t/{tid}/oauth/google/start?redirect_uri={u}",
+        u = urlencoding::encode(frontend)
+    );
+    let start_resp = app
+        .clone()
+        .oneshot(Request::builder().uri(&start_uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce");
+
+    // Cookie == query (Step 2 passes), but the envelope's HMAC is under
+    // the wrong secret. Step 4 must reject — and on top of that, even if
+    // it somehow decoded, the recovered `attacker.example/cb` is NOT in
+    // the per-tenant allowlist, so the redirect_uri re-check would also
+    // 400. Either way: 400 oauth_state_mismatch.
+    let cb_uri = format!(
+        "/t/{tid}/oauth/google/callback?code=C&state={state}",
+        state = bad_state
+    );
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&cb_uri)
+                .header(
+                    header::COOKIE,
+                    format!("drust_t_oauth_state={bad_state}; drust_t_oauth_pkce={pkce}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let body_str = std::str::from_utf8(&body).unwrap();
+    assert!(
+        body_str.contains("oauth_state_mismatch"),
+        "HMAC verify under wrong secret must 400 oauth_state_mismatch, got: {body_str}"
     );
 }

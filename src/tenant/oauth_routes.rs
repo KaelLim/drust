@@ -33,7 +33,6 @@ fn redirect_with_fragment_error(frontend: &str, code: &str, tid: &str) -> Respon
         .header(header::LOCATION, loc)
         .header(header::SET_COOKIE, clear_cookie(STATE_COOKIE, tid))
         .header(header::SET_COOKIE, clear_cookie(PKCE_COOKIE, tid))
-        .header(header::SET_COOKIE, clear_cookie(REDIRECT_URI_COOKIE, tid))
         .body(axum::body::Body::empty())
         .unwrap()
 }
@@ -53,8 +52,13 @@ fn parse_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
 
 pub(crate) const STATE_COOKIE: &str = "drust_t_oauth_state";
 pub(crate) const PKCE_COOKIE: &str = "drust_t_oauth_pkce";
-pub(crate) const REDIRECT_URI_COOKIE: &str = "drust_t_oauth_redirect_uri";
 pub(crate) const COOKIE_TTL_SECS: i64 = 300;
+
+// v1.32.1 (D7): the former `drust_t_oauth_redirect_uri` cookie was retired.
+// `redirect_uri` now travels inside the `state` query param via an
+// HMAC-bound envelope so two parallel /start calls in different tabs no
+// longer clobber each other's redirect. See
+// `crate::oauth::state::TenantOauthStateToken`.
 
 /// Build the cookie attribute suffix (no `key=value` prefix). Path =
 /// `/drust/t/<tid>/oauth/` is REQUIRED because Caddy strips `/drust`
@@ -122,16 +126,15 @@ pub(crate) fn plain_text(status: StatusCode, body: &str) -> Response {
         .unwrap()
 }
 
-/// Same as `plain_text` but also clears the three OAuth cookies. Used by
+/// Same as `plain_text` but also clears the two OAuth cookies. Used by
 /// `/callback` steps 1-4 (pre-validation failures) so a stale cookie
-/// triple isn't carried across browser retries.
+/// pair isn't carried across browser retries.
 fn plain_text_clear_cookies(status: StatusCode, body: &str, tid: &str) -> Response {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(header::SET_COOKIE, clear_cookie(STATE_COOKIE, tid))
         .header(header::SET_COOKIE, clear_cookie(PKCE_COOKIE, tid))
-        .header(header::SET_COOKIE, clear_cookie(REDIRECT_URI_COOKIE, tid))
         .body(axum::body::Body::from(body.to_string()))
         .unwrap()
 }
@@ -177,7 +180,14 @@ pub(crate) async fn oauth_start(
         return plain_text(StatusCode::BAD_REQUEST, "oauth_invalid_redirect");
     }
 
-    let csrf_state = oauth_state::issue_state();
+    // v1.32.1 (D7): bind redirect_uri INTO the `state` value via HMAC
+    // instead of via a separate cookie. The cookie still pins the nonce
+    // half (the encoded token contains nonce + redirect_uri + HMAC), so
+    // a CSRF that forges `state` query param still has to match the
+    // cookie — but we now also recover redirect_uri from the state itself
+    // and re-check the allowlist at callback (TOCTOU-safe).
+    let state_token = oauth_state::TenantOauthStateToken::new(q.redirect_uri.clone());
+    let csrf_state = state_token.encode(state.tenant_oauth_state_secret.as_ref());
     let (pkce_verifier, pkce_challenge) = oauth_state::issue_pkce();
 
     if state.public_url.is_empty() {
@@ -206,10 +216,6 @@ pub(crate) async fn oauth_start(
         .header(
             header::SET_COOKIE,
             set_cookie(PKCE_COOKIE, &pkce_verifier, &tid, secure),
-        )
-        .header(
-            header::SET_COOKIE,
-            set_cookie(REDIRECT_URI_COOKIE, &q.redirect_uri, &tid, secure),
         )
         .body(axum::body::Body::empty())
         .unwrap()
@@ -271,7 +277,6 @@ fn redirect_with_fragment_success(
         .header(header::LOCATION, loc)
         .header(header::SET_COOKIE, clear_cookie(STATE_COOKIE, tid))
         .header(header::SET_COOKIE, clear_cookie(PKCE_COOKIE, tid))
-        .header(header::SET_COOKIE, clear_cookie(REDIRECT_URI_COOKIE, tid))
         .body(axum::body::Body::empty())
         .unwrap()
 }
@@ -394,7 +399,9 @@ pub(crate) async fn oauth_callback(
         }
     };
 
-    // Step 2: state cookie matches query state (constant-time).
+    // Step 2: state cookie matches query state (constant-time). The state
+    // value is now an HMAC-bound envelope (see TenantOauthStateToken) but
+    // the cookie-vs-query equality check is still the first CSRF gate.
     let cookie_state = parse_cookie(&headers, STATE_COOKIE).unwrap_or_default();
     if !crate::oauth::state::verify_state(&cookie_state, &q.state) {
         return plain_text_clear_cookies(
@@ -414,14 +421,33 @@ pub(crate) async fn oauth_callback(
         );
     }
 
-    // Step 4: frontend redirect_uri cookie present AND still in allowlist
-    // (TOCTOU guard: admin may have shrunk allowlist between /start and /callback).
-    let frontend_uri = parse_cookie(&headers, REDIRECT_URI_COOKIE).unwrap_or_default();
-    if frontend_uri.is_empty()
-        || !cfg
-            .allowed_redirect_uris
-            .iter()
-            .any(|u| u == &frontend_uri)
+    // Step 4: decode the state envelope to recover the redirect_uri the
+    // /start handler signed. Two checks in defense-in-depth order:
+    //   (1) HMAC verifies → state was minted by THIS process for THIS
+    //       redirect_uri (an attacker can't forge a new envelope).
+    //   (2) recovered redirect_uri is STILL on the per-tenant allowlist —
+    //       TOCTOU guard: admin may have shrunk the allowlist between
+    //       /start and /callback, and we re-read it from the DB fresh
+    //       above (Step 1). Even if (1) somehow passes for an off-list
+    //       URI, this check still blocks.
+    let envelope = match crate::oauth::state::TenantOauthStateToken::decode(
+        &q.state,
+        state.tenant_oauth_state_secret.as_ref(),
+    ) {
+        Ok(t) => t,
+        Err(_) => {
+            return plain_text_clear_cookies(
+                StatusCode::BAD_REQUEST,
+                "oauth_state_mismatch",
+                &tid,
+            );
+        }
+    };
+    let frontend_uri = envelope.redirect_uri;
+    if !cfg
+        .allowed_redirect_uris
+        .iter()
+        .any(|u| u == &frontend_uri)
     {
         return plain_text_clear_cookies(
             StatusCode::BAD_REQUEST,

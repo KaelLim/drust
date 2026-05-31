@@ -339,6 +339,16 @@ async fn main() -> anyhow::Result<()> {
             oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
             public_url,
             oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
+            // HMAC secret binding per-tenant OAuth `state` to `redirect_uri`.
+            // In-memory only: a restart invalidates in-flight OAuth flows,
+            // acceptable given the 5-minute PKCE cookie TTL. Same shape as
+            // `url_sign_secret` above.
+            tenant_oauth_state_secret: {
+                use rand::RngCore;
+                let mut b = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut b);
+                Arc::new(b)
+            },
         },
         bus: bus.clone(),
         bus_rooms: bus_rooms.clone(),
