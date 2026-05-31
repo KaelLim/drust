@@ -544,7 +544,6 @@ async fn mcp_set_self_register_tool() {
     // NOT wire meta — we build the stack manually here.
     use drust::mcp::http_registry::McpHttpRegistry;
     use drust::mcp::server::McpRegistry;
-    use drust::safety::audit::AuditLog;
     use drust::storage::meta::open_meta;
     use drust::storage::pool::TenantRegistry;
     use drust::tenant::router::TenantAuthState;
@@ -592,11 +591,7 @@ async fn mcp_set_self_register_tool() {
         drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         drust::tenant::rooms::RoomsConfig::test_defaults(),
     ));
-    let state = TenantAuthState::test_default(
-        meta_arc.clone(),
-        tenants.clone(),
-        Arc::new(AuditLog::new(dir.path().join("audit"))),
-    );
+    let state = TenantAuthState::test_default(meta_arc.clone(), tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),

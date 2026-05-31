@@ -1,7 +1,7 @@
 use crate::auth::bearer::{hash_token, token_hint};
 use crate::auth::middleware::AuthCtx;
 use crate::error::{json_error, json_error_with_aliases};
-use crate::safety::audit::{AuditEntry, AuditLog, DefaultAuditExtra};
+use crate::safety::audit::{AuditEntry, DefaultAuditExtra};
 use crate::safety::rate_limit::RateLimiter;
 use crate::safety::rate_limit_ip::IpRateLimit;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
@@ -19,7 +19,6 @@ pub struct TenantAuthState {
     pub meta: Arc<Mutex<Connection>>,
     pub registry: Arc<TenantRegistry>,
     pub limiter: Arc<RateLimiter>,
-    pub audit: Arc<AuditLog>,
     /// Row count threshold above which index creation is considered "large
     /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
     /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
@@ -62,7 +61,7 @@ pub struct TenantAuthState {
 /// For tests that need a custom `limiter` (e.g. rate-limit threshold tests),
 /// build with `test_default` then overwrite the field:
 /// ```ignore
-/// let mut state = TenantAuthState::test_default(meta, registry, audit);
+/// let mut state = TenantAuthState::test_default(meta, registry);
 /// state.limiter = Arc::new(RateLimiter::new(budget, window));
 /// ```
 #[cfg(any(test, debug_assertions))]
@@ -70,14 +69,12 @@ impl TenantAuthState {
     pub fn test_default(
         meta: Arc<Mutex<Connection>>,
         registry: Arc<TenantRegistry>,
-        audit: Arc<AuditLog>,
     ) -> Self {
         use std::time::Duration;
         Self {
             meta,
             registry,
             limiter: Arc::new(RateLimiter::new(10_000, Duration::from_secs(1))),
-            audit,
             index_large_table_rows: 1_000_000,
             register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
             login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
@@ -136,7 +133,6 @@ pub async fn bearer_auth_layer(
     let hint_for_audit = extract_bearer(&req)
         .map(|b| token_hint(&b))
         .unwrap_or_else(|| "-".to_string());
-    let audit_sink = state.audit.clone();
 
     // Resolved during auth; captured here so the audit-emit code below can
     // attach `auth_kind` / `auth_user_id` without re-reading request extensions
@@ -415,7 +411,7 @@ pub async fn bearer_auth_layer(
             .ok();
         drop(conn);
     }
-    audit_sink.append(entry);
+    crate::safety::audit_db::try_send(&entry);
     resp
 }
 

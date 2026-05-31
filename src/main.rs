@@ -5,7 +5,6 @@ use drust::mcp::http_registry::McpHttpRegistry;
 use drust::mcp::server::McpRegistry;
 use drust::mgmt::routes::MgmtState;
 use drust::mgmt::tenant_files::TenantFilesState;
-use drust::safety::audit::AuditLog;
 use drust::safety::rate_limit::RateLimiter;
 use drust::safety::rate_limit_ip::IpRateLimit;
 use drust::storage::meta::{bootstrap_admin, open_meta};
@@ -317,8 +316,6 @@ async fn main() -> anyhow::Result<()> {
     let _cleanup_handle = limiter.clone().spawn_cleanup(Duration::from_secs(
         cfg.rate_limit_cleanup_interval_secs,
     ));
-    let (audit_inner, audit_handle) = AuditLog::start(cfg.log_dir.clone());
-    let audit = Arc::new(audit_inner);
     let tenant_files_state = garage.as_ref().map(|g| TenantFilesState {
         garage: Some(g.clone()),
         data_root: cfg.data_dir.clone(),
@@ -334,7 +331,6 @@ async fn main() -> anyhow::Result<()> {
             meta: meta.clone(),
             registry: tenants.clone(),
             limiter,
-            audit: audit.clone(),
             index_large_table_rows: cfg.index_large_table_rows,
             register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
             login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
@@ -368,13 +364,8 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     tracing::info!("drust http server stopped; draining audit queues");
-    // axum::serve has dropped its Service, so all the Arc<AuditLog>
-    // clones threaded into request state are gone. Drop our local Arc
-    // to release the last sender; the writer's rx.recv() will then
-    // return None and drain the remaining queue before exiting.
-    drop(audit);
-    audit_handle.join().await;
-    // v1.29.4: also flush the SQLite audit writer's in-flight buffer.
+    // v1.32.1 — JSONL writer retired (D1). Only the SQLite writer remains;
+    // flush its in-flight buffer before exit.
     drust::safety::audit_db::drain_writer().await;
     tracing::info!("audit drain complete; exit");
     Ok(())

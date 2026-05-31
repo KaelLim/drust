@@ -1,8 +1,5 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
 
 /// Cloneable carrier for handler-supplied audit metadata. Index DDL
 /// handlers attach this via `Response.extensions_mut().insert(AuditExtra(...))`,
@@ -154,117 +151,11 @@ pub fn should_log_body(path: &str) -> bool {
         && !path.contains("/admin/settings/token") // defense-in-depth: future siblings
 }
 
-/// Audit-log writer. Non-blocking append: callers send entries through
-/// an unbounded mpsc to a dedicated writer task that batches file
-/// I/O off the request hot path. The previous design serialised every
-/// request on a single `Mutex<()>` and lost lines on SIGTERM because
-/// the per-request `tokio::spawn` futures were dropped mid-write.
-pub struct AuditLog {
-    tx: mpsc::UnboundedSender<AuditEntry>,
-    log_dir: PathBuf,
-}
-
-impl AuditLog {
-    /// Directory containing the daily `audit-YYYY-MM-DD.jsonl` files.
-    /// Exposed so code paths that don't carry the `Arc<AuditLog>` (e.g.
-    /// per-tenant OAuth callback's stateless `write_entry` call) can
-    /// resolve the same directory without re-reading env vars.
-    pub fn log_dir(&self) -> &std::path::Path {
-        &self.log_dir
-    }
-}
-
-/// Returned by `AuditLog::start`. Holding the handle lets graceful
-/// shutdown await the writer's drain after the request server has
-/// stopped, so no audit lines are lost on SIGTERM.
-pub struct AuditWriterHandle(tokio::task::JoinHandle<()>);
-
-impl AuditWriterHandle {
-    /// Wait for the writer task to finish draining. Caller is
-    /// responsible for first dropping every `Arc<AuditLog>` clone so
-    /// the channel closes; otherwise this awaits forever.
-    pub async fn join(self) {
-        let _ = self.0.await;
-    }
-}
-
-impl AuditLog {
-    /// Test/lib-internal constructor: spawns the writer and forgets
-    /// the handle. The dropped handle does not abort the task; it
-    /// keeps writing for as long as the runtime lives.
-    pub fn new(dir: PathBuf) -> Self {
-        let (audit, _h) = Self::start(dir);
-        audit
-    }
-
-    /// Production constructor: returns the writer's `JoinHandle` so
-    /// `main` can await it on graceful shutdown.
-    pub fn start(dir: PathBuf) -> (Self, AuditWriterHandle) {
-        let (tx, mut rx) = mpsc::unbounded_channel::<AuditEntry>();
-        let dir_for_writer = dir.clone();
-        let handle = tokio::spawn(async move {
-            let mut current_path: Option<PathBuf> = None;
-            let mut current_file: Option<tokio::fs::File> = None;
-            while let Some(entry) = rx.recv().await {
-                let date = entry.ts.get(..10).unwrap_or(&entry.ts).to_string();
-                let path = dir_for_writer.join(format!("audit-{date}.jsonl"));
-                if current_path.as_ref() != Some(&path) {
-                    if let Some(mut f) = current_file.take() {
-                        let _ = f.flush().await;
-                    }
-                    let _ = tokio::fs::create_dir_all(&dir_for_writer).await;
-                    current_file = tokio::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)
-                        .await
-                        .ok();
-                    current_path = if current_file.is_some() {
-                        Some(path)
-                    } else {
-                        None
-                    };
-                }
-                if let (Some(f), Ok(mut line)) =
-                    (current_file.as_mut(), serde_json::to_string(&entry))
-                {
-                    line.push('\n');
-                    if let Err(e) = f.write_all(line.as_bytes()).await {
-                        tracing::warn!(error = %e, "audit write_all failed");
-                        continue;
-                    }
-                    if let Err(e) = f.flush().await {
-                        tracing::warn!(error = %e, "audit flush failed");
-                    }
-                }
-            }
-            // Channel closed — flush + close the open file before exit.
-            if let Some(mut f) = current_file.take() {
-                let _ = f.flush().await;
-            }
-        });
-        (
-            Self {
-                tx,
-                log_dir: dir,
-            },
-            AuditWriterHandle(handle),
-        )
-    }
-
-    /// Enqueue one audit entry. O(1), never blocks. Drops the entry
-    /// silently if the writer task has exited (only on shutdown).
-    pub fn append(&self, entry: AuditEntry) {
-        let _ = self.tx.send(entry);
-    }
-}
-
 /// Stateless one-shot dispatch to the global SQLite audit writer.
-/// Used by auth flows that don't carry the shared `Arc<AuditLog>` —
-/// admin + per-tenant OAuth callbacks and admin login / password
-/// endpoints. `_dir` is retained for caller-site compatibility after
-/// v1.25.2 retired the JSONL writer — see CHANGELOG; v1.25.3+ may
-/// drop the parameter.
+/// Used by auth flows + the per-request `bearer_auth_layer` audit emit
+/// point. `_dir` is retained for caller-site compatibility after
+/// v1.25.2 retired the JSONL writer and v1.32.1 retired the
+/// `AuditLog` carrier struct entirely — see CHANGELOG.
 pub async fn write_entry(_dir: &std::path::Path, entry: &AuditEntry) {
     crate::safety::audit_db::try_send(entry);
 }
@@ -289,6 +180,39 @@ mod tests {
         let j: serde_json::Value = serde_json::to_value(&e).unwrap();
         assert!(j.get("actor_admin_id").is_none(),  "actor_admin_id should be skipped when None");
         assert!(j.get("actor_email_snapshot").is_none(),  "actor_email_snapshot should be skipped when None");
+    }
+
+    /// v1.32.1 — moved from the retired `tests/audit_log.rs` integration
+    /// file. `with_extra` must flatten an object value into top-level
+    /// JSON keys via `serde(flatten)`.
+    #[test]
+    fn with_extra_flattens_into_top_level_json() {
+        let entry = AuditEntry::success("t1", "drust_abc", "POST /collections/foo/indexes", 42)
+            .with_collection("foo")
+            .with_extra(serde_json::json!({
+                "index_name":   "idx_foo_bar",
+                "index_fields": ["bar"],
+                "row_count":    18432,
+                "force_used":   false,
+            }));
+        let line = serde_json::to_string(&entry).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["index_name"], "idx_foo_bar");
+        assert_eq!(v["index_fields"], serde_json::json!(["bar"]));
+        assert_eq!(v["row_count"], 18432);
+        assert_eq!(v["force_used"], false);
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["collection"], "foo");
+    }
+
+    /// v1.32.1 — moved from the retired `tests/audit_log.rs`. Non-object
+    /// `extra` values are silently dropped (no panic, no leaked key).
+    #[test]
+    fn with_extra_ignores_non_object_value() {
+        let entry = AuditEntry::success("t1", "h", "op", 0)
+            .with_extra(serde_json::json!("not an object"));
+        let line = serde_json::to_string(&entry).unwrap();
+        assert!(!line.contains("not an object"));
     }
 }
 

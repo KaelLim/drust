@@ -6,23 +6,22 @@ mod helpers;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use drust::auth::admin_token;
-use drust::safety::audit::AuditLog;
+use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::{TenantStack, WebhookDispatcher, build_tenant_router, events::EventBus, router::TenantAuthState};
 use rusqlite::params;
-use std::path::Path as StdPath;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use tempfile::tempdir;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 /// Spin up an app with a single tenant; admin row and PAT inserted directly.
-/// Returns (app, plaintext_pat, admin_id, dir, audit_dir).
-async fn app_with_pat(tenant: &str) -> (axum::Router, String, i64, tempfile::TempDir, std::path::PathBuf) {
+/// Returns (app, plaintext_pat, admin_id, dir).
+async fn app_with_pat(tenant: &str) -> (axum::Router, String, i64, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
-    let audit_dir = dir.path().join("audit");
     let conn = open_meta(&data.join("meta.sqlite")).unwrap();
 
     // Insert admin
@@ -61,11 +60,7 @@ async fn app_with_pat(tenant: &str) -> (axum::Router, String, i64, tempfile::Tem
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(
-        meta,
-        tenants.clone(),
-        Arc::new(AuditLog::new(audit_dir.clone())),
-    );
+    let state = TenantAuthState::test_default(meta, tenants.clone());
     let app = build_tenant_router(TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -78,40 +73,78 @@ async fn app_with_pat(tenant: &str) -> (axum::Router, String, i64, tempfile::Tem
         cors_origins: Vec::new(),
     });
 
-    (app, plaintext, admin_id, dir, audit_dir)
+    (app, plaintext, admin_id, dir)
 }
 
-/// Poll the audit JSONL files until at least one line appears (or timeout).
-async fn read_audit_lines(dir: &StdPath) -> Vec<serde_json::Value> {
+/// Initialize the process-wide SQLite audit writer once and return the
+/// audit DB path so each test can read its own rows. Writer runs on a
+/// dedicated std::thread with its own tokio runtime so its task
+/// outlives individual #[tokio::test] runtimes (each gets a fresh
+/// runtime that drops at the end of the test).
+fn ensure_global_audit_writer() -> &'static PathBuf {
+    static AUDIT_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    AUDIT_PATH.get_or_init(|| {
+        let dir = Box::new(tempdir().unwrap());
+        let path = dir.path().join("test_audit_pat_bearer.sqlite");
+        let conn = open_audit_db_write(&path).unwrap();
+        let (tx_ready, rx_ready) = std::sync::mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("test-audit-pat-bearer-writer".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build writer runtime");
+                rt.block_on(async move {
+                    let writer = AuditWriter::new(conn);
+                    drust::safety::audit_db::init_globals(writer);
+                    let _ = tx_ready.send(());
+                    std::future::pending::<()>().await;
+                });
+            })
+            .expect("spawn audit writer thread");
+        rx_ready.recv().expect("audit writer init signal");
+        let path_clone = path.clone();
+        Box::leak(dir);
+        path_clone
+    })
+}
+
+/// Read every audit row whose tenant matches `tenant`. Polls briefly
+/// because the SQLite writer drains in 100ms batches.
+async fn read_audit_rows_for_tenant(tenant: &str) -> Vec<serde_json::Value> {
+    let path = ensure_global_audit_writer();
     for _ in 0..50 {
-        if dir.exists() {
-            let mut files = tokio::fs::read_dir(dir).await.unwrap();
-            let mut all = Vec::new();
-            while let Some(f) = files.next_entry().await.unwrap() {
-                let p = f.path();
-                if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                    continue;
-                }
-                let bytes = tokio::fs::read(&p).await.unwrap();
-                for line in bytes.split(|&b| b == b'\n') {
-                    if line.is_empty() {
-                        continue;
-                    }
-                    all.push(serde_json::from_slice(line).unwrap());
-                }
-            }
-            if !all.is_empty() {
-                return all;
-            }
+        let r = open_audit_db_read(path).unwrap();
+        let mut stmt = r
+            .prepare(
+                "SELECT op, status, actor_admin_id, actor_email_snapshot \
+                 FROM audit WHERE tenant = ?1 ORDER BY id ASC",
+            )
+            .unwrap();
+        let rows: Vec<serde_json::Value> = stmt
+            .query_map(rusqlite::params![tenant], |r| {
+                Ok(serde_json::json!({
+                    "op":                    r.get::<_, String>(0)?,
+                    "status":                r.get::<_, String>(1)?,
+                    "actor_admin_id":        r.get::<_, Option<i64>>(2)?,
+                    "actor_email_snapshot":  r.get::<_, Option<String>>(3)?,
+                }))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        if !rows.is_empty() {
+            return rows;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    panic!("audit file never appeared at {dir:?}");
+    panic!("no audit rows for tenant {tenant} after 1s");
 }
 
 #[tokio::test]
 async fn pat_bearer_returns_200_for_tenant_route() {
-    let (app, plaintext, _admin_id, _dir, _audit_dir) = app_with_pat("pat-t1").await;
+    let (app, plaintext, _admin_id, _dir) = app_with_pat("pat-t1").await;
     let resp = app
         .oneshot(
             Request::builder()
@@ -127,7 +160,8 @@ async fn pat_bearer_returns_200_for_tenant_route() {
 
 #[tokio::test]
 async fn pat_bearer_audit_row_carries_actor_admin_id() {
-    let (app, plaintext, admin_id, _dir, audit_dir) = app_with_pat("pat-t2").await;
+    ensure_global_audit_writer();
+    let (app, plaintext, admin_id, _dir) = app_with_pat("pat-t2").await;
     let resp = app
         .oneshot(
             Request::builder()
@@ -140,8 +174,8 @@ async fn pat_bearer_audit_row_carries_actor_admin_id() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let lines = read_audit_lines(&audit_dir).await;
-    let entry = lines.iter().find(|l| {
+    let rows = read_audit_rows_for_tenant("pat-t2").await;
+    let entry = rows.iter().find(|l| {
         l["op"].as_str().map_or(false, |op| op.contains("collections"))
     }).expect("no audit entry for collections route");
 

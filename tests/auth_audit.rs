@@ -1,25 +1,103 @@
+//! v1.32.1 D1 — auth/audit attribution tests, ported from JSONL to SQLite.
+//!
+//! These tests verify that audit rows emitted by the auth handlers
+//! (`/auth/register`, `/auth/login`, `/me`, plain bearer GET) carry the
+//! expected `auth_kind` / `auth_method` / `auth_user_id` / `email`
+//! fields. Previously they read daily `audit-YYYY-MM-DD.jsonl` files
+//! from the tenant's audit dir; v1.25.2 / v1.32.1 (D1) retired the
+//! JSONL writer so they now read the process-global SQLite audit DB
+//! (filtered by tenant id to stay isolated from parallel tests).
+
 use axum::body::Body;
 use axum::http::{Request, header};
+use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use serde_json::json;
+use std::path::PathBuf;
+use tempfile::tempdir;
 use tower::ServiceExt;
 
 mod helpers;
 
-fn read_audit_lines(dir: &std::path::Path) -> Vec<serde_json::Value> {
-    let mut out = vec![];
-    let audit_dir = dir.join("audit");
-    if let Ok(rd) = std::fs::read_dir(&audit_dir) {
-        for e in rd.flatten() {
-            if let Ok(s) = std::fs::read_to_string(e.path()) {
-                for l in s.lines() {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
-                        out.push(v);
-                    }
+/// One process-wide audit writer, initialised on first call. Writer
+/// runs on a dedicated `std::thread` with its own tokio runtime so the
+/// task outlives individual `#[tokio::test]` runtimes (each test drops
+/// its runtime on completion). Mirrors `tests/common/oauth_helpers.rs::TEST_AUDIT_DB`.
+fn ensure_global_audit_writer() -> &'static PathBuf {
+    static AUDIT_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    AUDIT_PATH.get_or_init(|| {
+        let dir = Box::new(tempdir().unwrap());
+        let path = dir.path().join("test_auth_audit.sqlite");
+        let conn = open_audit_db_write(&path).unwrap();
+        let (tx_ready, rx_ready) = std::sync::mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("test-auth-audit-writer".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build writer runtime");
+                rt.block_on(async move {
+                    let writer = AuditWriter::new(conn);
+                    drust::safety::audit_db::init_globals(writer);
+                    let _ = tx_ready.send(());
+                    std::future::pending::<()>().await;
+                });
+            })
+            .expect("spawn audit writer thread");
+        rx_ready.recv().expect("audit writer init signal");
+        let path_clone = path.clone();
+        Box::leak(dir);
+        path_clone
+    })
+}
+
+/// Read every audit row whose tenant matches `tenant`, returning
+/// flattened JSON objects (top-level columns merged with the `extra`
+/// JSON blob) so the existing assertions like `row["auth_kind"]`,
+/// `row["email"]`, `row["auth_user_id"]` work unchanged.
+fn read_audit_rows_for_tenant(tenant: &str) -> Vec<serde_json::Value> {
+    let path = ensure_global_audit_writer();
+    let r = open_audit_db_read(path).unwrap();
+    let _ = r.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+    let mut stmt = r
+        .prepare(
+            "SELECT tenant, status, op, auth_method, extra \
+             FROM audit WHERE tenant = ?1 ORDER BY id ASC",
+        )
+        .unwrap();
+    stmt.query_map(rusqlite::params![tenant], |r| {
+        let tenant: Option<String> = r.get(0)?;
+        let status: Option<String> = r.get(1)?;
+        let op: Option<String> = r.get(2)?;
+        let auth_method: Option<String> = r.get(3)?;
+        let extra_json: Option<String> = r.get(4)?;
+        let mut map = serde_json::Map::new();
+        if let Some(t) = tenant {
+            map.insert("tenant".into(), serde_json::Value::String(t));
+        }
+        if let Some(s) = status {
+            map.insert("status".into(), serde_json::Value::String(s));
+        }
+        if let Some(o) = op {
+            map.insert("op".into(), serde_json::Value::String(o));
+        }
+        if let Some(a) = auth_method {
+            map.insert("auth_method".into(), serde_json::Value::String(a));
+        }
+        if let Some(extra_str) = extra_json {
+            if let Ok(serde_json::Value::Object(extra_map)) =
+                serde_json::from_str::<serde_json::Value>(&extra_str)
+            {
+                for (k, v) in extra_map {
+                    map.entry(k).or_insert(v);
                 }
             }
         }
-    }
-    out
+        Ok(serde_json::Value::Object(map))
+    })
+    .unwrap()
+    .filter_map(Result::ok)
+    .collect()
 }
 
 async fn flush_audit() {
@@ -37,7 +115,8 @@ fn post_json(tid: &str, path: &str, body: serde_json::Value) -> Request<Body> {
 
 #[tokio::test]
 async fn login_audit_records_email_and_auth_user_id() {
-    let (app, tid, _svc, _anon, dir) =
+    ensure_global_audit_writer();
+    let (app, tid, _svc, _anon, _dir) =
         helpers::spin_up_dual_role_self_register("t-aud1").await;
     let _ = app
         .clone()
@@ -57,8 +136,8 @@ async fn login_audit_records_email_and_auth_user_id() {
         .await
         .unwrap();
     flush_audit().await;
-    let lines = read_audit_lines(dir.path());
-    let login = lines
+    let rows = read_audit_rows_for_tenant(&tid);
+    let login = rows
         .iter()
         .find(|l| l["op"].as_str().unwrap_or("").contains("/auth/login"))
         .expect("audit must record /auth/login");
@@ -75,8 +154,9 @@ async fn login_audit_records_email_and_auth_user_id() {
 
 #[tokio::test]
 async fn audit_never_records_password() {
+    ensure_global_audit_writer();
     let secret = "BoldenburgRedAxiom77";
-    let (app, tid, _svc, _anon, dir) =
+    let (app, tid, _svc, _anon, _dir) =
         helpers::spin_up_dual_role_self_register("t-aud2").await;
     let _ = app
         .clone()
@@ -105,8 +185,8 @@ async fn audit_never_records_password() {
         .await
         .unwrap();
     flush_audit().await;
-    let lines = read_audit_lines(dir.path());
-    for l in &lines {
+    let rows = read_audit_rows_for_tenant(&tid);
+    for l in &rows {
         let s = serde_json::to_string(l).unwrap();
         assert!(
             !s.contains(secret),
@@ -121,7 +201,8 @@ async fn audit_never_records_password() {
 
 #[tokio::test]
 async fn authed_request_carries_auth_kind() {
-    let (app, tid, svc, _anon, dir) =
+    ensure_global_audit_writer();
+    let (app, tid, svc, _anon, _dir) =
         helpers::spin_up_dual_role_self_register("t-aud3").await;
     // service token request → audit row should have auth_kind=service
     let _ = app
@@ -136,12 +217,11 @@ async fn authed_request_carries_auth_kind() {
         .await
         .unwrap();
     flush_audit().await;
-    let lines = read_audit_lines(dir.path());
+    let rows = read_audit_rows_for_tenant(&tid);
     assert!(
-        lines.iter().any(|l| l["op"].as_str().unwrap_or("").contains("/collections")
+        rows.iter().any(|l| l["op"].as_str().unwrap_or("").contains("/collections")
             && l["auth_kind"] == "service"),
-        "audit row must carry auth_kind=service: lines={:?}",
-        lines
+        "audit row must carry auth_kind=service: rows={rows:?}"
     );
 }
 
@@ -149,7 +229,8 @@ async fn authed_request_carries_auth_kind() {
 
 #[tokio::test]
 async fn register_success_carries_auth_kind_user_and_auth_method_password() {
-    let (app, tid, _svc, _anon, dir) =
+    ensure_global_audit_writer();
+    let (app, tid, _svc, _anon, _dir) =
         helpers::spin_up_dual_role_self_register("t-aud5").await;
     let _ = app
         .oneshot(post_json(
@@ -160,8 +241,8 @@ async fn register_success_carries_auth_kind_user_and_auth_method_password() {
         .await
         .unwrap();
     flush_audit().await;
-    let lines = read_audit_lines(dir.path());
-    let row = lines
+    let rows = read_audit_rows_for_tenant(&tid);
+    let row = rows
         .iter()
         .find(|l| l["op"].as_str().unwrap_or("").contains("/auth/register"))
         .expect("audit must record /auth/register");
@@ -179,7 +260,8 @@ async fn register_success_carries_auth_kind_user_and_auth_method_password() {
 
 #[tokio::test]
 async fn login_failure_carries_auth_kind_user_and_auth_method_password() {
-    let (app, tid, _svc, _anon, dir) =
+    ensure_global_audit_writer();
+    let (app, tid, _svc, _anon, _dir) =
         helpers::spin_up_dual_role_self_register("t-aud6").await;
     // Register first so we get a real user row, then fail with wrong pw.
     let _ = app
@@ -200,8 +282,8 @@ async fn login_failure_carries_auth_kind_user_and_auth_method_password() {
         .await
         .unwrap();
     flush_audit().await;
-    let lines = read_audit_lines(dir.path());
-    let row = lines
+    let rows = read_audit_rows_for_tenant(&tid);
+    let row = rows
         .iter()
         .find(|l| {
             l["op"].as_str().unwrap_or("").contains("/auth/login")
@@ -222,7 +304,8 @@ async fn login_failure_carries_auth_kind_user_and_auth_method_password() {
 
 #[tokio::test]
 async fn user_request_carries_auth_user_id() {
-    let (app, tid, _svc, _anon, dir) =
+    ensure_global_audit_writer();
+    let (app, tid, _svc, _anon, _dir) =
         helpers::spin_up_dual_role_self_register("t-aud4").await;
     let tok =
         helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
@@ -238,8 +321,8 @@ async fn user_request_carries_auth_user_id() {
         .await
         .unwrap();
     flush_audit().await;
-    let lines = read_audit_lines(dir.path());
-    let me = lines
+    let rows = read_audit_rows_for_tenant(&tid);
+    let me = rows
         .iter()
         .find(|l| l["op"].as_str().unwrap_or("").contains("/me"))
         .expect("audit must record /me");

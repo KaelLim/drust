@@ -410,3 +410,73 @@ pub fn try_find_audit_row(
 ) -> Option<serde_json::Value> {
     None
 }
+
+/// Poll the global test audit DB for the most recent row whose `op`
+/// matches `expected_op`. Mirrors `poll_for_audit_row` but filters by
+/// `op` instead of `auth_method` — for admin-REST audit rows that
+/// don't set `auth_method`. `_log_dir` is accepted but ignored (kept
+/// for call-site compatibility with the v1.25.2 JSONL signature).
+pub async fn poll_for_audit_op(
+    _log_dir: &std::path::Path,
+    expected_op: &str,
+    max_ms: u64,
+) -> serde_json::Value {
+    let _ = &*TEST_AUDIT_DB;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_ms);
+    loop {
+        if let Some(row) = try_find_audit_op_db(expected_op) {
+            return row;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("audit row with op={expected_op} not written within {max_ms}ms");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+fn try_find_audit_op_db(expected_op: &str) -> Option<serde_json::Value> {
+    let db_path = TEST_AUDIT_DB.as_path();
+    let conn = drust::safety::audit_db::open_audit_db_read(db_path).ok()?;
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+    let mut stmt = conn
+        .prepare(
+            "SELECT status, op, tenant, extra, actor_admin_id \
+             FROM audit WHERE op = ?1 \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .ok()?;
+    stmt.query_row([expected_op], |r| {
+        let status: Option<String> = r.get(0)?;
+        let op: Option<String> = r.get(1)?;
+        let tenant: Option<String> = r.get(2)?;
+        let extra_json: Option<String> = r.get(3)?;
+        let actor_admin_id: Option<i64> = r.get(4)?;
+        let mut map = serde_json::Map::new();
+        if let Some(s) = status {
+            map.insert("status".into(), serde_json::Value::String(s));
+        }
+        if let Some(o) = op {
+            map.insert("op".into(), serde_json::Value::String(o));
+        }
+        if let Some(t) = tenant {
+            map.insert("tenant".into(), serde_json::Value::String(t));
+        }
+        if let Some(id) = actor_admin_id {
+            map.insert(
+                "actor_admin_id".into(),
+                serde_json::Value::Number(id.into()),
+            );
+        }
+        if let Some(extra_str) = extra_json {
+            if let Ok(serde_json::Value::Object(extra_map)) =
+                serde_json::from_str::<serde_json::Value>(&extra_str)
+            {
+                for (k, v) in extra_map {
+                    map.entry(k).or_insert(v);
+                }
+            }
+        }
+        Ok(serde_json::Value::Object(map))
+    })
+    .ok()
+}

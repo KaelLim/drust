@@ -216,7 +216,7 @@ pub(crate) async fn oauth_start(
 }
 
 async fn audit_oauth_success(
-    state: &TenantAuthState,
+    _state: &TenantAuthState,
     tid: &str,
     provider: &str,
     user_id: &str,
@@ -227,11 +227,11 @@ async fn audit_oauth_success(
         .with_extra(serde_json::json!({ "auth_user_id": user_id, "auth_kind": "user" }));
     entry.auth_method = Some(format!("oauth_{provider}"));
     entry.oauth_email = Some(sanitize_email(email));
-    crate::safety::audit::write_entry(state.audit.log_dir(), &entry).await;
+    crate::safety::audit_db::try_send(&entry);
 }
 
 async fn audit_oauth_failure(
-    state: &TenantAuthState,
+    _state: &TenantAuthState,
     tid: &str,
     provider: &str,
     email: Option<&str>,
@@ -244,7 +244,7 @@ async fn audit_oauth_failure(
     entry.auth_method = Some(format!("oauth_{provider}"));
     entry.oauth_email = email.map(sanitize_email);
     entry.oauth_error_code = Some(error_code.to_string());
-    crate::safety::audit::write_entry(state.audit.log_dir(), &entry).await;
+    crate::safety::audit_db::try_send(&entry);
 }
 
 pub(crate) fn sanitize_email(s: &str) -> String {
