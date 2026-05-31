@@ -144,6 +144,7 @@ pub async fn spin_up_tenant_with_google_fake_opts(
     allow_self_register: bool,
     allowed_redirect_uris: &[&str],
 ) -> (Router, TempDir, String, String, std::path::PathBuf) {
+    ensure_test_audit_writer();
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let log_dir = data_dir.join("audit");
@@ -178,6 +179,7 @@ pub async fn spin_up_tenant_with_google_fake_opts(
 pub async fn spin_up_tenant_with_github_fake(
     fake: &Arc<FakeProvider>,
 ) -> (Router, TempDir, String, String, std::path::PathBuf) {
+    ensure_test_audit_writer();
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let log_dir = data_dir.join("audit");

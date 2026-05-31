@@ -1,6 +1,6 @@
 [package]
 name = "drust"
-version = "1.31.9"
+version = "1.32.0"
 edition = "2024"
 rust-version = "1.92"
 
@@ -59,13 +59,13 @@ flate2             = { version = "1", default-features = false, features = ["rus
 tar                = { version = "0.4", default-features = false }
 zstd               = { version = "0.13", default-features = false }
 tempfile           = "3"
+prometheus         = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 serial_test        = "3"
 reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 eventsource-stream = "0.2"
 serde_urlencoded   = "0.7"
-tokio-test         = "0.4"
 tokio-tungstenite  = "0.24"
 futures-util       = "0.3"
 

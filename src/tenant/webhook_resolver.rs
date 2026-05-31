@@ -19,9 +19,12 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
 /// True if `ip` is in any range we forbid for outbound webhook targets:
 /// RFC1918 private (10/8, 172.16/12, 192.168/16), loopback (127/8, ::1),
-/// link-local (169.254/16, fe80::/10), wildcard (0.0.0.0/8), or IPv6 ULA
-/// (fc00::/7). Returned for any IP that should never receive a webhook
-/// from an internet-facing drust instance.
+/// link-local (169.254/16, fe80::/10), wildcard (0.0.0.0/8), IPv6 ULA
+/// (fc00::/7), RFC 6598 CGNAT (100.64.0.0/10), IPv6 unspecified (::/128),
+/// RFC 3849 documentation (2001:db8::/32), and IPv4-mapped private ranges
+/// (::ffff:0:0/96 when the embedded IPv4 is itself private). Returned for
+/// any IP that should never receive a webhook from an internet-facing drust
+/// instance.
 ///
 /// `localhost`/`127.0.0.1`/`::1` are deliberately included — the existing
 /// `check_url` carve-out for `http://localhost` already runs BEFORE this
@@ -43,17 +46,26 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
             if octets[0] == 169 && octets[1] == 254 { return true; }
             // 0/8 wildcard
             if octets[0] == 0 { return true; }
+            // v1.32 A3: RFC 6598 CGNAT 100.64.0.0/10 — first 10 bits = 0110 0100 01
+            // i.e. octets[0]==100 and octets[1] in [64..127]
+            if octets[0] == 100 && (octets[1] & 0xc0) == 0x40 { return true; }
             false
         }
         IpAddr::V6(v6) => {
             // ::1 loopback
             if v6.is_loopback() { return true; }
+            // v1.32 A3: ::/128 — unspecified address
+            if v6.is_unspecified() { return true; }
             let segs = v6.segments();
             // fc00::/7 ULA  — first 7 bits = 1111110
             if (segs[0] & 0xfe00) == 0xfc00 { return true; }
             // fe80::/10 link-local — first 10 bits = 1111111010
             if (segs[0] & 0xffc0) == 0xfe80 { return true; }
+            // v1.32 A3: 2001:db8::/32 — RFC 3849 documentation prefix
+            if segs[0] == 0x2001 && segs[1] == 0x0db8 { return true; }
             // ::ffff:a.b.c.d — IPv4-mapped IPv6; re-check the V4 part.
+            // v1.32 A3: this also catches ::ffff:0:0/96 wildcard when the
+            // mapped address itself is private (e.g. ::ffff:10.x.x.x).
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_private_ip(IpAddr::V4(v4));
             }
@@ -153,6 +165,31 @@ mod tests {
         // ::ffff:127.0.0.1 → loopback when unmapped
         assert!(is_private_ip(ip("::ffff:127.0.0.1")));
         // ::ffff:8.8.8.8 → public when unmapped
+        assert!(!is_private_ip(ip("::ffff:8.8.8.8")));
+    }
+
+    // v1.32 A3 — new range tests (written before the fix to prove they fail)
+
+    #[test]
+    fn rejects_cgnat_range() {
+        // RFC 6598 CGNAT 100.64.0.0/10
+        assert!(is_private_ip(ip("100.64.0.5")));
+        assert!(is_private_ip(ip("100.127.255.254")));
+        // Just outside the /10 range — must NOT be flagged
+        assert!(!is_private_ip(ip("100.128.0.0")));
+        assert!(!is_private_ip(ip("100.63.255.255")));
+    }
+
+    #[test]
+    fn rejects_ipv6_special_ranges() {
+        // ::/128 — IPv6 unspecified
+        assert!(is_private_ip(ip("::")));
+        // 2001:db8::/32 — RFC 3849 documentation prefix
+        assert!(is_private_ip(ip("2001:db8::1")));
+        // IPv4-mapped private: recurse into IPv4 check
+        assert!(is_private_ip(ip("::ffff:10.0.0.1")));
+        assert!(is_private_ip(ip("::ffff:192.168.1.1")));
+        // IPv4-mapped public: must NOT be flagged
         assert!(!is_private_ip(ip("::ffff:8.8.8.8")));
     }
 }

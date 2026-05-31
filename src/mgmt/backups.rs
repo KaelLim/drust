@@ -445,6 +445,8 @@ fn is_uuid_like(s: &str) -> bool {
 /// post-dates the snapshot.
 pub async fn restore_tenant(
     State(state): State<BackupsState>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<crate::auth::middleware::AdminId>,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(filename): Path<String>,
     axum::Form(form): axum::Form<RestoreForm>,
 ) -> Response {
@@ -508,6 +510,25 @@ pub async fn restore_tenant(
 
     match result {
         Ok(Ok(())) => {
+            // Emit audit row for the successful restore (v1.32 B3).
+            let mut entry = crate::safety::audit::AuditEntry::success(
+                &form.tenant_id,
+                "admin",
+                "admin.backup.restore",
+                0,
+            );
+            entry.actor_admin_id = Some(caller_id);
+            entry.actor_email_snapshot = admin.email.clone();
+            entry.extra.insert(
+                "archive".into(),
+                serde_json::Value::String(filename.clone()),
+            );
+            entry.extra.insert(
+                "restored_to".into(),
+                serde_json::Value::String(dest_dir.display().to_string()),
+            );
+            crate::safety::audit_db::try_send(&entry);
+
             // PRG: redirect back to inspect page with success flash via query string.
             Redirect::to(&format!(
                 "/drust/admin/backups/{filename}/inspect?restored={tid}&dest={dest}",

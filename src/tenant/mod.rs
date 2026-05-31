@@ -187,8 +187,8 @@ mod cors_tests {
     /// new RFC 8594 deprecation headers (`Deprecation`, `Sunset`, `Link`).
     /// Without `Access-Control-Expose-Headers`, the browser hides them
     /// from `response.headers.get(...)` even though the bytes arrive.
-    #[test]
-    fn cors_exposes_deprecation_headers() {
+    #[tokio::test]
+    async fn cors_exposes_deprecation_headers() {
         // build_cors_layer is private; the test invokes it directly. We
         // can't introspect CorsLayer internals, so instead we mount the
         // layer on a stub axum Router and assert the actual response
@@ -206,8 +206,8 @@ mod cors_tests {
 
         // Real GET (not preflight). Access-Control-Expose-Headers is set
         // on the actual response, not just preflight.
-        let resp = tokio_test::block_on(async {
-            app.oneshot(
+        let resp = app
+            .oneshot(
                 Request::builder()
                     .method(Method::GET)
                     .uri("/echo")
@@ -216,8 +216,7 @@ mod cors_tests {
                     .unwrap(),
             )
             .await
-            .unwrap()
-        });
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let exposed = resp
             .headers()

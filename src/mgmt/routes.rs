@@ -888,6 +888,12 @@ impl MgmtState {
         // into public crawl, but otherwise stateless.
         let design_router = Router::new().route("/admin/_design", get(design_showcase));
 
+        // v1.32 C1 — Prometheus metrics endpoint. Admin-session-gated;
+        // exposes operational counters for ISO/IEC 27001 A.8.16 compliance.
+        let metrics_router = Router::new()
+            .route("/admin/_metrics", get(super::metrics::handler))
+            .with_state(self.clone());
+
         // Per-admin preferences hub. First section: locale switch (was on
         // the topbar pre-2026-05-22). Future home for keyboard shortcuts,
         // notifications, profile, etc. Save path writes through to
@@ -949,6 +955,7 @@ impl MgmtState {
             .merge(admin_tenant_files_router)
             .merge(backups_router)
             .merge(design_router)
+            .merge(metrics_router)
             .merge(settings_router)
             .merge(team_router)
             .layer(axum::middleware::from_fn_with_state(

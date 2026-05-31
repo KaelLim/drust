@@ -192,6 +192,8 @@ impl AuditWriter {
                         "audit: channel full, entry dropped (rate-limited log)"
                     );
                 }
+                // v1.32 C1 — keep Prometheus counter in sync with the drop.
+                crate::mgmt::metrics::metrics().audit_drops_total.inc();
             }
         }
     }

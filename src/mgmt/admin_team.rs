@@ -437,7 +437,7 @@ pub async fn change_role(
 
     // All DB work inside a single sync block before any .await.
     let db_result: Result<(String, Option<String>), Response> = {
-        let mut conn = s.meta.lock().await;
+        let conn = s.meta.lock().await;
 
         // Check target exists.
         let current_role: Option<String> = conn
@@ -556,7 +556,7 @@ pub async fn remove_admin(
 
     // All DB work inside a single sync block before any .await.
     let db_result: Result<(String, Option<String>, Option<String>), Response> = {
-        let mut conn = s.meta.lock().await;
+        let conn = s.meta.lock().await;
 
         // Snapshot target role + email BEFORE the DELETE so the audit row
         // can identify who was removed even after the admins row is gone.

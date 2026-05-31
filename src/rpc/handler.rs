@@ -51,7 +51,7 @@ enum RpcOutcome {
 }
 
 #[derive(serde::Deserialize, Default)]
-pub(crate) struct DryRunQs {
+pub struct DryRunQs {
     #[serde(default)]
     pub dry_run: Option<bool>,
 }
@@ -149,18 +149,35 @@ pub async fn call_rpc(
                         return Ok(RpcOutcome::AnonDenied);
                     }
 
-                    // 2b. Auto-bind :user_id from AuthCtx when:
-                    //     (a) the RPC declares a param named "user_id",
-                    //     (b) the caller is a User token, and
-                    //     (c) the body did not supply user_id.
+                    // 2b. Auto-bind / gate :user_id based on caller role:
+                    //
+                    //   • User token  — ALWAYS overwrite body-supplied user_id with
+                    //     the bearer-bound id (v1.32 A1 original fix).
+                    //   • Anon        — Anon has no bearer-bound user_id. Reject
+                    //     categorically when :user_id is declared — Anon callers
+                    //     must not be able to spoof user_id via body (v1.32 A1
+                    //     residual hole fix).
+                    //   • Service     — no auto-bind; service is trusted.
                     let mut body_map = body_map;
-                    if let AuthCtx::User { user_id, .. } = &ctx_for_closure {
-                        let declares_user_id = stored.params.iter().any(|p| p.name == "user_id");
-                        if declares_user_id && !body_map.contains_key("user_id") {
-                            body_map.insert(
-                                "user_id".into(),
-                                serde_json::Value::String(user_id.clone()),
-                            );
+                    let declares_user_id = stored.params.iter().any(|p| p.name == "user_id");
+                    match &ctx_for_closure {
+                        AuthCtx::User { user_id, .. } => {
+                            if declares_user_id {
+                                body_map.insert(
+                                    "user_id".into(),
+                                    serde_json::Value::String(user_id.clone()),
+                                );
+                            }
+                        }
+                        AuthCtx::Anon => {
+                            if declares_user_id {
+                                // Anon must not set user_id. The RPC requires a
+                                // bearer-bound identity — reject before SQL execution.
+                                return Ok(RpcOutcome::UserIdBindingRequired);
+                            }
+                        }
+                        AuthCtx::Service { .. } => {
+                            // Service may or may not supply user_id; no auto-bind.
                         }
                     }
 
@@ -209,12 +226,17 @@ pub async fn call_rpc(
                 //     a `user_id` param but the caller is Anon, reject
                 //     BEFORE entering the writer closure (no mutation
                 //     should happen).
+                //
+                // v1.32 A1: User tokens NEVER let the caller set user_id —
+                // always overwrite with the bearer-bound id. Closes the
+                // spoof where a User caller could send {"user_id":"<victim>"}.
+                // Service tokens unchanged (no auto-bind; service is trusted).
                 let declares_user_id =
                     stored.params.iter().any(|p| p.name == "user_id");
                 let mut body_map = body_map;
                 match &ctx_for_lookup {
                     AuthCtx::User { user_id, .. } => {
-                        if declares_user_id && !body_map.contains_key("user_id") {
+                        if declares_user_id {
                             body_map.insert(
                                 "user_id".into(),
                                 serde_json::Value::String(user_id.clone()),
@@ -222,7 +244,11 @@ pub async fn call_rpc(
                         }
                     }
                     AuthCtx::Anon => {
-                        if declares_user_id && !body_map.contains_key("user_id") {
+                        // v1.32 A1: Anon has no bearer-bound user_id. If the RPC
+                        // declares :user_id, reject categorically — Anon callers
+                        // must not be able to spoof user_id via body either. Closes
+                        // the residual hole adjacent to the User-token spoof fix.
+                        if declares_user_id {
                             return outcome_to_response(
                                 RpcOutcome::UserIdBindingRequired,
                                 &t,

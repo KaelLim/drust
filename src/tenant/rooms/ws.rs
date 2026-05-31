@@ -45,9 +45,27 @@ pub async fn ws_handler(
         .on_upgrade(move |socket| handle_socket(socket, ctx, pc, tenant))
 }
 
+/// RAII guard that increments `drust_ws_connections_active` on construction
+/// and decrements it on drop — regardless of how `handle_socket` exits.
+struct WsConnGuard;
+
+impl WsConnGuard {
+    fn new() -> Self {
+        crate::mgmt::metrics::metrics().ws_connections_active.inc();
+        WsConnGuard
+    }
+}
+
+impl Drop for WsConnGuard {
+    fn drop(&mut self) {
+        crate::mgmt::metrics::metrics().ws_connections_active.dec();
+    }
+}
+
 /// Per-connection event loop. Returns when the conn closes for any
 /// reason (client disconnect / LAGGED / send error).
 async fn handle_socket(socket: WebSocket, ctx: AuthCtx, pc: PublishCtx, tenant: String) {
+    let _conn_guard = WsConnGuard::new(); // v1.32 C1 — tracks active WS connections
     let (mut sink, mut stream) = socket.split();
 
     // v1.31.2 F6 — drop the separate `subscribed: HashSet<String>`. The
