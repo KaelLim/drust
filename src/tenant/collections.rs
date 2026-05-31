@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 
 #[derive(serde::Deserialize, Default)]
-pub(crate) struct DryRunQuery {
+pub struct DryRunQuery {
     #[serde(default)]
     pub(crate) dry_run: Option<bool>,
 }

@@ -64,6 +64,11 @@ fn bootstrap_meta_with_email(data_dir: &std::path::Path, email: &str) -> rusqlit
     {
         let mut conn = open_meta(&meta_path).unwrap();
         bootstrap_admin(&mut conn, "kael", "pass").unwrap();
+        // run_migrations adds sessions.token_hash (v1.29.5) and other
+        // columns that create_session / validate_session require. Without
+        // this call the INSERT in create_session hits "table sessions has
+        // no column named token_hash" and maps to oauth_provider_error.
+        drust::db::migrations::run_migrations(&conn, data_dir).unwrap();
     }
     drust::bin_helpers::set_admin_password_with_email(&meta_path, "kael", "pass", Some(email))
         .unwrap();
@@ -78,6 +83,8 @@ fn bootstrap_meta_without_email(data_dir: &std::path::Path) -> rusqlite::Connect
     let meta_path = data_dir.join("meta.sqlite");
     let mut conn = open_meta(&meta_path).unwrap();
     bootstrap_admin(&mut conn, "kael", "pass").unwrap();
+    // Same as bootstrap_meta_with_email: token_hash column required.
+    drust::db::migrations::run_migrations(&conn, data_dir).unwrap();
     conn
 }
 
@@ -91,6 +98,9 @@ fn bootstrap_meta_without_email(data_dir: &std::path::Path) -> rusqlite::Connect
 pub async fn spin_up_admin_with_google_fake(
     fake: &Arc<FakeProvider>,
 ) -> (axum::Router, TempDir, std::path::PathBuf) {
+    // Ensure the global test AuditWriter is running before any callback
+    // can emit a row via audit_db::try_send.
+    ensure_test_audit_writer();
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let log_dir = data_dir.join("audit");
@@ -118,6 +128,7 @@ pub async fn spin_up_admin_with_google_fake(
 pub async fn spin_up_admin_with_google_fake_no_email(
     fake: &Arc<FakeProvider>,
 ) -> (axum::Router, TempDir, std::path::PathBuf) {
+    ensure_test_audit_writer();
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let log_dir = data_dir.join("audit");
@@ -143,6 +154,7 @@ pub async fn spin_up_admin_with_google_fake_no_email(
 pub async fn spin_up_admin_with_github_fake(
     fake: &Arc<FakeProvider>,
 ) -> (axum::Router, TempDir, std::path::PathBuf) {
+    ensure_test_audit_writer();
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let log_dir = data_dir.join("audit");

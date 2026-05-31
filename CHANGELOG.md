@@ -1,3 +1,117 @@
+## v1.32.0 — 2026-05-31
+
+### Security
+
+- **A1: RPC `:user_id` user-token spoofing closed (CRITICAL).** Prior
+  to this release, any User-token caller could supply
+  `{"user_id":"<victim>"}` in an RPC body and the auto-bind would
+  honor it (condition `!body_map.contains_key("user_id")` skipped
+  overwrite). This let any user impersonate any other user on any
+  RPC declaring a `:user_id` param. Now the auto-bind always
+  overwrites for User tokens — both read and write arms. The Anon
+  arm was also tightened: if an RPC declares `:user_id`, Anon
+  callers are rejected categorically (previously body-supplied
+  user_id could thread into SQL). Service tokens unchanged. Four
+  regression tests in `tests/rpc_user_id_spoof.rs` cover read/write
+  × User/Anon spoof attempts.
+
+- **A2: OAuth id_token iss/aud/exp validation.** The Google id_token
+  decode path skipped signature verification per OIDC §3.1.3.7
+  (confidential client + TLS-trusted token endpoint), but the same
+  section also requires iss/aud/exp claim checks — which were
+  missing. Added: `iss ∈ {accounts.google.com,
+  https://accounts.google.com}`, `aud == client_id`, `exp > now`.
+  4 unit tests in `src/oauth/google.rs::tests`. Closes the
+  hijack path where a misconfigured `token_endpoint` or attacker
+  with a Google project + allowlisted email could log in as any
+  drust admin.
+
+- **A3: webhook resolver IPv6 + CGNAT private-range close.** Added
+  `100.64.0.0/10` (RFC 6598 CGNAT shared address space), `::/128`
+  (IPv6 unspecified), `::ffff:0:0/96` (IPv4-mapped wildcard via
+  recursion into IPv4 private check), and `2001:db8::/32` (RFC 3849
+  docs prefix) to `is_private_ip`. Applied by `PinnedPublicResolver`
+  at every webhook dispatch attempt. 2 unit tests.
+
+- **A4: EventBus subscribe race close (F7 mirror).** `EventBus::
+  subscribe` now holds the DashMap entry guard across `tx.
+  subscribe()`, mirroring the v1.31.2 F7 fix already applied to
+  `RoomBus`. Latent — no user report; structural fix prevents
+  parallel `evict_collection` from orphaning a freshly-subscribed
+  receiver. 50-subscriber × 200ms stress test mirrors the bus.rs
+  F7 test shape.
+
+### Cleanup
+
+- **B1: Fix 5 cargo warnings.** Deleted `CollectionsPage.tenant_id`
+  + `WebhookFailureRow.id` (unused fields), dropped 2 redundant
+  `mut` in `admin_team.rs`, raised `DryRunQuery` + `DryRunQs`
+  visibility to `pub` (fixes `private_interfaces`). `cargo check`
+  is now warning-free for Rust code (i18n build.rs orphan warnings
+  retained as soft signal).
+
+- **B2: Drop tokio-test dev dep.** Single call site in
+  `src/tenant/mod.rs` converted from `tokio_test::block_on` to
+  `#[tokio::test]`. Cargo.toml `[dev-dependencies]` no longer
+  lists `tokio-test`.
+
+- **B3: Backup restore audit row.** Restore handler now emits an
+  `admin.backup.restore` audit row with archive filename + restore
+  destination — closes the LOW-severity audit gap for the most
+  destructive admin op. Mirrors the v1.31.3 F15 admin_rooms.rs
+  audit pattern.
+
+### Observability
+
+- **C1: `/admin/_metrics` Prometheus endpoint.** Admin-session-gated
+  GET endpoint exposing 5 metrics:
+  - `drust_audit_drops_total` (counter — audit channel-full drops)
+  - `drust_bearer_denied_total{role,status}` (counter)
+  - `drust_webhook_attempts_total{result}` (counter)
+  - `drust_ws_connections_active` (gauge — RAII guard)
+  - `drust_tenant_db_bytes{tenant_id}` (gauge — refreshed at scrape)
+
+  `prometheus = 0.13` with `default-features = false` (no process
+  metrics / protobuf baggage). Closes ISO/IEC 27001 A.8.16
+  (Monitoring) gap surfaced in the v1.31.9 review.
+
+- **C2: GitHub Actions CI workflow.** `.github/workflows/ci.yml`
+  runs `cargo fmt --check`, `cargo clippy -D warnings`,
+  `cargo test --lib`, and `cargo audit` on every push to main + on
+  manual dispatch. NEVER `--release` (LTO + codegen-units=1 hangs
+  40+ min). Closes ISO/IEC 27001 A.8.8 (Vulnerability mgmt) gap.
+  Passive — push not blocked on red.
+
+### Tests (harness rot fixed incidentally)
+
+- **admin_oauth integration suite restored.** v1.31.9 baseline had
+  5 admin_oauth happy-path tests failing — root cause was
+  `sessions.token_hash` column added in v1.29.5 but the test
+  bootstrap didn't call `run_migrations`. INSERT failed at runtime,
+  mapped to `oauth_provider_error` redirect (masked the real
+  cause). Test harness now calls `run_migrations` in setup.
+- **Audit polling in tests now reads SQLite, not JSONL.** v1.25.2
+  retired JSONL writes but `poll_for_audit_row` still scanned for
+  `audit-*.jsonl` files. Test harness now initializes a global
+  audit writer + queries the SQLite DB.
+- **Fake Google `aud` mirrors request client_id.** Previously
+  hardcoded `"test-client-id"`, broke any test using a different
+  client_id once A2 added `aud` validation. Now matches real OIDC
+  behavior.
+
+Pre-existing test-harness rot in 10 other suites (admin_index_routes,
+admin_oauth_provider_handlers, admin_webhook_handlers, audit_ui_routes,
+auth_admin_ui, mgmt_login, session, session_middleware, tenants_api,
+tokens_api — 41 failing tests total) remains; production code
+unaffected, scheduled for a dedicated harness-cleanup release.
+
+### Notes
+
+- No DB migration, no env var addition, no admin UI change visible
+  to operators, no MCP tool signature change. Wire shape preserved
+  across REST, MCP, admin UI, audit-DB.
+- Spec: docs/superpowers/specs/2026-05-30-drust-v132-post-review-hardening-design.md
+
 ## v1.31.9 — 2026-05-30
 
 ### Changed

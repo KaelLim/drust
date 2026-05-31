@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check-test-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # NEVER add --release here. Cargo.toml [profile.release] sets
+      # LTO + codegen-units=1, making --release tests hang 40+ minutes.
+      - name: cargo test --lib
+        run: cargo test --lib
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version ^0.20
+
+      - name: cargo audit
+        run: cargo audit

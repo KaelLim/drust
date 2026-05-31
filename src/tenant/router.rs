@@ -151,6 +151,11 @@ pub async fn bearer_auth_layer(
         let bearer = match extract_bearer(&req) {
             Some(t) => t,
             None => {
+                // v1.32 C1 — bearer denied counter
+                crate::mgmt::metrics::metrics()
+                    .bearer_denied_total
+                    .with_label_values(&["none", "HTTP_401"])
+                    .inc();
                 return json_error(
                     StatusCode::UNAUTHORIZED,
                     "UNAUTHENTICATED",
@@ -293,6 +298,11 @@ pub async fn bearer_auth_layer(
         let (bound_tenant, role_str) = match ok {
             Some(row) => row,
             None => {
+                // v1.32 C1 — bearer denied counter; role unknown at this point
+                crate::mgmt::metrics::metrics()
+                    .bearer_denied_total
+                    .with_label_values(&["unknown", "HTTP_401"])
+                    .inc();
                 return json_error(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", "invalid token");
             }
         };

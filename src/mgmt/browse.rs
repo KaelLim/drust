@@ -14,7 +14,6 @@ use serde::Deserialize;
 #[derive(Template)]
 #[template(path = "collections.html")]
 struct CollectionsPage {
-    tenant_id: String,
     tenant_name: String,
     version: &'static str,
     t: Translator,
@@ -156,7 +155,6 @@ pub async fn collections_page(
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         CollectionsPage {
-            tenant_id,
             tenant_name,
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),

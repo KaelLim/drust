@@ -700,8 +700,6 @@ struct TenantOverviewPage {
 }
 
 struct WebhookFailureRow {
-    #[allow(dead_code)]
-    id: i64,
     collection: String,
     url: String,
     events: String,
@@ -832,19 +830,18 @@ pub async fn tenant_overview_page(
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string();
         if let Ok(mut stmt) = conn.prepare(
-            "SELECT id, collection, url, events, last_failure_at, \
+            "SELECT collection, url, events, last_failure_at, \
                 COALESCE(last_failure_reason, '') \
              FROM _system_webhooks \
              WHERE last_failure_at IS NOT NULL AND last_failure_at >= ?1 \
              ORDER BY last_failure_at DESC LIMIT 5",
         ) && let Ok(rows) = stmt.query_map(rusqlite::params![cutoff_str], |r| {
             Ok(WebhookFailureRow {
-                id: r.get(0)?,
-                collection: r.get(1)?,
-                url: r.get(2)?,
-                events: r.get(3)?,
-                last_failure_at: r.get(4)?,
-                last_failure_reason: r.get(5)?,
+                collection: r.get(0)?,
+                url: r.get(1)?,
+                events: r.get(2)?,
+                last_failure_at: r.get(3)?,
+                last_failure_reason: r.get(4)?,
             })
         }) {
             webhook_failures.extend(rows.flatten());

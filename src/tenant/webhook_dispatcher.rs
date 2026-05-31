@@ -299,6 +299,27 @@ pub(crate) async fn deliver(
     let outcome = deliver_for_test(
         resolver, None, row, body_bytes, delivery_id, timestamp, sched,
     ).await;
+    // v1.32 C1 — webhook attempt counter
+    {
+        let result_label = match &outcome {
+            Ok(()) => "success",
+            Err(DeliveryError::NonRetryable { status, .. }) if *status == 0 => "network",
+            Err(DeliveryError::NonRetryable { status, .. })
+                if (400..500).contains(status) => "4xx",
+            Err(DeliveryError::NonRetryable { .. }) => "5xx",
+            Err(DeliveryError::Exhausted { last_error, .. }) => {
+                if last_error.contains("timeout") || last_error.contains("timed out") {
+                    "timeout"
+                } else {
+                    "network"
+                }
+            }
+        };
+        crate::mgmt::metrics::metrics()
+            .webhook_attempts_total
+            .with_label_values(&[result_label])
+            .inc();
+    }
     if let Err(ref e) = outcome {
         let reason = e.to_string();
         let id = row.id;
