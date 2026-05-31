@@ -97,17 +97,27 @@ fn extract_cookie<B>(req: &Request<B>, name: &str) -> Option<String> {
 }
 
 pub fn build_session_cookie(token: &str, ttl_secs: u64) -> String {
-    format!(
-        "{}={}; Path=/drust; HttpOnly; Secure; SameSite=Lax; Max-Age={}",
+    let base = format!(
+        "{}={}; Path=/drust; HttpOnly; SameSite=Lax; Max-Age={}",
         SESSION_COOKIE, token, ttl_secs
-    )
+    );
+    if std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_ok() {
+        base
+    } else {
+        format!("{base}; Secure")
+    }
 }
 
 pub fn clear_session_cookie() -> String {
-    format!(
-        "{}=; Path=/drust; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
+    let base = format!(
+        "{}=; Path=/drust; HttpOnly; SameSite=Lax; Max-Age=0",
         SESSION_COOKIE
-    )
+    );
+    if std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_ok() {
+        base
+    } else {
+        format!("{base}; Secure")
+    }
 }
 
 impl IntoResponse for AdminId {
