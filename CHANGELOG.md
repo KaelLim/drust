@@ -1,3 +1,95 @@
+## v1.32.1 — 2026-05-31
+
+### Changed
+
+- **D1: JSONL audit dual-write retired.** `bearer_auth_layer` no
+  longer routes through `AuditLog::append` (which was running
+  `write_all + flush().await` per tenant request to daily `.jsonl`
+  files). Direct path is now `audit_db::try_send` — the documented
+  SoT since v1.25.2 has been adopted everywhere. `AuditLog`,
+  `AuditWriterHandle`, the JSONL writer task, `TenantAuthState.audit`
+  field, and `audit_handle.join()` in `main.rs` all deleted.
+  Pre-existing `audit-YYYY-MM-DD.jsonl` files left on disk; operator
+  may delete manually. 10 test files adapted to read from
+  `meta_logs.sqlite` via dedicated-thread `AuditWriter` init pattern
+  (see `tests/common/oauth_helpers.rs::TEST_AUDIT_DB`).
+
+- **D2: RoomBus / EventBus key types → `Arc<str>` (nested DashMap).**
+  Prior shape allocated `(String, String)` per publish call (tenant +
+  collection/room) for DashMap lookup. `publish()` is the per-event
+  hot path; alloc × 2 per event was wasted on every record CRUD +
+  every broadcast publish. Switched to
+  `DashMap<Arc<str>, DashMap<Arc<str>, Sender>>`: reads use `&str`
+  directly, writes alloc `Arc` only on first insert. F7
+  entry-guard-across-subscribe invariant preserved on both buses
+  (both outer + inner guards held across `.subscribe()`). Side win:
+  `tenant_channel_count` / `tenant_subscriber_count` dropped from
+  O(N_total_channels) → O(N_tenant_channels).
+
+- **D3: Stats sampler uses TenantRegistry reader pool + batched meta
+  UPDATEs.** `sample_one` previously opened a fresh `Connection` per
+  tenant per cycle (~1-3 ms cold open × N tenants); now uses the
+  existing reader pool (PRAGMA already applied). `sample_all` batches
+  all N `UPDATE meta.sqlite` statements in one
+  `BEGIN IMMEDIATE / COMMIT` transaction — meta-lock acquisitions
+  per cycle from N+1 to 2. Per-tenant sampling errors logged + skipped,
+  batch commits what succeeded.
+
+- **D4: `list_handler` drops redundant `collection_exists` reader.**
+  `require_dml_cap` already loads the schema (via cache); successful
+  return implies the collection exists. The separate `collection_exists`
+  reader hit + an inner `COLLECTION_NOT_FOUND` 404 branch (already dead
+  — outer 404 covered all cases) both removed. Same 200/404 outcomes
+  + bodies.
+
+- **D5: `bearer_auth_layer` lazy audit field capture.** `path`,
+  `tenant`, and `hint` String allocs deferred to the audit-emit
+  branch; `Method` and `Uri` clones stay pre-`next.run` (both cheap —
+  `Uri` is internally Arc-shared). Naming split (`*_captured` vs
+  `*_for_audit`) makes the borrow-lifecycle constraint explicit. Win
+  is borrow-clarity + savings on test paths where `WRITER.get()` is
+  unset; production alloc count unchanged in current emit-always
+  paths.
+
+- **D6: Session cookies respect `DRUST_DEV_NO_SECURE_COOKIES`.**
+  Consistency with theme / locale + per-tenant OAuth cookies, which
+  already honor this env var for HTTP-only dev runs. Both
+  `build_session_cookie` AND `clear_session_cookie` fixed (the latter
+  would have prevented logout in dev otherwise — set with
+  non-`Secure`, browser rejects `Secure` clear over HTTP). Prod
+  unaffected (env unset → `Secure` flag stays).
+
+### Fixed
+
+- **D7: Per-tenant OAuth multi-tab redirect_uri confusion.** Prior
+  shape round-tripped frontend `redirect_uri` via a separate cookie
+  (`drust_t_oauth_redirect_uri`). Two parallel OAuth starts in
+  different tabs (each for a different allowlisted frontend) had the
+  later cookie write clobbering the earlier — the first callback then
+  redirected to the wrong frontend (still allowlisted, so no token
+  leak, just wrong destination). New `TenantOauthStateToken` embeds
+  `redirect_uri` + HMAC-SHA256 envelope
+  (`[16B nonce][2B u16 len][N B uri][32B HMAC]`, base64url encoded;
+  constant-time HMAC compare via `subtle::ConstantTimeEq`). Callback
+  decodes → verifies HMAC → re-checks against per-tenant allowlist
+  (TOCTOU-safe; defense in depth — 4 gates total: cookie match, PKCE,
+  HMAC, URI allowlist). Admin OAuth (`src/mgmt/oauth_login.rs`)
+  untouched — added a separate type rather than mutating
+  `OauthStateToken`. Per-process secret (32 bytes random at boot,
+  matching `url_sign_secret` pattern); restart invalidates in-flight
+  flows (acceptable given 5-min PKCE TTL).
+
+### Notes
+
+- Wire-identical across REST, MCP, audit-DB consumers. No DB
+  migration, no env var addition, no admin UI change.
+- `cargo test --lib` 434 → 443 (+9 D7 unit tests).
+- Pre-existing 41 integration test failures unchanged; v1.32.1
+  introduced 0 new failures, fixed 0 (test-harness rot deferred to
+  v1.32.5 / v1.33 — see task #722).
+
+---
+
 ## v1.32.0 — 2026-05-31
 
 ### Security
