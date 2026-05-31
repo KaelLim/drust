@@ -4,7 +4,6 @@ use axum::Router;
 use drust::auth::bearer::{generate_token, hash_token};
 use drust::mcp::http_registry::McpHttpRegistry;
 use drust::mcp::server::McpRegistry;
-use drust::safety::audit::AuditLog;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::{SharedTenantPool, TenantRegistry};
 use drust::tenant::router::TenantAuthState;
@@ -39,11 +38,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(
-        meta,
-        tenants.clone(),
-        Arc::new(AuditLog::new(dir.path().join("audit"))),
-    );
+    let state = TenantAuthState::test_default(meta, tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -90,11 +85,7 @@ pub async fn spin_up_tenant_with_role(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(
-        meta,
-        tenants.clone(),
-        Arc::new(AuditLog::new(dir.path().join("audit"))),
-    );
+    let state = TenantAuthState::test_default(meta, tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -138,11 +129,7 @@ pub async fn spin_up_tenant_with_threshold(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let mut state = TenantAuthState::test_default(
-        meta,
-        tenants.clone(),
-        Arc::new(AuditLog::new(dir.path().join("audit"))),
-    );
+    let mut state = TenantAuthState::test_default(meta, tenants.clone());
     state.index_large_table_rows = index_large_table_rows;
     let stack = TenantStack {
         auth: state,

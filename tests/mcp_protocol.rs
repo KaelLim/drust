@@ -18,7 +18,6 @@ mod helpers;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use drust::auth::bearer::{generate_token, hash_token};
-use drust::safety::audit::AuditLog;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::{TenantStack, build_tenant_router, events::EventBus, router::TenantAuthState};
@@ -56,11 +55,7 @@ async fn mcp_stack(tenant: &str) -> (axum::Router, String, String, tempfile::Tem
     let bus = EventBus::new();
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(
-        meta,
-        tenants.clone(),
-        Arc::new(AuditLog::new(dir.path().join("audit"))),
-    );
+    let state = TenantAuthState::test_default(meta, tenants.clone());
     let app = build_tenant_router(TenantStack {
         auth: state,
         bus: bus.clone(),

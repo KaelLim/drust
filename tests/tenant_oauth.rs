@@ -23,7 +23,6 @@ use drust::auth::bearer::{generate_token, hash_token};
 use drust::oauth::github::GitHubAdapter;
 use drust::oauth::google::GoogleAdapter;
 use drust::oauth::provider::OauthProvider;
-use drust::safety::audit::AuditLog;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::events::EventBus;
@@ -86,7 +85,7 @@ async fn bootstrap_tenant_with_oauth(
 /// handler doesn't bail with `DRUST_PUBLIC_URL not set`.
 fn build_tenant_state(
     data_dir: &std::path::Path,
-    audit_log_dir: &std::path::Path,
+    _audit_log_dir: &std::path::Path,
     overrides: HashMap<String, Arc<dyn OauthProvider>>,
 ) -> TenantAuthState {
     let meta_path = data_dir.join("meta.sqlite");
@@ -95,7 +94,6 @@ fn build_tenant_state(
     let mut state = TenantAuthState::test_default(
         Arc::new(Mutex::new(conn)),
         Arc::new(TenantRegistry::new(data_dir.to_path_buf(), 2)),
-        Arc::new(AuditLog::new(audit_log_dir.to_path_buf())),
     );
     // Override the two test-specific fields that differ from the factory defaults.
     state.public_url = "http://test".to_string();
@@ -1242,48 +1240,11 @@ async fn tenant_oauth_concurrent_callbacks_same_email() {
 }
 
 // ---------- T2: AuditExtra on admin REST PUT / DELETE ----------
-
-/// Poll a tenant audit dir for a JSONL row whose `op` equals `expected_op`.
-/// Mirrors `poll_for_audit_row` (which filters by `auth_method`) but for
-/// the admin-REST audit shape (no auth_method on plain bearer rows).
-async fn poll_for_audit_op(
-    log_dir: &std::path::Path,
-    expected_op: &str,
-    max_ms: u64,
-) -> serde_json::Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_ms);
-    loop {
-        if log_dir.exists() {
-            let entries: Vec<_> = std::fs::read_dir(log_dir)
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("audit-") && n.ends_with(".jsonl"))
-                })
-                .collect();
-            for p in entries {
-                if let Ok(body) = std::fs::read_to_string(&p) {
-                    for line in body.lines() {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
-                            && v["op"] == expected_op
-                        {
-                            return v;
-                        }
-                    }
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!("audit row with op={expected_op} not written within {max_ms}ms");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-}
+//
+// poll_for_audit_op was a local JSONL-file scanner. It now lives in
+// `tests/common/oauth_helpers.rs` and reads from the global test
+// SQLite audit DB (same writer instance as `poll_for_audit_row`).
+use crate::common::oauth_helpers::poll_for_audit_op;
 
 #[tokio::test]
 async fn admin_put_oauth_provider_writes_audit_extra() {

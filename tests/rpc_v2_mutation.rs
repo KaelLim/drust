@@ -10,8 +10,45 @@ mod helpers;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use serde_json::json;
+use std::path::PathBuf;
+use tempfile::tempdir;
 use tower::ServiceExt;
+
+/// Initialise the process-wide audit writer once and return the DB
+/// path. v1.32.1 D1 — JSONL writer retired; tests read from the
+/// global SQLite writer filtered by tenant id. Writer runs on a
+/// dedicated std::thread so its task outlives individual #[tokio::test]
+/// runtimes.
+fn ensure_global_audit_writer() -> &'static PathBuf {
+    static AUDIT_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    AUDIT_PATH.get_or_init(|| {
+        let dir = Box::new(tempdir().unwrap());
+        let path = dir.path().join("test_rpc_v2_mutation_audit.sqlite");
+        let conn = open_audit_db_write(&path).unwrap();
+        let (tx_ready, rx_ready) = std::sync::mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("test-rpc-v2-audit-writer".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build writer runtime");
+                rt.block_on(async move {
+                    let writer = AuditWriter::new(conn);
+                    drust::safety::audit_db::init_globals(writer);
+                    let _ = tx_ready.send(());
+                    std::future::pending::<()>().await;
+                });
+            })
+            .expect("spawn audit writer thread");
+        rx_ready.recv().expect("audit writer init signal");
+        let path_clone = path.clone();
+        Box::leak(dir);
+        path_clone
+    })
+}
 
 fn req(
     method: &str,
@@ -97,25 +134,51 @@ async fn orders_qty_sum(pool: &drust::storage::pool::SharedTenantPool) -> i64 {
     .unwrap()
 }
 
-/// Best-effort: drain audit lines from the dir's JSONL files. Sleeps
-/// briefly so the async writer task has time to flush. Mirrors the
-/// pattern in tests/auth_audit.rs.
-async fn read_audit_lines(dir: &std::path::Path) -> Vec<serde_json::Value> {
+/// Best-effort: drain audit rows for `tenant` from the global SQLite
+/// audit DB. Sleeps briefly so the async writer task (100ms batch
+/// flush) has time to commit. v1.32.1 D1 — replaces the previous
+/// JSONL-file scan. Flattens `extra` JSON into top-level keys so
+/// assertions like `row["rpc_mode"]` work unchanged.
+async fn read_audit_lines(tenant: &str) -> Vec<serde_json::Value> {
+    let path = ensure_global_audit_writer();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let mut out = vec![];
-    let audit_dir = dir.join("audit");
-    if let Ok(rd) = std::fs::read_dir(&audit_dir) {
-        for e in rd.flatten() {
-            if let Ok(s) = std::fs::read_to_string(e.path()) {
-                for l in s.lines() {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
-                        out.push(v);
-                    }
+    let r = open_audit_db_read(path).unwrap();
+    let _ = r.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+    let mut stmt = r
+        .prepare(
+            "SELECT tenant, status, op, extra \
+             FROM audit WHERE tenant = ?1 ORDER BY id ASC",
+        )
+        .unwrap();
+    stmt.query_map(rusqlite::params![tenant], |r| {
+        let tenant: Option<String> = r.get(0)?;
+        let status: Option<String> = r.get(1)?;
+        let op: Option<String> = r.get(2)?;
+        let extra_json: Option<String> = r.get(3)?;
+        let mut map = serde_json::Map::new();
+        if let Some(t) = tenant {
+            map.insert("tenant".into(), serde_json::Value::String(t));
+        }
+        if let Some(s) = status {
+            map.insert("status".into(), serde_json::Value::String(s));
+        }
+        if let Some(o) = op {
+            map.insert("op".into(), serde_json::Value::String(o));
+        }
+        if let Some(extra_str) = extra_json {
+            if let Ok(serde_json::Value::Object(extra_map)) =
+                serde_json::from_str::<serde_json::Value>(&extra_str)
+            {
+                for (k, v) in extra_map {
+                    map.entry(k).or_insert(v);
                 }
             }
         }
-    }
-    out
+        Ok(serde_json::Value::Object(map))
+    })
+    .unwrap()
+    .filter_map(Result::ok)
+    .collect()
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -167,6 +230,7 @@ async fn case1_read_rpc_unchanged() {
 
 #[tokio::test]
 async fn case2_single_insert_commits_and_audits_affected_one() {
+    ensure_global_audit_writer();
     let (app, tid, svc, _anon, dir) =
         helpers::spin_up_dual_role_self_register("t-rpc-c2").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
@@ -198,7 +262,7 @@ async fn case2_single_insert_commits_and_audits_affected_one() {
     assert_eq!(orders_count(&pool).await, 1);
     assert_eq!(orders_qty_sum(&pool).await, 5);
 
-    let lines = read_audit_lines(dir.path()).await;
+    let lines = read_audit_lines(&tid).await;
     let row = lines
         .iter()
         .find(|l| l["op"].as_str().unwrap_or("").contains("/rpc/add_order"))
@@ -616,6 +680,7 @@ async fn case9_returning_clause_shape_matches_select() {
 
 #[tokio::test]
 async fn case10_audit_extra_carries_all_four_new_fields() {
+    ensure_global_audit_writer();
     let (app, tid, svc, _anon, dir) =
         helpers::spin_up_dual_role_self_register("t-rpc-c10").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
@@ -636,7 +701,7 @@ async fn case10_audit_extra_carries_all_four_new_fields() {
         .unwrap();
     assert!(r.status().is_success());
 
-    let lines = read_audit_lines(dir.path()).await;
+    let lines = read_audit_lines(&tid).await;
     let row = lines
         .iter()
         .find(|l| l["op"].as_str().unwrap_or("").contains("/rpc/add_one"))
@@ -655,6 +720,7 @@ async fn case10_audit_extra_carries_all_four_new_fields() {
 
 #[tokio::test]
 async fn case10b_read_rpc_audit_has_rpc_mode_read_no_write_fields() {
+    ensure_global_audit_writer();
     let (app, tid, svc, _anon, dir) =
         helpers::spin_up_dual_role_self_register("t-rpc-c10b").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
@@ -666,7 +732,7 @@ async fn case10b_read_rpc_audit_has_rpc_mode_read_no_write_fields() {
         .unwrap();
     assert!(r.status().is_success());
 
-    let lines = read_audit_lines(dir.path()).await;
+    let lines = read_audit_lines(&tid).await;
     let row = lines
         .iter()
         .find(|l| l["op"].as_str().unwrap_or("").contains("/rpc/ping"))

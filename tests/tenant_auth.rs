@@ -3,7 +3,6 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use axum::routing::get;
 use drust::auth::bearer::{generate_token, hash_token};
-use drust::safety::audit::AuditLog;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::router::{TenantAuthState, TenantRef, bearer_auth_layer};
@@ -28,7 +27,6 @@ async fn app() -> (Router, String, tempfile::TempDir) {
     let state = TenantAuthState::test_default(
         Arc::new(Mutex::new(conn)),
         Arc::new(TenantRegistry::new(data.clone(), 2)),
-        Arc::new(AuditLog::new(dir.path().join("audit"))),
     );
     // Need to seed tenant data file
     let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();

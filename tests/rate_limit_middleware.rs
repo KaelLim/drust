@@ -3,7 +3,6 @@ mod helpers;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use drust::auth::bearer::{generate_token, hash_token};
-use drust::safety::audit::AuditLog;
 use drust::safety::rate_limit::RateLimiter;
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
@@ -39,11 +38,7 @@ async fn app_with_limiter(
     let bus = EventBus::new();
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let mut state = TenantAuthState::test_default(
-        meta,
-        tenants.clone(),
-        Arc::new(AuditLog::new(dir.path().join("audit"))),
-    );
+    let mut state = TenantAuthState::test_default(meta, tenants.clone());
     // Override the default limiter with the test-specific budget + window.
     state.limiter = Arc::new(RateLimiter::new(budget, window));
     let app = build_tenant_router(TenantStack {

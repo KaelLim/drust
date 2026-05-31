@@ -126,7 +126,7 @@ pub async fn register_handler(
                     "auth_kind": "user",
                 }));
             entry.auth_method = Some("password".to_string());
-            state.audit.append(entry);
+            crate::safety::audit_db::try_send(&entry);
             (
                 StatusCode::CREATED,
                 Json(json!({"user_id": user_id, "email": email, "created_at": now})),
@@ -139,7 +139,7 @@ pub async fn register_handler(
                     serde_json::json!({"email": email, "auth_kind": "user"}),
                 );
             entry.auth_method = Some("password".to_string());
-            state.audit.append(entry);
+            crate::safety::audit_db::try_send(&entry);
             json_error(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already registered")
         }
         Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
@@ -244,7 +244,7 @@ pub async fn login_handler(
                 serde_json::json!({"email": email, "auth_kind": "user"}),
             );
         entry.auth_method = Some("password".to_string());
-        state.audit.append(entry);
+        crate::safety::audit_db::try_send(&entry);
         return json_error(
             StatusCode::UNAUTHORIZED,
             "INVALID_CREDENTIALS",
@@ -259,7 +259,7 @@ pub async fn login_handler(
                 serde_json::json!({"email": email, "auth_kind": "user"}),
             );
         entry.auth_method = Some("password".to_string());
-        state.audit.append(entry);
+        crate::safety::audit_db::try_send(&entry);
         return json_error(
             StatusCode::UNAUTHORIZED,
             "INVALID_CREDENTIALS",
@@ -287,7 +287,7 @@ pub async fn login_handler(
             "auth_kind": "user",
         }));
     entry.auth_method = Some("password".to_string());
-    state.audit.append(entry);
+    crate::safety::audit_db::try_send(&entry);
     (
         StatusCode::OK,
         Json(serde_json::json!({
