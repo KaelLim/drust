@@ -15,6 +15,7 @@ async fn cross_module_publish_subscribe_roundtrip() {
         RoomMessage {
             payload: Arc::new(serde_json::json!({"hi": 1})),
             ts_ms: 1_000,
+            frame_bytes: bytes::Bytes::new(),
         },
     );
     assert_eq!(n, 1);
@@ -60,6 +61,7 @@ async fn bus_lagged_on_one_room_does_not_affect_another_room() {
             RoomMessage {
                 payload: Arc::new(serde_json::json!({ "n": i })),
                 ts_ms: 0,
+                frame_bytes: bytes::Bytes::new(),
             },
         );
     }
@@ -70,6 +72,7 @@ async fn bus_lagged_on_one_room_does_not_affect_another_room() {
         RoomMessage {
             payload: Arc::new(serde_json::json!({ "body": "hello" })),
             ts_ms: 1,
+            frame_bytes: bytes::Bytes::new(),
         },
     );
 

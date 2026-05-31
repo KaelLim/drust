@@ -18,10 +18,19 @@ pub struct RoomBus {
 
 /// Carried by the broadcast channel. `payload` is `Arc`-wrapped so
 /// fan-out to N subscribers clones the pointer, not the JSON value.
+///
+/// `frame_bytes` (v1.32.2 D8): the pre-serialized full
+/// `ServerMessage::Message` envelope. Built once by [`publish_into_bus`]
+/// (or test helpers) so the WS Message-fanout path just forwards bytes
+/// verbatim — no per-subscriber re-serialize, no per-subscriber Value
+/// deep-clone. `Bytes` is Arc-backed: `.clone()` is a pointer bump.
+/// Lagged error envelopes are still built per-subscriber-per-room so
+/// `frame_bytes` is only consulted in the Message branch.
 #[derive(Debug, Clone)]
 pub struct RoomMessage {
     pub payload: Arc<serde_json::Value>,
     pub ts_ms: i64,
+    pub frame_bytes: bytes::Bytes,
 }
 
 /// `tokio::sync::broadcast` buffer — slow subscriber lagging > BUFFER
@@ -145,6 +154,9 @@ mod tests {
         RoomMessage {
             payload: Arc::new(serde_json::json!({ "body": s })),
             ts_ms: 0,
+            // bus unit tests don't exercise the WS Message fanout
+            // (which is what consumes frame_bytes); empty is fine.
+            frame_bytes: bytes::Bytes::new(),
         }
     }
 
