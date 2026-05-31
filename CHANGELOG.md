@@ -1,3 +1,57 @@
+## v1.32.2 — 2026-05-31
+
+### Performance
+
+- **D8: WS publish serialize-once.** Pre-v1.32.2 each WS subscriber
+  received broadcast frames via `(*rmsg.payload).clone() +
+  serde_json::to_string(&ServerMessage)` — N subscribers × K-byte
+  payload meant N × (deep-clone + serialize) per publish. The whole
+  point of `Arc<Value>` on `RoomMessage` was defeated by the per-recv
+  envelope rebuild. Now `publish_into_bus` pre-serializes the full
+  `ServerMessage::Message` envelope into `bytes::Bytes` once at
+  publish time; `ws.rs::send_json`'s Message branch forwards bytes
+  verbatim. Lagged branch unchanged (per-room per-subscriber error
+  envelope can't be pre-serialized; it needs the room name).
+
+  Wire byte-identical to subscribers: serialization goes through the
+  same `ServerMessage` Serialize impl that the pre-D8 `send_json` was
+  invoking — pinned by a new unit test
+  (`tests/bench_ws_publish.rs` and
+  `src/tenant/rooms/rest.rs::tests::d8_frame_bytes_is_byte_identical_to_legacy_send_json`).
+
+  Synthetic bench numbers (subs × payload KB, µs/publish):
+
+  | subs × KB | baseline | D8     | improvement |
+  |-----------|----------|--------|-------------|
+  | 10 × 1    | 1,310    | 289    | −77.9%      |
+  | 10 × 16   | 13,738   | 2,140  | −84.4%      |
+  | 10 × 64   | 43,276   | 5,945  | −86.3%      |
+  | 100 × 1   | 10,422   | 1,196  | −88.5%      |
+  | 100 × 16  | 103,316  | 2,964  | −97.1%      |
+  | 100 × 64  | 316,784  | 6,528  | −97.9%      |
+  | 1000 × 1  | 71,475   | 4,948  | −93.1%      |
+  | 1000 × 16 | 793,202  | 6,520  | −99.2%      |
+
+  Post-D8 per-publish time is roughly O(1) in N — exactly as expected
+  when receivers do no per-message serialize work. 1000×64KB omitted
+  from the bench (~64MB per-iter alloc pushed allocator into useless
+  regime; 1000×16KB + 100×64KB give the same signal).
+
+### Notes
+
+- Bench (`tests/bench_ws_publish.rs`) is `#[ignore]`'d so does not
+  run on regular `cargo test`. Run with
+  `cargo test --test bench_ws_publish -- --ignored --nocapture`.
+  WS-level bench is impossible because `tests/rooms_ws.rs` is all
+  `#[ignore]`'d due to tokio-rs/tokio#2374 (per-test runtime
+  starvation at <10 concurrent clients); synthetic at the bus +
+  send-equivalent layer measures the exact work D8 eliminates.
+- Tests: 444 lib pass (+1 D8 wire-identity), 4 rooms_policy pass,
+  34 tenant::rooms lib pass. 41 pre-existing integration failures
+  unchanged (deferred to v1.32.5).
+
+---
+
 ## v1.32.1 — 2026-05-31
 
 ### Changed
