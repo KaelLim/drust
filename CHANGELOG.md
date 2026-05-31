@@ -2,54 +2,20 @@
 
 ### Performance
 
-- **D10: webhook reqwest::Client reuse with per-Request DNS.**
-  Pre-D10 each delivery attempt rebuilt a `reqwest::Client` inside
-  the per-attempt loop in `deliver_for_test` — rustls context +
-  connection pool state + `dns_resolver` wiring (~5–20ms cold per
-  build). At N webhooks × 4 attempts that was 4N constructions per
-  CRUD event; Client setup dominated dispatch CPU at moderate
-  webhook volume.
-
-  Now `WebhookDispatcher` holds a `cached_client: Arc<reqwest::Client>`
-  built once at construction with `pool_max_idle_per_host(0)` (no
-  keep-alive — every request opens a fresh TCP connection, which
-  forces a fresh `dns_resolver` call) and the resolver
-  (`PinnedPublicResolver` in production, the test override if
-  injected) baked in. `dispatch` threads `cached_client.clone()`
-  through the spawn chain to `deliver`; `deliver_inner` (the
-  renamed body of `deliver_for_test`) uses the shared client on the
-  production fast path and falls back to per-attempt construction
-  for loopback-dev hosts (127.0.0.1 / localhost / ::1).
-
-  **DNS-rebind defense preserved** by:
-  1. `pool_max_idle_per_host(0)` on the cached client (fresh TCP
-     per Request).
-  2. `dns_resolver(ResolverHandle(PinnedPublicResolver))` baked
-     into the cached client — called on every connect, applies the
-     public-IP filter to every attempt.
-  3. `redirect::Policy::none()` — no in-band redirect can smuggle
-     past the resolver.
-  4. `webhook_resolver::resolve_public` wrap-first pre-check
-     (unchanged) provides the second layer; the register-time
-     `check_url` provides the third.
-
-  Research note proving reqwest 0.12.28's `DynResolver` is called
-  per-Request (not per-Client cached):
-  `docs/superpowers/notes/2026-05-30-reqwest-resolver-lifecycle.md`.
-
-  `deliver_for_test` stays public + signature-stable for the 10+
-  test callsites; it now wraps `deliver_inner` with `None` so every
-  test keeps building per-attempt Clients with its injected
-  resolver — no test behaviour change.
-
-  Wire shape on the receiver: unchanged. HMAC signature, headers,
-  body, HTTP status, retry classification — all unchanged.
-
-### Notes
-
-- 444 lib pass. `webhook_dns_rebind` (DNS-rebind regression
-  critical) 6/6 pass. `webhook_url_validation` 6/6 pass. `webhooks`
-  17/17 pass. 41 pre-existing integration failures unchanged.
+- **Webhook delivery reuses a single HTTP client across attempts.**
+  Previously each delivery attempt rebuilt a `reqwest::Client`
+  (rustls context + connection pool + DNS resolver wiring, ~5–20ms
+  cold per build) so at N webhooks × 4 attempts client setup
+  dominated dispatch CPU at moderate volume. The dispatcher now
+  caches one `Arc<reqwest::Client>` built at startup and threads it
+  through every attempt, while still forcing a fresh TCP connection
+  per Request so the SSRF guard (`PinnedPublicResolver`) runs on
+  every DNS lookup. Redirect policy stays disabled and the
+  wrap-time public-IP pre-check is unchanged, so DNS-rebind defense
+  is preserved end-to-end. Wire shape on receivers (HMAC signature,
+  headers, body, HTTP status, retry classification) is unchanged.
+  Loopback dev hosts (127.0.0.1 / localhost / ::1) fall back to the
+  per-attempt build path.
 
 ---
 
@@ -57,55 +23,27 @@
 
 ### Performance
 
-- **D9: bearer_auth_layer meta lock × 4 → 1 CTE.** Pre-D9 every
-  tenant request acquired the `meta.sqlite` mutex 3–4 times in
-  sequence: tenant-exists check, per-admin PAT lookup, shared
-  service/anon tokens lookup, and a 4th post-handler lock for the
-  admin email snapshot in the audit branch. `meta` is the single
-  global serializer for ALL tenant traffic — under cross-tenant load
-  this was the top contention point.
-
-  Now: one CTE returns `(tenant_ok, kind, pat_token_id,
-  pat_admin_id, bound_tenant, email)` in a single round-trip.
-  PAT and service/anon use different hash schemes
-  (`base64-no-pad` vs `hex`) so the two UNION branches can never
-  match the same bearer — `LIMIT 1` on the scalar subqueries is
-  defensive. PAT prefix check stays in Rust to avoid wasting a hash
-  compute on non-PAT bearers. The email snapshot is now carried to
-  the audit branch via a captured local rather than re-locking
-  meta after `next.run`.
-
-  Wire shape preserved:
-  - 401 UNAUTHENTICATED for bearer that doesn't resolve.
-  - 404 TENANT_NOT_FOUND for invalid tenant.
-  - 404 TENANT_NOT_FOUND for cross-tenant bearer (token matched
-    but for a DIFFERENT tenant — Rust-side `bound_tenant` guard
-    preserves pre-D9 behavior).
-  - AuthCtx variants emitted: unchanged.
-  - bearer_denied_total counter labels: unchanged.
-
-  User-session path (`_system_sessions` via pool reader, separate
-  connection — not covered by the meta CTE) is unchanged. Resolved
-  AFTER the CTE for clarity; user-session bearers whose hash
-  doesn't match any meta row still take precedence over the None
-  CTE result.
+- **Tenant bearer auth: 4 sequential meta-DB locks collapsed to 1.**
+  Every tenant request previously acquired the global `meta.sqlite`
+  mutex 3–4 times in sequence (tenant lookup, per-admin PAT lookup,
+  shared service/anon tokens lookup, post-handler email snapshot
+  for audit). Under cross-tenant load `meta` was the top contention
+  point. One CTE round-trip now returns everything the layer needs.
+  Wire shape preserved end-to-end: 401 UNAUTHENTICATED for
+  unresolved bearers, 404 TENANT_NOT_FOUND for invalid tenant
+  (including cross-tenant bearers), AuthCtx variants, audit fields,
+  and `bearer_denied_total` counter labels — all unchanged.
+  User-session bearers (separate connection via the pool reader)
+  resolve after the CTE; their precedence over a None CTE result
+  is preserved.
 
 ### Tests
 
-- **`tests/meta_lock_contention.rs` (D9 pre-work).** 1000
-  concurrent oneshot requests with mixed bearer shapes (valid
-  service / valid anon / invalid bearer / invalid tenant) against
-  a single tenant. Asserts zero false-allow + zero false-deny.
-  Passes pre-D9 (0.57s) AND post-D9 (0.92s) — pins the auth-layer
-  correctness invariant across the refactor.
-
-### Notes
-
-- 444 lib tests pass (unchanged). Targeted auth integration
-  (admin_pat_bearer, auth_bearer_resolution, auth_me,
-  auth_mcp_blocked, auth_audit, authorizer) all pass.
-  41 pre-existing integration failures verified to fail identically
-  pre- and post-D9 — zero new regressions.
+- New `meta_lock_contention` stress test: 1000 concurrent oneshot
+  requests with mixed bearer shapes (valid service / anon / invalid
+  bearer / invalid tenant) asserts zero false-allow and zero
+  false-deny — pins the auth-layer correctness invariant across
+  the refactor.
 
 ---
 
@@ -113,53 +51,27 @@
 
 ### Performance
 
-- **D8: WS publish serialize-once.** Pre-v1.32.2 each WS subscriber
-  received broadcast frames via `(*rmsg.payload).clone() +
-  serde_json::to_string(&ServerMessage)` — N subscribers × K-byte
-  payload meant N × (deep-clone + serialize) per publish. The whole
-  point of `Arc<Value>` on `RoomMessage` was defeated by the per-recv
-  envelope rebuild. Now `publish_into_bus` pre-serializes the full
-  `ServerMessage::Message` envelope into `bytes::Bytes` once at
-  publish time; `ws.rs::send_json`'s Message branch forwards bytes
-  verbatim. Lagged branch unchanged (per-room per-subscriber error
-  envelope can't be pre-serialized; it needs the room name).
+- **WebSocket broadcast: serialize each frame once instead of per
+  subscriber.** Every WS subscriber previously deep-cloned the
+  payload `Arc` and re-ran `serde_json::to_string(&ServerMessage)`
+  — N subscribers × K-byte payload meant N × (deep-clone +
+  serialize) per publish, defeating the point of the `Arc<Value>`.
+  The publish hot path now pre-serializes the full
+  `ServerMessage::Message` envelope into `bytes::Bytes` once and
+  the send loop forwards bytes verbatim. Per-publish time is now
+  roughly O(1) in subscriber count. Bytes received are byte-identical
+  to the pre-v1.32.2 path (same `ServerMessage` Serialize impl,
+  pinned by a regression test). Lagged-recovery envelopes still
+  rebuilt per subscriber (they carry the room name).
 
-  Wire byte-identical to subscribers: serialization goes through the
-  same `ServerMessage` Serialize impl that the pre-D8 `send_json` was
-  invoking — pinned by a new unit test
-  (`tests/bench_ws_publish.rs` and
-  `src/tenant/rooms/rest.rs::tests::d8_frame_bytes_is_byte_identical_to_legacy_send_json`).
+  Synthetic bench, µs/publish:
 
-  Synthetic bench numbers (subs × payload KB, µs/publish):
-
-  | subs × KB | baseline | D8     | improvement |
-  |-----------|----------|--------|-------------|
-  | 10 × 1    | 1,310    | 289    | −77.9%      |
-  | 10 × 16   | 13,738   | 2,140  | −84.4%      |
-  | 10 × 64   | 43,276   | 5,945  | −86.3%      |
-  | 100 × 1   | 10,422   | 1,196  | −88.5%      |
-  | 100 × 16  | 103,316  | 2,964  | −97.1%      |
-  | 100 × 64  | 316,784  | 6,528  | −97.9%      |
-  | 1000 × 1  | 71,475   | 4,948  | −93.1%      |
-  | 1000 × 16 | 793,202  | 6,520  | −99.2%      |
-
-  Post-D8 per-publish time is roughly O(1) in N — exactly as expected
-  when receivers do no per-message serialize work. 1000×64KB omitted
-  from the bench (~64MB per-iter alloc pushed allocator into useless
-  regime; 1000×16KB + 100×64KB give the same signal).
-
-### Notes
-
-- Bench (`tests/bench_ws_publish.rs`) is `#[ignore]`'d so does not
-  run on regular `cargo test`. Run with
-  `cargo test --test bench_ws_publish -- --ignored --nocapture`.
-  WS-level bench is impossible because `tests/rooms_ws.rs` is all
-  `#[ignore]`'d due to tokio-rs/tokio#2374 (per-test runtime
-  starvation at <10 concurrent clients); synthetic at the bus +
-  send-equivalent layer measures the exact work D8 eliminates.
-- Tests: 444 lib pass (+1 D8 wire-identity), 4 rooms_policy pass,
-  34 tenant::rooms lib pass. 41 pre-existing integration failures
-  unchanged (deferred to v1.32.5).
+  | subscribers × payload KB | baseline | now    | change  |
+  |--------------------------|----------|--------|---------|
+  | 10 × 1                   | 1,310    | 289    | −77.9%  |
+  | 100 × 16                 | 103,316  | 2,964  | −97.1%  |
+  | 100 × 64                 | 316,784  | 6,528  | −97.9%  |
+  | 1000 × 16                | 793,202  | 6,520  | −99.2%  |
 
 ---
 
@@ -167,91 +79,57 @@
 
 ### Changed
 
-- **D1: JSONL audit dual-write retired.** `bearer_auth_layer` no
-  longer routes through `AuditLog::append` (which was running
-  `write_all + flush().await` per tenant request to daily `.jsonl`
-  files). Direct path is now `audit_db::try_send` — the documented
-  SoT since v1.25.2 has been adopted everywhere. `AuditLog`,
-  `AuditWriterHandle`, the JSONL writer task, `TenantAuthState.audit`
-  field, and `audit_handle.join()` in `main.rs` all deleted.
-  Pre-existing `audit-YYYY-MM-DD.jsonl` files left on disk; operator
-  may delete manually. 10 test files adapted to read from
-  `meta_logs.sqlite` via dedicated-thread `AuditWriter` init pattern
-  (see `tests/common/oauth_helpers.rs::TEST_AUDIT_DB`).
+- **JSONL audit dual-write retired.** Audit rows now route directly
+  to `meta_logs.sqlite` (the source of truth since v1.25.2). The
+  per-request `write_all + flush().await` to daily `.jsonl` files
+  is removed. Pre-existing `audit-YYYY-MM-DD.jsonl` files are left
+  on disk; operators may delete manually.
 
-- **D2: RoomBus / EventBus key types → `Arc<str>` (nested DashMap).**
-  Prior shape allocated `(String, String)` per publish call (tenant +
-  collection/room) for DashMap lookup. `publish()` is the per-event
-  hot path; alloc × 2 per event was wasted on every record CRUD +
-  every broadcast publish. Switched to
-  `DashMap<Arc<str>, DashMap<Arc<str>, Sender>>`: reads use `&str`
-  directly, writes alloc `Arc` only on first insert. F7
-  entry-guard-across-subscribe invariant preserved on both buses
-  (both outer + inner guards held across `.subscribe()`). Side win:
-  `tenant_channel_count` / `tenant_subscriber_count` dropped from
-  O(N_total_channels) → O(N_tenant_channels).
+- **RoomBus / EventBus DashMap keys → `Arc<str>`.** The publish hot
+  path no longer allocates a `String` per call for the
+  (tenant, collection) key. Reads use `&str` directly; only first
+  insert allocates an `Arc`. Side win: per-tenant subscriber and
+  channel counts now scale with that tenant's channels, not the
+  global total.
 
-- **D3: Stats sampler uses TenantRegistry reader pool + batched meta
-  UPDATEs.** `sample_one` previously opened a fresh `Connection` per
-  tenant per cycle (~1-3 ms cold open × N tenants); now uses the
-  existing reader pool (PRAGMA already applied). `sample_all` batches
-  all N `UPDATE meta.sqlite` statements in one
-  `BEGIN IMMEDIATE / COMMIT` transaction — meta-lock acquisitions
-  per cycle from N+1 to 2. Per-tenant sampling errors logged + skipped,
-  batch commits what succeeded.
+- **Stats sampler reuses the reader pool and batches meta updates.**
+  Per-tenant `Connection` open removed (was 1–3ms cold × N tenants
+  per cycle). N+1 meta-lock acquisitions collapsed to 2 via a
+  single `BEGIN IMMEDIATE / COMMIT`. Per-tenant errors are logged
+  and skipped; the batch commits what succeeded.
 
-- **D4: `list_handler` drops redundant `collection_exists` reader.**
-  `require_dml_cap` already loads the schema (via cache); successful
-  return implies the collection exists. The separate `collection_exists`
-  reader hit + an inner `COLLECTION_NOT_FOUND` 404 branch (already dead
-  — outer 404 covered all cases) both removed. Same 200/404 outcomes
-  + bodies.
+- **`list_handler`: skip the redundant `collection_exists` reader.**
+  The DML-cap check already loads schema (cached); successful return
+  implies the collection exists. Same 200 / 404 outcomes and bodies.
 
-- **D5: `bearer_auth_layer` lazy audit field capture.** `path`,
-  `tenant`, and `hint` String allocs deferred to the audit-emit
-  branch; `Method` and `Uri` clones stay pre-`next.run` (both cheap —
-  `Uri` is internally Arc-shared). Naming split (`*_captured` vs
-  `*_for_audit`) makes the borrow-lifecycle constraint explicit. Win
-  is borrow-clarity + savings on test paths where `WRITER.get()` is
-  unset; production alloc count unchanged in current emit-always
-  paths.
+- **`bearer_auth_layer`: lazy audit field capture.** `path`,
+  `tenant`, and `hint` `String` allocations deferred to the
+  audit-emit branch.
 
-- **D6: Session cookies respect `DRUST_DEV_NO_SECURE_COOKIES`.**
-  Consistency with theme / locale + per-tenant OAuth cookies, which
-  already honor this env var for HTTP-only dev runs. Both
-  `build_session_cookie` AND `clear_session_cookie` fixed (the latter
-  would have prevented logout in dev otherwise — set with
-  non-`Secure`, browser rejects `Secure` clear over HTTP). Prod
-  unaffected (env unset → `Secure` flag stays).
+- **Session cookies honor `DRUST_DEV_NO_SECURE_COOKIES`.** Already
+  the convention for theme / locale / per-tenant OAuth cookies.
+  Both build and clear paths fixed so logout works in HTTP dev
+  runs. Production unaffected (env unset → `Secure` flag stays).
 
 ### Fixed
 
-- **D7: Per-tenant OAuth multi-tab redirect_uri confusion.** Prior
-  shape round-tripped frontend `redirect_uri` via a separate cookie
-  (`drust_t_oauth_redirect_uri`). Two parallel OAuth starts in
-  different tabs (each for a different allowlisted frontend) had the
-  later cookie write clobbering the earlier — the first callback then
-  redirected to the wrong frontend (still allowlisted, so no token
-  leak, just wrong destination). New `TenantOauthStateToken` embeds
-  `redirect_uri` + HMAC-SHA256 envelope
-  (`[16B nonce][2B u16 len][N B uri][32B HMAC]`, base64url encoded;
-  constant-time HMAC compare via `subtle::ConstantTimeEq`). Callback
-  decodes → verifies HMAC → re-checks against per-tenant allowlist
-  (TOCTOU-safe; defense in depth — 4 gates total: cookie match, PKCE,
-  HMAC, URI allowlist). Admin OAuth (`src/mgmt/oauth_login.rs`)
-  untouched — added a separate type rather than mutating
-  `OauthStateToken`. Per-process secret (32 bytes random at boot,
-  matching `url_sign_secret` pattern); restart invalidates in-flight
-  flows (acceptable given 5-min PKCE TTL).
+- **Per-tenant OAuth multi-tab redirect_uri confusion.** Two
+  parallel OAuth starts in different tabs (each for a different
+  allowlisted frontend) could land the first callback on the
+  second tab's redirect URI — still allowlisted so no token leak,
+  but wrong destination. The `redirect_uri` is now embedded into
+  the state token via an HMAC-SHA256 envelope (16B nonce + length-
+  prefixed URI + 32B HMAC, base64url; constant-time compare).
+  Callback decodes → verifies HMAC → re-checks against the
+  per-tenant allowlist (TOCTOU-safe; defense in depth across
+  cookie match, PKCE, HMAC, URI allowlist). Per-process secret
+  regenerated at boot; restart invalidates in-flight flows
+  (5-min PKCE TTL bounds the window). Admin OAuth flow unchanged.
 
 ### Notes
 
-- Wire-identical across REST, MCP, audit-DB consumers. No DB
+- Wire-identical across REST, MCP, and audit-DB consumers. No DB
   migration, no env var addition, no admin UI change.
-- `cargo test --lib` 434 → 443 (+9 D7 unit tests).
-- Pre-existing 41 integration test failures unchanged; v1.32.1
-  introduced 0 new failures, fixed 0 (test-harness rot deferred to
-  v1.32.5 / v1.33 — see task #722).
 
 ---
 
@@ -259,115 +137,73 @@
 
 ### Security
 
-- **A1: RPC `:user_id` user-token spoofing closed (CRITICAL).** Prior
-  to this release, any User-token caller could supply
-  `{"user_id":"<victim>"}` in an RPC body and the auto-bind would
-  honor it (condition `!body_map.contains_key("user_id")` skipped
-  overwrite). This let any user impersonate any other user on any
-  RPC declaring a `:user_id` param. Now the auto-bind always
-  overwrites for User tokens — both read and write arms. The Anon
-  arm was also tightened: if an RPC declares `:user_id`, Anon
-  callers are rejected categorically (previously body-supplied
-  user_id could thread into SQL). Service tokens unchanged. Four
-  regression tests in `tests/rpc_user_id_spoof.rs` cover read/write
-  × User/Anon spoof attempts.
+- **RPC `:user_id` user-token spoofing closed (CRITICAL).** A
+  User-token caller could supply `{"user_id":"<victim>"}` in an
+  RPC body and the auto-bind would honor it, letting any user
+  impersonate any other user on any RPC declaring a `:user_id`
+  parameter. Auto-bind now always overwrites for User tokens
+  (both read and write arms). Anon callers are rejected
+  categorically on RPCs declaring `:user_id`. Service tokens
+  unchanged.
 
-- **A2: OAuth id_token iss/aud/exp validation.** The Google id_token
+- **OAuth id_token iss/aud/exp validation.** The Google id_token
   decode path skipped signature verification per OIDC §3.1.3.7
   (confidential client + TLS-trusted token endpoint), but the same
-  section also requires iss/aud/exp claim checks — which were
-  missing. Added: `iss ∈ {accounts.google.com,
-  https://accounts.google.com}`, `aud == client_id`, `exp > now`.
-  4 unit tests in `src/oauth/google.rs::tests`. Closes the
-  hijack path where a misconfigured `token_endpoint` or attacker
-  with a Google project + allowlisted email could log in as any
-  drust admin.
+  section also requires `iss` / `aud` / `exp` claim checks — which
+  were missing. Now validated:
+  `iss ∈ {accounts.google.com, https://accounts.google.com}`,
+  `aud == client_id`, `exp > now`. Closes the hijack path where a
+  misconfigured `token_endpoint` or an attacker with a Google
+  project + allowlisted email could log in as any drust admin.
 
-- **A3: webhook resolver IPv6 + CGNAT private-range close.** Added
-  `100.64.0.0/10` (RFC 6598 CGNAT shared address space), `::/128`
-  (IPv6 unspecified), `::ffff:0:0/96` (IPv4-mapped wildcard via
-  recursion into IPv4 private check), and `2001:db8::/32` (RFC 3849
-  docs prefix) to `is_private_ip`. Applied by `PinnedPublicResolver`
-  at every webhook dispatch attempt. 2 unit tests.
+- **Webhook resolver: IPv6 and CGNAT private ranges blocked.** SSRF
+  guard now also rejects `100.64.0.0/10` (RFC 6598 CGNAT), `::/128`
+  (IPv6 unspecified), `::ffff:0:0/96` (IPv4-mapped wildcard), and
+  `2001:db8::/32` (RFC 3849 docs prefix) at every dispatch attempt.
 
-- **A4: EventBus subscribe race close (F7 mirror).** `EventBus::
-  subscribe` now holds the DashMap entry guard across `tx.
-  subscribe()`, mirroring the v1.31.2 F7 fix already applied to
-  `RoomBus`. Latent — no user report; structural fix prevents
-  parallel `evict_collection` from orphaning a freshly-subscribed
-  receiver. 50-subscriber × 200ms stress test mirrors the bus.rs
-  F7 test shape.
-
-### Cleanup
-
-- **B1: Fix 5 cargo warnings.** Deleted `CollectionsPage.tenant_id`
-  + `WebhookFailureRow.id` (unused fields), dropped 2 redundant
-  `mut` in `admin_team.rs`, raised `DryRunQuery` + `DryRunQs`
-  visibility to `pub` (fixes `private_interfaces`). `cargo check`
-  is now warning-free for Rust code (i18n build.rs orphan warnings
-  retained as soft signal).
-
-- **B2: Drop tokio-test dev dep.** Single call site in
-  `src/tenant/mod.rs` converted from `tokio_test::block_on` to
-  `#[tokio::test]`. Cargo.toml `[dev-dependencies]` no longer
-  lists `tokio-test`.
-
-- **B3: Backup restore audit row.** Restore handler now emits an
-  `admin.backup.restore` audit row with archive filename + restore
-  destination — closes the LOW-severity audit gap for the most
-  destructive admin op. Mirrors the v1.31.3 F15 admin_rooms.rs
-  audit pattern.
+- **EventBus subscribe race closed (mirrors v1.31.2 RoomBus fix).**
+  `EventBus::subscribe` now holds the DashMap entry guard across
+  `tx.subscribe()`, so a parallel `evict_collection` cannot orphan
+  a freshly-subscribed receiver. Latent — no user report;
+  structural fix.
 
 ### Observability
 
-- **C1: `/admin/_metrics` Prometheus endpoint.** Admin-session-gated
-  GET endpoint exposing 5 metrics:
+- **`/admin/_metrics` Prometheus endpoint.** Admin-session-gated
+  GET endpoint exposing five metrics:
   - `drust_audit_drops_total` (counter — audit channel-full drops)
   - `drust_bearer_denied_total{role,status}` (counter)
   - `drust_webhook_attempts_total{result}` (counter)
   - `drust_ws_connections_active` (gauge — RAII guard)
   - `drust_tenant_db_bytes{tenant_id}` (gauge — refreshed at scrape)
 
-  `prometheus = 0.13` with `default-features = false` (no process
-  metrics / protobuf baggage). Closes ISO/IEC 27001 A.8.16
-  (Monitoring) gap surfaced in the v1.31.9 review.
+  Built on `prometheus 0.13` with no process-metric or protobuf
+  dependencies. Closes ISO/IEC 27001 A.8.16 (Monitoring) gap.
 
-- **C2: GitHub Actions CI workflow.** `.github/workflows/ci.yml`
-  runs `cargo fmt --check`, `cargo clippy -D warnings`,
-  `cargo test --lib`, and `cargo audit` on every push to main + on
-  manual dispatch. NEVER `--release` (LTO + codegen-units=1 hangs
-  40+ min). Closes ISO/IEC 27001 A.8.8 (Vulnerability mgmt) gap.
-  Passive — push not blocked on red.
+- **GitHub Actions CI workflow.** `.github/workflows/ci.yml` runs
+  `cargo fmt --check`, `cargo clippy -D warnings`,
+  `cargo test --lib`, and `cargo audit` on every push to main and
+  on manual dispatch. Passive — push is not blocked on red. Closes
+  ISO/IEC 27001 A.8.8 (Vulnerability management) gap.
 
-### Tests (harness rot fixed incidentally)
+### Cleanup
 
-- **admin_oauth integration suite restored.** v1.31.9 baseline had
-  5 admin_oauth happy-path tests failing — root cause was
-  `sessions.token_hash` column added in v1.29.5 but the test
-  bootstrap didn't call `run_migrations`. INSERT failed at runtime,
-  mapped to `oauth_provider_error` redirect (masked the real
-  cause). Test harness now calls `run_migrations` in setup.
-- **Audit polling in tests now reads SQLite, not JSONL.** v1.25.2
-  retired JSONL writes but `poll_for_audit_row` still scanned for
-  `audit-*.jsonl` files. Test harness now initializes a global
-  audit writer + queries the SQLite DB.
-- **Fake Google `aud` mirrors request client_id.** Previously
-  hardcoded `"test-client-id"`, broke any test using a different
-  client_id once A2 added `aud` validation. Now matches real OIDC
-  behavior.
+- Five cargo warnings resolved (unused struct fields, redundant
+  `mut`, private-interface visibility). `cargo check` is now
+  warning-free for Rust code.
 
-Pre-existing test-harness rot in 10 other suites (admin_index_routes,
-admin_oauth_provider_handlers, admin_webhook_handlers, audit_ui_routes,
-auth_admin_ui, mgmt_login, session, session_middleware, tenants_api,
-tokens_api — 41 failing tests total) remains; production code
-unaffected, scheduled for a dedicated harness-cleanup release.
+- `tokio-test` dev dependency dropped (single test site converted
+  to `#[tokio::test]`).
+
+- Backup restore now emits an `admin.backup.restore` audit row
+  with archive filename and restore destination — closes the
+  LOW-severity audit gap for the most destructive admin operation.
 
 ### Notes
 
 - No DB migration, no env var addition, no admin UI change visible
   to operators, no MCP tool signature change. Wire shape preserved
-  across REST, MCP, admin UI, audit-DB.
-- Spec: docs/superpowers/specs/2026-05-30-drust-v132-post-review-hardening-design.md
+  across REST, MCP, admin UI, and audit-DB.
 
 ## v1.31.9 — 2026-05-30
 

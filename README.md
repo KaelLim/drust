@@ -2,7 +2,7 @@
 type: index
 name: drust
 status: production
-updated: 2026-05-26
+updated: 2026-05-31
 ---
 
 # drust
@@ -22,19 +22,23 @@ updated: 2026-05-26
 ## Key features
 
 - **Per-tenant SQLite isolation.** One file per tenant under `tenants/<id>/data.sqlite`. Cross-tenant `ATTACH` is denied at the SQL authorizer layer.
-- **Structured REST + MCP write API.** Writes never accept raw SQL; tools enforce schema, types, FK constraints, and an opt-in DML capability allowlist (`anon_caps`) per collection.
+- **Structured REST + MCP write API.** Writes never accept raw SQL; tools enforce schema, types, FK constraints, and an opt-in DML capability allowlist (`anon_caps`) per collection. WebSocket broadcast frames are serialized once per publish regardless of subscriber count.
 - **Read-only SQL via authorizer whitelist.** Read connections open `SQLITE_OPEN_READONLY` and run under [`sqlite3_set_authorizer`](https://www.sqlite.org/c3ref/set_authorizer.html) — no `sqlite_master`, no `ATTACH`, no writes.
 - **Streamable HTTP MCP per tenant.** `/t/<tenant>/mcp` exposes the full CRUD / schema / index / RPC / file / vector-search / webhook tool surface. One server instance per tenant, served over the [Streamable HTTP transport](https://spec.modelcontextprotocol.io/specification/2024-11-05/basic/transports/#streamable-http). Service-key only.
+- **AI introspection helpers.** Every REST error JSON carries a context-aware `suggested_fix` field; the same hint reaches MCP clients via `ErrorData.data`. Destructive tools (`delete_record`, `drop_collection`, `drop_index`) accept `dry_run: true` and return blast-radius counts without mutating. A service-only `recent_writes` MCP tool lets a retrying model recover what its previous attempt already did.
+- **Per-tenant schema codegen.** `GET /t/<id>/openapi.json`, `GET /t/<id>/types.ts`, and `GET /t/<id>/zod.ts` emit OpenAPI 3.1, TypeScript `Row` / `Insert` / `Update` interfaces, and Zod runtime validators tailored to the tenant's current schema (vector fields → `z.array(z.number()).length(N)`). Anon vs service views differ; `X-Drust-Schema-Source` header records which was rendered.
 - **Stored RPCs.** Tenants can define named SELECT functions (Supabase-style) callable via `POST /t/<id>/rpc/<name>` or the MCP `call_rpc` tool. SQL is validated at create-time under the read-only authorizer; a built-in admin test playground runs them with `EXPLAIN QUERY PLAN`.
 - **Vector storage + similarity search.** Per-collection `vector` field type (packed f32 BLOB) with `POST /t/<id>/collections/<c>/search` for cosine / L2 / L1 top-k under a Filter AST. `sqlite-vec` is registered as a SQLite auto-extension so `vec_distance_*` are also callable from `/query` and stored RPCs.
-- **Realtime broadcast.** SSE channel per `(tenant, collection)` at `/t/<id>/records/<c>/subscribe`, per-collection opt-in toggle, anon-cap gate, user-token denial.
+- **Realtime broadcast.** Two surfaces: SSE channel per `(tenant, collection)` at `/t/<id>/records/<c>/subscribe` (gated by per-collection `realtime_enabled` and `anon_caps[select]`), and the v1.31 per-tenant WS multiplex at `/t/<id>/realtime` with rooms, rate-limit / lagged-recovery frames, and an in-admin Broadcast Inspector for end-to-end smoke testing.
 - **End-user auth + per-tenant OAuth.** Per-tenant `_system_users` with Google / GitHub OAuth providers configured per tenant; opt-in self-registration; row-level filter via `owner_field` + `read_scope`; argon2id password hashing with timing-equalized login.
-- **Outbound webhooks.** Per-tenant CRUD-event subscriptions, HMAC-SHA256-signed POST with 4-attempt retry (+0s / +1s / +5s / +30s); admin UI + REST + MCP write surfaces; SSRF guard rejects private/loopback IPs.
+- **Outbound webhooks.** Per-tenant CRUD-event subscriptions, HMAC-SHA256-signed POST with 4-attempt retry (+0s / +1s / +5s / +30s); admin UI + REST + MCP write surfaces; SSRF guard rejects private/loopback/CGNAT and IPv6-mapped equivalents at every dispatch attempt; HTTP client reused across attempts with per-Request DNS so the resolver still runs on every connection.
 - **Schema descriptions for LLM bootstrap.** Optional plain-text `description` on every collection / field / index / RPC, surfaced through `describe_collection` and `get_schema_overview` so an LLM can read the schema's intent in one MCP call.
-- **Admin UI.** Two-page web UI (`/admin/tenants` + per-tenant `/admin/tenants/<id>/<datatable>`) with a terminal aesthetic, file management, RPC editor + test playground, anon capability matrix, MCP setup snippets, audit log browser, backup browser with single-tenant restore.
+- **Admin UI.** Two-page web UI (`/admin/tenants` + per-tenant `/admin/tenants/<id>/<datatable>`) with a Supabase-style collection editor (sticky header, FilterAst-backed Table mode via `POST /_list`, Definition view), file management, RPC editor + test playground, anon capability matrix, MCP setup snippets, audit log browser, backup browser with single-tenant restore, Broadcast Inspector. Localized (`en` / `zh-Hant`) with three themes (`system` / `cozy-dark` / `soft-light`).
+- **Admin Personal Access Tokens.** Each admin gets their own PAT for CLI / MCP use instead of sharing the per-tenant service key. PATs are admin-scoped (not bound to a single tenant) and revoked centrally from the admin UI.
 - **S3 file storage (optional).** When configured, every tenant gets two S3 buckets — `<id>-pub` (website-enabled) and `<id>-prv` (private) — provisioned automatically. Implemented against [Garage](https://garagehq.deuxfleurs.fr/) but the data path is plain S3 (`object_store::aws::AmazonS3`).
-- **Admin OAuth.** `/admin/login` accepts Google / GitHub OAuth alongside username + password; controlled via env allowlist.
-- **Operational basics.** Per-tenant rate limiting, SQLite-backed audit log per request, daily `VACUUM INTO` snapshots with 30-day retention, soft-delete with 7-day grace, CORS allow-list with subdomain wildcards.
+- **Admin OAuth.** `/admin/login` accepts Google / GitHub OAuth alongside username + password; controlled via env allowlist; id_token `iss` / `aud` / `exp` claims validated per OIDC §3.1.3.7.
+- **Observability.** Admin-session-gated `/admin/_metrics` Prometheus endpoint exposes audit drops, bearer denials, webhook attempts, active WS connections, and per-tenant DB bytes. Audit rows land in `meta_logs.sqlite` with a 90-day retention sweep + monthly VACUUM, queryable from the admin UI.
+- **Operational basics.** Per-tenant rate limiting, daily `VACUUM INTO` snapshots with 30-day retention (covers `meta.sqlite` + `meta_logs.sqlite`), soft-delete with 7-day grace, CORS allow-list with subdomain wildcards.
 
 ## Architecture at a glance
 
@@ -46,12 +50,15 @@ client │ TLS edge │ ── HTTP ▶│  axum router                         
                             │   ├─ /t/<id>/...        (bearer auth)            │
                             │   └─ /t/<id>/mcp        (rmcp Streamable HTTP)   │
                             │                                                   │
-                            │  ┌─ meta.sqlite ─┐    ┌─ tenants/<id>/data.sqlite│
-                            │  │ admins        │    │ user collections         │
-                            │  │ tenants       │    │ _system_collection_meta  │
-                            │  │ tokens (hash) │    │ _system_rpc              │
-                            │  │ sessions      │    │ _system_files            │
-                            │  └───────────────┘    └──────────────────────────│
+                            │  ┌─ meta.sqlite ────┐  ┌─ tenants/<id>/data.sqlite│
+                            │  │ admins (+ PAT)   │  │ user collections         │
+                            │  │ tenants          │  │ _system_collection_meta  │
+                            │  │ tokens (hash)    │  │ _system_users / _sessions│
+                            │  │ sessions         │  │ _system_rpc              │
+                            │  └──────────────────┘  │ _system_files            │
+                            │  ┌─ meta_logs.sqlite ┐ │ _system_webhooks         │
+                            │  │ audit (rolling)  │  │ _system_oauth_providers  │
+                            │  └──────────────────┘  └──────────────────────────│
                             └─────────────────┬─────────────────────────────────┘
                                               │ optional S3 (Garage / MinIO / R2)
                                               ▼
@@ -99,7 +106,7 @@ Configured via environment variables (loaded from `.env` by systemd or your shel
 | `DRUST_DATA_DIR` | yes | Base directory for `meta.sqlite` and `tenants/` |
 | `DRUST_INIT_ADMIN_USERNAME` | yes (first boot) | Bootstrap admin account |
 | `DRUST_INIT_ADMIN_PASSWORD` | yes (first boot) | Bootstrap admin password |
-| `DRUST_LOG_DIR` | yes | Per-day audit JSONL files land here |
+| `DRUST_LOG_DIR` | yes | Reserved log directory (audit rows themselves write to `meta_logs.sqlite` since v1.24) |
 | `DRUST_CORS_ORIGINS` | optional | Comma-separated allow-list, supports `https://*.example.com` |
 | `DRUST_DISK_MIN_FREE_PCT` | optional (default 20) | Upload guard for tenant file storage |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables S3 storage features |
@@ -123,8 +130,10 @@ src/
   rpc/               stored RPC: prepare, registry, REST + MCP handlers
   mcp/               rmcp tool definitions, Streamable HTTP service registry
   codegen/           per-tenant OpenAPI / TypeScript / Zod schema generators
-  safety/            audit log, rate limiter
-  bin/set_admin_password.rs  out-of-band password rotation CLI
+  safety/            audit log + audit-DB writer, rate limiter, blast-radius probes
+  bin/set_admin_password.rs   out-of-band password rotation CLI
+  bin/set_admin_role.rs       admin role flip (owner / member)
+  bin/drust_session_janitor.rs  expired-session sweeper (daily systemd timer)
 docs/
   architecture.md    auto-generated source-graph index (rebuild via gen-architecture.sh)
 CHANGELOG.md         keepachangelog format, semver
@@ -133,7 +142,7 @@ CLAUDE.md            internal guide for AI coding agents
 
 ## Status
 
-Production. Currently `v1.28.6`. See [CHANGELOG.md](CHANGELOG.md) for full history.
+Production. Currently `v1.32.4`. See [CHANGELOG.md](CHANGELOG.md) for full history.
 
 ## License
 
