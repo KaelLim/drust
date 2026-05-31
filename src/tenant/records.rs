@@ -278,33 +278,13 @@ pub async fn list_handler(
              internally.",
         );
     }
+    // require_dml_cap already loaded the schema (via the cache); a
+    // successful return proves the collection exists. The previous
+    // standalone collection_exists reader hit + "existing collections"
+    // 404 branch here were redundant (require_dml_cap returns its own
+    // 404 with code "NOT_FOUND" first). v1.32.1 D4 — drop the redundant
+    // reader checkout from the happy path.
     let pool = t.pool.clone();
-    let coll_clone = coll.clone();
-    let exists = pool
-        .with_reader(move |c| collection_exists(c, &coll_clone))
-        .await
-        .unwrap_or(false);
-    if !exists {
-        let existing: Vec<String> = pool
-            .with_reader(|c| {
-                let mut stmt = c.prepare(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '\\_system\\_%' ESCAPE '\\'"
-                )?;
-                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-                rows.collect::<Result<Vec<_>, _>>()
-            })
-            .await
-            .unwrap_or_default();
-        return json_error_with_context(
-            StatusCode::NOT_FOUND,
-            "COLLECTION_NOT_FOUND",
-            "no such collection",
-            &crate::safety::error_fixes::ErrorContext::CollectionNotFound {
-                collection: &coll,
-                existing: &existing,
-            },
-        );
-    }
     // Compute owner_filter: only for User tokens on collections with
     // read_scope = "own".  Service and Anon bypass the row-level filter.
     let owner_filter = compute_owner_filter(&ctx, &schema);
