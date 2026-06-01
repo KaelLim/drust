@@ -1,3 +1,27 @@
+## v1.32.11 — 2026-06-01
+
+### Fixed
+
+- **Cell-expand modal was silently dead on the collection-rows
+  page.** v1.32.9 / v1.32.10 wired the click handler against
+  `window.drustUI.detail(...)`, but `collection_rows.html` was
+  the one admin page in the entire `_modal.html` consumer set
+  that never `{% include "_modal.html" %}`'d the modal infra
+  (every other page — files, settings, audit, backup_inspect,
+  tenants_list, admin_team, rpc, api_keys — does). On the
+  collection rows page `window.drustUI` was therefore
+  `undefined`, every click threw a `TypeError: Cannot read
+  properties of undefined (reading 'detail')` and the browser
+  swallowed it inside the event handler boundary. Now
+  `{% include "_modal.html" %}` ships with the template,
+  mirroring the canonical placement (just before
+  `{% endblock %}`) used by `files.html` and the rest. No code
+  changes outside the include — the textarea-mode behavior
+  from v1.32.10 lights up unchanged once the modal DOM is in
+  the page.
+
+---
+
 ## v1.32.10 — 2026-06-01
 
 ### Changed
