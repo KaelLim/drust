@@ -144,7 +144,24 @@ COMMIT;
 "#;
 
 fn apply_schema(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(SCHEMA_SQL)
+    conn.execute_batch(SCHEMA_SQL)?;
+    // v1.32.8 — keep parity with `db::migrations::migrate_tenant_db`.
+    // SCHEMA_SQL above predates v1.9's end-user auth and was never
+    // updated when `_system_users` / `_system_sessions` were added,
+    // so newly-created tenants used to be missing both tables. The
+    // startup migration loop covered EXISTING tenants because it
+    // runs `migrate_tenant_db` per row in the tenants table, but a
+    // tenant created AT RUNTIME (after `run_migrations` already
+    // iterated) hit `open_write` → `apply_schema(SCHEMA_SQL)` only,
+    // never the migration path. Symptom: clicking the
+    // `_system_users` sidebar entry on a fresh tenant returned
+    // `collection not found` because `describe_collection` couldn't
+    // see the table that was never created. Reusing the migration
+    // SQL strings (rather than inlining a fresh copy here) keeps
+    // both code paths producing exactly the same schema forever.
+    conn.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS)?;
+    conn.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)?;
+    Ok(())
 }
 
 pub fn open_write(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection> {
