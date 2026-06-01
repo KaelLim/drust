@@ -588,8 +588,8 @@ impl MgmtState {
         };
         use crate::mgmt::tenants::{
             TenantsState, cmdk_tenants_json, create_tenant_form, create_tenant_json,
-            list_page_axum, soft_delete_tenant, soft_delete_tenant_form,
-            tenant_files_admin_page, tenant_oauth_provider_delete,
+            get_publish_policy, list_page_axum, patch_publish_policy, soft_delete_tenant,
+            soft_delete_tenant_form, tenant_files_admin_page, tenant_oauth_provider_delete,
             tenant_oauth_provider_upsert, tenant_oauth_providers_page, tenant_overview_page,
             tenant_webhook_create_form, tenant_webhook_delete_form, tenant_webhooks_page,
             toggle_self_register,
@@ -799,6 +799,13 @@ impl MgmtState {
             .route(
                 "/admin/tenants/{id}/allow-self-register",
                 post(toggle_self_register),
+            )
+            // v1.32.5 — publish-policy flags (allow_user_publish /
+            // allow_anon_publish). PATCH partial-updates either or both;
+            // GET reads current state. MCP `broadcast` ignores these.
+            .route(
+                "/admin/tenants/{id}/publish-policy",
+                axum::routing::get(get_publish_policy).patch(patch_publish_policy),
             )
             // v1.12 per-tenant OAuth admin UI — virtual sidebar entry
             // `🔐 _oauth_providers`. GET renders the page; POST upserts a

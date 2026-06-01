@@ -8,13 +8,17 @@
 //! Auth at upgrade: bearer resolved by `bearer_auth_layer` upstream
 //! (which itself reads the Authorization header rewritten from
 //! `?token=` by `ws_query_token_adapter`). Anon / User / Service all
-//! may subscribe; only `AuthCtx::Service { .. }` may `op:publish`.
+//! may subscribe; `op:publish` is gated by `check_publish_allowed`
+//! against the per-tenant `TenantPublishPolicy` (v1.32.5 — was
+//! service-only pre-v1.32.5).
 
 use crate::auth::middleware::AuthCtx;
 use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
 use crate::tenant::rooms::bus::RoomMessage;
 use crate::tenant::rooms::envelope::{codes, ClientOp, ServerMessage};
-use crate::tenant::rooms::policy::validate_room_name;
+use crate::tenant::rooms::policy::{
+    check_publish_allowed, validate_room_name, PublishGate, TenantPublishPolicy,
+};
 use crate::tenant::rooms::rest::{publish_into_bus, PublishCtx, PublishError};
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Path};
@@ -31,6 +35,9 @@ use tokio_stream::StreamMap;
 pub async fn ws_handler(
     pc: PublishCtx,
     Extension(ctx): Extension<AuthCtx>,
+    // v1.32.5 — optional so tests / dev routers that mount without
+    // bearer_auth_layer fall through to the safe default (service-only).
+    policy: Option<Extension<TenantPublishPolicy>>,
     Path((tenant,)): Path<(String,)>,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -40,9 +47,10 @@ pub async fn ws_handler(
     // handle_text_frame::Publish stays — it gives clean errors below
     // this hard ceiling.
     let cap = pc.cfg.payload_max_bytes;
+    let policy = policy.map(|Extension(p)| p).unwrap_or_default();
     ws.max_message_size(cap)
         .max_frame_size(cap)
-        .on_upgrade(move |socket| handle_socket(socket, ctx, pc, tenant))
+        .on_upgrade(move |socket| handle_socket(socket, ctx, pc, tenant, policy))
 }
 
 /// RAII guard that increments `drust_ws_connections_active` on construction
@@ -64,7 +72,13 @@ impl Drop for WsConnGuard {
 
 /// Per-connection event loop. Returns when the conn closes for any
 /// reason (client disconnect / LAGGED / send error).
-async fn handle_socket(socket: WebSocket, ctx: AuthCtx, pc: PublishCtx, tenant: String) {
+async fn handle_socket(
+    socket: WebSocket,
+    ctx: AuthCtx,
+    pc: PublishCtx,
+    tenant: String,
+    policy: TenantPublishPolicy,
+) {
     let _conn_guard = WsConnGuard::new(); // v1.32 C1 — tracks active WS connections
     let (mut sink, mut stream) = socket.split();
 
@@ -105,7 +119,7 @@ async fn handle_socket(socket: WebSocket, ctx: AuthCtx, pc: PublishCtx, tenant: 
                     Message::Text(text) => {
                         if !handle_text_frame(
                             text.as_str(), &ctx, &pc, &tenant, token_hint, admin_id,
-                            &mut stream_map, &mut sink,
+                            &policy, &mut stream_map, &mut sink,
                         ).await {
                             break;
                         }
@@ -169,6 +183,7 @@ async fn handle_text_frame(
     tenant: &str,
     token_hint: &'static str,
     admin_id: Option<i64>,
+    policy: &TenantPublishPolicy,
     stream_map: &mut StreamMap<String, BroadcastStream<RoomMessage>>,
     sink: &mut SplitSink<WebSocket, Message>,
 ) -> bool {
@@ -246,16 +261,37 @@ async fn handle_text_frame(
             payload,
             client_ref,
         } => {
-            if !matches!(ctx, AuthCtx::Service { .. }) {
-                return send_error(
-                    sink,
-                    client_ref,
-                    codes::WS_PUBLISH_DENIED,
-                    "service token required to publish",
-                    Some(room),
-                )
-                .await
-                .is_ok();
+            // v1.32.5 — gate via shared helper. Default (both flags off)
+            // preserves the historical service-only behavior; admin can
+            // opt in user / anon publish via PATCH publish-policy. MCP
+            // `broadcast` does NOT consume this — MCP dispatch is already
+            // service-only by construction (defense in depth ≥ 2).
+            match check_publish_allowed(ctx, policy) {
+                PublishGate::Allow => {}
+                PublishGate::DenyUser => {
+                    return send_error(
+                        sink,
+                        client_ref,
+                        codes::WS_PUBLISH_USER_DENIED,
+                        "user tokens cannot publish on this tenant; \
+                         admin must enable `allow_user_publish`",
+                        Some(room),
+                    )
+                    .await
+                    .is_ok();
+                }
+                PublishGate::DenyAnon => {
+                    return send_error(
+                        sink,
+                        client_ref,
+                        codes::WS_PUBLISH_ANON_DENIED,
+                        "anon tokens cannot publish on this tenant; \
+                         admin must enable `allow_anon_publish`",
+                        Some(room),
+                    )
+                    .await
+                    .is_ok();
+                }
             }
             let started = Instant::now();
             let byte_count = serde_json::to_vec(&payload).map(|v| v.len()).unwrap_or(0);

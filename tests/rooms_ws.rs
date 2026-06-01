@@ -174,7 +174,41 @@ async fn ws_publish_with_service_key_fans_out() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
+async fn ws_publish_with_anon_succeeds_when_allow_anon_publish_is_on() {
+    // v1.32.5 — admin flips `allow_anon_publish=1`; anon WS publish now
+    // returns an `ack` instead of `error`. Defense-in-depth check that the
+    // policy plumbing (CTE → extension → gate) survives a real WS round-trip.
+    let (app, tok, dir) = helpers::spin_up_tenant_with_role(TENANT, "anon").await;
+    {
+        let c = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        c.execute(
+            "UPDATE tenants SET allow_anon_publish = 1 WHERE id = ?1",
+            rusqlite::params![TENANT],
+        )
+        .unwrap();
+    }
+    let addr = serve(app).await;
+    let (mut ws, _) = connect_async(ws_url(addr, TENANT, &tok)).await.unwrap();
+    send_op(
+        &mut ws,
+        json!({"op":"publish","room":"chat","payload":{"x":1},"ref":"p1"}),
+    )
+    .await;
+    let ack = recv_json(&mut ws).await;
+    assert_eq!(ack["kind"], "ack");
+    assert_eq!(ack["op"], "publish");
+    assert_eq!(ack["ref"], "p1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
 async fn ws_publish_with_anon_returns_ws_publish_denied() {
+    // v1.32.5 — anon publish is opt-in. With the default
+    // `allow_anon_publish = 0` flag, the WS gate emits
+    // `WS_PUBLISH_ANON_DENIED` (role-specific). The pre-v1.32.5
+    // wire code `WS_PUBLISH_DENIED` is retained in `codes::` for
+    // any client that still pattern-matches it but is no longer
+    // emitted by handle_text_frame.
     let (app, tok, _dir) = helpers::spin_up_tenant_with_role(TENANT, "anon").await;
     let addr = serve(app).await;
     let (mut ws, _) = connect_async(ws_url(addr, TENANT, &tok)).await.unwrap();
@@ -186,7 +220,7 @@ async fn ws_publish_with_anon_returns_ws_publish_denied() {
     .await;
     let err = recv_json(&mut ws).await;
     assert_eq!(err["kind"], "error");
-    assert_eq!(err["code"], "WS_PUBLISH_DENIED");
+    assert_eq!(err["code"], "WS_PUBLISH_ANON_DENIED");
     assert_eq!(err["ref"], "p1");
 }
 

@@ -25,6 +25,12 @@ struct ApiKeysPage {
     active_coll: String,
     /// Current state of `tenants.allow_self_register`. Drives the checkbox.
     allow_self_register: bool,
+    /// v1.32.5 — current state of `tenants.allow_user_publish`.
+    /// Drives the WS / REST publish checkbox for user tokens.
+    allow_user_publish: bool,
+    /// v1.32.5 — current state of `tenants.allow_anon_publish`.
+    /// Drives the WS / REST publish checkbox for anon tokens.
+    allow_anon_publish: bool,
     version: &'static str,
     t: Translator,
     admin: crate::mgmt::admin_profile::AdminProfileExt,
@@ -208,14 +214,18 @@ pub async fn api_keys_page(
     Path(tenant_id): Path<String>,
 ) -> Response {
     let conn = state.session.meta.lock().await;
-    let meta: Option<(String, String, i64)> = conn
+    let meta: Option<(String, String, i64, i64, i64)> = conn
         .query_row(
-            "SELECT name, created_at, COALESCE(allow_self_register, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT name, created_at, \
+                    COALESCE(allow_self_register, 0), \
+                    COALESCE(allow_user_publish, 0), \
+                    COALESCE(allow_anon_publish, 0) \
+             FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
             rusqlite::params![tenant_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .ok();
-    let (name, created, self_register_flag) = match meta {
+    let (name, created, self_register_flag, user_pub_flag, anon_pub_flag) = match meta {
         Some(m) => m,
         None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
     };
@@ -255,6 +265,8 @@ pub async fn api_keys_page(
             collections,
             active_coll: "_api_keys".to_string(),
             allow_self_register: self_register_flag != 0,
+            allow_user_publish: user_pub_flag != 0,
+            allow_anon_publish: anon_pub_flag != 0,
             version: env!("CARGO_PKG_VERSION"),
             t: Translator::new(locale),
             admin,

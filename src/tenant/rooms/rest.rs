@@ -8,7 +8,10 @@ use crate::error::{json_error, json_error_with_aliases};
 use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
 use crate::tenant::rooms::bus::{RoomBus, RoomMessage};
 use crate::tenant::rooms::envelope::{codes, ServerMessage};
-use crate::tenant::rooms::policy::{check_payload_size, validate_room_name, PublishBucket};
+use crate::tenant::rooms::policy::{
+    check_payload_size, check_publish_allowed, validate_room_name,
+    PublishBucket, PublishGate, TenantPublishPolicy,
+};
 use crate::tenant::rooms::state::RoomsConfig;
 use axum::extract::Path;
 use axum::http::{header, HeaderValue, StatusCode};
@@ -29,6 +32,10 @@ pub struct PublishCtx {
 pub async fn publish_handler(
     pc: PublishCtx,
     Extension(ctx): Extension<AuthCtx>,
+    // v1.32.5 — bearer_auth_layer always attaches this. Optional extractor
+    // so handlers mounted in test routers without the layer fall back to
+    // the safe "service-only" default rather than 500.
+    policy: Option<Extension<TenantPublishPolicy>>,
     Path((tenant, room)): Path<(String, String)>,
     Json(payload): Json<serde_json::Value>,
 ) -> Response {
@@ -39,15 +46,32 @@ pub async fn publish_handler(
         AuthCtx::Anon => "anon",
     };
     let admin_id = ctx.admin_id();
+    let policy = policy.map(|Extension(p)| p).unwrap_or_default();
 
-    // Auth: Service only.
-    if !matches!(ctx, AuthCtx::Service { .. }) {
-        return json_error_with_aliases(
-            StatusCode::FORBIDDEN,
-            "WRITE_DENIED",
-            &["SERVICE_REQUIRED"],
-            "service token required to publish",
-        );
+    // v1.32.5 — gate via shared helper; deny path returns role-specific
+    // error code so frontends can show "ask admin to flip the flag" hints.
+    match check_publish_allowed(&ctx, &policy) {
+        PublishGate::Allow => {}
+        PublishGate::DenyUser => {
+            return json_error_with_aliases(
+                StatusCode::FORBIDDEN,
+                "PUBLISH_USER_DENIED",
+                &["WRITE_DENIED"],
+                "user tokens cannot publish on this tenant; \
+                 admin must enable `allow_user_publish` via \
+                 PATCH /admin/tenants/<id>/publish-policy",
+            );
+        }
+        PublishGate::DenyAnon => {
+            return json_error_with_aliases(
+                StatusCode::FORBIDDEN,
+                "PUBLISH_ANON_DENIED",
+                &["WRITE_DENIED"],
+                "anon tokens cannot publish on this tenant; \
+                 admin must enable `allow_anon_publish` via \
+                 PATCH /admin/tenants/<id>/publish-policy",
+            );
+        }
     }
 
     let byte_count = serde_json::to_vec(&payload).map(|v| v.len()).unwrap_or(0);

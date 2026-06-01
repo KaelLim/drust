@@ -173,6 +173,14 @@ pub fn run_migrations(
 
     add_column_if_missing(meta, "tenants", "allow_self_register",
         "INTEGER NOT NULL DEFAULT 0")?;
+    // v1.32.5 — opt-in publish policy. Default off keeps the historical
+    // service-only gate; flipping a flag lets user / anon tokens call
+    // `op:publish` (WS) or POST /rooms/<r> (REST). MCP `broadcast` tool
+    // stays service-only by MCP dispatch — these flags do not loosen it.
+    add_column_if_missing(meta, "tenants", "allow_user_publish",
+        "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(meta, "tenants", "allow_anon_publish",
+        "INTEGER NOT NULL DEFAULT 0")?;
     // v1.15.0 — denormalized dashboard stats sampled in background.
     add_column_if_missing(meta, "tenants", "db_bytes",
         "INTEGER NOT NULL DEFAULT 0")?;

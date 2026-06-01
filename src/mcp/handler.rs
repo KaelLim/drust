@@ -309,6 +309,18 @@ pub struct SetSelfRegisterArgs {
     pub enabled: bool,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetPublishPolicyArgs {
+    /// When `Some`, sets `allow_user_publish` to this value. Omit to leave
+    /// the flag unchanged. Default is `false` (publish denied for user
+    /// tokens until admin opts in).
+    pub allow_user_publish: Option<bool>,
+    /// When `Some`, sets `allow_anon_publish` to this value. Omit to leave
+    /// the flag unchanged. Default is `false` (publish denied for anon
+    /// tokens until admin opts in).
+    pub allow_anon_publish: Option<bool>,
+}
+
 // --- v1.12: Per-tenant OAuth-provider admin parameter types ----------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1334,6 +1346,41 @@ impl DrustMcpService {
         }
     }
 
+    #[tool(description = "v1.32.5 — Set this tenant's broadcast publish policy. \
+        Two opt-in flags (both default false) gate `op:publish` (WS) and \
+        POST /t/{tenant}/rooms/{room} (REST) for non-service tokens. Either \
+        arg may be omitted to leave that flag unchanged. \
+        - allow_user_publish=true: logged-in end-users (drust_user_*) may publish. \
+        - allow_anon_publish=true: the public anon bearer may publish — treat \
+          as public-write; per-tenant rate-limit still applies. \
+        MCP `broadcast` is service-only regardless of these flags (MCP \
+        dispatch enforces). Returns {allow_user_publish, allow_anon_publish} \
+        with the post-update state. NOT_FOUND if the tenant is missing.")]
+    async fn set_publish_policy(
+        &self,
+        Parameters(SetPublishPolicyArgs { allow_user_publish, allow_anon_publish }):
+            Parameters<SetPublishPolicyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let meta = match self.state.meta() {
+            Some(m) => m.clone(),
+            None => {
+                return Err(McpError::internal_error(
+                    "meta connection not available in this context".to_string(),
+                    None,
+                ))
+            }
+        };
+        let tenant_id = self.state.tenant_id().to_string();
+        match owner_field_tools::set_publish_policy(
+            &meta, &tenant_id, allow_user_publish, allow_anon_publish,
+        )
+        .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
     // ── v1.12: Per-tenant OAuth-provider admin tools ──────────────────────
 
     #[tool(description = "List the OAuth providers configured for this tenant's \
@@ -1585,6 +1632,7 @@ CAPABILITY GROUPS
    OAuth:    list_oauth_providers, set_oauth_provider, delete_oauth_provider, set_self_register
    Webhooks: create_webhook, list_webhooks, update_webhook, delete_webhook   (CRUD events fan out)
    Broadcast (v1.31+): broadcast — publish JSON to a WS room; fire-and-forget, no replay
+   Publish policy (v1.32.5+): set_publish_policy — opt non-service tokens into WS/REST publish
 
 5. OBSERVABILITY (service-only)
    recent_writes — last 100 mutations for THIS tenant. Use after a retry to see what the previous attempt wrote.

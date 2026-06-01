@@ -35,7 +35,10 @@ async fn publish_with_service_key_returns_200_and_zero_delivered_when_no_subscri
 }
 
 #[tokio::test]
-async fn publish_anon_returns_403_write_denied() {
+async fn publish_anon_returns_403_anon_denied_by_default() {
+    // v1.32.5 — anon publish is opt-in. The default (allow_anon_publish=0)
+    // returns 403 with the role-specific primary code and the legacy
+    // `WRITE_DENIED` retained as an alias for backwards-compat.
     let (app, tok, _dir) = helpers::spin_up_tenant_with_role(TENANT, "anon").await;
     let req = Request::builder()
         .method("POST")
@@ -47,7 +50,18 @@ async fn publish_anon_returns_403_write_denied() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let v = body_json(resp).await;
-    assert_eq!(v["error_code"], "WRITE_DENIED");
+    assert_eq!(v["error_code"], "PUBLISH_ANON_DENIED");
+    let aliases = v["error_aliases"].as_array().expect("error_aliases array");
+    assert!(
+        aliases.iter().any(|x| x == "WRITE_DENIED"),
+        "v1.32.5 must keep WRITE_DENIED as a legacy alias; got {:?}",
+        aliases,
+    );
+    let fix = v["suggested_fix"].as_str().unwrap_or_default();
+    assert!(
+        fix.contains("allow_anon_publish"),
+        "suggested_fix should mention the opt-in flag; got {fix:?}",
+    );
 }
 
 #[tokio::test]
@@ -147,4 +161,97 @@ async fn publish_into_bus_delivers_to_one_subscriber() {
     assert_eq!(n, 1);
     let got = rx.recv().await.unwrap();
     assert_eq!(got.payload["k"], 1);
+}
+
+// ─── v1.32.5 publish-policy gating ───────────────────────────────────────────
+
+/// Helper: flip allow_user_publish / allow_anon_publish in the test tenant's
+/// meta.sqlite. Returns once the UPDATE has been issued. The next REST
+/// request through bearer_auth_layer will pick up the new value via the CTE.
+fn flip_publish_flag(dir: &tempfile::TempDir, tenant: &str, col: &str, on: bool) {
+    let path = dir.path().join("meta.sqlite");
+    let c = rusqlite::Connection::open(path).unwrap();
+    let sql = format!("UPDATE tenants SET {col} = ?1 WHERE id = ?2");
+    c.execute(&sql, rusqlite::params![on as i64, tenant]).unwrap();
+}
+
+#[tokio::test]
+async fn publish_anon_succeeds_once_allow_anon_publish_is_on() {
+    let (app, tok, dir) = helpers::spin_up_tenant_with_role(TENANT, "anon").await;
+    flip_publish_flag(&dir, TENANT, "allow_anon_publish", true);
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/t/{TENANT}/rooms/chat"))
+        .header("authorization", format!("Bearer {tok}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"hi":true}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["ok"], true);
+}
+
+#[tokio::test]
+async fn publish_user_denied_when_flag_off_and_allowed_when_on() {
+    // Anon flag stays off — opening anon publish must NOT open user publish.
+    let tenant = "ab10b1a4-0000-0000-0000-000000000099";
+    let (app, _svc_tok, dir) = helpers::spin_up_tenant_with_role(tenant, "service").await;
+    // Mint a user session directly in the tenant DB so bearer_auth_layer
+    // resolves AuthCtx::User. Schema lives in src/auth/user_session.rs.
+    use drust::auth::user_session;
+    let conn = drust::storage::tenant_db::open_write(dir.path(), tenant).unwrap();
+    // _system_users + _system_sessions are auto-created by open_write. Seed
+    // one row so the session can reference a real user_id.
+    conn.execute(
+        "INSERT INTO _system_users (id, email, password_hash, verified, profile, created_at, updated_at) \
+         VALUES ('u-1','u1@x','$oauth-only$',1,'{}','2026-01-01','2026-01-01')",
+        [],
+    )
+    .unwrap();
+    let session_tok = user_session::create_session(&conn, "u-1", None, 1).unwrap();
+    drop(conn);
+    // Default: user publish denied.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/t/{tenant}/rooms/chat"))
+        .header("authorization", format!("Bearer {session_tok}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"x":1}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let v = body_json(resp).await;
+    assert_eq!(v["error_code"], "PUBLISH_USER_DENIED");
+    let aliases = v["error_aliases"].as_array().expect("aliases");
+    assert!(aliases.iter().any(|x| x == "WRITE_DENIED"));
+    // Flip user flag, leave anon off. User publish must now succeed.
+    flip_publish_flag(&dir, tenant, "allow_user_publish", true);
+    let req2 = Request::builder()
+        .method("POST")
+        .uri(format!("/t/{tenant}/rooms/chat"))
+        .header("authorization", format!("Bearer {session_tok}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"x":2}"#))
+        .unwrap();
+    let resp2 = app.oneshot(req2).await.unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn publish_service_unaffected_by_publish_policy_flags() {
+    // Service key must publish whether the two flags are off, on, or mixed.
+    let tenant = "ab10b1a4-0000-0000-0000-000000000010";
+    let (app, tok, dir) = helpers::spin_up_tenant_with_role(tenant, "service").await;
+    flip_publish_flag(&dir, tenant, "allow_user_publish", false);
+    flip_publish_flag(&dir, tenant, "allow_anon_publish", false);
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/t/{tenant}/rooms/notif"))
+        .header("authorization", format!("Bearer {tok}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"x":1}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 }

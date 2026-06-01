@@ -887,6 +887,15 @@ cap_desc = "end-users sign up without admin approval"
 cap_name = "Public registration"
 title = "Self-registration"
 
+[tenant_api_keys.pub_policy]
+title = "Broadcast publish policy"
+sub = "Open `op:publish` on /realtime and POST /rooms/{room} to non-service tokens. Off by default — service keys can always publish."
+user_cap_name = "User-token publish"
+user_cap_desc = "Logged-in end-users (drust_user_*) may publish to broadcast rooms."
+anon_cap_name = "Anon-token publish"
+anon_cap_desc = "Public anon bearer may publish to broadcast rooms. Treat as public-write — rate-limit applies."
+alert_body = "Could not update broadcast publish policy."
+
 [tenant_api_keys.state]
 key_not_stored = "key not stored — created before v1.1c"
 no_key_yet = "no {role} key yet"
