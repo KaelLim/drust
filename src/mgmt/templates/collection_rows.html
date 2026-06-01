@@ -575,14 +575,18 @@ for (;;) {
         } catch (e) { /* not real JSON — render as plain text */ }
       }
     }
-    if (raw === null) {
-      window.drustUI.detail({ title: label, fields: [{ label: label, value: 'NULL', mono: true }] });
-    } else {
-      window.drustUI.detail({
-        title: label,
-        fields: [{ label: label, value: prettyValue, code: isJsonShape, mono: !isJsonShape }],
-      });
-    }
+    // v1.32.10 — Supabase-style viewer: render the value inside a
+    // readonly resizable textarea. `wide` widens the modal box so
+    // the editor reads ~80 mono chars per line; `textarea` shifts
+    // rendering from <pre>/<dd> to <textarea>, giving the user
+    // independent scroll + drag-resize for very long content. The
+    // JSON pretty-print path still applies — its newlines render
+    // naturally inside the textarea.
+    window.drustUI.detail({
+      title: label,
+      wide: true,
+      fields: [{ label: label, value: prettyValue, textarea: true }],
+    });
   });
 
   async function refresh(){

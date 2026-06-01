@@ -1,3 +1,31 @@
+## v1.32.10 — 2026-06-01
+
+### Changed
+
+- **Cell-expand modal switched from `<pre>`/plain text to Supabase-
+  style readonly `<textarea>`.** v1.32.9 reused the audit-detail
+  `<pre>` / `<dd>` rendering for the click-to-expand cell viewer,
+  which read fine for short JSON but felt cramped for long
+  Chinese prose or 200-line documents — single scroll axis, no
+  resize, label column ate 120px. v1.32.10 adds two opt-in flags
+  to `drustUI.detail`:
+  - `f.textarea: true` — value renders inside `<textarea readonly
+    class="modal-detail-area">`, the dd spans the full grid width,
+    and the user gets independent scroll + a drag-resize handle on
+    the bottom edge. Mono font, dark surface, focus ring matches
+    the rest of the form inputs.
+  - `opts.wide: true` — promotes the modal box to ~720px (default
+    460px) so the editor reads ~80 mono chars per line — wide
+    enough for typical JSON / SQL / prose without horizontal scroll.
+  Cell click handler in `collection_rows.html` now sets both, so
+  the JSON pretty-print path (already in v1.32.9) renders its
+  newlines naturally inside the textarea. Other callers of
+  `drustUI.detail` (audit detail panel's 15-row read-out) are
+  unchanged — they don't pass the new flags and keep their grid
+  layout.
+
+---
+
 ## v1.32.9 — 2026-06-01
 
 ### Changed
