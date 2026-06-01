@@ -745,7 +745,19 @@ impl MgmtState {
                 "/admin/tenants/{id}/tokens/{role}/reroll",
                 post(super::tokens::reroll_token_form),
             )
-            .route("/admin/tenants/{id}/files", get(tenant_files_admin_page))
+            .route("/admin/tenants/{id}/_files", get(tenant_files_admin_page))
+            // Legacy alias: /files → 301 /_files. v1.32.7 renamed the page
+            // URL for consistency with the other virtual sidebar entries
+            // (_overview, _api_keys, _rpc, _broadcast, _oauth_providers,
+            // _webhooks, _logs). Bookmarks + browser history under /files
+            // still resolve via this redirect. Sub-routes (/files/upload,
+            // /files/<key>, /files/<key>/sign, /files/<key>/bytes) stay on
+            // /files because they're API/action endpoints — only the page
+            // URL changed.
+            .route(
+                "/admin/tenants/{id}/files",
+                get(super::tenant_files::redirect_legacy_files_page),
+            )
             .route("/admin/_docs/changelog", get(super::docs::changelog_page))
             .route(
                 "/admin/tenants/{id}/collections",

@@ -10,7 +10,7 @@
         <div class="grow">
           <div class="eyebrow">{{ t.s("tenant_files_admin.head.eyebrow") }}</div>
           <h1 class="view-title">{{ t.s("tenant_files_admin.head.title") }}</h1>
-          <p class="view-sub">Two Garage buckets per tenant — <code>tenant-{{ tenant_id }}-pub</code> served at <code>/public/&lt;key&gt;</code>, <code>tenant-{{ tenant_id }}-prv</code> requires signed URLs.</p>
+          <p class="view-sub">{{ t.fmt1("tenant_files_admin.head.intro", "tenant_id", tenant_id)|safe }}</p>
         </div>
       </div>
 
@@ -19,7 +19,7 @@
         <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg></span>
         <div class="b-body">
           <div class="b-title">{{ t.fmt1("tenant_files_admin.disk.banner_title", "pct", disk.free_pct_display) }}</div>
-          <p>Free up <code>/var/lib/garage</code> on the host or scale the disk.</p>
+          <p>{{ t.s("tenant_files_admin.disk.banner_body")|safe }}</p>
         </div>
       </div>
       {% endif %}

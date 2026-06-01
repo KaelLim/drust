@@ -515,7 +515,8 @@ for (;;) {
     const thead = document.getElementById('rows-thead');
     const tbody = document.getElementById('rows-tbody');
     const empty = document.getElementById('rows-empty');
-    thead.innerHTML = resp.columns.map(function(c){ return '<th>' + escapeHtml(c) + '</th>'; }).join('');
+    const labels = resp.column_labels || resp.columns;
+    thead.innerHTML = resp.columns.map(function(_c, i){ return '<th>' + escapeHtml(labels[i]) + '</th>'; }).join('');
     if (resp.rows.length === 0) {
       tbody.innerHTML = '';
       empty.hidden = false;

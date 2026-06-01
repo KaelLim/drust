@@ -219,6 +219,21 @@ top_tenants_title = "Top 租戶"
 # REVIEW (low confidence): standalone suffix may read oddly; please verify
 shown_suffix = "已顯示"
 
+[audit_body.detail]
+tenant_id = "租戶 ID"
+token_hint = "金鑰提示"
+status = "狀態"
+duration = "耗時"
+collection = "資料表"
+record_id = "資料列 ID"
+sql_hash = "SQL hash"
+error_code = "錯誤代碼"
+error_message = "錯誤訊息"
+auth_method = "驗證方式"
+oauth_email = "OAuth Email"
+oauth_error_code = "OAuth 錯誤代碼"
+extra = "其他"
+
 [audit_body.diag]
 # REVIEW (low confidence): diagnostic message with template var
 corrupt_archives_skipped = "已略過 {count} 個損毀的封存檔。"
@@ -452,7 +467,7 @@ title = "已儲存函式"
 
 [collection_sidebar.section]
 backend = "後端"
-collections = "集合"
+collections = "資料表"
 connect = "連線"
 home = "首頁"
 
@@ -466,16 +481,16 @@ title = "切換租戶 (⌘K)"
 title = "外送 webhook 訂閱"
 
 [collections.empty]
-body = "當你的客戶端寫入第一筆記錄後，集合會自動出現在此處。"
+body = "當你的客戶端寫入第一筆記錄後，資料表會自動出現在此處。"
 title = "此資料庫沒有任何資料表"
 
 [collections.head]
-eyebrow = "租戶 · 集合"
+eyebrow = "租戶 · 資料表"
 title = "空租戶"
 
 [collections.page]
-meta_description = "drust 管理 — {tenant_name} 尚無集合。當你的客戶端寫入第一筆記錄後，集合會自動出現。"
-title = "drust 管理 — {tenant_name} / 集合（空）"
+meta_description = "drust 管理 — {tenant_name} 尚無資料表。當你的客戶端寫入第一筆記錄後，資料表會自動出現。"
+title = "drust 管理 — {tenant_name} / 資料表（空）"
 
 # Design system page strings — every entry is low-confidence because
 # this page is a developer reference; preferred terminology may differ
@@ -703,6 +718,7 @@ update_failed_title = "更新失敗"
 
 [tenant_api_keys.banner]
 service_admin_title = "Service token 等同此租戶的完整管理權限。"
+service_admin_body = "請把它當成資料庫的 root 密碼。瀏覽器看得到的介面用 <b>anon</b> token；service token 只能留在你的伺服器端。"
 
 [tenant_api_keys.btn]
 copy_key_title = "複製金鑰"
@@ -712,7 +728,7 @@ show_hide_title = "顯示／隱藏"
 
 [tenant_api_keys.card]
 anon_label = "Anon 金鑰"
-anon_scopes = "供瀏覽器 SDK 使用・受每個 collection 的 anon_caps 限制"
+anon_scopes = "供瀏覽器 SDK 使用・受每個資料表的 anon_caps 限制"
 service_label = "Service 金鑰"
 service_scopes = "略過 anon_caps 與 owner-field・僅限可信後端使用"
 
@@ -724,6 +740,7 @@ reroll_title = "重新產生金鑰"
 [tenant_api_keys.head]
 eyebrow = "租戶・連接"
 title = "API 金鑰"
+intro = "這個租戶有兩種金鑰，請依照要整合的介面挑一支用；重新產生會立刻作廢前一支 bearer。租戶 <b>{tenant_name}</b> <code style=\"opacity:0.6;font-size:11px;\">{tenant_id}</code>・建立於 {created_at}。"
 
 [tenant_api_keys.mcp]
 copy_title = "複製 claude mcp add-json 指令"
@@ -774,6 +791,7 @@ failed_title = "刪除失敗"
 
 [tenant_files_admin.disk]
 banner_title = "主機磁碟剩 {pct}% — 暫停上傳"
+banner_body = "請清理主機上的 <code>/var/lib/garage</code> 或擴充磁碟空間。"
 
 [tenant_files_admin.empty]
 body = "使用上方表單上傳第一個檔案。"
@@ -782,6 +800,7 @@ title = "尚未有檔案"
 [tenant_files_admin.head]
 eyebrow = "租戶 · 後端"
 title = "儲存空間"
+intro = "每個租戶有兩個 Garage bucket — <code>tenant-{tenant_id}-pub</code> 對外提供 <code>/public/&lt;key&gt;</code>，<code>tenant-{tenant_id}-prv</code> 需要簽署過的 URL 才能存取。"
 
 [tenant_files_admin.page]
 title = "drust 管理 — 檔案"
@@ -875,24 +894,24 @@ title = "最近活動"
 
 [tenant_overview.collections_card]
 empty_body = "使用 MCP create_collection 工具或 REST API 來新增一個。"
-empty_title = "尚無使用者集合"
+empty_title = "尚無使用者資料表"
 
 [tenant_overview.header]
 eyebrow = "租戶 · 首頁"
 health_pill = "健康"
 # REVIEW (low confidence): contains template vars in zh, please verify spacing
-subtitle = "此租戶各面向的快照 — 集合、流量、認證、儲存、備份。租戶 id {tenant_id} · 建立於 {created_at}。"
+subtitle = "此租戶各面向的快照 — 資料表、流量、認證、儲存、備份。租戶 id {tenant_id} · 建立於 {created_at}。"
 
 [tenant_overview.page]
 # REVIEW (low confidence): meta tags rarely user-visible, but verify wording
-meta_description = "drust 管理介面 — 租戶 {tenant_name} 總覽：集合、記錄、儲存、最近活動。"
+meta_description = "drust 管理介面 — 租戶 {tenant_name} 總覽：資料表、記錄、儲存、最近活動。"
 # REVIEW (low confidence): page title
 title = "drust 管理介面 — {tenant_name} / 總覽"
 
 [tenant_overview.stat]
 api_tokens_label = "API 權杖"
 api_tokens_meta = "匿名 + 服務"
-collections_meta = "此租戶的使用者集合"
+collections_meta = "此租戶的使用者資料表"
 end_users_label = "終端使用者"
 oauth_label = "OAuth 提供者"
 oauth_meta = "每租戶 Google · GitHub"
@@ -900,7 +919,7 @@ rpcs_label = "已儲存的 RPC"
 rpcs_meta = "具名 SELECT 函式"
 storage_meta = "磁碟上的 data.sqlite"
 total_rows_label = "總列數"
-total_rows_meta = "橫跨所有集合"
+total_rows_meta = "橫跨所有資料表"
 webhooks_label = "Webhook"
 webhooks_meta = "啟用中的訂閱"
 
@@ -987,7 +1006,7 @@ name = "名稱（snake_case，需唯一）"
 sql = "SQL（使用 :name 代表參數）"
 
 [tenant_rpc_form.field.mode]
-help_owner_field = "若 collection 有 owner_field，mutation RPC 的 SQL 內必須綁定 :user_id（drust 會從登入者 session 自動代入）。"
+help_owner_field = "若資料表有 owner_field，mutation RPC 的 SQL 內必須綁定 :user_id（drust 會從登入者 session 自動代入）。"
 label = "模式"
 read = "讀（只允許 SELECT）"
 write = "寫（INSERT / UPDATE / DELETE）"
@@ -1086,8 +1105,8 @@ title = "尚未設定 webhook"
 save_failed = "儲存失敗"
 
 [tenant_webhooks_admin.form]
-collection_label = "collection"
-events_label = "events"
+collection_label = "資料表"
+events_label = "事件"
 subtitle = "儲存時產生 64 字元 hex 密鑰 · 僅顯示一次"
 submit = "儲存 webhook"
 title = "新增 webhook"
@@ -1135,7 +1154,7 @@ prev = "上一頁"
 [collection_page.settings]
 close = "關閉設定"
 run_explain = "執行 EXPLAIN…"
-title = "集合設定"
+title = "資料表設定"
 
 [collection_page.settings.section]
 anon = "匿名存取"
@@ -1151,9 +1170,9 @@ definition = "結構"
 table = "資料"
 
 [broadcast_inspector]
-page_title = "Broadcast Inspector"
+page_title = "廣播檢查器"
 view_eyebrow = "廣播"
-view_sub = "走 /realtime 的 WebSocket multiplex — 訂閱 room、即時 tail、送 JSON。Inspector 不會列出 room；自己輸入要觀察的名稱。"
+view_sub = "走 /realtime 的 WebSocket multiplex — 訂閱房間、即時看訊息、送 JSON。檢查器不會列出房間；自己輸入要觀察的名稱。"
 
 [broadcast_inspector.bearer_missing]
 title = "Service bearer 無法取得"
@@ -1172,8 +1191,8 @@ btn_connect = "連線"
 btn_disconnect = "斷線"
 
 [broadcast_inspector.connect]
-room_label = "Room"
-placeholder = "room 名稱（例如 chat）"
+room_label = "房間"
+placeholder = "房間名稱（例如 chat）"
 [broadcast_inspector.publish]
 heading = "發送"
 payload_label = "Payload（JSON）"
@@ -1183,11 +1202,11 @@ counter = "{used} / {cap} B"
 shortcut_hint = "Ctrl/⌘ + Enter 送出"
 
 [broadcast_inspector.tail]
-heading = "Tail"
+heading = "即時訊息"
 btn_clear = "清空"
 btn_pause = "暫停"
 btn_resume = "繼續"
-empty = "（還沒有訊息 — 請先 Connect 到一個 room）"
+empty = "（還沒有訊息 — 請先連線到一個房間）"
 new_pill = "▼ {n} 筆新訊息"
 self_tag = "me"
 lagged_row = "⚠ LAGGED — 漏掉 {n} 則；已自動重新訂閱"
@@ -1196,3 +1215,12 @@ col_time = "時間"
 col_source = "來源"
 col_payload = "Payload"
 col_delivered = "→"
+
+[system_users.col]
+id = "ID"
+email = "Email"
+password_hash = "密碼雜湊"
+verified = "已驗證"
+profile = "個人資料"
+created_at = "建立時間"
+updated_at = "更新時間"

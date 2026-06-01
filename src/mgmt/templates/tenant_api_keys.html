@@ -62,7 +62,7 @@
           <div class="grow">
             <div class="eyebrow">{{ t.s("tenant_api_keys.head.eyebrow") }}</div>
             <h1 class="view-title">{{ t.s("tenant_api_keys.head.title") }}</h1>
-            <p class="view-sub">Two personalities for this tenant — pick whichever matches the surface you're integrating with. Reroll clears the previous bearer immediately. Tenant <b>{{ tenant_name }}</b> <code style="opacity:0.6;font-size:11px;">{{ tenant_id }}</code> · created {{ created_at }}.</p>
+            <p class="view-sub">{{ t.fmt3("tenant_api_keys.head.intro", "tenant_name", tenant_name, "tenant_id", tenant_id, "created_at", created_at)|safe }}</p>
           </div>
         </div>
 
@@ -70,7 +70,7 @@
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
           <div class="b-body">
             <div class="b-title">{{ t.s("tenant_api_keys.banner.service_admin_title") }}</div>
-            <p>Treat it like a database root password. Use the <b>anon</b> token for browser-visible surfaces; service stays on your server.</p>
+            <p>{{ t.s("tenant_api_keys.banner.service_admin_body")|safe }}</p>
           </div>
         </div>
 
