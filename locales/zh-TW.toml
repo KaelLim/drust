@@ -27,24 +27,16 @@ sentinel = "ok"
 # DIVERGENCE: common.action.* preserved alongside common.button.* — see en.toml.
 # In zh-TW the values coincide, but the keys remain split to mirror the en side.
 [common.action]
-apply = "套用"
 cancel = "取消"
-reset = "重設"
 save = "儲存"
 
 # DIVERGENCE: common.actions.cancel/copy/save preserved alongside common.button.*
 # — see en.toml. create/delete/edit folded into common.button.*.
 [common.actions]
-cancel = "取消"
 copy = "複製"
-save = "儲存"
 
 [common.app]
 title = "drust 管理"
-
-[common.audit]
-title = "稽核日誌"
-
 [common.badge]
 fk = "FK"
 idx = "IDX"
@@ -57,7 +49,6 @@ copy = "複製"
 copy_to_clipboard = "複製到剪貼簿"
 close = "關閉"
 copied = "已複製 ✓"
-create = "建立"
 delete = "刪除"
 # REVIEW (low confidence): design-system sample button, please verify wording
 delete_tenant = "刪除租戶"
@@ -76,15 +67,9 @@ save_changes = "儲存變更"
 show = "顯示"
 
 [common.card]
-collections_title = "集合"
 view_all = "檢視全部 →"
-
-[common.cell]
-null = "NULL"
-
 [common.col]
 size = "大小"
-tenant = "租戶"
 
 [common.desc]
 bytes_unit = "位元組"
@@ -93,20 +78,11 @@ err_generic = "描述已被拒絕："
 err_invalid = "描述包含無效字元（NUL 位元組），已被拒絕。"
 err_too_long = "描述超過 2048 位元組上限。請編輯後重新送出。"
 field_none = "（無）"
-label = "描述"
-none = "（無描述）"
-
-[common.disposition]
-attachment = "附件下載"
-inline = "內嵌"
-
 [common.duration]
 ms = "毫秒"
 
 [common.empty]
 no_data = "無資料"
-# CONFLICT: see extraction report (zh "無相符結果" vs "無符合項目")
-no_matches = "無相符結果"
 none = "無"
 
 [common.error]
@@ -141,30 +117,9 @@ title_confirm = "確認"
 title_details = "詳細資訊"
 title_input = "輸入"
 title_notice = "提示"
-
-[common.nav]
-# REVIEW (low confidence): design-system nav samples — verify against real sidebar copy
-api_keys = "API 金鑰"
-backend = "後端"
-collections = "集合"
-connect = "連線"
-end_users = "終端使用者"
-files = "檔案"
-home = "首頁"
-logs = "日誌"
-oauth_providers = "OAuth 供應商"
-overview = "概覽"
-stored_rpc = "Stored RPC"
-webhooks = "Webhooks"
-
 [common.pager]
 next = "下一頁 →"
-of = "／共"
-page = "頁次"
-# CONFLICT: see extraction report (zh "每頁筆數" vs "每頁")
-per_page = "每頁筆數"
 prev = "← 上一頁"
-total = "筆總計"
 
 [common.pill]
 enabled = "已啟用"
@@ -184,21 +139,11 @@ pill_service_only = "僅服務金鑰"
 placeholder = "搜尋…"
 
 [common.stat]
-collections = "集合"
-fields = "個欄位"
-indexes = "個索引"
-records = "筆記錄"
 storage = "儲存"
 
 [common.state]
 disabled = "已停用"
-enabled = "已啟用"
-
-[common.toast]
-copied = "已複製"
-
 [common.unit]
-ms = "毫秒"
 # REVIEW (low confidence): unit suffix, context-dependent
 rows = "筆"
 tables = "資料表"
@@ -208,15 +153,6 @@ tenants = "個租戶"
 
 [common.upload]
 or = "或"
-
-[common.visibility]
-private = "私有"
-public = "公開"
-
-# =====================================================================
-# page-specific sections (alphabetical by prefix)
-# =====================================================================
-
 [admin_sidebar.brand]
 subtitle = "管理主控台"
 
@@ -244,13 +180,10 @@ organization = "組織"
 resources = "資源"
 
 [mcp_pat.alert]
-pat_failed_title = "MCP PAT 操作失敗"
-pat_failed_body = "伺服器回應錯誤。請重新整理頁面再試一次；若仍有問題，請到 audit log 查看原因。"
 no_pat_title = "尚無可用 PAT"
 no_pat_body = "請到 /drust/admin/settings 查看你的 PAT，然後再按一次。"
 
 [admin_team.action]
-view = "檢視"
 promote = "提升為 Owner"
 demote = "降為 Member"
 remove = "移除"
@@ -261,26 +194,10 @@ confirm_remove = "輸入 {email} 確認移除"
 email = "Email"
 name = "名稱"
 role = "角色"
-last_seen = "最後上線"
-tokens = "Tokens"
-
-[admin_team.error]
-not_owner = "只有 Owner 可執行此操作"
-last_owner = "無法降級／移除最後一位 Owner"
-email_taken = "Email 已存在 admins 中"
-invalid_role = "角色必須是 owner 或 member"
-
 [admin_team.head]
 add = "新增 admin"
 subtitle = "管理 admin 與角色"
 title = "團隊"
-
-[admin_team.role]
-owner = "Owner"
-member = "Member"
-owner_hint = "Owner 可管理 admins"
-member_hint = "完整資料存取，無法管理 admins"
-
 [audit_body.aria]
 # REVIEW (low confidence): aria-label with template var, please verify wording
 show_details_for = "顯示 {op} 的詳細資訊"
@@ -301,8 +218,6 @@ top_tenants_title = "Top 租戶"
 [audit_body.count]
 # REVIEW (low confidence): standalone suffix may read oddly; please verify
 shown_suffix = "已顯示"
-# REVIEW (low confidence): pagination phrase with embedded {n}, verify wording
-truncated_from = "· 自 {n} 裁切"
 
 [audit_body.diag]
 # REVIEW (low confidence): diagnostic message with template var
@@ -342,8 +257,6 @@ p99_meta = "p99 {p99} 毫秒"
 # REVIEW (low confidence): standalone suffix, please verify
 pct_err_suffix = "% 錯誤"
 req_per_sec = "請求 / 秒"
-sampled_label = "取樣"
-sampled_note = "本時間窗超過 50,000 筆時，延遲、Top tenants、Top slow ops 為最近 50,000 筆的樣本統計。請求總數仍為實際全量。"
 total_requests = "請求總數"
 zero_err = "0% 錯誤"
 
@@ -464,10 +377,6 @@ apply_btn = "套用變更"
 [collection_rows.explain]
 run_btn = "▶ 解析"
 title = "執行 EXPLAIN QUERY PLAN"
-
-[collection_rows.head]
-eyebrow = "租戶 · 集合"
-
 [collection_rows.indexes]
 add_field_btn = "+ 新增欄位"
 col_description = "描述"
@@ -483,10 +392,7 @@ err_no_field = "請至少選擇一個欄位。"
 force_check = "強制（略過大表保護）"
 remove_field_title = "移除此欄位"
 select_field_placeholder = "— 選擇欄位 —"
-submit_btn = "建立索引"
 title = "索引"
-unique_check = "唯一"
-unique_pill = "唯一"
 
 [collection_rows.rows]
 per_page_label = "每頁筆數"
@@ -494,7 +400,6 @@ per_page_label = "每頁筆數"
 [collection_rows.schema]
 col_constraints = "限制"
 col_default = "預設值"
-col_description = "描述"
 col_field = "欄位"
 col_null = "可為空"
 col_type = "型別"
@@ -502,12 +407,6 @@ edit_field_desc_aria = "編輯欄位描述"
 indexed = "已建索引"
 primary_key = "主鍵"
 title = "結構"
-
-[collection_rows.tabs]
-aria_label = "集合視圖"
-indexes = "索引"
-schema = "結構"
-
 [collection_sidebar.api_keys]
 title = "anon · service · MCP 金鑰"
 
@@ -525,9 +424,6 @@ title = "已註冊終端使用者"
 
 [collection_sidebar.files]
 title = "檔案儲存 (S3)"
-
-[collection_sidebar.foot]
-
 [collection_sidebar.logs]
 title = "稽核 · 請求歷史"
 
@@ -674,18 +570,8 @@ heading = "色彩 token"
 
 [design.type]
 heading = "字體排印"
-
-[files.confirm]
-delete_body = "確定要刪除「{name}」嗎？此操作無法復原。"
-delete_title = "刪除檔案"
-
 [files.disk]
 banner_title = "磁碟剩餘 {pct}% — 已暫停上傳"
-
-[files.empty]
-none_body = "請使用上方表單上傳第一個檔案。"
-none_title = "尚無檔案"
-
 [files.head]
 eyebrow = "管理 · 儲存"
 # REVIEW (low confidence): count suffix, please verify
@@ -695,62 +581,17 @@ title = "主機檔案"
 
 [files.list]
 card_title = "檔案"
-sync_audit_btn = "同步稽核"
 
 [files.page]
 meta_description = "drust 管理 — 主機層級的檔案儲存。上傳、瀏覽並管理由 Garage S3 支援的公開與私有檔案。"
 title = "drust 管理 — 檔案"
-
-[files.pager]
-page_of = "第 {page} 頁，共 {total_pages} 頁 · 合計 {total} 筆"
-
 [files.row]
-copy_url_btn = "複製 URL"
 delete_btn = "刪除"
-sign_url_btn = "簽署 URL"
-
-[files.sign]
-failed_title = "簽署失敗"
-invalid_ttl_body = "必須為 1 至 604800 之間的整數。"
-invalid_ttl_title = "無效的存活時間"
-prompt_body = "有效秒數（1–604800）。預設 3600 = 1 小時。"
-prompt_ok = "簽署"
-prompt_title = "簽署 URL"
-signed_title = "已簽署的 URL"
-
 [files.stats]
 disk_free_label = "磁碟可用"
 disk_healthy = "正常"
 disk_used_label = "磁碟已用"
-files_label = "檔案數"
 total_suffix = "合計"
-
-[files.tabs]
-all = "全部"
-private = "私有"
-public = "公開"
-
-[files.table]
-col_actions = "動作"
-col_original_name = "原始檔名"
-col_size = "大小"
-col_type = "類型"
-col_uploaded = "上傳時間"
-col_visibility = "可見性"
-
-[files.unavail]
-title = "尚未設定儲存空間"
-
-[files.upload]
-browse_btn = "瀏覽…"
-card_title = "上傳"
-disposition_label = "顯示方式"
-dropzone_prompt = "拖放檔案至此"
-hint_ready = "已就緒 · 按 Upload ↵"
-no_file_chosen = "— 尚未選擇檔案 —"
-submit_btn = "上傳"
-visibility_label = "可見性"
-
 [files_reconcile.action]
 apply_selected = "套用所選"
 delete_selected = "刪除所選"
@@ -833,11 +674,9 @@ subtitle = "此管理員帳號的個人偏好。儲存為此裝置上的長期 c
 
 [settings.locale]
 card_title = "語言"
-card_sub = "切換管理介面的顯示語言，下次載入頁面時生效。遺漏的翻譯會自動 fallback 到英文。"
 
 [settings.theme]
 card_title = "主題"
-card_sub = "選擇 admin UI 的外觀。"
 
 [settings.preferences]
 card_title = "偏好設定"
@@ -860,8 +699,6 @@ reroll_text = "重抽會立即讓目前的 PAT 失效。所有正在使用此 PA
 reroll_title = "重抽 PAT"
 
 [tenant_api_keys.alert]
-service_required_body = "請於上方重新產生或建立 service 金鑰，以啟用一鍵 MCP 指令。"
-service_required_title = "需要 Service 金鑰"
 update_failed_title = "更新失敗"
 
 [tenant_api_keys.banner]
@@ -960,7 +797,6 @@ failed_title = "簽署失敗"
 invalid_title = "無效的 TTL"
 prompt_body = "有效秒數（1–604800）。預設 3600 = 1 小時。"
 prompt_ok = "簽署"
-prompt_title = "簽署 URL"
 success_title = "簽署完成的 URL"
 
 [tenant_files_admin.stats]
@@ -990,11 +826,9 @@ disp_inline = "內嵌"
 disposition_label = "處置方式"
 dropzone_prompt = "將檔案拖放至此"
 no_file = "— 尚未選擇檔案 —"
-submit = "上傳"
 uploading = "上傳中…"
 vis_private = "私人"
 vis_public = "公開"
-visibility_label = "可見性"
 
 [tenant_oauth_providers.callback_banner]
 title = "Callback URL 為各租戶固定值"
@@ -1212,31 +1046,9 @@ new_tenant = "新增租戶"
 [tenants_list.count]
 # REVIEW (low confidence): contains template var {n}, please verify
 total = "共 {n} 個租戶"
-
-[tenants_list.create]
-prompt_body = "將會建立 data.sqlite、每租戶 S3 儲存桶，以及 anon／service 金鑰。請選擇顯示名稱。"
-prompt_placeholder = "活動報名"
-prompt_title = "建立租戶"
-
-[tenants_list.delete]
-# REVIEW (low confidence): contains template var {name}, verify quotation style
-confirm_body = "確定要刪除「{name}」嗎？這會一併移除其資料庫、金鑰與所有儲存的檔案。"
-confirm_title = "刪除租戶"
-
 [tenants_list.disk]
 # REVIEW (low confidence): contains template var {pct}, verify wording
 banner_title = "磁碟剩餘 {pct}% — 上傳已暫停"
-
-[tenants_list.empty]
-body = "點擊上方的「新增租戶」來建立一個。"
-title = "尚未建立任何租戶"
-
-[tenants_list.footer]
-# REVIEW (low confidence): contains template var, verify wording
-refresh_every = "每 {m} 分鐘更新"
-# REVIEW (low confidence): contains template var, verify wording
-stats_sampled = "統計取樣於 {age} 前"
-
 [tenants_list.head]
 eyebrow = "管理 · 平台"
 subtitle = "每個租戶都擁有獨立的 SQLite 資料庫、一組 S3 儲存桶、OAuth 註冊、anon 與 service 金鑰，以及 MCP 端點。點擊任一列進入該租戶的管理工作區。"
@@ -1258,23 +1070,8 @@ storage_low = "偏低"
 tagline = "多租戶 SQLite BaaS"
 uploads_paused = "上傳已暫停（低於 20% 門檻）"
 well_above_threshold = "遠高於 20% 門檻"
-
-[tenants_list.row]
-copy_full_id_title = "複製完整 ID"
-copy_id = "複製 ID"
-
 [tenants_list.search]
-# REVIEW (low confidence): contains template var {q}, verify wording
-no_matches = "找不到符合 {q} 的結果"
 title = "依租戶名稱或 ID 篩選（按 / 聚焦）"
-
-[tenants_list.table]
-col_created = "建立時間"
-col_db = "資料庫"
-col_files = "檔案"
-col_tenant = "租戶"
-col_total = "總計"
-
 [tenant_webhooks_admin.actions]
 new_subscription = "新增訂閱"
 
@@ -1377,19 +1174,8 @@ btn_disconnect = "斷線"
 [broadcast_inspector.connect]
 room_label = "Room"
 placeholder = "room 名稱（例如 chat）"
-
-[broadcast_inspector.subs]
-heading = "訂閱"
-placeholder = "room 名稱（例如 chat）"
-btn_subscribe = "訂閱"
-btn_unsub = "退訂"
-btn_evict = "Evict"
-caveat = "Inspector 不會列出活躍 room — 輸入你 app 用的 room 名稱。"
-confirm_evict = "把所有訂閱者從 room '{room}' 踢出去？此操作會留 admin audit。"
-
 [broadcast_inspector.publish]
 heading = "發送"
-room_label = "Room"
 payload_label = "Payload（JSON）"
 payload_invalid = "JSON 格式錯"
 btn_send = "送出"

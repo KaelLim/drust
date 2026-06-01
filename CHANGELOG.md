@@ -1,3 +1,54 @@
+## v1.32.6 — 2026-06-01
+
+### Fixed
+
+- **Ghost CSS vars purged from admin templates.** Seven templates
+  (`_styles.html`, `_cmdk.html`, `collection_rows.html`,
+  `tenant_overview.html`, `tenant_webhooks_admin.html`, `login.html`,
+  `design.html`) still referenced `var(--line)` / `var(--line-2)` /
+  `var(--bg-soft)` — three CSS custom properties that have not been
+  defined by any theme since v1.23. They silently fell back to
+  `currentColor` for borders and `transparent` for backgrounds,
+  which made hairline dividers, cmdk hint bars, sticky filter
+  popovers, the login card border, and the OAuth-button hover
+  surface invisible in `cozy-dark` and incorrect in `soft-light`.
+  All references now use the canonical tokens already defined in
+  `themes/<code>.toml [ui]`: `--border-mid`, `--border-strong`,
+  `--surface-2`. The v1.28.10 checkbox-skin fix used the same
+  pattern; this commit finishes the sweep.
+- **i18n orphan scanner now sees Rust-side references AND `fmtN`
+  variants.** `build.rs` previously had two blind spots:
+  - it only walked `src/mgmt/templates/**/*.html`, so any key
+    consumed exclusively from a `.rs` file (e.g.
+    `tenant_broadcast.rs` injecting `broadcast_inspector.conn.state_*`
+    into a JS `I18N` global, or `i18n.rs` tests asserting on
+    `common.button.copy`) surfaced as a "safe to remove" orphan
+    warning on every release build;
+  - and its regex was `(?:s|fmt)`, which silently missed every
+    numbered `t.fmt1(...)` / `t.fmt2(...)` / `t.fmt3(...)` call
+    site — so every key formatted with one positional binding
+    looked dead.
+  The scanner now walks `src/**/*.rs` recursively (any quoted
+  literal that matches a known `en.toml` key counts; line-comment
+  strings skipped so stale `// TODO: rename foo.bar` notes can't
+  hold keys alive) and the template regex is now
+  `(?:s|fmt[0-9]*)`. With both blind spots closed, build warnings
+  on a clean tree dropped from 4 (with ~125 false negatives hidden
+  by the broken regex) to 0.
+
+### Removed
+
+- **127 genuinely-orphan i18n keys deleted** from `en.toml` +
+  `zh-TW.toml` — keys that templates and `.rs` files genuinely
+  no longer reference (renamed surfaces, removed buttons, replaced
+  copy-paste sections from earlier iterations). The set was
+  enumerated by the scanner fix above, then triaged: every key
+  the scanner flagged was confirmed unused with `grep -rn
+  <key> src/` before removal. Empty `[section]` headers and their
+  preceding REVIEW comments were collapsed in the same pass.
+
+---
+
 ## v1.32.5 — 2026-06-01
 
 ### Changed

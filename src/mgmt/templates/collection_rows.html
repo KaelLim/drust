@@ -172,7 +172,7 @@
               {% endif %}
             </tbody>
           </table>
-          <div class="card-body-tight" style="border-top:1px solid var(--line);">
+          <div class="card-body-tight" style="border-top:1px solid var(--border-mid);">
             <div style="font:600 11px/1 var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">{{ t.s("collection_rows.indexes.create_heading") }}</div>
             <div style="font:400 12px/1.5 var(--sans);color:var(--muted);margin-bottom:12px;">
               Row order is the index column order (matters for composite indexes).
@@ -325,7 +325,7 @@
         </script>
 
         {# --- Stats footer (new in v1.28) --- #}
-        <div style="padding:14px 18px;border-top:1px solid var(--line-2);font:400 12px/1.4 var(--sans);color:var(--muted);">
+        <div style="padding:14px 18px;border-top:1px solid var(--border-strong);font:400 12px/1.4 var(--sans);color:var(--muted);">
           {{ fields.len() }} {{ t.s("collection_page.definition.fields_heading") }} ·
           {{ indices.len() }} {{ t.s("collection_page.definition.indexes_heading") }} ·
           <span id="def-row-count">…</span> rows

@@ -28,25 +28,17 @@ sentinel = "ok"
 # values differ in case (e.g. "Apply" vs "apply"). Fold once templates pick a
 # single canonical capitalisation. See Theme E3 review (2026-05-22).
 [common.action]
-apply = "Apply"
 cancel = "cancel"
-reset = "reset"
 save = "save"
 
 # DIVERGENCE: common.actions.cancel/copy/save preserved alongside common.button.*
 # due to case differences ("cancel" vs "Cancel" etc). create/delete/edit folded
 # into common.button.*.
 [common.actions]
-cancel = "cancel"
 copy = "copy"
-save = "save"
 
 [common.app]
 title = "drust admin"
-
-[common.audit]
-title = "Audit log"
-
 [common.badge]
 fk = "FK"
 idx = "IDX"
@@ -59,7 +51,6 @@ copy = "Copy"
 copy_to_clipboard = "Copy to clipboard"
 close = "Close"
 copied = "copied ✓"
-create = "Create"
 delete = "Delete"
 delete_tenant = "Delete tenant"
 drop = "Drop"
@@ -73,15 +64,9 @@ save_changes = "Save changes"
 show = "show"
 
 [common.card]
-collections_title = "Collections"
 view_all = "view all →"
-
-[common.cell]
-null = "NULL"
-
 [common.col]
 size = "size"
-tenant = "tenant"
 
 [common.desc]
 bytes_unit = "bytes"
@@ -90,20 +75,11 @@ err_generic = "Description rejected:"
 err_invalid = "Description contains an invalid character (NUL byte) and was rejected."
 err_too_long = "Description exceeds the 2048-byte limit. Edit and resubmit."
 field_none = "(none)"
-label = "Description"
-none = "(no description)"
-
-[common.disposition]
-attachment = "attachment"
-inline = "inline"
-
 [common.duration]
 ms = "ms"
 
 [common.empty]
 no_data = "no data"
-# CONFLICT: zh ("無相符結果" vs "無符合項目") - see report
-no_matches = "no matches"
 none = "None"
 
 [common.error]
@@ -138,29 +114,9 @@ title_confirm = "Confirm"
 title_details = "Details"
 title_input = "Input"
 title_notice = "Notice"
-
-[common.nav]
-api_keys = "API keys"
-backend = "Backend"
-collections = "Collections"
-connect = "Connect"
-end_users = "End-users"
-files = "Files"
-home = "Home"
-logs = "Logs"
-oauth_providers = "OAuth providers"
-overview = "Overview"
-stored_rpc = "Stored RPC"
-webhooks = "Webhooks"
-
 [common.pager]
 next = "next →"
-of = "of"
-page = "page"
-# CONFLICT: zh ("每頁筆數" vs "每頁") - see report
-per_page = "per page"
 prev = "← prev"
-total = "total"
 
 [common.pill]
 enabled = "enabled"
@@ -179,21 +135,11 @@ pill_service_only = "service-only"
 placeholder = "search…"
 
 [common.stat]
-collections = "Collections"
-fields = "fields"
-indexes = "indexes"
-records = "records"
 storage = "Storage"
 
 [common.state]
 disabled = "disabled"
-enabled = "enabled"
-
-[common.toast]
-copied = "copied"
-
 [common.unit]
-ms = "ms"
 rows = "rows"
 tables = "tables"
 
@@ -202,15 +148,6 @@ tenants = "tenants"
 
 [common.upload]
 or = "or"
-
-[common.visibility]
-private = "private"
-public = "public"
-
-# =====================================================================
-# page-specific sections (alphabetical by prefix)
-# =====================================================================
-
 [admin_sidebar.brand]
 subtitle = "admin console"
 
@@ -237,13 +174,10 @@ organization = "Organization"
 resources = "Resources"
 
 [mcp_pat.alert]
-pat_failed_title = "MCP PAT request failed"
-pat_failed_body = "The server returned an error. Refresh the page and try again; if the problem persists, check the audit log."
 no_pat_title = "No PAT available"
 no_pat_body = "Visit /drust/admin/settings to view your PAT, then click here again."
 
 [admin_team.action]
-view = "View"
 promote = "Promote to Owner"
 demote = "Demote to Member"
 remove = "Remove"
@@ -254,26 +188,10 @@ confirm_remove = "Type {email} to confirm removal"
 email = "Email"
 name = "Name"
 role = "Role"
-last_seen = "Last seen"
-tokens = "Tokens"
-
-[admin_team.error]
-not_owner = "Only Owner can perform this action"
-last_owner = "Cannot demote/remove the last Owner"
-email_taken = "Email already in admins"
-invalid_role = "Role must be owner or member"
-
 [admin_team.head]
 add = "Add admin"
 subtitle = "Manage admins and roles"
 title = "Team"
-
-[admin_team.role]
-owner = "Owner"
-member = "Member"
-owner_hint = "Owner can manage admins"
-member_hint = "Full data access, cannot manage admins"
-
 [audit_body.aria]
 show_details_for = "show details for {op}"
 
@@ -291,7 +209,6 @@ top_tenants_title = "Top tenants"
 
 [audit_body.count]
 shown_suffix = "shown"
-truncated_from = "· truncated from {n}"
 
 [audit_body.diag]
 corrupt_archives_skipped = "{count} corrupt archive(s) skipped."
@@ -326,8 +243,6 @@ meta_window = "window"
 p99_meta = "p99 {p99} ms"
 pct_err_suffix = "% err"
 req_per_sec = "req / sec"
-sampled_label = "sampled"
-sampled_note = "Latency, top tenants and top slow ops are computed from the 50,000 newest entries when the window holds more rows."
 total_requests = "Total requests"
 zero_err = "0% err"
 
@@ -447,10 +362,6 @@ apply_btn = "apply changes"
 [collection_rows.explain]
 run_btn = "▶ Explain"
 title = "Run EXPLAIN QUERY PLAN"
-
-[collection_rows.head]
-eyebrow = "Tenant · collection"
-
 [collection_rows.indexes]
 add_field_btn = "+ add field"
 col_description = "description"
@@ -466,10 +377,7 @@ err_no_field = "Select at least one field."
 force_check = "force (skip large-table guard)"
 remove_field_title = "remove this field"
 select_field_placeholder = "— select field —"
-submit_btn = "create index"
 title = "Indexes"
-unique_check = "unique"
-unique_pill = "unique"
 
 [collection_rows.rows]
 per_page_label = "per page"
@@ -477,7 +385,6 @@ per_page_label = "per page"
 [collection_rows.schema]
 col_constraints = "constraints"
 col_default = "default"
-col_description = "description"
 col_field = "field"
 col_null = "null"
 col_type = "type"
@@ -485,12 +392,6 @@ edit_field_desc_aria = "edit field description"
 indexed = "indexed"
 primary_key = "primary key"
 title = "Schema"
-
-[collection_rows.tabs]
-aria_label = "Collection view"
-indexes = "Indexes"
-schema = "Schema"
-
 [collection_sidebar.api_keys]
 title = "anon · service · MCP keys"
 
@@ -508,9 +409,6 @@ title = "registered end-users"
 
 [collection_sidebar.files]
 title = "file storage (S3)"
-
-[collection_sidebar.foot]
-
 [collection_sidebar.logs]
 title = "audit · request history"
 
@@ -653,18 +551,8 @@ heading = "Color tokens"
 
 [design.type]
 heading = "Typography"
-
-[files.confirm]
-delete_body = 'Delete "{name}"? This cannot be undone.'
-delete_title = "Delete file"
-
 [files.disk]
 banner_title = "Disk at {pct}% free — uploads paused"
-
-[files.empty]
-none_body = "Upload the first one with the form above."
-none_title = "No files yet"
-
 [files.head]
 eyebrow = "Admin · storage"
 pill_files_unit = "files"
@@ -673,62 +561,17 @@ title = "Host files"
 
 [files.list]
 card_title = "Files"
-sync_audit_btn = "sync audit"
 
 [files.page]
 meta_description = "drust admin — host-level file storage. Upload, browse, and manage public and private files backed by Garage S3."
 title = "drust admin — files"
-
-[files.pager]
-page_of = "page {page} of {total_pages} · {total} total"
-
 [files.row]
-copy_url_btn = "copy URL"
 delete_btn = "delete"
-sign_url_btn = "Sign URL"
-
-[files.sign]
-failed_title = "Sign failed"
-invalid_ttl_body = "Must be an integer between 1 and 604800."
-invalid_ttl_title = "Invalid TTL"
-prompt_body = "Expiry in seconds (1–604800). Default 3600 = 1 hour."
-prompt_ok = "Sign"
-prompt_title = "Sign URL"
-signed_title = "Signed URL"
-
 [files.stats]
 disk_free_label = "Disk free"
 disk_healthy = "healthy"
 disk_used_label = "Disk used"
-files_label = "Files"
 total_suffix = "total"
-
-[files.tabs]
-all = "All"
-private = "Private"
-public = "Public"
-
-[files.table]
-col_actions = "actions"
-col_original_name = "original name"
-col_size = "size"
-col_type = "type"
-col_uploaded = "uploaded"
-col_visibility = "visibility"
-
-[files.unavail]
-title = "Storage not configured"
-
-[files.upload]
-browse_btn = "browse…"
-card_title = "Upload"
-disposition_label = "disposition"
-dropzone_prompt = "drag & drop a file here"
-hint_ready = "ready · press Upload ↵"
-no_file_chosen = "— no file chosen —"
-submit_btn = "Upload"
-visibility_label = "visibility"
-
 [files_reconcile.action]
 apply_selected = "Apply selected"
 delete_selected = "Delete selected"
@@ -811,11 +654,9 @@ subtitle = "Personal preferences for this admin account. Saved to a long-lived c
 
 [settings.locale]
 card_title = "Language"
-card_sub = "Switch the admin UI language. Takes effect on the next page load. Missing translations fall back to English."
 
 [settings.theme]
 card_title = "Theme"
-card_sub = "Choose how the admin UI looks."
 
 [settings.preferences]
 card_title = "Preferences"
@@ -838,8 +679,6 @@ reroll_text = "Rerolling immediately invalidates your current PAT. Every Claude 
 reroll_title = "Reroll PAT"
 
 [tenant_api_keys.alert]
-service_required_body = "Reroll or generate the service key above to enable the one-click MCP command."
-service_required_title = "Service key required"
 update_failed_title = "Update failed"
 
 [tenant_api_keys.banner]
@@ -940,7 +779,6 @@ failed_title = "Sign failed"
 invalid_title = "Invalid TTL"
 prompt_body = "Expiry in seconds (1–604800). Default 3600 = 1 hour."
 prompt_ok = "Sign"
-prompt_title = "Sign URL"
 success_title = "Signed URL"
 
 [tenant_files_admin.stats]
@@ -970,11 +808,9 @@ disp_inline = "inline"
 disposition_label = "disposition"
 dropzone_prompt = "drag & drop a file here"
 no_file = "— no file chosen —"
-submit = "Upload"
 uploading = "uploading…"
 vis_private = "private"
 vis_public = "public"
-visibility_label = "visibility"
 
 [tenant_oauth_providers.callback_banner]
 title = "Callback URL is fixed per tenant"
@@ -1187,27 +1023,8 @@ new_tenant = "New tenant"
 
 [tenants_list.count]
 total = "{n} tenants"
-
-[tenants_list.create]
-prompt_body = "Provisions data.sqlite + per-tenant S3 buckets + anon/service tokens. Choose a display name."
-prompt_placeholder = "Event Registration"
-prompt_title = "Create a tenant"
-
-[tenants_list.delete]
-confirm_body = 'Delete "{name}"? This removes its database, tokens, and any stored files.'
-confirm_title = "Delete tenant"
-
 [tenants_list.disk]
 banner_title = "Disk at {pct}% free — uploads paused"
-
-[tenants_list.empty]
-body = "Click New tenant above to create one."
-title = "No tenants yet"
-
-[tenants_list.footer]
-refresh_every = "refresh every {m} min"
-stats_sampled = "stats sampled {age}"
-
 [tenants_list.head]
 eyebrow = "Admin · platform"
 subtitle = "Each tenant gets its own SQLite database, S3 bucket pair, OAuth registrations, anon & service keys, and MCP endpoint. Click a row to enter the tenant studio."
@@ -1228,22 +1045,8 @@ storage_low = "low"
 tagline = "multi-tenant SQLite BaaS"
 uploads_paused = "uploads paused (< 20% threshold)"
 well_above_threshold = "well above 20% threshold"
-
-[tenants_list.row]
-copy_full_id_title = "copy full id"
-copy_id = "copy id"
-
 [tenants_list.search]
-no_matches = "no matches for {q}"
 title = "Filter by tenant name or id ( / to focus )"
-
-[tenants_list.table]
-col_created = "created"
-col_db = "db"
-col_files = "files"
-col_tenant = "Tenant"
-col_total = "total"
-
 [tenant_webhooks_admin.actions]
 new_subscription = "New subscription"
 
@@ -1346,19 +1149,8 @@ btn_disconnect = "Disconnect"
 [broadcast_inspector.connect]
 room_label = "Room"
 placeholder = "room name (e.g. chat)"
-
-[broadcast_inspector.subs]
-heading = "Subscriptions"
-placeholder = "room name (e.g. chat)"
-btn_subscribe = "Subscribe"
-btn_unsub = "Unsub"
-btn_evict = "Evict"
-caveat = "Inspector does not enumerate active rooms — type the name your app uses."
-confirm_evict = "Drop room '{room}' for ALL subscribers? This is an admin-audited destructive op."
-
 [broadcast_inspector.publish]
 heading = "Publish"
-room_label = "Room"
 payload_label = "Payload (JSON)"
 payload_invalid = "invalid JSON"
 btn_send = "Send"
