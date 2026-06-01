@@ -3,9 +3,18 @@
 //! `locales/en.toml`. Failure fails the build with file:line + a
 //! Levenshtein-distance "did you mean" hint.
 //!
+//! Orphan detection also walks every `src/**/*.rs` (recursively) and
+//! treats any double-quoted string literal whose shape matches a flat
+//! TOML key (`^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$`, ≥2 segments) as a
+//! reference. This covers Rust-side i18n injection paths the template
+//! scanner can't see — e.g. `tenant_broadcast.rs` builds an `I18N`
+//! object whose values are `t.s("broadcast_inspector.conn.state_*")`
+//! and the template reads them as JS globals at runtime. Without this
+//! pass, every such key shows up as a false-positive orphan warning.
+//!
 //! Soft warnings (do not fail build):
-//!   - keys in `en.toml` not referenced by any template (orphans — safe
-//!     to remove, but not a bug)
+//!   - keys in `en.toml` not referenced by any template OR `.rs` file
+//!     (orphans — safe to remove, but not a bug)
 //!   - keys in any non-en bundle not in `en.toml` (dead — en is source of
 //!     truth). Every `locales/<tag>.toml` is checked; adding a new locale
 //!     file is enough, no edits to `build.rs` required.
@@ -18,6 +27,7 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=src/mgmt/templates");
+    println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=locales/en.toml");
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -45,8 +55,14 @@ fn main() {
     non_en_locales.sort();
 
     let template_dir = Path::new("src/mgmt/templates");
-    let used = scan_template_keys(template_dir);
+    let mut used = scan_template_keys(template_dir);
     let en_keys = load_toml_keys("locales/en.toml");
+
+    // Merge Rust-side references into `used` so orphan detection covers
+    // keys whose only consumer is a `.rs` file (e.g. i18n injection into
+    // JS globals via `tenant_broadcast.rs`'s I18N table, or sentinel
+    // assertions inside `#[cfg(test)]` modules).
+    scan_rs_key_refs(Path::new("src"), &en_keys, &mut used);
 
     // (a) missing in en — hard error
     let missing: Vec<_> = used
@@ -248,7 +264,11 @@ fn main() {
 /// or `t.fmt("key", ...)` occurrence.
 fn scan_template_keys(dir: &Path) -> BTreeMap<String, Vec<(String, usize)>> {
     let mut out: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
-    let re = regex_lite::Regex::new(r#"t\s*\.\s*(?:s|fmt)\s*\(\s*"([A-Za-z0-9_.]+)""#)
+    // Translator surface: `t.s(...)`, `t.fmt(...)`, `t.fmt1(...)`,
+    // `t.fmt2(...)`, `t.fmt3(...)`. Earlier regex only matched `s|fmt`
+    // and missed every numbered `fmtN` variant — keys consumed only via
+    // `t.fmt1` etc. surfaced as false-positive orphan warnings.
+    let re = regex_lite::Regex::new(r#"t\s*\.\s*(?:s|fmt[0-9]*)\s*\(\s*"([A-Za-z0-9_.]+)""#)
         .expect("compile i18n scan regex");
 
     let entries = match fs::read_dir(dir) {
@@ -280,6 +300,63 @@ fn scan_template_keys(dir: &Path) -> BTreeMap<String, Vec<(String, usize)>> {
         }
     }
     out
+}
+
+/// Recursively walks `src/**/*.rs` and extracts every double-quoted
+/// string literal whose value exists in `en_keys`. Matched keys are
+/// merged into `used` with `(file, line)` for parity with the template
+/// scanner's diagnostics. Skips strings inside line comments (`//`) to
+/// avoid stray TODO references holding keys alive.
+fn scan_rs_key_refs(
+    dir: &Path,
+    en_keys: &HashSet<String>,
+    used: &mut BTreeMap<String, Vec<(String, usize)>>,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let lit_re = regex_lite::Regex::new(r#""([A-Za-z_][A-Za-z0-9_.]*)""#)
+        .expect("compile rs literal regex");
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if path.is_dir() {
+            scan_rs_key_refs(&path, en_keys, used);
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            continue;
+        }
+        let txt = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        for (line_idx, raw_line) in txt.lines().enumerate() {
+            // Strip trailing line comment. Anything after `//` is not a
+            // live reference — keeps stale `// TODO: rename foo.bar`
+            // notes from holding keys alive.
+            let line = match raw_line.find("//") {
+                Some(i) => &raw_line[..i],
+                None => raw_line,
+            };
+            for cap in lit_re.captures_iter(line) {
+                let candidate = cap.get(1).unwrap().as_str();
+                if !candidate.contains('.') {
+                    continue;
+                }
+                if !en_keys.contains(candidate) {
+                    continue;
+                }
+                used.entry(candidate.to_string())
+                    .or_default()
+                    .push((path.display().to_string(), line_idx + 1));
+            }
+        }
+    }
 }
 
 fn load_toml_keys(path: &str) -> HashSet<String> {
