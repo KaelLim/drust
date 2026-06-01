@@ -1,3 +1,32 @@
+## v1.32.8 — 2026-06-01
+
+### Fixed
+
+- **Newly-created tenants were missing `_system_users` /
+  `_system_sessions` until restart.** `src/storage/tenant_db.rs::
+  apply_schema` (run from `open_write` whenever a tenant DB is
+  first opened) predates the v1.9 end-user auth tables and was
+  never updated when those tables were introduced. They only ever
+  got created from `db::migrations::migrate_tenant_db`, which is
+  driven by the startup migration loop iterating
+  `meta.sqlite.tenants` — so the path correctly covered every
+  tenant that existed at boot, but a tenant created AT RUNTIME
+  hit the `open_write` → `apply_schema(SCHEMA_SQL)` path only,
+  never the migration path. Symptom on a fresh tenant: clicking
+  the `_system_users` sidebar entry returned
+  `collection not found` because `describe_collection` saw no such
+  table. Fix: `apply_schema` now also runs
+  `SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS` and
+  `SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS` from the migration
+  module, so the create path and the migrate path produce
+  identical schema. Existing affected tenants are repaired
+  automatically on the next process restart via the existing
+  startup migration loop (the same SQL is `CREATE TABLE IF NOT
+  EXISTS`, so it's idempotent on tenants that already had the
+  tables).
+
+---
+
 ## v1.32.7 — 2026-06-01
 
 ### Changed
