@@ -22,6 +22,8 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
     ("OAUTH_ONLY_NO_PASSWORD", "This user signed up via OAuth and has no password. Use the OAuth sign-in flow instead."),
     ("OWNER_FIELD_REQUIRED", "This collection has an owner_field; service-key INSERT must populate it explicitly. User-token INSERT auto-fills it from the authenticated user."),
     ("PROTECTED_COLLECTION", "`_system_*` collections are not writable via /records or MCP record tools. Use the matching admin endpoint (e.g. `_system_users` → POST /admin/users)."),
+    ("PUBLISH_ANON_DENIED", "Anon tokens cannot publish to broadcast rooms on this tenant. Ask the admin to PATCH /admin/tenants/<id>/publish-policy with {\"allow_anon_publish\": true}, or use a service / user token."),
+    ("PUBLISH_USER_DENIED", "User tokens cannot publish to broadcast rooms on this tenant. Ask the admin to PATCH /admin/tenants/<id>/publish-policy with {\"allow_user_publish\": true}, or use a service token."),
     ("QUERY_USER_DENIED", "End-user tokens cannot use `/query` (raw SELECT). Use `/list` (FilterAst), `/search` (vector), or a stored RPC with `:user_id`."),
     ("RATE_LIMITED", "Too many requests in the window. Wait for the `Retry-After` seconds and retry."),
     ("RECENT_WRITES_UNAVAILABLE", "Audit log is temporarily unreadable. Retry in a few seconds."),

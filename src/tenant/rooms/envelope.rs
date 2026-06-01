@@ -71,6 +71,12 @@ pub enum ServerMessage {
 /// Error codes for `ServerMessage::Error.code`.
 pub mod codes {
     pub const WS_PUBLISH_DENIED: &str = "WS_PUBLISH_DENIED";
+    /// v1.32.5 — emitted when a user token tries `op:publish` on a tenant
+    /// whose `allow_user_publish` flag is still off (default).
+    pub const WS_PUBLISH_USER_DENIED: &str = "WS_PUBLISH_USER_DENIED";
+    /// v1.32.5 — emitted when an anon token tries `op:publish` on a tenant
+    /// whose `allow_anon_publish` flag is still off (default).
+    pub const WS_PUBLISH_ANON_DENIED: &str = "WS_PUBLISH_ANON_DENIED";
     pub const ROOM_NAME_INVALID: &str = "ROOM_NAME_INVALID";
     pub const PROTECTED_ROOM: &str = "PROTECTED_ROOM";
     pub const PAYLOAD_TOO_LARGE: &str = "PAYLOAD_TOO_LARGE";

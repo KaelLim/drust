@@ -907,6 +907,15 @@ cap_desc = "終端使用者可不需管理員核准即註冊"
 cap_name = "公開註冊"
 title = "自助註冊"
 
+[tenant_api_keys.pub_policy]
+title = "Broadcast 發佈策略"
+sub = "開放 /realtime 的 `op:publish` 以及 POST /rooms/{room} 給非 service token。預設關閉；service key 一律可發佈。"
+user_cap_name = "User token 可發佈"
+user_cap_desc = "登入後的終端使用者（drust_user_*）可向 broadcast room 發送訊息。"
+anon_cap_name = "Anon token 可發佈"
+anon_cap_desc = "公開的 anon bearer 可向 broadcast room 發送訊息。等同公開寫端，受 rate-limit 約束。"
+alert_body = "Broadcast 發佈策略更新失敗。"
+
 [tenant_api_keys.state]
 key_not_stored = "金鑰未保存—於 v1.1c 之前建立"
 no_key_yet = "尚未產生 {role} 金鑰"

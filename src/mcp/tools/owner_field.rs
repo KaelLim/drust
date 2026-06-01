@@ -105,6 +105,62 @@ pub async fn set_self_register(
     Ok(json!({"allow_self_register": enabled}))
 }
 
+// ─── set_publish_policy (v1.32.5) ────────────────────────────────────────────
+
+/// Update one or both of `tenants.{allow_user_publish, allow_anon_publish}`.
+/// Either argument may be `None` to leave that flag untouched. Returns the
+/// current state of both flags after the update.
+///
+/// MCP `broadcast` does NOT consult these flags — MCP dispatch is service-only
+/// by construction. These flags only affect REST `POST /t/{tenant}/rooms/{room}`
+/// and WS `op:publish` on `/t/{tenant}/realtime`.
+pub async fn set_publish_policy(
+    meta: &std::sync::Arc<Mutex<Connection>>,
+    tenant_id: &str,
+    allow_user: Option<bool>,
+    allow_anon: Option<bool>,
+) -> anyhow::Result<serde_json::Value> {
+    let tid = tenant_id.to_string();
+    let conn = meta.lock().await;
+    // Verify tenant exists up-front so a no-op call still surfaces NOT_FOUND.
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tid],
+            |r| r.get(0),
+        )
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    if exists == 0 {
+        anyhow::bail!("NOT_FOUND: tenant not found");
+    }
+    if let Some(v) = allow_user {
+        conn.execute(
+            "UPDATE tenants SET allow_user_publish = ?1 WHERE id = ?2",
+            rusqlite::params![v as i64, tid],
+        )
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    }
+    if let Some(v) = allow_anon {
+        conn.execute(
+            "UPDATE tenants SET allow_anon_publish = ?1 WHERE id = ?2",
+            rusqlite::params![v as i64, tid],
+        )
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    }
+    let (u, a): (i64, i64) = conn
+        .query_row(
+            "SELECT COALESCE(allow_user_publish, 0), COALESCE(allow_anon_publish, 0) \
+             FROM tenants WHERE id = ?1",
+            rusqlite::params![tid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    Ok(json!({
+        "allow_user_publish": u != 0,
+        "allow_anon_publish": a != 0,
+    }))
+}
+
 // ─── validation helper (same logic as owner_field.rs) ────────────────────────
 
 fn validate_owner_column(

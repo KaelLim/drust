@@ -571,6 +571,99 @@ pub async fn toggle_self_register(
     }
 }
 
+// ─── v1.32.5: publish-policy toggle (allow_user_publish / allow_anon_publish) ─
+
+#[derive(serde::Deserialize)]
+pub struct PublishPolicyPatch {
+    pub allow_user_publish: Option<bool>,
+    pub allow_anon_publish: Option<bool>,
+}
+
+#[derive(serde::Serialize)]
+pub struct PublishPolicyView {
+    pub allow_user_publish: bool,
+    pub allow_anon_publish: bool,
+}
+
+/// `PATCH /admin/tenants/{id}/publish-policy`
+///
+/// Partial-update of the two opt-in publish flags on `tenants`. Either
+/// field may be omitted to leave it unchanged. Returns the current state
+/// of both flags after the update.
+///
+/// MCP `broadcast` is service-only by MCP dispatch and is NOT affected
+/// by these flags.
+pub async fn patch_publish_policy(
+    State(state): State<TenantsState>,
+    Path(tid): Path<String>,
+    axum::Extension(_admin): axum::Extension<crate::auth::middleware::AdminId>,
+    axum::Json(body): axum::Json<PublishPolicyPatch>,
+) -> Response {
+    let conn = state.session.meta.lock().await;
+    if let Some(v) = body.allow_user_publish {
+        if let Err(e) = conn.execute(
+            "UPDATE tenants SET allow_user_publish = ?1 \
+             WHERE id = ?2 AND deleted_at IS NULL",
+            rusqlite::params![v as i64, tid],
+        ) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+    if let Some(v) = body.allow_anon_publish {
+        if let Err(e) = conn.execute(
+            "UPDATE tenants SET allow_anon_publish = ?1 \
+             WHERE id = ?2 AND deleted_at IS NULL",
+            rusqlite::params![v as i64, tid],
+        ) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+    match conn.query_row(
+        "SELECT COALESCE(allow_user_publish, 0), COALESCE(allow_anon_publish, 0) \
+         FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+        rusqlite::params![tid],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    ) {
+        Ok((u, a)) => (
+            StatusCode::OK,
+            axum::Json(PublishPolicyView {
+                allow_user_publish: u != 0,
+                allow_anon_publish: a != 0,
+            }),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+    }
+}
+
+/// `GET /admin/tenants/{id}/publish-policy` — read-only view of the
+/// current flag state. Used by the admin UI to render the checkboxes
+/// without requiring the wider tenant overview API.
+pub async fn get_publish_policy(
+    State(state): State<TenantsState>,
+    Path(tid): Path<String>,
+    axum::Extension(_admin): axum::Extension<crate::auth::middleware::AdminId>,
+) -> Response {
+    let conn = state.session.meta.lock().await;
+    let row: rusqlite::Result<(i64, i64)> = conn.query_row(
+        "SELECT COALESCE(allow_user_publish, 0), COALESCE(allow_anon_publish, 0) \
+         FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+        rusqlite::params![tid],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    );
+    match row {
+        Ok((u, a)) => (
+            StatusCode::OK,
+            axum::Json(PublishPolicyView {
+                allow_user_publish: u != 0,
+                allow_anon_publish: a != 0,
+            }),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+    }
+}
+
 // ─── Admin tenant-files subpage (Task 21) ────────────────────────────────────
 
 /// A single file row for the admin tenant-files view.

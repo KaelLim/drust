@@ -109,6 +109,53 @@ pub fn check_payload_size(len: usize, max_bytes: usize) -> Result<(), &'static s
     }
 }
 
+/// v1.32.5 — per-tenant publish policy. Bound on every request by
+/// `bearer_auth_layer` so REST + WS handlers can gate without an
+/// extra meta.sqlite round-trip. MCP `broadcast` does NOT consume
+/// this — MCP dispatch is already service-only by construction.
+///
+/// Default for both fields is `false` (matches the column default in
+/// `meta.sqlite.tenants`). A fresh install or pre-v1.32.5 deployment
+/// upgrade therefore preserves the historical "service-only publish"
+/// behavior — flags must be flipped to opt in.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TenantPublishPolicy {
+    pub allow_user: bool,
+    pub allow_anon: bool,
+}
+
+/// Outcome of `check_publish_allowed`. Distinct deny variants so REST
+/// and WS can emit role-specific error codes without re-pattern-matching
+/// on `AuthCtx`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishGate {
+    Allow,
+    DenyUser,
+    DenyAnon,
+}
+
+/// v1.32.5 — single source of truth for publish authorization.
+///
+/// - `AuthCtx::Service` → always `Allow` (admin keys / service bearer)
+/// - `AuthCtx::User`    → `Allow` iff `policy.allow_user`
+/// - `AuthCtx::Anon`    → `Allow` iff `policy.allow_anon`
+///
+/// MCP `broadcast` does NOT call this — it relies on MCP dispatch being
+/// service-only globally (second layer of defense-in-depth).
+pub fn check_publish_allowed(
+    ctx: &crate::auth::middleware::AuthCtx,
+    policy: &TenantPublishPolicy,
+) -> PublishGate {
+    use crate::auth::middleware::AuthCtx;
+    match ctx {
+        AuthCtx::Service { .. } => PublishGate::Allow,
+        AuthCtx::User { .. } if policy.allow_user => PublishGate::Allow,
+        AuthCtx::User { .. } => PublishGate::DenyUser,
+        AuthCtx::Anon if policy.allow_anon => PublishGate::Allow,
+        AuthCtx::Anon => PublishGate::DenyAnon,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +194,32 @@ mod tests {
                 "accepted invalid: {n:?}",
             );
         }
+    }
+
+    #[test]
+    fn check_publish_allowed_matrix() {
+        use crate::auth::middleware::AuthCtx;
+        let off = TenantPublishPolicy { allow_user: false, allow_anon: false };
+        let user_on = TenantPublishPolicy { allow_user: true, allow_anon: false };
+        let anon_on = TenantPublishPolicy { allow_user: false, allow_anon: true };
+        let both_on = TenantPublishPolicy { allow_user: true, allow_anon: true };
+        let svc = AuthCtx::Service { admin_id: None };
+        let usr = AuthCtx::User { user_id: "u-1".into(), token_hash: "h".into() };
+        let anon = AuthCtx::Anon;
+        // Service: always Allow.
+        for p in [&off, &user_on, &anon_on, &both_on] {
+            assert_eq!(check_publish_allowed(&svc, p), PublishGate::Allow);
+        }
+        // User: gated by allow_user.
+        assert_eq!(check_publish_allowed(&usr, &off), PublishGate::DenyUser);
+        assert_eq!(check_publish_allowed(&usr, &user_on), PublishGate::Allow);
+        assert_eq!(check_publish_allowed(&usr, &anon_on), PublishGate::DenyUser);
+        assert_eq!(check_publish_allowed(&usr, &both_on), PublishGate::Allow);
+        // Anon: gated by allow_anon.
+        assert_eq!(check_publish_allowed(&anon, &off), PublishGate::DenyAnon);
+        assert_eq!(check_publish_allowed(&anon, &user_on), PublishGate::DenyAnon);
+        assert_eq!(check_publish_allowed(&anon, &anon_on), PublishGate::Allow);
+        assert_eq!(check_publish_allowed(&anon, &both_on), PublishGate::Allow);
     }
 
     #[test]

@@ -345,8 +345,8 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     bucket: state.bucket.clone(),
                     cfg: state.rooms_cfg.clone(),
                 };
-                move |ctx, path, json| {
-                    rooms::rest::publish_handler(pc.clone(), ctx, path, json)
+                move |ctx, policy, path, json| {
+                    rooms::rest::publish_handler(pc.clone(), ctx, policy, path, json)
                 }
             })
             .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
@@ -497,7 +497,9 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     bucket: state.bucket.clone(),
                     cfg: state.rooms_cfg.clone(),
                 };
-                move |ctx, path, ws| rooms::ws::ws_handler(pc.clone(), ctx, path, ws)
+                move |ctx, policy, path, ws| {
+                    rooms::ws::ws_handler(pc.clone(), ctx, policy, path, ws)
+                }
             }),
         )
         .layer(axum::middleware::from_fn_with_state(

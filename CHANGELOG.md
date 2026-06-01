@@ -1,3 +1,57 @@
+## v1.32.5 — 2026-06-01
+
+### Changed
+
+- **Broadcast publish is no longer hard-pinned to service tokens.**
+  REST `POST /t/{tenant}/rooms/{room}` and WebSocket `op:publish`
+  on `/t/{tenant}/realtime` now consult two opt-in tenant flags:
+  `allow_user_publish` and `allow_anon_publish`. Both default to
+  `false`, so the historical service-only behaviour is preserved
+  on upgrade; admins must explicitly enable user or anon publish.
+  Service-key publish is unaffected. The MCP `broadcast` tool
+  stays service-only by MCP dispatch and is **not** affected by
+  these flags.
+- **Role-specific deny codes on the publish surfaces.** REST
+  denials now emit `PUBLISH_USER_DENIED` / `PUBLISH_ANON_DENIED`
+  as the primary `error_code`, with the previous `WRITE_DENIED`
+  retained as an alias in `error_aliases` for clients still
+  pattern-matching on the legacy value. WS denials emit
+  `WS_PUBLISH_USER_DENIED` / `WS_PUBLISH_ANON_DENIED`. Both
+  surfaces carry a `suggested_fix` pointing at the new
+  `PATCH /admin/tenants/{id}/publish-policy` endpoint.
+
+### Added
+
+- **`PATCH /admin/tenants/{id}/publish-policy`** (and matching
+  `GET`) for admin partial-update of either flag. Body
+  `{"allow_user_publish"?: bool, "allow_anon_publish"?: bool}`.
+- **`set_publish_policy` MCP tool** mirroring the same partial
+  semantics for tenant-admin automations.
+- **Admin UI: two checkboxes on `_api_keys`.** A new card under
+  the Self-registration tile renders the live state of both
+  flags and PATCHes optimistically on click. Failure rolls back
+  the checkbox and surfaces a localized error.
+
+### Security
+
+- **Default-off keeps anon writes locked.** A pre-v1.32.5
+  deployment upgraded in place has both flags at `false`, so
+  the broadcast surface remains service-only until an admin
+  flips a flag — no silent loosening of an existing tenant's
+  ACL. The same per-tenant rate-limit (`PublishBucket`) and
+  payload-size cap still apply on every publish, regardless of
+  flag state.
+
+### Fixed
+
+- **MCP `broadcast` is double-gated for defense in depth.** The
+  tool already required service-key MCP dispatch; the new
+  policy helper documents that explicitly, and the WS / REST
+  code paths share one helper (`check_publish_allowed`) so a
+  future change can't open one surface without the other.
+
+---
+
 ## v1.32.4 — 2026-05-31
 
 ### Performance

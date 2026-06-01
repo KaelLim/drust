@@ -217,6 +217,9 @@ pub async fn bearer_auth_layer(
         // bearer — the LIMIT 1 on each scalar subquery is just defensive.
         // PAT prefix check stays in Rust to avoid wasting a hash compute
         // on non-PAT bearers.
+        // v1.32.5 — appended `allow_user_publish` / `allow_anon_publish`
+        // (cols 6,7) so REST + WS publish gates can read the per-tenant
+        // policy without a second meta.lock(). NULL when tenant missing.
         const SQL_BEARER_AUTH_CTE: &str = "\
 WITH bearer_match AS ( \
     SELECT 'admin_pat' AS kind, p.id AS token_id, p.admin_id, \
@@ -236,7 +239,9 @@ SELECT \
     (SELECT token_id FROM bearer_match LIMIT 1), \
     (SELECT admin_id FROM bearer_match LIMIT 1), \
     (SELECT bound_tenant FROM bearer_match LIMIT 1), \
-    (SELECT email FROM admins WHERE id = (SELECT admin_id FROM bearer_match LIMIT 1))";
+    (SELECT email FROM admins WHERE id = (SELECT admin_id FROM bearer_match LIMIT 1)), \
+    (SELECT COALESCE(allow_user_publish, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
+    (SELECT COALESCE(allow_anon_publish, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL)";
 
         let pat_hash = bearer
             .starts_with(crate::auth::admin_token::TOKEN_PREFIX)
@@ -249,6 +254,8 @@ SELECT \
             Option<i64>,    // pat_admin_id
             Option<String>, // bound_tenant
             Option<String>, // pat_email
+            i64,            // allow_user_publish (v1.32.5)
+            i64,            // allow_anon_publish (v1.32.5)
         )> = {
             let conn = state.meta.lock().await;
             conn.query_row(
@@ -265,12 +272,26 @@ SELECT \
                     r.get::<_, Option<i64>>(3)?,
                     r.get::<_, Option<String>>(4)?,
                     r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                    r.get::<_, Option<i64>>(7)?.unwrap_or(0),
                 )),
             )
             .ok()
         };
-        let (tenant_ok, kind, pat_token_id, pat_admin_id, bound_tenant, pat_email_snapshot) =
-            meta_row.unwrap_or_default();
+        let (
+            tenant_ok,
+            kind,
+            pat_token_id,
+            pat_admin_id,
+            bound_tenant,
+            pat_email_snapshot,
+            allow_user_publish,
+            allow_anon_publish,
+        ) = meta_row.unwrap_or_default();
+        let publish_policy = crate::tenant::rooms::policy::TenantPublishPolicy {
+            allow_user: allow_user_publish != 0,
+            allow_anon: allow_anon_publish != 0,
+        };
         if !tenant_ok {
             return json_error(
                 StatusCode::NOT_FOUND,
@@ -331,6 +352,7 @@ SELECT \
                 pool,
                 role: TokenRole::User,
             });
+            req.extensions_mut().insert(publish_policy);
             return next.run(req).await;
         }
         // Apply the kind resolved by the CTE.
@@ -376,6 +398,7 @@ SELECT \
                     pool,
                     role: TokenRole::Service,
                 });
+                req.extensions_mut().insert(publish_policy);
             }
             Some(role_str @ ("service" | "anon")) => {
                 // Cross-tenant token guard (preserves pre-D9 wire 404).
@@ -411,6 +434,7 @@ SELECT \
                     pool,
                     role,
                 });
+                req.extensions_mut().insert(publish_policy);
             }
             // None or any unexpected kind — bearer unresolved.
             _ => {
