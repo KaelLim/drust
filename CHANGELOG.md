@@ -1,3 +1,69 @@
+## v1.32.7 — 2026-06-01
+
+### Changed
+
+- **Per-tenant files admin page renamed from `/files` to `/_files`**
+  for consistency with the other virtual sidebar entries
+  (`_overview`, `_api_keys`, `_rpc`, `_broadcast`, `_oauth_providers`,
+  `_webhooks`, `_logs`). The legacy `/admin/tenants/<id>/files` URL
+  now returns 301 → `/_files`, so existing bookmarks and browser
+  history still resolve. Sub-routes under `/files/...` (upload,
+  `<key>`, `<key>/sign`, `<key>/bytes`) are unchanged — those are
+  API/action endpoints, not page URLs.
+- **`collection`/「集合」 unified to「資料表」 across the zh-TW bundle.**
+  Eleven `集合` occurrences plus three stray English `collection`
+  references inside Chinese sentences renamed in one pass. The
+  English bundle is unchanged. Tool/identifier names like
+  `create_collection` and template placeholders like `{collection}`
+  are left intact — only display text changed.
+
+### Fixed
+
+- **Several admin surfaces still rendered English on the zh-TW
+  locale.** Hardcoded prose and label strings replaced with `t.s`/
+  `t.fmt1`/`t.fmt3` calls plus the matching translations:
+  - `_broadcast` inspector — `Room` → `房間`, `Tail` →
+    `即時訊息`, plus the page sub-heading 改寫成一般 user 看得
+    懂的詞 (no more "tail"/"room" left untranslated).
+  - `_api_keys` page — the two intro paragraphs (`Two personalities
+    for this tenant...` and the `Treat it like a database root
+    password...` banner body) now resolve via i18n + `|safe` so the
+    embedded `<b>`/`<code>` tags survive rendering.
+  - Storage page — the `Two Garage buckets per tenant — ...`
+    description and the low-disk banner body (`Free up /var/lib/
+    garage...`) translated.
+  - `_logs` table header column `operation` → `操作` (was a single
+    hardcoded English `<th>`). The detail panel's 15 raw field
+    labels (timestamp, tenant, tenant_id, token_hint, operation,
+    status, duration, collection, record_id, sql_hash, error_code,
+    error_message, auth_method, oauth_email, oauth_error_code,
+    extra) now read from a server-rendered `L = {...}` map so all
+    of them honour the active locale.
+- **`_system_users` column headers no longer render raw SQL names.**
+  The admin `_list` endpoint now returns an optional
+  `column_labels: Option<Vec<String>>` alongside `columns`. Server
+  fills it for known system collections via
+  `system_column_labels()` (currently `_system_users` only;
+  `_system_*` family is the natural extension point); user-defined
+  tables get `None` so the schema author's raw column names render
+  as before. Client JS in `collection_rows.html` prefers
+  `column_labels[i]` when present, falls back to `columns[i]`
+  otherwise. Adds 7 `[system_users.col]` keys in en + zh-TW bundles
+  for id / email / password_hash / verified / profile / created_at /
+  updated_at.
+
+### Internal
+
+- `build.rs` orphan scanner: a `SYSTEM_USERS_COL_KEYS` static array
+  inside `src/mgmt/collection_list.rs` lists each key consumed via
+  `format!("{prefix}.{raw}")` so the scanner's `.rs` walk picks them
+  up as references. Without this, every dynamically-keyed translation
+  would re-surface as a "safe to remove" orphan warning each build —
+  the same false-positive pattern v1.32.6 closed for `t.fmt[0-9]*`
+  call sites.
+
+---
+
 ## v1.32.6 — 2026-06-01
 
 ### Fixed

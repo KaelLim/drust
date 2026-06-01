@@ -91,7 +91,7 @@
     <thead><tr>
       <th>{{ t.s("common.label.timestamp") }}</th>
       {% if is_host_scope %}<th>{{ t.s("backup_inspect.table.col_tenant") }}</th>{% endif %}
-      <th>operation</th>
+      <th>{{ t.s("common.label.operation") }}</th>
       <th class="num">{{ t.s("common.duration.ms") }}</th>
     </tr></thead>
     <tbody>
@@ -193,6 +193,25 @@
     var entries;
     try { entries = JSON.parse(dataEl.textContent); } catch (e) { return; }
 
+    var L = {
+      timestamp:        "{{ t.s("common.label.timestamp") }}",
+      tenant:           "{{ t.s("common.label.tenant") }}",
+      tenant_id:        "{{ t.s("audit_body.detail.tenant_id") }}",
+      token_hint:       "{{ t.s("audit_body.detail.token_hint") }}",
+      operation:        "{{ t.s("common.label.operation") }}",
+      status:           "{{ t.s("audit_body.detail.status") }}",
+      duration:         "{{ t.s("audit_body.detail.duration") }}",
+      collection:       "{{ t.s("audit_body.detail.collection") }}",
+      record_id:        "{{ t.s("audit_body.detail.record_id") }}",
+      sql_hash:         "{{ t.s("audit_body.detail.sql_hash") }}",
+      error_code:       "{{ t.s("audit_body.detail.error_code") }}",
+      error_message:    "{{ t.s("audit_body.detail.error_message") }}",
+      auth_method:      "{{ t.s("audit_body.detail.auth_method") }}",
+      oauth_email:      "{{ t.s("audit_body.detail.oauth_email") }}",
+      oauth_error_code: "{{ t.s("audit_body.detail.oauth_error_code") }}",
+      extra:            "{{ t.s("audit_body.detail.extra") }}"
+    };
+
     function field(label, value, opts) {
       opts = opts || {};
       return { label: label, value: value, mono: !!opts.mono, code: !!opts.code };
@@ -201,24 +220,24 @@
     function openDetail(e) {
       if (!e) return;
       var fields = [];
-      fields.push(field('timestamp', e.ts, { mono: true }));
+      fields.push(field(L.timestamp, e.ts, { mono: true }));
       var displayTenant = e.tenant === '-' ? 'admin' : (e.tenant_name || e.tenant);
-      fields.push(field('tenant', displayTenant));
-      if (e.tenant && e.tenant !== '-') fields.push(field('tenant_id', e.tenant, { mono: true }));
-      fields.push(field('token_hint', e.token_hint, { mono: true }));
-      fields.push(field('operation', e.op, { mono: true }));
-      fields.push(field('status', e.status));
-      fields.push(field('duration', e.duration_ms + ' ms'));
-      if (e.collection) fields.push(field('collection', e.collection, { mono: true }));
-      if (e.record_id != null) fields.push(field('record_id', String(e.record_id), { mono: true }));
-      if (e.sql_hash) fields.push(field('sql_hash', e.sql_hash, { mono: true }));
-      if (e.error_code) fields.push(field('error_code', e.error_code, { mono: true }));
-      if (e.error_message) fields.push(field('error_message', e.error_message, { code: true }));
-      if (e.auth_method) fields.push(field('auth_method', e.auth_method));
-      if (e.oauth_email) fields.push(field('oauth_email', e.oauth_email));
-      if (e.oauth_error_code) fields.push(field('oauth_error_code', e.oauth_error_code, { mono: true }));
+      fields.push(field(L.tenant, displayTenant));
+      if (e.tenant && e.tenant !== '-') fields.push(field(L.tenant_id, e.tenant, { mono: true }));
+      fields.push(field(L.token_hint, e.token_hint, { mono: true }));
+      fields.push(field(L.operation, e.op, { mono: true }));
+      fields.push(field(L.status, e.status));
+      fields.push(field(L.duration, e.duration_ms + ' ms'));
+      if (e.collection) fields.push(field(L.collection, e.collection, { mono: true }));
+      if (e.record_id != null) fields.push(field(L.record_id, String(e.record_id), { mono: true }));
+      if (e.sql_hash) fields.push(field(L.sql_hash, e.sql_hash, { mono: true }));
+      if (e.error_code) fields.push(field(L.error_code, e.error_code, { mono: true }));
+      if (e.error_message) fields.push(field(L.error_message, e.error_message, { code: true }));
+      if (e.auth_method) fields.push(field(L.auth_method, e.auth_method));
+      if (e.oauth_email) fields.push(field(L.oauth_email, e.oauth_email));
+      if (e.oauth_error_code) fields.push(field(L.oauth_error_code, e.oauth_error_code, { mono: true }));
       if (e.extra && Object.keys(e.extra).length) {
-        try { fields.push(field('extra', JSON.stringify(e.extra, null, 2), { code: true })); }
+        try { fields.push(field(L.extra, JSON.stringify(e.extra, null, 2), { code: true })); }
         catch (err) {}
       }
       drustUI.detail({ title: e.op + ' · ' + e.duration_ms + ' ms', fields: fields });

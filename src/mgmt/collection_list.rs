@@ -50,11 +50,56 @@ pub enum SortDir {
 #[derive(Debug, Serialize)]
 pub struct ListResponse {
     pub columns: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column_labels: Option<Vec<String>>,
     pub rows: Vec<Vec<serde_json::Value>>,
     pub total: i64,
     pub page: u32,
     pub per_page: u32,
     pub total_pages: u32,
+}
+
+/// Keys consumed by `system_column_labels` via `format!("{prefix}.{raw}")`.
+/// Listed explicitly so `build.rs`'s orphan scanner sees the references —
+/// it walks `src/**/*.rs` for literal strings matching known en.toml keys
+/// but does not simulate format!/concat-time key construction. Keep this
+/// in sync with the actual `_system_users` schema and the
+/// `[system_users.col]` block in `locales/en.toml`.
+#[allow(dead_code)]
+const SYSTEM_USERS_COL_KEYS: &[&str] = &[
+    "system_users.col.id",
+    "system_users.col.email",
+    "system_users.col.password_hash",
+    "system_users.col.verified",
+    "system_users.col.profile",
+    "system_users.col.created_at",
+    "system_users.col.updated_at",
+];
+
+/// Returns localized display labels for a system collection's columns,
+/// one per entry in `columns`. Unknown column names fall back to the
+/// raw SQL name so adding a column doesn't break rendering. Returns
+/// `None` for non-system collections — user-defined tables show the
+/// raw column names that the schema author chose.
+fn system_column_labels(
+    coll_name: &str,
+    columns: &[String],
+    locale: crate::mgmt::i18n::Locale,
+) -> Option<Vec<String>> {
+    let prefix = match coll_name {
+        "_system_users" => "system_users.col",
+        _ => return None,
+    };
+    let t = crate::mgmt::i18n::Translator::new(locale);
+    Some(columns.iter().map(|raw| {
+        let key = format!("{prefix}.{raw}");
+        let translated = t.s(&key);
+        if translated.starts_with("!!") && translated.ends_with("!!") {
+            raw.clone()
+        } else {
+            translated.into_owned()
+        }
+    }).collect())
 }
 
 /// Translate a flat list of `{field, op, value}` triples to a single
@@ -144,10 +189,12 @@ use crate::mgmt::tenants::TenantsState;
 pub async fn admin_list_handler(
     State(state): State<TenantsState>,
     Path((tenant_id, coll_name)): Path<(String, String)>,
+    locale: Option<axum::Extension<crate::mgmt::i18n::Locale>>,
     Json(req): Json<ListRequest>,
 ) -> Response {
     let started = std::time::Instant::now();
-    let result = admin_list_inner(&state, &tenant_id, &coll_name, req).await;
+    let locale = locale.map(|axum::Extension(l)| l).unwrap_or(crate::mgmt::i18n::Locale::En);
+    let result = admin_list_inner(&state, &tenant_id, &coll_name, req, locale).await;
     let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     match result {
         Ok(body) => {
@@ -174,6 +221,7 @@ async fn admin_list_inner(
     tenant_id: &str,
     coll_name: &str,
     req: ListRequest,
+    locale: crate::mgmt::i18n::Locale,
 ) -> Result<ListResponse, (StatusCode, &'static str, String)> {
     // Tenant existence check — mirrors browse.rs.
     let meta = state.session.meta.lock().await;
@@ -314,8 +362,11 @@ async fn admin_list_inner(
 
     let total_pages = if total == 0 { 1 } else { (total as u64).div_ceil(per_page as u64) as u32 };
 
+    let column_labels = system_column_labels(coll_name, &column_names, locale);
+
     Ok(ListResponse {
         columns: column_names,
+        column_labels,
         rows,
         total,
         page,

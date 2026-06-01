@@ -210,6 +210,21 @@ top_tenants_title = "Top tenants"
 [audit_body.count]
 shown_suffix = "shown"
 
+[audit_body.detail]
+tenant_id = "tenant id"
+token_hint = "token hint"
+status = "status"
+duration = "duration"
+collection = "collection"
+record_id = "record id"
+sql_hash = "SQL hash"
+error_code = "error code"
+error_message = "error message"
+auth_method = "auth method"
+oauth_email = "OAuth email"
+oauth_error_code = "OAuth error code"
+extra = "extra"
+
 [audit_body.diag]
 corrupt_archives_skipped = "{count} corrupt archive(s) skipped."
 unparseable_skipped = "{count} unparseable lines skipped."
@@ -683,6 +698,7 @@ update_failed_title = "Update failed"
 
 [tenant_api_keys.banner]
 service_admin_title = "Service token is full admin of this tenant."
+service_admin_body = "Treat it like a database root password. Use the <b>anon</b> token for browser-visible surfaces; service stays on your server."
 
 [tenant_api_keys.btn]
 copy_key_title = "copy key"
@@ -704,6 +720,7 @@ reroll_title = "Reroll key"
 [tenant_api_keys.head]
 eyebrow = "Tenant · connect"
 title = "API keys"
+intro = "Two personalities for this tenant — pick whichever matches the surface you're integrating with. Reroll clears the previous bearer immediately. Tenant <b>{tenant_name}</b> <code style=\"opacity:0.6;font-size:11px;\">{tenant_id}</code> · created {created_at}."
 
 [tenant_api_keys.mcp]
 copy_title = "copy claude mcp add-json command"
@@ -756,6 +773,7 @@ failed_title = "Delete failed"
 
 [tenant_files_admin.disk]
 banner_title = "Host disk at {pct}% free — uploads paused"
+banner_body = "Free up <code>/var/lib/garage</code> on the host or scale the disk."
 
 [tenant_files_admin.empty]
 body = "Upload the first one with the form above."
@@ -764,6 +782,7 @@ title = "No files yet"
 [tenant_files_admin.head]
 eyebrow = "Tenant · backend"
 title = "Storage"
+intro = "Two Garage buckets per tenant — <code>tenant-{tenant_id}-pub</code> served at <code>/public/&lt;key&gt;</code>, <code>tenant-{tenant_id}-prv</code> requires signed URLs."
 
 [tenant_files_admin.page]
 title = "drust admin — files"
@@ -1171,3 +1190,16 @@ col_time = "Time"
 col_source = "Source"
 col_payload = "Payload"
 col_delivered = "→"
+
+# system collection column display labels — server-side mapping in
+# `src/mgmt/collection_list.rs::system_column_labels`. Unknown raw
+# columns fall back to the raw SQL name, so adding a column doesn't
+# break rendering. Keep these aligned with the actual schema columns.
+[system_users.col]
+id = "ID"
+email = "Email"
+password_hash = "Password hash"
+verified = "Verified"
+profile = "Profile"
+created_at = "Created"
+updated_at = "Updated"

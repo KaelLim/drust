@@ -73,6 +73,19 @@ impl TenantFilesState {
     }
 }
 
+/// GET /drust/admin/tenants/<id>/files (legacy alias).
+/// v1.32.7 renamed the admin page URL to `/_files` so it lines up with
+/// the other virtual sidebar entries (`_overview`, `_api_keys`, etc.);
+/// this redirect keeps any existing bookmark or browser history entry
+/// working. Sub-routes under `/files/...` (upload, key, sign, bytes)
+/// are unchanged.
+pub async fn redirect_legacy_files_page(
+    axum::extract::Path(tenant_id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::{IntoResponse, Redirect};
+    Redirect::permanent(&format!("/drust/admin/tenants/{tenant_id}/_files")).into_response()
+}
+
 /// GET /drust/t/<tenant>/files/<key>/bytes
 /// Streams the file body. Auth via bearer_auth_layer (must be a service token
 /// for the tenant — anon tokens will be 403 by the dispatch layer for any
