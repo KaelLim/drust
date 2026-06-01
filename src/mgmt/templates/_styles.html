@@ -1192,19 +1192,39 @@
   }
   .coll-chip .chip-x:hover{background:var(--border-mid);color:var(--text)}
 
-  .coll-table-wrap{padding:0}
-  .coll-table-wrap table.data{width:100%;table-layout:fixed}
-  /* v1.28.5 — every cell truncates to a single line with ellipsis.
-     Full content stays accessible via the per-td `title` attribute
-     the JS render sets. `table-layout:fixed` on the table itself is
-     what lets `max-width` on td actually take effect; without it the
-     auto-sizing algorithm widens columns to fit content. */
+  /* v1.32.9 — natural column widths + horizontal scroll. v1.28.5's
+     fixed-layout + width:100% pinned the table to its container and
+     clamped EVERY column to 280px regardless of content, which hid the
+     left half of long Chinese / URL / vector-preview cells AND wasted
+     space on cheap columns (id, ts, count). The new layout: container
+     allows overflow-x:auto so wide tables scroll horizontally; the
+     table itself takes max-content (sizes to fit the widest row); each
+     `td` retains the per-cell ceiling (now 360px) + ellipsis so a
+     single absurd value can't bloat its column. Click-to-expand
+     handler in collection_rows.html hands the full content back via
+     the existing detail modal. */
+  .coll-table-wrap{padding:0;overflow-x:auto}
+  .coll-table-wrap table.data{width:max-content;min-width:100%;table-layout:auto}
   .coll-table-wrap td{
-    max-width:280px;
+    max-width:360px;
     white-space:nowrap;
     overflow:hidden;
     text-overflow:ellipsis;
+    cursor:pointer;
   }
+  .coll-table-wrap td:hover{background:var(--surface-2)}
+  /* Sticky first column (Supabase-style). v1.32.9 — keeps the PK / id
+     visible while the user scrolls horizontally through wide rows.
+     z-index sits above sibling cells but below the sticky thead. */
+  .coll-table-wrap th:first-child,
+  .coll-table-wrap td:first-child{
+    position:sticky;
+    left:0;
+    background:var(--bg);
+    z-index:2;
+  }
+  .coll-table-wrap thead th:first-child{z-index:3}
+  .coll-table-wrap tbody tr:hover td:first-child{background:var(--surface)}
 
   /* v1.28.13 — collection page footer is a thin status bar pinned to
      the browser viewport bottom. Height matches `.sidebar-foot` (46px)

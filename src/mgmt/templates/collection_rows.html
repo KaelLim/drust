@@ -511,22 +511,31 @@ for (;;) {
     return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
   }
 
+  // v1.32.9 — cache the latest list response so the cell-click handler
+  // can resolve a `<td data-r data-c>` back to the full pre-escape
+  // value without re-fetching. Replacing the existing `title` tooltip
+  // because the browser-native one is single-line, truncates at ~256
+  // chars, doesn't survive long enough to read a JSON payload, and is
+  // unstyleable.
+  var lastList = { rows: [], columns: [], labels: [] };
+
   function renderRows(resp){
     const thead = document.getElementById('rows-thead');
     const tbody = document.getElementById('rows-tbody');
     const empty = document.getElementById('rows-empty');
     const labels = resp.column_labels || resp.columns;
+    lastList = { rows: resp.rows, columns: resp.columns, labels: labels };
     thead.innerHTML = resp.columns.map(function(_c, i){ return '<th>' + escapeHtml(labels[i]) + '</th>'; }).join('');
     if (resp.rows.length === 0) {
       tbody.innerHTML = '';
       empty.hidden = false;
     } else {
       empty.hidden = true;
-      tbody.innerHTML = resp.rows.map(function(row){
-        return '<tr>' + row.map(function(cell){
+      tbody.innerHTML = resp.rows.map(function(row, r){
+        return '<tr>' + row.map(function(cell, c){
           var v = cell === null ? 'NULL' : String(cell);
           var cls = cell === null ? ' class="null"' : '';
-          return '<td' + cls + ' title="' + escapeHtml(v) + '">' + escapeHtml(v) + '</td>';
+          return '<td' + cls + ' data-r="' + r + '" data-c="' + c + '">' + escapeHtml(v) + '</td>';
         }).join('') + '</tr>';
       }).join('');
     }
@@ -537,6 +546,44 @@ for (;;) {
     var def = document.getElementById('def-row-count');
     if (def) def.textContent = String(resp.total);
   }
+
+  // Cell click → open the shared detail modal with the column name as
+  // label and the FULL pre-escape value as body. JSON-shaped strings
+  // are pretty-printed via `<pre>` (code mode); plain text falls back
+  // to wrapped mono. Vector summaries (e.g. `[vec dim=384 · …]`) are
+  // server-rendered teasers — the full array is intentionally left
+  // out of the list payload (it'd dominate the response wire size);
+  // GET the row endpoint directly to inspect it.
+  document.getElementById('rows-tbody').addEventListener('click', function (ev) {
+    var td = ev.target.closest('td');
+    if (!td || td.dataset.r == null || td.dataset.c == null) return;
+    var r = +td.dataset.r;
+    var c = +td.dataset.c;
+    if (!lastList.rows[r]) return;
+    var raw = lastList.rows[r][c];
+    var label = (lastList.labels && lastList.labels[c]) || lastList.columns[c] || '';
+    var isJsonShape = false;
+    var prettyValue = raw;
+    if (typeof raw === 'string') {
+      var trimmed = raw.trim();
+      if ((trimmed.startsWith('{') && trimmed.endsWith('}'))
+          || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+        try {
+          var parsed = JSON.parse(trimmed);
+          prettyValue = JSON.stringify(parsed, null, 2);
+          isJsonShape = true;
+        } catch (e) { /* not real JSON — render as plain text */ }
+      }
+    }
+    if (raw === null) {
+      window.drustUI.detail({ title: label, fields: [{ label: label, value: 'NULL', mono: true }] });
+    } else {
+      window.drustUI.detail({
+        title: label,
+        fields: [{ label: label, value: prettyValue, code: isJsonShape, mono: !isJsonShape }],
+      });
+    }
+  });
 
   async function refresh(){
     writeUrl();
