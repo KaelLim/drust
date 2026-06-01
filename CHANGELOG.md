@@ -1,3 +1,56 @@
+## v1.32.9 — 2026-06-01
+
+### Changed
+
+- **Collection-rows table is now Supabase-/Sheets-style.** Three
+  long-standing usability papercuts collapsed into one pass:
+  1. **Natural column widths + horizontal overflow.** v1.28.5
+     pinned the table to its container with `width:100%` +
+     `table-layout:fixed`, which clamped every column to 280px and
+     hid the left half of long Chinese / URL / vector-preview
+     cells while wasting space on tiny columns (id, ts, count).
+     The wrap container is now `overflow-x:auto`; the table
+     itself takes `max-content` with `table-layout:auto`; each
+     `td` retains a per-cell ceiling (raised 280 → 360) so a
+     single absurd value can't bloat its column.
+  2. **Sticky first column.** PK / id stays visible while the
+     user scrolls horizontally through wide rows. Header cell sits
+     above body cell on z-index so the sticky thead doesn't lift
+     over it.
+  3. **Click-to-expand cells.** Every cell is now clickable and
+     opens the shared detail modal (`drustUI.detail`) with the
+     full pre-escape value. JSON-shaped strings (leading
+     `{`/`[` + matching close, JSON-parseable) are auto
+     pretty-printed via `<pre>`; everything else falls back to
+     wrapped mono. The pre-v1.32.9 browser-native `title`
+     tooltip is gone — it was single-line, ~256-char-truncated,
+     unstyleable, and disappeared on hover-out.
+- **Vector cells render `[vec dim=N · 0.12, -0.45, 0.78, …]`
+  instead of the opaque `[blob]` sentinel.** `admin_list_inner`
+  passes the schema's declared `vector_fields` into the read
+  closure; when a BLOB cell's column is a declared vector AND
+  the on-disk byte length matches `dim * 4`, the first three f32
+  values are decoded from the packed little-endian layout
+  produced by `vector_codec::pack` and inlined into the cell
+  preview. Non-vector BLOBs (or vector cells whose byte length
+  disagrees with the declared `dim`) get an honest
+  `[blob bytes=N]` placeholder so the row count is visible
+  rather than misleading. The full vector array is still
+  available via the `/records/<id>` REST endpoint — the list
+  view is intentionally a teaser, not a dump (a 384-dim cell
+  rendered in full would dominate every other column on the
+  page).
+- **Broadcast sidebar icon swapped to a bilaterally symmetric
+  beacon glyph.** The pre-v1.32.9 WiFi-arc icon's bounding box
+  was 16w × 18h (taller than wide) which read as vertically
+  stretched at the 15×15 `.nav-icon svg` render size. The new
+  glyph is a centred dot with two pairs of concentric arcs
+  radiating left + right — same line weight as the other
+  sidebar icons, symmetric on both axes inside the 24×24
+  viewBox.
+
+---
+
 ## v1.32.8 — 2026-06-01
 
 ### Fixed

@@ -59,6 +59,41 @@ pub struct ListResponse {
     pub total_pages: u32,
 }
 
+/// Render a BLOB cell as a human-readable preview. Vector columns (the
+/// schema's declared `vector_fields`) get their declared `dim` plus the
+/// first three f32 values decoded from the packed little-endian layout
+/// produced by `crate::query::vector_codec::pack`. Non-vector BLOBs
+/// just get a byte-count hint. The full vector value remains available
+/// through the existing `/records/<id>` REST endpoint when a row needs
+/// to be inspected; the list view is intentionally a teaser.
+fn format_blob_cell(
+    col_name: &str,
+    bytes: &[u8],
+    vector_dim_by_col: &std::collections::HashMap<String, u32>,
+) -> String {
+    let Some(&declared_dim) = vector_dim_by_col.get(col_name) else {
+        return format!("[blob bytes={}]", bytes.len());
+    };
+    // Each f32 is 4 bytes packed little-endian. A column whose declared
+    // dim disagrees with the on-disk byte length is almost certainly a
+    // foreign BLOB that snuck in through `query` / `insert_record` —
+    // fall back to the neutral hint so the list view doesn't lie.
+    if bytes.len() % 4 != 0 || bytes.len() as u32 / 4 != declared_dim {
+        return format!("[blob bytes={}]", bytes.len());
+    }
+    let take = (declared_dim as usize).min(3);
+    let mut head: Vec<String> = Vec::with_capacity(take);
+    for chunk in bytes.chunks_exact(4).take(take) {
+        let f = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        // Two decimals is enough to convey magnitude + sign without
+        // dominating the cell. The full-precision value lives behind
+        // the row-detail modal that v1.32.9 introduces.
+        head.push(format!("{f:.2}"));
+    }
+    let suffix = if (declared_dim as usize) > take { ", …" } else { "" };
+    format!("[vec dim={} · {}{}]", declared_dim, head.join(", "), suffix)
+}
+
 /// Keys consumed by `system_column_labels` via `format!("{prefix}.{raw}")`.
 /// Listed explicitly so `build.rs`'s orphan scanner sees the references —
 /// it walks `src/**/*.rs` for literal strings matching known en.toml keys
@@ -289,6 +324,16 @@ async fn admin_list_inner(
     let is_protected = crate::storage::schema::is_protected_collection(coll_name);
     let binds_for_list = binds.clone();
     let list_sql_for_closure = list_sql.clone();
+    // v1.32.9 — pass the schema's declared vector fields into the read
+    // closure so a BLOB cell coming back from a vector column renders as
+    // `[vec dim=N · 0.12, -0.45, 0.78, …]` instead of the opaque
+    // `[blob]` sentinel. Non-vector BLOBs still get an honest
+    // `[blob bytes=N]` placeholder so the row count is visible.
+    let vector_dim_by_col: std::collections::HashMap<String, u32> = schema
+        .vector_fields
+        .iter()
+        .map(|v| (v.name.clone(), v.dim))
+        .collect();
     let rows_result = pool.with_reader(move |c| -> rusqlite::Result<(Vec<String>, Vec<Vec<serde_json::Value>>)> {
         if !is_protected {
             crate::query::authorizer::attach_readonly_authorizer(c);
@@ -307,7 +352,11 @@ async fn admin_list_inner(
                     rusqlite::types::Value::Real(f) => serde_json::Number::from_f64(f)
                         .map(serde_json::Value::Number).unwrap_or(serde_json::Value::Null),
                     rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
-                    rusqlite::types::Value::Blob(_) => serde_json::Value::String("[blob]".into()),
+                    rusqlite::types::Value::Blob(bytes) => {
+                        let col_name = &col_names[i];
+                        let display = format_blob_cell(col_name, &bytes, &vector_dim_by_col);
+                        serde_json::Value::String(display)
+                    }
                 });
             }
             out.push(row_vals);
