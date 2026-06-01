@@ -1108,6 +1108,35 @@
   .modal-detail-grid dd{font:400 13px/1.5 var(--font-sans);color:var(--fg);margin:0;word-break:break-all}
   .modal-detail-grid dd.mono{font-family:var(--font-mono);font-size:12px}
   .modal-detail-grid dd pre{background:var(--bg-deep);padding:8px 10px;border-radius:6px;font:11px/1.4 var(--font-mono);margin:0;overflow-x:auto;white-space:pre-wrap;color:var(--fg-2)}
+  /* v1.32.10 — Supabase-style cell viewer. `f.textarea: true` on a
+     `drustUI.detail` field renders the value inside a readonly
+     <textarea> and promotes its dd to span the full grid width so
+     the editor is the dominant visual element. resize:vertical lets
+     the user drag-grow it for very long content; the dt label still
+     shows above. Pair with `opts.wide: true` so the parent modal
+     widens to ~720px. */
+  .modal-detail-grid dd.full-span{grid-column:1 / -1}
+  .modal-detail-area{
+    width:100%;
+    min-height:240px;
+    max-height:60vh;
+    padding:10px 12px;
+    background:var(--bg-deep);
+    border:1px solid var(--border);
+    border-radius:8px;
+    color:var(--fg-2);
+    font:12px/1.5 var(--font-mono);
+    resize:vertical;
+    white-space:pre-wrap;
+    word-break:break-word;
+    outline:none;
+    box-sizing:border-box;
+  }
+  .modal-detail-area:focus{border-color:var(--accent-border);box-shadow:0 0 0 3px var(--accent-soft)}
+  /* v1.32.10 — wide modal variant for single-value viewers (cell
+     expand, future "inspect record"). Default 460px is too narrow
+     for a readable textarea; ~720px gives ~80 mono chars per line. */
+  .modal.modal-wide{width:min(720px,92vw)}
 
   /* v1.17.1 — leading-icon search input */
   .input-with-icon{position:relative;display:inline-flex;align-items:center}

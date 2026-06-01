@@ -24,6 +24,7 @@
     function close(value) {
       overlay.hidden = true;
       box.classList.remove('modal-variant-danger');
+      box.classList.remove('modal-wide');
       inputEl.hidden = true;
       inputEl.value = '';
       actionsEl.innerHTML = '';
@@ -127,6 +128,10 @@
       detail: function (opts) {
         opts = opts || {};
         titleEl.textContent = opts.title || '{{ t.s("common.modal.title_details") }}';
+        // v1.32.10 — `opts.wide` widens the modal box (~720px vs the
+        // default 460px) for single-value cell viewers where every
+        // line counts. Cleared in close() so the next open reverts.
+        if (opts.wide) box.classList.add('modal-wide');
         // Build the <dl> grid from fields[].
         var dl = document.createElement('dl');
         dl.className = 'modal-detail-grid';
@@ -136,7 +141,22 @@
           var dt = document.createElement('dt');
           dt.textContent = f.label || '';
           var dd = document.createElement('dd');
-          if (f.code) {
+          // v1.32.10 — `f.textarea: true` renders the value inside a
+          // readonly resizable <textarea>, then promotes dd to span
+          // the full grid width so the editor is wide enough to read
+          // naturally. Used by the collection-rows cell-expand modal
+          // for Supabase-style long-content viewing. NULL still
+          // renders as the literal sentinel so the user sees that
+          // the underlying cell IS null rather than "empty editor".
+          if (f.textarea) {
+            dd.classList.add('full-span');
+            var ta = document.createElement('textarea');
+            ta.className = 'modal-detail-area';
+            ta.readOnly = true;
+            ta.spellcheck = false;
+            ta.value = f.value == null ? 'NULL' : String(f.value);
+            dd.appendChild(ta);
+          } else if (f.code) {
             var pre = document.createElement('pre');
             pre.textContent = f.value == null ? '' : String(f.value);
             dd.appendChild(pre);
