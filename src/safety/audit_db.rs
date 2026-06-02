@@ -439,7 +439,7 @@ fn flush(conn: &mut Connection, buf: &mut Vec<crate::safety::audit::AuditEntry>)
                 entry.token_hint,
                 entry.op,
                 entry.status,
-                entry.duration_ms,
+                entry.duration_ms as i64,
                 entry.error_code,
                 entry.auth_method,
                 entry.oauth_email,
