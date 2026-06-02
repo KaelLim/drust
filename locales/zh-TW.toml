@@ -743,7 +743,7 @@ title = "API 金鑰"
 intro = "這個租戶有兩種金鑰，請依照要整合的介面挑一支用；重新產生會立刻作廢前一支 bearer。租戶 <b>{tenant_name}</b> <code style=\"opacity:0.6;font-size:11px;\">{tenant_id}</code>・建立於 {created_at}。"
 
 [tenant_api_keys.mcp]
-copy_title = "複製 claude mcp add-json 指令"
+copy_title = "複製 claude mcp add 指令"
 desc = "Streamable HTTP・透過 service token 認證"
 name = "MCP 端點"
 # {n} placeholder: 渲染時由 handler 透過 t.fmt(...) 帶入即時的 MCP 工具數量。
@@ -1224,3 +1224,21 @@ verified = "已驗證"
 profile = "個人資料"
 created_at = "建立時間"
 updated_at = "更新時間"
+
+[mcp_setup]
+modal_title = "MCP 設定指引"
+button_more_clients = "更多 client"
+path_label = "貼到："
+linux_unsupported = "Claude Desktop 官方不支援 Linux。"
+
+[mcp_setup.tab]
+windows = "Windows"
+macos = "macOS"
+linux = "Linux"
+
+[mcp_setup.client]
+claude_code = "Claude Code CLI"
+codex = "Codex CLI"
+cursor = "Cursor"
+claude_desktop = "Claude Desktop"
+gemini = "Gemini CLI"

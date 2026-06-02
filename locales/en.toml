@@ -723,7 +723,7 @@ title = "API keys"
 intro = "Two personalities for this tenant — pick whichever matches the surface you're integrating with. Reroll clears the previous bearer immediately. Tenant <b>{tenant_name}</b> <code style=\"opacity:0.6;font-size:11px;\">{tenant_id}</code> · created {created_at}."
 
 [tenant_api_keys.mcp]
-copy_title = "copy claude mcp add-json command"
+copy_title = "copy claude mcp add command"
 desc = "Streamable HTTP · authenticated via service token"
 name = "MCP endpoint"
 # {n} placeholder: filled at render time via t.fmt(...) — the handler
@@ -1203,3 +1203,21 @@ verified = "Verified"
 profile = "Profile"
 created_at = "Created"
 updated_at = "Updated"
+
+[mcp_setup]
+modal_title = "MCP server setup"
+button_more_clients = "More clients"
+path_label = "Paste into:"
+linux_unsupported = "Claude Desktop is not officially supported on Linux."
+
+[mcp_setup.tab]
+windows = "Windows"
+macos = "macOS"
+linux = "Linux"
+
+[mcp_setup.client]
+claude_code = "Claude Code CLI"
+codex = "Codex CLI"
+cursor = "Cursor"
+claude_desktop = "Claude Desktop"
+gemini = "Gemini CLI"

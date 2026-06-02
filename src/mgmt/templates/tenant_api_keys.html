@@ -93,8 +93,11 @@
                 {% endmatch %}>
           </span>
           <div class="row" style="gap:6px;">
-            <button class="btn sm icon" type="button" onclick="copyMcpCommand(this)" title="{{ t.s("tenant_api_keys.mcp.copy_title") }}" aria-label="copy mcp.json command">
+            <button class="btn sm icon" type="button" onclick="copyMcpCommand(this)" title="{{ t.s("tenant_api_keys.mcp.copy_title") }}" aria-label="copy mcp add command">
               <svg aria-hidden="true"><use href="#i-braces"/></svg>
+            </button>
+            <button class="btn sm icon" type="button" onclick="openMcpSetup()" title="{{ t.s("mcp_setup.button_more_clients") }}" aria-label="open MCP server setup modal">
+              <svg aria-hidden="true"><use href="#i-external-link"/></svg>
             </button>
           </div>
         </div>
@@ -160,6 +163,28 @@
         </div>
 
       </div>
+
+      <!-- v1.32.13 — MCP multi-client setup modal -->
+      <div class="modal-overlay" id="mcp-setup-overlay" hidden onclick="if(event.target===this)closeMcpSetup()">
+        <div class="modal modal-wide modal-mcp-setup" id="mcp-setup-modal" data-os="macos" role="dialog" aria-modal="true" aria-labelledby="mcp-setup-title">
+          <div class="modal-mcp-head">
+            <h2 class="modal-title" id="mcp-setup-title">{{ t.s("mcp_setup.modal_title") }}</h2>
+            <button type="button" class="btn sm icon" onclick="closeMcpSetup()" aria-label="close">
+              <svg aria-hidden="true"><use href="#i-x"/></svg>
+            </button>
+          </div>
+
+          <div class="mcp-os-tabs" role="tablist" aria-label="operating system">
+            <button class="mcp-os-tab" role="tab" data-os="windows" onclick="setMcpOs('windows')">{{ t.s("mcp_setup.tab.windows") }}</button>
+            <button class="mcp-os-tab" role="tab" data-os="macos" onclick="setMcpOs('macos')">{{ t.s("mcp_setup.tab.macos") }}</button>
+            <button class="mcp-os-tab" role="tab" data-os="linux" onclick="setMcpOs('linux')">{{ t.s("mcp_setup.tab.linux") }}</button>
+          </div>
+
+          <div class="mcp-clients" id="mcp-clients">
+            <!-- 5 client cards injected by renderMcpClients() at openMcpSetup() time -->
+          </div>
+        </div>
+      </div>
 {% endblock %}
 
 {% block extra_scripts %}
@@ -206,8 +231,10 @@
     navigator.clipboard.writeText(el.getAttribute('data-plain')).then(function () { _setOk(btn); });
   }
   // v1.29.3 — reads PAT from server-injected <span id="key-mcp-pat"
-  // data-plain="..."> and writes the claude mcp add-json snippet directly
+  // data-plain="..."> and writes the `claude mcp add` snippet directly
   // to clipboard. No fetch — single round-trip eliminated.
+  // v1.32.13 — flag form (`--transport http --header ...`) instead of
+  // JSON form (`add-json '<JSON>'`) so cmd.exe / PowerShell don't mis-parse.
   function copyMcpCommand(btn) {
     var tenantId = document.getElementById('mcp-url').getAttribute('data-tenant');
     var patEl = document.getElementById('key-mcp-pat');
@@ -220,9 +247,175 @@
       return;
     }
     var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
-    var serverCfg = { type: 'http', url: url, headers: { Authorization: 'Bearer ' + token } };
-    var snippet = "claude mcp add-json drust-" + tenantId + " '" + JSON.stringify(serverCfg) + "'";
+    // v1.32.13 — switched from `mcp add-json '<JSON>'` to `mcp add --transport http <url> --header "..."`.
+    // The JSON form needs POSIX single-quotes which cmd.exe / PowerShell mis-parse; the flag form
+    // contains no nested quoting and works identically on bash / zsh / cmd / PowerShell / WSL.
+    var snippet = 'claude mcp add drust-' + tenantId + ' ' + url
+      + ' --transport http --header "Authorization: Bearer ' + token + '"';
     navigator.clipboard.writeText(snippet).then(function () { _setOk(btn); });
+  }
+  // v1.32.13 — MCP multi-client setup modal (Claude Code / Codex / Cursor / Claude Desktop / Gemini CLI)
+  function detectMcpOs() {
+    var p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+    p = p.toLowerCase();
+    if (p.indexOf('win') >= 0) return 'windows';
+    if (p.indexOf('mac') >= 0) return 'macos';
+    return 'linux';
+  }
+  function setMcpOs(os) {
+    var modal = document.getElementById('mcp-setup-modal');
+    if (!modal) return;
+    modal.dataset.os = os;
+    var tabs = modal.querySelectorAll('.mcp-os-tab');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].setAttribute('aria-selected', tabs[i].dataset.os === os ? 'true' : 'false');
+      tabs[i].classList.toggle('is-active', tabs[i].dataset.os === os);
+    }
+  }
+  function openMcpSetup() {
+    var tenantId = document.getElementById('mcp-url').getAttribute('data-tenant');
+    var patEl = document.getElementById('key-mcp-pat');
+    var token = patEl && patEl.getAttribute('data-plain');
+    if (!token) {
+      drustUI.alert({
+        title: '{{ t.s("mcp_pat.alert.no_pat_title") }}',
+        body:  '{{ t.s("mcp_pat.alert.no_pat_body") }}'
+      });
+      return;
+    }
+    var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
+    renderMcpClients(tenantId, url, token);
+    setMcpOs(detectMcpOs());
+    document.getElementById('mcp-setup-overlay').hidden = false;
+    document.addEventListener('keydown', _mcpEscClose);
+  }
+  function closeMcpSetup() {
+    document.getElementById('mcp-setup-overlay').hidden = true;
+    document.removeEventListener('keydown', _mcpEscClose);
+  }
+  function _mcpEscClose(e) { if (e.key === 'Escape') closeMcpSetup(); }
+  function renderMcpClients(t, url, k) {
+    var box = document.getElementById('mcp-clients');
+    if (!box) return;
+    var snippets = _mcpSnippets(t, url, k);
+    box.textContent = '';
+    for (var i = 0; i < snippets.length; i++) {
+      box.appendChild(_mcpCard(snippets[i]));
+    }
+  }
+  function _mcpSnippets(t, url, k) {
+    var bearer = 'Bearer ' + k;
+    var json = function (kkey) {
+      var inner = {};
+      inner[kkey] = url;
+      inner.headers = { Authorization: bearer };
+      return JSON.stringify({ mcpServers: _mcpKv('drust-' + t, inner) }, null, 2);
+    };
+    return [
+      {
+        id: 'claude_code',
+        name: '{{ t.s("mcp_setup.client.claude_code") }}',
+        paths: null,
+        snippet: 'claude mcp add drust-' + t + ' ' + url + ' --transport http --header "Authorization: ' + bearer + '"',
+        disabledOn: null
+      },
+      {
+        id: 'codex',
+        name: '{{ t.s("mcp_setup.client.codex") }}',
+        paths: {
+          macos: '~/.codex/config.toml',
+          linux: '~/.codex/config.toml',
+          windows: '%USERPROFILE%\\.codex\\config.toml'
+        },
+        snippet: '[mcp_servers.drust-' + t + ']\ntype = "http"\nurl = "' + url + '"\nheaders = { Authorization = "' + bearer + '" }',
+        disabledOn: null
+      },
+      {
+        id: 'cursor',
+        name: '{{ t.s("mcp_setup.client.cursor") }}',
+        paths: {
+          macos: '~/.cursor/mcp.json',
+          linux: '~/.cursor/mcp.json',
+          windows: '%USERPROFILE%\\.cursor\\mcp.json'
+        },
+        snippet: json('url'),
+        disabledOn: null
+      },
+      {
+        id: 'claude_desktop',
+        name: '{{ t.s("mcp_setup.client.claude_desktop") }}',
+        paths: {
+          macos: '~/Library/Application Support/Claude/claude_desktop_config.json',
+          windows: '%APPDATA%\\Claude\\claude_desktop_config.json',
+          linux: '{{ t.s("mcp_setup.linux_unsupported") }}'
+        },
+        snippet: json('url'),
+        disabledOn: 'linux'
+      },
+      {
+        id: 'gemini',
+        name: '{{ t.s("mcp_setup.client.gemini") }}',
+        paths: {
+          macos: '~/.gemini/settings.json',
+          linux: '~/.gemini/settings.json',
+          windows: '%USERPROFILE%\\.gemini\\settings.json'
+        },
+        snippet: json('httpUrl'),
+        disabledOn: null
+      }
+    ];
+  }
+  // Object-literal helper so we can build {drust-<uuid>: ...} without losing key insertion order.
+  function _mcpKv(key, val) { var o = {}; o[key] = val; return o; }
+  function _mcpCard(s) {
+    var card = document.createElement('div');
+    card.className = 'mcp-client-card';
+    if (s.disabledOn) card.setAttribute('data-disabled-on', s.disabledOn);
+
+    var head = document.createElement('div');
+    head.className = 'mcp-client-head';
+    var h = document.createElement('h3');
+    h.className = 'mcp-client-name';
+    h.textContent = s.name;
+    head.appendChild(h);
+    var copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'btn sm';
+    copyBtn.textContent = '{{ t.s("common.button.copy") }}';
+    copyBtn.onclick = function () { _mcpCopy(s.snippet, copyBtn); };
+    head.appendChild(copyBtn);
+    card.appendChild(head);
+
+    if (s.paths) {
+      var pathBox = document.createElement('div');
+      pathBox.className = 'mcp-client-paths';
+      var label = document.createElement('span');
+      label.className = 'mcp-client-paths-label';
+      label.textContent = '{{ t.s("mcp_setup.path_label") }} ';
+      pathBox.appendChild(label);
+      ['windows', 'macos', 'linux'].forEach(function (os) {
+        var line = document.createElement('code');
+        line.className = 'mcp-client-path path-' + os;
+        line.textContent = s.paths[os];
+        pathBox.appendChild(line);
+      });
+      card.appendChild(pathBox);
+    }
+
+    var pre = document.createElement('pre');
+    pre.className = 'mcp-client-snippet';
+    pre.textContent = s.snippet;
+    card.appendChild(pre);
+
+    return card;
+  }
+  function _mcpCopy(text, btn) {
+    navigator.clipboard.writeText(text).then(function () {
+      var orig = btn.textContent;
+      btn.textContent = '{{ t.s("common.button.copied") }}';
+      if (window.chonkReact) window.chonkReact('happy');
+      setTimeout(function () { btn.textContent = orig; }, 1500);
+    });
   }
   function _setSelfRegPill(enabled) {
     var pill = document.getElementById('self-reg-pill');
