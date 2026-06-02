@@ -53,7 +53,7 @@ urlencoding        = "2"
 object_store       = { version = "0.11", features = ["aws"] }
 mime_guess         = "2"
 bytes              = "1"
-reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest            = { version = "0.13", default-features = false, features = ["rustls", "json", "query", "form"] }
 pulldown-cmark     = { version = "0.13", default-features = false, features = ["html"] }
 flate2             = { version = "1", default-features = false, features = ["rust_backend"] }
 tar                = { version = "0.4", default-features = false }
@@ -63,7 +63,7 @@ prometheus         = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 serial_test        = "3"
-reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest            = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 eventsource-stream = "0.2"
 serde_urlencoded   = "0.7"
 tokio-tungstenite  = "0.24"
