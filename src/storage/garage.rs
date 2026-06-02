@@ -5,7 +5,7 @@
 
 use crate::config::StorageConfig;
 use anyhow::{Context, Result};
-use object_store::ObjectStore;
+use object_store::{ObjectStore, ObjectStoreExt};
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as StorePath;
 use std::sync::Arc;
@@ -422,7 +422,7 @@ impl GarageClient {
         cache_control: Option<&str>,
         meta_json: Option<&str>,
     ) -> anyhow::Result<()> {
-        use object_store::{Attribute, AttributeValue, Attributes, ObjectStore, PutOptions};
+        use object_store::{Attribute, AttributeValue, Attributes, ObjectStore, ObjectStoreExt, PutOptions};
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
 
@@ -479,7 +479,7 @@ impl GarageClient {
 
     /// Cross-bucket DELETE. Idempotent: missing key is `Ok`.
     pub async fn delete_object_in(&self, bucket: &str, key: &str) -> anyhow::Result<()> {
-        use object_store::ObjectStore;
+        use object_store::{ObjectStore, ObjectStoreExt};
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
         match s3.delete(&path).await {
@@ -495,7 +495,7 @@ impl GarageClient {
         bucket: &str,
         key: &str,
     ) -> anyhow::Result<bytes::Bytes> {
-        use object_store::ObjectStore;
+        use object_store::{ObjectStore, ObjectStoreExt};
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
         let result = s3.get(&path).await?;
@@ -508,7 +508,7 @@ impl GarageClient {
         bucket: &str,
         key: &str,
     ) -> anyhow::Result<impl futures::Stream<Item = anyhow::Result<bytes::Bytes>> + use<>> {
-        use object_store::ObjectStore;
+        use object_store::{ObjectStore, ObjectStoreExt};
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
         let result = s3.get(&path).await?;
