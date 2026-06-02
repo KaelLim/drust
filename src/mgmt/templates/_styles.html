@@ -1138,6 +1138,29 @@
      for a readable textarea; ~720px gives ~80 mono chars per line. */
   .modal.modal-wide{width:min(720px,92vw)}
 
+  /* v1.32.13 — MCP multi-client setup modal */
+  .modal.modal-mcp-setup{width:min(820px,94vw);max-height:80vh;display:flex;flex-direction:column;gap:14px}
+  .modal-mcp-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .modal-mcp-head .modal-title{margin:0}
+  .mcp-os-tabs{display:flex;gap:6px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  .mcp-os-tab{background:transparent;border:1px solid transparent;color:var(--muted);font:500 12.5px/1 var(--font-mono);padding:6px 12px;border-radius:6px;cursor:pointer;letter-spacing:.04em}
+  .mcp-os-tab:hover{color:var(--fg)}
+  .mcp-os-tab.is-active{background:var(--accent-soft);border-color:var(--accent-border);color:var(--accent)}
+  .mcp-clients{display:flex;flex-direction:column;gap:14px;overflow-y:auto;padding-right:4px}
+  .mcp-client-card{background:var(--bg-deep);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+  .mcp-client-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+  .mcp-client-name{font:500 14px/1.2 var(--font-sans);margin:0;color:var(--fg)}
+  .mcp-client-paths{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .mcp-client-paths-label{font-weight:500}
+  .mcp-client-path{font-family:var(--font-mono);font-size:11.5px;color:var(--fg-2);display:none}
+  .modal-mcp-setup[data-os="windows"] .mcp-client-path.path-windows{display:inline}
+  .modal-mcp-setup[data-os="macos"]   .mcp-client-path.path-macos{display:inline}
+  .modal-mcp-setup[data-os="linux"]   .mcp-client-path.path-linux{display:inline}
+  .mcp-client-snippet{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font:11.5px/1.5 var(--font-mono);color:var(--fg-2);white-space:pre-wrap;word-break:break-word;margin:0;overflow-x:auto}
+  /* Disabled card (Claude Desktop on Linux) */
+  .modal-mcp-setup[data-os="linux"] .mcp-client-card[data-disabled-on="linux"]{opacity:.5;pointer-events:none}
+  .modal-mcp-setup[data-os="linux"] .mcp-client-card[data-disabled-on="linux"] .btn{cursor:not-allowed}
+
   /* v1.17.1 — leading-icon search input */
   .input-with-icon{position:relative;display:inline-flex;align-items:center}
   .input-with-icon > svg.icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);width:14px;height:14px;color:var(--muted);pointer-events:none}

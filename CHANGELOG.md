@@ -1,3 +1,50 @@
+## v1.32.13 — 2026-06-02
+
+### Added
+
+- **MCP server setup modal with multi-client snippets.** The per-
+  tenant `_api_keys` page now ships a `[More clients ▸]` button
+  next to the existing `[Copy]` button on the MCP server card.
+  Clicking it opens a modal with three OS tabs (Windows / macOS /
+  Linux, auto-selected by `navigator.userAgentData?.platform` and
+  manually switchable) and five client setup cards: Claude Code
+  CLI, Codex CLI, Cursor, Claude Desktop, Gemini CLI. Each card
+  has a per-OS config-file-path hint and a ready-to-paste snippet
+  with its own `[Copy]` button. Claude Desktop greys out on the
+  Linux tab since Anthropic does not officially support it there.
+  Frontend-only: no new backend route, no DB column, no migration,
+  no new Rust tests — the PAT source and tenant URL come from the
+  same server-injected DOM nodes the existing single-click copy
+  button already reads. Spec:
+  `docs/superpowers/specs/2026-06-02-mcp-multi-client-setup.md`.
+
+### Fixed
+
+- **Single-click `[Copy]` button on MCP card now emits a
+  cross-shell-safe command.** v1.29.3's `claude mcp add-json
+  drust-<tenant> '<JSON>'` payload relied on POSIX single-quote
+  string literal semantics, which `cmd.exe` and PowerShell do not
+  honour — Windows operators pasting the snippet hit
+  `Invalid configuration: : Invalid input` and had to manually
+  rewrite the JSON quoting. v1.32.13 switches to the flag form:
+  `claude mcp add drust-<tenant> <url> --transport http --header
+  "Authorization: Bearer <pat>"`, which has no nested JSON quoting
+  and parses identically in bash / zsh / cmd / PowerShell / WSL.
+  Same string is also surfaced as the "Claude Code CLI" tab inside
+  the new multi-client modal so the one-click and explore paths
+  agree byte-for-byte.
+
+### Notes
+
+- Version number v1.32.12 is deliberately skipped. The standalone
+  flag-form fix was bumped to v1.32.12 mid-development but was
+  superseded by v1.32.13 before any tagged release, because the
+  modal needs the same flag-form string as its Claude Code tab —
+  shipping v1.32.12 as a separate release would have been replaced
+  in the same week.
+
+---
+
 ## v1.32.11 — 2026-06-01
 
 ### Fixed
