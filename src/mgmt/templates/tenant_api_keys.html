@@ -74,8 +74,8 @@
           </div>
         </div>
 
-        {% call api_key_card("anon", t.s("tenant_api_keys.card.anon_label"), t.s("tenant_api_keys.card.anon_scopes"), anon, tenant_id) %}
-        {% call api_key_card("service", t.s("tenant_api_keys.card.service_label"), t.s("tenant_api_keys.card.service_scopes"), service, tenant_id) %}
+        {% call api_key_card("anon", t.s("tenant_api_keys.card.anon_label"), t.s("tenant_api_keys.card.anon_scopes"), anon, tenant_id) %}{% endcall %}
+        {% call api_key_card("service", t.s("tenant_api_keys.card.service_label"), t.s("tenant_api_keys.card.service_scopes"), service, tenant_id) %}{% endcall %}
 
         <div class="key-row" style="margin-top:10px;">
           <div class="key-icon" style="color:var(--lilac);">
