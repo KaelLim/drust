@@ -120,6 +120,14 @@ pub async fn create(
     let ttl = state.large_upload_session_ttl_secs as i64;
     let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(ttl)).to_rfc3339();
 
+    // Disk guard on the spool filesystem (data_root).
+    if let Ok(stats) = crate::storage::disk::disk_stats(&state.data_root) {
+        if (stats.free_pct as u8) < state.disk_min_free_pct {
+            return json_error(StatusCode::INSUFFICIENT_STORAGE, "DISK_FULL",
+                "insufficient free disk for upload");
+        }
+    }
+
     // Create the empty spool file (and its dir) before the DB row, so a
     // crash leaves at most an orphan file (janitor-swept), never a row
     // without a spool.
