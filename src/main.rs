@@ -287,6 +287,15 @@ async fn main() -> anyhow::Result<()> {
         std::sync::Arc::new(oauth_registry_inner)
     };
 
+    let (lu_max, lu_chunk, lu_sessions, lu_ttl) = match &cfg.storage {
+        Some(sc) => (
+            sc.large_upload_max_bytes,
+            sc.large_upload_chunk_max_bytes,
+            sc.large_upload_max_sessions_per_tenant,
+            sc.large_upload_session_ttl_secs,
+        ),
+        None => (2_147_483_648, 67_108_864, 5, 86_400),
+    };
     let mgmt_state = MgmtState {
         meta: meta.clone(),
         audit_meta_read: audit_meta_read.clone(),
@@ -307,6 +316,10 @@ async fn main() -> anyhow::Result<()> {
         oauth_registry,
         admin_login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        large_upload_max_bytes: lu_max,
+        large_upload_chunk_max_bytes: lu_chunk,
+        large_upload_max_sessions_per_tenant: lu_sessions,
+        large_upload_session_ttl_secs: lu_ttl,
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
@@ -326,6 +339,10 @@ async fn main() -> anyhow::Result<()> {
         public_base_url: cfg.public_base_url.clone(),
         url_sign_secret: url_sign_secret.clone(),
         tenants: tenants.clone(),
+        large_upload_max_bytes: lu_max,
+        large_upload_chunk_max_bytes: lu_chunk,
+        large_upload_max_sessions_per_tenant: lu_sessions,
+        large_upload_session_ttl_secs: lu_ttl,
     });
 
     let tenant_stack = TenantStack {

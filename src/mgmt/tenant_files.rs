@@ -42,6 +42,14 @@ pub struct TenantFilesState {
     /// v1.20 — per-tenant pool registry so admin file writes go through
     /// the writer mutex.
     pub tenants: std::sync::Arc<crate::storage::pool::TenantRegistry>,
+    /// v1.33 — Mode B per-file ceiling (bytes).
+    pub large_upload_max_bytes: usize,
+    /// v1.33 — Mode B per-chunk body limit (bytes).
+    pub large_upload_chunk_max_bytes: usize,
+    /// v1.33 — max concurrent in-flight Mode B sessions per tenant.
+    pub large_upload_max_sessions_per_tenant: u32,
+    /// v1.33 — abandoned Mode B session TTL (seconds).
+    pub large_upload_session_ttl_secs: u64,
 }
 
 /// Test-only constructor available in debug builds.
@@ -69,6 +77,10 @@ impl TenantFilesState {
             public_base_url: "http://localhost".into(),
             url_sign_secret: std::sync::Arc::new([0u8; 32]),
             tenants,
+            large_upload_max_bytes: 2_147_483_648,
+            large_upload_chunk_max_bytes: 67_108_864,
+            large_upload_max_sessions_per_tenant: 5,
+            large_upload_session_ttl_secs: 86_400,
         }
     }
 }

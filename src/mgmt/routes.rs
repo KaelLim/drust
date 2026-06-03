@@ -71,6 +71,14 @@ pub struct MgmtState {
     /// Default: 5 per 60 s. Defends the provider-exchange path from being
     /// flooded with attacker-supplied (code, state) pairs.
     pub admin_oauth_callback_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
+    /// v1.33 — Mode B per-file ceiling (bytes). Forwarded to TenantFilesState.
+    pub large_upload_max_bytes: usize,
+    /// v1.33 — Mode B per-chunk body limit (bytes). Forwarded to TenantFilesState.
+    pub large_upload_chunk_max_bytes: usize,
+    /// v1.33 — max concurrent in-flight Mode B sessions per tenant.
+    pub large_upload_max_sessions_per_tenant: u32,
+    /// v1.33 — abandoned Mode B session TTL (seconds).
+    pub large_upload_session_ttl_secs: u64,
 }
 
 #[derive(Template)]
@@ -633,6 +641,10 @@ impl MgmtState {
             public_base_url: self.public_base_url.clone(),
             url_sign_secret: self.url_sign_secret.clone(),
             tenants: self.tenants.clone(),
+            large_upload_max_bytes: self.large_upload_max_bytes,
+            large_upload_chunk_max_bytes: self.large_upload_chunk_max_bytes,
+            large_upload_max_sessions_per_tenant: self.large_upload_max_sessions_per_tenant,
+            large_upload_session_ttl_secs: self.large_upload_session_ttl_secs,
         };
         let signed_bytes_state = crate::mgmt::signed_bytes::SignedBytesState {
             meta: self.meta.clone(),
