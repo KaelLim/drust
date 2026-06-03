@@ -5,3 +5,6 @@
 *.log
 /data
 .claude/
+/.codegraph/
+/meta.sqlite*
+/meta_logs.sqlite*
