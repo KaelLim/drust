@@ -1,3 +1,36 @@
+## v1.33.1 — 2026-06-03
+
+### Security
+
+- **Stored-XSS fix in the admin collection editor (tenant → operator
+  privilege escalation).** `src/mgmt/browse.rs` serialized a
+  collection's fields — including the v1.19 per-field `description`,
+  which is tenant-controlled free text — into an executable `<script>`
+  in `collection_rows.html` with no escaping, so a tenant could set a
+  field description to `</script>…` and have the trailing markup
+  execute in the drust operator's authenticated admin session the
+  moment the operator opened that collection's editor. Fixed by adding
+  one canonical `<script>`-safe JSON escaper
+  (`src/mgmt/script_json.rs`: `escape_json_for_script` /
+  `json_for_script`) that neutralizes `</`, `<!--`, U+2028 and U+2029
+  — all losslessly, so the escaped output is `JSON.parse`-identical —
+  and routing every JSON-into-`<script>` island through it: the
+  collection editor, the audit-log embed (previously escaped inline),
+  the settings themes blob, and the broadcast-inspector i18n bundle.
+  No consumer behavior changes for legitimate data.
+
+### Changed
+
+- **MCP clients now discover the Mode B resumable upload endpoint.**
+  The per-tenant MCP `initialize.instructions` prologue gained an
+  `Upload (large / resumable)` block pointing at `POST /t/<id>/uploads`
+  (tus 1.0) with `OPTIONS`-based capability discovery, and `whoami`
+  now returns `endpoints.files_upload_resumable`. No new MCP tool and
+  no route change — `/uploads` was already service-key-gated; this only
+  makes the existing endpoint visible to LLM clients.
+
+---
+
 ## v1.33.0 — 2026-06-03
 
 ### Added
