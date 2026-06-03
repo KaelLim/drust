@@ -195,7 +195,9 @@ async fn settings_page(
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
             mascot_json_dark: trc.mascot_json_dark,
-            all_themes_json: crate::mgmt::theme::build_all_themes_json(),
+            all_themes_json: crate::mgmt::script_json::escape_json_for_script(
+                &crate::mgmt::theme::build_all_themes_json(),
+            ),
             pat_plaintext,
             pat_hash_prefix,
             pat_last_used_at,

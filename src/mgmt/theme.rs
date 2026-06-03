@@ -480,4 +480,13 @@ mod tests {
         let body = *pal.mascot.get(&'B').expect("B");
         assert_ne!(body, "#0a0a0a", "soft-light must not share body with cozy-dark");
     }
+
+    #[test]
+    fn all_themes_json_is_script_safe_and_still_valid_json() {
+        let raw = build_all_themes_json();
+        let safe = crate::mgmt::script_json::escape_json_for_script(&raw);
+        assert!(!safe.contains("</"), "no live `</` may survive in the embed");
+        // Escaping must not corrupt the payload — it still parses.
+        let _: serde_json::Value = serde_json::from_str(&safe).expect("escaped themes JSON must parse");
+    }
 }
