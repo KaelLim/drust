@@ -24,7 +24,7 @@ pub mod webhook_routes;
 use crate::mcp::http_registry::McpHttpRegistry;
 use crate::mgmt::tenant_files::TenantFilesState;
 use axum::Router;
-use axum::http::{HeaderValue, Method, header};
+use axum::http::{HeaderValue, Method, header, header::HeaderName};
 use axum::routing::{any, delete, get, post, put};
 use auth_routes::{
     login_handler, logout_all_handler, logout_handler, me_get_handler, me_patch_handler,
@@ -129,15 +129,31 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
                 Method::OPTIONS,
                 Method::HEAD,
             ])
-            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+            .allow_headers([
+                header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT,
+                HeaderName::from_static("tus-resumable"),
+                HeaderName::from_static("upload-length"),
+                HeaderName::from_static("upload-offset"),
+                HeaderName::from_static("upload-metadata"),
+            ])
             // v1.29.7 C3 — RFC 8594 deprecation headers must be visible to
             // cross-origin browser SPAs. Without this, `response.headers
             // .get('deprecation')` returns null even though the bytes arrive,
             // defeating the discovery audience H5-1 phase 1 was designed for.
+            // v1.33 — extend for tus response headers so browser tus clients
+            // can read Upload-Offset, Location, etc. from cross-origin responses.
             .expose_headers([
                 axum::http::header::HeaderName::from_static("deprecation"),
                 axum::http::header::HeaderName::from_static("sunset"),
                 axum::http::header::HeaderName::from_static("link"),
+                HeaderName::from_static("tus-resumable"),
+                HeaderName::from_static("tus-version"),
+                HeaderName::from_static("tus-extension"),
+                HeaderName::from_static("tus-max-size"),
+                HeaderName::from_static("upload-offset"),
+                HeaderName::from_static("upload-length"),
+                HeaderName::from_static("upload-expires"),
+                HeaderName::from_static("location"),
             ])
             .max_age(Duration::from_secs(600)),
     )
@@ -426,6 +442,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     // is available to the handler).
     let files_router = if let Some(files_state) = state.files {
         let max_upload_bytes = files_state.max_upload_bytes;
+        let chunk_max = files_state.large_upload_chunk_max_bytes;
         Router::new()
             .route(
                 "/t/{tenant}/files",
@@ -445,6 +462,19 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             .route(
                 "/t/{tenant}/files/{key}/sign",
                 post(crate::mgmt::tenant_files::sign_url),
+            )
+            .route(
+                "/t/{tenant}/uploads",
+                post(crate::tenant::uploads::create)
+                    .get(crate::tenant::uploads::list_sessions)
+                    .options(crate::tenant::uploads::options),
+            )
+            .route(
+                "/t/{tenant}/uploads/{token}",
+                axum::routing::patch(crate::tenant::uploads::patch)
+                    .head(crate::tenant::uploads::head)
+                    .delete(crate::tenant::uploads::terminate)
+                    .layer(axum::extract::DefaultBodyLimit::max(chunk_max)),
             )
             .layer(axum::middleware::from_fn_with_state(
                 auth_state.clone(),

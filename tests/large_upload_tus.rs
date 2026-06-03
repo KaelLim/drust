@@ -192,3 +192,16 @@ async fn cross_tenant_token_is_404() {
         Path(("t-b".into(), tok))).await.into_response();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn list_sessions_returns_in_flight() {
+    let (_d, state, tref) = setup("t-list");
+    let _ = create_session(&state, &tref, "t-list", 100).await;
+    let _ = create_session(&state, &tref, "t-list", 200).await;
+    let resp = uploads::list_sessions(State(state), axum::Extension(tref),
+        Path("t-list".to_string())).await.into_response();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["sessions"].as_array().unwrap().len(), 2);
+}
