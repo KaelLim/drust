@@ -17,6 +17,7 @@ pub mod oauth_login;
 pub mod public_files;
 pub mod routes;
 pub mod rpc_admin;
+pub mod script_json;
 pub mod signed_bytes;
 pub mod stats;
 pub mod tenant_broadcast;
