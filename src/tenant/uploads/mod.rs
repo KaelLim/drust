@@ -314,6 +314,28 @@ async fn finalize_and_respond(
     (StatusCode::NO_CONTENT, h).into_response()
 }
 
+/// GET /t/{tenant}/uploads — service-only list of in-flight sessions.
+pub async fn list_sessions(
+    State(_state): State<TenantFilesState>,
+    axum::Extension(t): axum::Extension<TenantRef>,
+    Path(_tenant): Path<String>,
+) -> Response {
+    if let Err(e) = require_service(&t) { return e; }
+    match session::list_sessions(&t.pool).await {
+        Ok(rows) => {
+            let arr: Vec<_> = rows.into_iter().map(|s| serde_json::json!({
+                "upload_token": s.upload_token,
+                "key": s.key,
+                "original_name": s.original_name,
+                "total_length": s.total_length,
+                "expires_at": s.expires_at,
+            })).collect();
+            axum::Json(serde_json::json!({ "sessions": arr })).into_response()
+        }
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
+    }
+}
+
 /// DELETE /t/{tenant}/uploads/{token} — tus termination (= manual discard).
 pub async fn terminate(
     State(state): State<TenantFilesState>,
