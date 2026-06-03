@@ -1617,7 +1617,7 @@ CAPABILITY GROUPS
 
 3. STORAGE (per-tenant Garage buckets — public + private)
    Manage: list_files, delete_file, get_file_url  (pass download=true for attachment disposition)
-   Upload: MCP has no upload tool by design. Use REST:
+   Upload (small): single request — MCP has no upload tool by design. Use REST:
      POST {base}/drust/t/{tenant_id}/files
      Header: Authorization: Bearer $DRUST_TOKEN
      Body:   multipart/form-data
@@ -1626,6 +1626,13 @@ CAPABILITY GROUPS
        disposition   (optional — 'inline' | 'attachment', default 'inline')
        cache_control (optional — default 'public, max-age=86400' (public) / 'private, no-store' (private))
        meta          (optional — JSON object)
+   Upload (large / resumable): when the file exceeds limits.max_upload_bytes
+   (see whoami) or you need resume-on-disconnect, use the tus 1.0 protocol:
+     POST {base}/drust/t/{tenant_id}/uploads    (create session; 201 + Location)
+       Header: Upload-Length, Upload-Metadata (tus); Authorization: Bearer $DRUST_TOKEN
+     then PATCH each chunk per tus 1.0; HEAD to resume from the server offset.
+     Send OPTIONS {base}/drust/t/{tenant_id}/uploads to discover Tus-Max-Size
+     and the per-chunk limit. Service token only (same as small upload).
 
 4. IDENTITY + INTEGRATIONS
    Users:    create_user, list_users, get_user, update_user, delete_user, revoke_user_sessions
@@ -1689,6 +1696,8 @@ mod instructions_tests {
         assert!(s.contains("dry_run"), "missing dry_run note");
         assert!(s.contains("broadcast"), "missing v1.31 broadcast surface");
         assert!(s.contains("recent_writes"), "missing observability tool");
+        assert!(s.contains("/uploads"), "tus resumable-upload path must be advertised");
+        assert!(s.contains("tus"), "must name the tus protocol so the LLM knows the verb sequence");
         // Regex range survived format! escaping (literal {0,127}, not a placeholder error)
         assert!(s.contains("{0,127}"), "regex range escaped wrong");
     }
