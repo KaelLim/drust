@@ -154,16 +154,14 @@ pub async fn broadcast_inspector_page(
             serde_json::Value::String(t_for_js.s(t_key).into_owned()),
         );
     }
-    // Post-process `</` → `<\/` so a future translation containing
-    // `</script>` cannot break out of the surrounding <script> element
-    // (HTML5 §8.2.4.6: the script-data state terminates on any literal
-    // `</script` regardless of JS string-literal context). serde_json
-    // escapes `"`, `\`, and control chars but NOT `</`. With this line
-    // the "safe to embed verbatim" claim on `i18n_js` is true by
-    // construction, not by content audit of the TOML bundle.
-    let i18n_js = serde_json::Value::Object(i18n_map)
-        .to_string()
-        .replace("</", r"<\/");
+    // Route through the canonical <script>-safe escaper (src/mgmt/script_json.rs)
+    // so a future translation containing `</script>` (or `<!--`, U+2028/U+2029)
+    // cannot break out of the surrounding <script> element. `i18n_js` is then
+    // safe to embed verbatim by construction, not by content audit of the TOML
+    // bundle. serde_json escapes `"`, `\`, and control chars but NOT `</`.
+    let i18n_js = crate::mgmt::script_json::escape_json_for_script(
+        &serde_json::Value::Object(i18n_map).to_string(),
+    );
 
     let page = BroadcastInspectorPage {
         version: env!("CARGO_PKG_VERSION"),
