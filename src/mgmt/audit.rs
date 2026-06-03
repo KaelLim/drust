@@ -735,9 +735,9 @@ pub async fn build_body_ctx(
         // the `op` field) cannot prematurely close the surrounding
         // <script id="audit-entries"> element. The `\/` form is legal JSON per
         // RFC 8259 §7 and JSON.parse decodes it identically.
-        let entries_json = serde_json::to_string(&page_view)
-            .unwrap_or_else(|_| "[]".to_string())
-            .replace("</", "<\\/");
+        let entries_json = crate::mgmt::script_json::escape_json_for_script(
+            &serde_json::to_string(&page_view).unwrap_or_else(|_| "[]".to_string()),
+        );
         let next = if has_more {
             page.last().map(|e| e.ts.clone())
         } else {
@@ -1687,8 +1687,8 @@ mod tests {
         let raw = serde_json::to_string(&[view]).unwrap();
         // Direct serde output contains the literal `</`.
         assert!(raw.contains("</script>"), "baseline assumption: serde does not escape `</`");
-        // Apply the same .replace the production code applies.
-        let safe = raw.replace("</", "<\\/");
+        // Exercise the shared canonical escaper (same one production now uses).
+        let safe = crate::mgmt::script_json::escape_json_for_script(&raw);
         assert!(!safe.contains("</script>"), "after escape, `</script>` must be gone");
         assert!(safe.contains("<\\/script>"), "the slash escape must be visible");
         // And the result must still round-trip back to the same logical content via JSON.parse-equivalent.
