@@ -477,6 +477,57 @@ impl GarageClient {
         Ok(())
     }
 
+    /// Cross-bucket streaming PUT from a local file — used by Mode B finalize.
+    /// Same metadata attributes as `put_object_in`, but the body is streamed
+    /// from `src` via multipart so it never sits fully in memory. When the
+    /// client was built via `from_store` (tests: empty `s3_endpoint`), the
+    /// single backing store is used directly; production builds a per-bucket
+    /// S3 from the configured endpoint/creds.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn put_file_in(
+        &self,
+        bucket: &str,
+        key: &str,
+        src: &std::path::Path,
+        content_type: Option<&str>,
+        disposition_mode: &str,
+        original_name: &str,
+        cache_control: Option<&str>,
+    ) -> anyhow::Result<()> {
+        use object_store::{Attribute, AttributeValue, Attributes, PutMultipartOptions};
+        let path = StorePath::from(key);
+
+        let ascii = ascii_fallback_filename(original_name);
+        let pct = urlencoding::encode(original_name);
+        let cd = format!("{disposition_mode}; filename=\"{ascii}\"; filename*=UTF-8''{pct}");
+
+        let mut attrs = Attributes::new();
+        if let Some(ct) = content_type {
+            attrs.insert(Attribute::ContentType, AttributeValue::from(ct.to_string()));
+        }
+        attrs.insert(Attribute::ContentDisposition, AttributeValue::from(cd));
+        if let Some(cc) = cache_control {
+            attrs.insert(Attribute::CacheControl, AttributeValue::from(cc.to_string()));
+        }
+        attrs.insert(
+            Attribute::Metadata("original-name".into()),
+            AttributeValue::from(urlencoding::encode(original_name).into_owned()),
+        );
+        attrs.insert(
+            Attribute::Metadata("uploaded-at".into()),
+            AttributeValue::from(chrono::Utc::now().to_rfc3339()),
+        );
+        let opts = PutMultipartOptions { attributes: attrs, ..Default::default() };
+
+        if self.s3_endpoint.is_empty() {
+            // from_store / test path: single backing store, bucket ignored.
+            stream_file_to_store(self.store.as_ref(), &path, src, opts, FINALIZE_PART_SIZE).await
+        } else {
+            let s3 = self.build_s3_for_bucket(bucket)?;
+            stream_file_to_store(&s3, &path, src, opts, FINALIZE_PART_SIZE).await
+        }
+    }
+
     /// Cross-bucket DELETE. Idempotent: missing key is `Ok`.
     pub async fn delete_object_in(&self, bucket: &str, key: &str) -> anyhow::Result<()> {
         use object_store::{ObjectStore, ObjectStoreExt};
@@ -517,6 +568,56 @@ impl GarageClient {
         }))
     }
 }
+
+/// Stream a local file into an object store using multipart upload, so a
+/// multi-hundred-MB spool never sits in RAM. `part_size` is the read/flush
+/// granularity (production: 16 MiB; tests pass a tiny value to force
+/// multiple parts). Aborts the multipart upload on any error so no partial
+/// upload is left dangling.
+pub async fn stream_file_to_store(
+    store: &dyn ObjectStore,
+    dest: &StorePath,
+    src: &std::path::Path,
+    opts: object_store::PutMultipartOptions,
+    part_size: usize,
+) -> anyhow::Result<()> {
+    use object_store::MultipartUpload;
+    use tokio::io::AsyncReadExt;
+    let mut upload = store.put_multipart_opts(dest, opts).await?;
+    let mut file = tokio::fs::File::open(src).await?;
+    let mut buf = vec![0u8; part_size];
+    loop {
+        // Fill `buf` up to part_size or EOF (read() may return short).
+        let mut filled = 0;
+        while filled < part_size {
+            let n = file.read(&mut buf[filled..]).await?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        if filled == 0 {
+            break;
+        }
+        let payload = object_store::PutPayload::from(buf[..filled].to_vec());
+        if let Err(e) = upload.put_part(payload).await {
+            let _ = upload.abort().await;
+            return Err(e.into());
+        }
+        if filled < part_size {
+            break; // short read = EOF
+        }
+    }
+    if let Err(e) = upload.complete().await {
+        let _ = upload.abort().await;
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+/// Production part size for `put_file_in` finalize streaming (16 MiB — well
+/// above S3's 5 MiB non-final-part minimum).
+const FINALIZE_PART_SIZE: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests {
@@ -608,6 +709,23 @@ mod tests {
         let cd = content_disposition("hello.txt");
         assert!(cd.contains("filename=\"hello.txt\""));
         assert!(cd.contains("filename*=UTF-8''hello.txt"));
+    }
+
+    #[tokio::test]
+    async fn stream_file_to_store_uploads_multiple_parts() {
+        use object_store::PutMultipartOptions;
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        // 25 bytes with an 8-byte part size → 4 parts (last short).
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"0123456789abcdefghijklmno").unwrap();
+        let dest = StorePath::from("t1/big.bin");
+        super::stream_file_to_store(
+            store.as_ref(), &dest, tmp.path(),
+            PutMultipartOptions { attributes: object_store::Attributes::new(), ..Default::default() },
+            8,
+        ).await.unwrap();
+        let got = store.get(&dest).await.unwrap().bytes().await.unwrap();
+        assert_eq!(&got[..], b"0123456789abcdefghijklmno");
     }
 
     #[tokio::test]
