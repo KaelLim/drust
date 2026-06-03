@@ -117,6 +117,7 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
     let rest_base = format!("/drust/t/{tenant_id}/");
     let mcp_path = format!("/drust/t/{tenant_id}/mcp");
     let files_upload = format!("/drust/t/{tenant_id}/files");
+    let files_upload_resumable = format!("/drust/t/{tenant_id}/uploads");
     let rpc_pattern = format!("/drust/t/{tenant_id}/rpc/<name>");
     // v1.31 — broadcast room surfaces. realtime_ws expects WS upgrade; pass
     // the service or anon token via `?token=<...>` (browsers can't set
@@ -137,6 +138,7 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
             "rest_base": rest_base,
             "mcp": mcp_path,
             "files_upload": files_upload,
+            "files_upload_resumable": files_upload_resumable,
             "rpc": rpc_pattern,
             "realtime_ws": realtime_ws,
             "rooms_publish_rest": rooms_publish_rest,

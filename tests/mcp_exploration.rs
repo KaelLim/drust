@@ -131,6 +131,7 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
     assert_eq!(v["tokens"]["anon"]["plaintext"], "drust_anon_plain");
     assert_eq!(v["endpoints"]["mcp"], "/drust/t/blog/mcp");
     assert_eq!(v["endpoints"]["files_upload"], "/drust/t/blog/files");
+    assert_eq!(v["endpoints"]["files_upload_resumable"], "/drust/t/blog/uploads");
     assert_eq!(v["endpoints"]["rest_base"], "/drust/t/blog/");
     assert_eq!(v["endpoints"]["rpc"], "/drust/t/blog/rpc/<name>");
     assert_eq!(v["limits"]["max_upload_bytes"], 12_345);
