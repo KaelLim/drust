@@ -213,6 +213,23 @@ pub(crate) fn mask_sensitive_columns(
     (column_names, masked_rows)
 }
 
+/// Build the three pre-serialized JSON strings the collection-editor template
+/// inlines into its JS module, every one routed through the canonical
+/// `<script>`-safe escaper. `fields` carries tenant-controlled free text
+/// (per-field `description`), so escaping here is load-bearing, not cosmetic.
+fn editor_json_payloads<F: serde::Serialize>(
+    fields: &[F],
+    tenant_id: &str,
+    coll_name: &str,
+) -> (String, String, String) {
+    use crate::mgmt::script_json::json_for_script;
+    (
+        json_for_script(fields),
+        json_for_script(tenant_id),
+        json_for_script(coll_name),
+    )
+}
+
 pub async fn collection_rows_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
@@ -317,9 +334,8 @@ pub async fn collection_rows_page(
         .collect();
 
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
-    let fields_json = serde_json::to_string(&schema.fields).unwrap_or_default();
-    let tenant_id_json = serde_json::to_string(&tenant_id).unwrap_or_default();
-    let coll_name_json = serde_json::to_string(&coll_name).unwrap_or_default();
+    let (fields_json, tenant_id_json, coll_name_json) =
+        editor_json_payloads(&schema.fields, &tenant_id, &coll_name);
     Html(
         RowsPage {
             tenant_id,
@@ -849,5 +865,31 @@ fn map_index_admin_error(msg: &str) -> (StatusCode, &'static str) {
         (StatusCode::BAD_REQUEST, "INVALID_IDENTIFIER")
     } else {
         (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL")
+    }
+}
+
+#[cfg(test)]
+mod editor_payload_tests {
+    use super::editor_json_payloads;
+    use crate::mcp::tools::schema::FieldSpec;
+
+    #[test]
+    fn fields_payload_escapes_hostile_description() {
+        let fields = vec![FieldSpec {
+            name: "n".into(),
+            sql_type: "text".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: None,
+            description: Some("</script><img src=x onerror=alert(1)>".into()),
+        }];
+        let (fields_json, tid_json, coll_json) = editor_json_payloads(&fields, "t-1", "posts");
+        assert!(!fields_json.contains("</script>"), "live closer leaked: {fields_json}");
+        assert!(fields_json.contains("<\\/script>"), "closer not escaped: {fields_json}");
+        // Identifiers round-trip untouched.
+        assert_eq!(tid_json, "\"t-1\"");
+        assert_eq!(coll_json, "\"posts\"");
     }
 }
