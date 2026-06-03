@@ -17,6 +17,7 @@ pub mod rooms;
 pub mod records_list;
 pub mod router;
 pub mod sse;
+pub mod uploads;
 pub mod vector_search;
 pub mod webhook_routes;
 
