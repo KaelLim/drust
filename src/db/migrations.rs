@@ -68,6 +68,23 @@ CREATE INDEX IF NOT EXISTS idx_system_webhooks_collection
   ON _system_webhooks(collection) WHERE active = 1;
 "#;
 
+pub const SQL_CREATE_SYSTEM_UPLOAD_SESSIONS_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS "_system_upload_sessions" (
+  upload_token   TEXT PRIMARY KEY,
+  tenant_id      TEXT    NOT NULL,
+  key            TEXT    NOT NULL,
+  visibility     TEXT    NOT NULL,
+  original_name  TEXT    NOT NULL,
+  content_type   TEXT,
+  total_length   INTEGER NOT NULL,
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  expires_at     TEXT    NOT NULL,
+  uploader       TEXT    NOT NULL DEFAULT 'service'
+);
+CREATE INDEX IF NOT EXISTS idx_system_upload_sessions_expires
+  ON "_system_upload_sessions"(expires_at);
+"#;
+
 pub fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -98,6 +115,7 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     tx.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS)?;
+    tx.execute_batch(SQL_CREATE_SYSTEM_UPLOAD_SESSIONS_IF_NOT_EXISTS)?;
     add_column_if_missing(&tx, "_system_collection_meta", "owner_field", "TEXT")?;
     add_column_if_missing(&tx, "_system_collection_meta", "read_scope", "TEXT")?;
     add_column_if_missing(
@@ -973,5 +991,26 @@ mod tests {
             msg.contains("check") || msg.contains("constraint"),
             "expected CHECK constraint violation, got: {err}"
         );
+    }
+
+    #[test]
+    fn migrate_tenant_db_creates_upload_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-up");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT)",
+            ).unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-up").unwrap();
+        migrate_tenant_db(dir.path(), "t-up").unwrap(); // idempotent
+        let c = Connection::open(&p).unwrap();
+        let n: i64 = c.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_upload_sessions'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 }
