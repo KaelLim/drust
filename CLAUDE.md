@@ -5,8 +5,8 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-05-26
-version: 1.28.6
+updated: 2026-06-03
+version: 1.33.0
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -60,6 +60,7 @@ Stored in per-tenant `_system_collection_meta` (one row per collection). Surface
 - **AI introspection helpers** (v1.26+): every REST error JSON includes a `suggested_fix` field with a context-aware remediation hint; same applied to MCP `ErrorData.data`. Destructive ops `delete_record` / `drop_collection` / `drop_index` accept `dry_run: true` and return `would_*` counts + blast radius without mutating. New `recent_writes` MCP tool (service-only) reads the last 100 mutation rows from `meta_logs.sqlite` filtered to the calling tenant — lets a retrying model recover what its previous attempt already did. Catalog of fixes in `src/safety/error_fixes.rs`; blast-radius probes in `src/storage/blast_radius.rs`.
 - **Per-tenant schema codegen** (v1.27+, `src/codegen/`): `GET /t/<id>/openapi.json` (OpenAPI 3.1, all CRUD + `/search` + `/subscribe` + FilterAst `$ref`), `GET /t/<id>/types.ts` (TypeScript Row / Insert / Update interfaces with FK JSDoc), `GET /t/<id>/zod.ts` (RowSchema / InsertSchema / UpdateSchema runtime validators; vector → `z.array(z.number()).length(N)`). Bearer-gated; anon vs service shapes differ — service surface includes per-collection / field / index descriptions, anon strips them. `X-Drust-Schema-Source: anon|service` response header records which view was rendered. Golden-file tests under `tests/codegen/golden/` regenerate with `DRUST_CODEGEN_REGENERATE=1`.
 - **Admin `_list` endpoint** (v1.28+, `src/mgmt/collection_list.rs`): `POST /admin/tenants/<id>/collections/<coll>/_list` body `{filters:[{field,op,value}], sort, page, per_page}` returns `{columns, rows, total, page, per_page, total_pages}`. Bridges UI ops (`contains` / `between` / `is_true` / `is_null` / etc.) onto `FilterAst` then compiles with `?` binds. Bypasses the read-only authorizer for `_system_*` tables (admin path; connection still `SQLITE_OPEN_READONLY`). Masks sensitive columns (`_system_users.password_hash`). Emits one audit row per call (op `admin.collection.list`). Backs the chip filter on the redesigned collection editor (see Admin UI section).
+- **Mode B large-file upload / tus 1.0** (v1.33+, `src/uploads/`): resumable-upload server at `/t/<id>/uploads/*`. Five tus methods — `OPTIONS` (capability), `POST` (create session), `HEAD` (offset probe), `PATCH` (append chunk), `DELETE` (abort) — plus service-only `GET` (list sessions). Each `PATCH` chunk is bounded by `DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES` (default 64 MiB) via a per-route `DefaultBodyLimit`; chunks append to a durable spool file (`tenants/<id>/_uploads/<token>.part`) so the filesystem byte-count is the offset source of truth and resume survives client disconnect and server restart. On completion: `INSERT OR IGNORE` a `_system_files` row (SQLite-first, idempotent), stream the spool to Garage via `put_file_in`, then delete the spool and session row. Service-key-only (`403 WRITE_DENIED` for anon/user). New per-tenant `_system_upload_sessions` table. Four env knobs: `DRUST_LARGE_UPLOAD_MAX_BYTES` (2 GiB), `DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES` (64 MiB), `DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT` (5), `DRUST_LARGE_UPLOAD_SESSION_TTL_SECS` (86400). Hourly in-process janitor reclaims abandoned sessions; never touches `_system_files` or Garage. Mode A (`POST /t/<id>/files`) unchanged.
 
 ### Auth
 
@@ -120,6 +121,7 @@ Three further invariants are enforced in code; they don't need callouts but must
 - **User tokens (`drust_user_*`) cannot use `/query`, `/query/explain`, or `/mcp`.** drust does not rewrite user-supplied SQL, so `owner_field` cannot be enforced on those surfaces. Reject with `403 QUERY_USER_DENIED` / `MCP_USER_DENIED`. For per-user reads of owner-scoped data, expose a stored RPC with `:user_id` (auto-bound from `AuthCtx`), or use `/search` (v1.10+) / `/list` (v1.21+) where drust builds the SQL.
 - **`/search` and `/list` accept user tokens; `/query` does not.** All three take structured input from users, but `/query` accepts raw SELECT (un-rewritable) while `/search` and `/list` take only `FilterAst` (`src/query/vector_filter.rs`) compiled with `?` binds, so `owner_field` is always enforceable. Any new endpoint accepting user input that lands in SQL must explicitly pick a camp.
 - **Anon SSE access requires `realtime_enabled AND anon_caps[select]`.** Both flags surface the same row content — opening one without the other is a side-channel leak. Disable order: PUT `/realtime` and MCP `set_realtime` invalidate `pool.schema_cache` BEFORE `bus.evict_collection`, so subscribers racing the gap read fresh schema and fail the gate immediately.
+- **Mode B keeps every HTTP request small by design (chunks ≤ `DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES`, default 64 MiB) so it stays under the 200 MB Caddy/.221 ingress limit.** Never raise a body-limit to accommodate large uploads — the tus chunking protocol exists precisely so each individual request stays small.
 
 ## Directory map
 
