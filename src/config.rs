@@ -51,6 +51,16 @@ pub struct StorageConfig {
     pub public_bucket: String,
     pub max_upload_bytes: usize,
     pub disk_min_free_pct: u8,
+    /// Mode B (resumable) per-file ceiling → tus `Tus-Max-Size`. Default 2 GiB.
+    pub large_upload_max_bytes: usize,
+    /// Mode B per-PATCH chunk body limit. Must stay < the Caddy `max_size`
+    /// (200 MB today). Default 64 MiB.
+    pub large_upload_chunk_max_bytes: usize,
+    /// Max concurrent in-flight Mode B sessions per tenant. Default 5.
+    pub large_upload_max_sessions_per_tenant: u32,
+    /// Abandoned-session lifetime (seconds) → `expires_at` + janitor sweep.
+    /// Default 86 400 (24 h).
+    pub large_upload_session_ttl_secs: u64,
 }
 
 impl StorageConfig {
@@ -75,6 +85,10 @@ impl StorageConfig {
             public_bucket: opt("GARAGE_PUBLIC_BUCKET").unwrap_or_else(|| "public".to_string()),
             max_upload_bytes: parse_num("GARAGE_MAX_UPLOAD_SIZE", 52_428_800)?,
             disk_min_free_pct,
+            large_upload_max_bytes: parse_num("DRUST_LARGE_UPLOAD_MAX_BYTES", 2_147_483_648)?,
+            large_upload_chunk_max_bytes: parse_num("DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES", 67_108_864)?,
+            large_upload_max_sessions_per_tenant: parse_num("DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT", 5)?,
+            large_upload_session_ttl_secs: parse_num("DRUST_LARGE_UPLOAD_SESSION_TTL_SECS", 86_400)?,
         }))
     }
 }
@@ -205,6 +219,29 @@ mod tests {
         assert_eq!(cfg.public_bucket, "public");
         assert_eq!(cfg.max_upload_bytes, 52_428_800);
         assert_eq!(cfg.disk_min_free_pct, 20);
+        clear_storage_env();
+    }
+
+    #[test]
+    fn storage_config_large_upload_defaults() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_storage_env();
+        for k in ["DRUST_LARGE_UPLOAD_MAX_BYTES", "DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES",
+                  "DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT", "DRUST_LARGE_UPLOAD_SESSION_TTL_SECS"] {
+            unsafe { std::env::remove_var(k) };
+        }
+        unsafe {
+            std::env::set_var("GARAGE_S3_ENDPOINT", "http://127.0.0.1:47830");
+            std::env::set_var("GARAGE_ADMIN_ENDPOINT", "http://127.0.0.1:47832");
+            std::env::set_var("GARAGE_S3_ACCESS_KEY", "GK123");
+            std::env::set_var("GARAGE_S3_SECRET_KEY", "secret");
+            std::env::set_var("GARAGE_ADMIN_TOKEN", "token");
+        }
+        let cfg = StorageConfig::from_env().unwrap().unwrap();
+        assert_eq!(cfg.large_upload_max_bytes, 2_147_483_648);
+        assert_eq!(cfg.large_upload_chunk_max_bytes, 67_108_864);
+        assert_eq!(cfg.large_upload_max_sessions_per_tenant, 5);
+        assert_eq!(cfg.large_upload_session_ttl_secs, 86_400);
         clear_storage_env();
     }
 }

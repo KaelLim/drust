@@ -665,7 +665,7 @@ mod tests {
         conn.execute(
             crate::safety::audit_db::INSERT_SQL,
             rusqlite::params![
-                e.ts, e.tenant, e.token_hint, e.op, e.status, e.duration_ms,
+                e.ts, e.tenant, e.token_hint, e.op, e.status, e.duration_ms as i64,
                 e.error_code, e.auth_method, e.oauth_email, e.oauth_error_code,
                 extracted.caller_ip.as_deref(), extracted.user_agent.as_deref(),
                 serde_json::to_string(&e.extra).unwrap_or_default(),
