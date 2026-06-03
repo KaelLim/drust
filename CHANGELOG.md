@@ -1,3 +1,35 @@
+## v1.33.0 — 2026-06-03
+
+### Added
+
+- **Mode B large-file upload (tus 1.0 resumable).** A second ingest
+  path at `/t/<id>/uploads/*` enables reliable upload of 200 MB–1 GB+
+  files without raising any infrastructure body-limit. Four tus
+  endpoints: `OPTIONS` (capability probe), `POST` (session creation),
+  `HEAD` (offset probe for resume), `PATCH` (chunk append), `DELETE`
+  (abort); plus service-only `GET` (session list). Each `PATCH` chunk
+  is capped by `DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES` (default 64 MiB)
+  via a per-route `DefaultBodyLimit`, keeping every HTTP request well
+  under the 200 MB Caddy/.221 ingress limit. Chunks are appended to a
+  durable per-tenant spool file (`tenants/<id>/_uploads/<token>.part`);
+  the filesystem byte-count is the offset source of truth, so resume
+  survives both client disconnect and server restart. On completion,
+  finalize is SQLite-first + idempotent: `INSERT OR IGNORE` a
+  `_system_files` row, stream the spool to Garage via `put_file_in`
+  (multipart over loopback), then delete the spool and session row.
+  Service-key-only — anon and user tokens receive `403 WRITE_DENIED`.
+  New per-tenant `_system_upload_sessions` table tracks in-progress
+  uploads. Four new env knobs: `DRUST_LARGE_UPLOAD_MAX_BYTES` (default
+  2 GiB), `DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES` (default 64 MiB),
+  `DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT` (default 5),
+  `DRUST_LARGE_UPLOAD_SESSION_TTL_SECS` (default 86400 = 24 h). Hourly
+  in-process janitor reclaims abandoned sessions (spool file + DB row +
+  advisory lock); deliberately never touches `_system_files` or Garage.
+  Mode A (`POST /t/<id>/files`) is byte-for-byte unchanged.
+  Spec: `docs/superpowers/specs/2026-06-03-drust-large-upload-design.md`.
+
+---
+
 ## v1.32.13 — 2026-06-02
 
 ### Added
