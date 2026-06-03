@@ -205,3 +205,23 @@ async fn list_sessions_returns_in_flight() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["sessions"].as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn create_rejects_over_session_cap() {
+    let (_d, mut state, tref) = setup("t-cap");
+    state.large_upload_max_sessions_per_tenant = 2;
+    // Two succeed.
+    for _ in 0..2 {
+        let mut h = HeaderMap::new();
+        h.insert("upload-length", "10".parse().unwrap());
+        let resp = uploads::create(State(state.clone()), axum::Extension(tref.clone()),
+            Path("t-cap".to_string()), h).await.into_response();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+    // Third exceeds the cap.
+    let mut h = HeaderMap::new();
+    h.insert("upload-length", "10".parse().unwrap());
+    let resp = uploads::create(State(state.clone()), axum::Extension(tref.clone()),
+        Path("t-cap".to_string()), h).await.into_response();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}
