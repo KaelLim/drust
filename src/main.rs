@@ -345,6 +345,43 @@ async fn main() -> anyhow::Result<()> {
         large_upload_session_ttl_secs: lu_ttl,
     });
 
+    // v1.33 — Mode B abandoned-upload janitor. Hourly sweep of expired
+    // _system_upload_sessions across all tenants (spool file + row reclaim).
+    // Gated on storage being configured — no Mode B sessions can exist
+    // otherwise (create returns 503).
+    if cfg.storage.is_some() {
+        let registry_for_janitor = tenants.clone();
+        let meta_for_janitor = meta.clone();
+        let data_root = cfg.data_dir.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await; // consume immediate tick
+            loop {
+                tick.tick().await;
+                let ids: Vec<String> = {
+                    let conn = meta_for_janitor.lock().await;
+                    conn.prepare("SELECT id FROM tenants WHERE deleted_at IS NULL")
+                        .and_then(|mut s| s.query_map([], |r| r.get::<_, String>(0))
+                            .and_then(|it| it.collect()))
+                        .unwrap_or_default()
+                };
+                let now = chrono::Utc::now().to_rfc3339();
+                let mut total = 0usize;
+                for tid in ids {
+                    if let Ok(pool) = registry_for_janitor.get_or_open(&tid) {
+                        total += drust::tenant::uploads::session::sweep_tenant(
+                            &pool, &tid, &data_root, &now,
+                        ).await;
+                    }
+                }
+                if total > 0 {
+                    tracing::info!(reclaimed = total, "upload janitor swept abandoned sessions");
+                }
+            }
+        });
+    }
+
     let tenant_stack = TenantStack {
         auth: TenantAuthState {
             meta: meta.clone(),

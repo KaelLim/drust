@@ -168,6 +168,43 @@ pub async fn list_sessions(pool: &SharedTenantPool) -> rusqlite::Result<Vec<Sess
     .await
 }
 
+/// Sweep one tenant's expired sessions: delete the spool file + session row,
+/// and prune the per-token append lock. Returns the number reclaimed.
+///
+/// Deliberately does NOT touch `_system_files` or Garage. A session row can
+/// still exist for a SUCCESSFULLY finalized upload (e.g. a crash in the small
+/// window between the Garage push and the session-row delete), so deleting the
+/// object / row here could destroy a live file. A half-finalized orphan row
+/// (Garage push failed, then upload abandoned) is left for the existing
+/// reconcile page to surface — never silently deleted.
+pub async fn sweep_tenant(
+    pool: &SharedTenantPool,
+    tenant_id: &str,
+    data_root: &std::path::Path,
+    now_rfc3339: &str,
+) -> usize {
+    let expired = match expired_tokens(pool, now_rfc3339.to_string()).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(tenant = %tenant_id, error = %e, "upload janitor: list expired failed");
+            return 0;
+        }
+    };
+    let mut n = 0;
+    for s in expired {
+        let spool = crate::storage::tenant_db::tenant_dir(data_root, tenant_id)
+            .join("_uploads").join(format!("{}.part", s.upload_token));
+        let _ = tokio::fs::remove_file(&spool).await;
+        let _ = delete_session(pool, &s.upload_token).await;
+        // Prune the per-token append lock (T7's token_locks map) so abandoned
+        // uploads don't leak DashMap entries. `session` is a child module of
+        // `uploads`, so it can reach the parent's private `token_locks()`.
+        super::token_locks().remove(&s.upload_token);
+        n += 1;
+    }
+    n
+}
+
 /// Tokens of sessions whose `expires_at` is in the past — the janitor's work
 /// list. Returned with their `key` + `visibility` so the caller can also
 /// clean any half-finalized `_system_files` row / Garage object.
@@ -257,6 +294,37 @@ mod tests {
         assert_eq!(count_in_flight(&pool).await.unwrap(), 1);
         delete_session(&pool, "tok-rt").await.unwrap();
         assert!(get_session(&pool, "tok-rt").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn sweep_removes_expired_and_keeps_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let tid = "t-sweep";
+        crate::storage::tenant_db::open_write(dir.path(), tid).unwrap();
+        let pool = registry(&dir).get_or_open(tid).unwrap();
+        // expired
+        insert_session(&pool, NewSession {
+            upload_token: "exp".into(), tenant_id: tid.into(), key: "e.bin".into(),
+            visibility: "private".into(), original_name: "e".into(), content_type: None,
+            total_length: 10, expires_at: "2000-01-01T00:00:00+00:00".into(),
+        }).await.unwrap();
+        // fresh
+        insert_session(&pool, NewSession {
+            upload_token: "fresh".into(), tenant_id: tid.into(), key: "f.bin".into(),
+            visibility: "private".into(), original_name: "f".into(), content_type: None,
+            total_length: 10, expires_at: "2999-01-01T00:00:00+00:00".into(),
+        }).await.unwrap();
+        // spool file for the expired one
+        let updir = crate::storage::tenant_db::tenant_dir(dir.path(), tid).join("_uploads");
+        std::fs::create_dir_all(&updir).unwrap();
+        let spool = updir.join("exp.part");
+        std::fs::write(&spool, b"partial").unwrap();
+
+        let removed = sweep_tenant(&pool, tid, dir.path(), "2026-06-03T00:00:00+00:00").await;
+        assert_eq!(removed, 1);
+        assert!(!spool.exists(), "expired spool file should be deleted");
+        assert!(get_session(&pool, "exp").await.unwrap().is_none());
+        assert!(get_session(&pool, "fresh").await.unwrap().is_some());
     }
 
     // --- test helpers ---
