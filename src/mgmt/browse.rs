@@ -871,21 +871,31 @@ fn map_index_admin_error(msg: &str) -> (StatusCode, &'static str) {
 #[cfg(test)]
 mod editor_payload_tests {
     use super::editor_json_payloads;
-    use crate::mcp::tools::schema::FieldSpec;
+    // Pin the regression to the EXACT type the handler serializes
+    // (`schema.fields: Vec<storage::schema::Field>`). `Field.description` is
+    // tenant-controlled free text (sourced from `_system_collection_meta`), so
+    // it is the live stored-XSS vector — testing the parallel `FieldSpec` type
+    // would not catch a future `#[serde(skip)]` on the real field.
+    use crate::storage::schema::Field;
 
     #[test]
     fn fields_payload_escapes_hostile_description() {
-        let fields = vec![FieldSpec {
+        let fields = vec![Field {
             name: "n".into(),
             sql_type: "text".into(),
             nullable: true,
-            unique: false,
+            pk: false,
             default_value: None,
             foreign_key: None,
-            dim: None,
             description: Some("</script><img src=x onerror=alert(1)>".into()),
         }];
         let (fields_json, tid_json, coll_json) = editor_json_payloads(&fields, "t-1", "posts");
+        // The hostile description really is serialized into the payload …
+        assert!(
+            fields_json.contains("onerror=alert(1)"),
+            "description must reach the payload: {fields_json}"
+        );
+        // … but its `</script>` closer is neutralized.
         assert!(!fields_json.contains("</script>"), "live closer leaked: {fields_json}");
         assert!(fields_json.contains("<\\/script>"), "closer not escaped: {fields_json}");
         // Identifiers round-trip untouched.
