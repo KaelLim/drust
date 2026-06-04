@@ -2,7 +2,7 @@
 type: index
 name: drust
 status: production
-updated: 2026-05-31
+updated: 2026-06-04
 ---
 
 # drust
@@ -29,13 +29,14 @@ updated: 2026-05-31
 - **Per-tenant schema codegen.** `GET /t/<id>/openapi.json`, `GET /t/<id>/types.ts`, and `GET /t/<id>/zod.ts` emit OpenAPI 3.1, TypeScript `Row` / `Insert` / `Update` interfaces, and Zod runtime validators tailored to the tenant's current schema (vector fields → `z.array(z.number()).length(N)`). Anon vs service views differ; `X-Drust-Schema-Source` header records which was rendered.
 - **Stored RPCs.** Tenants can define named SELECT functions (Supabase-style) callable via `POST /t/<id>/rpc/<name>` or the MCP `call_rpc` tool. SQL is validated at create-time under the read-only authorizer; a built-in admin test playground runs them with `EXPLAIN QUERY PLAN`.
 - **Vector storage + similarity search.** Per-collection `vector` field type (packed f32 BLOB) with `POST /t/<id>/collections/<c>/search` for cosine / L2 / L1 top-k under a Filter AST. `sqlite-vec` is registered as a SQLite auto-extension so `vec_distance_*` are also callable from `/query` and stored RPCs.
-- **Realtime broadcast.** Two surfaces: SSE channel per `(tenant, collection)` at `/t/<id>/records/<c>/subscribe` (gated by per-collection `realtime_enabled` and `anon_caps[select]`), and the v1.31 per-tenant WS multiplex at `/t/<id>/realtime` with rooms, rate-limit / lagged-recovery frames, and an in-admin Broadcast Inspector for end-to-end smoke testing.
+- **Realtime broadcast.** Two surfaces: SSE channel per `(tenant, collection)` at `/t/<id>/records/<c>/subscribe` (gated by per-collection `realtime_enabled` and `anon_caps[select]`), and the v1.31 per-tenant WS multiplex at `/t/<id>/realtime` with rooms, rate-limit / lagged-recovery frames, and an in-admin Broadcast Inspector for end-to-end smoke testing. Room subscribe is open to anon / user / service; publish is service-key-only by default, with opt-in per-tenant `allow_user_publish` / `allow_anon_publish` flags.
 - **End-user auth + per-tenant OAuth.** Per-tenant `_system_users` with Google / GitHub OAuth providers configured per tenant; opt-in self-registration; row-level filter via `owner_field` + `read_scope`; argon2id password hashing with timing-equalized login.
 - **Outbound webhooks.** Per-tenant CRUD-event subscriptions, HMAC-SHA256-signed POST with 4-attempt retry (+0s / +1s / +5s / +30s); admin UI + REST + MCP write surfaces; SSRF guard rejects private/loopback/CGNAT and IPv6-mapped equivalents at every dispatch attempt; HTTP client reused across attempts with per-Request DNS so the resolver still runs on every connection.
 - **Schema descriptions for LLM bootstrap.** Optional plain-text `description` on every collection / field / index / RPC, surfaced through `describe_collection` and `get_schema_overview` so an LLM can read the schema's intent in one MCP call.
 - **Admin UI.** Two-page web UI (`/admin/tenants` + per-tenant `/admin/tenants/<id>/<datatable>`) with a Supabase-style collection editor (sticky header, FilterAst-backed Table mode via `POST /_list`, Definition view), file management, RPC editor + test playground, anon capability matrix, MCP setup snippets, audit log browser, backup browser with single-tenant restore, Broadcast Inspector. Localized (`en` / `zh-Hant`) with three themes (`system` / `cozy-dark` / `soft-light`).
 - **Admin Personal Access Tokens.** Each admin gets their own PAT for CLI / MCP use instead of sharing the per-tenant service key. PATs are admin-scoped (not bound to a single tenant) and revoked centrally from the admin UI.
 - **S3 file storage (optional).** When configured, every tenant gets two S3 buckets — `<id>-pub` (website-enabled) and `<id>-prv` (private) — provisioned automatically. Implemented against [Garage](https://garagehq.deuxfleurs.fr/) but the data path is plain S3 (`object_store::aws::AmazonS3`).
+- **Resumable large-file upload (tus 1.0).** A second ingest path at `/t/<id>/uploads/*` (Mode B) accepts 200 MB–1 GB+ files without raising any infrastructure body-limit: tus `PATCH` chunks are capped (default 64 MiB) and appended to a durable per-tenant spool, so the filesystem byte-count is the resume offset — uploads survive client disconnect and server restart. Finalize is SQLite-first + idempotent, then streams the spool to the object store. Service-key only; Mode A (`POST /t/<id>/files`) is unchanged.
 - **Admin OAuth.** `/admin/login` accepts Google / GitHub OAuth alongside username + password; controlled via env allowlist; id_token `iss` / `aud` / `exp` claims validated per OIDC §3.1.3.7.
 - **Observability.** Admin-session-gated `/admin/_metrics` Prometheus endpoint exposes audit drops, bearer denials, webhook attempts, active WS connections, and per-tenant DB bytes. Audit rows land in `meta_logs.sqlite` with a 90-day retention sweep + monthly VACUUM, queryable from the admin UI.
 - **Operational basics.** Per-tenant rate limiting, daily `VACUUM INTO` snapshots with 30-day retention (covers `meta.sqlite` + `meta_logs.sqlite`), soft-delete with 7-day grace, CORS allow-list with subdomain wildcards.
@@ -142,7 +143,7 @@ CLAUDE.md            internal guide for AI coding agents
 
 ## Status
 
-Production. Currently `v1.32.4`. See [CHANGELOG.md](CHANGELOG.md) for full history.
+Production. Currently `v1.33.2`. See [CHANGELOG.md](CHANGELOG.md) for full history.
 
 ## License
 
