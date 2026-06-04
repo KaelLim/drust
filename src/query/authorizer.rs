@@ -8,7 +8,8 @@ use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 pub fn detach_authorizer(conn: &Connection) {
     conn.authorizer(Some(|_ctx: AuthContext<'_>| -> Authorization {
         Authorization::Allow
-    }));
+    }))
+    .expect("detach (allow-all) authorizer must install");
 }
 
 /// Attach the read-only authorizer. Every SQL action is inspected; anything
@@ -66,7 +67,8 @@ pub fn attach_readonly_authorizer(conn: &Connection) {
             | AuthAction::AlterTable { .. } => Authorization::Deny,
             _ => Authorization::Deny,
         }
-    }));
+    }))
+    .expect("read-only authorizer must install — fail closed rather than run user SQL unguarded");
 }
 
 /// v1.30 — writable authorizer for stored RPC `mode='write'` bodies.
@@ -147,7 +149,8 @@ pub fn attach_writable_authorizer(conn: &Connection) {
             | AuthAction::Savepoint { .. } => Authorization::Deny,
             _ => Authorization::Deny,
         }
-    }));
+    }))
+    .expect("writable authorizer must install — fail closed rather than run RPC write body unguarded");
 }
 
 #[cfg(test)]
