@@ -315,12 +315,19 @@ SELECT \
         // None; we fall through to the user-session lookup.
         // User sessions take precedence over meta-side roles by design
         // (same as pre-D9 ordering: pool-side resolved before meta-side).
-        let bearer_for_lookup = bearer.clone();
-        let session_result = pool
-            .with_reader(move |c| {
+        // O1′: user session tokens always carry the `drust_user_` prefix and
+        // lookup_session matches on the full-token hash, so a non-prefixed
+        // bearer can never be a session. Skip the per-request _system_sessions
+        // read for service/anon/PAT bearers — behaviour-preserving.
+        let session_result = if crate::auth::user_session::is_user_token(&bearer) {
+            let bearer_for_lookup = bearer.clone();
+            pool.with_reader(move |c| {
                 crate::auth::user_session::lookup_session(c, &bearer_for_lookup)
             })
-            .await;
+            .await
+        } else {
+            Ok(None)
+        };
         if let Ok(Some(session_info)) = session_result {
             // Slide expiry best-effort on a background task.
             let token_for_slide = bearer.clone();
