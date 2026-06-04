@@ -24,6 +24,14 @@ pub fn hash_token(token: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(h.finalize())
 }
 
+/// True iff `token` carries the user-session prefix. Used by the auth layer to
+/// skip the `_system_sessions` lookup for service/anon/PAT bearers, which can
+/// never be a user session (sessions are minted only via `generate_token()`,
+/// always `drust_user_`-prefixed). Behaviour-preserving short-circuit.
+pub fn is_user_token(token: &str) -> bool {
+    token.starts_with(TOKEN_PREFIX)
+}
+
 pub fn create_session(
     conn: &Connection,
     user_id: &str,
@@ -120,6 +128,15 @@ mod tests {
         assert_ne!(a, b);
         assert!(a.starts_with("drust_user_"));
         assert!(a.len() > 30);
+    }
+
+    #[test]
+    fn is_user_token_matches_only_prefixed() {
+        assert!(is_user_token("drust_user_abc"));
+        assert!(is_user_token(&generate_token()));
+        assert!(!is_user_token("drust_service_xxx"));
+        assert!(!is_user_token("anything-else"));
+        assert!(!is_user_token(""));
     }
 
     #[test]
