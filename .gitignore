@@ -6,5 +6,6 @@
 /data
 .claude/
 /.codegraph/
+/.mcp.json
 /meta.sqlite*
 /meta_logs.sqlite*
