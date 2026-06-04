@@ -1061,7 +1061,7 @@ fn render_test_outcome(
             .iter()
             .map(|row| {
                 row.iter()
-                    .map(|v| match v {
+                    .map(|v| match v.to_json() {
                         serde_json::Value::Null => "NULL".to_string(),
                         serde_json::Value::String(s) => s.clone(),
                         other => other.to_string(),
