@@ -171,15 +171,24 @@ mod tests {
         e.actor_email_snapshot = Some("kael@example.com".into());
         let j: serde_json::Value = serde_json::to_value(&e).unwrap();
         assert_eq!(j["actor_admin_id"], serde_json::json!(7));
-        assert_eq!(j["actor_email_snapshot"], serde_json::json!("kael@example.com"));
+        assert_eq!(
+            j["actor_email_snapshot"],
+            serde_json::json!("kael@example.com")
+        );
     }
 
     #[test]
     fn audit_entry_omits_actor_fields_when_none() {
         let e = AuditEntry::success("tenant-x", "abcd", "GET /thing", 5);
         let j: serde_json::Value = serde_json::to_value(&e).unwrap();
-        assert!(j.get("actor_admin_id").is_none(),  "actor_admin_id should be skipped when None");
-        assert!(j.get("actor_email_snapshot").is_none(),  "actor_email_snapshot should be skipped when None");
+        assert!(
+            j.get("actor_admin_id").is_none(),
+            "actor_admin_id should be skipped when None"
+        );
+        assert!(
+            j.get("actor_email_snapshot").is_none(),
+            "actor_email_snapshot should be skipped when None"
+        );
     }
 
     /// v1.32.1 — moved from the retired `tests/audit_log.rs` integration
@@ -209,8 +218,8 @@ mod tests {
     /// `extra` values are silently dropped (no panic, no leaked key).
     #[test]
     fn with_extra_ignores_non_object_value() {
-        let entry = AuditEntry::success("t1", "h", "op", 0)
-            .with_extra(serde_json::json!("not an object"));
+        let entry =
+            AuditEntry::success("t1", "h", "op", 0).with_extra(serde_json::json!("not an object"));
         let line = serde_json::to_string(&entry).unwrap();
         assert!(!line.contains("not an object"));
     }

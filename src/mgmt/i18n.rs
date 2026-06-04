@@ -106,9 +106,7 @@ impl Translator {
         let bundles = BUNDLES
             .get()
             .expect("init_bundles must run before Translator::new");
-        let bundle = bundles
-            .get(&locale)
-            .expect("locale registered in bundles");
+        let bundle = bundles.get(&locale).expect("locale registered in bundles");
         let fallback = bundles
             .get(&Locale::En)
             .expect("en bundle always registered");
@@ -207,10 +205,7 @@ fn substitute_placeholders(template: &str, args: &[(&str, &str)]) -> String {
             // Find closing '}' from this position via the original byte string.
             if let Some(rel) = template[i + 1..].find('}') {
                 let name = &template[i + 1..i + 1 + rel];
-                if !name.is_empty()
-                    && name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
                 {
                     if let Some(&(_, v)) = args.iter().find(|(k, _)| *k == name) {
                         out.push_str(v);
@@ -393,8 +388,7 @@ mod tests {
         // For F1's stub TOML, no real key carries a placeholder.
         // We exercise the missing-key path here; the real placeholder
         // case is covered once Theme E lands real bundles.
-        let out =
-            Translator::new(Locale::En).fmt("does.not.exist", &[("name", "Alice")]);
+        let out = Translator::new(Locale::En).fmt("does.not.exist", &[("name", "Alice")]);
         assert_eq!(out, "!!does.not.exist!!");
     }
 
@@ -405,10 +399,7 @@ mod tests {
 
     #[test]
     fn substitute_placeholders_preserves_chinese() {
-        let out = substitute_placeholders(
-            "你好 {name}，歡迎使用 drust。",
-            &[("name", "Kael")],
-        );
+        let out = substitute_placeholders("你好 {name}，歡迎使用 drust。", &[("name", "Kael")]);
         assert_eq!(out, "你好 Kael，歡迎使用 drust。");
     }
 
@@ -427,8 +418,7 @@ mod tests {
 
     #[test]
     fn substitute_placeholders_unterminated_brace_passes_through() {
-        let out =
-            substitute_placeholders("oops {name no close", &[("name", "x")]);
+        let out = substitute_placeholders("oops {name no close", &[("name", "x")]);
         assert_eq!(out, "oops {name no close");
     }
 }

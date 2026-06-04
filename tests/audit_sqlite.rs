@@ -4,9 +4,9 @@
 
 use drust::safety::audit::AuditEntry;
 use drust::safety::audit_db::*;
-use tempfile::tempdir;
 use std::path::PathBuf;
 use std::time::Duration;
+use tempfile::tempdir;
 
 fn tmp_audit_db() -> (tempfile::TempDir, PathBuf, AuditWriter) {
     let dir = tempdir().unwrap();
@@ -29,23 +29,35 @@ fn mk_entry(ts: &str, tenant: &str, op: &str, status: &str, ms: u64) -> AuditEnt
 async fn schema_creates_indexes() {
     let (_dir, path, _w) = tmp_audit_db();
     let r = open_audit_db_read(&path).unwrap();
-    let count: i64 = r.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_audit_%'",
-        [], |row| row.get(0)
-    ).unwrap();
+    let count: i64 = r
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_audit_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(count, 3);
 }
 
 #[tokio::test]
 async fn single_insert_round_trip() {
     let (_dir, path, w) = tmp_audit_db();
-    w.send_backfill(mk_entry("2026-05-23T01:00:00.000Z", "acme", "GET /x", "ok", 12)).await.unwrap();
+    w.send_backfill(mk_entry(
+        "2026-05-23T01:00:00.000Z",
+        "acme",
+        "GET /x",
+        "ok",
+        12,
+    ))
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
     let r = open_audit_db_read(&path).unwrap();
-    let (ts, tenant, op, ms): (String, String, String, i64) = r.query_row(
-        "SELECT ts, tenant, op, duration_ms FROM audit",
-        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-    ).unwrap();
+    let (ts, tenant, op, ms): (String, String, String, i64) = r
+        .query_row("SELECT ts, tenant, op, duration_ms FROM audit", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap();
     assert_eq!(ts, "2026-05-23T01:00:00.000Z");
     assert_eq!(tenant, "acme");
     assert_eq!(op, "GET /x");
@@ -56,16 +68,22 @@ async fn single_insert_round_trip() {
 async fn caller_ip_user_agent_hoisted_from_extra() {
     let (_dir, path, w) = tmp_audit_db();
     let mut e = mk_entry("2026-05-23T01:00:00.000Z", "acme", "GET /x", "ok", 12);
-    e.extra.insert("caller_ip".into(), serde_json::json!("203.0.113.5"));
-    e.extra.insert("user_agent".into(), serde_json::json!("curl/8.0"));
-    e.extra.insert("auth_kind".into(), serde_json::json!("admin"));
+    e.extra
+        .insert("caller_ip".into(), serde_json::json!("203.0.113.5"));
+    e.extra
+        .insert("user_agent".into(), serde_json::json!("curl/8.0"));
+    e.extra
+        .insert("auth_kind".into(), serde_json::json!("admin"));
     w.send_backfill(e).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
     let r = open_audit_db_read(&path).unwrap();
-    let (ip, ua, extra): (Option<String>, Option<String>, Option<String>) = r.query_row(
-        "SELECT caller_ip, user_agent, extra FROM audit",
-        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    ).unwrap();
+    let (ip, ua, extra): (Option<String>, Option<String>, Option<String>) = r
+        .query_row(
+            "SELECT caller_ip, user_agent, extra FROM audit",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
     assert_eq!(ip.as_deref(), Some("203.0.113.5"));
     assert_eq!(ua.as_deref(), Some("curl/8.0"));
     let extra = extra.expect("extra has auth_kind");
@@ -80,12 +98,19 @@ async fn batch_insert_100_in_one_tx() {
     for i in 0..100 {
         w.send_backfill(mk_entry(
             &format!("2026-05-23T01:00:{:02}.000Z", i % 60),
-            "acme", "GET /x", "ok", i as u64
-        )).await.unwrap();
+            "acme",
+            "GET /x",
+            "ok",
+            i as u64,
+        ))
+        .await
+        .unwrap();
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     let r = open_audit_db_read(&path).unwrap();
-    let cnt: i64 = r.query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0)).unwrap();
+    let cnt: i64 = r
+        .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(cnt, 100);
 }
 
@@ -93,13 +118,25 @@ async fn batch_insert_100_in_one_tx() {
 async fn query_window_filters_by_tenant() {
     let (_dir, path, w) = tmp_audit_db();
     for tenant in &["acme", "beta", "acme", "gamma", "acme"] {
-        w.send_backfill(mk_entry("2026-05-23T01:00:00.000Z", tenant, "GET /x", "ok", 10)).await.unwrap();
+        w.send_backfill(mk_entry(
+            "2026-05-23T01:00:00.000Z",
+            tenant,
+            "GET /x",
+            "ok",
+            10,
+        ))
+        .await
+        .unwrap();
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     let r = open_audit_db_read(&path).unwrap();
-    let acme_count: i64 = r.query_row(
-        "SELECT COUNT(*) FROM audit WHERE tenant = 'acme'", [], |row| row.get(0)
-    ).unwrap();
+    let acme_count: i64 = r
+        .query_row(
+            "SELECT COUNT(*) FROM audit WHERE tenant = 'acme'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(acme_count, 3);
 }
 
@@ -110,8 +147,13 @@ async fn sql_total_matches_count() {
         let status = if i % 5 == 0 { "error" } else { "ok" };
         w.send_backfill(mk_entry(
             &format!("2026-05-23T01:{:02}:00.000Z", i % 60),
-            "acme", "GET /x", status, 10
-        )).await.unwrap();
+            "acme",
+            "GET /x",
+            status,
+            10,
+        ))
+        .await
+        .unwrap();
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     let r = open_audit_db_read(&path).unwrap();
@@ -130,7 +172,15 @@ async fn top_tenants_via_sql() {
     let (_dir, path, w) = tmp_audit_db();
     for (tenant, n) in [("a", 10), ("b", 8), ("c", 6), ("d", 4), ("e", 2), ("f", 1)] {
         for _ in 0..n {
-            w.send_backfill(mk_entry("2026-05-23T01:00:00.000Z", tenant, "GET /x", "ok", 10)).await.unwrap();
+            w.send_backfill(mk_entry(
+                "2026-05-23T01:00:00.000Z",
+                tenant,
+                "GET /x",
+                "ok",
+                10,
+            ))
+            .await
+            .unwrap();
         }
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -167,21 +217,34 @@ async fn retention_deletes_old_rows() {
     for i in 0..5 {
         w.send_backfill(mk_entry(
             &format!("2025-01-01T0{}:00:00.000Z", i),
-            "acme", "GET /x", "ok", 10
-        )).await.unwrap();
+            "acme",
+            "GET /x",
+            "ok",
+            10,
+        ))
+        .await
+        .unwrap();
     }
     for i in 0..5 {
         w.send_backfill(mk_entry(
             &format!("2026-05-23T0{}:00:00.000Z", i),
-            "acme", "GET /x", "ok", 10
-        )).await.unwrap();
+            "acme",
+            "GET /x",
+            "ok",
+            10,
+        ))
+        .await
+        .unwrap();
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     // Send retention with cutoff at 2026-01-01: old rows go away
-    w.send_retention("2026-01-01T00:00:00.000Z".to_string(), false).await;
+    w.send_retention("2026-01-01T00:00:00.000Z".to_string(), false)
+        .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     let r = open_audit_db_read(&path).unwrap();
-    let count: i64 = r.query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0)).unwrap();
+    let count: i64 = r
+        .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(count, 5);
 }
 
@@ -191,27 +254,48 @@ async fn pagination_cursor_via_ts_and_id() {
     for i in 0..20 {
         w.send_backfill(mk_entry(
             &format!("2026-05-23T01:{:02}:00.000Z", i),
-            "acme", "GET /x", "ok", 10
-        )).await.unwrap();
+            "acme",
+            "GET /x",
+            "ok",
+            10,
+        ))
+        .await
+        .unwrap();
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     let r = open_audit_db_read(&path).unwrap();
     // First page: 10 rows
     let page1 = drust::mgmt::audit::query_browse(
-        &r, "2026-05-23T00:00:00.000Z", None, None, None, None, 10,
+        &r,
+        "2026-05-23T00:00:00.000Z",
+        None,
+        None,
+        None,
+        None,
+        10,
     );
     assert_eq!(page1.len(), 10);
     // Second page: cursor = last ts of page1
     let cursor = page1.last().unwrap().ts.clone();
     let page2 = drust::mgmt::audit::query_browse(
-        &r, "2026-05-23T00:00:00.000Z", None, None, None, Some(&cursor), 10,
+        &r,
+        "2026-05-23T00:00:00.000Z",
+        None,
+        None,
+        None,
+        Some(&cursor),
+        10,
     );
     // ts < cursor → page2 has fewer (9 because boundary is exclusive)
     assert!(page2.len() <= 10);
     // No overlap between page1 and page2
     let page1_ts: std::collections::HashSet<_> = page1.iter().map(|e| e.ts.clone()).collect();
     for entry in &page2 {
-        assert!(!page1_ts.contains(&entry.ts), "page overlap on ts={}", entry.ts);
+        assert!(
+            !page1_ts.contains(&entry.ts),
+            "page overlap on ts={}",
+            entry.ts
+        );
     }
 }
 
@@ -219,11 +303,14 @@ async fn pagination_cursor_via_ts_and_id() {
 async fn extra_with_nested_object_preserved() {
     let (_dir, path, w) = tmp_audit_db();
     let mut e = mk_entry("2026-05-23T01:00:00.000Z", "acme", "GET /x", "ok", 12);
-    e.extra.insert("nested".into(), serde_json::json!({"a": 1, "b": [2, 3]}));
+    e.extra
+        .insert("nested".into(), serde_json::json!({"a": 1, "b": [2, 3]}));
     w.send_backfill(e).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
     let r = open_audit_db_read(&path).unwrap();
-    let extra: String = r.query_row("SELECT extra FROM audit", [], |row| row.get(0)).unwrap();
+    let extra: String = r
+        .query_row("SELECT extra FROM audit", [], |row| row.get(0))
+        .unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&extra).unwrap();
     assert_eq!(parsed["nested"]["a"], 1);
     assert_eq!(parsed["nested"]["b"], serde_json::json!([2, 3]));
@@ -248,7 +335,15 @@ async fn aggregate_via_sql_empty_db_returns_zero() {
 async fn tenant_filter_excludes_other_tenants_in_overview() {
     let (_dir, path, w) = tmp_audit_db();
     for tenant in &["acme", "acme", "acme", "beta", "beta"] {
-        w.send_backfill(mk_entry("2026-05-23T01:00:00.000Z", tenant, "GET /x", "ok", 10)).await.unwrap();
+        w.send_backfill(mk_entry(
+            "2026-05-23T01:00:00.000Z",
+            tenant,
+            "GET /x",
+            "ok",
+            10,
+        ))
+        .await
+        .unwrap();
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     let r = open_audit_db_read(&path).unwrap();

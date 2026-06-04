@@ -11,10 +11,10 @@
 //! both with `actor_admin_id = Some(caller_id)`.
 
 use axum::Extension;
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use rusqlite::params;
 use serde::Serialize;
 
@@ -42,7 +42,13 @@ pub async fn reroll(
         let conn = s.meta.lock().await;
         let tx = match conn.unchecked_transaction() {
             Ok(t) => t,
-            Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string()),
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL",
+                    &e.to_string(),
+                );
+            }
         };
 
         if let Err(e) = tx.execute(
@@ -50,18 +56,30 @@ pub async fn reroll(
              WHERE admin_id = ?1 AND revoked_at IS NULL",
             params![caller_id],
         ) {
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                &e.to_string(),
+            );
         }
 
         if let Err(e) = tx.execute(
             "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext) VALUES (?1, ?2, ?3)",
             params![caller_id, hash_new, plaintext_new],
         ) {
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                &e.to_string(),
+            );
         }
 
         if let Err(e) = tx.commit() {
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                &e.to_string(),
+            );
         }
 
         Ok(())
@@ -75,7 +93,10 @@ pub async fn reroll(
     emit_audit_revoke(caller_id);
     emit_audit_mint(caller_id);
 
-    let mut resp = Json(RerollResponse { plaintext: plaintext_new }).into_response();
+    let mut resp = Json(RerollResponse {
+        plaintext: plaintext_new,
+    })
+    .into_response();
     resp.headers_mut().insert(
         axum::http::header::HeaderName::from_static("x-drust-sensitive"),
         axum::http::header::HeaderValue::from_static("true"),

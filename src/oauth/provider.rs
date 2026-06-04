@@ -67,12 +67,7 @@ pub enum OauthError {
 pub trait OauthProvider: Send + Sync {
     fn name(&self) -> &'static str;
 
-    fn authorize_url(
-        &self,
-        state: &str,
-        pkce_challenge: &str,
-        redirect_uri: &str,
-    ) -> String;
+    fn authorize_url(&self, state: &str, pkce_challenge: &str, redirect_uri: &str) -> String;
 
     fn exchange<'a>(
         &'a self,

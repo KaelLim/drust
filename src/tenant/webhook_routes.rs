@@ -13,10 +13,10 @@
 //! and `oauth_admin_routes`). Secrets are returned **once** in the 201
 //! response body of POST; every subsequent read redacts them to `●●●●`.
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -124,7 +124,8 @@ fn validate_url(raw: &str) -> Result<(), Response> {
 
 /// REST adapter: pure check → 422 Response.
 fn validate_events(events: &[String]) -> Result<(), Response> {
-    check_events(events).map_err(|(code, msg)| json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg))
+    check_events(events)
+        .map_err(|(code, msg)| json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg))
 }
 
 /// Generate a 64-char hex-encoded random secret (32 bytes from `OsRng` via
@@ -258,8 +259,7 @@ pub async fn list_handler(
             let rows: Vec<WebhookOut> = stmt
                 .query_map([], |r| {
                     let events_raw: String = r.get(2)?;
-                    let events: Vec<String> =
-                        serde_json::from_str(&events_raw).unwrap_or_default();
+                    let events: Vec<String> = serde_json::from_str(&events_raw).unwrap_or_default();
                     Ok(WebhookOut {
                         id: r.get(0)?,
                         collection: r.get(1)?,
@@ -306,8 +306,7 @@ async fn fetch_webhook_row(pool: crate::storage::pool::SharedTenantPool, id: i64
                 rusqlite::params![id],
                 |r| {
                     let events_raw: String = r.get(2)?;
-                    let events: Vec<String> =
-                        serde_json::from_str(&events_raw).unwrap_or_default();
+                    let events: Vec<String> = serde_json::from_str(&events_raw).unwrap_or_default();
                     Ok(WebhookOut {
                         id: r.get(0)?,
                         collection: r.get(1)?,

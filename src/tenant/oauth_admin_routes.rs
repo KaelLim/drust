@@ -13,10 +13,10 @@
 //! `{provider, redirect_uris_count}` on PUT, `{provider}` on DELETE — for
 //! forensic correlation, matching the v1.9 admin-user-route precedent.
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -58,10 +58,7 @@ pub async fn list_oauth_providers_handler(
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
-    let rows = match pool
-        .with_reader(move |c| oauth_config::list(c))
-        .await
-    {
+    let rows = match pool.with_reader(move |c| oauth_config::list(c)).await {
         Ok(v) => v,
         Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     };
@@ -135,8 +132,8 @@ pub async fn put_oauth_provider_handler(
     let uris_count = uris.len();
     let res = pool
         .with_writer(move |c| {
-            oauth_config::upsert(c, &provider2, &client_id, &client_secret, &uris)
-                .map_err(|e| match e {
+            oauth_config::upsert(c, &provider2, &client_id, &client_secret, &uris).map_err(|e| {
+                match e {
                     OauthConfigError::Db(re) => re,
                     // Validation already ran above; treat any residual
                     // validation miss as a generic Rusqlite error so the
@@ -144,7 +141,8 @@ pub async fn put_oauth_provider_handler(
                     // hit this branch — validate_upsert is called twice
                     // intentionally for defence-in-depth.)
                     _ => rusqlite::Error::InvalidParameterName(e.to_string()),
-                })
+                }
+            })
         })
         .await;
     match res {

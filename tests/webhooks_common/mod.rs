@@ -2,12 +2,12 @@
 //! `FakeHook::start()`); records every request, supports scripted
 //! per-call responses for retry behaviour tests.
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
-use axum::Router;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -22,16 +22,16 @@ pub struct Received {
 
 #[derive(Default)]
 struct State_ {
-    received:      Vec<Received>,
+    received: Vec<Received>,
     /// Sequence of status codes to return; pops one per request.
     /// When empty, returns 200.
-    response_seq:  std::collections::VecDeque<u16>,
+    response_seq: std::collections::VecDeque<u16>,
 }
 
 pub struct FakeHook {
     base_url: String,
-    state:    Arc<Mutex<State_>>,
-    handle:   tokio::task::JoinHandle<()>,
+    state: Arc<Mutex<State_>>,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for FakeHook {
@@ -67,7 +67,9 @@ impl FakeHook {
         }
     }
 
-    pub fn url(&self) -> &str { &self.base_url }
+    pub fn url(&self) -> &str {
+        &self.base_url
+    }
 
     pub async fn requests(&self) -> Vec<Received> {
         self.state.lock().await.received.clone()
@@ -76,7 +78,9 @@ impl FakeHook {
 
 async fn handle(State(s): State<Arc<Mutex<State_>>>, req: Request) -> impl IntoResponse {
     let (parts, body) = req.into_parts();
-    let body_bytes = axum::body::to_bytes(body, 1_048_576).await.unwrap_or_default();
+    let body_bytes = axum::body::to_bytes(body, 1_048_576)
+        .await
+        .unwrap_or_default();
     let body_text = String::from_utf8_lossy(&body_bytes).to_string();
     let mut headers = HashMap::new();
     for (k, v) in parts.headers.iter() {
@@ -92,5 +96,8 @@ async fn handle(State(s): State<Arc<Mutex<State_>>>, req: Request) -> impl IntoR
     let mut g = s.lock().await;
     g.received.push(r);
     let code = g.response_seq.pop_front().unwrap_or(200);
-    (StatusCode::from_u16(code).unwrap_or(StatusCode::OK), Body::empty())
+    (
+        StatusCode::from_u16(code).unwrap_or(StatusCode::OK),
+        Body::empty(),
+    )
 }

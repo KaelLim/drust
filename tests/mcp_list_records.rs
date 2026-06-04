@@ -242,13 +242,10 @@ async fn user_token_via_mcp_is_rejected_with_write_denied() {
     // covers any new tool transparently. We register a user token via
     // self-register and then POST to /mcp; expect 403 + WRITE_DENIED
     // (mcp_dispatch returns this for any non-service kind).
-    use helpers::{
-        register_and_login_via_app, spin_up_tenant_self_register,
-    };
+    use helpers::{register_and_login_via_app, spin_up_tenant_self_register};
     let tid = "mcp-user-rej";
     let (app, _svc_tok, _dir) = spin_up_tenant_self_register(tid).await;
-    let user_tok =
-        register_and_login_via_app(&app, tid, "u@x.com", "longpassword").await;
+    let user_tok = register_and_login_via_app(&app, tid, "u@x.com", "longpassword").await;
     let req = mcp_request(
         tid,
         &user_tok,
@@ -315,8 +312,7 @@ async fn tools_list_contains_list_records() {
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header("mcp-session-id", &session_id)
         .body(Body::from(
-            json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-                .to_string(),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string(),
         ))
         .unwrap();
     let _ = app.clone().oneshot(ack_req).await.unwrap();
@@ -331,8 +327,7 @@ async fn tools_list_contains_list_records() {
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header("mcp-session-id", &session_id)
         .body(Body::from(
-            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-                .to_string(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string(),
         ))
         .unwrap();
     let tl_resp = app.oneshot(tl_req).await.unwrap();

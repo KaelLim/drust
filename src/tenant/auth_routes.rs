@@ -1,8 +1,8 @@
 use axum::Extension;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -42,7 +42,11 @@ pub async fn register_handler(
     let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
     let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.register_rl.check(ip) {
-        return json_error(StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED_IP", "rate limited");
+        return json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "RATE_LIMITED_IP",
+            "rate limited",
+        );
     }
     if body.password.len() < PASSWORD_MIN {
         return json_error(
@@ -64,7 +68,11 @@ pub async fn register_handler(
     // whitespace-aware.
     let email = body.email.trim().to_string();
     if !email_looks_valid(&email) {
-        return json_error(StatusCode::UNPROCESSABLE_ENTITY, "EMAIL_INVALID", "invalid email");
+        return json_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "EMAIL_INVALID",
+            "invalid email",
+        );
     }
     let profile_str = crate::auth::profile::encode(body.profile.as_ref());
     if let Some(s) = &profile_str
@@ -112,7 +120,13 @@ pub async fn register_handler(
                 "INSERT INTO _system_users \
                  (id, email, password_hash, verified, profile, created_at, updated_at) \
                  VALUES (?1, ?2, ?3, 0, ?4, ?5, ?5)",
-                rusqlite::params![uid_for_insert, email_for_insert, hash, profile_str, now_for_insert],
+                rusqlite::params![
+                    uid_for_insert,
+                    email_for_insert,
+                    hash,
+                    profile_str,
+                    now_for_insert
+                ],
             )
         })
         .await;
@@ -134,13 +148,15 @@ pub async fn register_handler(
                 .into_response()
         }
         Err(e) if e.to_string().contains("UNIQUE") => {
-            let mut entry =
-                AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_409", "").with_extra(
-                    serde_json::json!({"email": email, "auth_kind": "user"}),
-                );
+            let mut entry = AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_409", "")
+                .with_extra(serde_json::json!({"email": email, "auth_kind": "user"}));
             entry.auth_method = Some("password".to_string());
             crate::safety::audit_db::try_send(&entry);
-            json_error(StatusCode::CONFLICT, "EMAIL_EXISTS", "email already registered")
+            json_error(
+                StatusCode::CONFLICT,
+                "EMAIL_EXISTS",
+                "email already registered",
+            )
         }
         Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
@@ -166,7 +182,11 @@ pub async fn login_handler(
     let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
     let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.login_rl.check(ip) {
-        return json_error(StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED_IP", "rate limited");
+        return json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "RATE_LIMITED_IP",
+            "rate limited",
+        );
     }
     let email = body.email.trim().to_string();
 
@@ -194,10 +214,8 @@ pub async fn login_handler(
     let pool = match state.registry.get_or_open(&tenant_id) {
         Ok(p) => p,
         Err(_) => {
-            let _ = crate::auth::user::verify_password(
-                &body.password,
-                crate::auth::user::dummy_hash(),
-            );
+            let _ =
+                crate::auth::user::verify_password(&body.password, crate::auth::user::dummy_hash());
             return json_error(
                 StatusCode::UNAUTHORIZED,
                 "INVALID_CREDENTIALS",
@@ -235,14 +253,9 @@ pub async fn login_handler(
     // OAuth-only" from "wrong password" by timing alone (S1 invariant from
     // v1.9 — same defense, new branch). Audit shape stays identical too.
     if crate::auth::oauth_sentinel::is_oauth_only(&phc) {
-        let _ = crate::auth::user::verify_password(
-            &body.password,
-            crate::auth::user::dummy_hash(),
-        );
-        let mut entry =
-            AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_401", "").with_extra(
-                serde_json::json!({"email": email, "auth_kind": "user"}),
-            );
+        let _ = crate::auth::user::verify_password(&body.password, crate::auth::user::dummy_hash());
+        let mut entry = AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_401", "")
+            .with_extra(serde_json::json!({"email": email, "auth_kind": "user"}));
         entry.auth_method = Some("password".to_string());
         crate::safety::audit_db::try_send(&entry);
         return json_error(
@@ -254,10 +267,8 @@ pub async fn login_handler(
     let ok = crate::auth::user::verify_password(&body.password, &phc).unwrap_or(false);
     if !ok || uid.is_empty() {
         // S6: log email for correlation but never the attempted password.
-        let mut entry =
-            AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_401", "").with_extra(
-                serde_json::json!({"email": email, "auth_kind": "user"}),
-            );
+        let mut entry = AuditEntry::failure(&tenant_id, "-", &op, 0, "HTTP_401", "")
+            .with_extra(serde_json::json!({"email": email, "auth_kind": "user"}));
         entry.auth_method = Some("password".to_string());
         crate::safety::audit_db::try_send(&entry);
         return json_error(
@@ -279,13 +290,12 @@ pub async fn login_handler(
         Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     };
     let exp = chrono::Utc::now() + chrono::Duration::days(30);
-    let mut entry =
-        AuditEntry::success(&tenant_id, "-", &op, 0).with_extra(serde_json::json!({
-            "email": email,
-            "auth_user_id": uid,
-            "ip_at_login": ip.to_string(),
-            "auth_kind": "user",
-        }));
+    let mut entry = AuditEntry::success(&tenant_id, "-", &op, 0).with_extra(serde_json::json!({
+        "email": email,
+        "auth_user_id": uid,
+        "ip_at_login": ip.to_string(),
+        "auth_kind": "user",
+    }));
     entry.auth_method = Some("password".to_string());
     crate::safety::audit_db::try_send(&entry);
     (
@@ -313,10 +323,7 @@ fn email_looks_valid(s: &str) -> bool {
     if parts.next().is_some() {
         return false;
     }
-    !local.is_empty()
-        && domain.contains('.')
-        && !domain.starts_with('.')
-        && !domain.ends_with('.')
+    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
 pub async fn logout_handler(
@@ -326,7 +333,13 @@ pub async fn logout_handler(
 ) -> Response {
     let token_hash = match &ctx {
         AuthCtx::User { token_hash, .. } => token_hash.clone(),
-        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "logout requires user token"),
+        _ => {
+            return json_error(
+                StatusCode::UNAUTHORIZED,
+                "NOT_USER_TOKEN",
+                "logout requires user token",
+            );
+        }
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
@@ -337,9 +350,7 @@ pub async fn logout_handler(
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let _ = pool
-        .with_writer(move |c| {
-            crate::auth::user_session::revoke_session_by_hash(c, &token_hash)
-        })
+        .with_writer(move |c| crate::auth::user_session::revoke_session_by_hash(c, &token_hash))
         .await;
     (StatusCode::OK, Json(json!({}))).into_response()
 }
@@ -351,7 +362,13 @@ pub async fn logout_all_handler(
 ) -> Response {
     let user_id = match &ctx {
         AuthCtx::User { user_id, .. } => user_id.clone(),
-        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "logout-all requires user token"),
+        _ => {
+            return json_error(
+                StatusCode::UNAUTHORIZED,
+                "NOT_USER_TOKEN",
+                "logout-all requires user token",
+            );
+        }
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
@@ -362,9 +379,7 @@ pub async fn logout_all_handler(
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
     let n = pool
-        .with_writer(move |c| {
-            crate::auth::user_session::revoke_all_sessions(c, &user_id)
-        })
+        .with_writer(move |c| crate::auth::user_session::revoke_all_sessions(c, &user_id))
         .await
         .unwrap_or(0);
     (StatusCode::OK, Json(json!({"revoked": n}))).into_response()
@@ -429,7 +444,13 @@ pub async fn me_get_handler(
 ) -> Response {
     let user_id = match &ctx {
         AuthCtx::User { user_id, .. } => user_id.clone(),
-        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
+        _ => {
+            return json_error(
+                StatusCode::UNAUTHORIZED,
+                "NOT_USER_TOKEN",
+                "user token required",
+            );
+        }
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
@@ -443,7 +464,11 @@ pub async fn me_get_handler(
         Ok((id, email, verified, profile, ca, ua)) => {
             me_row_to_response(id, email, verified, profile, ca, ua)
         }
-        Err(_) => json_error(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", "user no longer exists"),
+        Err(_) => json_error(
+            StatusCode::UNAUTHORIZED,
+            "TOKEN_REVOKED",
+            "user no longer exists",
+        ),
     }
 }
 
@@ -462,14 +487,19 @@ pub async fn me_patch_handler(
 ) -> Response {
     let user_id = match &ctx {
         AuthCtx::User { user_id, .. } => user_id.clone(),
-        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
+        _ => {
+            return json_error(
+                StatusCode::UNAUTHORIZED,
+                "NOT_USER_TOKEN",
+                "user token required",
+            );
+        }
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
         None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
-    let profile_str = crate::auth::profile::encode(Some(&body.profile))
-        .unwrap_or_default();
+    let profile_str = crate::auth::profile::encode(Some(&body.profile)).unwrap_or_default();
     if profile_str.len() > PROFILE_MAX_BYTES {
         return json_error(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -499,7 +529,11 @@ pub async fn me_patch_handler(
         Ok((id, email, verified, profile, ca, ua)) => {
             me_row_to_response(id, email, verified, profile, ca, ua)
         }
-        Err(_) => json_error(StatusCode::UNAUTHORIZED, "TOKEN_REVOKED", "user no longer exists"),
+        Err(_) => json_error(
+            StatusCode::UNAUTHORIZED,
+            "TOKEN_REVOKED",
+            "user no longer exists",
+        ),
     }
 }
 
@@ -520,7 +554,13 @@ pub async fn me_password_handler(
 ) -> Response {
     let user_id = match &ctx {
         AuthCtx::User { user_id, .. } => user_id.clone(),
-        _ => return json_error(StatusCode::UNAUTHORIZED, "NOT_USER_TOKEN", "user token required"),
+        _ => {
+            return json_error(
+                StatusCode::UNAUTHORIZED,
+                "NOT_USER_TOKEN",
+                "user token required",
+            );
+        }
     };
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
@@ -596,8 +636,7 @@ pub async fn me_password_handler(
                 "DELETE FROM _system_sessions WHERE user_id = ?1",
                 rusqlite::params![uid_for_tx],
             )?;
-            let token =
-                crate::auth::user_session::create_session(&tx, &uid_for_tx, Some(&ip), 30)?;
+            let token = crate::auth::user_session::create_session(&tx, &uid_for_tx, Some(&ip), 30)?;
             tx.commit()?;
             Ok(token)
         })

@@ -45,12 +45,8 @@ fn cli_rejects_malformed_email() {
     let meta = dir.path().join("meta.sqlite");
     seed_admin(&meta, "kael", "init");
 
-    let err = drust::bin_helpers::set_admin_password_with_email(
-        &meta,
-        "kael",
-        "x",
-        Some("not-an-email"),
-    )
-    .unwrap_err();
+    let err =
+        drust::bin_helpers::set_admin_password_with_email(&meta, "kael", "x", Some("not-an-email"))
+            .unwrap_err();
     assert!(err.to_string().contains("invalid email"), "got: {err}");
 }

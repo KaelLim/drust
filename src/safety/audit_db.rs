@@ -89,11 +89,8 @@ pub fn open_audit_db_write(path: &Path) -> anyhow::Result<Connection> {
 /// ensuring the file exists (open_audit_db_write was called at least
 /// once first).
 pub fn open_audit_db_read(path: &Path) -> anyhow::Result<Connection> {
-    let conn = Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .with_context(|| format!("opening audit DB read-only at {}", path.display()))?;
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("opening audit DB read-only at {}", path.display()))?;
     conn.execute_batch(PRAGMAS_READ)
         .with_context(|| format!("opening audit DB read-only at {}", path.display()))?;
     Ok(conn)
@@ -115,9 +112,7 @@ pub struct HoistResult {
 /// entry's `extra` map and return them as separate fields. The
 /// remaining map serialises as JSON for the `extra` column. Non-string
 /// values for those keys are left in the map (will go into `extra`).
-pub fn hoist_indexed_fields(
-    entry: &crate::safety::audit::AuditEntry,
-) -> HoistResult {
+pub fn hoist_indexed_fields(entry: &crate::safety::audit::AuditEntry) -> HoistResult {
     let mut extra = entry.extra.clone();
     let caller_ip = take_string_key(&mut extra, "caller_ip");
     let user_agent = take_string_key(&mut extra, "user_agent");
@@ -126,7 +121,11 @@ pub fn hoist_indexed_fields(
     } else {
         serde_json::to_string(&serde_json::Value::Object(extra)).ok()
     };
-    HoistResult { caller_ip, user_agent, remaining_json }
+    HoistResult {
+        caller_ip,
+        user_agent,
+        remaining_json,
+    }
 }
 
 fn take_string_key(
@@ -171,7 +170,10 @@ impl AuditWriter {
         let dropped = Arc::new(AtomicU64::new(0));
         let writer_tx = tx.clone();
         tokio::spawn(writer_loop(conn, rx));
-        Self { tx: writer_tx, dropped }
+        Self {
+            tx: writer_tx,
+            dropped,
+        }
     }
 
     /// Non-blocking dispatch from a request handler. On channel-full,
@@ -212,14 +214,8 @@ impl AuditWriter {
 
     /// Used by the backfill at startup. Same blocking-send semantics as
     /// retention — backfill is not in a request path.
-    pub async fn send_backfill(
-        &self,
-        entry: crate::safety::audit::AuditEntry,
-    ) -> Result<(), ()> {
-        self.tx
-            .send(WriterCmd::Insert(entry))
-            .await
-            .map_err(|_| ())
+    pub async fn send_backfill(&self, entry: crate::safety::audit::AuditEntry) -> Result<(), ()> {
+        self.tx.send(WriterCmd::Insert(entry)).await.map_err(|_| ())
     }
 
     /// Persist a single key/value into the audit DB's `_meta` table
@@ -256,8 +252,7 @@ static WRITER: OnceLock<AuditWriter> = OnceLock::new();
 /// Gated to test + debug builds; absent from the release binary.
 #[cfg(any(test, debug_assertions))]
 pub fn open_audit_db_memory() -> anyhow::Result<Connection> {
-    let conn = Connection::open_in_memory()
-        .with_context(|| "opening in-memory audit DB")?;
+    let conn = Connection::open_in_memory().with_context(|| "opening in-memory audit DB")?;
     conn.execute_batch(SCHEMA_SQL)
         .with_context(|| "applying schema to in-memory audit DB")?;
     Ok(conn)
@@ -364,8 +359,7 @@ pub async fn read_last_vacuum_ts(
 }
 
 async fn writer_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriterCmd>) {
-    let mut buf: Vec<crate::safety::audit::AuditEntry> =
-        Vec::with_capacity(FLUSH_BATCH_SIZE);
+    let mut buf: Vec<crate::safety::audit::AuditEntry> = Vec::with_capacity(FLUSH_BATCH_SIZE);
     let flush_window = std::time::Duration::from_millis(FLUSH_INTERVAL_MS);
     loop {
         let timeout = tokio::time::sleep(flush_window);
@@ -475,7 +469,6 @@ fn run_retention(conn: &mut Connection, cutoff_ts: &str, vacuum: bool) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,11 +483,20 @@ mod tests {
     fn schema_includes_actor_attribution_columns() {
         let conn = open_audit_db_memory().unwrap();
         let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(audit)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert!(cols.contains(&"actor_admin_id".to_string()), "missing actor_admin_id in {cols:?}");
-        assert!(cols.contains(&"actor_email_snapshot".to_string()), "missing actor_email_snapshot");
+            .prepare("PRAGMA table_info(audit)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"actor_admin_id".to_string()),
+            "missing actor_admin_id in {cols:?}"
+        );
+        assert!(
+            cols.contains(&"actor_email_snapshot".to_string()),
+            "missing actor_email_snapshot"
+        );
     }
 
     #[test]
@@ -510,7 +512,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx_count, 3, "expect 3 indexes (ts / tenant_ts / status_ts)");
+        assert_eq!(
+            idx_count, 3,
+            "expect 3 indexes (ts / tenant_ts / status_ts)"
+        );
     }
 
     #[test]
@@ -598,15 +603,22 @@ mod tests {
 
     #[test]
     fn hoist_empty_after_extraction_returns_none_for_remaining() {
-        let e = mk_extra_entry(&[
-            ("caller_ip", serde_json::json!("1.2.3.4")),
-        ]);
+        let e = mk_extra_entry(&[("caller_ip", serde_json::json!("1.2.3.4"))]);
         let result = hoist_indexed_fields(&e);
         assert_eq!(result.caller_ip.as_deref(), Some("1.2.3.4"));
-        assert!(result.remaining_json.is_none(), "empty map → None, not 'null'");
+        assert!(
+            result.remaining_json.is_none(),
+            "empty map → None, not 'null'"
+        );
     }
 
-    fn mk_entry(ts: &str, tenant: &str, op: &str, status: &str, ms: u64) -> crate::safety::audit::AuditEntry {
+    fn mk_entry(
+        ts: &str,
+        tenant: &str,
+        op: &str,
+        status: &str,
+        ms: u64,
+    ) -> crate::safety::audit::AuditEntry {
         let mut e = crate::safety::audit::AuditEntry::success(tenant, "-", op, ms);
         e.ts = ts.to_string();
         if status == "error" {
@@ -625,7 +637,9 @@ mod tests {
         // Give the writer 200 ms to flush.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let r = open_audit_db_read(&path).unwrap();
-        let count: i64 = r.query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0)).unwrap();
+        let count: i64 = r
+            .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 1);
         let (tenant, op, ms): (String, String, i64) = r
             .query_row("SELECT tenant, op, duration_ms FROM audit", [], |row| {
@@ -645,13 +659,18 @@ mod tests {
         for i in 0..100 {
             let entry = mk_entry(
                 &format!("2026-05-23T01:00:{:02}.000Z", i % 60),
-                "acme", "GET /x", "ok", i as u64,
+                "acme",
+                "GET /x",
+                "ok",
+                i as u64,
             );
             w.send_backfill(entry).await.unwrap();
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let r = open_audit_db_read(&path).unwrap();
-        let count: i64 = r.query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0)).unwrap();
+        let count: i64 = r
+            .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 100);
     }
 
@@ -665,17 +684,31 @@ mod tests {
         conn.execute(
             crate::safety::audit_db::INSERT_SQL,
             rusqlite::params![
-                e.ts, e.tenant, e.token_hint, e.op, e.status, e.duration_ms as i64,
-                e.error_code, e.auth_method, e.oauth_email, e.oauth_error_code,
-                extracted.caller_ip.as_deref(), extracted.user_agent.as_deref(),
+                e.ts,
+                e.tenant,
+                e.token_hint,
+                e.op,
+                e.status,
+                e.duration_ms as i64,
+                e.error_code,
+                e.auth_method,
+                e.oauth_email,
+                e.oauth_error_code,
+                extracted.caller_ip.as_deref(),
+                extracted.user_agent.as_deref(),
                 serde_json::to_string(&e.extra).unwrap_or_default(),
-                e.actor_admin_id, e.actor_email_snapshot.as_deref(),
+                e.actor_admin_id,
+                e.actor_email_snapshot.as_deref(),
             ],
-        ).unwrap();
+        )
+        .unwrap();
         let row: (Option<i64>, Option<String>) = conn
-            .query_row("SELECT actor_admin_id, actor_email_snapshot FROM audit", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            }).unwrap();
+            .query_row(
+                "SELECT actor_admin_id, actor_email_snapshot FROM audit",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(row, (Some(42), Some("x@y".to_string())));
     }
 }

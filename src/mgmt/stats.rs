@@ -30,10 +30,7 @@ use crate::storage::tenant_db;
 /// Returns `(0, 0)` on any error (missing file, unopenable tenant, etc.)
 /// so a single bad tenant doesn't poison the batch. Callers that want
 /// the meta row updated should use `sample_one`.
-pub async fn sample_bytes(
-    registry: &Arc<TenantRegistry>,
-    tenant_id: &str,
-) -> (i64, i64) {
+pub async fn sample_bytes(registry: &Arc<TenantRegistry>, tenant_id: &str) -> (i64, i64) {
     let db_path = tenant_db::tenant_data_path(registry.data_root(), tenant_id);
     let db_bytes: i64 = std::fs::metadata(&db_path)
         .map(|m| m.len() as i64)
@@ -89,21 +86,17 @@ pub async fn sample_one(
 /// exactly twice per cycle (once to list IDs, once to write back) rather
 /// than `1 + N` times. Per-tenant sampling errors are logged and the
 /// tenant is skipped — the batch still commits whatever succeeded.
-pub async fn sample_all(
-    meta: &Arc<Mutex<rusqlite::Connection>>,
-    registry: &Arc<TenantRegistry>,
-) {
+pub async fn sample_all(meta: &Arc<Mutex<rusqlite::Connection>>, registry: &Arc<TenantRegistry>) {
     let ids: Vec<String> = {
         let conn = meta.lock().await;
-        let mut stmt = match conn
-            .prepare("SELECT id FROM tenants WHERE deleted_at IS NULL ORDER BY id")
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = ?e, "stats sampler: prepare failed");
-                return;
-            }
-        };
+        let mut stmt =
+            match conn.prepare("SELECT id FROM tenants WHERE deleted_at IS NULL ORDER BY id") {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = ?e, "stats sampler: prepare failed");
+                    return;
+                }
+            };
         stmt.query_map([], |r| r.get::<_, String>(0))
             .ok()
             .map(|it| it.filter_map(Result::ok).collect())

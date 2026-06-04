@@ -33,13 +33,30 @@ fn b64(s: &str) -> String {
 #[tokio::test]
 async fn options_advertises_tus_capabilities() {
     let (_d, state, tref) = setup("t-opt");
-    let resp = uploads::options(State(state), axum::Extension(tref),
-        Path("t-opt".to_string())).await.into_response();
+    let resp = uploads::options(
+        State(state),
+        axum::Extension(tref),
+        Path("t-opt".to_string()),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     let h = resp.headers();
     assert_eq!(h.get("tus-version").unwrap(), "1.0.0");
-    assert!(h.get("tus-extension").unwrap().to_str().unwrap().contains("creation"));
-    assert!(h.get("tus-extension").unwrap().to_str().unwrap().contains("termination"));
+    assert!(
+        h.get("tus-extension")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("creation")
+    );
+    assert!(
+        h.get("tus-extension")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("termination")
+    );
     assert!(h.contains_key("tus-max-size"));
 }
 
@@ -48,14 +65,30 @@ async fn create_returns_201_with_prefixed_location() {
     let (_d, state, tref) = setup("t-cr");
     let mut headers = HeaderMap::new();
     headers.insert("upload-length", "1000".parse().unwrap());
-    headers.insert("upload-metadata",
-        format!("filename {},filetype {}", b64("a.pdf"), b64("application/pdf")).parse().unwrap());
-    let resp = uploads::create(State(state), axum::Extension(tref),
-        Path("t-cr".to_string()), headers).await.into_response();
+    headers.insert(
+        "upload-metadata",
+        format!(
+            "filename {},filetype {}",
+            b64("a.pdf"),
+            b64("application/pdf")
+        )
+        .parse()
+        .unwrap(),
+    );
+    let resp = uploads::create(
+        State(state),
+        axum::Extension(tref),
+        Path("t-cr".to_string()),
+        headers,
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let loc = resp.headers().get("location").unwrap().to_str().unwrap();
-    assert!(loc.starts_with("/drust/t/t-cr/uploads/"),
-        "Location must be /drust-prefixed for the browser-facing path, got: {loc}");
+    assert!(
+        loc.starts_with("/drust/t/t-cr/uploads/"),
+        "Location must be /drust-prefixed for the browser-facing path, got: {loc}"
+    );
     assert!(resp.headers().contains_key("upload-expires"));
 }
 
@@ -65,8 +98,14 @@ async fn create_rejects_oversize_length() {
     state.large_upload_max_bytes = 500; // tiny cap
     let mut headers = HeaderMap::new();
     headers.insert("upload-length", "100000".parse().unwrap());
-    let resp = uploads::create(State(state), axum::Extension(tref),
-        Path("t-big".to_string()), headers).await.into_response();
+    let resp = uploads::create(
+        State(state),
+        axum::Extension(tref),
+        Path("t-big".to_string()),
+        headers,
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
@@ -76,18 +115,44 @@ async fn create_rejects_anon() {
     tref.role = TokenRole::Anon;
     let mut headers = HeaderMap::new();
     headers.insert("upload-length", "1000".parse().unwrap());
-    let resp = uploads::create(State(state), axum::Extension(tref),
-        Path("t-anon".to_string()), headers).await.into_response();
+    let resp = uploads::create(
+        State(state),
+        axum::Extension(tref),
+        Path("t-anon".to_string()),
+        headers,
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
-async fn create_session(state: &TenantFilesState, tref: &TenantRef, tid: &str, len: usize) -> String {
+async fn create_session(
+    state: &TenantFilesState,
+    tref: &TenantRef,
+    tid: &str,
+    len: usize,
+) -> String {
     let mut headers = HeaderMap::new();
     headers.insert("upload-length", len.to_string().parse().unwrap());
-    headers.insert("upload-metadata", format!("filename {}", b64("f.bin")).parse().unwrap());
-    let resp = uploads::create(State(state.clone()), axum::Extension(tref.clone()),
-        Path(tid.to_string()), headers).await.into_response();
-    let loc = resp.headers().get("location").unwrap().to_str().unwrap().to_string();
+    headers.insert(
+        "upload-metadata",
+        format!("filename {}", b64("f.bin")).parse().unwrap(),
+    );
+    let resp = uploads::create(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        Path(tid.to_string()),
+        headers,
+    )
+    .await
+    .into_response();
+    let loc = resp
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     loc.rsplit('/').next().unwrap().to_string()
 }
 
@@ -97,8 +162,13 @@ async fn head_then_patch_advances_offset() {
     let tok = create_session(&state, &tref, "t-patch", 5).await;
 
     // HEAD → offset 0.
-    let resp = uploads::head(State(state.clone()), axum::Extension(tref.clone()),
-        Path(("t-patch".into(), tok.clone()))).await.into_response();
+    let resp = uploads::head(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        Path(("t-patch".into(), tok.clone())),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.headers().get("upload-offset").unwrap(), "0");
     assert_eq!(resp.headers().get("upload-length").unwrap(), "5");
@@ -106,18 +176,30 @@ async fn head_then_patch_advances_offset() {
     // PATCH "hel" at offset 0 → offset 3.
     let mut h = HeaderMap::new();
     h.insert("upload-offset", "0".parse().unwrap());
-    let resp = uploads::patch(State(state.clone()), axum::Extension(tref.clone()),
-        Path(("t-patch".into(), tok.clone())), h, axum::body::Bytes::from_static(b"hel"))
-        .await.into_response();
+    let resp = uploads::patch(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        Path(("t-patch".into(), tok.clone())),
+        h,
+        axum::body::Bytes::from_static(b"hel"),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     assert_eq!(resp.headers().get("upload-offset").unwrap(), "3");
 
     // Wrong-offset PATCH → 409.
     let mut h = HeaderMap::new();
     h.insert("upload-offset", "0".parse().unwrap());
-    let resp = uploads::patch(State(state.clone()), axum::Extension(tref.clone()),
-        Path(("t-patch".into(), tok.clone())), h, axum::body::Bytes::from_static(b"X"))
-        .await.into_response();
+    let resp = uploads::patch(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        Path(("t-patch".into(), tok.clone())),
+        h,
+        axum::body::Bytes::from_static(b"X"),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 }
 
@@ -127,9 +209,15 @@ async fn patch_overrun_rejected() {
     let tok = create_session(&state, &tref, "t-over", 3).await;
     let mut h = HeaderMap::new();
     h.insert("upload-offset", "0".parse().unwrap());
-    let resp = uploads::patch(State(state.clone()), axum::Extension(tref.clone()),
-        Path(("t-over".into(), tok)), h, axum::body::Bytes::from_static(b"toolong"))
-        .await.into_response();
+    let resp = uploads::patch(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        Path(("t-over".into(), tok)),
+        h,
+        axum::body::Bytes::from_static(b"toolong"),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -146,26 +234,49 @@ async fn full_upload_finalizes_into_system_files() {
     // put_file_in (Task 3) branches on s3_endpoint.is_empty(): a from_store
     // client has an empty endpoint, so finalize streams into this InMemory
     // store directly — no real S3 needed.
-    let garage = Arc::new(GarageClient::from_store(Arc::new(InMemory::new()), "private"));
-    let mut state = TenantFilesState::test_default(Some(garage), dir.path().to_path_buf(), registry);
+    let garage = Arc::new(GarageClient::from_store(
+        Arc::new(InMemory::new()),
+        "private",
+    ));
+    let mut state =
+        TenantFilesState::test_default(Some(garage), dir.path().to_path_buf(), registry);
     state.large_upload_chunk_max_bytes = 64 * 1024 * 1024;
-    let tref = TenantRef { tenant_id: tid.into(), token_hint: "svc".into(), pool: pool.clone(), role: TokenRole::Service };
+    let tref = TenantRef {
+        tenant_id: tid.into(),
+        token_hint: "svc".into(),
+        pool: pool.clone(),
+        role: TokenRole::Service,
+    };
 
     let tok = create_session(&state, &tref, tid, 5).await;
     let mut h = HeaderMap::new();
     h.insert("upload-offset", "0".parse().unwrap());
-    let resp = uploads::patch(State(state.clone()), axum::Extension(tref.clone()),
-        Path((tid.into(), tok.clone())), h, axum::body::Bytes::from_static(b"hello"))
-        .await.into_response();
+    let resp = uploads::patch(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        Path((tid.into(), tok.clone())),
+        h,
+        axum::body::Bytes::from_static(b"hello"),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     assert_eq!(resp.headers().get("upload-offset").unwrap(), "5");
 
     // _system_files row now exists; session row gone.
-    let n: i64 = pool.with_reader(|c| c.query_row(
-        "SELECT COUNT(*) FROM _system_files", [], |r| r.get(0))).await.unwrap();
+    let n: i64 = pool
+        .with_reader(|c| c.query_row("SELECT COUNT(*) FROM _system_files", [], |r| r.get(0)))
+        .await
+        .unwrap();
     assert_eq!(n, 1);
-    let s: i64 = pool.with_reader(|c| c.query_row(
-        "SELECT COUNT(*) FROM _system_upload_sessions", [], |r| r.get(0))).await.unwrap();
+    let s: i64 = pool
+        .with_reader(|c| {
+            c.query_row("SELECT COUNT(*) FROM _system_upload_sessions", [], |r| {
+                r.get(0)
+            })
+        })
+        .await
+        .unwrap();
     assert_eq!(s, 0);
 }
 
@@ -173,12 +284,22 @@ async fn full_upload_finalizes_into_system_files() {
 async fn delete_terminates_session() {
     let (_d, state, tref) = setup("t-del");
     let tok = create_session(&state, &tref, "t-del", 100).await;
-    let resp = uploads::terminate(State(state.clone()), axum::Extension(tref.clone()),
-        Path(("t-del".into(), tok.clone()))).await.into_response();
+    let resp = uploads::terminate(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        Path(("t-del".into(), tok.clone())),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     // gone
-    let resp = uploads::head(State(state.clone()), axum::Extension(tref.clone()),
-        Path(("t-del".into(), tok))).await.into_response();
+    let resp = uploads::head(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        Path(("t-del".into(), tok)),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
@@ -188,8 +309,13 @@ async fn cross_tenant_token_is_404() {
     let tok = create_session(&state_a, &tref_a, "t-a", 10).await;
     // Tenant B's state/pool; same token string.
     let (_db, state_b, tref_b) = setup("t-b");
-    let resp = uploads::head(State(state_b), axum::Extension(tref_b),
-        Path(("t-b".into(), tok))).await.into_response();
+    let resp = uploads::head(
+        State(state_b),
+        axum::Extension(tref_b),
+        Path(("t-b".into(), tok)),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
@@ -198,10 +324,17 @@ async fn list_sessions_returns_in_flight() {
     let (_d, state, tref) = setup("t-list");
     let _ = create_session(&state, &tref, "t-list", 100).await;
     let _ = create_session(&state, &tref, "t-list", 200).await;
-    let resp = uploads::list_sessions(State(state), axum::Extension(tref),
-        Path("t-list".to_string())).await.into_response();
+    let resp = uploads::list_sessions(
+        State(state),
+        axum::Extension(tref),
+        Path("t-list".to_string()),
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["sessions"].as_array().unwrap().len(), 2);
 }
@@ -214,14 +347,26 @@ async fn create_rejects_over_session_cap() {
     for _ in 0..2 {
         let mut h = HeaderMap::new();
         h.insert("upload-length", "10".parse().unwrap());
-        let resp = uploads::create(State(state.clone()), axum::Extension(tref.clone()),
-            Path("t-cap".to_string()), h).await.into_response();
+        let resp = uploads::create(
+            State(state.clone()),
+            axum::Extension(tref.clone()),
+            Path("t-cap".to_string()),
+            h,
+        )
+        .await
+        .into_response();
         assert_eq!(resp.status(), StatusCode::CREATED);
     }
     // Third exceeds the cap.
     let mut h = HeaderMap::new();
     h.insert("upload-length", "10".parse().unwrap());
-    let resp = uploads::create(State(state.clone()), axum::Extension(tref.clone()),
-        Path("t-cap".to_string()), h).await.into_response();
+    let resp = uploads::create(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        Path("t-cap".to_string()),
+        h,
+    )
+    .await
+    .into_response();
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 }

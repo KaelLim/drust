@@ -149,12 +149,20 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     // that have shipped it. The WHERE callable_by = '[]' clause on the
     // UPDATE makes the backfill idempotent (second migration is no-op
     // for already-set rows).
-    let has_rpc: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_system_rpc'",
-        [], |r| r.get(0)
-    ).unwrap_or(0);
+    let has_rpc: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_system_rpc'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     if has_rpc > 0 {
-        add_column_if_missing(&tx, "_system_rpc", "callable_by", "TEXT NOT NULL DEFAULT '[]'")?;
+        add_column_if_missing(
+            &tx,
+            "_system_rpc",
+            "callable_by",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
         tx.execute(
             "UPDATE _system_rpc SET callable_by = \
                 CASE WHEN anon_callable = 1 THEN '[\"anon\",\"user\"]' ELSE '[]' END \
@@ -164,7 +172,12 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         // v1.29.5 — _system_rpc.user_calls (H3-2 phase 1). Defaults to 0;
         // v1.30 RPC v2 will write user-role counts here instead of
         // lumping them into anon_calls.
-        add_column_if_missing(&tx, "_system_rpc", "user_calls", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing(
+            &tx,
+            "_system_rpc",
+            "user_calls",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         // v1.30 — _system_rpc.mode (S1). 'read' default keeps every v1.29 RPC
         // on the existing v1.6 SELECT path. CHECK constraint is *not* applied
         // by ALTER TABLE ADD COLUMN (SQLite ignores it on alter); the constraint
@@ -183,33 +196,44 @@ pub struct MigrationReport {
     pub tenants_failed: Vec<(String, String)>,
 }
 
-pub fn run_migrations(
-    meta: &Connection,
-    tenants_root: &Path,
-) -> rusqlite::Result<MigrationReport> {
+pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Result<MigrationReport> {
     let mut report = MigrationReport::default();
 
-    add_column_if_missing(meta, "tenants", "allow_self_register",
-        "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "allow_self_register",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     // v1.32.5 — opt-in publish policy. Default off keeps the historical
     // service-only gate; flipping a flag lets user / anon tokens call
     // `op:publish` (WS) or POST /rooms/<r> (REST). MCP `broadcast` tool
     // stays service-only by MCP dispatch — these flags do not loosen it.
-    add_column_if_missing(meta, "tenants", "allow_user_publish",
-        "INTEGER NOT NULL DEFAULT 0")?;
-    add_column_if_missing(meta, "tenants", "allow_anon_publish",
-        "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "allow_user_publish",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "allow_anon_publish",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     // v1.15.0 — denormalized dashboard stats sampled in background.
-    add_column_if_missing(meta, "tenants", "db_bytes",
-        "INTEGER NOT NULL DEFAULT 0")?;
-    add_column_if_missing(meta, "tenants", "files_bytes",
-        "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(meta, "tenants", "db_bytes", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(meta, "tenants", "files_bytes", "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(meta, "tenants", "stats_updated_at", "TEXT")?;
 
     // v1.29.0 — team management: role column + backfill
     add_column_if_missing(meta, "admins", "role", "TEXT NOT NULL DEFAULT 'member'")?;
     let any_owner: bool = meta
-        .query_row("SELECT 1 FROM admins WHERE role='owner' LIMIT 1", [], |_| Ok(()))
+        .query_row(
+            "SELECT 1 FROM admins WHERE role='owner' LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
         .is_ok();
     if !any_owner {
         meta.execute("UPDATE admins SET role='owner'", [])?;
@@ -225,7 +249,7 @@ pub fn run_migrations(
         "DROP TABLE IF EXISTS _oauth_refresh_tokens;
          DROP TABLE IF EXISTS _oauth_access_tokens;
          DROP TABLE IF EXISTS _oauth_authorization_codes;
-         DROP TABLE IF EXISTS _oauth_clients;"
+         DROP TABLE IF EXISTS _oauth_clients;",
     )?;
 
     // v1.29.3 — collapse the two-PAT model (Task 8 manual + v1.29.2 auto_mcp)
@@ -243,7 +267,7 @@ pub fn run_migrations(
     //    and kind='auto_mcp' from v1.29.2 — neither has plaintext stored).
     //    The backfill loop below produces fresh plaintext-bearing rows.
     meta.execute_batch(
-        "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE revoked_at IS NULL;"
+        "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE revoked_at IS NULL;",
     )?;
 
     // 4. Swap the partial unique index: drop the kind-based one, create one
@@ -251,7 +275,7 @@ pub fn run_migrations(
     meta.execute_batch(
         "DROP INDEX IF EXISTS uniq_admin_tokens_auto_mcp;
          CREATE UNIQUE INDEX IF NOT EXISTS uniq_admin_tokens_active \
-             ON _admin_tokens(admin_id) WHERE revoked_at IS NULL;"
+             ON _admin_tokens(admin_id) WHERE revoked_at IS NULL;",
     )?;
 
     // 5 & 6. Drop the `kind` and `name` columns.
@@ -259,14 +283,20 @@ pub fn run_migrations(
     //    is referenced by a constraint (UNIQUE(admin_id, name) blocks dropping
     //    `name` directly). We use the classic rename-create-insert-drop
     //    table rebuild when either column is present.
-    let has_kind: i64 = meta.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('_admin_tokens') WHERE name = 'kind'",
-        [], |r| r.get(0)
-    ).unwrap_or(0);
-    let has_name: i64 = meta.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('_admin_tokens') WHERE name = 'name'",
-        [], |r| r.get(0)
-    ).unwrap_or(0);
+    let has_kind: i64 = meta
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('_admin_tokens') WHERE name = 'kind'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let has_name: i64 = meta
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('_admin_tokens') WHERE name = 'name'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     if has_kind > 0 || has_name > 0 {
         // Rebuild the table without the obsolete columns, preserving all rows.
         meta.execute_batch(
@@ -287,7 +317,7 @@ pub fn run_migrations(
              DROP TABLE _admin_tokens_legacy;
              CREATE INDEX IF NOT EXISTS idx_admin_tokens_admin ON _admin_tokens(admin_id);
              CREATE UNIQUE INDEX IF NOT EXISTS uniq_admin_tokens_active
-                 ON _admin_tokens(admin_id) WHERE revoked_at IS NULL;"
+                 ON _admin_tokens(admin_id) WHERE revoked_at IS NULL;",
         )?;
     }
 
@@ -299,10 +329,13 @@ pub fn run_migrations(
             .collect::<rusqlite::Result<Vec<i64>>>()?
     };
     for aid in admin_ids {
-        let has_active: bool = meta.query_row(
-            "SELECT 1 FROM _admin_tokens WHERE admin_id = ?1 AND revoked_at IS NULL",
-            rusqlite::params![aid], |_| Ok(())
-        ).is_ok();
+        let has_active: bool = meta
+            .query_row(
+                "SELECT 1 FROM _admin_tokens WHERE admin_id = ?1 AND revoked_at IS NULL",
+                rusqlite::params![aid],
+                |_| Ok(()),
+            )
+            .is_ok();
         if !has_active {
             let plaintext = crate::auth::admin_token::generate_token();
             let hash = crate::auth::admin_token::hash_token(&plaintext);
@@ -320,14 +353,17 @@ pub fn run_migrations(
     // Guard: `sessions` is always present on a real DB (created by
     // SCHEMA_SQL before run_migrations), but tests that seed only a
     // minimal subset of tables skip this step safely.
-    let sessions_exists: bool = meta.query_row(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'",
-        [], |_| Ok(())
-    ).is_ok();
+    let sessions_exists: bool = meta
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
     if sessions_exists {
         add_column_if_missing(meta, "sessions", "token_hash", "TEXT")?;
         meta.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);"
+            "CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);",
         )?;
     }
 
@@ -382,24 +418,40 @@ mod tests {
 
         // Column exists
         let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(admins)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert!(cols.contains(&"role".to_string()), "missing role column: {cols:?}");
+            .prepare("PRAGMA table_info(admins)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"role".to_string()),
+            "missing role column: {cols:?}"
+        );
 
         // All existing admins backfilled to 'owner'
         let roles: Vec<String> = conn
-            .prepare("SELECT role FROM admins ORDER BY id").unwrap()
-            .query_map([], |r| r.get::<_, String>(0)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert_eq!(roles, vec!["owner", "owner"], "backfill should lift all existing admins");
+            .prepare("SELECT role FROM admins ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            roles,
+            vec!["owner", "owner"],
+            "backfill should lift all existing admins"
+        );
 
         // Idempotent: second run is a no-op
         run_migrations(&conn, tmp.path()).unwrap();
         let roles: Vec<String> = conn
-            .prepare("SELECT role FROM admins ORDER BY id").unwrap()
-            .query_map([], |r| r.get::<_, String>(0)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
+            .prepare("SELECT role FROM admins ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
         assert_eq!(roles, vec!["owner", "owner"]);
     }
 
@@ -427,9 +479,13 @@ mod tests {
         ] {
             let row: i64 = conn
                 .query_row(
-                    &format!("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='{table}'"),
-                    [], |r| r.get(0)
-                ).unwrap();
+                    &format!(
+                        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='{table}'"
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(row, 0, "table {table} should have been dropped");
         }
     }
@@ -445,12 +501,27 @@ mod tests {
         run_migrations(&conn, tmp.path()).unwrap();
 
         let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(_admin_tokens)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert!(cols.contains(&"plaintext".to_string()), "plaintext column missing: {:?}", cols);
-        assert!(!cols.contains(&"kind".to_string()), "kind column should be dropped: {:?}", cols);
-        assert!(!cols.contains(&"name".to_string()), "name column should be dropped: {:?}", cols);
+            .prepare("PRAGMA table_info(_admin_tokens)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"plaintext".to_string()),
+            "plaintext column missing: {:?}",
+            cols
+        );
+        assert!(
+            !cols.contains(&"kind".to_string()),
+            "kind column should be dropped: {:?}",
+            cols
+        );
+        assert!(
+            !cols.contains(&"name".to_string()),
+            "name column should be dropped: {:?}",
+            cols
+        );
     }
 
     #[test]
@@ -480,11 +551,21 @@ mod tests {
         run_migrations(&conn, tmp.path()).unwrap();
 
         // (a) kind column dropped.
-        let cols: Vec<String> = conn.prepare("PRAGMA table_info(_admin_tokens)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert!(!cols.contains(&"kind".to_string()), "kind should be dropped");
-        assert!(cols.contains(&"plaintext".to_string()), "plaintext should be added");
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(_admin_tokens)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            !cols.contains(&"kind".to_string()),
+            "kind should be dropped"
+        );
+        assert!(
+            cols.contains(&"plaintext".to_string()),
+            "plaintext should be added"
+        );
 
         // (b) Old auto_mcp index gone, new active index present.
         let old: Option<String> = conn.query_row(
@@ -499,10 +580,14 @@ mod tests {
         assert!(new_sql.contains("revoked_at IS NULL"));
 
         // (c) Legacy hash_legacy row was soft-revoked.
-        let legacy_revoked: Option<String> = conn.query_row(
-            "SELECT revoked_at FROM _admin_tokens WHERE token_hash = 'hash_legacy'",
-            [], |r| r.get(0)
-        ).ok().flatten();
+        let legacy_revoked: Option<String> = conn
+            .query_row(
+                "SELECT revoked_at FROM _admin_tokens WHERE token_hash = 'hash_legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
         assert!(legacy_revoked.is_some(), "legacy PAT must be soft-revoked");
 
         // (d) Backfill: both admins have one active PAT with non-NULL plaintext.
@@ -511,42 +596,62 @@ mod tests {
                 "SELECT COUNT(*) FROM _admin_tokens WHERE admin_id = ?1 AND revoked_at IS NULL AND plaintext IS NOT NULL",
                 rusqlite::params![aid], |r| r.get(0)
             ).unwrap();
-            assert_eq!(count, 1, "admin {} must have exactly 1 active plaintext PAT, got {}", aid, count);
+            assert_eq!(
+                count, 1,
+                "admin {} must have exactly 1 active plaintext PAT, got {}",
+                aid, count
+            );
         }
 
         // (e) Partial unique index prevents a second active row.
         conn.execute(
-            "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext) VALUES (1, 'h2', 'p2')", []
-        ).expect_err("second active row should violate uniq_admin_tokens_active");
+            "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext) VALUES (1, 'h2', 'p2')",
+            [],
+        )
+        .expect_err("second active row should violate uniq_admin_tokens_active");
     }
 
     #[test]
     fn create_system_users_idempotent() {
         let c = fresh();
-        c.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS).unwrap();
-        c.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS).unwrap();
-        let n: i64 = c.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_users'",
-            [], |r| r.get(0)).unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS)
+            .unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS)
+            .unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_users'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(n, 1);
     }
 
     #[test]
     fn create_system_sessions_idempotent() {
         let c = fresh();
-        c.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS).unwrap();
-        c.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS).unwrap();
-        let n: i64 = c.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_sessions'",
-            [], |r| r.get(0)).unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)
+            .unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)
+            .unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_sessions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(n, 1);
     }
 
     #[test]
     fn create_system_oauth_providers_idempotent() {
         let c = fresh();
-        c.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS).unwrap();
-        c.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS).unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS)
+            .unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS)
+            .unwrap();
         let n: i64 = c.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_oauth_providers'",
             [], |r| r.get(0)).unwrap();
@@ -556,11 +661,17 @@ mod tests {
     #[test]
     fn create_system_webhooks_idempotent() {
         let c = fresh();
-        c.execute_batch(SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS).unwrap();
-        c.execute_batch(SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS).unwrap(); // second run is a no-op
-        let n: i64 = c.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_webhooks'",
-            [], |r| r.get(0)).unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS)
+            .unwrap();
+        c.execute_batch(SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS)
+            .unwrap(); // second run is a no-op
+        let n: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_webhooks'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -570,9 +681,13 @@ mod tests {
         c.execute("CREATE TABLE t (a TEXT)", []).unwrap();
         add_column_if_missing(&c, "t", "b", "INTEGER NOT NULL DEFAULT 0").unwrap();
         add_column_if_missing(&c, "t", "b", "INTEGER NOT NULL DEFAULT 0").unwrap();
-        let cols: Vec<String> = c.prepare("PRAGMA table_info(t)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<Result<_, _>>().unwrap();
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(t)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(cols, vec!["a".to_string(), "b".to_string()]);
     }
 
@@ -595,18 +710,30 @@ mod tests {
         migrate_tenant_db(dir.path(), "t-x").unwrap(); // idempotent
 
         let c = Connection::open(&p).unwrap();
-        let n_users: i64 = c.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_users'",
-            [], |r| r.get(0)).unwrap();
-        let n_sess: i64 = c.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_sessions'",
-            [], |r| r.get(0)).unwrap();
+        let n_users: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_users'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let n_sess: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_sessions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(n_users, 1);
         assert_eq!(n_sess, 1);
 
-        let cols: Vec<String> = c.prepare("PRAGMA table_info(_system_collection_meta)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<Result<_, _>>().unwrap();
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(_system_collection_meta)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert!(cols.contains(&"owner_field".to_string()));
         assert!(cols.contains(&"read_scope".to_string()));
     }
@@ -688,7 +815,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(v, 1, "existing row should preserve current SSE behaviour (= 1)");
+        assert_eq!(
+            v, 1,
+            "existing row should preserve current SSE behaviour (= 1)"
+        );
     }
 
     #[test]
@@ -713,7 +843,8 @@ mod tests {
                  INSERT INTO _system_collection_meta
                     (collection_name, anon_caps_json, updated_at)
                     VALUES ('legacy', '[\"select\"]', '2026-01-01');",
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         migrate_tenant_db(dir.path(), "t-desc").unwrap();
@@ -721,25 +852,43 @@ mod tests {
 
         let c = Connection::open(&p).unwrap();
         let cols: Vec<String> = c
-            .prepare("PRAGMA table_info(_system_collection_meta)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<Result<_, _>>().unwrap();
-        assert!(cols.contains(&"description".to_string()),
-            "description column missing; cols = {cols:?}");
-        assert!(cols.contains(&"field_descriptions_json".to_string()),
-            "field_descriptions_json column missing; cols = {cols:?}");
-        assert!(cols.contains(&"index_descriptions_json".to_string()),
-            "index_descriptions_json column missing; cols = {cols:?}");
+            .prepare("PRAGMA table_info(_system_collection_meta)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"description".to_string()),
+            "description column missing; cols = {cols:?}"
+        );
+        assert!(
+            cols.contains(&"field_descriptions_json".to_string()),
+            "field_descriptions_json column missing; cols = {cols:?}"
+        );
+        assert!(
+            cols.contains(&"index_descriptions_json".to_string()),
+            "index_descriptions_json column missing; cols = {cols:?}"
+        );
 
         // Existing row defaults: description NULL, both JSON blobs '{}'.
-        let (d, fd, id): (Option<String>, String, String) = c.query_row(
-            "SELECT description, field_descriptions_json, index_descriptions_json
+        let (d, fd, id): (Option<String>, String, String) = c
+            .query_row(
+                "SELECT description, field_descriptions_json, index_descriptions_json
                FROM _system_collection_meta WHERE collection_name='legacy'",
-            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        ).unwrap();
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
         assert!(d.is_none(), "legacy row description should default to NULL");
-        assert_eq!(fd, "{}", "legacy row field_descriptions_json should default to {{}}");
-        assert_eq!(id, "{}", "legacy row index_descriptions_json should default to {{}}");
+        assert_eq!(
+            fd, "{}",
+            "legacy row field_descriptions_json should default to {{}}"
+        );
+        assert_eq!(
+            id, "{}",
+            "legacy row index_descriptions_json should default to {{}}"
+        );
     }
 
     #[test]
@@ -776,9 +925,13 @@ mod tests {
         assert!(report.tenants_failed.iter().any(|(t, _)| t == "t-locked"));
         // t-ok must have been migrated despite t-locked failing
         let c = Connection::open(ok_dir.join("data.sqlite")).unwrap();
-        let n: i64 = c.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_users'",
-            [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_users'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -809,8 +962,20 @@ mod tests {
         migrate_tenant_db(dir.path(), "t-rpc").unwrap(); // idempotent — second run no-op
 
         let c = Connection::open(&p).unwrap();
-        let pub_cb: String = c.query_row("SELECT callable_by FROM _system_rpc WHERE name='public_fn'", [], |r| r.get(0)).unwrap();
-        let svc_cb: String = c.query_row("SELECT callable_by FROM _system_rpc WHERE name='service_fn'", [], |r| r.get(0)).unwrap();
+        let pub_cb: String = c
+            .query_row(
+                "SELECT callable_by FROM _system_rpc WHERE name='public_fn'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let svc_cb: String = c
+            .query_row(
+                "SELECT callable_by FROM _system_rpc WHERE name='service_fn'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(pub_cb, r#"["anon","user"]"#);
         assert_eq!(svc_cb, "[]");
     }
@@ -840,7 +1005,13 @@ mod tests {
         migrate_tenant_db(dir.path(), "t-uc").unwrap(); // idempotent
 
         let c = Connection::open(&p).unwrap();
-        let uc: i64 = c.query_row("SELECT user_calls FROM _system_rpc WHERE name='x'", [], |r| r.get(0)).unwrap();
+        let uc: i64 = c
+            .query_row(
+                "SELECT user_calls FROM _system_rpc WHERE name='x'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(uc, 0);
     }
 
@@ -873,24 +1044,41 @@ mod tests {
         drop(conn);
         migrate_tenant_db(tmp.path(), "fresh130").unwrap();
 
-        let c = Connection::open(tmp.path().join("tenants").join("fresh130").join("data.sqlite")).unwrap();
+        let c = Connection::open(
+            tmp.path()
+                .join("tenants")
+                .join("fresh130")
+                .join("data.sqlite"),
+        )
+        .unwrap();
         // (a) Column present.
         let cols: Vec<String> = c
-            .prepare("PRAGMA table_info(_system_rpc)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert!(cols.contains(&"mode".to_string()),
-            "_system_rpc.mode column missing on fresh DB; cols = {cols:?}");
+            .prepare("PRAGMA table_info(_system_rpc)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"mode".to_string()),
+            "_system_rpc.mode column missing on fresh DB; cols = {cols:?}"
+        );
 
         // (b) Default-value check: insert omitting `mode`, then read it back.
         c.execute(
             "INSERT INTO _system_rpc (name, sql, params_json) VALUES ('m1', 'SELECT 1', '[]')",
             [],
-        ).unwrap();
-        let m: String = c.query_row(
-            "SELECT mode FROM _system_rpc WHERE name = 'm1'", [], |r| r.get(0)
-        ).unwrap();
-        assert_eq!(m, "read", "fresh-DB default for _system_rpc.mode must be 'read'");
+        )
+        .unwrap();
+        let m: String = c
+            .query_row("SELECT mode FROM _system_rpc WHERE name = 'm1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            m, "read",
+            "fresh-DB default for _system_rpc.mode must be 'read'"
+        );
     }
 
     #[test]
@@ -922,18 +1110,29 @@ mod tests {
 
         let c = Connection::open(&p).unwrap();
         let cols: Vec<String> = c
-            .prepare("PRAGMA table_info(_system_rpc)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert!(cols.contains(&"mode".to_string()),
-            "mode column missing after upgrade; cols = {cols:?}");
+            .prepare("PRAGMA table_info(_system_rpc)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"mode".to_string()),
+            "mode column missing after upgrade; cols = {cols:?}"
+        );
 
         for name in ["old_a", "old_b"] {
-            let m: String = c.query_row(
-                "SELECT mode FROM _system_rpc WHERE name = ?1",
-                rusqlite::params![name], |r| r.get(0)
-            ).unwrap();
-            assert_eq!(m, "read", "pre-v1.30 row {name} should default to 'read', got {m:?}");
+            let m: String = c
+                .query_row(
+                    "SELECT mode FROM _system_rpc WHERE name = ?1",
+                    rusqlite::params![name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                m, "read",
+                "pre-v1.30 row {name} should default to 'read', got {m:?}"
+            );
         }
     }
 
@@ -965,11 +1164,17 @@ mod tests {
 
         // Sanity: column exists exactly once.
         let c = Connection::open(&p).unwrap();
-        let mode_count: i64 = c.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('_system_rpc') WHERE name = 'mode'",
-            [], |r| r.get(0)
-        ).unwrap();
-        assert_eq!(mode_count, 1, "mode column must appear exactly once after double-migrate");
+        let mode_count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('_system_rpc') WHERE name = 'mode'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            mode_count, 1,
+            "mode column must appear exactly once after double-migrate"
+        );
     }
 
     #[test]
@@ -978,11 +1183,13 @@ mod tests {
         // must reject an out-of-set value.
         let tmp = TempDir::new().unwrap();
         let conn = crate::storage::tenant_db::open_write(tmp.path(), "chkmode").unwrap();
-        let err = conn.execute(
-            "INSERT INTO _system_rpc (name, sql, params_json, mode)
+        let err = conn
+            .execute(
+                "INSERT INTO _system_rpc (name, sql, params_json, mode)
              VALUES ('x', 'SELECT 1', '[]', 'execute')",
-            [],
-        ).unwrap_err();
+                [],
+            )
+            .unwrap_err();
         // Any SQLite error is acceptable; the test guarantees the row was
         // not accepted. We additionally assert the message mentions CHECK
         // to catch a future drift where the constraint silently disappears.

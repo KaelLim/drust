@@ -29,7 +29,10 @@ async fn app_with_tenant() -> (axum::Router, tempfile::TempDir) {
     // run_migrations creates _system_users, _system_sessions, etc.
     drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
 
-    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2));
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
     let bus = drust::tenant::events::EventBus::new();
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
@@ -96,9 +99,9 @@ async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), 4_000_000)
         .await
         .unwrap();
-    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-        serde_json::json!({ "_raw": String::from_utf8_lossy(&bytes).to_string() })
-    })
+    serde_json::from_slice(&bytes).unwrap_or_else(
+        |_| serde_json::json!({ "_raw": String::from_utf8_lossy(&bytes).to_string() }),
+    )
 }
 
 async fn post_list(
@@ -111,9 +114,7 @@ async fn post_list(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!(
-                    "/admin/tenants/{TENANT}/collections/{coll}/_list"
-                ))
+                .uri(format!("/admin/tenants/{TENANT}/collections/{coll}/_list"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, cookie)
                 .body(Body::from(body.to_string()))
@@ -180,8 +181,7 @@ async fn password_hash_is_masked() {
     assert_eq!(rows.len(), 1, "expected exactly one user row");
     let masked = rows[0][pw_idx].as_str().unwrap();
     assert_eq!(
-        masked,
-        "\u{25cf}\u{25cf}\u{25cf}\u{25cf}",
+        masked, "\u{25cf}\u{25cf}\u{25cf}\u{25cf}",
         "password_hash must be masked with 4 bullet characters"
     );
 }

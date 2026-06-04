@@ -13,7 +13,7 @@
 
 use axum::body::Body;
 use axum::extract::Request;
-use axum::http::{header, HeaderValue, Uri};
+use axum::http::{HeaderValue, Uri, header};
 use axum::middleware::Next;
 use axum::response::Response;
 
@@ -71,10 +71,10 @@ fn strip_query_param(uri: &Uri, key: &str) -> Option<Uri> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
     use axum::body::Body;
     use axum::http::{Method, Request, StatusCode};
     use axum::routing::get;
-    use axum::Router;
     use tower::ServiceExt;
 
     /// Probe: returns the inbound Authorization value (or "none").
@@ -104,7 +104,9 @@ mod tests {
     }
 
     async fn body_string(resp: axum::response::Response) -> String {
-        let b = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let b = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
         String::from_utf8_lossy(&b).into_owned()
     }
 
@@ -195,8 +197,14 @@ mod tests {
     #[tokio::test]
     async fn ws_subrouter_layer_order_lets_query_token_reach_auth() {
         // Synthetic auth check: 401 when no Authorization header.
-        async fn fake_auth(req: Request<Body>, next: axum::middleware::Next) -> axum::response::Response {
-            if req.headers().contains_key(axum::http::header::AUTHORIZATION) {
+        async fn fake_auth(
+            req: Request<Body>,
+            next: axum::middleware::Next,
+        ) -> axum::response::Response {
+            if req
+                .headers()
+                .contains_key(axum::http::header::AUTHORIZATION)
+            {
                 next.run(req).await
             } else {
                 (StatusCode::UNAUTHORIZED, "missing bearer").into_response()
@@ -231,8 +239,7 @@ mod tests {
         let bad: Router = Router::new()
             .route(
                 "/ws",
-                get(|| async { "ok" })
-                    .layer(axum::middleware::from_fn(ws_query_token_adapter)),
+                get(|| async { "ok" }).layer(axum::middleware::from_fn(ws_query_token_adapter)),
             )
             .layer(axum::middleware::from_fn(fake_auth));
         let resp = bad
@@ -263,14 +270,10 @@ mod tests {
 
         // Router shape mirrors the post-fix `core` shape: adapter mounted
         // ONLY on /ws; a sibling /records route has no layer.
-        let app: Router = Router::new()
-            .route("/records", post(probe_auth))
-            .route(
-                "/ws",
-                get(probe_auth).layer(axum::middleware::from_fn(
-                    super::ws_query_token_adapter,
-                )),
-            );
+        let app: Router = Router::new().route("/records", post(probe_auth)).route(
+            "/ws",
+            get(probe_auth).layer(axum::middleware::from_fn(super::ws_query_token_adapter)),
+        );
 
         let resp = app
             .clone()

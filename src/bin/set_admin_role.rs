@@ -54,11 +54,10 @@ fn main() -> anyhow::Result<()> {
         )
         .map_err(|_| anyhow::anyhow!("no admin found with email {email:?}"))?;
 
-    let before: String = conn.query_row(
-        "SELECT role FROM admins WHERE id = ?1",
-        params![id],
-        |r| r.get(0),
-    )?;
+    let before: String =
+        conn.query_row("SELECT role FROM admins WHERE id = ?1", params![id], |r| {
+            r.get(0)
+        })?;
 
     conn.execute(
         "UPDATE admins SET role = ?1 WHERE id = ?2",

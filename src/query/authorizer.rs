@@ -150,7 +150,9 @@ pub fn attach_writable_authorizer(conn: &Connection) {
             _ => Authorization::Deny,
         }
     }))
-    .expect("writable authorizer must install — fail closed rather than run RPC write body unguarded");
+    .expect(
+        "writable authorizer must install — fail closed rather than run RPC write body unguarded",
+    );
 }
 
 #[cfg(test)]
@@ -167,7 +169,8 @@ mod auth_tests {
             "INSERT INTO _system_rpc (name, sql, params_json, created_at, updated_at)
                   VALUES ('test', 'SELECT 1', '[]', datetime('now'), datetime('now'))",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         tmp
     }
 
@@ -176,11 +179,8 @@ mod auth_tests {
         let tmp = fresh_with_rpc_table();
         let conn = open_read(tmp.path(), "rpcauth").unwrap();
         attach_readonly_authorizer(&conn);
-        let r: rusqlite::Result<i64> = conn.query_row(
-            "SELECT COUNT(*) FROM _system_rpc",
-            [],
-            |r| r.get(0),
-        );
+        let r: rusqlite::Result<i64> =
+            conn.query_row("SELECT COUNT(*) FROM _system_rpc", [], |r| r.get(0));
         assert!(r.is_err(), "expected denial, got {:?}", r);
     }
 
@@ -189,11 +189,8 @@ mod auth_tests {
         let tmp = fresh_with_rpc_table();
         let conn = open_read(tmp.path(), "rpcauth").unwrap();
         attach_readonly_authorizer(&conn);
-        let r: rusqlite::Result<i64> = conn.query_row(
-            "SELECT COUNT(*) FROM _system_files",
-            [],
-            |r| r.get(0),
-        );
+        let r: rusqlite::Result<i64> =
+            conn.query_row("SELECT COUNT(*) FROM _system_files", [], |r| r.get(0));
         assert!(r.is_err(), "expected denial, got {:?}", r);
     }
 
@@ -202,11 +199,10 @@ mod auth_tests {
         let tmp = fresh_with_rpc_table();
         let conn = open_read(tmp.path(), "rpcauth").unwrap();
         attach_readonly_authorizer(&conn);
-        let r: rusqlite::Result<i64> = conn.query_row(
-            "SELECT COUNT(*) FROM _system_collection_meta",
-            [],
-            |r| r.get(0),
-        );
+        let r: rusqlite::Result<i64> =
+            conn.query_row("SELECT COUNT(*) FROM _system_collection_meta", [], |r| {
+                r.get(0)
+            });
         assert!(r.is_err(), "expected denial, got {:?}", r);
     }
 }

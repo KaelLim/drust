@@ -364,8 +364,7 @@ pub async fn upload(
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "tenant pool open failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("tenant db: {e}"))
-                .into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("tenant db: {e}")).into_response();
         }
     };
     {

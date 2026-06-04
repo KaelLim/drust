@@ -22,7 +22,9 @@ async fn app() -> axum::Router {
     )));
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
-        audit_meta_read: Arc::new(tokio::sync::Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
+        audit_meta_read: Arc::new(tokio::sync::Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
@@ -38,8 +40,16 @@ async fn app() -> axum::Router {
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
-        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
-        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
     };
     build_mgmt_router(state)
 }

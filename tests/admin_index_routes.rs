@@ -41,14 +41,19 @@ async fn app_with_tenant_and_coll() -> (axum::Router, tempfile::TempDir) {
         .unwrap();
     drop(writer);
 
-    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2));
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
     let bus = drust::tenant::events::EventBus::new();
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
     )));
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
-        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
+        audit_meta_read: Arc::new(Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
@@ -64,8 +69,16 @@ async fn app_with_tenant_and_coll() -> (axum::Router, tempfile::TempDir) {
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
-        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
-        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
     };
     let router = state.with_data_dir(data_dir);
     (router, dir)
@@ -99,9 +112,9 @@ async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), 4_000_000)
         .await
         .unwrap();
-    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-        serde_json::json!({ "_raw": String::from_utf8_lossy(&bytes).to_string() })
-    })
+    serde_json::from_slice(&bytes).unwrap_or_else(
+        |_| serde_json::json!({ "_raw": String::from_utf8_lossy(&bytes).to_string() }),
+    )
 }
 
 // ── unauthenticated guard ─────────────────────────────────────────────────────
@@ -134,7 +147,10 @@ async fn create_index_unauthenticated_redirects_to_login() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert!(loc.contains("/login"), "expected /login redirect, got {loc}");
+    assert!(
+        loc.contains("/login"),
+        "expected /login redirect, got {loc}"
+    );
 }
 
 // ── create index ──────────────────────────────────────────────────────────────

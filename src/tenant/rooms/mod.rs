@@ -25,5 +25,5 @@ pub use ws::ws_handler;
 pub use bus::{RoomBus, RoomMessage};
 pub use envelope::{ClientOp, ServerMessage, codes};
 pub use policy::{PublishBucket, validate_room_name};
-pub use rest::{publish_handler, publish_into_bus, PublishCtx, PublishError};
+pub use rest::{PublishCtx, PublishError, publish_handler, publish_into_bus};
 pub use state::RoomsConfig;

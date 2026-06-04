@@ -12,9 +12,7 @@
 use crate::auth::middleware::AuthCtx;
 use crate::error::json_error;
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
-use crate::query::list_builder::{
-    ListError, ListRequest, build_structured_list_sql,
-};
+use crate::query::list_builder::{ListError, ListRequest, build_structured_list_sql};
 use crate::query::vector_filter::FilterError;
 use crate::storage::schema::{DmlVerb, is_protected_collection};
 use crate::tenant::router::{TenantRef, TokenRole};
@@ -86,19 +84,15 @@ pub async fn post_list(
                 return json_error(
                     StatusCode::FORBIDDEN,
                     "ANON_CAP_DENIED",
-                    &format!(
-                        "anon role lacks 'select' on collection '{coll}'"
-                    ),
+                    &format!("anon role lacks 'select' on collection '{coll}'"),
                 );
             }
             None
         }
         // User on owner-scoped + read_scope=own → auto-append owner clause.
-        (
-            AuthCtx::User { user_id, .. },
-            Some(field),
-            Some("own"),
-        ) => Some((field.to_string(), user_id.clone())),
+        (AuthCtx::User { user_id, .. }, Some(field), Some("own")) => {
+            Some((field.to_string(), user_id.clone()))
+        }
 
         // User on owner-scoped + read_scope=all → no row filter but caller
         // is owner-scope-aware. Treat as non-owner-scoped for caps (no
@@ -111,9 +105,7 @@ pub async fn post_list(
                 return json_error(
                     StatusCode::FORBIDDEN,
                     "ANON_CAP_DENIED",
-                    &format!(
-                        "user role inherits anon caps; 'select' not allowed on '{coll}'"
-                    ),
+                    &format!("user role inherits anon caps; 'select' not allowed on '{coll}'"),
                 );
             }
             None
@@ -124,9 +116,7 @@ pub async fn post_list(
                 return json_error(
                     StatusCode::FORBIDDEN,
                     "ANON_CAP_DENIED",
-                    &format!(
-                        "user role inherits anon caps; 'select' not allowed on '{coll}'"
-                    ),
+                    &format!("user role inherits anon caps; 'select' not allowed on '{coll}'"),
                 );
             }
             None
@@ -150,11 +140,10 @@ pub async fn post_list(
 
     // ── Compile SQL ──────────────────────────────────────────────────
     let owner_ref = owner_pair.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
-    let (list_sql, count_sql, binds) =
-        match build_structured_list_sql(&schema, &req, owner_ref) {
-            Ok(x) => x,
-            Err(e) => return map_list_error(e),
-        };
+    let (list_sql, count_sql, binds) = match build_structured_list_sql(&schema, &req, owner_ref) {
+        Ok(x) => x,
+        Err(e) => return map_list_error(e),
+    };
 
     // Vector field names — server-side default-hide on the response
     // (matches GET /records behaviour). For `/list`, we already excluded
@@ -293,11 +282,10 @@ pub async fn post_list_explain(
         }
     };
 
-    let (list_sql, _count, binds) =
-        match build_structured_list_sql(&schema, &req, None) {
-            Ok(x) => x,
-            Err(e) => return map_list_error(e),
-        };
+    let (list_sql, _count, binds) = match build_structured_list_sql(&schema, &req, None) {
+        Ok(x) => x,
+        Err(e) => return map_list_error(e),
+    };
 
     let plan_sql = format!("EXPLAIN QUERY PLAN {list_sql}");
     let plan: Vec<String> = pool
@@ -305,14 +293,10 @@ pub async fn post_list_explain(
             attach_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<Vec<String>> {
                 let mut stmt = c.prepare(&plan_sql)?;
-                let refs: Vec<&dyn rusqlite::ToSql> = binds
-                    .iter()
-                    .map(|v| v as &dyn rusqlite::ToSql)
-                    .collect();
-                let rows = stmt.query_map(
-                    rusqlite::params_from_iter(refs),
-                    |r| r.get::<_, String>(3),
-                )?;
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                let rows =
+                    stmt.query_map(rusqlite::params_from_iter(refs), |r| r.get::<_, String>(3))?;
                 let mut out = Vec::new();
                 for row in rows {
                     out.push(row?);
@@ -331,11 +315,9 @@ pub async fn post_list_explain(
 /// Map a `ListError` to an HTTP response per spec §3.
 fn map_list_error(e: ListError) -> Response {
     match e {
-        ListError::Filter(FilterError::Parse(msg)) => json_error(
-            StatusCode::BAD_REQUEST,
-            "FILTER_PARSE_ERROR",
-            &msg,
-        ),
+        ListError::Filter(FilterError::Parse(msg)) => {
+            json_error(StatusCode::BAD_REQUEST, "FILTER_PARSE_ERROR", &msg)
+        }
         ListError::Filter(FilterError::UnknownField(f)) => json_error(
             StatusCode::BAD_REQUEST,
             "FILTER_UNKNOWN_FIELD",
@@ -393,10 +375,8 @@ fn run_bound_select(
     binds: &[Value],
 ) -> rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> {
     let mut stmt = conn.prepare(sql)?;
-    let col_names: Vec<String> =
-        stmt.column_names().iter().map(|s| s.to_string()).collect();
-    let refs: Vec<&dyn rusqlite::ToSql> =
-        binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;
     let mut out: Vec<serde_json::Value> = Vec::new();
     while let Some(r) = rows_iter.next()? {
@@ -409,9 +389,9 @@ fn run_bound_select(
                     ValueRef::Null => serde_json::Value::Null,
                     ValueRef::Integer(n) => json!(n),
                     ValueRef::Real(f) => json!(f),
-                    ValueRef::Text(t) => serde_json::Value::String(
-                        String::from_utf8_lossy(t).into_owned(),
-                    ),
+                    ValueRef::Text(t) => {
+                        serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+                    }
                     ValueRef::Blob(b) => json!({ "__blob_bytes": b.len() }),
                 },
             );

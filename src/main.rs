@@ -1,5 +1,5 @@
-use axum::{Router, routing::get};
 use axum::http::{HeaderName, HeaderValue};
+use axum::{Router, routing::get};
 use drust::config::Config;
 use drust::mcp::http_registry::McpHttpRegistry;
 use drust::mcp::server::McpRegistry;
@@ -90,18 +90,16 @@ async fn main() -> anyhow::Result<()> {
                 .format("%Y-%m-%dT%H:%M:%S%.3fZ")
                 .to_string();
 
-            let last = drust::safety::audit_db::read_last_vacuum_ts(&audit_meta_for_retention).await;
+            let last =
+                drust::safety::audit_db::read_last_vacuum_ts(&audit_meta_for_retention).await;
             let do_vacuum = drust::safety::audit_db::should_vacuum(fired, last);
 
             match drust::safety::audit_db::writer_for_init_use() {
                 Some(w) => {
                     w.send_retention(cutoff, do_vacuum).await;
                     if do_vacuum {
-                        w.send_set_meta(
-                            "last_vacuum_ts".to_string(),
-                            fired.to_rfc3339(),
-                        )
-                        .await;
+                        w.send_set_meta("last_vacuum_ts".to_string(), fired.to_rfc3339())
+                            .await;
                     }
                 }
                 None => tracing::error!("audit retention: global writer not initialised"),
@@ -276,16 +274,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Defensive: if any provider is configured but public_url is missing,
     // disable all OAuth (button hidden, /start returns oauth_misconfigured).
-    let oauth_registry = if !oauth_registry_inner.enabled_names().is_empty()
-        && public_url.is_empty()
-    {
-        tracing::warn!(
-            "OAuth provider(s) configured but DRUST_PUBLIC_URL missing; disabling OAuth"
-        );
-        std::sync::Arc::new(drust::oauth::ProviderRegistry::from_env_empty())
-    } else {
-        std::sync::Arc::new(oauth_registry_inner)
-    };
+    let oauth_registry =
+        if !oauth_registry_inner.enabled_names().is_empty() && public_url.is_empty() {
+            tracing::warn!(
+                "OAuth provider(s) configured but DRUST_PUBLIC_URL missing; disabling OAuth"
+            );
+            std::sync::Arc::new(drust::oauth::ProviderRegistry::from_env_empty())
+        } else {
+            std::sync::Arc::new(oauth_registry_inner)
+        };
 
     let (lu_max, lu_chunk, lu_sessions, lu_ttl) = match &cfg.storage {
         Some(sc) => (
@@ -328,9 +325,9 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_secs(cfg.rate_limit_window_secs),
         cfg.rate_limit_map_cap,
     ));
-    let _cleanup_handle = limiter.clone().spawn_cleanup(Duration::from_secs(
-        cfg.rate_limit_cleanup_interval_secs,
-    ));
+    let _cleanup_handle = limiter
+        .clone()
+        .spawn_cleanup(Duration::from_secs(cfg.rate_limit_cleanup_interval_secs));
     let tenant_files_state = garage.as_ref().map(|g| TenantFilesState {
         garage: Some(g.clone()),
         data_root: cfg.data_dir.clone(),
@@ -362,8 +359,10 @@ async fn main() -> anyhow::Result<()> {
                 let ids: Vec<String> = {
                     let conn = meta_for_janitor.lock().await;
                     conn.prepare("SELECT id FROM tenants WHERE deleted_at IS NULL")
-                        .and_then(|mut s| s.query_map([], |r| r.get::<_, String>(0))
-                            .and_then(|it| it.collect()))
+                        .and_then(|mut s| {
+                            s.query_map([], |r| r.get::<_, String>(0))
+                                .and_then(|it| it.collect())
+                        })
                         .unwrap_or_default()
                 };
                 let now = chrono::Utc::now().to_rfc3339();
@@ -372,7 +371,8 @@ async fn main() -> anyhow::Result<()> {
                     if let Ok(pool) = registry_for_janitor.get_or_open(&tid) {
                         total += drust::tenant::uploads::session::sweep_tenant(
                             &pool, &tid, &data_root, &now,
-                        ).await;
+                        )
+                        .await;
                     }
                 }
                 if total > 0 {
@@ -446,8 +446,7 @@ async fn shutdown_signal() {
     };
     #[cfg(unix)]
     let term = async {
-        if let Ok(mut s) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         {
             s.recv().await;
         }

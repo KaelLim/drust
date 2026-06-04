@@ -54,8 +54,7 @@ async fn setup(
     String,
     String,
 ) {
-    let (app, tid, svc, anon, dir) =
-        helpers::spin_up_dual_role_self_register(tname).await;
+    let (app, tid, svc, anon, dir) = helpers::spin_up_dual_role_self_register(tname).await;
 
     // Create posts table via direct pool write.
     let pool = helpers::grab_pool(&tid, &dir).await;
@@ -134,7 +133,11 @@ async fn read_own_user_only_sees_own_records() {
     assert_eq!(resp.status(), StatusCode::OK);
     let v = read_json(resp).await;
     let arr = v["records"].as_array().unwrap();
-    assert_eq!(arr.len(), 1, "alice should see exactly 1 record, got: {arr:?}");
+    assert_eq!(
+        arr.len(),
+        1,
+        "alice should see exactly 1 record, got: {arr:?}"
+    );
     assert!(
         arr.iter()
             .all(|r| r["title"].as_str().unwrap().starts_with("alice-")),
@@ -273,7 +276,11 @@ async fn insert_overrides_client_supplied_owner_field() {
         ))
         .await
         .unwrap();
-    assert!(r.status().is_success(), "insert should succeed: {:?}", r.status());
+    assert!(
+        r.status().is_success(),
+        "insert should succeed: {:?}",
+        r.status()
+    );
 
     // Alice sees her phishy post.
     let v = read_json(
@@ -480,7 +487,11 @@ async fn user_cannot_transfer_ownership_via_patch_user_id() {
         ))
         .await
         .unwrap();
-    assert!(r.status().is_success(), "patch should succeed: {}", r.status());
+    assert!(
+        r.status().is_success(),
+        "patch should succeed: {}",
+        r.status()
+    );
     // Alice can still see + update the row (still owns it).
     let resp = app
         .clone()
@@ -562,7 +573,11 @@ async fn user_can_read_but_not_write_when_anon_caps_is_select_only() {
         .oneshot(req("GET", &tid, "/records/tags", None, &token))
         .await
         .unwrap();
-    assert!(r.status().is_success(), "user GET should pass via anon's select cap: {}", r.status());
+    assert!(
+        r.status().is_success(),
+        "user GET should pass via anon's select cap: {}",
+        r.status()
+    );
     // POST denied (insert not in caps)
     let r = app
         .oneshot(req(

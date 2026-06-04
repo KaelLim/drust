@@ -288,21 +288,31 @@ mod schema_tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert!(cols.contains(&"description".to_string()),
-            "fresh tenant missing description; cols = {cols:?}");
-        assert!(cols.contains(&"field_descriptions_json".to_string()),
-            "fresh tenant missing field_descriptions_json; cols = {cols:?}");
-        assert!(cols.contains(&"index_descriptions_json".to_string()),
-            "fresh tenant missing index_descriptions_json; cols = {cols:?}");
+        assert!(
+            cols.contains(&"description".to_string()),
+            "fresh tenant missing description; cols = {cols:?}"
+        );
+        assert!(
+            cols.contains(&"field_descriptions_json".to_string()),
+            "fresh tenant missing field_descriptions_json; cols = {cols:?}"
+        );
+        assert!(
+            cols.contains(&"index_descriptions_json".to_string()),
+            "fresh tenant missing index_descriptions_json; cols = {cols:?}"
+        );
     }
 
     #[test]
     fn open_write_creates_upload_sessions_table() {
         let tmp = TempDir::new().unwrap();
         let conn = open_write(tmp.path(), "freshup").unwrap();
-        let exists: bool = conn.query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_system_upload_sessions'",
-            [], |_| Ok(true)).unwrap_or(false);
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_system_upload_sessions'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
         assert!(exists, "_system_upload_sessions missing on fresh tenant");
     }
 }

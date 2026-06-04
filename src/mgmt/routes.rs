@@ -170,15 +170,12 @@ async fn settings_page(
              WHERE admin_id = ?1 AND revoked_at IS NULL",
             rusqlite::params![caller_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        ).ok()
+        )
+        .ok()
     };
 
     let (pat_plaintext, pat_hash_prefix, pat_last_used_at) = match pat_row {
-        Some((plain, hash, last)) => (
-            plain,
-            Some(hash.chars().take(8).collect::<String>()),
-            last,
-        ),
+        Some((plain, hash, last)) => (plain, Some(hash.chars().take(8).collect::<String>()), last),
         None => (None, None, None),
     };
 
@@ -362,7 +359,12 @@ async fn login_page(
         LoginPage {
             error: None,
             version: env!("CARGO_PKG_VERSION"),
-            oauth_providers: state.oauth_registry.enabled_names().into_iter().map(String::from).collect(),
+            oauth_providers: state
+                .oauth_registry
+                .enabled_names()
+                .into_iter()
+                .map(String::from)
+                .collect(),
             oauth_error: q.oauth_error,
             t: Translator::new(locale),
             palette_resolved: trc.palette_resolved,
@@ -387,9 +389,8 @@ async fn login_submit(
     let fallback_addr: std::net::SocketAddr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
     let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.admin_login_rl.check(ip) {
-        let mut entry = crate::safety::audit::AuditEntry::failure(
-            "-", "-", op, 0, "HTTP_429", "rate limited",
-        );
+        let mut entry =
+            crate::safety::audit::AuditEntry::failure("-", "-", op, 0, "HTTP_429", "rate limited");
         entry.auth_method = Some("password".to_string());
         entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
         crate::safety::audit::write_entry(&state.log_dir, &entry).await;
@@ -456,7 +457,7 @@ async fn login_submit(
     // deletes it from the browser jar; the new canonical cookie below then
     // takes over cleanly.
     let expire_legacy_locale = "drust_locale=; Path=/; Max-Age=0; SameSite=Lax";
-    let expire_legacy_theme  = "drust_theme=; Path=/; Max-Age=0; SameSite=Lax";
+    let expire_legacy_theme = "drust_theme=; Path=/; Max-Age=0; SameSite=Lax";
     resp.headers_mut()
         .append(header::SET_COOKIE, expire_legacy_locale.parse().unwrap());
     resp.headers_mut()
@@ -517,7 +518,12 @@ fn unauthorized(
     let body = LoginPage {
         error: Some(msg.to_string()),
         version: env!("CARGO_PKG_VERSION"),
-        oauth_providers: state.oauth_registry.enabled_names().into_iter().map(String::from).collect(),
+        oauth_providers: state
+            .oauth_registry
+            .enabled_names()
+            .into_iter()
+            .map(String::from)
+            .collect(),
         oauth_error: None,
         t: Translator::new(locale),
         palette_resolved: trc.palette_resolved,
@@ -705,10 +711,7 @@ impl MgmtState {
             )
             .route("/admin/tenants/{id}/delete", post(soft_delete_tenant_form))
             .route("/admin/tenants/{id}", get(super::tokens::detail_redirect))
-            .route(
-                "/admin/tenants/{id}/_overview",
-                get(tenant_overview_page),
-            )
+            .route("/admin/tenants/{id}/_overview", get(tenant_overview_page))
             // v1.31 — broadcast room operations (drop hung subscribers).
             .route(
                 "/admin/tenants/{id}/realtime/evict-all",

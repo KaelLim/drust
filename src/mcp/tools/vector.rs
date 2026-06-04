@@ -76,8 +76,8 @@ pub async fn search_collection(
             )
         })?;
 
-    let qvec = vector_codec::pack(&vf.name, vf.dim, &input.vector)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let qvec =
+        vector_codec::pack(&vf.name, vf.dim, &input.vector).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let (where_sql, mut binds): (String, Vec<Value>) = match &input.r#where {
         None => ("1=1".into(), vec![]),
@@ -144,9 +144,9 @@ pub async fn search_collection(
                             ValueRef::Null => serde_json::Value::Null,
                             ValueRef::Integer(x) => json!(x),
                             ValueRef::Real(x) => json!(x),
-                            ValueRef::Text(t) => serde_json::Value::String(
-                                String::from_utf8_lossy(t).into_owned(),
-                            ),
+                            ValueRef::Text(t) => {
+                                serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+                            }
                             ValueRef::Blob(b) => json!({ "__blob_bytes": b.len() }),
                         },
                     );

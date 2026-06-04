@@ -35,11 +35,7 @@ impl IpRateLimit {
 
         if map.len() >= self.max_entries && !map.contains_key(&ip) {
             // LRU eviction: drop the oldest entry by last_seen
-            if let Some(oldest) = map
-                .iter()
-                .min_by_key(|(_, b)| b.last_seen)
-                .map(|(k, _)| *k)
-            {
+            if let Some(oldest) = map.iter().min_by_key(|(_, b)| b.last_seen).map(|(k, _)| *k) {
                 map.remove(&oldest);
             }
         }
@@ -70,7 +66,9 @@ mod tests {
     use std::net::IpAddr;
     use std::time::Duration;
 
-    fn ip(s: &str) -> IpAddr { s.parse().unwrap() }
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
 
     #[test]
     fn under_limit_passes() {
@@ -83,7 +81,9 @@ mod tests {
     #[test]
     fn over_limit_rejects() {
         let rl = IpRateLimit::new(3, Duration::from_secs(60), 100);
-        for _ in 0..3 { assert!(rl.check(ip("2.2.2.2"))); }
+        for _ in 0..3 {
+            assert!(rl.check(ip("2.2.2.2")));
+        }
         assert!(!rl.check(ip("2.2.2.2")));
     }
 

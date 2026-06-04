@@ -57,8 +57,7 @@ async fn rest_delete_dry_run_does_not_delete() {
     use axum::http::{Request, header};
     use tower::ServiceExt;
 
-    let (app, svc_token, dir) =
-        test_helpers::spin_up_tenant_with_role("acme", "service").await;
+    let (app, svc_token, dir) = test_helpers::spin_up_tenant_with_role("acme", "service").await;
 
     // Seed a `posts` collection with one row by going through the same pool.
     let pool = test_helpers::grab_pool("acme", &dir).await;
@@ -125,8 +124,7 @@ async fn rest_drop_index_dry_run_does_not_drop() {
     use axum::http::{Request, header};
     use tower::ServiceExt;
 
-    let (app, svc_token, dir) =
-        test_helpers::spin_up_tenant_with_role("acme", "service").await;
+    let (app, svc_token, dir) = test_helpers::spin_up_tenant_with_role("acme", "service").await;
 
     // Seed a `posts` table and create an index via the pool writer.
     let pool = test_helpers::grab_pool("acme", &dir).await;

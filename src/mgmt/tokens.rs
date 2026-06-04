@@ -155,14 +155,14 @@ pub async fn reroll_token_form(
     if !resp.status().is_success() {
         return resp;
     }
-    Redirect::to(&format!(
-        "/drust/admin/tenants/{}/_api_keys",
-        tenant_id
-    ))
-    .into_response()
+    Redirect::to(&format!("/drust/admin/tenants/{}/_api_keys", tenant_id)).into_response()
 }
 
-pub(crate) fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str) -> Option<TokenSlotInfo> {
+pub(crate) fn read_slot(
+    conn: &rusqlite::Connection,
+    tenant_id: &str,
+    role: &str,
+) -> Option<TokenSlotInfo> {
     let row: Option<(i64, String, Option<String>)> = conn
         .query_row(
             "SELECT id, created_at, plaintext FROM tokens \
@@ -193,11 +193,7 @@ pub(crate) fn read_slot(conn: &rusqlite::Connection, tenant_id: &str, role: &str
 /// Before v1.14 this redirected to `_api_keys`, which is still reachable
 /// via the sidebar.
 pub async fn detail_redirect(Path(tenant_id): Path<String>) -> Response {
-    Redirect::to(&format!(
-        "/drust/admin/tenants/{}/_overview",
-        tenant_id
-    ))
-    .into_response()
+    Redirect::to(&format!("/drust/admin/tenants/{}/_overview", tenant_id)).into_response()
 }
 
 /// `GET /admin/tenants/{id}/_api_keys` — virtual collection that renders the

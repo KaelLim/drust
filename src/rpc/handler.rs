@@ -12,9 +12,7 @@
 
 use crate::auth::middleware::AuthCtx;
 use crate::error::json_error;
-use crate::query::executor::{
-    ExecError, QueryResult, execute_read_query_with_named,
-};
+use crate::query::executor::{ExecError, QueryResult, execute_read_query_with_named};
 use crate::rpc::params::{ParamError, validate_and_bind};
 use crate::rpc::registry::{self, RegistryError};
 use crate::tenant::router::TenantRef;
@@ -94,12 +92,10 @@ pub async fn call_rpc(
     // here keeps the write arm from grabbing the writer mutex when it'd
     // bail out anyway).
     let stored_res = pool
-        .with_reader(move |conn| {
-            match registry::lookup(conn, &name_for_lookup) {
-                Ok(Some(s)) => Ok(Ok(s)),
-                Ok(None) => Ok(Err(RpcOutcome::NotFound)),
-                Err(e) => Ok(Err(RpcOutcome::Registry(e))),
-            }
+        .with_reader(move |conn| match registry::lookup(conn, &name_for_lookup) {
+            Ok(Some(s)) => Ok(Ok(s)),
+            Ok(None) => Ok(Err(RpcOutcome::NotFound)),
+            Err(e) => Ok(Err(RpcOutcome::Registry(e))),
         })
         .await;
 
@@ -115,8 +111,8 @@ pub async fn call_rpc(
         }
     };
 
-    let dry_run = matches!(stored.mode, crate::rpc::registry::RpcMode::Write)
-        && qs.dry_run.unwrap_or(false);
+    let dry_run =
+        matches!(stored.mode, crate::rpc::registry::RpcMode::Write) && qs.dry_run.unwrap_or(false);
 
     let outcome_res: rusqlite::Result<RpcOutcome> = match stored.mode {
         crate::rpc::registry::RpcMode::Read => {
@@ -129,77 +125,71 @@ pub async fn call_rpc(
             // ═══════════════════════════════════════════════════════
             let name_for_closure = name.clone();
             let ctx_for_closure = ctx_for_lookup.clone();
-            pool
-                .with_reader(move |conn| {
-                    // 1. Look up the RPC by name.
-                    let stored = match registry::lookup(conn, &name_for_closure) {
-                        Ok(Some(s)) => s,
-                        Ok(None) => return Ok(RpcOutcome::NotFound),
-                        Err(e) => return Ok(RpcOutcome::Registry(e)),
-                    };
+            pool.with_reader(move |conn| {
+                // 1. Look up the RPC by name.
+                let stored = match registry::lookup(conn, &name_for_closure) {
+                    Ok(Some(s)) => s,
+                    Ok(None) => return Ok(RpcOutcome::NotFound),
+                    Err(e) => return Ok(RpcOutcome::Registry(e)),
+                };
 
-                    // 2. Role allow-list check.
-                    //    Service: always allowed.
-                    //    Anon / User: allowed only when anon_callable = true.
-                    let allowed = match &ctx_for_closure {
-                        AuthCtx::Service { .. } => true,
-                        AuthCtx::Anon | AuthCtx::User { .. } => stored.anon_callable,
-                    };
-                    if !allowed {
-                        return Ok(RpcOutcome::AnonDenied);
-                    }
+                // 2. Role allow-list check.
+                //    Service: always allowed.
+                //    Anon / User: allowed only when anon_callable = true.
+                let allowed = match &ctx_for_closure {
+                    AuthCtx::Service { .. } => true,
+                    AuthCtx::Anon | AuthCtx::User { .. } => stored.anon_callable,
+                };
+                if !allowed {
+                    return Ok(RpcOutcome::AnonDenied);
+                }
 
-                    // 2b. Auto-bind / gate :user_id based on caller role:
-                    //
-                    //   • User token  — ALWAYS overwrite body-supplied user_id with
-                    //     the bearer-bound id (v1.32 A1 original fix).
-                    //   • Anon        — Anon has no bearer-bound user_id. Reject
-                    //     categorically when :user_id is declared — Anon callers
-                    //     must not be able to spoof user_id via body (v1.32 A1
-                    //     residual hole fix).
-                    //   • Service     — no auto-bind; service is trusted.
-                    let mut body_map = body_map;
-                    let declares_user_id = stored.params.iter().any(|p| p.name == "user_id");
-                    match &ctx_for_closure {
-                        AuthCtx::User { user_id, .. } => {
-                            if declares_user_id {
-                                body_map.insert(
-                                    "user_id".into(),
-                                    serde_json::Value::String(user_id.clone()),
-                                );
-                            }
-                        }
-                        AuthCtx::Anon => {
-                            if declares_user_id {
-                                // Anon must not set user_id. The RPC requires a
-                                // bearer-bound identity — reject before SQL execution.
-                                return Ok(RpcOutcome::UserIdBindingRequired);
-                            }
-                        }
-                        AuthCtx::Service { .. } => {
-                            // Service may or may not supply user_id; no auto-bind.
+                // 2b. Auto-bind / gate :user_id based on caller role:
+                //
+                //   • User token  — ALWAYS overwrite body-supplied user_id with
+                //     the bearer-bound id (v1.32 A1 original fix).
+                //   • Anon        — Anon has no bearer-bound user_id. Reject
+                //     categorically when :user_id is declared — Anon callers
+                //     must not be able to spoof user_id via body (v1.32 A1
+                //     residual hole fix).
+                //   • Service     — no auto-bind; service is trusted.
+                let mut body_map = body_map;
+                let declares_user_id = stored.params.iter().any(|p| p.name == "user_id");
+                match &ctx_for_closure {
+                    AuthCtx::User { user_id, .. } => {
+                        if declares_user_id {
+                            body_map.insert(
+                                "user_id".into(),
+                                serde_json::Value::String(user_id.clone()),
+                            );
                         }
                     }
-
-                    // 3. Validate + bind params.
-                    let bound = match validate_and_bind(&stored.params, &body_map) {
-                        Ok(b) => b,
-                        Err(e) => return Ok(RpcOutcome::Param(e)),
-                    };
-
-                    // 4. Execute through the read-only authorizer.
-                    match execute_read_query_with_named(
-                        conn,
-                        &stored.sql,
-                        &bound,
-                        MAX_ROWS,
-                        MAX_BYTES,
-                    ) {
-                        Ok(qr) => Ok(RpcOutcome::Ok(qr)),
-                        Err(e) => Ok(RpcOutcome::Exec(e)),
+                    AuthCtx::Anon => {
+                        if declares_user_id {
+                            // Anon must not set user_id. The RPC requires a
+                            // bearer-bound identity — reject before SQL execution.
+                            return Ok(RpcOutcome::UserIdBindingRequired);
+                        }
                     }
-                })
-                .await
+                    AuthCtx::Service { .. } => {
+                        // Service may or may not supply user_id; no auto-bind.
+                    }
+                }
+
+                // 3. Validate + bind params.
+                let bound = match validate_and_bind(&stored.params, &body_map) {
+                    Ok(b) => b,
+                    Err(e) => return Ok(RpcOutcome::Param(e)),
+                };
+
+                // 4. Execute through the read-only authorizer.
+                match execute_read_query_with_named(conn, &stored.sql, &bound, MAX_ROWS, MAX_BYTES)
+                {
+                    Ok(qr) => Ok(RpcOutcome::Ok(qr)),
+                    Err(e) => Ok(RpcOutcome::Exec(e)),
+                }
+            })
+            .await
             // ═══════════════════════════════════════════════════════
             // END READ ARM
             // ═══════════════════════════════════════════════════════
@@ -231,8 +221,7 @@ pub async fn call_rpc(
                 // always overwrite with the bearer-bound id. Closes the
                 // spoof where a User caller could send {"user_id":"<victim>"}.
                 // Service tokens unchanged (no auto-bind; service is trusted).
-                let declares_user_id =
-                    stored.params.iter().any(|p| p.name == "user_id");
+                let declares_user_id = stored.params.iter().any(|p| p.name == "user_id");
                 let mut body_map = body_map;
                 match &ctx_for_lookup {
                     AuthCtx::User { user_id, .. } => {
@@ -342,9 +331,10 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
             .into_response();
             // v1.30: emit AuditExtra{rpc_mode:"read"} on success so the
             // audit row is uniform with the write-mode arm.
-            resp.extensions_mut().insert(
-                crate::safety::audit::AuditExtra(json!({"rpc_mode": "read"})),
-            );
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(
+                    json!({"rpc_mode": "read"}),
+                ));
             resp
         }
         RpcOutcome::OkWrite(w) => {
@@ -411,9 +401,10 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
                 "RPC_DENIED",
                 &format!("role cannot call rpc '{name}'"),
             );
-            resp.extensions_mut().insert(
-                crate::safety::audit::AuditExtra(json!({"rpc_mode": "write"})),
-            );
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(
+                    json!({"rpc_mode": "write"}),
+                ));
             resp
         }
         RpcOutcome::UserIdBindingRequired => {
@@ -423,9 +414,10 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
                 "USER_ID_BINDING_REQUIRED",
                 ":user_id binding requires a user token (anon cannot call this RPC)",
             );
-            resp.extensions_mut().insert(
-                crate::safety::audit::AuditExtra(json!({"rpc_mode": "write"})),
-            );
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(
+                    json!({"rpc_mode": "write"}),
+                ));
             resp
         }
         RpcOutcome::Param(e) => match e {
@@ -452,19 +444,13 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
                 "QUERY_TOO_LARGE",
                 &e.to_string(),
             ),
-            ExecError::Forbidden(_) => json_error(
-                StatusCode::FORBIDDEN,
-                "QUERY_FORBIDDEN",
-                &e.to_string(),
-            ),
-            ExecError::Timeout(_) => json_error(
-                StatusCode::REQUEST_TIMEOUT,
-                "QUERY_TIMEOUT",
-                &e.to_string(),
-            ),
-            ExecError::Sql(_) => {
-                json_error(StatusCode::BAD_REQUEST, "SQL_ERROR", &e.to_string())
+            ExecError::Forbidden(_) => {
+                json_error(StatusCode::FORBIDDEN, "QUERY_FORBIDDEN", &e.to_string())
             }
+            ExecError::Timeout(_) => {
+                json_error(StatusCode::REQUEST_TIMEOUT, "QUERY_TIMEOUT", &e.to_string())
+            }
+            ExecError::Sql(_) => json_error(StatusCode::BAD_REQUEST, "SQL_ERROR", &e.to_string()),
         },
         RpcOutcome::StatementFailed(e) => {
             let code = if e.authorizer_denied {
@@ -487,32 +473,26 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
             }
             let mut resp = Json(serde_json::Value::Object(body)).into_response();
             *resp.status_mut() = StatusCode::BAD_REQUEST;
-            resp.extensions_mut().insert(
-                crate::safety::audit::AuditExtra(json!({
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(json!({
                     "rpc_mode": "write",
                     "rpc_statement_index": e.statement_index,
-                })),
-            );
+                })));
             resp
         }
         RpcOutcome::TxCommitFailed(msg) => {
             // v1.30 C7: tag with rpc_mode:"write" for cross-arm audit uniformity.
-            let mut resp = json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "TX_COMMIT_FAILED",
-                &msg,
-            );
-            resp.extensions_mut().insert(
-                crate::safety::audit::AuditExtra(json!({"rpc_mode": "write"})),
-            );
+            let mut resp = json_error(StatusCode::INTERNAL_SERVER_ERROR, "TX_COMMIT_FAILED", &msg);
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(
+                    json!({"rpc_mode": "write"}),
+                ));
             resp
         }
         RpcOutcome::Registry(e) => match e {
-            RegistryError::NotFound(_) => json_error(
-                StatusCode::NOT_FOUND,
-                "RPC_NOT_FOUND",
-                &e.to_string(),
-            ),
+            RegistryError::NotFound(_) => {
+                json_error(StatusCode::NOT_FOUND, "RPC_NOT_FOUND", &e.to_string())
+            }
             RegistryError::BadParams(_) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "PARAM_BAD_STORED",
@@ -523,9 +503,11 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
                 "DB_ERROR",
                 &e.to_string(),
             ),
-            RegistryError::Sqlite(_) => {
-                json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string())
-            }
+            RegistryError::Sqlite(_) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            ),
         },
     }
 }

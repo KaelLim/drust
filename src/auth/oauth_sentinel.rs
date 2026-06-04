@@ -19,7 +19,7 @@ mod tests {
         assert!(is_oauth_only(OAUTH_ONLY_SENTINEL));
         assert!(!is_oauth_only("$argon2id$v=19$m=19456,t=2,p=1$abc$def"));
         assert!(!is_oauth_only(""));
-        assert!(!is_oauth_only("$oauth-only"));   // missing closing $
+        assert!(!is_oauth_only("$oauth-only")); // missing closing $
         assert!(!is_oauth_only("$oauth-only$x")); // suffix
     }
 }

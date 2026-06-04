@@ -86,9 +86,18 @@ impl StorageConfig {
             max_upload_bytes: parse_num("GARAGE_MAX_UPLOAD_SIZE", 52_428_800)?,
             disk_min_free_pct,
             large_upload_max_bytes: parse_num("DRUST_LARGE_UPLOAD_MAX_BYTES", 2_147_483_648)?,
-            large_upload_chunk_max_bytes: parse_num("DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES", 67_108_864)?,
-            large_upload_max_sessions_per_tenant: parse_num("DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT", 5)?,
-            large_upload_session_ttl_secs: parse_num("DRUST_LARGE_UPLOAD_SESSION_TTL_SECS", 86_400)?,
+            large_upload_chunk_max_bytes: parse_num(
+                "DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES",
+                67_108_864,
+            )?,
+            large_upload_max_sessions_per_tenant: parse_num(
+                "DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT",
+                5,
+            )?,
+            large_upload_session_ttl_secs: parse_num(
+                "DRUST_LARGE_UPLOAD_SESSION_TTL_SECS",
+                86_400,
+            )?,
         }))
     }
 }
@@ -226,8 +235,12 @@ mod tests {
     fn storage_config_large_upload_defaults() {
         let _g = ENV_LOCK.lock().unwrap();
         clear_storage_env();
-        for k in ["DRUST_LARGE_UPLOAD_MAX_BYTES", "DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES",
-                  "DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT", "DRUST_LARGE_UPLOAD_SESSION_TTL_SECS"] {
+        for k in [
+            "DRUST_LARGE_UPLOAD_MAX_BYTES",
+            "DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES",
+            "DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT",
+            "DRUST_LARGE_UPLOAD_SESSION_TTL_SECS",
+        ] {
             unsafe { std::env::remove_var(k) };
         }
         unsafe {

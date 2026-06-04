@@ -134,10 +134,7 @@ async fn read_audit_rows_for_tenant(tenant: &str) -> Vec<serde_json::Value> {
                     map.insert("token_hint".into(), serde_json::Value::String(h));
                 }
                 if let Some(d) = duration_ms {
-                    map.insert(
-                        "duration_ms".into(),
-                        serde_json::Value::Number(d.into()),
-                    );
+                    map.insert("duration_ms".into(), serde_json::Value::Number(d.into()));
                 }
                 if let Some(c) = error_code {
                     map.insert("error_code".into(), serde_json::Value::String(c));

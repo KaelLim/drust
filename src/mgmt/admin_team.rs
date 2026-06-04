@@ -9,10 +9,10 @@
 //! v1.29.0.
 
 use askama::Template;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
-use axum::Json;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -140,9 +140,9 @@ async fn team_page(
 ) -> Response {
     let rows: Vec<AdminTeamRow> = {
         let conn = s.meta.lock().await;
-        let mut stmt = match conn.prepare(
-            "SELECT id, display_name, email, picture_url, role FROM admins ORDER BY id",
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT id, display_name, email, picture_url, role FROM admins ORDER BY id")
+        {
             Ok(s) => s,
             Err(e) => {
                 return (
@@ -164,10 +164,8 @@ async fn team_page(
         .unwrap_or_default()
         .into_iter()
         .map(|(id, display_name, email, picture_url, role)| {
-            let initials = AdminProfileExt::compute_initials(
-                display_name.as_deref(),
-                email.as_deref(),
-            );
+            let initials =
+                AdminProfileExt::compute_initials(display_name.as_deref(), email.as_deref());
             AdminTeamRow {
                 id,
                 display_name,
@@ -203,9 +201,9 @@ pub async fn list_admins(State(s): State<MgmtState>) -> Response {
     // result while holding the lock, then drop the lock.
     let result: Result<Vec<AdminRow>, String> = {
         let conn = s.meta.lock().await;
-        let mut stmt = match conn.prepare(
-            "SELECT id, email, display_name, role, created_at FROM admins ORDER BY id",
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT id, email, display_name, role, created_at FROM admins ORDER BY id")
+        {
             Ok(s) => s,
             Err(e) => {
                 return (
@@ -449,9 +447,7 @@ pub async fn change_role(
             .ok();
         let current_role = match current_role {
             Some(r) => r,
-            None => {
-                return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "admin not found")
-            }
+            None => return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "admin not found"),
         };
 
         // If the role isn't actually changing, succeed immediately.
@@ -569,9 +565,7 @@ pub async fn remove_admin(
             .ok();
         let (target_role, target_email) = match target_snap {
             Some(s) => s,
-            None => {
-                return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "admin not found")
-            }
+            None => return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "admin not found"),
         };
 
         // TOCTOU-safe invariant check inside a transaction.

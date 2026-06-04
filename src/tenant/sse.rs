@@ -22,12 +22,8 @@ pub async fn subscribe_handler(
     // 1. Protected (_system_*) collections never broadcast and do not
     //    leak existence — 404, matches /records/* behaviour.
     if is_protected_collection(&coll) {
-        return json_error(
-            StatusCode::NOT_FOUND,
-            "NOT_FOUND",
-            "collection not found",
-        )
-        .into_response();
+        return json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "collection not found")
+            .into_response();
     }
     // 2. Load the cached schema. Missing collection → 404.
     let pool = t.pool.clone();
@@ -39,12 +35,8 @@ pub async fn subscribe_handler(
     {
         Ok(Some(s)) => s,
         Ok(None) => {
-            return json_error(
-                StatusCode::NOT_FOUND,
-                "NOT_FOUND",
-                "collection not found",
-            )
-            .into_response();
+            return json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "collection not found")
+                .into_response();
         }
         Err(e) => {
             return json_error(

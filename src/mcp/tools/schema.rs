@@ -173,10 +173,7 @@ fn column_expr(f: &FieldSpec) -> anyhow::Result<String> {
             anyhow::anyhow!("vector field {:?} requires `dim` (1..=4096)", f.name)
         })?;
         if dim == 0 || dim > 4096 {
-            anyhow::bail!(
-                "vector field {:?} has dim={dim}, must be 1..=4096",
-                f.name
-            );
+            anyhow::bail!("vector field {:?} has dim={dim}, must be 1..=4096", f.name);
         }
     }
     let mut s = format!("\"{}\" {}", f.name, ty);
@@ -276,8 +273,8 @@ pub async fn create_collection_with_desc(
     // value never leaves a half-described collection on the floor.
     let validated_coll_desc: Option<String> = match description.filter(|s| !s.is_empty()) {
         Some(raw) => {
-            let v = check_description(raw)
-                .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
+            let v =
+                check_description(raw).map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
             if v.is_empty() { None } else { Some(v) }
         }
         None => None,
@@ -340,11 +337,7 @@ pub async fn create_collection_with_desc(
         crate::storage::schema::write_realtime_enabled(tx, &meta_name, false)?;
         // 4. Vector fields (if any).
         if !vector_fields.is_empty() {
-            crate::storage::schema::write_vector_fields(
-                tx,
-                &meta_name,
-                &vector_fields,
-            )?;
+            crate::storage::schema::write_vector_fields(tx, &meta_name, &vector_fields)?;
         }
         // 5. v1.19.1 — collection-level description from the pre-validated value.
         if let Some(val) = &validated_coll_desc {
@@ -397,14 +390,15 @@ pub async fn add_field(
     // v1.19.1 — pre-validate description before any writer step so a bad
     // value surfaces before we ALTER the table. Validated value is moved
     // into the meta-write step further down.
-    let validated_desc: Option<String> = match field.description.as_deref().filter(|s| !s.is_empty()) {
-        Some(raw) => {
-            let v = crate::storage::schema::check_description(raw)
-                .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
-            if v.is_empty() { None } else { Some(v) }
-        }
-        None => None,
-    };
+    let validated_desc: Option<String> =
+        match field.description.as_deref().filter(|s| !s.is_empty()) {
+            Some(raw) => {
+                let v = crate::storage::schema::check_description(raw)
+                    .map_err(|(code, msg)| anyhow::anyhow!("{code}: {msg}"))?;
+                if v.is_empty() { None } else { Some(v) }
+            }
+            None => None,
+        };
     pool.with_writer(move |c| c.execute(&sql, [])).await?;
     // If this is a vector field, register it in the meta. Done in a
     // separate writer step so the ALTER TABLE error path (e.g. column
@@ -414,8 +408,7 @@ pub async fn add_field(
         let coll_for_writer = collection.to_string();
         let field_name = field.name.clone();
         pool.with_writer(move |c| -> rusqlite::Result<()> {
-            let mut existing =
-                crate::storage::schema::read_vector_fields(c, &coll_for_writer)?;
+            let mut existing = crate::storage::schema::read_vector_fields(c, &coll_for_writer)?;
             existing.retain(|v| v.name != field_name);
             existing.push(crate::storage::schema::VectorField {
                 name: field_name,
@@ -434,7 +427,10 @@ pub async fn add_field(
         let field_name = field.name.clone();
         pool.with_writer(move |c| {
             crate::storage::schema::write_field_description(
-                c, &coll_for_desc, &field_name, Some(&desc),
+                c,
+                &coll_for_desc,
+                &field_name,
+                Some(&desc),
             )
         })
         .await?;
@@ -508,8 +504,7 @@ pub async fn drop_field(
         let coll_for_writer = collection.to_string();
         let field_for_writer = field.to_string();
         pool.with_writer(move |c| -> rusqlite::Result<()> {
-            let mut existing =
-                crate::storage::schema::read_vector_fields(c, &coll_for_writer)?;
+            let mut existing = crate::storage::schema::read_vector_fields(c, &coll_for_writer)?;
             let before = existing.len();
             existing.retain(|v| v.name != field_for_writer);
             if existing.len() != before {
@@ -657,7 +652,11 @@ pub async fn set_collection_description(
     };
     let pool = pool.clone();
     let coll_for_write = collection.to_string();
-    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value = if validated.is_empty() {
+        None
+    } else {
+        Some(validated)
+    };
     let value_for_write = value.clone();
     // v1.20 TOCTOU fix: fold existence check inside the writer closure.
     pool.with_writer(move |c| {
@@ -703,7 +702,11 @@ pub async fn set_field_description(
     let pool = pool.clone();
     let coll_for_write = collection.to_string();
     let field_for_write = field.to_string();
-    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value = if validated.is_empty() {
+        None
+    } else {
+        Some(validated)
+    };
     let value_for_post = value.clone();
     // v1.20 TOCTOU fix: fold both the collection and field existence checks
     // inside the writer closure to prevent orphan keys in field_descriptions_json.
@@ -766,7 +769,11 @@ pub async fn set_index_description(
     let pool = pool.clone();
     let coll_for_write = collection.to_string();
     let idx_for_write = index_name.to_string();
-    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value = if validated.is_empty() {
+        None
+    } else {
+        Some(validated)
+    };
     let value_for_post = value.clone();
     // v1.20 TOCTOU fix: fold both the collection and index existence checks
     // inside the writer closure to prevent orphan keys in index_descriptions_json.
@@ -778,13 +785,12 @@ pub async fn set_index_description(
             ));
         }
         // Check the index exists on this collection via sqlite_master.
-        let idx_exists: bool = c
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master \
+        let idx_exists: bool = c.query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
                  WHERE type='index' AND tbl_name=?1 AND name=?2",
-                rusqlite::params![coll_for_write, idx_for_write],
-                |r| r.get::<_, i64>(0),
-            )? > 0;
+            rusqlite::params![coll_for_write, idx_for_write],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
         if !idx_exists {
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(1),

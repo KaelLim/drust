@@ -84,9 +84,8 @@ mod tests {
     fn fresh() -> (TempDir, Connection) {
         let tmp = TempDir::new().unwrap();
         let conn = open_write(tmp.path(), "cachetest").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE posts (id INTEGER PRIMARY KEY, body TEXT);"
-        ).unwrap();
+        conn.execute_batch("CREATE TABLE posts (id INTEGER PRIMARY KEY, body TEXT);")
+            .unwrap();
         (tmp, conn)
     }
 

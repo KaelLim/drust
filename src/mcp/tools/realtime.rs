@@ -35,7 +35,10 @@ pub async fn set_realtime(
     .map_err(|e| {
         let msg = e.to_string();
         if msg.contains("COLLECTION_NOT_FOUND") {
-            anyhow::anyhow!("unknown collection: {}", msg.splitn(2, ": ").nth(1).unwrap_or(&msg))
+            anyhow::anyhow!(
+                "unknown collection: {}",
+                msg.splitn(2, ": ").nth(1).unwrap_or(&msg)
+            )
         } else {
             anyhow::anyhow!("{e}")
         }

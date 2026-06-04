@@ -66,7 +66,11 @@ pub fn is_valid_token(tok: &str) -> bool {
     tok.len() == 36
         && tok.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
         && tok.as_bytes().iter().enumerate().all(|(i, &b)| {
-            if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b != b'-' }
+            if matches!(i, 8 | 13 | 18 | 23) {
+                b == b'-'
+            } else {
+                b != b'-'
+            }
         })
 }
 
@@ -89,8 +93,14 @@ pub async fn insert_session(pool: &SharedTenantPool, s: NewSession) -> rusqlite:
                 content_type, total_length, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
-                s.upload_token, s.tenant_id, s.key, s.visibility, s.original_name,
-                s.content_type, s.total_length, s.expires_at,
+                s.upload_token,
+                s.tenant_id,
+                s.key,
+                s.visibility,
+                s.original_name,
+                s.content_type,
+                s.total_length,
+                s.expires_at,
             ],
         )
         .map(|_| ())
@@ -98,7 +108,10 @@ pub async fn insert_session(pool: &SharedTenantPool, s: NewSession) -> rusqlite:
     .await
 }
 
-pub async fn get_session(pool: &SharedTenantPool, token: &str) -> rusqlite::Result<Option<Session>> {
+pub async fn get_session(
+    pool: &SharedTenantPool,
+    token: &str,
+) -> rusqlite::Result<Option<Session>> {
     let token = token.to_string();
     pool.with_reader(move |c| {
         c.query_row(
@@ -106,16 +119,18 @@ pub async fn get_session(pool: &SharedTenantPool, token: &str) -> rusqlite::Resu
                     content_type, total_length, expires_at
              FROM _system_upload_sessions WHERE upload_token = ?1",
             rusqlite::params![token],
-            |r| Ok(Session {
-                upload_token: r.get(0)?,
-                tenant_id: r.get(1)?,
-                key: r.get(2)?,
-                visibility: r.get(3)?,
-                original_name: r.get(4)?,
-                content_type: r.get(5)?,
-                total_length: r.get(6)?,
-                expires_at: r.get(7)?,
-            }),
+            |r| {
+                Ok(Session {
+                    upload_token: r.get(0)?,
+                    tenant_id: r.get(1)?,
+                    key: r.get(2)?,
+                    visibility: r.get(3)?,
+                    original_name: r.get(4)?,
+                    content_type: r.get(5)?,
+                    total_length: r.get(6)?,
+                    expires_at: r.get(7)?,
+                })
+            },
         )
         .map(Some)
         .or_else(|e| match e {
@@ -140,7 +155,9 @@ pub async fn delete_session(pool: &SharedTenantPool, token: &str) -> rusqlite::R
 
 pub async fn count_in_flight(pool: &SharedTenantPool) -> rusqlite::Result<i64> {
     pool.with_reader(move |c| {
-        c.query_row("SELECT COUNT(*) FROM _system_upload_sessions", [], |r| r.get(0))
+        c.query_row("SELECT COUNT(*) FROM _system_upload_sessions", [], |r| {
+            r.get(0)
+        })
     })
     .await
 }
@@ -153,16 +170,18 @@ pub async fn list_sessions(pool: &SharedTenantPool) -> rusqlite::Result<Vec<Sess
                     content_type, total_length, expires_at
              FROM _system_upload_sessions ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map([], |r| Ok(Session {
-            upload_token: r.get(0)?,
-            tenant_id: r.get(1)?,
-            key: r.get(2)?,
-            visibility: r.get(3)?,
-            original_name: r.get(4)?,
-            content_type: r.get(5)?,
-            total_length: r.get(6)?,
-            expires_at: r.get(7)?,
-        }))?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Session {
+                upload_token: r.get(0)?,
+                tenant_id: r.get(1)?,
+                key: r.get(2)?,
+                visibility: r.get(3)?,
+                original_name: r.get(4)?,
+                content_type: r.get(5)?,
+                total_length: r.get(6)?,
+                expires_at: r.get(7)?,
+            })
+        })?;
         rows.collect()
     })
     .await
@@ -193,7 +212,8 @@ pub async fn sweep_tenant(
     let mut n = 0;
     for s in expired {
         let spool = crate::storage::tenant_db::tenant_dir(data_root, tenant_id)
-            .join("_uploads").join(format!("{}.part", s.upload_token));
+            .join("_uploads")
+            .join(format!("{}.part", s.upload_token));
         let _ = tokio::fs::remove_file(&spool).await;
         let _ = delete_session(pool, &s.upload_token).await;
         // Prune the per-token append lock (T7's token_locks map) so abandoned
@@ -208,25 +228,28 @@ pub async fn sweep_tenant(
 /// Tokens of sessions whose `expires_at` is in the past — the janitor's work
 /// list. Returned with their `key` + `visibility` so the caller can also
 /// clean any half-finalized `_system_files` row / Garage object.
-pub async fn expired_tokens(pool: &SharedTenantPool, now_rfc3339: String)
-    -> rusqlite::Result<Vec<Session>>
-{
+pub async fn expired_tokens(
+    pool: &SharedTenantPool,
+    now_rfc3339: String,
+) -> rusqlite::Result<Vec<Session>> {
     pool.with_reader(move |c| {
         let mut stmt = c.prepare(
             "SELECT upload_token, tenant_id, key, visibility, original_name,
                     content_type, total_length, expires_at
              FROM _system_upload_sessions WHERE expires_at < ?1",
         )?;
-        let rows = stmt.query_map(rusqlite::params![now_rfc3339], |r| Ok(Session {
-            upload_token: r.get(0)?,
-            tenant_id: r.get(1)?,
-            key: r.get(2)?,
-            visibility: r.get(3)?,
-            original_name: r.get(4)?,
-            content_type: r.get(5)?,
-            total_length: r.get(6)?,
-            expires_at: r.get(7)?,
-        }))?;
+        let rows = stmt.query_map(rusqlite::params![now_rfc3339], |r| {
+            Ok(Session {
+                upload_token: r.get(0)?,
+                tenant_id: r.get(1)?,
+                key: r.get(2)?,
+                visibility: r.get(3)?,
+                original_name: r.get(4)?,
+                content_type: r.get(5)?,
+                total_length: r.get(6)?,
+                expires_at: r.get(7)?,
+            })
+        })?;
         rows.collect()
     })
     .await
@@ -303,17 +326,37 @@ mod tests {
         crate::storage::tenant_db::open_write(dir.path(), tid).unwrap();
         let pool = registry(&dir).get_or_open(tid).unwrap();
         // expired
-        insert_session(&pool, NewSession {
-            upload_token: "exp".into(), tenant_id: tid.into(), key: "e.bin".into(),
-            visibility: "private".into(), original_name: "e".into(), content_type: None,
-            total_length: 10, expires_at: "2000-01-01T00:00:00+00:00".into(),
-        }).await.unwrap();
+        insert_session(
+            &pool,
+            NewSession {
+                upload_token: "exp".into(),
+                tenant_id: tid.into(),
+                key: "e.bin".into(),
+                visibility: "private".into(),
+                original_name: "e".into(),
+                content_type: None,
+                total_length: 10,
+                expires_at: "2000-01-01T00:00:00+00:00".into(),
+            },
+        )
+        .await
+        .unwrap();
         // fresh
-        insert_session(&pool, NewSession {
-            upload_token: "fresh".into(), tenant_id: tid.into(), key: "f.bin".into(),
-            visibility: "private".into(), original_name: "f".into(), content_type: None,
-            total_length: 10, expires_at: "2999-01-01T00:00:00+00:00".into(),
-        }).await.unwrap();
+        insert_session(
+            &pool,
+            NewSession {
+                upload_token: "fresh".into(),
+                tenant_id: tid.into(),
+                key: "f.bin".into(),
+                visibility: "private".into(),
+                original_name: "f".into(),
+                content_type: None,
+                total_length: 10,
+                expires_at: "2999-01-01T00:00:00+00:00".into(),
+            },
+        )
+        .await
+        .unwrap();
         // spool file for the expired one
         let updir = crate::storage::tenant_db::tenant_dir(dir.path(), tid).join("_uploads");
         std::fs::create_dir_all(&updir).unwrap();
@@ -332,6 +375,9 @@ mod tests {
         crate::storage::tenant_db::open_write(dir.path(), tid).unwrap();
     }
     fn registry(dir: &tempfile::TempDir) -> std::sync::Arc<crate::storage::pool::TenantRegistry> {
-        std::sync::Arc::new(crate::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2))
+        std::sync::Arc::new(crate::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        ))
     }
 }

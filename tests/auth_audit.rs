@@ -116,8 +116,7 @@ fn post_json(tid: &str, path: &str, body: serde_json::Value) -> Request<Body> {
 #[tokio::test]
 async fn login_audit_records_email_and_auth_user_id() {
     ensure_global_audit_writer();
-    let (app, tid, _svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-aud1").await;
+    let (app, tid, _svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-aud1").await;
     let _ = app
         .clone()
         .oneshot(post_json(
@@ -156,8 +155,7 @@ async fn login_audit_records_email_and_auth_user_id() {
 async fn audit_never_records_password() {
     ensure_global_audit_writer();
     let secret = "BoldenburgRedAxiom77";
-    let (app, tid, _svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-aud2").await;
+    let (app, tid, _svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-aud2").await;
     let _ = app
         .clone()
         .oneshot(post_json(
@@ -202,8 +200,7 @@ async fn audit_never_records_password() {
 #[tokio::test]
 async fn authed_request_carries_auth_kind() {
     ensure_global_audit_writer();
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-aud3").await;
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-aud3").await;
     // service token request → audit row should have auth_kind=service
     let _ = app
         .oneshot(
@@ -219,8 +216,9 @@ async fn authed_request_carries_auth_kind() {
     flush_audit().await;
     let rows = read_audit_rows_for_tenant(&tid);
     assert!(
-        rows.iter().any(|l| l["op"].as_str().unwrap_or("").contains("/collections")
-            && l["auth_kind"] == "service"),
+        rows.iter()
+            .any(|l| l["op"].as_str().unwrap_or("").contains("/collections")
+                && l["auth_kind"] == "service"),
         "audit row must carry auth_kind=service: rows={rows:?}"
     );
 }
@@ -230,8 +228,7 @@ async fn authed_request_carries_auth_kind() {
 #[tokio::test]
 async fn register_success_carries_auth_kind_user_and_auth_method_password() {
     ensure_global_audit_writer();
-    let (app, tid, _svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-aud5").await;
+    let (app, tid, _svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-aud5").await;
     let _ = app
         .oneshot(post_json(
             &tid,
@@ -261,8 +258,7 @@ async fn register_success_carries_auth_kind_user_and_auth_method_password() {
 #[tokio::test]
 async fn login_failure_carries_auth_kind_user_and_auth_method_password() {
     ensure_global_audit_writer();
-    let (app, tid, _svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-aud6").await;
+    let (app, tid, _svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-aud6").await;
     // Register first so we get a real user row, then fail with wrong pw.
     let _ = app
         .clone()
@@ -285,10 +281,7 @@ async fn login_failure_carries_auth_kind_user_and_auth_method_password() {
     let rows = read_audit_rows_for_tenant(&tid);
     let row = rows
         .iter()
-        .find(|l| {
-            l["op"].as_str().unwrap_or("").contains("/auth/login")
-                && l["status"] == "error"
-        })
+        .find(|l| l["op"].as_str().unwrap_or("").contains("/auth/login") && l["status"] == "error")
         .expect("audit must record a failed /auth/login");
     assert_eq!(
         row["auth_kind"].as_str().unwrap_or(""),
@@ -305,10 +298,8 @@ async fn login_failure_carries_auth_kind_user_and_auth_method_password() {
 #[tokio::test]
 async fn user_request_carries_auth_user_id() {
     ensure_global_audit_writer();
-    let (app, tid, _svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-aud4").await;
-    let tok =
-        helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
+    let (app, tid, _svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-aud4").await;
+    let tok = helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
     let _ = app
         .oneshot(
             Request::builder()

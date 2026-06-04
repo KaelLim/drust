@@ -183,22 +183,50 @@ pub async fn put_collection_description_handler(
         Err((code, msg)) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg),
     };
     let coll_for_check = coll.clone();
-    let exists = match t.pool.with_reader(move |c|
-        crate::storage::schema::collection_exists(c, &coll_for_check)
-    ).await {
+    let exists = match t
+        .pool
+        .with_reader(move |c| crate::storage::schema::collection_exists(c, &coll_for_check))
+        .await
+    {
         Ok(b) => b,
-        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
     };
     if !exists {
-        return json_error(StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", "no such collection");
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "COLLECTION_NOT_FOUND",
+            "no such collection",
+        );
     }
     let coll_for_write = coll.clone();
-    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value = if validated.is_empty() {
+        None
+    } else {
+        Some(validated)
+    };
     let value_for_write = value.clone();
-    if let Err(e) = t.pool.with_writer(move |c|
-        crate::storage::schema::write_collection_description(c, &coll_for_write, value_for_write.as_deref())
-    ).await {
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
+    if let Err(e) = t
+        .pool
+        .with_writer(move |c| {
+            crate::storage::schema::write_collection_description(
+                c,
+                &coll_for_write,
+                value_for_write.as_deref(),
+            )
+        })
+        .await
+    {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DB_ERROR",
+            &e.to_string(),
+        );
     }
     t.pool.schema_cache.invalidate(&coll);
     Json(serde_json::json!({ "collection": coll, "description": value })).into_response()
@@ -230,27 +258,59 @@ pub async fn put_field_description_handler(
         Err((code, msg)) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg),
     };
     let coll_for_check = coll.clone();
-    let cs = match t.pool.with_reader(move |c|
-        crate::storage::schema::describe_collection(c, &coll_for_check)
-    ).await {
+    let cs = match t
+        .pool
+        .with_reader(move |c| crate::storage::schema::describe_collection(c, &coll_for_check))
+        .await
+    {
         Ok(Some(c)) => c,
-        Ok(None) => return json_error(StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", "no such collection"),
-        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
+        Ok(None) => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "COLLECTION_NOT_FOUND",
+                "no such collection",
+            );
+        }
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
     };
     if !cs.fields.iter().any(|f| f.name == field) {
         return json_error(StatusCode::NOT_FOUND, "FIELD_NOT_FOUND", "no such field");
     }
     let coll_for_write = coll.clone();
     let field_for_write = field.clone();
-    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value = if validated.is_empty() {
+        None
+    } else {
+        Some(validated)
+    };
     let value_for_write = value.clone();
-    if let Err(e) = t.pool.with_writer(move |c|
-        crate::storage::schema::write_field_description(c, &coll_for_write, &field_for_write, value_for_write.as_deref())
-    ).await {
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
+    if let Err(e) = t
+        .pool
+        .with_writer(move |c| {
+            crate::storage::schema::write_field_description(
+                c,
+                &coll_for_write,
+                &field_for_write,
+                value_for_write.as_deref(),
+            )
+        })
+        .await
+    {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DB_ERROR",
+            &e.to_string(),
+        );
     }
     t.pool.schema_cache.invalidate(&coll);
-    Json(serde_json::json!({ "collection": coll, "field": field, "description": value })).into_response()
+    Json(serde_json::json!({ "collection": coll, "field": field, "description": value }))
+        .into_response()
 }
 
 /// PUT /t/{tenant}/collections/{coll}/indexes/{index_name}/description — service-key only
@@ -279,34 +339,64 @@ pub async fn put_index_description_handler(
         Err((code, msg)) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg),
     };
     let coll_for_check = coll.clone();
-    let cs = match t.pool.with_reader(move |c|
-        crate::storage::schema::describe_collection(c, &coll_for_check)
-    ).await {
+    let cs = match t
+        .pool
+        .with_reader(move |c| crate::storage::schema::describe_collection(c, &coll_for_check))
+        .await
+    {
         Ok(Some(c)) => c,
-        Ok(None) => return json_error(StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", "no such collection"),
-        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
+        Ok(None) => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "COLLECTION_NOT_FOUND",
+                "no such collection",
+            );
+        }
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
     };
     if !cs.indices.iter().any(|i| i.name == index_name) {
         return json_error(StatusCode::NOT_FOUND, "INDEX_NOT_FOUND", "no such index");
     }
     let coll_for_write = coll.clone();
     let idx_for_write = index_name.clone();
-    let value = if validated.is_empty() { None } else { Some(validated) };
+    let value = if validated.is_empty() {
+        None
+    } else {
+        Some(validated)
+    };
     let value_for_write = value.clone();
-    if let Err(e) = t.pool.with_writer(move |c|
-        crate::storage::schema::write_index_description(c, &coll_for_write, &idx_for_write, value_for_write.as_deref())
-    ).await {
-        return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string());
+    if let Err(e) = t
+        .pool
+        .with_writer(move |c| {
+            crate::storage::schema::write_index_description(
+                c,
+                &coll_for_write,
+                &idx_for_write,
+                value_for_write.as_deref(),
+            )
+        })
+        .await
+    {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DB_ERROR",
+            &e.to_string(),
+        );
     }
     t.pool.schema_cache.invalidate(&coll);
-    Json(serde_json::json!({ "collection": coll, "index_name": index_name, "description": value })).into_response()
+    Json(serde_json::json!({ "collection": coll, "index_name": index_name, "description": value }))
+        .into_response()
 }
 
 /// GET /t/{tenant}/schema/overview — service-key only.
 /// REST mirror of the `get_schema_overview` MCP tool.
-pub async fn get_schema_overview_handler(
-    Extension(t): Extension<TenantRef>,
-) -> Response {
+pub async fn get_schema_overview_handler(Extension(t): Extension<TenantRef>) -> Response {
     if !matches!(t.role, TokenRole::Service) {
         return json_error_with_aliases(
             StatusCode::FORBIDDEN,
@@ -315,34 +405,52 @@ pub async fn get_schema_overview_handler(
             "service token required for schema overview",
         );
     }
-    let collections = match t.pool.with_reader(|c| {
-        let names = crate::storage::schema::list_collections(c)?;
-        let mut out = Vec::with_capacity(names.len());
-        for col in names {
-            if let Some(cs) = crate::storage::schema::describe_collection(c, &col.name)? {
-                out.push(cs);
+    let collections = match t
+        .pool
+        .with_reader(|c| {
+            let names = crate::storage::schema::list_collections(c)?;
+            let mut out = Vec::with_capacity(names.len());
+            for col in names {
+                if let Some(cs) = crate::storage::schema::describe_collection(c, &col.name)? {
+                    out.push(cs);
+                }
             }
-        }
-        Ok::<_, rusqlite::Error>(out)
-    }).await {
-        Ok(v) => v,
-        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
-    };
-    let rpcs = match t.pool.with_reader(|c| {
-        crate::rpc::registry::list(c).map_err(|e| {
-            rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(1),
-                Some(e.to_string()),
-            )
+            Ok::<_, rusqlite::Error>(out)
         })
-    }).await {
+        .await
+    {
         Ok(v) => v,
-        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", &e.to_string()),
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
+    };
+    let rpcs = match t
+        .pool
+        .with_reader(|c| {
+            crate::rpc::registry::list(c).map_err(|e| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            })
+        })
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
     };
     let tenant_id = t.tenant_id.clone();
     Json(serde_json::json!({
         "tenant": tenant_id,
         "collections": collections,
         "rpcs": rpcs,
-    })).into_response()
+    }))
+    .into_response()
 }

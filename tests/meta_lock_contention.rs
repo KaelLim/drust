@@ -56,7 +56,12 @@ async fn bearer_auth_under_concurrent_load_preserves_correctness() {
         let anon_c = anon.clone();
         set.spawn(async move {
             let (target_tid, bearer, expected, label) = match i % 4 {
-                0 => ((*tid_c).clone(), (*svc_c).clone(), Expect::AuthOk, "service"),
+                0 => (
+                    (*tid_c).clone(),
+                    (*svc_c).clone(),
+                    Expect::AuthOk,
+                    "service",
+                ),
                 1 => ((*tid_c).clone(), (*anon_c).clone(), Expect::AuthOk, "anon"),
                 2 => (
                     (*tid_c).clone(),

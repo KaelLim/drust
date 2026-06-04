@@ -2,9 +2,9 @@
 //! caller can serialise. Validates by parse-back in the route handler
 //! and by golden-file test in tests/codegen_golden.rs.
 
-use super::ir::{CodegenIr, CollectionIr, FieldIr, FieldType, DefaultValue};
 use super::filter_ast_schema::filter_ast_openapi_schema;
-use serde_json::{json, Value};
+use super::ir::{CodegenIr, CollectionIr, DefaultValue, FieldIr, FieldType};
+use serde_json::{Value, json};
 
 pub fn render_openapi(ir: &CodegenIr) -> Value {
     let mut paths = serde_json::Map::new();
@@ -78,10 +78,18 @@ pub fn render_openapi(ir: &CodegenIr) -> Value {
 // --- helpers ---------------------------------------------------------
 
 fn pascal(s: &str) -> String {
-    s.split('_').filter(|p| !p.is_empty()).map(|p| {
-        let mut chars = p.chars();
-        chars.next().map(|c| c.to_ascii_uppercase()).into_iter().chain(chars).collect::<String>()
-    }).collect()
+    s.split('_')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let mut chars = p.chars();
+            chars
+                .next()
+                .map(|c| c.to_ascii_uppercase())
+                .into_iter()
+                .chain(chars)
+                .collect::<String>()
+        })
+        .collect()
 }
 
 fn collection_row_schema(coll: &CollectionIr) -> Value {
@@ -109,7 +117,9 @@ fn collection_insert_schema(coll: &CollectionIr) -> Value {
     let mut props = serde_json::Map::new();
     let mut required = Vec::new();
     for f in &coll.fields {
-        if f.server_managed { continue; }
+        if f.server_managed {
+            continue;
+        }
         props.insert(f.name.clone(), field_schema(f));
         if !f.nullable && f.default.is_none() {
             required.push(Value::String(f.name.clone()));
@@ -121,7 +131,9 @@ fn collection_insert_schema(coll: &CollectionIr) -> Value {
 fn collection_update_schema(coll: &CollectionIr) -> Value {
     let mut props = serde_json::Map::new();
     for f in &coll.fields {
-        if f.server_managed { continue; }
+        if f.server_managed {
+            continue;
+        }
         props.insert(f.name.clone(), field_schema(f));
     }
     // No required[] — every field optional on update.
@@ -131,15 +143,23 @@ fn collection_update_schema(coll: &CollectionIr) -> Value {
 fn field_schema(f: &FieldIr) -> Value {
     let mut s = serde_json::Map::new();
     match &f.ty {
-        FieldType::Text => { s.insert("type".into(), Value::String("string".into())); }
-        FieldType::Integer => { s.insert("type".into(), Value::String("integer".into())); }
-        FieldType::Real => { s.insert("type".into(), Value::String("number".into())); }
+        FieldType::Text => {
+            s.insert("type".into(), Value::String("string".into()));
+        }
+        FieldType::Integer => {
+            s.insert("type".into(), Value::String("integer".into()));
+        }
+        FieldType::Real => {
+            s.insert("type".into(), Value::String("number".into()));
+        }
         FieldType::Blob => {
             s.insert("type".into(), Value::String("string".into()));
             s.insert("format".into(), Value::String("binary".into()));
         }
         FieldType::Json => {} // free-form
-        FieldType::Boolean => { s.insert("type".into(), Value::String("boolean".into())); }
+        FieldType::Boolean => {
+            s.insert("type".into(), Value::String("boolean".into()));
+        }
         FieldType::Vector { dim } => {
             s.insert("type".into(), Value::String("array".into()));
             s.insert("items".into(), json!({ "type": "number" }));
@@ -155,12 +175,19 @@ fn field_schema(f: &FieldIr) -> Value {
     }
     if let Some(d) = &f.default {
         match d {
-            DefaultValue::Literal(v) => { s.insert("default".into(), v.clone()); }
+            DefaultValue::Literal(v) => {
+                s.insert("default".into(), v.clone());
+            }
             DefaultValue::SqlExpr(_) => {
                 s.insert("readOnly".into(), Value::Bool(true));
-                s.insert("description".into(), Value::String(
-                    f.description.clone().unwrap_or_else(|| "Server-generated on insert.".into())
-                ));
+                s.insert(
+                    "description".into(),
+                    Value::String(
+                        f.description
+                            .clone()
+                            .unwrap_or_else(|| "Server-generated on insert.".into()),
+                    ),
+                );
             }
         }
     }
@@ -272,7 +299,9 @@ fn delete_op(_coll: &str) -> Value {
 }
 
 fn search_op(coll: &CollectionIr, row_name: &str) -> Value {
-    let vec_fields: Vec<String> = coll.fields.iter()
+    let vec_fields: Vec<String> = coll
+        .fields
+        .iter()
         .filter_map(|f| matches!(f.ty, FieldType::Vector { .. }).then(|| f.name.clone()))
         .collect();
     json!({

@@ -25,7 +25,7 @@ mod webhooks_common;
 use webhooks_common::FakeHook;
 
 use drust::tenant::webhook_dispatcher::{
-    deliver_for_test, DeliverySchedule, PreCheckResolveFn, WebhookRow,
+    DeliverySchedule, PreCheckResolveFn, WebhookRow, deliver_for_test,
 };
 use futures::future::BoxFuture;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
@@ -78,10 +78,12 @@ fn mock_resolver() -> Arc<dyn Resolve + Send + Sync> {
 /// which won't coerce into the `dyn Future` form the type alias expects.
 fn pre_check_returning(result: Result<(), &'static str>) -> PreCheckResolveFn {
     let r: Result<(), String> = result.map_err(|s| s.to_string());
-    Arc::new(move |_host, _port| -> BoxFuture<'static, Result<(), String>> {
-        let r = r.clone();
-        Box::pin(async move { r })
-    })
+    Arc::new(
+        move |_host, _port| -> BoxFuture<'static, Result<(), String>> {
+            let r = r.clone();
+            Box::pin(async move { r })
+        },
+    )
 }
 
 /// reqwest::dns::Resolve implementation that returns `127.0.0.1:<pinned>`
@@ -153,9 +155,16 @@ async fn mixed_resolve_dials_only_public() {
         DeliverySchedule::fast_for_tests(),
     )
     .await;
-    assert!(outcome.is_ok(), "pre-check Ok must let the attempt proceed; got: {outcome:?}");
+    assert!(
+        outcome.is_ok(),
+        "pre-check Ok must let the attempt proceed; got: {outcome:?}"
+    );
     let received = hook.requests().await;
-    assert_eq!(received.len(), 1, "the dial must land on the public-IP (127.0.0.1-pinned) path");
+    assert_eq!(
+        received.len(),
+        1,
+        "the dial must land on the public-IP (127.0.0.1-pinned) path"
+    );
 }
 
 // ─── case 3 — all-private resolve → terminal NonRetryable ───────────────────

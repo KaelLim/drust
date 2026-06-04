@@ -235,8 +235,7 @@ fn main() {
     // panics at runtime on the first request — catch it at build time.
     const EXPECTED_THEMES: &[&str] = &["cozy-dark", "soft-light", "system"];
 
-    let expected: std::collections::BTreeSet<&str> =
-        EXPECTED_THEMES.iter().copied().collect();
+    let expected: std::collections::BTreeSet<&str> = EXPECTED_THEMES.iter().copied().collect();
     let actual: std::collections::BTreeSet<String> = fs::read_dir("themes")
         .expect("read themes dir")
         .filter_map(|e| e.ok())
@@ -246,8 +245,7 @@ fn main() {
             s.strip_suffix(".toml").map(String::from)
         })
         .collect();
-    let actual_refs: std::collections::BTreeSet<&str> =
-        actual.iter().map(|s| s.as_str()).collect();
+    let actual_refs: std::collections::BTreeSet<&str> = actual.iter().map(|s| s.as_str()).collect();
 
     if actual_refs != expected {
         let missing: Vec<&&str> = expected.difference(&actual_refs).collect();
@@ -288,8 +286,8 @@ fn scan_template_keys(dir: &Path) -> BTreeMap<String, Vec<(String, usize)>> {
         if path.extension().and_then(|s| s.to_str()) != Some("html") {
             continue;
         }
-        let txt = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let txt =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         for (line_idx, line) in txt.lines().enumerate() {
             for cap in re.captures_iter(line) {
                 let key = cap.get(1).unwrap().as_str().to_string();
@@ -316,8 +314,8 @@ fn scan_rs_key_refs(
         Ok(e) => e,
         Err(_) => return,
     };
-    let lit_re = regex_lite::Regex::new(r#""([A-Za-z_][A-Za-z0-9_.]*)""#)
-        .expect("compile rs literal regex");
+    let lit_re =
+        regex_lite::Regex::new(r#""([A-Za-z_][A-Za-z0-9_.]*)""#).expect("compile rs literal regex");
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
@@ -360,10 +358,8 @@ fn scan_rs_key_refs(
 }
 
 fn load_toml_keys(path: &str) -> HashSet<String> {
-    let src = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {path}: {e}"));
-    let val: toml::Value =
-        toml::from_str(&src).unwrap_or_else(|e| panic!("parse {path}: {e}"));
+    let src = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let val: toml::Value = toml::from_str(&src).unwrap_or_else(|e| panic!("parse {path}: {e}"));
     let mut out = HashSet::new();
     flatten_toml(&val, String::new(), &mut out);
     out

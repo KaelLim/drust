@@ -90,15 +90,16 @@ async fn insert_packs_vector_and_excludes_from_response() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(v["record"].get("embedding").is_none(), "GET response leaked embedding: {v}");
+    assert!(
+        v["record"].get("embedding").is_none(),
+        "GET response leaked embedding: {v}"
+    );
 
     // Verify the BLOB is actually stored at the SQLite level with the
     // right packed-f32 bytes.
     let pool = helpers::grab_pool("blog", &dir).await;
     let bytes: Vec<u8> = pool
-        .with_reader(|c| {
-            c.query_row("SELECT embedding FROM docs WHERE id = 1", [], |r| r.get(0))
-        })
+        .with_reader(|c| c.query_row("SELECT embedding FROM docs WHERE id = 1", [], |r| r.get(0)))
         .await
         .unwrap();
     assert_eq!(bytes.len(), 12); // 3 dim × 4 bytes

@@ -8,10 +8,10 @@
 //!   DELETE /t/{tenant}/admin/users/{uid}        — delete + cascade
 //!   POST   /t/{tenant}/admin/users/{uid}/revoke-sessions — kick all sessions
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -86,7 +86,11 @@ pub async fn create_user_handler(
     let uid = format!("u-{}", uuid::Uuid::new_v4());
     let now = chrono::Utc::now().to_rfc3339();
     let profile_str = crate::auth::profile::encode(body.profile.as_ref());
-    let verified = if body.verified.unwrap_or(false) { 1i64 } else { 0i64 };
+    let verified = if body.verified.unwrap_or(false) {
+        1i64
+    } else {
+        0i64
+    };
     let uid2 = uid.clone();
     let email2 = email.clone();
     let now2 = now.clone();
@@ -164,7 +168,11 @@ pub async fn list_users_handler(
         })
         .await
         .unwrap_or(0);
-    (StatusCode::OK, Json(json!({"users": users, "total": total}))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({"users": users, "total": total})),
+    )
+        .into_response()
 }
 
 pub async fn get_user_handler(
@@ -184,10 +192,7 @@ pub async fn get_user_handler(
 }
 
 /// Shared helper — read a single user row without exposing password_hash.
-async fn fetch_user_row(
-    pool: crate::storage::pool::SharedTenantPool,
-    uid: String,
-) -> Response {
+async fn fetch_user_row(pool: crate::storage::pool::SharedTenantPool, uid: String) -> Response {
     let row = pool
         .with_reader(move |c| {
             c.query_row(
@@ -307,49 +312,49 @@ pub async fn delete_user_handler(
     };
     let uid2 = uid.clone();
     let res = pool
-        .with_writer(move |c| -> rusqlite::Result<(serde_json::Map<String, serde_json::Value>, usize)> {
-            let tx = c.transaction()?;
-            // 1. Find all collections that have owner_field set.
-            let owner_cols: Vec<(String, String)> = {
-                let mut stmt = tx.prepare(
-                    "SELECT collection_name, owner_field \
+        .with_writer(
+            move |c| -> rusqlite::Result<(serde_json::Map<String, serde_json::Value>, usize)> {
+                let tx = c.transaction()?;
+                // 1. Find all collections that have owner_field set.
+                let owner_cols: Vec<(String, String)> = {
+                    let mut stmt = tx.prepare(
+                        "SELECT collection_name, owner_field \
                      FROM _system_collection_meta \
                      WHERE owner_field IS NOT NULL",
-                )?;
-                stmt.query_map([], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?
-                .collect::<Result<_, _>>()?
-            };
-            // 2. Cascade-delete user's records from each collection.
-            let mut deleted_records = serde_json::Map::new();
-            for (coll, field) in &owner_cols {
-                let n = tx.execute(
-                    &format!(
-                        "DELETE FROM \"{}\" WHERE \"{}\" = ?1",
-                        coll.replace('"', "\"\""),
-                        field.replace('"', "\"\"")
-                    ),
+                    )?;
+                    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                        .collect::<Result<_, _>>()?
+                };
+                // 2. Cascade-delete user's records from each collection.
+                let mut deleted_records = serde_json::Map::new();
+                for (coll, field) in &owner_cols {
+                    let n = tx.execute(
+                        &format!(
+                            "DELETE FROM \"{}\" WHERE \"{}\" = ?1",
+                            coll.replace('"', "\"\""),
+                            field.replace('"', "\"\"")
+                        ),
+                        rusqlite::params![uid2],
+                    )?;
+                    deleted_records.insert(coll.clone(), json!(n));
+                }
+                // 3. Delete all sessions.
+                let revoked = tx.execute(
+                    "DELETE FROM _system_sessions WHERE user_id = ?1",
                     rusqlite::params![uid2],
                 )?;
-                deleted_records.insert(coll.clone(), json!(n));
-            }
-            // 3. Delete all sessions.
-            let revoked = tx.execute(
-                "DELETE FROM _system_sessions WHERE user_id = ?1",
-                rusqlite::params![uid2],
-            )?;
-            // 4. Delete the user row.
-            let n = tx.execute(
-                "DELETE FROM _system_users WHERE id = ?1",
-                rusqlite::params![uid2],
-            )?;
-            if n == 0 {
-                return Err(rusqlite::Error::QueryReturnedNoRows);
-            }
-            tx.commit()?;
-            Ok((deleted_records, revoked))
-        })
+                // 4. Delete the user row.
+                let n = tx.execute(
+                    "DELETE FROM _system_users WHERE id = ?1",
+                    rusqlite::params![uid2],
+                )?;
+                if n == 0 {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                }
+                tx.commit()?;
+                Ok((deleted_records, revoked))
+            },
+        )
         .await;
     match res {
         Ok((dr, rs)) => {

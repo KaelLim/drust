@@ -43,8 +43,7 @@ static TEST_AUDIT_DB: LazyLock<PathBuf> = LazyLock::new(|| {
     let path = tmp.path().to_path_buf();
 
     // Open the write connection and apply schema.
-    let conn = drust::safety::audit_db::open_audit_db_write(&path)
-        .expect("open test audit DB");
+    let conn = drust::safety::audit_db::open_audit_db_write(&path).expect("open test audit DB");
 
     // We need the AuditWriter (which calls tokio::spawn internally) to run
     // on a runtime that outlives individual #[tokio::test] runtimes.

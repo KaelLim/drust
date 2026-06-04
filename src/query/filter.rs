@@ -72,7 +72,9 @@ pub fn build_list_sql(collection: &str, p: &ListParams) -> String {
         debug_assert!(
             val.starts_with("u-")
                 && val.len() >= 4
-                && val.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-' || b == b'u'),
+                && val
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() || b == b'-' || b == b'u'),
             "owner_filter user_id shape: expected `u-<hex/uuid>`, got {val:?}"
         );
         wheres.push(format!("{} = '{}'", q(field), sql_escape(val)));
@@ -101,6 +103,9 @@ pub fn build_count_sql(
     if wheres.is_empty() {
         format!("SELECT COUNT(*) FROM {table}")
     } else {
-        format!("SELECT COUNT(*) FROM {table} WHERE {}", wheres.join(" AND "))
+        format!(
+            "SELECT COUNT(*) FROM {table} WHERE {}",
+            wheres.join(" AND ")
+        )
     }
 }

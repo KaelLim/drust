@@ -105,8 +105,8 @@ pub async fn broadcast_inspector_page(
             Some(n) => n,
             None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
         };
-        let bearer_opt = crate::mgmt::tokens::read_slot(&conn, &tenant_id, "service")
-            .and_then(|s| s.plaintext);
+        let bearer_opt =
+            crate::mgmt::tokens::read_slot(&conn, &tenant_id, "service").and_then(|s| s.plaintext);
         (name, bearer_opt)
     };
 
@@ -130,24 +130,48 @@ pub async fn broadcast_inspector_page(
     let t_for_js = Translator::new(locale);
     let mut i18n_map = serde_json::Map::new();
     for (js_key, t_key) in [
-        ("state_disconnected",    "broadcast_inspector.conn.state_disconnected"),
-        ("state_connecting",      "broadcast_inspector.conn.state_connecting"),
-        ("state_connected",       "broadcast_inspector.conn.state_connected"),
-        ("state_bearer_rejected", "broadcast_inspector.conn.state_bearer_rejected"),
-        ("state_unreachable",     "broadcast_inspector.conn.state_unreachable"),
-        ("state_server_closed",   "broadcast_inspector.conn.state_server_closed"),
-        ("state_room_invalid",    "broadcast_inspector.conn.state_room_invalid"),
-        ("btn_connect",           "broadcast_inspector.conn.btn_connect"),
-        ("btn_disconnect",        "broadcast_inspector.conn.btn_disconnect"),
-        ("btn_pause",             "broadcast_inspector.tail.btn_pause"),
-        ("btn_resume",            "broadcast_inspector.tail.btn_resume"),
-        ("payload_invalid",       "broadcast_inspector.publish.payload_invalid"),
-        ("counter_tpl",           "broadcast_inspector.publish.counter"),
-        ("lagged_tpl",            "broadcast_inspector.tail.lagged_row"),
-        ("paused_drop_tpl",       "broadcast_inspector.tail.paused_drop"),
-        ("new_pill_tpl",          "broadcast_inspector.tail.new_pill"),
-        ("self_tag",              "broadcast_inspector.tail.self_tag"),
-        ("tail_empty",            "broadcast_inspector.tail.empty"),
+        (
+            "state_disconnected",
+            "broadcast_inspector.conn.state_disconnected",
+        ),
+        (
+            "state_connecting",
+            "broadcast_inspector.conn.state_connecting",
+        ),
+        (
+            "state_connected",
+            "broadcast_inspector.conn.state_connected",
+        ),
+        (
+            "state_bearer_rejected",
+            "broadcast_inspector.conn.state_bearer_rejected",
+        ),
+        (
+            "state_unreachable",
+            "broadcast_inspector.conn.state_unreachable",
+        ),
+        (
+            "state_server_closed",
+            "broadcast_inspector.conn.state_server_closed",
+        ),
+        (
+            "state_room_invalid",
+            "broadcast_inspector.conn.state_room_invalid",
+        ),
+        ("btn_connect", "broadcast_inspector.conn.btn_connect"),
+        ("btn_disconnect", "broadcast_inspector.conn.btn_disconnect"),
+        ("btn_pause", "broadcast_inspector.tail.btn_pause"),
+        ("btn_resume", "broadcast_inspector.tail.btn_resume"),
+        (
+            "payload_invalid",
+            "broadcast_inspector.publish.payload_invalid",
+        ),
+        ("counter_tpl", "broadcast_inspector.publish.counter"),
+        ("lagged_tpl", "broadcast_inspector.tail.lagged_row"),
+        ("paused_drop_tpl", "broadcast_inspector.tail.paused_drop"),
+        ("new_pill_tpl", "broadcast_inspector.tail.new_pill"),
+        ("self_tag", "broadcast_inspector.tail.self_tag"),
+        ("tail_empty", "broadcast_inspector.tail.empty"),
     ] {
         i18n_map.insert(
             js_key.to_string(),

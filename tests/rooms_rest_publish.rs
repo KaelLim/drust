@@ -13,7 +13,9 @@ mod helpers;
 const TENANT: &str = "ab10b1a4-0000-0000-0000-000000000001";
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-    let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     serde_json::from_slice(&body).unwrap_or_else(|_| serde_json::json!(null))
 }
 
@@ -156,8 +158,8 @@ async fn publish_into_bus_delivers_to_one_subscriber() {
         bucket: std::sync::Arc::new(rooms::PublishBucket::new(0)),
         cfg: rooms::RoomsConfig::test_defaults(),
     };
-    let n =
-        rooms::publish_into_bus(&pc, TENANT, "delivery", serde_json::json!({"k":1}), "rest").unwrap();
+    let n = rooms::publish_into_bus(&pc, TENANT, "delivery", serde_json::json!({"k":1}), "rest")
+        .unwrap();
     assert_eq!(n, 1);
     let got = rx.recv().await.unwrap();
     assert_eq!(got.payload["k"], 1);
@@ -172,7 +174,8 @@ fn flip_publish_flag(dir: &tempfile::TempDir, tenant: &str, col: &str, on: bool)
     let path = dir.path().join("meta.sqlite");
     let c = rusqlite::Connection::open(path).unwrap();
     let sql = format!("UPDATE tenants SET {col} = ?1 WHERE id = ?2");
-    c.execute(&sql, rusqlite::params![on as i64, tenant]).unwrap();
+    c.execute(&sql, rusqlite::params![on as i64, tenant])
+        .unwrap();
 }
 
 #[tokio::test]

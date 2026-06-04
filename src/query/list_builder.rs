@@ -129,8 +129,8 @@ pub fn build_structured_list_sql(
     let (sort_field, dir_kw) = match &req.sort {
         None => ("created_at".to_string(), "DESC"),
         Some(s) => {
-            let known = field_exists(schema, &s.field)
-                || SYSTEM_SORTABLE.contains(&s.field.as_str());
+            let known =
+                field_exists(schema, &s.field) || SYSTEM_SORTABLE.contains(&s.field.as_str());
             if !known {
                 return Err(ListError::SortFieldUnknown(s.field.clone()));
             }
@@ -253,8 +253,7 @@ mod tests {
     }
 
     fn leaf(json: &str) -> FilterAst {
-        let obj: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(json).unwrap();
+        let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(json).unwrap();
         FilterAst::Leaf(obj)
     }
 
@@ -264,10 +263,19 @@ mod tests {
         let (list, count, binds) =
             build_structured_list_sql(&s, &ListRequest::default(), None).unwrap();
         assert!(list.contains("FROM \"posts\""), "list: {list}");
-        assert!(list.contains("ORDER BY \"created_at\" DESC"), "list: {list}");
+        assert!(
+            list.contains("ORDER BY \"created_at\" DESC"),
+            "list: {list}"
+        );
         assert!(list.contains("LIMIT 20 OFFSET 0"), "list: {list}");
-        assert!(list.contains("\"title\""), "should select declared fields: {list}");
-        assert!(!list.contains("\"embedding\""), "must not select vector: {list}");
+        assert!(
+            list.contains("\"title\""),
+            "should select declared fields: {list}"
+        );
+        assert!(
+            !list.contains("\"embedding\""),
+            "must not select vector: {list}"
+        );
         assert_eq!(count, "SELECT COUNT(*) FROM \"posts\"");
         assert!(binds.is_empty());
     }
@@ -432,7 +440,10 @@ mod tests {
             ..Default::default()
         };
         let err = build_structured_list_sql(&s, &req, None).unwrap_err();
-        assert!(matches!(err, ListError::SelectFieldUnknown(_)), "got {err:?}");
+        assert!(
+            matches!(err, ListError::SelectFieldUnknown(_)),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -444,7 +455,10 @@ mod tests {
         };
         let (list, _c, _b) = build_structured_list_sql(&s, &req, None).unwrap();
         assert!(list.contains("\"title\""), "list: {list}");
-        assert!(!list.contains("\"embedding\""), "vector must be dropped: {list}");
+        assert!(
+            !list.contains("\"embedding\""),
+            "vector must be dropped: {list}"
+        );
     }
 
     #[test]

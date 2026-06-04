@@ -22,7 +22,11 @@ pub async fn create_user(
     let uid = format!("u-{}", uuid::Uuid::new_v4());
     let now = chrono::Utc::now().to_rfc3339();
     let profile_str = crate::auth::profile::encode(profile.as_ref());
-    let verified_i = if verified.unwrap_or(false) { 1i64 } else { 0i64 };
+    let verified_i = if verified.unwrap_or(false) {
+        1i64
+    } else {
+        0i64
+    };
     let uid2 = uid.clone();
     let email2 = email.clone();
     let now2 = now.clone();
@@ -224,10 +228,8 @@ pub async fn delete_user(
                      FROM _system_collection_meta \
                      WHERE owner_field IS NOT NULL",
                 )?;
-                stmt.query_map([], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
             };
             // 2. Cascade-delete user's records from each collection.
             let mut deleted_records = serde_json::Map::new();

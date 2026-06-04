@@ -17,17 +17,16 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
     let tok = create_session(&mut conn, 1, 3600).unwrap();
     conn.execute("INSERT INTO tenants (id, name) VALUES ('blog', 'b')", [])
         .unwrap();
-    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
-        data.clone(),
-        2,
-    ));
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data.clone(), 2));
     let bus = drust::tenant::events::EventBus::new();
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
     )));
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
-        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
+        audit_meta_read: Arc::new(Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
@@ -43,8 +42,16 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
-        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
-        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
     };
     (state.with_data_dir(data.clone()), tok, dir)
 }

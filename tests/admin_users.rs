@@ -37,8 +37,7 @@ async fn read_json(resp: axum::response::Response) -> serde_json::Value {
 
 #[tokio::test]
 async fn create_list_get_user_via_service_token() {
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-au1").await;
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-au1").await;
 
     // Create user
     let r = app
@@ -52,9 +51,16 @@ async fn create_list_get_user_via_service_token() {
         ))
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::CREATED, "create user should return 201");
+    assert_eq!(
+        r.status(),
+        StatusCode::CREATED,
+        "create user should return 201"
+    );
     let v = read_json(r).await;
-    let uid = v["user_id"].as_str().expect("user_id in response").to_string();
+    let uid = v["user_id"]
+        .as_str()
+        .expect("user_id in response")
+        .to_string();
     assert_eq!(v["email"].as_str().unwrap(), "a@b.com");
 
     // List users
@@ -77,13 +83,15 @@ async fn create_list_get_user_via_service_token() {
     let v = read_json(r).await;
     assert_eq!(v["email"].as_str().unwrap(), "a@b.com");
     // password_hash must NOT be exposed
-    assert!(v.get("password_hash").is_none(), "password_hash must not be in response");
+    assert!(
+        v.get("password_hash").is_none(),
+        "password_hash must not be in response"
+    );
 }
 
 #[tokio::test]
 async fn update_user_changes_email_and_verified() {
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-au-upd").await;
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-au-upd").await;
 
     // Create
     let r = app
@@ -120,8 +128,7 @@ async fn update_user_changes_email_and_verified() {
 
 #[tokio::test]
 async fn delete_user_cascades_records() {
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-au2").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-au2").await;
 
     // Create posts collection with owner_field via pool
     let pool = helpers::grab_pool(&tid, &dir).await;
@@ -183,7 +190,11 @@ async fn delete_user_cascades_records() {
             ))
             .await
             .unwrap();
-        assert!(r.status().is_success(), "insert post {i} failed: {}", r.status());
+        assert!(
+            r.status().is_success(),
+            "insert post {i} failed: {}",
+            r.status()
+        );
     }
 
     // Delete user
@@ -208,8 +219,7 @@ async fn delete_user_cascades_records() {
 
 #[tokio::test]
 async fn admin_users_rejects_non_service() {
-    let (app, tid, _svc, anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-au3").await;
+    let (app, tid, _svc, anon, _dir) = helpers::spin_up_dual_role_self_register("t-au3").await;
 
     let r = app
         .oneshot(req("GET", &tid, "/admin/users", None, &anon))
@@ -226,8 +236,7 @@ async fn admin_users_rejects_non_service() {
 
 #[tokio::test]
 async fn revoke_sessions_kicks_all_user_tokens() {
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-au4").await;
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-au4").await;
 
     // Register + login via app
     let token = helpers::register_and_login_via_app(&app, &tid, "a@b.com", "longpassword").await;
@@ -256,20 +265,26 @@ async fn revoke_sessions_kicks_all_user_tokens() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
     let v = read_json(r).await;
-    assert!(v["revoked"].as_i64().unwrap() >= 1, "at least 1 session should be revoked");
+    assert!(
+        v["revoked"].as_i64().unwrap() >= 1,
+        "at least 1 session should be revoked"
+    );
 
     // /me now 401
     let r = app
         .oneshot(req("GET", &tid, "/me", None, &token))
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "/me should now be 401");
+    assert_eq!(
+        r.status(),
+        StatusCode::UNAUTHORIZED,
+        "/me should now be 401"
+    );
 }
 
 #[tokio::test]
 async fn create_user_duplicate_email_returns_409() {
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-au5").await;
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-au5").await;
 
     let create_req = || {
         req(
@@ -283,7 +298,11 @@ async fn create_user_duplicate_email_returns_409() {
     let r = app.clone().oneshot(create_req()).await.unwrap();
     assert_eq!(r.status(), StatusCode::CREATED);
     let r = app.oneshot(create_req()).await.unwrap();
-    assert_eq!(r.status(), StatusCode::CONFLICT, "duplicate email should be 409");
+    assert_eq!(
+        r.status(),
+        StatusCode::CONFLICT,
+        "duplicate email should be 409"
+    );
     let bytes = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
     assert!(
         String::from_utf8_lossy(&bytes).contains("EMAIL_EXISTS"),
@@ -294,8 +313,7 @@ async fn create_user_duplicate_email_returns_409() {
 
 #[tokio::test]
 async fn get_nonexistent_user_returns_404() {
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-au6").await;
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-au6").await;
 
     let r = app
         .oneshot(req(
@@ -341,7 +359,9 @@ async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::V
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let text = String::from_utf8(bytes.to_vec()).unwrap();
     if ct.starts_with("text/event-stream") {
         let mut out = Vec::new();
@@ -349,7 +369,9 @@ async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::V
             for line in frame.lines() {
                 if let Some(data) = line.strip_prefix("data:") {
                     let trimmed = data.trim();
-                    if trimmed.is_empty() { continue; }
+                    if trimmed.is_empty() {
+                        continue;
+                    }
                     if let Ok(v) = serde_json::from_str(trimmed) {
                         out.push(v);
                     }
@@ -374,14 +396,17 @@ async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "test", "version": "0"}
-            }
-        }).to_string()))
+        .body(Body::from(
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"}
+                }
+            })
+            .to_string(),
+        ))
         .unwrap();
     let init_resp = app.clone().oneshot(init).await.unwrap();
     assert_eq!(init_resp.status(), StatusCode::OK, "MCP initialize failed");
@@ -396,7 +421,9 @@ async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
 
     // notifications/initialized
     let ack = mcp_req_with_session(
-        tid, token, &session_id,
+        tid,
+        token,
+        &session_id,
         serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
     );
     let _ = app.clone().oneshot(ack).await.unwrap();
@@ -413,14 +440,20 @@ async fn mcp_call_tool(
     args: serde_json::Value,
 ) -> String {
     let call = mcp_req_with_session(
-        tid, token, session_id,
+        tid,
+        token,
+        session_id,
         serde_json::json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
             "params":{"name":name,"arguments":args}
         }),
     );
     let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(resp.status().is_success(), "tools/call {name} HTTP status: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "tools/call {name} HTTP status: {}",
+        resp.status()
+    );
     let msgs = parse_mcp_response(resp).await;
     // Extract content[0].text from result or return full msg as string
     msgs.iter()
@@ -436,30 +469,36 @@ async fn mcp_call_tool(
 
 #[tokio::test]
 async fn mcp_create_user_tool() {
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-mcpu1").await;
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-mcpu1").await;
     let sid = mcp_init(&app, &tid, &svc).await;
     let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
+        &app,
+        &tid,
+        &svc,
+        &sid,
         "create_user",
         serde_json::json!({"email":"a@b.com","password":"longpassword"}),
-    ).await;
+    )
+    .await;
     assert!(txt.contains("user_id"), "body: {txt}");
     assert!(txt.contains("a@b.com"), "body: {txt}");
 }
 
 #[tokio::test]
 async fn mcp_list_get_update_delete_user() {
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-mcpu2").await;
+    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-mcpu2").await;
     let sid = mcp_init(&app, &tid, &svc).await;
 
     // Create
     let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
+        &app,
+        &tid,
+        &svc,
+        &sid,
         "create_user",
         serde_json::json!({"email":"a@b.com","password":"longpassword"}),
-    ).await;
+    )
+    .await;
     assert!(txt.contains("u-"), "create_user body: {txt}");
     // Parse user_id: find "u-<uuid4>" prefix in the response text.
     let uid_start = txt.find("u-").expect("u- prefix not found");
@@ -469,38 +508,55 @@ async fn mcp_list_get_update_delete_user() {
         .collect();
 
     // List
-    let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
-        "list_users", serde_json::json!({}),
-    ).await;
+    let txt = mcp_call_tool(&app, &tid, &svc, &sid, "list_users", serde_json::json!({})).await;
     assert!(txt.contains("a@b.com"), "list_users body: {txt}");
 
     // Get
     let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
-        "get_user", serde_json::json!({"user_id": &uid}),
-    ).await;
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "get_user",
+        serde_json::json!({"user_id": &uid}),
+    )
+    .await;
     assert!(txt.contains("a@b.com"), "get_user body: {txt}");
 
     // Update — change email
     let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
-        "update_user", serde_json::json!({"user_id": &uid, "email": "z@b.com"}),
-    ).await;
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "update_user",
+        serde_json::json!({"user_id": &uid, "email": "z@b.com"}),
+    )
+    .await;
     assert!(txt.contains("z@b.com"), "update_user body: {txt}");
 
     // Revoke sessions (safe on a user with no sessions)
     let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
-        "revoke_user_sessions", serde_json::json!({"user_id": &uid}),
-    ).await;
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "revoke_user_sessions",
+        serde_json::json!({"user_id": &uid}),
+    )
+    .await;
     assert!(txt.contains("revoked"), "revoke_user_sessions body: {txt}");
 
     // Delete
     let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
-        "delete_user", serde_json::json!({"user_id": &uid}),
-    ).await;
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "delete_user",
+        serde_json::json!({"user_id": &uid}),
+    )
+    .await;
     assert!(txt.contains("deleted_records"), "delete_user body: {txt}");
 }
 
@@ -510,8 +566,7 @@ async fn mcp_list_get_update_delete_user() {
 
 #[tokio::test]
 async fn mcp_set_owner_field_tool() {
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-mcpof").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-mcpof").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     pool.with_writer(|c| {
         c.execute_batch(
@@ -529,10 +584,14 @@ async fn mcp_set_owner_field_tool() {
 
     let sid = mcp_init(&app, &tid, &svc).await;
     let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
+        &app,
+        &tid,
+        &svc,
+        &sid,
         "set_owner_field",
         serde_json::json!({"collection":"posts","field":"user_id","read_scope":"own"}),
-    ).await;
+    )
+    .await;
     assert!(txt.contains("owner_field"), "body: {txt}");
     assert!(txt.contains("user_id"), "body: {txt}");
 }
@@ -542,13 +601,13 @@ async fn mcp_set_self_register_tool() {
     // Build a tenant app with meta wired into McpRegistry so set_self_register
     // can write to meta.sqlite. The standard test helper (test_mcp_http) does
     // NOT wire meta — we build the stack manually here.
+    use drust::auth::bearer::{generate_token, hash_token};
     use drust::mcp::http_registry::McpHttpRegistry;
     use drust::mcp::server::McpRegistry;
     use drust::storage::meta::open_meta;
     use drust::storage::pool::TenantRegistry;
     use drust::tenant::router::TenantAuthState;
     use drust::tenant::{TenantStack, build_tenant_router, events::EventBus};
-    use drust::auth::bearer::{generate_token, hash_token};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -620,15 +679,23 @@ async fn mcp_set_self_register_tool() {
         )
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::FORBIDDEN, "register should be off initially");
+    assert_eq!(
+        r.status(),
+        StatusCode::FORBIDDEN,
+        "register should be off initially"
+    );
 
     // Enable self-register via MCP tool.
     let sid = mcp_init(&app, tid, &svc_tok).await;
     let txt = mcp_call_tool(
-        &app, tid, &svc_tok, &sid,
+        &app,
+        tid,
+        &svc_tok,
+        &sid,
         "set_self_register",
         serde_json::json!({"enabled": true}),
-    ).await;
+    )
+    .await;
     assert!(txt.contains("allow_self_register"), "body: {txt}");
 
     // Now /auth/register should succeed.
@@ -657,26 +724,27 @@ async fn mcp_set_self_register_tool() {
 async fn mcp_create_user_with_profile_returns_object_not_string() {
     // Regression: profile written as JSON object should round-trip as JSON
     // object, not as a JSON-encoded string.
-    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-mcpu-profile").await;
+    let (app, tid, svc, _anon, _dir) =
+        helpers::spin_up_dual_role_self_register("t-mcpu-profile").await;
     let sid = mcp_init(&app, &tid, &svc).await;
     let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
+        &app,
+        &tid,
+        &svc,
+        &sid,
         "create_user",
         json!({
             "email": "p@x.com",
             "password": "longpassword",
             "profile": {"kind": "mcp-test", "note": "validation run"},
         }),
-    ).await;
+    )
+    .await;
     let create_resp: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let uid = create_resp["user_id"].as_str().unwrap().to_string();
 
     // get_user — the profile field should be an OBJECT, not a string.
-    let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
-        "get_user",
-        json!({"user_id": uid}),
-    ).await;
+    let txt = mcp_call_tool(&app, &tid, &svc, &sid, "get_user", json!({"user_id": uid})).await;
     let got: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let profile = &got["profile"];
     assert!(
@@ -693,10 +761,14 @@ async fn mcp_create_user_with_stringified_profile_still_round_trips_as_object() 
     // pre-stringify a JSON object before sending. profile arrives as
     // Value::String("{...}") instead of Value::Object. We should detect this
     // and store the inner JSON so reads still surface a structured object.
-    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-mcpu-strprofile").await;
+    let (app, tid, svc, _anon, _dir) =
+        helpers::spin_up_dual_role_self_register("t-mcpu-strprofile").await;
     let sid = mcp_init(&app, &tid, &svc).await;
     let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
+        &app,
+        &tid,
+        &svc,
+        &sid,
         "create_user",
         json!({
             "email": "s@x.com",
@@ -704,15 +776,12 @@ async fn mcp_create_user_with_stringified_profile_still_round_trips_as_object() 
             // Client sends profile as a JSON-encoded STRING, not an object.
             "profile": r#"{"kind":"stringified","note":"client double-encoded"}"#,
         }),
-    ).await;
+    )
+    .await;
     let create_resp: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let uid = create_resp["user_id"].as_str().unwrap().to_string();
 
-    let txt = mcp_call_tool(
-        &app, &tid, &svc, &sid,
-        "get_user",
-        json!({"user_id": uid}),
-    ).await;
+    let txt = mcp_call_tool(&app, &tid, &svc, &sid, "get_user", json!({"user_id": uid})).await;
     let got: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let profile = &got["profile"];
     assert!(

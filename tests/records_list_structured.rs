@@ -236,8 +236,7 @@ async fn service_token_with_sort_asc_orders_rows() {
 #[tokio::test]
 async fn anon_with_cap_can_list() {
     // dual-role tenant: anon token has anon_caps_json='[\"select\"]'.
-    let (app, tid, _svc, anon, dir) =
-        spin_up_dual_role_self_register("anon-list").await;
+    let (app, tid, _svc, anon, dir) = spin_up_dual_role_self_register("anon-list").await;
     seed_plain_posts(&dir, &tid).await;
     insert_post(&app, &tid, &_svc, "anon-1", 1).await;
     let (status, v) = post_list(&app, &tid, &anon, "posts", json!({})).await;
@@ -249,14 +248,11 @@ async fn anon_with_cap_can_list() {
 async fn user_on_owner_scoped_sees_only_own_rows() {
     // User-A creates two rows; user-B creates one. User-A's POST /list
     // must return exactly two.
-    let (app, tid, svc, _anon, dir) =
-        spin_up_dual_role_self_register("user-owner-list").await;
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("user-owner-list").await;
     seed_owner_scoped_posts(&dir, &tid).await;
     let _ = svc; // unused — we use user tokens
-    let user_a =
-        register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-    let user_b =
-        register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
+    let user_a = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+    let user_b = register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
     insert_post(&app, &tid, &user_a, "a-1", 1).await;
     insert_post(&app, &tid, &user_a, "a-2", 2).await;
     insert_post(&app, &tid, &user_b, "b-1", 1).await;
@@ -271,11 +267,9 @@ async fn user_on_owner_scoped_sees_only_own_rows() {
 
 #[tokio::test]
 async fn user_on_non_owner_scoped_falls_through_to_anon_cap() {
-    let (app, tid, svc, _anon, dir) =
-        spin_up_dual_role_self_register("user-non-owner").await;
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("user-non-owner").await;
     seed_plain_posts(&dir, &tid).await;
-    let user_a =
-        register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
+    let user_a = register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
     insert_post(&app, &tid, &svc, "row-1", 1).await;
     let (status, v) = post_list(&app, &tid, &user_a, "posts", json!({})).await;
     assert_eq!(status, StatusCode::OK);
@@ -337,13 +331,10 @@ async fn happy_path_filter_and_sort_combined() {
 
 #[tokio::test]
 async fn user_filter_without_owner_clause_still_scoped() {
-    let (app, tid, _svc, _anon, dir) =
-        spin_up_dual_role_self_register("owner-strict").await;
+    let (app, tid, _svc, _anon, dir) = spin_up_dual_role_self_register("owner-strict").await;
     seed_owner_scoped_posts(&dir, &tid).await;
-    let user_a =
-        register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-    let user_b =
-        register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
+    let user_a = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+    let user_b = register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
     insert_post(&app, &tid, &user_a, "a-low", 1).await;
     insert_post(&app, &tid, &user_a, "a-high", 100).await;
     insert_post(&app, &tid, &user_b, "b-high", 100).await;
@@ -367,13 +358,10 @@ async fn user_filter_without_owner_clause_still_scoped() {
 
 #[tokio::test]
 async fn user_filter_targeting_owner_field_yields_empty_intersection() {
-    let (app, tid, _svc, _anon, dir) =
-        spin_up_dual_role_self_register("owner-bypass").await;
+    let (app, tid, _svc, _anon, dir) = spin_up_dual_role_self_register("owner-bypass").await;
     seed_owner_scoped_posts(&dir, &tid).await;
-    let user_a =
-        register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-    let user_b =
-        register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
+    let user_a = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+    let user_b = register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
     insert_post(&app, &tid, &user_a, "a-1", 1).await;
     insert_post(&app, &tid, &user_b, "b-1", 1).await;
     // User A explicitly filters owner_id = "u-anything"; the auto-appended
@@ -398,8 +386,7 @@ async fn user_filter_targeting_owner_field_yields_empty_intersection() {
 
 #[tokio::test]
 async fn filter_inj_double_dash_returns_unknown_field() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("inj-dash", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("inj-dash", "service").await;
     seed_plain_posts(&dir, "inj-dash").await;
     let (status, v) = post_list(
         &app,
@@ -415,8 +402,7 @@ async fn filter_inj_double_dash_returns_unknown_field() {
 
 #[tokio::test]
 async fn filter_inj_semicolon_drop_returns_unknown_field() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("inj-drop", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("inj-drop", "service").await;
     seed_plain_posts(&dir, "inj-drop").await;
     let (status, v) = post_list(
         &app,
@@ -432,8 +418,7 @@ async fn filter_inj_semicolon_drop_returns_unknown_field() {
 
 #[tokio::test]
 async fn filter_inj_quote_or_returns_unknown_field() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("inj-quote", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("inj-quote", "service").await;
     seed_plain_posts(&dir, "inj-quote").await;
     let (status, v) = post_list(
         &app,
@@ -453,8 +438,7 @@ async fn filter_inj_quote_or_returns_unknown_field() {
 
 #[tokio::test]
 async fn sort_inj_drop_returns_sort_field_unknown() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("sort-inj", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("sort-inj", "service").await;
     seed_plain_posts(&dir, "sort-inj").await;
     let (status, v) = post_list(
         &app,
@@ -474,8 +458,7 @@ async fn sort_inj_drop_returns_sort_field_unknown() {
 
 #[tokio::test]
 async fn filter_on_vector_field_returns_filter_vector_field() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("vec-filter", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("vec-filter", "service").await;
     seed_posts_with_vector(&dir, "vec-filter").await;
     let (status, v) = post_list(
         &app,
@@ -491,8 +474,7 @@ async fn filter_on_vector_field_returns_filter_vector_field() {
 
 #[tokio::test]
 async fn sort_on_vector_field_returns_sort_vector_field() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("vec-sort", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("vec-sort", "service").await;
     seed_posts_with_vector(&dir, "vec-sort").await;
     let (status, v) = post_list(
         &app,
@@ -508,8 +490,7 @@ async fn sort_on_vector_field_returns_sort_vector_field() {
 
 #[tokio::test]
 async fn select_with_vector_drops_silently_from_response() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("vec-select", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("vec-select", "service").await;
     seed_posts_with_vector(&dir, "vec-select").await;
     // Insert a row WITHOUT touching the embedding column (set_realtime is
     // off by default but that doesn't affect /list).
@@ -537,7 +518,10 @@ async fn select_with_vector_drops_silently_from_response() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let row = &v["records"][0];
-    assert!(row.get("embedding").is_none(), "vector must be dropped: {row:?}");
+    assert!(
+        row.get("embedding").is_none(),
+        "vector must be dropped: {row:?}"
+    );
     assert_eq!(row["title"], "x");
 }
 
@@ -547,35 +531,28 @@ async fn select_with_vector_drops_silently_from_response() {
 
 #[tokio::test]
 async fn system_collection_404_for_service() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("sys-svc", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("sys-svc", "service").await;
     seed_plain_posts(&dir, "sys-svc").await;
-    let (status, v) =
-        post_list(&app, "sys-svc", &tok, "_system_users", json!({})).await;
+    let (status, v) = post_list(&app, "sys-svc", &tok, "_system_users", json!({})).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(v["error_code"], "COLLECTION_NOT_FOUND");
 }
 
 #[tokio::test]
 async fn system_collection_404_for_anon() {
-    let (app, tid, _svc, anon, dir) =
-        spin_up_dual_role_self_register("sys-anon").await;
+    let (app, tid, _svc, anon, dir) = spin_up_dual_role_self_register("sys-anon").await;
     seed_plain_posts(&dir, &tid).await;
-    let (status, v) =
-        post_list(&app, &tid, &anon, "_system_users", json!({})).await;
+    let (status, v) = post_list(&app, &tid, &anon, "_system_users", json!({})).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(v["error_code"], "COLLECTION_NOT_FOUND");
 }
 
 #[tokio::test]
 async fn system_collection_404_for_user() {
-    let (app, tid, _svc, _anon, dir) =
-        spin_up_dual_role_self_register("sys-user").await;
+    let (app, tid, _svc, _anon, dir) = spin_up_dual_role_self_register("sys-user").await;
     seed_plain_posts(&dir, &tid).await;
-    let user_a =
-        register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-    let (status, v) =
-        post_list(&app, &tid, &user_a, "_system_users", json!({})).await;
+    let user_a = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+    let (status, v) = post_list(&app, &tid, &user_a, "_system_users", json!({})).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(v["error_code"], "COLLECTION_NOT_FOUND");
 }
@@ -586,8 +563,7 @@ async fn system_collection_404_for_user() {
 
 #[tokio::test]
 async fn anon_empty_caps_returns_anon_cap_denied() {
-    let (app, tid, _svc, anon, dir) =
-        spin_up_dual_role_self_register("anon-nocap").await;
+    let (app, tid, _svc, anon, dir) = spin_up_dual_role_self_register("anon-nocap").await;
     seed_plain_posts(&dir, &tid).await;
     set_anon_caps_empty(&dir, &tid).await;
     let (status, v) = post_list(&app, &tid, &anon, "posts", json!({})).await;
@@ -601,8 +577,7 @@ async fn anon_empty_caps_returns_anon_cap_denied() {
 
 #[tokio::test]
 async fn anon_on_owner_scoped_returns_owner_scoped_anon_denied() {
-    let (app, tid, _svc, anon, dir) =
-        spin_up_dual_role_self_register("anon-owner").await;
+    let (app, tid, _svc, anon, dir) = spin_up_dual_role_self_register("anon-owner").await;
     seed_owner_scoped_posts(&dir, &tid).await;
     let (status, v) = post_list(&app, &tid, &anon, "posts", json!({})).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -615,17 +590,9 @@ async fn anon_on_owner_scoped_returns_owner_scoped_anon_denied() {
 
 #[tokio::test]
 async fn explain_service_returns_plan() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("explain-svc", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("explain-svc", "service").await;
     seed_plain_posts(&dir, "explain-svc").await;
-    let (status, v) = post_list_explain(
-        &app,
-        "explain-svc",
-        &tok,
-        "posts",
-        json!({}),
-    )
-    .await;
+    let (status, v) = post_list_explain(&app, "explain-svc", &tok, "posts", json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert!(v["plan"].is_array(), "plan must be array: {v:?}");
     assert!(!v["plan"].as_array().unwrap().is_empty(), "plan empty");
@@ -633,11 +600,9 @@ async fn explain_service_returns_plan() {
 
 #[tokio::test]
 async fn explain_anon_returns_explain_requires_service() {
-    let (app, tid, _svc, anon, dir) =
-        spin_up_dual_role_self_register("explain-anon").await;
+    let (app, tid, _svc, anon, dir) = spin_up_dual_role_self_register("explain-anon").await;
     seed_plain_posts(&dir, &tid).await;
-    let (status, v) =
-        post_list_explain(&app, &tid, &anon, "posts", json!({})).await;
+    let (status, v) = post_list_explain(&app, &tid, &anon, "posts", json!({})).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(v["error_code"], "EXPLAIN_REQUIRES_SERVICE");
 }
@@ -648,51 +613,27 @@ async fn explain_anon_returns_explain_requires_service() {
 
 #[tokio::test]
 async fn per_page_zero_returns_page_range_invalid() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("pp-zero", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("pp-zero", "service").await;
     seed_plain_posts(&dir, "pp-zero").await;
-    let (status, v) = post_list(
-        &app,
-        "pp-zero",
-        &tok,
-        "posts",
-        json!({"per_page": 0}),
-    )
-    .await;
+    let (status, v) = post_list(&app, "pp-zero", &tok, "posts", json!({"per_page": 0})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(v["error_code"], "PAGE_RANGE_INVALID");
 }
 
 #[tokio::test]
 async fn per_page_over_500_returns_page_range_invalid() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("pp-501", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("pp-501", "service").await;
     seed_plain_posts(&dir, "pp-501").await;
-    let (status, v) = post_list(
-        &app,
-        "pp-501",
-        &tok,
-        "posts",
-        json!({"per_page": 501}),
-    )
-    .await;
+    let (status, v) = post_list(&app, "pp-501", &tok, "posts", json!({"per_page": 501})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(v["error_code"], "PAGE_RANGE_INVALID");
 }
 
 #[tokio::test]
 async fn page_zero_returns_page_range_invalid() {
-    let (app, tok, dir) =
-        spin_up_tenant_with_role("page-zero", "service").await;
+    let (app, tok, dir) = spin_up_tenant_with_role("page-zero", "service").await;
     seed_plain_posts(&dir, "page-zero").await;
-    let (status, v) = post_list(
-        &app,
-        "page-zero",
-        &tok,
-        "posts",
-        json!({"page": 0}),
-    )
-    .await;
+    let (status, v) = post_list(&app, "page-zero", &tok, "posts", json!({"page": 0})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(v["error_code"], "PAGE_RANGE_INVALID");
 }

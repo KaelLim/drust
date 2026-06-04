@@ -9,9 +9,9 @@
 
 use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::{
-    exploration, files as file_tools, oauth as oauth_tools,
-    owner_field as owner_field_tools, read, schema as schema_tools, user as user_tools,
-    vector as vector_tools, webhook as webhook_tools, write as write_tools,
+    exploration, files as file_tools, oauth as oauth_tools, owner_field as owner_field_tools, read,
+    schema as schema_tools, user as user_tools, vector as vector_tools, webhook as webhook_tools,
+    write as write_tools,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -30,8 +30,11 @@ fn map_desc_error(e: anyhow::Error) -> McpError {
     let msg = e.to_string();
     let code = msg.split(':').next().unwrap_or("");
     match code {
-        "DESCRIPTION_TOO_LONG" | "DESCRIPTION_INVALID"
-        | "COLLECTION_NOT_FOUND" | "FIELD_NOT_FOUND" | "INDEX_NOT_FOUND"
+        "DESCRIPTION_TOO_LONG"
+        | "DESCRIPTION_INVALID"
+        | "COLLECTION_NOT_FOUND"
+        | "FIELD_NOT_FOUND"
+        | "INDEX_NOT_FOUND"
         | "PROTECTED_COLLECTION" => McpError::invalid_params(msg, None),
         _ => McpError::internal_error(msg, None),
     }
@@ -399,12 +402,22 @@ fn bail_mcp<T>(e: anyhow::Error) -> Result<T, McpError> {
     let fix = crate::safety::error_fixes::lookup(code);
     let mut data = serde_json::Map::new();
     if !code.is_empty() {
-        data.insert("error_code".into(), serde_json::Value::String(code.to_string()));
+        data.insert(
+            "error_code".into(),
+            serde_json::Value::String(code.to_string()),
+        );
     }
     if let Some(f) = fix {
-        data.insert("suggested_fix".into(), serde_json::Value::String(f.to_string()));
+        data.insert(
+            "suggested_fix".into(),
+            serde_json::Value::String(f.to_string()),
+        );
     }
-    let data_val = if data.is_empty() { None } else { Some(serde_json::Value::Object(data)) };
+    let data_val = if data.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(data))
+    };
     Err(McpError::internal_error(msg, data_val))
 }
 
@@ -483,12 +496,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "One-shot schema bootstrap for the tenant. Returns every \
+    #[tool(
+        description = "One-shot schema bootstrap for the tenant. Returns every \
         collection's full schema (fields, indices, descriptions, anon_caps, owner_field, \
         realtime_enabled, vector_fields) plus every stored RPC's metadata in a single \
         response. Service-key only. Use this when an LLM first connects to learn the data \
         model; the cheaper `list_collections` + `describe_collection` round-trips remain \
-        available for per-collection inspection.")]
+        available for per-collection inspection."
+    )]
     async fn get_schema_overview(&self) -> Result<CallToolResult, McpError> {
         match exploration::get_schema_overview(&self.state).await {
             Ok(v) => Ok(CallToolResult::success(vec![Content::text(
@@ -520,7 +535,10 @@ impl DrustMcpService {
     )]
     async fn count_rows(
         &self,
-        Parameters(CountRowsArgs { collection, where_clause }): Parameters<CountRowsArgs>,
+        Parameters(CountRowsArgs {
+            collection,
+            where_clause,
+        }): Parameters<CountRowsArgs>,
     ) -> Result<CallToolResult, McpError> {
         match exploration::count_rows(&self.state, &collection, where_clause.as_deref()).await {
             Ok(v) => json_content(v),
@@ -567,9 +585,20 @@ impl DrustMcpService {
         `foreign_key` names another collection; emits ON DELETE RESTRICT.")]
     async fn create_collection(
         &self,
-        Parameters(CreateCollectionArgs { name, fields, description }): Parameters<CreateCollectionArgs>,
+        Parameters(CreateCollectionArgs {
+            name,
+            fields,
+            description,
+        }): Parameters<CreateCollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match schema_tools::create_collection_with_desc(&self.state, &name, &fields, description.as_deref()).await {
+        match schema_tools::create_collection_with_desc(
+            &self.state,
+            &name,
+            &fields,
+            description.as_deref(),
+        )
+        .await
+        {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -606,20 +635,30 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Drop an entire collection (DROP TABLE + _updated_at trigger). \
+    #[tool(
+        description = "Drop an entire collection (DROP TABLE + _updated_at trigger). \
         Irreversible. Rejected if other collections still FK-reference this one. \
         v1.26: pass `dry_run: true` to preview row_count + indexes + RPCs + \
-        reverse FK list without dropping.")]
+        reverse FK list without dropping."
+    )]
     async fn drop_collection(
         &self,
-        Parameters(DropCollectionArgs { collection, dry_run }): Parameters<DropCollectionArgs>,
+        Parameters(DropCollectionArgs {
+            collection,
+            dry_run,
+        }): Parameters<DropCollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
         if dry_run.unwrap_or(false) {
             if crate::storage::schema::is_protected_collection(&collection) {
-                return bail_mcp(anyhow::anyhow!("PROTECTED_COLLECTION: cannot drop {collection}"));
+                return bail_mcp(anyhow::anyhow!(
+                    "PROTECTED_COLLECTION: cannot drop {collection}"
+                ));
             }
             let coll_check = collection.clone();
-            let exists: i64 = self.state.inner().pool
+            let exists: i64 = self
+                .state
+                .inner()
+                .pool
                 .with_reader(move |c| {
                     c.query_row(
                         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -635,7 +674,9 @@ impl DrustMcpService {
             return match crate::storage::blast_radius::drop_collection_blast_radius(
                 &self.state.inner().pool,
                 &collection,
-            ).await {
+            )
+            .await
+            {
                 Ok(br) => json_content(serde_json::to_value(br).expect("serialise")),
                 Err(e) => bail_mcp(e),
             };
@@ -646,15 +687,23 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Create a non-unique or unique index on one or more fields of a \
+    #[tool(
+        description = "Create a non-unique or unique index on one or more fields of a \
         collection. Speeds up `WHERE field = ?` and `ORDER BY field` queries. \
         `fields` is a non-empty list of column names (order matters for composite indices). \
         `unique` defaults to false. \
         Tables with more than DRUST_INDEX_LARGE_TABLE_ROWS rows return LARGE_TABLE — \
-        pass force=true only after understanding the temporary write lock implication.")]
+        pass force=true only after understanding the temporary write lock implication."
+    )]
     async fn create_index(
         &self,
-        Parameters(CreateIndexArgs { collection, fields, unique, force, description }): Parameters<CreateIndexArgs>,
+        Parameters(CreateIndexArgs {
+            collection,
+            fields,
+            unique,
+            force,
+            description,
+        }): Parameters<CreateIndexArgs>,
     ) -> Result<CallToolResult, McpError> {
         match crate::mcp::tools::index::create_index_with_threshold_and_desc(
             &self.state.inner().pool,
@@ -664,7 +713,9 @@ impl DrustMcpService {
             force.unwrap_or(false),
             self.state.inner().index_large_table_rows,
             description.as_deref(),
-        ).await {
+        )
+        .await
+        {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -676,7 +727,12 @@ impl DrustMcpService {
         receive its name without dropping.")]
     async fn drop_index(
         &self,
-        Parameters(DropIndexArgs { collection, name, fields, dry_run }): Parameters<DropIndexArgs>,
+        Parameters(DropIndexArgs {
+            collection,
+            name,
+            fields,
+            dry_run,
+        }): Parameters<DropIndexArgs>,
     ) -> Result<CallToolResult, McpError> {
         if dry_run.unwrap_or(false) {
             let resolved = match (name.as_deref(), fields.as_deref()) {
@@ -684,12 +740,18 @@ impl DrustMcpService {
                 (None, Some(fs)) if !fs.is_empty() => {
                     crate::mcp::tools::index::derive_index_name(&collection, fs)
                 }
-                _ => return bail_mcp(anyhow::anyhow!("INVALID_PARAMS: provide either name or non-empty fields")),
+                _ => {
+                    return bail_mcp(anyhow::anyhow!(
+                        "INVALID_PARAMS: provide either name or non-empty fields"
+                    ));
+                }
             };
             return match crate::storage::blast_radius::drop_index_blast_radius(
                 &self.state.inner().pool,
                 &resolved,
-            ).await {
+            )
+            .await
+            {
                 Ok(br) => json_content(serde_json::to_value(br).expect("serialise")),
                 Err(e) => bail_mcp(e),
             };
@@ -699,7 +761,9 @@ impl DrustMcpService {
             &collection,
             name.as_deref(),
             fields.as_deref(),
-        ).await {
+        )
+        .await
+        {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -726,7 +790,10 @@ impl DrustMcpService {
         Refuses `_system_*` collections.")]
     async fn set_realtime(
         &self,
-        Parameters(SetRealtimeArgs { collection, enabled }): Parameters<SetRealtimeArgs>,
+        Parameters(SetRealtimeArgs {
+            collection,
+            enabled,
+        }): Parameters<SetRealtimeArgs>,
     ) -> Result<CallToolResult, McpError> {
         match crate::mcp::tools::realtime::set_realtime(&self.state, &collection, enabled).await {
             Ok(v) => json_content(v),
@@ -734,9 +801,11 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Set or clear the collection-level description for a tenant \
+    #[tool(
+        description = "Set or clear the collection-level description for a tenant \
         collection. Service-key only. Empty / whitespace description clears (column → NULL). \
-        Bounded to 2048 bytes after trimming. Returns the post-state description.")]
+        Bounded to 2048 bytes after trimming. Returns the post-state description."
+    )]
     async fn set_collection_description(
         &self,
         Parameters(args): Parameters<SetCollectionDescriptionArgs>,
@@ -752,15 +821,20 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Set or clear a per-field description on a tenant collection. \
-        Service-key only. Returns FIELD_NOT_FOUND if the named field is not on the collection.")]
+    #[tool(
+        description = "Set or clear a per-field description on a tenant collection. \
+        Service-key only. Returns FIELD_NOT_FOUND if the named field is not on the collection."
+    )]
     async fn set_field_description(
         &self,
         Parameters(args): Parameters<SetFieldDescriptionArgs>,
     ) -> Result<CallToolResult, McpError> {
         let pool = self.state.inner().pool.clone();
         match schema_tools::set_field_description(
-            &pool, &args.collection, &args.field, &args.description,
+            &pool,
+            &args.collection,
+            &args.field,
+            &args.description,
         )
         .await
         {
@@ -771,15 +845,20 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Set or clear a per-index description on a tenant collection. \
-        Service-key only. Returns INDEX_NOT_FOUND if the named index is not on the collection.")]
+    #[tool(
+        description = "Set or clear a per-index description on a tenant collection. \
+        Service-key only. Returns INDEX_NOT_FOUND if the named index is not on the collection."
+    )]
     async fn set_index_description(
         &self,
         Parameters(args): Parameters<SetIndexDescriptionArgs>,
     ) -> Result<CallToolResult, McpError> {
         let pool = self.state.inner().pool.clone();
         match schema_tools::set_index_description(
-            &pool, &args.collection, &args.index_name, &args.description,
+            &pool,
+            &args.collection,
+            &args.index_name,
+            &args.description,
         )
         .await
         {
@@ -808,7 +887,8 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "List records from a collection with structured filter, \
+    #[tool(
+        description = "List records from a collection with structured filter, \
         sort, and pagination. Reuses the same FilterAst as `search_collection`; \
         rejects raw SQL by construction. `filter` is a tree of \
         `{and:[...]}` / `{or:[...]}` / `{not:...}` over leaves \
@@ -820,7 +900,8 @@ impl DrustMcpService {
         owner_field enforcement is guaranteed by drust — service tokens \
         bypass; user tokens (REST only) get an auto-appended owner clause; \
         MCP is service-only at the transport layer so this tool sees all \
-        rows.")]
+        rows."
+    )]
     async fn list_records(
         &self,
         Parameters(args): Parameters<read::ListRecordsArgs>,
@@ -873,10 +954,16 @@ impl DrustMcpService {
         would block the delete) without actually deleting.")]
     async fn delete_record(
         &self,
-        Parameters(DeleteRecordArgs { collection, id, dry_run }): Parameters<DeleteRecordArgs>,
+        Parameters(DeleteRecordArgs {
+            collection,
+            id,
+            dry_run,
+        }): Parameters<DeleteRecordArgs>,
     ) -> Result<CallToolResult, McpError> {
         if dry_run.unwrap_or(false) {
-            match crate::mcp::tools::write::delete_record_validate(&self.state, &collection, id).await {
+            match crate::mcp::tools::write::delete_record_validate(&self.state, &collection, id)
+                .await
+            {
                 Ok(()) => {}
                 Err(e) => return bail_mcp(e),
             }
@@ -884,7 +971,9 @@ impl DrustMcpService {
                 &self.state.inner().pool,
                 &collection,
                 id,
-            ).await {
+            )
+            .await
+            {
                 Ok(br) => return json_content(serde_json::to_value(br).expect("serialise")),
                 Err(e) => return bail_mcp(e),
             }
@@ -961,16 +1050,13 @@ impl DrustMcpService {
         pool.with_writer(move |c| {
             // C5: mode = Read until create_rpc accepts a `mode` param
             // (queued follow-up). Same default as the admin form.
-            crate::rpc::prepare::validate_rpc_sql(
-                c,
-                &sql,
-                crate::rpc::registry::RpcMode::Read,
-            ).map_err(|e| {
-                rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(1),
-                    Some(e.to_string()),
-                )
-            })?;
+            crate::rpc::prepare::validate_rpc_sql(c, &sql, crate::rpc::registry::RpcMode::Read)
+                .map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(1),
+                        Some(e.to_string()),
+                    )
+                })?;
             crate::rpc::registry::create(
                 c,
                 &name,
@@ -981,10 +1067,7 @@ impl DrustMcpService {
                 crate::rpc::registry::RpcMode::Read,
             )
             .map_err(|e| {
-                rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(1),
-                    Some(e.to_string()),
-                )
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
             })?;
             Ok::<_, rusqlite::Error>(())
         })
@@ -1021,16 +1104,13 @@ impl DrustMcpService {
             if let Some(s) = sql.as_deref() {
                 // C5: mode = Read for update_rpc until the tool accepts
                 // an explicit mode param. Matches create_rpc.
-                crate::rpc::prepare::validate_rpc_sql(
-                    c,
-                    s,
-                    crate::rpc::registry::RpcMode::Read,
-                ).map_err(|e| {
-                    rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(1),
-                        Some(e.to_string()),
-                    )
-                })?;
+                crate::rpc::prepare::validate_rpc_sql(c, s, crate::rpc::registry::RpcMode::Read)
+                    .map_err(|e| {
+                        rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(1),
+                            Some(e.to_string()),
+                        )
+                    })?;
             }
             crate::rpc::registry::update(
                 c,
@@ -1042,10 +1122,7 @@ impl DrustMcpService {
                 None,
             )
             .map_err(|e| {
-                rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(1),
-                    Some(e.to_string()),
-                )
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
             })?;
             Ok::<_, rusqlite::Error>(())
         })
@@ -1067,10 +1144,7 @@ impl DrustMcpService {
         let name = p.name.clone();
         pool.with_writer(move |c| {
             crate::rpc::registry::delete(c, &name).map_err(|e| {
-                rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(1),
-                    Some(e.to_string()),
-                )
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
             })
         })
         .await
@@ -1139,11 +1213,7 @@ impl DrustMcpService {
                     Err(e) => return Ok(Err(e.to_string())),
                 };
                 let qr = match crate::query::executor::execute_read_query_with_named(
-                    c,
-                    &rpc.sql,
-                    &bound,
-                    1_000,
-                    1_048_576,
+                    c, &rpc.sql, &bound, 1_000, 1_048_576,
                 ) {
                     Ok(qr) => qr,
                     Err(e) => return Ok(Err(e.to_string())),
@@ -1191,14 +1261,21 @@ impl DrustMcpService {
 
     // ── T24: User-management tools ─────────────────────────────────────────
 
-    #[tool(description = "Create a new user in this tenant's _system_users table. \
+    #[tool(
+        description = "Create a new user in this tenant's _system_users table. \
         Required: email (unique, case-insensitive), password (hashed server-side). \
         Optional: profile (JSON object), verified (boolean, default false). \
         Returns {user_id, email, created_at}. \
-        Errors with EMAIL_EXISTS if the email is already taken.")]
+        Errors with EMAIL_EXISTS if the email is already taken."
+    )]
     async fn create_user(
         &self,
-        Parameters(CreateUserArgs { email, password, profile, verified }): Parameters<CreateUserArgs>,
+        Parameters(CreateUserArgs {
+            email,
+            password,
+            profile,
+            verified,
+        }): Parameters<CreateUserArgs>,
     ) -> Result<CallToolResult, McpError> {
         match user_tools::create_user(&self.state.inner().pool, email, password, profile, verified)
             .await
@@ -1208,9 +1285,11 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "List users in this tenant. Optional: q (email substring filter), \
+    #[tool(
+        description = "List users in this tenant. Optional: q (email substring filter), \
         limit (1–500, default 50), offset. \
-        Returns {users: [...], total}.")]
+        Returns {users: [...], total}."
+    )]
     async fn list_users(
         &self,
         Parameters(ListUsersArgs { q, limit, offset }): Parameters<ListUsersArgs>,
@@ -1234,12 +1313,20 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Update one or more fields of a user. All fields except user_id \
+    #[tool(
+        description = "Update one or more fields of a user. All fields except user_id \
         are optional — only supplied fields are changed. password is re-hashed server-side. \
-        Returns the updated row. Errors: NOT_FOUND, EMAIL_EXISTS, HASH_FAILED.")]
+        Returns the updated row. Errors: NOT_FOUND, EMAIL_EXISTS, HASH_FAILED."
+    )]
     async fn update_user(
         &self,
-        Parameters(UpdateUserArgs { user_id, email, password, profile, verified }): Parameters<UpdateUserArgs>,
+        Parameters(UpdateUserArgs {
+            user_id,
+            email,
+            password,
+            profile,
+            verified,
+        }): Parameters<UpdateUserArgs>,
     ) -> Result<CallToolResult, McpError> {
         match user_tools::update_user(
             &self.state.inner().pool,
@@ -1256,10 +1343,12 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Delete a user and cascade: removes the user's records from every \
+    #[tool(
+        description = "Delete a user and cascade: removes the user's records from every \
         collection that has owner_field set, revokes all sessions, then deletes the user row. \
         Returns {deleted_records: {<collection>: <count>, ...}, revoked_sessions: <n>}. \
-        Errors with NOT_FOUND if the user does not exist.")]
+        Errors with NOT_FOUND if the user does not exist."
+    )]
     async fn delete_user(
         &self,
         Parameters(UserIdArgs { user_id }): Parameters<UserIdArgs>,
@@ -1270,8 +1359,10 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Revoke all active sessions for a user (forces re-login on all devices). \
-        Returns {revoked: <n>}. Safe to call on a non-existent user (returns revoked: 0).")]
+    #[tool(
+        description = "Revoke all active sessions for a user (forces re-login on all devices). \
+        Returns {revoked: <n>}. Safe to call on a non-existent user (returns revoked: 0)."
+    )]
     async fn revoke_user_sessions(
         &self,
         Parameters(UserIdArgs { user_id }): Parameters<UserIdArgs>,
@@ -1284,16 +1375,22 @@ impl DrustMcpService {
 
     // ── T25: Owner-field + self-register tools ─────────────────────────────
 
-    #[tool(description = "Declare that a column in `collection` is the owner-field — \
+    #[tool(
+        description = "Declare that a column in `collection` is the owner-field — \
         a foreign key to _system_users(id) that links rows to their creator. \
         `field` must already exist on the table and carry a FK to _system_users(id). \
         `read_scope`: 'own' (default) — anon reads filtered to caller's user_id; \
         'all' — anon reads unfiltered. \
         Returns {owner_field, read_scope}. \
-        Errors: OWNER_FIELD_INVALID_COLUMN (no such column), OWNER_FIELD_NOT_FK (missing FK).")]
+        Errors: OWNER_FIELD_INVALID_COLUMN (no such column), OWNER_FIELD_NOT_FK (missing FK)."
+    )]
     async fn set_owner_field(
         &self,
-        Parameters(SetOwnerFieldArgs { collection, field, read_scope }): Parameters<SetOwnerFieldArgs>,
+        Parameters(SetOwnerFieldArgs {
+            collection,
+            field,
+            read_scope,
+        }): Parameters<SetOwnerFieldArgs>,
     ) -> Result<CallToolResult, McpError> {
         match owner_field_tools::set_owner_field(
             &self.state.inner().pool,
@@ -1336,7 +1433,7 @@ impl DrustMcpService {
                 return Err(McpError::internal_error(
                     "meta connection not available in this context".to_string(),
                     None,
-                ))
+                ));
             }
         };
         let tenant_id = self.state.tenant_id().to_string();
@@ -1358,8 +1455,10 @@ impl DrustMcpService {
         with the post-update state. NOT_FOUND if the tenant is missing.")]
     async fn set_publish_policy(
         &self,
-        Parameters(SetPublishPolicyArgs { allow_user_publish, allow_anon_publish }):
-            Parameters<SetPublishPolicyArgs>,
+        Parameters(SetPublishPolicyArgs {
+            allow_user_publish,
+            allow_anon_publish,
+        }): Parameters<SetPublishPolicyArgs>,
     ) -> Result<CallToolResult, McpError> {
         let meta = match self.state.meta() {
             Some(m) => m.clone(),
@@ -1367,12 +1466,15 @@ impl DrustMcpService {
                 return Err(McpError::internal_error(
                     "meta connection not available in this context".to_string(),
                     None,
-                ))
+                ));
             }
         };
         let tenant_id = self.state.tenant_id().to_string();
         match owner_field_tools::set_publish_policy(
-            &meta, &tenant_id, allow_user_publish, allow_anon_publish,
+            &meta,
+            &tenant_id,
+            allow_user_publish,
+            allow_anon_publish,
         )
         .await
         {
@@ -1413,7 +1515,12 @@ impl DrustMcpService {
         EMPTY_REDIRECT_URIS, or INVALID_REDIRECT_URI.")]
     async fn set_oauth_provider(
         &self,
-        Parameters(SetOauthProviderArgs { provider, client_id, client_secret, allowed_redirect_uris }): Parameters<SetOauthProviderArgs>,
+        Parameters(SetOauthProviderArgs {
+            provider,
+            client_id,
+            client_secret,
+            allowed_redirect_uris,
+        }): Parameters<SetOauthProviderArgs>,
     ) -> Result<CallToolResult, McpError> {
         match oauth_tools::set_oauth_provider(
             &self.state.inner().pool,
@@ -1447,17 +1554,24 @@ impl DrustMcpService {
 
     // ── v1.13: Webhook subscription tools (service-only) ───────────────────
 
-    #[tool(description = "Create an outbound webhook subscription for this tenant. \
+    #[tool(
+        description = "Create an outbound webhook subscription for this tenant. \
         `events` is a non-empty subset of {created, updated, deleted}. \
         `url` must be https:// or http:// with a loopback host (127.0.0.1/localhost/::1). \
         Returns {id, secret, collection, events, url, active, created_at}. \
         The raw 64-hex `secret` is returned **once**; subsequent reads redact it to '●●●●'. \
-        Errors: INVALID_URL, INVALID_EVENTS, DB_ERROR.")]
+        Errors: INVALID_URL, INVALID_EVENTS, DB_ERROR."
+    )]
     async fn create_webhook(
         &self,
-        Parameters(CreateWebhookArgs { collection, events, url }): Parameters<CreateWebhookArgs>,
+        Parameters(CreateWebhookArgs {
+            collection,
+            events,
+            url,
+        }): Parameters<CreateWebhookArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match webhook_tools::create_webhook(&self.state.inner().pool, collection, events, url).await {
+        match webhook_tools::create_webhook(&self.state.inner().pool, collection, events, url).await
+        {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -1484,7 +1598,12 @@ impl DrustMcpService {
         Errors: NOT_FOUND, INVALID_URL, INVALID_EVENTS.")]
     async fn update_webhook(
         &self,
-        Parameters(UpdateWebhookArgs { id, active, events, url }): Parameters<UpdateWebhookArgs>,
+        Parameters(UpdateWebhookArgs {
+            id,
+            active,
+            events,
+            url,
+        }): Parameters<UpdateWebhookArgs>,
     ) -> Result<CallToolResult, McpError> {
         match webhook_tools::update_webhook(&self.state.inner().pool, id, active, events, url).await
         {
@@ -1514,7 +1633,11 @@ impl DrustMcpService {
         rejected by the MCP layer).")]
     async fn recent_writes(
         &self,
-        Parameters(RecentWritesArgs { limit, collection, since_ts }): Parameters<RecentWritesArgs>,
+        Parameters(RecentWritesArgs {
+            limit,
+            collection,
+            since_ts,
+        }): Parameters<RecentWritesArgs>,
     ) -> Result<CallToolResult, McpError> {
         let tenant_id = self.state.inner().tenant_id.clone();
         match crate::safety::recent_writes::query_recent(
@@ -1523,7 +1646,9 @@ impl DrustMcpService {
             limit.unwrap_or(50),
             collection.as_deref(),
             since_ts.as_deref(),
-        ).await {
+        )
+        .await
+        {
             Ok(rows) => json_content(serde_json::to_value(rows).expect("serialise")),
             Err(e) => bail_mcp(anyhow::anyhow!("RECENT_WRITES_UNAVAILABLE: {e}")),
         }
@@ -1540,9 +1665,9 @@ impl DrustMcpService {
         &self,
         Parameters(BroadcastArgs { room, payload }): Parameters<BroadcastArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::tenant::rooms::rest::{publish_into_bus, PublishCtx, PublishError};
         use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
         use crate::tenant::rooms::envelope::codes;
+        use crate::tenant::rooms::rest::{PublishCtx, PublishError, publish_into_bus};
         let inner = self.state.inner();
         let tenant = inner.tenant_id.clone();
         let pc = PublishCtx {
@@ -1555,7 +1680,16 @@ impl DrustMcpService {
         match publish_into_bus(&pc, &tenant, &room, payload, "mcp") {
             Ok(delivered_to) => {
                 let ms = started.elapsed().as_millis() as u64;
-                write_publish_audit(&tenant, "service", ms, &room, byte_count, "mcp", delivered_to, None);
+                write_publish_audit(
+                    &tenant,
+                    "service",
+                    ms,
+                    &room,
+                    byte_count,
+                    "mcp",
+                    delivered_to,
+                    None,
+                );
                 json_content(serde_json::json!({
                     "room": room,
                     "delivered_to": delivered_to,
@@ -1564,22 +1698,33 @@ impl DrustMcpService {
             }
             Err(e) => {
                 let (code, msg) = match e {
-                    PublishError::RoomNameInvalid => {
-                        (codes::ROOM_NAME_INVALID, "room name does not match ^[a-zA-Z][a-zA-Z0-9_:.-]{0,127}$".to_string())
-                    }
-                    PublishError::ProtectedRoom => {
-                        (codes::PROTECTED_ROOM, "`_system_` prefix is reserved".to_string())
-                    }
+                    PublishError::RoomNameInvalid => (
+                        codes::ROOM_NAME_INVALID,
+                        "room name does not match ^[a-zA-Z][a-zA-Z0-9_:.-]{0,127}$".to_string(),
+                    ),
+                    PublishError::ProtectedRoom => (
+                        codes::PROTECTED_ROOM,
+                        "`_system_` prefix is reserved".to_string(),
+                    ),
                     PublishError::PayloadTooLarge => {
                         let max = inner.rooms_cfg.payload_max_bytes;
-                        (codes::PAYLOAD_TOO_LARGE, format!("payload {byte_count} bytes exceeds cap {max}"))
+                        (
+                            codes::PAYLOAD_TOO_LARGE,
+                            format!("payload {byte_count} bytes exceeds cap {max}"),
+                        )
                     }
-                    PublishError::RateLimited(d) => {
-                        (codes::RATE_LIMITED, format!("per-tenant publish quota exhausted; retry after {} ms", d.as_millis()))
-                    }
+                    PublishError::RateLimited(d) => (
+                        codes::RATE_LIMITED,
+                        format!(
+                            "per-tenant publish quota exhausted; retry after {} ms",
+                            d.as_millis()
+                        ),
+                    ),
                 };
                 let ms = started.elapsed().as_millis() as u64;
-                write_publish_audit_failure(&tenant, "service", ms, &room, byte_count, "mcp", code, None);
+                write_publish_audit_failure(
+                    &tenant, "service", ms, &room, byte_count, "mcp", code, None,
+                );
                 bail_mcp(anyhow::anyhow!("{code}: {msg}"))
             }
         }
@@ -1680,8 +1825,14 @@ mod instructions_tests {
     #[test]
     fn instructions_includes_all_groups_and_tenant_id() {
         let s = build_instructions("test-tenant-abc", "https://example.test");
-        assert!(s.contains("'test-tenant-abc'"), "tenant id not in identity line");
-        assert!(s.contains("https://example.test"), "base url not interpolated");
+        assert!(
+            s.contains("'test-tenant-abc'"),
+            "tenant id not in identity line"
+        );
+        assert!(
+            s.contains("https://example.test"),
+            "base url not interpolated"
+        );
         assert!(s.contains("START HERE"), "missing START HERE");
         for group in &[
             "1. SCHEMA",
@@ -1696,8 +1847,14 @@ mod instructions_tests {
         assert!(s.contains("dry_run"), "missing dry_run note");
         assert!(s.contains("broadcast"), "missing v1.31 broadcast surface");
         assert!(s.contains("recent_writes"), "missing observability tool");
-        assert!(s.contains("/uploads"), "tus resumable-upload path must be advertised");
-        assert!(s.contains("tus"), "must name the tus protocol so the LLM knows the verb sequence");
+        assert!(
+            s.contains("/uploads"),
+            "tus resumable-upload path must be advertised"
+        );
+        assert!(
+            s.contains("tus"),
+            "must name the tus protocol so the LLM knows the verb sequence"
+        );
         // Regex range survived format! escaping (literal {0,127}, not a placeholder error)
         assert!(s.contains("{0,127}"), "regex range escaped wrong");
     }
@@ -1713,7 +1870,10 @@ mod instructions_tests {
             "gamma-tenant",
             "11111111-1111-1111-1111-111111111111",
         ] {
-            assert!(!s.contains(forbidden), "prologue leaks literal: {forbidden}");
+            assert!(
+                !s.contains(forbidden),
+                "prologue leaks literal: {forbidden}"
+            );
         }
         // Tenant id must appear (identity line + upload URL = at least once).
         assert!(s.contains("alpha"), "own tenant id must appear");

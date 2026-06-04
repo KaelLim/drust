@@ -154,8 +154,7 @@ impl TenantOauthStateToken {
         payload.extend_from_slice(&self.nonce);
         payload.extend_from_slice(&len_u16.to_be_bytes());
         payload.extend_from_slice(uri_bytes);
-        let mut mac =
-            HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
         mac.update(&payload);
         payload.extend_from_slice(&mac.finalize().into_bytes());
         URL_SAFE_NO_PAD.encode(&payload)
@@ -180,8 +179,7 @@ impl TenantOauthStateToken {
         let uri_bytes = &raw[18..18 + len];
         let mac_received = &raw[18 + len..18 + len + 32];
         let signed_region = &raw[..18 + len];
-        let mut mac =
-            HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
         mac.update(signed_region);
         let mac_expected = mac.finalize().into_bytes();
         // Constant-time comparison — never short-circuit on byte mismatch.
@@ -191,7 +189,10 @@ impl TenantOauthStateToken {
         let redirect_uri = std::str::from_utf8(uri_bytes)
             .map_err(|_| TenantOauthStateError::InvalidUtf8)?
             .to_string();
-        Ok(Self { nonce, redirect_uri })
+        Ok(Self {
+            nonce,
+            redirect_uri,
+        })
     }
 }
 
@@ -283,8 +284,8 @@ mod tests {
     fn tenant_state_round_trip_decodes_to_input() {
         let original = TenantOauthStateToken::new("https://app.example.com/auth/callback");
         let encoded = original.encode(TEST_SECRET);
-        let decoded = TenantOauthStateToken::decode(&encoded, TEST_SECRET)
-            .expect("round-trip must succeed");
+        let decoded =
+            TenantOauthStateToken::decode(&encoded, TEST_SECRET).expect("round-trip must succeed");
         assert_eq!(decoded.nonce, original.nonce);
         assert_eq!(decoded.redirect_uri, original.redirect_uri);
     }

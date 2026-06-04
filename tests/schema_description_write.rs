@@ -40,7 +40,9 @@ async fn put_json(
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, json)
 }
@@ -137,7 +139,11 @@ async fn rest_set_field_description_not_found_when_field_missing() {
         serde_json::json!({ "description": "Ghost field" }),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "expected 404, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "expected 404, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "FIELD_NOT_FOUND");
 }
 
@@ -156,7 +162,11 @@ async fn rest_set_index_description_not_found_when_index_missing() {
         serde_json::json!({ "description": "Ghost index" }),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "expected 404, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "expected 404, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "INDEX_NOT_FOUND");
 }
 
@@ -177,7 +187,11 @@ async fn rest_set_description_on_protected_returns_403() {
         serde_json::json!({ "description": "Should be rejected" }),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "expected 403, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "PROTECTED_COLLECTION");
 }
 
@@ -198,7 +212,11 @@ async fn rest_set_description_too_long_returns_422() {
         serde_json::json!({ "description": long_desc }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "expected 422, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "DESCRIPTION_TOO_LONG");
 }
 
@@ -218,7 +236,11 @@ async fn rest_set_description_anon_denied() {
         serde_json::json!({ "description": "Anon should not set this" }),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "expected 403, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "WRITE_DENIED");
 }
 
@@ -434,7 +456,11 @@ async fn rest_set_description_user_denied() {
         serde_json::json!({ "description": "User-token should not set this" }),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403 for user token, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "expected 403 for user token, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "WRITE_DENIED");
 }
 
@@ -456,7 +482,11 @@ async fn rest_set_field_description_user_denied() {
         serde_json::json!({ "description": "User-token should not set this" }),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403 for user token, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "expected 403 for user token, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "WRITE_DENIED");
 }
 
@@ -475,7 +505,11 @@ async fn rest_set_description_nul_returns_422() {
         serde_json::json!({ "description": "hello\u{0000}world" }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "expected 422, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "DESCRIPTION_INVALID");
 }
 
@@ -494,7 +528,11 @@ async fn rest_set_field_description_on_protected_returns_403() {
         serde_json::json!({ "description": "Should be rejected" }),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "expected 403, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "PROTECTED_COLLECTION");
 }
 
@@ -513,7 +551,11 @@ async fn rest_set_index_description_on_protected_returns_403() {
         serde_json::json!({ "description": "Should be rejected" }),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "expected 403, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "PROTECTED_COLLECTION");
 }
 

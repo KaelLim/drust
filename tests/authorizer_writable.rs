@@ -14,9 +14,8 @@ use tempfile::tempdir;
 pub fn seed(name: &str) -> tempfile::TempDir {
     let d = tempdir().unwrap();
     let conn = open_write(d.path(), name).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER);"
-    ).unwrap();
+    conn.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER);")
+        .unwrap();
     d
 }
 
@@ -27,7 +26,12 @@ fn insert_into_user_table_allowed() {
     attach_writable_authorizer(&conn);
     let sql = "INSERT INTO orders (qty) VALUES (1)";
     let r = conn.prepare(sql);
-    assert!(r.is_ok(), "expected allow for: {} (err: {:?})", sql, r.err());
+    assert!(
+        r.is_ok(),
+        "expected allow for: {} (err: {:?})",
+        sql,
+        r.err()
+    );
 }
 
 #[test]
@@ -37,7 +41,12 @@ fn update_user_table_allowed() {
     attach_writable_authorizer(&conn);
     let sql = "UPDATE orders SET qty = 2 WHERE id = 1";
     let r = conn.prepare(sql);
-    assert!(r.is_ok(), "expected allow for: {} (err: {:?})", sql, r.err());
+    assert!(
+        r.is_ok(),
+        "expected allow for: {} (err: {:?})",
+        sql,
+        r.err()
+    );
 }
 
 #[test]
@@ -47,7 +56,12 @@ fn delete_user_table_allowed() {
     attach_writable_authorizer(&conn);
     let sql = "DELETE FROM orders WHERE id = 1";
     let r = conn.prepare(sql);
-    assert!(r.is_ok(), "expected allow for: {} (err: {:?})", sql, r.err());
+    assert!(
+        r.is_ok(),
+        "expected allow for: {} (err: {:?})",
+        sql,
+        r.err()
+    );
 }
 
 #[test]
@@ -57,7 +71,12 @@ fn pragma_table_info_allowed() {
     attach_writable_authorizer(&conn);
     let sql = "SELECT * FROM pragma_table_info('orders')";
     let r = conn.prepare(sql);
-    assert!(r.is_ok(), "expected allow for: {} (err: {:?})", sql, r.err());
+    assert!(
+        r.is_ok(),
+        "expected allow for: {} (err: {:?})",
+        sql,
+        r.err()
+    );
 }
 
 #[test]
@@ -71,7 +90,12 @@ fn pragma_writable_schema_ignored() {
     // the action is silently dropped.
     let sql = "PRAGMA writable_schema = 1";
     let r = conn.prepare(sql);
-    assert!(r.is_ok(), "expected allow (Ignore) for: {} (err: {:?})", sql, r.err());
+    assert!(
+        r.is_ok(),
+        "expected allow (Ignore) for: {} (err: {:?})",
+        sql,
+        r.err()
+    );
     // Execute it too — should still be a no-op under Ignore semantics.
     let _ = conn.execute("PRAGMA writable_schema = 1", []);
     // Confirm the write was dropped: writable_schema must still report 0.

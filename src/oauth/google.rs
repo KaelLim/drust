@@ -4,8 +4,8 @@
 //! OIDC Core §3.1.3.7 rationale.
 
 use crate::oauth::provider::{OauthError, OauthProvider, VerifiedUser};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use std::pin::Pin;
 
@@ -71,13 +71,21 @@ struct IdTokenClaims {
 /// endpoint), but iss/aud/exp checks are mandatory under the same section.
 pub(crate) fn decode_id_token(jwt: &str, client_id: &str) -> Result<VerifiedUser, OauthError> {
     let mut parts = jwt.split('.');
-    let _header = parts.next().ok_or_else(|| OauthError::ProviderResponse("id_token has no header".into()))?;
-    let payload = parts.next().ok_or_else(|| OauthError::ProviderResponse("id_token has no payload".into()))?;
+    let _header = parts
+        .next()
+        .ok_or_else(|| OauthError::ProviderResponse("id_token has no header".into()))?;
+    let payload = parts
+        .next()
+        .ok_or_else(|| OauthError::ProviderResponse("id_token has no payload".into()))?;
     if parts.next().is_none() {
-        return Err(OauthError::ProviderResponse("id_token missing signature segment".into()));
+        return Err(OauthError::ProviderResponse(
+            "id_token missing signature segment".into(),
+        ));
     }
     if payload.is_empty() {
-        return Err(OauthError::ProviderResponse("id_token payload empty".into()));
+        return Err(OauthError::ProviderResponse(
+            "id_token payload empty".into(),
+        ));
     }
     let decoded = URL_SAFE_NO_PAD
         .decode(payload)
@@ -89,10 +97,7 @@ pub(crate) fn decode_id_token(jwt: &str, client_id: &str) -> Result<VerifiedUser
     // Signature verification is intentionally skipped (confidential
     // client + TLS-trusted token endpoint), but iss/aud/exp checks
     // are mandatory under the same spec section.
-    const VALID_ISS: &[&str] = &[
-        "https://accounts.google.com",
-        "accounts.google.com",
-    ];
+    const VALID_ISS: &[&str] = &["https://accounts.google.com", "accounts.google.com"];
     if !VALID_ISS.contains(&claims.iss.as_str()) {
         return Err(OauthError::ProviderResponse(format!(
             "id_token iss mismatch: {:?}",
@@ -149,7 +154,8 @@ impl OauthProvider for GoogleAdapter {
         code: &'a str,
         pkce_verifier: &'a str,
         redirect_uri: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<VerifiedUser, OauthError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<VerifiedUser, OauthError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let resp = self
                 .http
@@ -174,8 +180,8 @@ impl OauthProvider for GoogleAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     const TEST_CLIENT_ID: &str = "client123";
 

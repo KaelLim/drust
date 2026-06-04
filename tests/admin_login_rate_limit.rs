@@ -1,8 +1,8 @@
 //! v1.19.2 regression — admin login enforces a per-IP rate limit (5/min).
 
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
 use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
 use drust::mgmt::routes::MgmtState;
 use drust::oauth::ProviderRegistry;
 use drust::safety::rate_limit_ip::IpRateLimit;
@@ -19,7 +19,9 @@ async fn build_login_router(rl_capacity: u32) -> Router {
     let meta = Arc::new(Mutex::new(meta_conn));
     let mgmt_state = MgmtState {
         meta: meta.clone(),
-        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
+        audit_meta_read: Arc::new(Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
         session_ttl_days: 1,
         garage: None,
         public_base_url: "http://localhost".into(),
@@ -29,7 +31,8 @@ async fn build_login_router(rl_capacity: u32) -> Router {
         log_dir: dir.path().join("logs"),
         url_sign_secret: Arc::new([0u8; 32]),
         tenants: Arc::new(drust::storage::pool::TenantRegistry::new(
-            dir.path().to_path_buf(), 2,
+            dir.path().to_path_buf(),
+            2,
         )),
         mcp: Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
             drust::mcp::server::McpRegistry::new(Arc::new(

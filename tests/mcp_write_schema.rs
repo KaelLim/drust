@@ -3,9 +3,9 @@ use drust::mcp::server::McpRegistry;
 use drust::mcp::tools::schema::{
     FieldSpec, add_field, create_collection, drop_collection, drop_field, set_anon_caps,
 };
-use drust::storage::schema::DmlVerb;
 use drust::mcp::tools::write::{delete_record, insert_record, update_record};
 use drust::storage::pool::TenantRegistry;
+use drust::storage::schema::DmlVerb;
 use std::sync::Arc;
 
 async fn svc(dir: &tempfile::TempDir) -> drust::mcp::server::DrustMcp {
@@ -746,9 +746,14 @@ async fn insert_record_into_system_files_returns_protected_collection() {
 async fn update_record_in_system_users_returns_protected_collection() {
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;
-    let err = update_record(&s, "_system_users", 1, serde_json::json!({"email": "x@x.com"}))
-        .await
-        .unwrap_err();
+    let err = update_record(
+        &s,
+        "_system_users",
+        1,
+        serde_json::json!({"email": "x@x.com"}),
+    )
+    .await
+    .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("PROTECTED_COLLECTION"),
@@ -760,9 +765,7 @@ async fn update_record_in_system_users_returns_protected_collection() {
 async fn delete_record_in_system_sessions_returns_protected_collection() {
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;
-    let err = delete_record(&s, "_system_sessions", 1)
-        .await
-        .unwrap_err();
+    let err = delete_record(&s, "_system_sessions", 1).await.unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("PROTECTED_COLLECTION"),

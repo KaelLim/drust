@@ -212,7 +212,9 @@ async fn legacy_filter_emits_deprecation_headers() {
     );
     assert_eq!(
         r.headers().get("link").and_then(|v| v.to_str().ok()),
-        Some("<https://github.com/KaelLim/drust/blob/main/docs/migration/list-filter.md>; rel=\"deprecation\""),
+        Some(
+            "<https://github.com/KaelLim/drust/blob/main/docs/migration/list-filter.md>; rel=\"deprecation\""
+        ),
         "Link must be the GitHub blob URL (the canonical, dereferenceable migration doc)"
     );
 

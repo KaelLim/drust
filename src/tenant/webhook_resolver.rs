@@ -35,34 +35,58 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
         IpAddr::V4(v4) => {
             let octets = v4.octets();
             // 10/8
-            if octets[0] == 10 { return true; }
+            if octets[0] == 10 {
+                return true;
+            }
             // 172.16/12
-            if octets[0] == 172 && (octets[1] & 0xf0) == 16 { return true; }
+            if octets[0] == 172 && (octets[1] & 0xf0) == 16 {
+                return true;
+            }
             // 192.168/16
-            if octets[0] == 192 && octets[1] == 168 { return true; }
+            if octets[0] == 192 && octets[1] == 168 {
+                return true;
+            }
             // 127/8 loopback
-            if octets[0] == 127 { return true; }
+            if octets[0] == 127 {
+                return true;
+            }
             // 169.254/16 link-local
-            if octets[0] == 169 && octets[1] == 254 { return true; }
+            if octets[0] == 169 && octets[1] == 254 {
+                return true;
+            }
             // 0/8 wildcard
-            if octets[0] == 0 { return true; }
+            if octets[0] == 0 {
+                return true;
+            }
             // v1.32 A3: RFC 6598 CGNAT 100.64.0.0/10 — first 10 bits = 0110 0100 01
             // i.e. octets[0]==100 and octets[1] in [64..127]
-            if octets[0] == 100 && (octets[1] & 0xc0) == 0x40 { return true; }
+            if octets[0] == 100 && (octets[1] & 0xc0) == 0x40 {
+                return true;
+            }
             false
         }
         IpAddr::V6(v6) => {
             // ::1 loopback
-            if v6.is_loopback() { return true; }
+            if v6.is_loopback() {
+                return true;
+            }
             // v1.32 A3: ::/128 — unspecified address
-            if v6.is_unspecified() { return true; }
+            if v6.is_unspecified() {
+                return true;
+            }
             let segs = v6.segments();
             // fc00::/7 ULA  — first 7 bits = 1111110
-            if (segs[0] & 0xfe00) == 0xfc00 { return true; }
+            if (segs[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
             // fe80::/10 link-local — first 10 bits = 1111111010
-            if (segs[0] & 0xffc0) == 0xfe80 { return true; }
+            if (segs[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
             // v1.32 A3: 2001:db8::/32 — RFC 3849 documentation prefix
-            if segs[0] == 0x2001 && segs[1] == 0x0db8 { return true; }
+            if segs[0] == 0x2001 && segs[1] == 0x0db8 {
+                return true;
+            }
             // ::ffff:a.b.c.d — IPv4-mapped IPv6; re-check the V4 part.
             // v1.32 A3: this also catches ::ffff:0:0/96 wildcard when the
             // mapped address itself is private (e.g. ::ffff:10.x.x.x).
@@ -76,17 +100,19 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
 
 /// Resolve `host:port` and return only non-private SocketAddrs. Error if
 /// resolution fails OR every IP is private/loopback/link-local.
-pub(crate) async fn resolve_public(
-    host: String,
-    port: u16,
-) -> Result<Vec<SocketAddr>, String> {
+pub(crate) async fn resolve_public(host: String, port: u16) -> Result<Vec<SocketAddr>, String> {
     let resolved = tokio::task::spawn_blocking(move || {
-        (host.as_str(), port).to_socket_addrs().map(|it| it.collect::<Vec<_>>())
+        (host.as_str(), port)
+            .to_socket_addrs()
+            .map(|it| it.collect::<Vec<_>>())
     })
     .await
     .map_err(|e| format!("dns join error: {e}"))?
     .map_err(|e| format!("dns lookup failed: {e}"))?;
-    let public: Vec<_> = resolved.into_iter().filter(|sa| !is_private_ip(sa.ip())).collect();
+    let public: Vec<_> = resolved
+        .into_iter()
+        .filter(|sa| !is_private_ip(sa.ip()))
+        .collect();
     if public.is_empty() {
         return Err("host resolves only to private/loopback/link-local IPs".into());
     }
@@ -133,7 +159,9 @@ use std::sync::Arc;
 mod tests {
     use super::*;
 
-    fn ip(s: &str) -> IpAddr { s.parse().unwrap() }
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
 
     #[test]
     fn rejects_rfc1918() {

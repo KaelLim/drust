@@ -31,7 +31,9 @@ impl RpcMode {
 }
 
 impl Default for RpcMode {
-    fn default() -> Self { RpcMode::Read }
+    fn default() -> Self {
+        RpcMode::Read
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -166,7 +168,14 @@ pub fn create(
             (name, sql, params_json, description, anon_callable, mode,
              created_at, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
-        params![name, sql, params_json, description, anon_callable as i64, mode.as_str()],
+        params![
+            name,
+            sql,
+            params_json,
+            description,
+            anon_callable as i64,
+            mode.as_str()
+        ],
     );
     match res {
         Ok(_) => Ok(()),
@@ -201,7 +210,7 @@ pub fn update(
         clauses.push("description = ?");
         binds.push(match d {
             Some(s) => rusqlite::types::Value::Text(s.into()),
-            None    => rusqlite::types::Value::Null,
+            None => rusqlite::types::Value::Null,
         });
     }
     if let Some(b) = anon_callable {
@@ -239,11 +248,7 @@ pub fn delete(conn: &Connection, name: &str) -> Result<(), RegistryError> {
 /// Bump the appropriate counter and `last_called_at`. Bypasses the
 /// caller's auth — this is drust's own bookkeeping write, not user
 /// SQL.
-pub fn increment(
-    conn: &Connection,
-    name: &str,
-    role: TokenRole,
-) -> rusqlite::Result<()> {
+pub fn increment(conn: &Connection, name: &str, role: TokenRole) -> rusqlite::Result<()> {
     let col = match role {
         TokenRole::Anon | TokenRole::User => "anon_calls",
         TokenRole::Service => "service_calls",
@@ -271,7 +276,16 @@ mod tests {
     #[test]
     fn create_then_lookup() {
         let (_t, conn) = fresh();
-        create(&conn, "echo", "SELECT 1", "[]", Some("trivial"), false, RpcMode::Read).unwrap();
+        create(
+            &conn,
+            "echo",
+            "SELECT 1",
+            "[]",
+            Some("trivial"),
+            false,
+            RpcMode::Read,
+        )
+        .unwrap();
         let r = lookup(&conn, "echo").unwrap().unwrap();
         assert_eq!(r.name, "echo");
         assert_eq!(r.sql, "SELECT 1");
@@ -302,7 +316,10 @@ mod tests {
         create(&conn, "b", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
         create(&conn, "a", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
         let v = list(&conn).unwrap();
-        assert_eq!(v.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert_eq!(
+            v.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
     }
 
     #[test]

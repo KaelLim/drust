@@ -23,8 +23,13 @@ pub enum AuthCtx {
     /// (PAT or OAuth) and `None` for the shared per-tenant `service` token.
     /// All three sources have identical authorization power; `admin_id` is
     /// purely for audit attribution.
-    Service { admin_id: Option<i64> },
-    User { user_id: String, token_hash: String },
+    Service {
+        admin_id: Option<i64>,
+    },
+    User {
+        user_id: String,
+        token_hash: String,
+    },
 }
 
 impl AuthCtx {
@@ -192,7 +197,14 @@ mod ctx_tests {
     fn auth_ctx_kind_strings() {
         assert_eq!(AuthCtx::Anon.kind(), "anon");
         assert_eq!(AuthCtx::Service { admin_id: None }.kind(), "service");
-        assert_eq!(AuthCtx::User { user_id: "u".into(), token_hash: "h".into() }.kind(), "user");
+        assert_eq!(
+            AuthCtx::User {
+                user_id: "u".into(),
+                token_hash: "h".into()
+            }
+            .kind(),
+            "user"
+        );
     }
 
     #[test]
@@ -200,7 +212,11 @@ mod ctx_tests {
         assert_eq!(AuthCtx::Anon.user_id(), None);
         assert_eq!(AuthCtx::Service { admin_id: None }.user_id(), None);
         assert_eq!(
-            AuthCtx::User { user_id: "u-42".into(), token_hash: "h".into() }.user_id(),
+            AuthCtx::User {
+                user_id: "u-42".into(),
+                token_hash: "h".into()
+            }
+            .user_id(),
             Some("u-42"),
         );
     }
@@ -210,7 +226,14 @@ mod ctx_tests {
         assert_eq!(AuthCtx::Service { admin_id: None }.admin_id(), None);
         assert_eq!(AuthCtx::Service { admin_id: Some(7) }.admin_id(), Some(7));
         assert_eq!(AuthCtx::Anon.admin_id(), None);
-        assert_eq!(AuthCtx::User { user_id: "u".into(), token_hash: "h".into() }.admin_id(), None);
+        assert_eq!(
+            AuthCtx::User {
+                user_id: "u".into(),
+                token_hash: "h".into()
+            }
+            .admin_id(),
+            None
+        );
     }
 
     /// Admin session cookie MUST be SameSite=Lax, not Strict — Strict

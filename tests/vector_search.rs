@@ -281,7 +281,10 @@ async fn search_filter_and_or_not() {
     assert_eq!(status, StatusCode::OK, "body: {v}");
     let rows = v["rows"].as_array().unwrap();
     let titles: Vec<&str> = rows.iter().map(|r| r["title"].as_str().unwrap()).collect();
-    assert!(!titles.contains(&"beta"), "beta should be filtered: {titles:?}");
+    assert!(
+        !titles.contains(&"beta"),
+        "beta should be filtered: {titles:?}"
+    );
     // alpha + gamma remain (both category=docs).
     assert!(titles.contains(&"alpha"));
     assert!(titles.contains(&"gamma"));

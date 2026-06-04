@@ -92,10 +92,7 @@ pub fn load_admin_profile(
         .ok()
         .map(|(d, e, p, r)| (blank_to_none(d), blank_to_none(e), blank_to_none(p), r));
     Ok(row.map(|(display_name, email, picture_url, role)| {
-        let initials = AdminProfileExt::compute_initials(
-            display_name.as_deref(),
-            email.as_deref(),
-        );
+        let initials = AdminProfileExt::compute_initials(display_name.as_deref(), email.as_deref());
         let is_owner = role == "owner";
         AdminProfileExt {
             display_name,

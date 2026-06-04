@@ -24,10 +24,19 @@ fn promotes_member_to_owner() {
     let out = Command::new(exe)
         .env("DRUST_DATA_DIR", tmp.path())
         .args(&["--email", "k@x", "--role", "owner"])
-        .output().unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let conn = rusqlite::Connection::open(&meta_path).unwrap();
-    let role: String = conn.query_row("SELECT role FROM admins WHERE email='k@x'", [], |r| r.get(0)).unwrap();
+    let role: String = conn
+        .query_row("SELECT role FROM admins WHERE email='k@x'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(role, "owner");
 }

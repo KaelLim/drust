@@ -38,7 +38,9 @@ fn build_state(
     )));
     MgmtState {
         meta: Arc::new(Mutex::new(meta)),
-        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
+        audit_meta_read: Arc::new(Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
@@ -54,8 +56,16 @@ fn build_state(
         index_large_table_rows: 1_000_000,
         public_url: "http://test".to_string(),
         oauth_registry: Arc::new(registry),
-        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
-        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
     }
 }
 
@@ -492,7 +502,9 @@ async fn oauth_button_hidden_when_unconfigured() {
     // 256 KB cap: the rendered login page is currently ~80 KB after the
     // v1.15 design overhaul (mascot SVG + design tokens). Give plenty of
     // headroom so a future UI polish doesn't silently retrip this.
-    let body = axum::body::to_bytes(resp.into_body(), 256 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 256 * 1024)
+        .await
+        .unwrap();
     let html = std::str::from_utf8(&body).unwrap();
     assert!(!html.contains("oauth-btn-google"), "google button leaked");
     assert!(!html.contains("oauth-btn-github"), "github button leaked");

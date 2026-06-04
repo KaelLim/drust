@@ -7,10 +7,10 @@
 //!   3. unknown field → 404
 //!   4. NUL byte → 303 with ?desc_error=DESCRIPTION_INVALID
 
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use axum::routing::post;
 use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use axum::routing::post;
 use drust::mgmt::browse::{
     admin_update_collection_description, admin_update_field_description,
     admin_update_index_description,
@@ -172,8 +172,5 @@ async fn admin_set_description_nul_redirects_with_desc_error() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert!(
-        loc.contains("desc_error=DESCRIPTION_INVALID"),
-        "got: {loc}"
-    );
+    assert!(loc.contains("desc_error=DESCRIPTION_INVALID"), "got: {loc}");
 }

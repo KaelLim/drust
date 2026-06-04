@@ -72,10 +72,7 @@ pub struct TenantAuthState {
 /// ```
 #[cfg(any(test, debug_assertions))]
 impl TenantAuthState {
-    pub fn test_default(
-        meta: Arc<Mutex<Connection>>,
-        registry: Arc<TenantRegistry>,
-    ) -> Self {
+    pub fn test_default(meta: Arc<Mutex<Connection>>, registry: Arc<TenantRegistry>) -> Self {
         use std::time::Duration;
         Self {
             meta,
@@ -473,10 +470,8 @@ SELECT \
         .extensions()
         .get::<crate::safety::audit::AuditExtra>()
         .cloned();
-    let default_extra: Option<DefaultAuditExtra> = resp
-        .extensions()
-        .get::<DefaultAuditExtra>()
-        .cloned();
+    let default_extra: Option<DefaultAuditExtra> =
+        resp.extensions().get::<DefaultAuditExtra>().cloned();
     let entry = if status.is_success() || status.is_redirection() {
         AuditEntry::success(&tenant_for_audit, &hint_for_audit, &op, duration_ms)
     } else {
@@ -554,4 +549,3 @@ fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
     let raw = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
     raw.strip_prefix("Bearer ").map(|s| s.to_string())
 }
-

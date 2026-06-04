@@ -73,11 +73,7 @@ async fn spin_up() -> (axum::Router, tempfile::TempDir) {
 /// Insert an additional admin with a given email and role directly into the DB.
 /// The admin has no password (OAuth-only sentinel) — they log in via a session
 /// we create directly with `create_session`.
-fn insert_admin(
-    dir: &tempfile::TempDir,
-    email: &str,
-    role: &str,
-) -> (i64, String) {
+fn insert_admin(dir: &tempfile::TempDir, email: &str, role: &str) -> (i64, String) {
     let meta_path = dir.path().join("meta.sqlite");
     let conn = rusqlite::Connection::open(&meta_path).unwrap();
     let username = email.split('@').next().unwrap_or("admin").to_string();
@@ -98,7 +94,8 @@ fn insert_admin(
     conn.execute(
         "INSERT INTO sessions (token, admin_id, expires_at) VALUES (?1, ?2, ?3)",
         params![session_token, admin_id, expires_at.to_rfc3339()],
-    ).unwrap();
+    )
+    .unwrap();
     (admin_id, format!("drust_session={session_token}"))
 }
 
@@ -129,7 +126,9 @@ async fn login(app: &axum::Router, username: &str, password: &str) -> String {
 }
 
 async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
 }
 
@@ -155,9 +154,16 @@ async fn owner_can_invite_admin() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED, "invite should return 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "invite should return 201"
+    );
     let body = body_json(resp).await;
-    assert!(body["id"].as_i64().is_some(), "response should include new admin id");
+    assert!(
+        body["id"].as_i64().is_some(),
+        "response should include new admin id"
+    );
     assert_eq!(body["email"], "alice@example.com");
     assert_eq!(body["role"], "member");
 }
@@ -230,7 +236,11 @@ async fn owner_can_demote_owner_when_another_exists() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "demote with another owner should succeed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "demote with another owner should succeed"
+    );
 }
 
 #[tokio::test]
@@ -268,8 +278,7 @@ async fn member_cannot_invite() {
                 .header(header::COOKIE, &member_cookie)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
-                    serde_json::json!({ "email": "bob@example.com", "role": "member" })
-                        .to_string(),
+                    serde_json::json!({ "email": "bob@example.com", "role": "member" }).to_string(),
                 ))
                 .unwrap(),
         )
@@ -288,7 +297,9 @@ async fn member_cannot_remove() {
         let meta_path = dir.path().join("meta.sqlite");
         let conn = rusqlite::Connection::open(&meta_path).unwrap();
         let id: i64 = conn
-            .query_row("SELECT id FROM admins WHERE username = 'root'", [], |r| r.get(0))
+            .query_row("SELECT id FROM admins WHERE username = 'root'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         (id, ())
     };
@@ -330,10 +341,16 @@ async fn invite_atomically_creates_pat_for_new_admin() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED, "invite should return 201");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "invite should return 201"
+    );
 
     let body = body_json(resp).await;
-    let new_id = body["id"].as_i64().expect("invite response should carry new admin id");
+    let new_id = body["id"]
+        .as_i64()
+        .expect("invite response should carry new admin id");
 
     // Verify PAT row exists directly in meta.sqlite.
     let meta_path = dir.path().join("meta.sqlite");

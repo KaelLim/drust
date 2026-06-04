@@ -3,9 +3,7 @@
 //! channel so the toggle takes effect immediately.
 
 use crate::error::{json_error, json_error_with_aliases};
-use crate::storage::schema::{
-    collection_exists, is_protected_collection, write_realtime_enabled,
-};
+use crate::storage::schema::{collection_exists, is_protected_collection, write_realtime_enabled};
 use crate::tenant::events::EventBus;
 use crate::tenant::router::{TenantRef, TokenRole};
 use axum::Extension;

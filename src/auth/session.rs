@@ -76,8 +76,9 @@ mod migration_tests {
                 admin_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 expires_at TEXT NOT NULL
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         conn
     }
 
@@ -85,11 +86,11 @@ mod migration_tests {
     fn create_writes_both_columns() {
         let mut conn = fresh();
         let token = create_session(&mut conn, 7, 60).unwrap();
-        let (t, h): (String, Option<String>) = conn.query_row(
-            "SELECT token, token_hash FROM sessions LIMIT 1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).unwrap();
+        let (t, h): (String, Option<String>) = conn
+            .query_row("SELECT token, token_hash FROM sessions LIMIT 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
         assert_eq!(t, token);
         assert!(h.is_some(), "token_hash must be populated");
         assert_eq!(h.unwrap(), crate::auth::bearer::hash_token(&token));
@@ -103,7 +104,8 @@ mod migration_tests {
         conn.execute(
             "INSERT INTO sessions (token, admin_id, expires_at) VALUES ('plain', 1, ?1)",
             rusqlite::params![future],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(validate_session(&conn, "plain").unwrap(), Some(1));
     }
 
@@ -114,9 +116,12 @@ mod migration_tests {
         conn.execute(
             "INSERT INTO sessions (token, admin_id, expires_at) VALUES ('plain', 1, ?1)",
             rusqlite::params![future],
-        ).unwrap();
+        )
+        .unwrap();
         revoke_session(&mut conn, "plain").unwrap();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 0);
     }
 }

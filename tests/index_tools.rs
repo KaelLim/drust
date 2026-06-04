@@ -46,9 +46,13 @@ async fn creates_simple_index_on_one_field() {
     assert_eq!(resp["ok"], true);
     assert_eq!(resp["collection"], "posts");
     assert_eq!(resp["name"], "idx_posts_author_id");
-    assert!(resp["indices"].as_array().unwrap().iter().any(|i| {
-        i["name"] == "idx_posts_author_id" && i["unique"] == false
-    }));
+    assert!(
+        resp["indices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| { i["name"] == "idx_posts_author_id" && i["unique"] == false })
+    );
     assert!(resp["row_count_at_build"].is_number());
     assert!(resp["duration_ms"].is_number());
 }
@@ -90,7 +94,10 @@ async fn creates_composite_index_on_two_fields() {
         .iter()
         .find(|i| i["name"] == "idx_posts_author_id_day_number")
         .unwrap();
-    assert_eq!(idx["fields"], serde_json::json!(["author_id", "day_number"]));
+    assert_eq!(
+        idx["fields"],
+        serde_json::json!(["author_id", "day_number"])
+    );
     assert_eq!(idx["unique"], false);
 }
 
@@ -121,8 +128,10 @@ async fn unknown_field_returns_field_not_found() {
     )
     .await
     .unwrap_err();
-    assert!(err.to_string().contains("does_not_exist"),
-        "error should name the missing field: {err}");
+    assert!(
+        err.to_string().contains("does_not_exist"),
+        "error should name the missing field: {err}"
+    );
 }
 
 #[tokio::test]
@@ -144,15 +153,9 @@ async fn system_collection_returns_404() {
 #[tokio::test]
 async fn empty_fields_returns_invalid_params() {
     let (svc, _d) = fixture("t6").await;
-    let err = drust::mcp::tools::index::create_index(
-        &svc.inner().pool,
-        "posts",
-        &[],
-        false,
-        false,
-    )
-    .await
-    .unwrap_err();
+    let err = drust::mcp::tools::index::create_index(&svc.inner().pool, "posts", &[], false, false)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("non-empty"));
 }
 
@@ -215,13 +218,17 @@ async fn creates_unique_index_succeeds_when_data_unique() {
         &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
-        true,  // unique
+        true, // unique
         false,
     )
     .await
     .unwrap();
-    let idx = resp["indices"].as_array().unwrap().iter()
-        .find(|i| i["name"] == "idx_posts_author_id").unwrap();
+    let idx = resp["indices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "idx_posts_author_id")
+        .unwrap();
     assert_eq!(idx["unique"], true);
 }
 
@@ -255,13 +262,9 @@ async fn large_table_without_force_returns_409() {
     let (svc, _d) = fixture("t11").await;
     // Seed 5 rows; we'll set threshold=3 in the call.
     for i in 0..5 {
-        drust::mcp::tools::write::insert_record(
-            &svc,
-            "posts",
-            serde_json::json!({"author_id": i}),
-        )
-        .await
-        .unwrap();
+        drust::mcp::tools::write::insert_record(&svc, "posts", serde_json::json!({"author_id": i}))
+            .await
+            .unwrap();
     }
     let err = drust::mcp::tools::index::create_index_with_threshold(
         &svc.inner().pool,
@@ -274,27 +277,26 @@ async fn large_table_without_force_returns_409() {
     .await
     .unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("LARGE_TABLE") || msg.contains("force"), "got: {msg}");
+    assert!(
+        msg.contains("LARGE_TABLE") || msg.contains("force"),
+        "got: {msg}"
+    );
 }
 
 #[tokio::test]
 async fn large_table_with_force_proceeds() {
     let (svc, _d) = fixture("t12").await;
     for i in 0..5 {
-        drust::mcp::tools::write::insert_record(
-            &svc,
-            "posts",
-            serde_json::json!({"author_id": i}),
-        )
-        .await
-        .unwrap();
+        drust::mcp::tools::write::insert_record(&svc, "posts", serde_json::json!({"author_id": i}))
+            .await
+            .unwrap();
     }
     let resp = drust::mcp::tools::index::create_index_with_threshold(
         &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
         false,
-        true,  // force
+        true, // force
         3,
     )
     .await
@@ -325,8 +327,12 @@ async fn drop_by_name_succeeds() {
     .unwrap();
     assert_eq!(resp["ok"], true);
     assert_eq!(resp["dropped_name"], "idx_posts_author_id");
-    let names: Vec<String> = resp["indices"].as_array().unwrap()
-        .iter().map(|i| i["name"].as_str().unwrap().to_string()).collect();
+    let names: Vec<String> = resp["indices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap().to_string())
+        .collect();
     assert!(!names.contains(&"idx_posts_author_id".to_string()));
 }
 
@@ -348,26 +354,39 @@ async fn drop_unknown_index_returns_404() {
 async fn drop_by_fields_resolves_to_same_index() {
     let (svc, _d) = fixture("t15").await;
     drust::mcp::tools::schema::add_field(
-        &svc, "posts",
+        &svc,
+        "posts",
         drust::mcp::tools::schema::FieldSpec {
             name: "day_number".into(),
             sql_type: "integer".into(),
-            nullable: true, unique: false, default_value: None, foreign_key: None,
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
             dim: None,
             description: None,
         },
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     drust::mcp::tools::index::create_index(
-        &svc.inner().pool, "posts",
+        &svc.inner().pool,
+        "posts",
         &["author_id".to_string(), "day_number".to_string()],
-        false, false,
-    ).await.unwrap();
+        false,
+        false,
+    )
+    .await
+    .unwrap();
 
     let resp = drust::mcp::tools::index::drop_index(
-        &svc.inner().pool, "posts",
+        &svc.inner().pool,
+        "posts",
         None,
         Some(&["author_id".to_string(), "day_number".to_string()]),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(resp["dropped_name"], "idx_posts_author_id_day_number");
 }
 
@@ -384,14 +403,31 @@ async fn drop_with_neither_name_nor_fields_returns_invalid_params() {
 async fn drop_then_recreate_works() {
     let (svc, _d) = fixture("t17").await;
     drust::mcp::tools::index::create_index(
-        &svc.inner().pool, "posts", &["author_id".to_string()], false, false
-    ).await.unwrap();
+        &svc.inner().pool,
+        "posts",
+        &["author_id".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap();
     drust::mcp::tools::index::drop_index(
-        &svc.inner().pool, "posts", Some("idx_posts_author_id"), None
-    ).await.unwrap();
+        &svc.inner().pool,
+        "posts",
+        Some("idx_posts_author_id"),
+        None,
+    )
+    .await
+    .unwrap();
     let resp = drust::mcp::tools::index::create_index(
-        &svc.inner().pool, "posts", &["author_id".to_string()], false, false
-    ).await.unwrap();
+        &svc.inner().pool,
+        "posts",
+        &["author_id".to_string()],
+        false,
+        false,
+    )
+    .await
+    .unwrap();
     assert_eq!(resp["ok"], true);
 }
 
@@ -595,7 +631,11 @@ async fn mcp_create_index_tool_works() {
         Some(false).unwrap_or(false),
     )
     .await;
-    assert!(resp.is_ok(), "create_index via mcp-layer path failed: {:?}", resp.err());
+    assert!(
+        resp.is_ok(),
+        "create_index via mcp-layer path failed: {:?}",
+        resp.err()
+    );
 
     let drop_resp = drust::mcp::tools::index::drop_index(
         &svc.inner().pool,
@@ -604,5 +644,9 @@ async fn mcp_create_index_tool_works() {
         None,
     )
     .await;
-    assert!(drop_resp.is_ok(), "drop_index via mcp-layer path failed: {:?}", drop_resp.err());
+    assert!(
+        drop_resp.is_ok(),
+        "drop_index via mcp-layer path failed: {:?}",
+        drop_resp.err()
+    );
 }

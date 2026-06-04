@@ -1,7 +1,7 @@
 use base64::Engine;
 use chrono::{Duration, Utc};
 use rand::RngCore;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
 const TOKEN_PREFIX: &str = "drust_user_";
@@ -75,7 +75,10 @@ pub fn slide_expiry(conn: &Connection, token: &str, ttl_days: i64) -> rusqlite::
 
 pub fn revoke_session(conn: &Connection, token: &str) -> rusqlite::Result<()> {
     let h = hash_token(token);
-    conn.execute("DELETE FROM _system_sessions WHERE token_hash = ?1", params![h])?;
+    conn.execute(
+        "DELETE FROM _system_sessions WHERE token_hash = ?1",
+        params![h],
+    )?;
     Ok(())
 }
 
@@ -105,7 +108,8 @@ mod tests {
             "CREATE TABLE _system_users (id TEXT PRIMARY KEY, email TEXT, password_hash TEXT, verified INTEGER, profile TEXT, created_at TEXT, updated_at TEXT); \
              INSERT INTO _system_users (id,email,password_hash,verified,created_at,updated_at) VALUES ('u-1','a@b','h',0,'2026','2026');"
         ).unwrap();
-        c.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS).unwrap();
+        c.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)
+            .unwrap();
         c
     }
 
@@ -129,7 +133,9 @@ mod tests {
     fn create_then_lookup_returns_user() {
         let c = fresh();
         let token = create_session(&c, "u-1", Some("203.0.113.5"), 30).unwrap();
-        let info = lookup_session(&c, &token).unwrap().expect("session must hit");
+        let info = lookup_session(&c, &token)
+            .unwrap()
+            .expect("session must hit");
         assert_eq!(info.user_id, "u-1");
     }
 
@@ -149,10 +155,18 @@ mod tests {
     fn slide_pushes_expires_at_forward() {
         let c = fresh();
         let token = create_session(&c, "u-1", None, 1).unwrap();
-        let before: String = c.query_row("SELECT expires_at FROM _system_sessions LIMIT 1", [], |r| r.get(0)).unwrap();
+        let before: String = c
+            .query_row("SELECT expires_at FROM _system_sessions LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
         slide_expiry(&c, &token, 30).unwrap();
-        let after: String = c.query_row("SELECT expires_at FROM _system_sessions LIMIT 1", [], |r| r.get(0)).unwrap();
+        let after: String = c
+            .query_row("SELECT expires_at FROM _system_sessions LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_ne!(before, after);
     }
 

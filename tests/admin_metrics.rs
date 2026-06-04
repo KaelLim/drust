@@ -131,7 +131,9 @@ async fn metrics_authenticated_returns_200_with_all_counter_names() {
         .unwrap_or("")
         .to_string();
 
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let body = std::str::from_utf8(&bytes).unwrap();
 
     // All 5 counter/gauge names must appear in the Prometheus exposition format.

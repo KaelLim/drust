@@ -32,7 +32,16 @@ pub async fn create_index_with_threshold(
     force: bool,
     large_table_rows: u64,
 ) -> anyhow::Result<serde_json::Value> {
-    create_index_with_threshold_and_desc(pool, collection, fields, unique, force, large_table_rows, None).await
+    create_index_with_threshold_and_desc(
+        pool,
+        collection,
+        fields,
+        unique,
+        force,
+        large_table_rows,
+        None,
+    )
+    .await
 }
 
 /// Like [`create_index_with_threshold`] but also accepts an optional
@@ -102,7 +111,10 @@ pub async fn create_index_with_threshold_and_desc(
     let row_count: u64 = pool
         .with_reader(move |c| {
             c.query_row(
-                &format!("SELECT COUNT(*) FROM \"{}\"", coll_for_count.replace('"', "\"\"")),
+                &format!(
+                    "SELECT COUNT(*) FROM \"{}\"",
+                    coll_for_count.replace('"', "\"\"")
+                ),
                 [],
                 |r| r.get::<_, i64>(0),
             )
@@ -184,7 +196,9 @@ pub async fn drop_index(
             n.to_string()
         }
         (None, Some(fs)) if !fs.is_empty() => {
-            for f in fs { identifier(f)?; }
+            for f in fs {
+                identifier(f)?;
+            }
             derive_index_name(collection, fs)
         }
         _ => anyhow::bail!("INVALID_PARAMS: provide either name or non-empty fields"),
@@ -206,10 +220,7 @@ pub async fn drop_index(
         anyhow::bail!("no such index: {resolved_name}");
     }
 
-    let drop_sql = format!(
-        "DROP INDEX \"{}\";",
-        resolved_name.replace('"', "\"\"")
-    );
+    let drop_sql = format!("DROP INDEX \"{}\";", resolved_name.replace('"', "\"\""));
     // v1.19.1 — DROP and blob-cleanup in a single writer closure so an
     // error after DROP doesn't leave the JSON blob with an orphan key.
     let coll_for_writer = collection.to_string();
@@ -217,7 +228,10 @@ pub async fn drop_index(
     pool.with_writer(move |c| -> rusqlite::Result<()> {
         c.execute_batch(&drop_sql)?;
         crate::storage::schema::write_index_description(
-            c, &coll_for_writer, &idx_for_writer, None,
+            c,
+            &coll_for_writer,
+            &idx_for_writer,
+            None,
         )?;
         Ok(())
     })

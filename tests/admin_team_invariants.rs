@@ -88,7 +88,8 @@ fn insert_admin(dir: &tempfile::TempDir, email: &str, role: &str) -> (i64, Strin
     conn.execute(
         "INSERT INTO sessions (token, admin_id, expires_at) VALUES (?1, ?2, ?3)",
         params![session_token, admin_id, expires_at.to_rfc3339()],
-    ).unwrap();
+    )
+    .unwrap();
     (admin_id, format!("drust_session={session_token}"))
 }
 
@@ -117,18 +118,18 @@ async fn login(app: &axum::Router, username: &str, password: &str) -> String {
 }
 
 async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
 }
 
 fn root_id(dir: &tempfile::TempDir) -> i64 {
     let meta_path = dir.path().join("meta.sqlite");
     let conn = rusqlite::Connection::open(&meta_path).unwrap();
-    conn.query_row(
-        "SELECT id FROM admins WHERE username = 'root'",
-        [],
-        |r| r.get(0),
-    )
+    conn.query_row("SELECT id FROM admins WHERE username = 'root'", [], |r| {
+        r.get(0)
+    })
     .unwrap()
 }
 
@@ -154,7 +155,11 @@ async fn cannot_demote_last_owner() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "demoting last owner should be 409");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "demoting last owner should be 409"
+    );
     let body = body_json(resp).await;
     assert_eq!(body["error_code"], "LAST_OWNER");
 }
@@ -176,7 +181,11 @@ async fn cannot_remove_last_owner() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "removing last owner should be 409");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "removing last owner should be 409"
+    );
     let body = body_json(resp).await;
     assert_eq!(body["error_code"], "LAST_OWNER");
 }
@@ -202,7 +211,11 @@ async fn can_demote_owner_when_another_exists() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "demote second owner should succeed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "demote second owner should succeed"
+    );
 }
 
 #[tokio::test]
@@ -222,7 +235,11 @@ async fn can_remove_owner_when_another_exists() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "remove second owner should succeed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "remove second owner should succeed"
+    );
 }
 
 #[tokio::test]
@@ -248,7 +265,11 @@ async fn duplicate_email_rejected_on_invite() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "duplicate email should be 409");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "duplicate email should be 409"
+    );
     let body = body_json(resp).await;
     assert_eq!(body["error_code"], "ADMIN_EMAIL_TAKEN");
 }

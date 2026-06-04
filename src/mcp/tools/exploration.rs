@@ -182,10 +182,7 @@ pub async fn get_schema_overview(s: &DrustMcp) -> anyhow::Result<serde_json::Val
     let rpcs = pool
         .with_reader(|c| {
             crate::rpc::registry::list(c).map_err(|e| {
-                rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(1),
-                    Some(e.to_string()),
-                )
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
             })
         })
         .await?;

@@ -30,7 +30,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct WebhookRow {
     pub id: i64,
     pub collection: String,
-    pub events: String,    // JSON array as text
+    pub events: String, // JSON array as text
     pub url: String,
     pub secret: String,
     pub active: i64,
@@ -47,9 +47,8 @@ pub struct WebhookRow {
 /// wrap-first short-circuit should fire. `reason` is logged only; the
 /// user-visible `body` stays "host_now_private_or_unresolvable" so the
 /// existing assertion contract from v1.21 (cases 1 and 3) keeps holding.
-pub type PreCheckResolveFn = std::sync::Arc<
-    dyn Fn(String, u16) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
->;
+pub type PreCheckResolveFn =
+    std::sync::Arc<dyn Fn(String, u16) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// Returns true if `events_json` (a serialized JSON array of event-name
 /// strings) contains the given event name.
@@ -63,13 +62,15 @@ pub(crate) fn events_contains(events_json: &str, name: &str) -> bool {
 /// HMAC-SHA256 over `body` keyed by `secret`, hex-encoded, prefixed
 /// `sha256=`. Matches GitHub-webhook signature convention.
 pub fn compute_signature(secret: &str, body: &[u8]) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(body);
     let bytes = mac.finalize().into_bytes();
     let mut hex = String::with_capacity(7 + bytes.len() * 2);
     hex.push_str("sha256=");
-    for b in bytes { hex.push_str(&format!("{:02x}", b)); }
+    for b in bytes {
+        hex.push_str(&format!("{:02x}", b));
+    }
     hex
 }
 
@@ -131,19 +132,18 @@ impl WebhookDispatcher {
         resolver_override: Option<Arc<dyn reqwest::dns::Resolve + Send + Sync>>,
     ) -> Arc<Self> {
         use std::time::Duration;
-        let resolver_for_cache: Arc<dyn reqwest::dns::Resolve + Send + Sync> =
-            resolver_override
-                .clone()
-                .unwrap_or_else(|| Arc::new(crate::tenant::webhook_resolver::PinnedPublicResolver));
+        let resolver_for_cache: Arc<dyn reqwest::dns::Resolve + Send + Sync> = resolver_override
+            .clone()
+            .unwrap_or_else(|| Arc::new(crate::tenant::webhook_resolver::PinnedPublicResolver));
         let cached_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
             .user_agent("drust-webhook/1.21.0")
             .pool_max_idle_per_host(0)
-            .dns_resolver(Arc::new(
-                crate::tenant::webhook_resolver::ResolverHandle(resolver_for_cache),
-            ))
+            .dns_resolver(Arc::new(crate::tenant::webhook_resolver::ResolverHandle(
+                resolver_for_cache,
+            )))
             .build()
             .expect("build cached webhook reqwest client");
         Arc::new(Self {
@@ -181,7 +181,10 @@ impl WebhookDispatcher {
                     return;
                 }
             };
-            let subs = match tenant_pool.with_reader(|conn| list_subscriptions(conn, &collection)).await {
+            let subs = match tenant_pool
+                .with_reader(|conn| list_subscriptions(conn, &collection))
+                .await
+            {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!(error = ?e, tenant = %tenant, collection = %collection, "webhook dispatch: list_subscriptions failed");
@@ -265,11 +268,7 @@ pub(crate) fn list_subscriptions(
 
 /// Mark a subscription's last failure. Called once after all retries
 /// exhaust (or after a non-retryable 4xx on the first attempt).
-pub(crate) fn record_failure(
-    conn: &Connection,
-    id: i64,
-    reason: &str,
-) -> rusqlite::Result<()> {
+pub(crate) fn record_failure(conn: &Connection, id: i64, reason: &str) -> rusqlite::Result<()> {
     let truncated: String = reason.chars().take(200).collect();
     conn.execute(
         "UPDATE _system_webhooks
@@ -291,13 +290,19 @@ pub struct DeliverySchedule {
 
 impl Default for DeliverySchedule {
     fn default() -> Self {
-        Self { backoffs: [0, 1, 5, 30], per_attempt_timeout_secs: 10 }
+        Self {
+            backoffs: [0, 1, 5, 30],
+            per_attempt_timeout_secs: 10,
+        }
     }
 }
 
 impl DeliverySchedule {
     pub const fn fast_for_tests() -> Self {
-        Self { backoffs: [0, 0, 0, 0], per_attempt_timeout_secs: 2 }
+        Self {
+            backoffs: [0, 0, 0, 0],
+            per_attempt_timeout_secs: 2,
+        }
     }
 }
 
@@ -315,7 +320,10 @@ impl std::fmt::Display for DeliveryError {
             DeliveryError::NonRetryable { status, body } => {
                 write!(f, "4xx {} from subscriber: {}", status, body)
             }
-            DeliveryError::Exhausted { last_error, attempts } => {
+            DeliveryError::Exhausted {
+                last_error,
+                attempts,
+            } => {
                 write!(f, "all {} attempts failed: {}", attempts, last_error)
             }
         }
@@ -344,15 +352,22 @@ pub(crate) async fn deliver(
     tenant_id: &str,
 ) -> Result<(), DeliveryError> {
     let outcome = deliver_inner(
-        Some(shared_client), resolver, None, row, body_bytes, delivery_id, timestamp, sched,
-    ).await;
+        Some(shared_client),
+        resolver,
+        None,
+        row,
+        body_bytes,
+        delivery_id,
+        timestamp,
+        sched,
+    )
+    .await;
     // v1.32 C1 — webhook attempt counter
     {
         let result_label = match &outcome {
             Ok(()) => "success",
             Err(DeliveryError::NonRetryable { status, .. }) if *status == 0 => "network",
-            Err(DeliveryError::NonRetryable { status, .. })
-                if (400..500).contains(status) => "4xx",
+            Err(DeliveryError::NonRetryable { status, .. }) if (400..500).contains(status) => "4xx",
             Err(DeliveryError::NonRetryable { .. }) => "5xx",
             Err(DeliveryError::Exhausted { last_error, .. }) => {
                 if last_error.contains("timeout") || last_error.contains("timed out") {
@@ -419,7 +434,17 @@ pub async fn deliver_for_test(
     // tests rely on the per-attempt Client to scope the injected
     // `resolver` and pre_check). Production uses [`deliver`] which feeds
     // the dispatcher's `cached_client` into [`deliver_inner`] directly.
-    deliver_inner(None, resolver, pre_check, row, body_bytes, delivery_id, timestamp, sched).await
+    deliver_inner(
+        None,
+        resolver,
+        pre_check,
+        row,
+        body_bytes,
+        delivery_id,
+        timestamp,
+        sched,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -445,10 +470,7 @@ async fn deliver_inner(
     let port = parsed.port_or_known_default().unwrap_or(443);
     // reqwest::Url returns `[::1]` (with brackets) for IPv6 literals — accept
     // both forms here, same as `check_url`.
-    let is_loopback_dev = matches!(
-        host.as_str(),
-        "127.0.0.1" | "localhost" | "::1" | "[::1]"
-    );
+    let is_loopback_dev = matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]");
 
     // Wrap-first standalone resolve: BEFORE any attempt, confirm the
     // host still maps to at least one public IP. A rebinding between
@@ -486,35 +508,33 @@ async fn deliver_inner(
         // dev hosts skip the shared client and rebuild per attempt with
         // no custom resolver — same as pre-D10 behavior, so the dev
         // bypass for 127.0.0.1 / localhost / ::1 stays intact.
-        let client: Arc<reqwest::Client> = if let Some(shared) = shared_client
-            .as_ref()
-            .filter(|_| !is_loopback_dev)
-        {
-            shared.clone()
-        } else {
-            let mut b = reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::none())
-                .user_agent("drust-webhook/1.21.0");
-            if !is_loopback_dev {
-                // Wrap the `dyn` resolver in a sized handle — reqwest's
-                // `dns_resolver` takes `Arc<R: Resolve + 'static + Sized>`,
-                // and `dyn Resolve` is not `Sized`.
-                b = b.dns_resolver(Arc::new(
-                    crate::tenant::webhook_resolver::ResolverHandle(resolver.clone()),
-                ));
-            }
-            match b.build() {
-                Ok(c) => Arc::new(c),
-                Err(e) => {
-                    return Err(DeliveryError::NonRetryable {
-                        status: 0,
-                        body: format!("client build: {e}"),
-                    });
+        let client: Arc<reqwest::Client> =
+            if let Some(shared) = shared_client.as_ref().filter(|_| !is_loopback_dev) {
+                shared.clone()
+            } else {
+                let mut b = reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(5))
+                    .timeout(Duration::from_secs(10))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .user_agent("drust-webhook/1.21.0");
+                if !is_loopback_dev {
+                    // Wrap the `dyn` resolver in a sized handle — reqwest's
+                    // `dns_resolver` takes `Arc<R: Resolve + 'static + Sized>`,
+                    // and `dyn Resolve` is not `Sized`.
+                    b = b.dns_resolver(Arc::new(crate::tenant::webhook_resolver::ResolverHandle(
+                        resolver.clone(),
+                    )));
                 }
-            }
-        };
+                match b.build() {
+                    Ok(c) => Arc::new(c),
+                    Err(e) => {
+                        return Err(DeliveryError::NonRetryable {
+                            status: 0,
+                            body: format!("client build: {e}"),
+                        });
+                    }
+                }
+            };
         let req = client
             .post(&row.url)
             .header("content-type", "application/json")
@@ -532,7 +552,10 @@ async fn deliver_inner(
                 if (400..500).contains(&status) {
                     let body = resp.text().await.unwrap_or_default();
                     let truncated: String = body.chars().take(200).collect();
-                    return Err(DeliveryError::NonRetryable { status, body: truncated });
+                    return Err(DeliveryError::NonRetryable {
+                        status,
+                        body: truncated,
+                    });
                 }
                 last_err = format!("attempt {} got status {}", attempt_idx + 1, status);
             }
@@ -575,7 +598,9 @@ mod tests {
 
     #[test]
     fn build_payload_shape_created_event() {
-        let ev = Event::Created { record: json!({"id":7,"title":"hi"}) };
+        let ev = Event::Created {
+            record: json!({"id":7,"title":"hi"}),
+        };
         let v = build_payload("tA", "videos", &ev, "del-1", "2026-01-01T00:00:00Z");
         assert_eq!(v["tenant"], "tA");
         assert_eq!(v["collection"], "videos");

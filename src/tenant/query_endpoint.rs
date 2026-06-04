@@ -93,14 +93,16 @@ pub async fn explain_handler(
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
         Err(e) => {
             let msg = e.to_string();
-            let (status, code) =
-                if msg.contains("not authorized") || msg.contains("authorizer") || msg.contains("prohibited") {
-                    (StatusCode::BAD_REQUEST, "SQL_NOT_ALLOWED")
-                } else if msg.contains("syntax") || msg.contains("near") {
-                    (StatusCode::BAD_REQUEST, "SQL_PARSE_ERROR")
-                } else {
-                    (StatusCode::BAD_REQUEST, "SQL_ERROR")
-                };
+            let (status, code) = if msg.contains("not authorized")
+                || msg.contains("authorizer")
+                || msg.contains("prohibited")
+            {
+                (StatusCode::BAD_REQUEST, "SQL_NOT_ALLOWED")
+            } else if msg.contains("syntax") || msg.contains("near") {
+                (StatusCode::BAD_REQUEST, "SQL_PARSE_ERROR")
+            } else {
+                (StatusCode::BAD_REQUEST, "SQL_ERROR")
+            };
             let body = json!({ "error_code": code, "message": msg });
             let mut r = Json(body).into_response();
             *r.status_mut() = status;

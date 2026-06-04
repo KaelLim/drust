@@ -7,39 +7,138 @@
 
 /// Sorted (by error code) catalog. Add new entries in alphabetical order.
 pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
-    ("ANON_CAP_DENIED", "Anonymous role lacks the required DML capability on this collection. Either authenticate with a user/service token, or have the tenant owner widen anon_caps."),
-    ("COLLECTION_NOT_FOUND", "Collection does not exist. Call `get_schema_overview` or `list_collections` to see existing collections."),
-    ("DESCRIPTION_INVALID", "Description failed validation. Strip control characters and ensure UTF-8."),
-    ("DESCRIPTION_TOO_LONG", "Descriptions are capped at 2048 bytes. Shorten the text and retry."),
-    ("FIELD_NOT_FOUND", "Named field does not exist on this collection. Call `describe_collection` to see existing fields."),
-    ("FK_RESTRICT", "Row is referenced by another collection's foreign key (ON DELETE RESTRICT). Delete the referencing rows first, or use `dry_run: true` to see which collections block."),
-    ("INDEX_NOT_FOUND", "Named index does not exist on this collection. Call `describe_collection` to see existing indexes."),
-    ("INVALID_PARAMS", "Required parameter missing or malformed. Re-read the tool's input schema."),
-    ("INVALID_SQL_FOR_MODE", "RPC body contains SQL not allowed for this mode. Read-mode RPCs accept only SELECT; write-mode RPCs accept INSERT/UPDATE/DELETE on user collections only — DDL, ATTACH, and _system_* writes are always rejected."),
-    ("LARGE_TABLE", "Table exceeds DRUST_INDEX_LARGE_TABLE_ROWS rows. Retry with `force: true` to bypass the guard (will lock the table briefly)."),
-    ("MCP_USER_DENIED", "End-user tokens (`drust_user_*`) cannot use MCP. Use REST `/records` / `/list` / `/search` endpoints, or a stored RPC."),
-    ("MODE_MISMATCH", "RPC's stored mode disagrees with its current SQL body. Re-create the RPC with the correct mode, or update the body to match the declared mode."),
-    ("OAUTH_ONLY_NO_PASSWORD", "This user signed up via OAuth and has no password. Use the OAuth sign-in flow instead."),
-    ("OWNER_FIELD_REQUIRED", "This collection has an owner_field; service-key INSERT must populate it explicitly. User-token INSERT auto-fills it from the authenticated user."),
-    ("PROTECTED_COLLECTION", "`_system_*` collections are not writable via /records or MCP record tools. Use the matching admin endpoint (e.g. `_system_users` → POST /admin/users)."),
-    ("PUBLISH_ANON_DENIED", "Anon tokens cannot publish to broadcast rooms on this tenant. Ask the admin to PATCH /admin/tenants/<id>/publish-policy with {\"allow_anon_publish\": true}, or use a service / user token."),
-    ("PUBLISH_USER_DENIED", "User tokens cannot publish to broadcast rooms on this tenant. Ask the admin to PATCH /admin/tenants/<id>/publish-policy with {\"allow_user_publish\": true}, or use a service token."),
-    ("QUERY_USER_DENIED", "End-user tokens cannot use `/query` (raw SELECT). Use `/list` (FilterAst), `/search` (vector), or a stored RPC with `:user_id`."),
-    ("RATE_LIMITED", "Too many requests in the window. Wait for the `Retry-After` seconds and retry."),
-    ("RECENT_WRITES_UNAVAILABLE", "Audit log is temporarily unreadable. Retry in a few seconds."),
-    ("RECORD_NOT_FOUND", "Row id does not exist in this collection (or it was already deleted)."),
-    ("RPC_DENIED", "RPC is not callable by your role. Service tokens always work; user/anon tokens require anon_callable=true on the stored RPC."),
-    ("RPC_STATEMENT_FAILED", "One statement in the multi-statement RPC body failed; all changes from this call were rolled back via SAVEPOINT. Inspect the failing statement (statement_index field, 1-based) and retry."),
-    ("SERVICE_REQUIRED", "Operation requires a service-key bearer token. This is the canonical code; older responses may use WRITE_DENIED as the primary."),
-    ("TENANT_NOT_FOUND", "Tenant id is not registered or has been deleted. Check the tenant id in the URL path."),
-    ("TX_COMMIT_FAILED", "drust failed to RELEASE the per-RPC SAVEPOINT. Usually indicates disk full or fsync error on the tenant's data.sqlite. Check disk free space and dmesg."),
-    ("UNAUTHENTICATED", "Bearer token missing or invalid. Set `Authorization: Bearer <token>` and check the token has not been revoked."),
-    ("USER_FILTER_DENIED_ON_OWNER_SCOPED", "User tokens cannot pass raw `?filter` / `?sort` against owner-scoped collections. Use `/list` POST body with FilterAst."),
-    ("USER_ID_BINDING_REQUIRED", "This RPC declares a :user_id parameter, which is auto-bound from the authenticated user's session. Anon tokens cannot satisfy this binding — call with a user/service token."),
-    ("VECTOR_DIM_MISMATCH", "Vector length does not match the field's declared `dim`. Re-check the embedding dimension."),
-    ("VECTOR_NON_FINITE", "Vector contains NaN or Inf. Replace non-finite values before insert."),
-    ("VECTOR_TYPE_ERROR", "Vector field expects an array of numbers. Check the input type."),
-    ("WRITE_DENIED", "Operation requires a service-key bearer token. Anon tokens cannot write."),
+    (
+        "ANON_CAP_DENIED",
+        "Anonymous role lacks the required DML capability on this collection. Either authenticate with a user/service token, or have the tenant owner widen anon_caps.",
+    ),
+    (
+        "COLLECTION_NOT_FOUND",
+        "Collection does not exist. Call `get_schema_overview` or `list_collections` to see existing collections.",
+    ),
+    (
+        "DESCRIPTION_INVALID",
+        "Description failed validation. Strip control characters and ensure UTF-8.",
+    ),
+    (
+        "DESCRIPTION_TOO_LONG",
+        "Descriptions are capped at 2048 bytes. Shorten the text and retry.",
+    ),
+    (
+        "FIELD_NOT_FOUND",
+        "Named field does not exist on this collection. Call `describe_collection` to see existing fields.",
+    ),
+    (
+        "FK_RESTRICT",
+        "Row is referenced by another collection's foreign key (ON DELETE RESTRICT). Delete the referencing rows first, or use `dry_run: true` to see which collections block.",
+    ),
+    (
+        "INDEX_NOT_FOUND",
+        "Named index does not exist on this collection. Call `describe_collection` to see existing indexes.",
+    ),
+    (
+        "INVALID_PARAMS",
+        "Required parameter missing or malformed. Re-read the tool's input schema.",
+    ),
+    (
+        "INVALID_SQL_FOR_MODE",
+        "RPC body contains SQL not allowed for this mode. Read-mode RPCs accept only SELECT; write-mode RPCs accept INSERT/UPDATE/DELETE on user collections only — DDL, ATTACH, and _system_* writes are always rejected.",
+    ),
+    (
+        "LARGE_TABLE",
+        "Table exceeds DRUST_INDEX_LARGE_TABLE_ROWS rows. Retry with `force: true` to bypass the guard (will lock the table briefly).",
+    ),
+    (
+        "MCP_USER_DENIED",
+        "End-user tokens (`drust_user_*`) cannot use MCP. Use REST `/records` / `/list` / `/search` endpoints, or a stored RPC.",
+    ),
+    (
+        "MODE_MISMATCH",
+        "RPC's stored mode disagrees with its current SQL body. Re-create the RPC with the correct mode, or update the body to match the declared mode.",
+    ),
+    (
+        "OAUTH_ONLY_NO_PASSWORD",
+        "This user signed up via OAuth and has no password. Use the OAuth sign-in flow instead.",
+    ),
+    (
+        "OWNER_FIELD_REQUIRED",
+        "This collection has an owner_field; service-key INSERT must populate it explicitly. User-token INSERT auto-fills it from the authenticated user.",
+    ),
+    (
+        "PROTECTED_COLLECTION",
+        "`_system_*` collections are not writable via /records or MCP record tools. Use the matching admin endpoint (e.g. `_system_users` → POST /admin/users).",
+    ),
+    (
+        "PUBLISH_ANON_DENIED",
+        "Anon tokens cannot publish to broadcast rooms on this tenant. Ask the admin to PATCH /admin/tenants/<id>/publish-policy with {\"allow_anon_publish\": true}, or use a service / user token.",
+    ),
+    (
+        "PUBLISH_USER_DENIED",
+        "User tokens cannot publish to broadcast rooms on this tenant. Ask the admin to PATCH /admin/tenants/<id>/publish-policy with {\"allow_user_publish\": true}, or use a service token.",
+    ),
+    (
+        "QUERY_USER_DENIED",
+        "End-user tokens cannot use `/query` (raw SELECT). Use `/list` (FilterAst), `/search` (vector), or a stored RPC with `:user_id`.",
+    ),
+    (
+        "RATE_LIMITED",
+        "Too many requests in the window. Wait for the `Retry-After` seconds and retry.",
+    ),
+    (
+        "RECENT_WRITES_UNAVAILABLE",
+        "Audit log is temporarily unreadable. Retry in a few seconds.",
+    ),
+    (
+        "RECORD_NOT_FOUND",
+        "Row id does not exist in this collection (or it was already deleted).",
+    ),
+    (
+        "RPC_DENIED",
+        "RPC is not callable by your role. Service tokens always work; user/anon tokens require anon_callable=true on the stored RPC.",
+    ),
+    (
+        "RPC_STATEMENT_FAILED",
+        "One statement in the multi-statement RPC body failed; all changes from this call were rolled back via SAVEPOINT. Inspect the failing statement (statement_index field, 1-based) and retry.",
+    ),
+    (
+        "SERVICE_REQUIRED",
+        "Operation requires a service-key bearer token. This is the canonical code; older responses may use WRITE_DENIED as the primary.",
+    ),
+    (
+        "TENANT_NOT_FOUND",
+        "Tenant id is not registered or has been deleted. Check the tenant id in the URL path.",
+    ),
+    (
+        "TX_COMMIT_FAILED",
+        "drust failed to RELEASE the per-RPC SAVEPOINT. Usually indicates disk full or fsync error on the tenant's data.sqlite. Check disk free space and dmesg.",
+    ),
+    (
+        "UNAUTHENTICATED",
+        "Bearer token missing or invalid. Set `Authorization: Bearer <token>` and check the token has not been revoked.",
+    ),
+    (
+        "USER_FILTER_DENIED_ON_OWNER_SCOPED",
+        "User tokens cannot pass raw `?filter` / `?sort` against owner-scoped collections. Use `/list` POST body with FilterAst.",
+    ),
+    (
+        "USER_ID_BINDING_REQUIRED",
+        "This RPC declares a :user_id parameter, which is auto-bound from the authenticated user's session. Anon tokens cannot satisfy this binding — call with a user/service token.",
+    ),
+    (
+        "VECTOR_DIM_MISMATCH",
+        "Vector length does not match the field's declared `dim`. Re-check the embedding dimension.",
+    ),
+    (
+        "VECTOR_NON_FINITE",
+        "Vector contains NaN or Inf. Replace non-finite values before insert.",
+    ),
+    (
+        "VECTOR_TYPE_ERROR",
+        "Vector field expects an array of numbers. Check the input type.",
+    ),
+    (
+        "WRITE_DENIED",
+        "Operation requires a service-key bearer token. Anon tokens cannot write.",
+    ),
 ];
 
 /// Look up a suggested_fix for an error code. Returns `None` when the code
@@ -78,18 +177,29 @@ pub enum ErrorContext<'a> {
 /// has no context-aware variant; caller should fall back to `lookup`.
 pub fn contextual_fix(ctx: &ErrorContext<'_>) -> String {
     match ctx {
-        ErrorContext::FieldNotFound { field, collection, existing } => format!(
+        ErrorContext::FieldNotFound {
+            field,
+            collection,
+            existing,
+        } => format!(
             "Field `{field}` not found on collection `{collection}`. \
              Existing fields: [{}].",
             existing.join(", ")
         ),
-        ErrorContext::CollectionNotFound { collection, existing } => format!(
+        ErrorContext::CollectionNotFound {
+            collection,
+            existing,
+        } => format!(
             "Collection `{collection}` not found. \
              Existing collections: [{}]. \
              Use `get_schema_overview` for the full schema.",
             existing.join(", ")
         ),
-        ErrorContext::VectorDimMismatch { field, expected_dim, actual_dim } => format!(
+        ErrorContext::VectorDimMismatch {
+            field,
+            expected_dim,
+            actual_dim,
+        } => format!(
             "Field `{field}` expects vector of dim={expected_dim}; \
              got length={actual_dim}."
         ),
