@@ -330,11 +330,16 @@ impl ThemeRenderCtx {
 
 fn mascot_to_json(m: &BTreeMap<char, &'static str>) -> String {
     // Map<char, &str> → JSON object. char keys serialize as 1-char strings.
+    // Route through the canonical <script>-safe escaper so this island obeys
+    // the same invariant as every other JSON-into-<script> embed (the
+    // `_theme_palette.html` `|safe` interpolation). Palette values are
+    // compile-time hex today, so the escaper is a no-op — but it makes a
+    // future non-hex mascot value inert rather than a `</script>` breakout.
     let map: serde_json::Map<String, serde_json::Value> = m
         .iter()
         .map(|(k, v)| (k.to_string(), serde_json::Value::String((*v).to_string())))
         .collect();
-    serde_json::to_string(&map).expect("serialize mascot palette")
+    crate::mgmt::script_json::json_for_script(&map)
 }
 
 /// Serialize one Palette into a JSON object with `ui`/`accent`/`mascot`
@@ -488,5 +493,22 @@ mod tests {
         assert!(!safe.contains("</"), "no live `</` may survive in the embed");
         // Escaping must not corrupt the payload — it still parses.
         let _: serde_json::Value = serde_json::from_str(&safe).expect("escaped themes JSON must parse");
+    }
+
+    #[test]
+    fn mascot_to_json_is_script_safe_and_still_valid_json() {
+        // Real palettes are hex-only, so feed a hostile value to prove the
+        // canonical escaper is actually wired in: a `</script>` breakout must
+        // come back inert yet still JSON.parse to the original string.
+        let mut m: BTreeMap<char, &'static str> = BTreeMap::new();
+        m.insert('x', "</script><img src=x onerror=alert(1)>");
+        let out = mascot_to_json(&m);
+        assert!(!out.contains("</"), "no live `</` may survive in the embed");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&out).expect("escaped mascot JSON must parse");
+        assert_eq!(
+            parsed["x"], "</script><img src=x onerror=alert(1)>",
+            "escaping must be lossless under JSON.parse"
+        );
     }
 }
