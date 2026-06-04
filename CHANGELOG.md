@@ -1,3 +1,57 @@
+## v1.33.3 — 2026-06-04
+
+### Performance
+
+Internal request hot-path optimizations. All three are **behaviour-preserving**
+(same API, same response bytes, same permission semantics — proven by the
+existing suite plus a per-cut test) and were profiled first. The auth surface
+was the surprise: v1.32.3's "D9" had already lock-collapsed bearer resolution to
+a single `meta.sqlite` query, so the planned auth-token *cache* was measured,
+found marginal, and **deferred** in favour of a cheaper, security-neutral cut.
+
+- **Stored-RPC SQL now uses `prepare_cached`** (`src/query/executor.rs`).
+  `execute_read_query_with_named_inner` recompiled its fixed-per-name SQL on
+  every call; it now uses rusqlite's per-connection statement cache (as
+  `audit_db`/`stats` already do), a near-100% hit on the pooled read
+  connections. The ad-hoc `/query` path stays on `prepare()`. A
+  `cached_stmt_reprepares_after_schema_change` test proves no stale results
+  after a schema change (rusqlite auto-re-prepares on `SQLITE_SCHEMA`).
+- **`_system_sessions` lookup is skipped for non-user bearers**
+  (`src/tenant/router.rs`, `src/auth/user_session.rs`). `bearer_auth_layer` ran
+  a per-request `pool.with_reader(lookup_session)` against `_system_sessions`
+  for *every* request, including service/anon/PAT tokens that can never be a
+  user session. User session tokens are minted only via `generate_token()` and
+  always carry the `drust_user_` prefix, and `lookup_session` matches on the
+  full-token hash, so gating the lookup on `is_user_token()` removes a read-pool
+  checkout + indexed query from the service/anon hot path with **no behaviour
+  change and no new security surface**. (Chosen over a token cache, which would
+  have needed invalidation wiring at every revoke site plus a
+  stale-grant-after-revoke window — not justified by the measured ~13 % slice
+  that D9 already minimized.)
+- **Result rows buffer as a `Cell` enum** instead of
+  `Vec<Vec<serde_json::Value>>` (`src/query/executor.rs`). Each cell was a heap
+  `serde_json::Value` (text cells a fresh `String`), then serde walked the tree
+  a second time to emit bytes. A lightweight `Cell` enum with a hand-written
+  `Serialize` drops the intermediate tree and the double pass; output is
+  **byte-identical** (proven by an `o2_golden` byte-diff test over control
+  chars, U+2028/U+2029, emoji, `i64::MIN`, `-0.0`). `column_types` is emitted
+  before `rows` and a column's type isn't settled until the scan completes, so
+  the buffer is kept by necessity — only the redundant `Value` tree is removed.
+  Value-manipulating consumers bridge via `Cell::to_json()`.
+
+> **Deferred (recorded, not dropped):** the auth-token *cache* (revisit only if a
+> release microbench of the bearer CTE under real cross-tenant contention lands
+> ≥77 µs) and the authorizer attach-once trim (provisional; needs a coupling
+> audit of every `detach_authorizer` site — its own spec when pulled).
+
+> **Benchmark honesty:** on the shared 2-core host (the test instance is
+> co-resident with the live service) run-to-run variance exceeded the per-cut
+> deltas, so these ship on correctness + mechanism (test-proven
+> behaviour-preserving, profiled hot spots) rather than a precise headline
+> percentage. No regression was observed on any leg.
+
+---
+
 ## v1.33.2 — 2026-06-04
 
 ### Fixed
