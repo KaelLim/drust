@@ -29,7 +29,11 @@ fn tus_headers() -> HeaderMap {
     h
 }
 
-const TUS_VERSION: &str = "1.0.0";
+pub(crate) const TUS_VERSION: &str = "1.0.0";
+/// tus extensions this server implements — advertised by both the
+/// `options` handler and the CORS-bypass capability layer in
+/// `crate::tenant::inject_tus_capabilities` (kept here so the two can't drift).
+pub(crate) const TUS_EXTENSION: &str = "creation,termination,expiration";
 
 fn hname(s: &'static str) -> HeaderName { HeaderName::from_static(s) }
 
@@ -60,7 +64,7 @@ pub async fn options(
     let mut h = HeaderMap::new();
     h.insert(hname("tus-resumable"), TUS_VERSION.parse().unwrap());
     h.insert(hname("tus-version"), TUS_VERSION.parse().unwrap());
-    h.insert(hname("tus-extension"), "creation,termination,expiration".parse().unwrap());
+    h.insert(hname("tus-extension"), TUS_EXTENSION.parse().unwrap());
     h.insert(hname("tus-max-size"),
         state.large_upload_max_bytes.to_string().parse().unwrap());
     (StatusCode::NO_CONTENT, h).into_response()

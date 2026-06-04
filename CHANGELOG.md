@@ -1,3 +1,34 @@
+## v1.33.2 — 2026-06-04
+
+### Fixed
+
+- **tus capability discovery (`OPTIONS /t/<id>/uploads`) now works over
+  HTTP.** A live end-to-end smoke test of the deployed Mode B endpoint
+  found the `.options(uploads::options)` handler unreachable: the CORS
+  layer is mounted outside `bearer_auth` (so preflight short-circuits
+  before auth) and answered every `OPTIONS` with a bare CORS 200,
+  shadowing the handler — so a tus client never saw `Tus-Version` /
+  `Tus-Extension` / `Tus-Max-Size`. (The v1.33.1 note advertising
+  "`OPTIONS`-based capability discovery" was therefore not actually
+  reachable; this makes it true.) The upload core — `POST`/`HEAD`/
+  `PATCH`/`DELETE`, chunking, disconnect-resume, and finalize-to-Garage
+  — was always fine and is unaffected. Fixed with a small
+  `inject_tus_capabilities` layer mounted OUTSIDE the CORS layer
+  (`src/tenant/mod.rs`) that re-attaches the static tus headers onto the
+  CORS-generated preflight response, scoped to `OPTIONS` on paths ending
+  `/uploads`. The handler-level unit test couldn't catch this (it calls
+  the handler directly, bypassing the layer stack); a new
+  `tus_capabilities_survive_cors_preflight` test pins the full stack.
+  Tus version/extension strings are now shared consts in
+  `src/tenant/uploads/mod.rs` so handler and layer can't drift.
+- **`mascot_to_json` (theme palette `<script>` embed) now routes through
+  the canonical `script_json` escaper** (`src/mgmt/theme.rs`), closing
+  the last JSON-into-`<script>` island that still serialized inline.
+  Palette values are compile-time hex so output is byte-identical today;
+  this is defense-in-depth so a future non-hex value can't break out.
+
+---
+
 ## v1.33.1 — 2026-06-03
 
 ### Security

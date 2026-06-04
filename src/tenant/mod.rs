@@ -247,6 +247,108 @@ mod cors_tests {
             );
         }
     }
+
+    /// v1.33.2 — the CORS layer short-circuits OPTIONS preflight before it can
+    /// reach `uploads::options`, so the tus capability headers must be re-added
+    /// by `inject_tus_capabilities` mounted OUTSIDE cors. A live HTTP probe found
+    /// the original handler dead; this pins the full layer stack so it can't
+    /// regress. Mirrors `build_tenant_router`'s `merged.layer(cors).layer(tus)`.
+    #[tokio::test]
+    async fn tus_capabilities_survive_cors_preflight() {
+        use axum::body::Body;
+        use axum::http::{Method, Request, header};
+        use axum::{Router, routing::post};
+        use tower::ServiceExt;
+
+        let cors = super::build_cors_layer(&["https://app.tzuchi.org".to_string()])
+            .expect("cors layer");
+        let app: Router = Router::new()
+            .route("/t/x/uploads", post(|| async { "ok" }))
+            .route("/t/x/collections", post(|| async { "ok" }))
+            .layer(cors)
+            .layer(axum::middleware::from_fn_with_state(
+                2_147_483_648usize,
+                super::inject_tus_capabilities,
+            ));
+
+        // Browser preflight to the creation endpoint → CORS answers, then the
+        // tus layer re-attaches capabilities.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/t/x/uploads")
+                    .header(header::ORIGIN, "https://app.tzuchi.org")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let h = resp.headers();
+        assert_eq!(h.get("tus-version").unwrap(), "1.0.0");
+        assert_eq!(h.get("tus-resumable").unwrap(), "1.0.0");
+        assert!(
+            h.get("tus-extension").unwrap().to_str().unwrap().contains("creation"),
+            "tus-extension must advertise creation"
+        );
+        assert_eq!(h.get("tus-max-size").unwrap(), "2147483648");
+
+        // Scoping: a non-/uploads OPTIONS must NOT carry tus headers.
+        let resp2 = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/t/x/collections")
+                    .header(header::ORIGIN, "https://app.tzuchi.org")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp2.headers().get("tus-version").is_none(),
+            "tus headers must be scoped to /uploads only"
+        );
+    }
+}
+
+/// v1.33.2 — re-attach tus capability headers (`Tus-Version` / `Tus-Extension`
+/// / `Tus-Max-Size`) onto `OPTIONS /t/<id>/uploads`.
+///
+/// The `.options(uploads::options)` handler is unreachable over HTTP: the CORS
+/// layer is mounted OUTSIDE bearer_auth (so preflight short-circuits before auth
+/// — see `build_tenant_router`) and answers every OPTIONS before it reaches the
+/// router, returning a bare CORS 200 without the tus headers. A unit test that
+/// calls the handler directly can't see this; only a live HTTP probe does.
+///
+/// This layer is mounted OUTSIDE the CORS layer, so on the response path it runs
+/// last and re-attaches the static capabilities onto the CORS-generated preflight
+/// response. Scoped to OPTIONS on paths ending `/uploads` (the creation endpoint;
+/// `/uploads/{token}` PATCH preflights are left untouched). Capability discovery
+/// is unauthenticated by tus convention and the advertised value is a public
+/// config constant, matching the unauthenticated CORS preflight it rides on.
+async fn inject_tus_capabilities(
+    axum::extract::State(max_size): axum::extract::State<usize>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let is_caps = req.method() == axum::http::Method::OPTIONS
+        && req.uri().path().ends_with("/uploads");
+    let mut resp = next.run(req).await;
+    if is_caps {
+        use axum::http::HeaderValue;
+        let h = resp.headers_mut();
+        h.insert("tus-resumable", HeaderValue::from_static(uploads::TUS_VERSION));
+        h.insert("tus-version", HeaderValue::from_static(uploads::TUS_VERSION));
+        h.insert("tus-extension", HeaderValue::from_static(uploads::TUS_EXTENSION));
+        if let Ok(v) = HeaderValue::from_str(&max_size.to_string()) {
+            h.insert("tus-max-size", v);
+        }
+    }
+    resp
 }
 
 pub fn build_tenant_router(state: TenantStack) -> Router {
@@ -255,6 +357,11 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     let webhooks = state.webhooks.clone();
     let mcp = state.mcp.clone();
     let cors = build_cors_layer(&state.cors_origins);
+    // Captured before `state.files` is moved into files_router below; feeds the
+    // tus capability layer (Tus-Max-Size) that re-attaches headers onto the
+    // CORS-shadowed OPTIONS /uploads response. None when Garage is unconfigured
+    // (files_router empty), so the layer is simply not mounted.
+    let tus_max_size: Option<usize> = state.files.as_ref().map(|f| f.large_upload_max_bytes);
 
     let core = Router::new()
         .route("/t/{tenant}/collections", get(collections::list_handler))
@@ -548,8 +655,19 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     // 200 + ACA* headers without seeing the bearer token. Real GET/POST/etc.
     // still pass through bearer_auth normally; the layer just appends the
     // ACAO header on the way back out.
-    if let Some(cors) = cors {
+    let merged = if let Some(cors) = cors {
         merged.layer(cors)
+    } else {
+        merged
+    };
+    // Mounted OUTSIDE the CORS layer (applied after it = outermost) so it post-
+    // processes the CORS-short-circuited OPTIONS /uploads preflight and re-adds
+    // the tus capability headers the shadowed `uploads::options` handler can't.
+    if let Some(max_size) = tus_max_size {
+        merged.layer(axum::middleware::from_fn_with_state(
+            max_size,
+            inject_tus_capabilities,
+        ))
     } else {
         merged
     }
