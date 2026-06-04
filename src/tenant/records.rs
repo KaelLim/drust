@@ -361,7 +361,7 @@ pub async fn list_handler(
                 if vector_names.contains(name) {
                     continue;
                 }
-                m.insert(name.clone(), row[i].clone());
+                m.insert(name.clone(), row[i].to_json());
             }
             serde_json::Value::Object(m)
         })

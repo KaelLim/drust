@@ -156,7 +156,7 @@ pub fn execute_one(
         // execute_read_query_with_named_inner (src/query/executor.rs).
         let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let col_count = column_names.len();
-        let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+        let mut rows: Vec<Vec<crate::query::executor::Cell>> = Vec::new();
         let mut types: Vec<String> = vec!["null".into(); col_count];
         let mut rows_iter = stmt
             .query(refs.as_slice())
@@ -173,7 +173,7 @@ pub fn execute_one(
                 if col_type == "null" {
                     *col_type = crate::query::executor::type_name(v);
                 }
-                row.push(crate::query::executor::value_to_json(v));
+                row.push(crate::query::executor::value_to_cell(v));
             }
             rows.push(row);
         }
