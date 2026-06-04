@@ -9,12 +9,7 @@
 //! OAuth callback chain are covered (users must be able to switch language
 //! before authenticating).
 
-use axum::{
-    extract::Request,
-    http::HeaderMap,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::HeaderMap, middleware::Next, response::Response};
 use axum_extra::extract::cookie::CookieJar;
 
 use crate::mgmt::i18n::Locale;

@@ -105,10 +105,8 @@ mod tests {
 
     async fn empty_state() -> ThemeLayerState {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE admins (id INTEGER PRIMARY KEY, theme TEXT);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE admins (id INTEGER PRIMARY KEY, theme TEXT);")
+            .unwrap();
         ThemeLayerState {
             meta: std::sync::Arc::new(tokio::sync::Mutex::new(conn)),
             allow_db_fallback: true,
@@ -162,10 +160,7 @@ mod tests {
         s.meta
             .lock()
             .await
-            .execute(
-                "INSERT INTO admins (id, theme) VALUES (1, 'cozy-dark')",
-                [],
-            )
+            .execute("INSERT INTO admins (id, theme) VALUES (1, 'cozy-dark')", [])
             .unwrap();
         let jar = jar_with("drust_theme", "xyz");
         assert_eq!(resolve_theme(&jar, &s, Some(1)).await, Theme::CozyDark);
@@ -179,7 +174,10 @@ mod tests {
             .await
             .execute("INSERT INTO admins (id, theme) VALUES (1, 'ocean')", [])
             .unwrap();
-        assert_eq!(resolve_theme(&CookieJar::new(), &s, Some(1)).await, Theme::System);
+        assert_eq!(
+            resolve_theme(&CookieJar::new(), &s, Some(1)).await,
+            Theme::System
+        );
     }
 
     #[tokio::test]
@@ -190,13 +188,19 @@ mod tests {
             .await
             .execute("INSERT INTO admins (id, theme) VALUES (1, NULL)", [])
             .unwrap();
-        assert_eq!(resolve_theme(&CookieJar::new(), &s, Some(1)).await, Theme::System);
+        assert_eq!(
+            resolve_theme(&CookieJar::new(), &s, Some(1)).await,
+            Theme::System
+        );
     }
 
     #[tokio::test]
     async fn admin_not_in_db_falls_to_default() {
         let s = empty_state().await;
         // admin_id=99 doesn't exist in our setup
-        assert_eq!(resolve_theme(&CookieJar::new(), &s, Some(99)).await, Theme::System);
+        assert_eq!(
+            resolve_theme(&CookieJar::new(), &s, Some(99)).await,
+            Theme::System
+        );
     }
 }

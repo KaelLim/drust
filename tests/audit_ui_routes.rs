@@ -44,11 +44,7 @@ impl TestAuditDb {
     /// out of the `extra` blob.
     async fn seed_from_jsonl(&self, log_dir: &std::path::Path) {
         let now = chrono::Utc::now();
-        let scan = drust::mgmt::audit::scan_window(
-            log_dir,
-            drust::mgmt::audit::Window::D7,
-            now,
-        );
+        let scan = drust::mgmt::audit::scan_window(log_dir, drust::mgmt::audit::Window::D7, now);
         let conn = self.conn.lock().await;
         let mut stmt = conn
             .prepare(
@@ -94,7 +90,10 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, TestAuditDb, tempf
     .unwrap();
     // Initialise its data.sqlite so the sidebar context loader doesn't fail.
     let _ = drust::storage::tenant_db::open_write(&data_dir, "acme").unwrap();
-    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2));
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
     let bus = drust::tenant::events::EventBus::new();
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
@@ -118,8 +117,16 @@ async fn app_with_log_dir(log_dir: PathBuf) -> (axum::Router, TestAuditDb, tempf
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
-        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
-        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
     };
     let router = state.with_data_dir(data_dir);
     (router, audit_db, dir)
@@ -264,7 +271,10 @@ async fn host_audit_with_session_renders_overview() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
     assert!(body.contains("Audit"));
-    assert!(body.contains("Top tenants"), "host scope must show Top tenants block");
+    assert!(
+        body.contains("Top tenants"),
+        "host scope must show Top tenants block"
+    );
 }
 
 #[tokio::test]
@@ -289,7 +299,10 @@ async fn host_audit_browse_filters_status_error() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
     assert!(body.contains("hashERR1"), "error entry should be visible");
-    assert!(!body.contains("hashOK01"), "ok entry should be filtered out");
+    assert!(
+        !body.contains("hashOK01"),
+        "ok entry should be filtered out"
+    );
 }
 
 #[tokio::test]
@@ -390,16 +403,40 @@ async fn browse_renders_typed_oauth_fields_and_extra_map() {
     let body = body_string(resp).await;
 
     // Typed OAuth fields must appear in the rendered details block.
-    assert!(body.contains("auth_method"), "auth_method label must render");
-    assert!(body.contains("oauth_google"), "oauth_google value must render");
-    assert!(body.contains("oauth_email"), "oauth_email label must render");
-    assert!(body.contains("user@example.com"), "oauth_email value must render");
-    assert!(body.contains("oauth_error_code"), "oauth_error_code label must render");
-    assert!(body.contains("oauth_state_mismatch"), "oauth_error_code value must render");
+    assert!(
+        body.contains("auth_method"),
+        "auth_method label must render"
+    );
+    assert!(
+        body.contains("oauth_google"),
+        "oauth_google value must render"
+    );
+    assert!(
+        body.contains("oauth_email"),
+        "oauth_email label must render"
+    );
+    assert!(
+        body.contains("user@example.com"),
+        "oauth_email value must render"
+    );
+    assert!(
+        body.contains("oauth_error_code"),
+        "oauth_error_code label must render"
+    );
+    assert!(
+        body.contains("oauth_state_mismatch"),
+        "oauth_error_code value must render"
+    );
 
     // Extra map keys (auth_kind, auth_user_id) must appear in the extra JSON block.
-    assert!(body.contains("auth_kind"), "extra map key auth_kind must render");
-    assert!(body.contains("u-abc-123"), "extra map value auth_user_id must render");
+    assert!(
+        body.contains("auth_kind"),
+        "extra map key auth_kind must render"
+    );
+    assert!(
+        body.contains("u-abc-123"),
+        "extra map value auth_user_id must render"
+    );
 }
 
 #[tokio::test]
@@ -460,7 +497,10 @@ async fn host_browse_renders_tenant_datalist_with_names() {
         "host scope must render tenant datalist"
     );
     // The seeded tenant ("Acme Inc") must appear as an option label.
-    assert!(body.contains("Acme Inc"), "datalist must render tenant display name");
+    assert!(
+        body.contains("Acme Inc"),
+        "datalist must render tenant display name"
+    );
     assert!(
         body.contains(r#"value="acme""#),
         "datalist option value must be the tenant id"
@@ -542,8 +582,14 @@ async fn host_browse_rows_have_data_idx_attribute() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
-    assert!(body.contains(r#"data-idx="0""#), "first row must carry data-idx=0");
-    assert!(body.contains(r#"data-idx="1""#), "second row must carry data-idx=1");
+    assert!(
+        body.contains(r#"data-idx="0""#),
+        "first row must carry data-idx=0"
+    );
+    assert!(
+        body.contains(r#"data-idx="1""#),
+        "second row must carry data-idx=1"
+    );
     assert!(
         body.contains(r#"role="button""#),
         "tl-row must carry role=button for click-to-modal affordance"

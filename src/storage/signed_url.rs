@@ -69,7 +69,14 @@ pub fn verify(
 ///
 /// `{base}/drust/s/admin/{key}?e={expires}&t={token}&d={0|1}`
 /// `{base}/drust/s/t/{tenant}/{key}?e={expires}&t={token}&d={0|1}`
-pub fn build_url(base: &str, owner: &Owner, key: &str, expires: i64, download: bool, token: &str) -> String {
+pub fn build_url(
+    base: &str,
+    owner: &Owner,
+    key: &str,
+    expires: i64,
+    download: bool,
+    token: &str,
+) -> String {
     let path = match owner {
         Owner::Admin => format!("/drust/s/admin/{key}"),
         Owner::Tenant(id) => format!("/drust/s/t/{id}/{key}"),

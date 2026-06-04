@@ -25,7 +25,9 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
     )));
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
-        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
+        audit_meta_read: Arc::new(Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
@@ -41,8 +43,16 @@ async fn app() -> (axum::Router, String, tempfile::TempDir) {
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
-        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
-        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
     };
     (state.with_data_dir(data_dir.clone()), tok, dir)
 }
@@ -125,11 +135,8 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
     drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     let tok = create_session(&mut conn, 1, 3600).unwrap();
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES ('blog', 'Blog')",
-        [],
-    )
-    .unwrap();
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('blog', 'Blog')", [])
+        .unwrap();
     let _ = drust::storage::tenant_db::open_write(&data_dir, "blog").unwrap();
 
     let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
@@ -151,7 +158,9 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
 
     let state = MgmtState {
         meta: Arc::new(Mutex::new(conn)),
-        audit_meta_read: Arc::new(Mutex::new(drust::safety::audit_db::open_audit_db_memory().unwrap())),
+        audit_meta_read: Arc::new(Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
         session_ttl_days: 7,
         garage: None,
         public_base_url: "http://localhost:8793".to_string(),
@@ -167,8 +176,16 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
         index_large_table_rows: 1_000_000,
         public_url: String::new(),
         oauth_registry: Arc::new(drust::oauth::ProviderRegistry::from_env_empty()),
-        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
-        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(5, std::time::Duration::from_secs(60), 4096)),
+        admin_login_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
+        admin_oauth_callback_rl: Arc::new(drust::safety::rate_limit_ip::IpRateLimit::new(
+            5,
+            std::time::Duration::from_secs(60),
+            4096,
+        )),
     };
     let app = state.with_data_dir(data_dir);
 

@@ -11,7 +11,7 @@
 //! body that passes the registry check will also pass runtime auth, and
 //! a body that pre-existed registry-side gets rejected at runtime anyway.
 
-use drust::rpc::prepare::{validate_rpc_sql, PrepareError};
+use drust::rpc::prepare::{PrepareError, validate_rpc_sql};
 use drust::rpc::registry::RpcMode;
 use drust::storage::tenant_db::open_write;
 use rusqlite::Connection;
@@ -60,12 +60,8 @@ fn write_with_insert_into_system_files_rejected() {
 #[test]
 fn write_with_attach_database_rejected() {
     let (_d, conn) = seed("c5_attach");
-    let err = validate_rpc_sql(
-        &conn,
-        "ATTACH DATABASE '/tmp/x.db' AS y",
-        RpcMode::Write,
-    )
-    .unwrap_err();
+    let err =
+        validate_rpc_sql(&conn, "ATTACH DATABASE '/tmp/x.db' AS y", RpcMode::Write).unwrap_err();
     let PrepareError::Rejected(msg) = err;
     let lc = msg.to_lowercase();
     assert!(
@@ -78,12 +74,8 @@ fn write_with_attach_database_rejected() {
 fn read_with_insert_still_rejected() {
     let (_d, conn) = seed("c5_read_insert");
     // Existing C1 contract: read-mode rejects any write.
-    let err = validate_rpc_sql(
-        &conn,
-        "INSERT INTO orders (qty) VALUES (1)",
-        RpcMode::Read,
-    )
-    .unwrap_err();
+    let err =
+        validate_rpc_sql(&conn, "INSERT INTO orders (qty) VALUES (1)", RpcMode::Read).unwrap_err();
     let PrepareError::Rejected(msg) = err;
     let lc = msg.to_lowercase();
     assert!(
@@ -113,10 +105,6 @@ fn write_with_valid_mutation_accepts() {
         RpcMode::Write,
     )
     .expect("valid write-mode UPDATE must pass");
-    validate_rpc_sql(
-        &conn,
-        "DELETE FROM orders WHERE id = :id",
-        RpcMode::Write,
-    )
-    .expect("valid write-mode DELETE must pass");
+    validate_rpc_sql(&conn, "DELETE FROM orders WHERE id = :id", RpcMode::Write)
+        .expect("valid write-mode DELETE must pass");
 }

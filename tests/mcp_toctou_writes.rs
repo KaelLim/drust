@@ -19,8 +19,8 @@
 //! coverage rationale for each.
 
 use drust::mcp::server::{DrustMcp, McpRegistry};
-use drust::mcp::tools::schema::{FieldSpec, create_collection};
 use drust::mcp::tools::owner_field::set_owner_field;
+use drust::mcp::tools::schema::{FieldSpec, create_collection};
 use drust::storage::pool::TenantRegistry;
 use drust::storage::schema::DmlVerb;
 use std::sync::Arc;
@@ -64,13 +64,9 @@ async fn set_anon_caps_collection_not_found_no_orphan() {
     let d = tempfile::tempdir().unwrap();
     let mcp = svc(&d, "toctou-anon-caps").await;
 
-    let err = drust::mcp::tools::schema::set_anon_caps(
-        &mcp,
-        "ghost",
-        &[DmlVerb::Select],
-    )
-    .await
-    .unwrap_err();
+    let err = drust::mcp::tools::schema::set_anon_caps(&mcp, "ghost", &[DmlVerb::Select])
+        .await
+        .unwrap_err();
 
     let msg = err.to_string();
     assert!(
@@ -230,8 +226,10 @@ async fn set_field_description_field_not_found_no_orphan_key() {
         .await
         .ok()
         .flatten();
-    let map: serde_json::Value =
-        blob.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(serde_json::json!({}));
+    let map: serde_json::Value = blob
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::json!({}));
     assert!(
         map.get("no_such_field").is_none(),
         "orphan key 'no_such_field' found in field_descriptions_json: {map}"
@@ -318,8 +316,10 @@ async fn set_index_description_index_not_found_no_orphan_key() {
         .await
         .ok()
         .flatten();
-    let map: serde_json::Value =
-        blob.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(serde_json::json!({}));
+    let map: serde_json::Value = blob
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::json!({}));
     assert!(
         map.get("idx_does_not_exist").is_none(),
         "orphan key 'idx_does_not_exist' found in index_descriptions_json: {map}"

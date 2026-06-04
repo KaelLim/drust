@@ -4,10 +4,7 @@
 //! URL fragment to the frontend's redirect_uri (Supabase/Auth0 pattern).
 
 use crate::oauth::{
-    github::GitHubAdapter,
-    google::GoogleAdapter,
-    provider::OauthProvider,
-    state as oauth_state,
+    github::GitHubAdapter, google::GoogleAdapter, provider::OauthProvider, state as oauth_state,
 };
 use crate::tenant::oauth_config;
 use crate::tenant::router::TenantAuthState;
@@ -84,9 +81,7 @@ pub(crate) fn clear_cookie(name: &str, tid: &str) -> String {
 }
 
 pub(crate) fn secure_from_headers(h: &axum::http::HeaderMap) -> bool {
-    h.get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        == Some("https")
+    h.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https")
 }
 
 /// Build an adapter from a stored config row. Returns `None` on an
@@ -176,7 +171,11 @@ pub(crate) async fn oauth_start(
     };
 
     // Validate redirect_uri against allowlist (exact match).
-    if !cfg.allowed_redirect_uris.iter().any(|u| u == &q.redirect_uri) {
+    if !cfg
+        .allowed_redirect_uris
+        .iter()
+        .any(|u| u == &q.redirect_uri)
+    {
         return plain_text(StatusCode::BAD_REQUEST, "oauth_invalid_redirect");
     }
 
@@ -196,8 +195,10 @@ pub(crate) async fn oauth_start(
             "DRUST_PUBLIC_URL not set",
         );
     }
-    let drust_callback =
-        format!("{pu}/drust/t/{tid}/oauth/{provider_name}/callback", pu = state.public_url);
+    let drust_callback = format!(
+        "{pu}/drust/t/{tid}/oauth/{provider_name}/callback",
+        pu = state.public_url
+    );
 
     let adapter = match build_adapter(&state, &cfg) {
         Some(a) => a,
@@ -244,9 +245,8 @@ async fn audit_oauth_failure(
     error_code: &str,
 ) {
     let op = format!("GET /t/{tid}/oauth/{provider}/callback");
-    let mut entry =
-        crate::safety::audit::AuditEntry::failure(tid, "-", &op, 0, "HTTP_400", "")
-            .with_extra(serde_json::json!({ "auth_kind": "user" }));
+    let mut entry = crate::safety::audit::AuditEntry::failure(tid, "-", &op, 0, "HTTP_400", "")
+        .with_extra(serde_json::json!({ "auth_kind": "user" }));
     entry.auth_method = Some(format!("oauth_{provider}"));
     entry.oauth_email = email.map(sanitize_email);
     entry.oauth_error_code = Some(error_code.to_string());
@@ -269,9 +269,8 @@ fn redirect_with_fragment_success(
     expires_in_secs: u64,
     tid: &str,
 ) -> Response {
-    let loc = format!(
-        "{frontend}#access_token={token}&token_type=Bearer&expires_in={expires_in_secs}"
-    );
+    let loc =
+        format!("{frontend}#access_token={token}&token_type=Bearer&expires_in={expires_in_secs}");
     Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, loc)
@@ -384,18 +383,10 @@ pub(crate) async fn oauth_callback(
     let cfg = match cfg_opt {
         Ok(Some(c)) => c,
         Ok(None) => {
-            return plain_text_clear_cookies(
-                StatusCode::BAD_REQUEST,
-                "oauth_misconfigured",
-                &tid,
-            );
+            return plain_text_clear_cookies(StatusCode::BAD_REQUEST, "oauth_misconfigured", &tid);
         }
         Err(_) => {
-            return plain_text_clear_cookies(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "db error",
-                &tid,
-            );
+            return plain_text_clear_cookies(StatusCode::INTERNAL_SERVER_ERROR, "db error", &tid);
         }
     };
 
@@ -404,21 +395,13 @@ pub(crate) async fn oauth_callback(
     // the cookie-vs-query equality check is still the first CSRF gate.
     let cookie_state = parse_cookie(&headers, STATE_COOKIE).unwrap_or_default();
     if !crate::oauth::state::verify_state(&cookie_state, &q.state) {
-        return plain_text_clear_cookies(
-            StatusCode::BAD_REQUEST,
-            "oauth_state_mismatch",
-            &tid,
-        );
+        return plain_text_clear_cookies(StatusCode::BAD_REQUEST, "oauth_state_mismatch", &tid);
     }
 
     // Step 3: PKCE verifier present.
     let pkce_verifier = parse_cookie(&headers, PKCE_COOKIE).unwrap_or_default();
     if pkce_verifier.is_empty() {
-        return plain_text_clear_cookies(
-            StatusCode::BAD_REQUEST,
-            "oauth_state_mismatch",
-            &tid,
-        );
+        return plain_text_clear_cookies(StatusCode::BAD_REQUEST, "oauth_state_mismatch", &tid);
     }
 
     // Step 4: decode the state envelope to recover the redirect_uri the
@@ -436,24 +419,12 @@ pub(crate) async fn oauth_callback(
     ) {
         Ok(t) => t,
         Err(_) => {
-            return plain_text_clear_cookies(
-                StatusCode::BAD_REQUEST,
-                "oauth_state_mismatch",
-                &tid,
-            );
+            return plain_text_clear_cookies(StatusCode::BAD_REQUEST, "oauth_state_mismatch", &tid);
         }
     };
     let frontend_uri = envelope.redirect_uri;
-    if !cfg
-        .allowed_redirect_uris
-        .iter()
-        .any(|u| u == &frontend_uri)
-    {
-        return plain_text_clear_cookies(
-            StatusCode::BAD_REQUEST,
-            "oauth_invalid_redirect",
-            &tid,
-        );
+    if !cfg.allowed_redirect_uris.iter().any(|u| u == &frontend_uri) {
+        return plain_text_clear_cookies(StatusCode::BAD_REQUEST, "oauth_invalid_redirect", &tid);
     }
 
     // Step 5: exchange code+verifier with the provider.
@@ -466,19 +437,20 @@ pub(crate) async fn oauth_callback(
             &tid,
         );
     }
-    let drust_callback =
-        format!("{pu}/drust/t/{tid}/oauth/{provider_name}/callback", pu = state.public_url);
+    let drust_callback = format!(
+        "{pu}/drust/t/{tid}/oauth/{provider_name}/callback",
+        pu = state.public_url
+    );
     let adapter = match build_adapter(&state, &cfg) {
         Some(a) => a,
         None => {
-            return plain_text_clear_cookies(
-                StatusCode::BAD_REQUEST,
-                "oauth_misconfigured",
-                &tid,
-            );
+            return plain_text_clear_cookies(StatusCode::BAD_REQUEST, "oauth_misconfigured", &tid);
         }
     };
-    let user = match adapter.exchange(&q.code, &pkce_verifier, &drust_callback).await {
+    let user = match adapter
+        .exchange(&q.code, &pkce_verifier, &drust_callback)
+        .await
+    {
         Ok(u) => u,
         Err(e) => {
             tracing::warn!(
@@ -488,8 +460,7 @@ pub(crate) async fn oauth_callback(
                 "oauth exchange failed"
             );
             // Email not yet known — pass None.
-            audit_oauth_failure(&state, &tid, &provider_name, None, "oauth_provider_error")
-                .await;
+            audit_oauth_failure(&state, &tid, &provider_name, None, "oauth_provider_error").await;
             return redirect_with_fragment_error(&frontend_uri, "oauth_provider_error", &tid);
         }
     };

@@ -15,7 +15,10 @@ fn admins_email_column_exists_on_fresh_meta() {
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
-    assert!(cols.contains(&"email".to_string()), "missing email: {cols:?}");
+    assert!(
+        cols.contains(&"email".to_string()),
+        "missing email: {cols:?}"
+    );
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 use base64::Engine;
 use rand::RngCore;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
 pub const TOKEN_PREFIX: &str = "drust_pat_";
@@ -68,7 +68,8 @@ mod tests {
     #[test]
     fn lookup_returns_none_for_non_prefix() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::db::migrations::SQL_CREATE_ADMIN_TOKENS_IF_NOT_EXISTS).unwrap();
+        conn.execute_batch(crate::db::migrations::SQL_CREATE_ADMIN_TOKENS_IF_NOT_EXISTS)
+            .unwrap();
         assert!(lookup(&conn, "drust_user_xyz").unwrap().is_none());
         assert!(lookup(&conn, "literal-shared-token").unwrap().is_none());
     }
@@ -82,14 +83,16 @@ mod tests {
                 admin_id INTEGER NOT NULL,
                 token_hash TEXT NOT NULL UNIQUE,
                 revoked_at TEXT
-            ) STRICT;"
-        ).unwrap();
+            ) STRICT;",
+        )
+        .unwrap();
         let plaintext = generate_token();
         let h = hash_token(&plaintext);
         conn.execute(
             "INSERT INTO _admin_tokens (admin_id, token_hash) VALUES (7, ?1)",
             rusqlite::params![h],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Active row resolves.
         assert!(lookup(&conn, &plaintext).unwrap().is_some());
@@ -98,7 +101,8 @@ mod tests {
         conn.execute(
             "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE token_hash = ?1",
             rusqlite::params![h],
-        ).unwrap();
+        )
+        .unwrap();
         assert!(
             lookup(&conn, &plaintext).unwrap().is_none(),
             "soft-revoked PAT must not authenticate"

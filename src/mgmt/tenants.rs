@@ -77,8 +77,7 @@ impl TenantsState {
         use crate::auth::middleware::AdminSessionState;
         let log_dir = data_dir.join("logs");
         let audit_meta_read = std::sync::Arc::new(tokio::sync::Mutex::new(
-            crate::safety::audit_db::open_audit_db_memory()
-                .expect("in-memory audit DB for tests"),
+            crate::safety::audit_db::open_audit_db_memory().expect("in-memory audit DB for tests"),
         ));
         Self {
             session: AdminSessionState { meta: meta.clone() },
@@ -234,7 +233,10 @@ pub async fn list_page_axum(
             // Track the freshest sample timestamp across the batch for the
             // footer; sampler updates each row at slightly different instants.
             if let Some(ref s) = stats_at {
-                if latest_sample.as_deref().map_or(true, |cur| s.as_str() > cur) {
+                if latest_sample
+                    .as_deref()
+                    .map_or(true, |cur| s.as_str() > cur)
+                {
                     latest_sample = Some(s.clone());
                 }
             }
@@ -825,9 +827,7 @@ fn humanize_audit_ts(ts: &str) -> String {
     let Ok(then) = chrono::DateTime::parse_from_rfc3339(ts) else {
         return ts.to_string();
     };
-    let secs = (Utc::now() - then.with_timezone(&Utc))
-        .num_seconds()
-        .max(0);
+    let secs = (Utc::now() - then.with_timezone(&Utc)).num_seconds().max(0);
     match secs {
         0..=10 => "just now".to_string(),
         11..=59 => format!("{}s ago", secs),
@@ -914,7 +914,9 @@ pub async fn tenant_overview_page(
             .query_row("SELECT COUNT(*) FROM _system_webhooks", [], |r| r.get(0))
             .unwrap_or(0);
         oauth_count = conn
-            .query_row("SELECT COUNT(*) FROM _system_oauth_providers", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM _system_oauth_providers", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
 
         // Recent webhook failures (last 24h). Best-effort: any column-shape
@@ -1140,9 +1142,8 @@ pub async fn tenant_files_admin_page(
     };
 
     let base_url = &state.public_base_url;
-    let files: Vec<AdminTenantFileRow> = match stmt.query_map(
-        rusqlite::params![per_page as i64, offset],
-        |r| {
+    let files: Vec<AdminTenantFileRow> =
+        match stmt.query_map(rusqlite::params![per_page as i64, offset], |r| {
             let _id: i64 = r.get(0)?;
             let key: String = r.get(1)?;
             let original_name: String = r.get(2)?;
@@ -1170,11 +1171,10 @@ pub async fn tenant_files_admin_page(
                 uploaded_at,
                 public_url,
             })
-        },
-    ) {
-        Ok(rows) => rows.filter_map(Result::ok).collect(),
-        Err(_) => vec![],
-    };
+        }) {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(_) => vec![],
+        };
 
     let prev_url = (page > 1).then(|| pager_url(page - 1));
     let next_url = (page < total_pages).then(|| pager_url(page + 1));
@@ -1307,10 +1307,7 @@ async fn load_tenant_shell(
 /// `state.tenants.get_or_open(...)` so we don't materialise an empty
 /// `tenants/<bogus_id>/data.sqlite` for an admin-typed path. Cheaper than
 /// `load_tenant_shell` (no collection list).
-async fn ensure_tenant_exists(
-    state: &TenantsState,
-    tenant_id: &str,
-) -> Option<Response> {
+async fn ensure_tenant_exists(state: &TenantsState, tenant_id: &str) -> Option<Response> {
     let exists: bool = {
         let conn = state.session.meta.lock().await;
         conn.query_row(
@@ -1348,7 +1345,10 @@ async fn render_oauth_providers_page(
             .with_reader(|c| crate::tenant::oauth_config::list(c))
             .await
         {
-            Ok(rows) => rows.into_iter().map(TenantOauthProviderRow::from_config).collect(),
+            Ok(rows) => rows
+                .into_iter()
+                .map(TenantOauthProviderRow::from_config)
+                .collect(),
             Err(_) => vec![],
         },
         Err(_) => vec![],
@@ -1424,7 +1424,15 @@ pub async fn tenant_oauth_provider_upsert(
         &form.client_secret,
         &uris,
     ) {
-        return render_oauth_providers_page(&state, tenant_id, Some(e.to_string()), locale, theme, admin.clone()).await;
+        return render_oauth_providers_page(
+            &state,
+            tenant_id,
+            Some(e.to_string()),
+            locale,
+            theme,
+            admin.clone(),
+        )
+        .await;
     }
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
@@ -1437,8 +1445,14 @@ pub async fn tenant_oauth_provider_upsert(
     let uris_owned = uris.clone();
     let res: Result<(), String> = pool
         .with_writer(move |c| {
-            crate::tenant::oauth_config::upsert(c, &provider, &client_id, &client_secret, &uris_owned)
-                .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))
+            crate::tenant::oauth_config::upsert(
+                c,
+                &provider,
+                &client_id,
+                &client_secret,
+                &uris_owned,
+            )
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))
         })
         .await
         .map_err(|e| e.to_string());
@@ -1448,7 +1462,9 @@ pub async fn tenant_oauth_provider_upsert(
             "/drust/admin/tenants/{tenant_id}/_oauth_providers"
         ))
         .into_response(),
-        Err(msg) => render_oauth_providers_page(&state, tenant_id, Some(msg), locale, theme, admin).await,
+        Err(msg) => {
+            render_oauth_providers_page(&state, tenant_id, Some(msg), locale, theme, admin).await
+        }
     }
 }
 
@@ -1542,10 +1558,7 @@ const WEBHOOK_SECRET_ONCE_COOKIE: &str = "drust_webhook_secret_once";
 /// Pull rows from the tenant's `_system_webhooks` table. Errors are swallowed
 /// — the page just renders an empty table rather than 500-ing on a missing
 /// fresh tenant DB.
-async fn load_webhook_rows(
-    state: &TenantsState,
-    tenant_id: &str,
-) -> Vec<TenantWebhookRow> {
+async fn load_webhook_rows(state: &TenantsState, tenant_id: &str) -> Vec<TenantWebhookRow> {
     let pool = match state.tenants.get_or_open(tenant_id) {
         Ok(p) => p,
         Err(_) => return vec![],
@@ -1560,8 +1573,7 @@ async fn load_webhook_rows(
         let rows: Vec<TenantWebhookRow> = stmt
             .query_map([], |r| {
                 let events_raw: String = r.get(2)?;
-                let events: Vec<String> =
-                    serde_json::from_str(&events_raw).unwrap_or_default();
+                let events: Vec<String> = serde_json::from_str(&events_raw).unwrap_or_default();
                 Ok(TenantWebhookRow {
                     id: r.get(0)?,
                     collection: r.get(1)?,
@@ -1616,9 +1628,7 @@ fn clear_secret_once_cookie() -> axum::http::HeaderValue {
 fn set_secret_once_cookie(id: i64, secret: &str) -> String {
     let payload = serde_json::json!({"id": id, "secret": secret}).to_string();
     let encoded = urlencoding::encode(&payload);
-    format!(
-        "{WEBHOOK_SECRET_ONCE_COOKIE}={encoded}; Path=/; Max-Age=120; HttpOnly; SameSite=Lax"
-    )
+    format!("{WEBHOOK_SECRET_ONCE_COOKIE}={encoded}; Path=/; Max-Age=120; HttpOnly; SameSite=Lax")
 }
 
 /// Context bundle for `render_webhooks_page`. Defaults are all `None` /

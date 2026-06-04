@@ -309,9 +309,21 @@ async fn sign_url_private_row_returns_signed_url() {
         "URL should be drust-served HMAC route: {}",
         resp.url
     );
-    assert!(resp.url.contains("?e="), "URL should embed expires: {}", resp.url);
-    assert!(resp.url.contains("&t="), "URL should embed HMAC token: {}", resp.url);
-    assert!(resp.url.contains("&d=0"), "URL should embed download flag: {}", resp.url);
+    assert!(
+        resp.url.contains("?e="),
+        "URL should embed expires: {}",
+        resp.url
+    );
+    assert!(
+        resp.url.contains("&t="),
+        "URL should embed HMAC token: {}",
+        resp.url
+    );
+    assert!(
+        resp.url.contains("&d=0"),
+        "URL should embed download flag: {}",
+        resp.url
+    );
     assert!(
         resp.expires_at.is_some(),
         "expires_at should be set for private file"

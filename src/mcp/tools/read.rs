@@ -1,9 +1,7 @@
 use crate::mcp::server::DrustMcp;
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::{ExecError, execute_read_query};
-use crate::query::list_builder::{
-    self, ListError, ListRequest, SortSpec,
-};
+use crate::query::list_builder::{self, ListError, ListRequest, SortSpec};
 use crate::query::vector_filter::{FilterAst, FilterError};
 use crate::storage::schema::is_protected_collection;
 use rusqlite::types::{Value, ValueRef};
@@ -127,8 +125,7 @@ pub async fn list_records(
     let filter_ast: Option<FilterAst> = match args.filter {
         None => None,
         Some(raw) => Some(
-            serde_json::from_value(raw)
-                .map_err(|e| anyhow::anyhow!("FILTER_PARSE_ERROR: {e}"))?,
+            serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("FILTER_PARSE_ERROR: {e}"))?,
         ),
     };
 
@@ -141,8 +138,7 @@ pub async fn list_records(
     };
 
     let (list_sql, count_sql, binds) =
-        list_builder::build_structured_list_sql(&schema, &req, None)
-            .map_err(map_list_error)?;
+        list_builder::build_structured_list_sql(&schema, &req, None).map_err(map_list_error)?;
 
     let vector_names: std::collections::HashSet<String> = schema
         .vector_fields
@@ -237,9 +233,9 @@ fn map_list_error(e: ListError) -> anyhow::Error {
         ListError::SelectFieldUnknown(f) => {
             anyhow::anyhow!("SELECT_FIELD_UNKNOWN: {f}")
         }
-        ListError::PageRangeInvalid => anyhow::anyhow!(
-            "PAGE_RANGE_INVALID: per_page must be 1..=500 and page must be >= 1"
-        ),
+        ListError::PageRangeInvalid => {
+            anyhow::anyhow!("PAGE_RANGE_INVALID: per_page must be 1..=500 and page must be >= 1")
+        }
     }
 }
 
@@ -251,10 +247,8 @@ fn run_bound_select(
     binds: &[Value],
 ) -> rusqlite::Result<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare(sql)?;
-    let col_names: Vec<String> =
-        stmt.column_names().iter().map(|s| s.to_string()).collect();
-    let refs: Vec<&dyn rusqlite::ToSql> =
-        binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;
     let mut out: Vec<serde_json::Value> = Vec::new();
     while let Some(r) = rows_iter.next()? {
@@ -267,9 +261,9 @@ fn run_bound_select(
                     ValueRef::Null => serde_json::Value::Null,
                     ValueRef::Integer(n) => json!(n),
                     ValueRef::Real(f) => json!(f),
-                    ValueRef::Text(t) => serde_json::Value::String(
-                        String::from_utf8_lossy(t).into_owned(),
-                    ),
+                    ValueRef::Text(t) => {
+                        serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+                    }
                     ValueRef::Blob(b) => json!({ "__blob_bytes": b.len() }),
                 },
             );

@@ -33,12 +33,7 @@ async fn read_json(resp: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn register_and_login(
-    app: &axum::Router,
-    tenant: &str,
-    email: &str,
-    pw: &str,
-) -> String {
+async fn register_and_login(app: &axum::Router, tenant: &str, email: &str, pw: &str) -> String {
     let _ = app
         .clone()
         .oneshot(req_json(

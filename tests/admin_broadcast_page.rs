@@ -12,11 +12,11 @@
 //!   6. Unauthenticated request → 303 redirect to /drust/login (regression
 //!      of the `admin_session_layer` gate on this specific route).
 
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use axum::routing::get;
 use axum::Router;
-use drust::auth::middleware::{admin_session_layer, AdminSessionState};
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use axum::routing::get;
+use drust::auth::middleware::{AdminSessionState, admin_session_layer};
 use drust::mgmt::admin_profile::AdminProfileExt;
 use drust::mgmt::tenant_broadcast::broadcast_inspector_page;
 use drust::mgmt::tenants::TenantsState;
@@ -120,7 +120,9 @@ async fn renders_with_drust_prefixed_ws_url_and_hidden_bearer() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let html = std::str::from_utf8(&bytes).unwrap();
 
     // /drust prefix is mandatory for the browser hop.
@@ -188,7 +190,9 @@ async fn legacy_hash_only_tenant_renders_bearer_missing_banner() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let html = std::str::from_utf8(&bytes).unwrap();
 
     // bearer field is empty.
@@ -234,7 +238,9 @@ async fn does_not_leak_other_tenant_id_or_bearer() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let html = std::str::from_utf8(&bytes).unwrap();
 
     assert!(
@@ -297,14 +303,8 @@ async fn unauthenticated_request_redirects_to_drust_login() {
     )));
     let bus = drust::tenant::events::EventBus::new();
     let bus_rooms = drust::tenant::rooms::RoomBus::new();
-    let state = TenantsState::test_default(
-        meta.clone(),
-        data_dir.clone(),
-        tenants,
-        mcp,
-        bus,
-        bus_rooms,
-    );
+    let state =
+        TenantsState::test_default(meta.clone(), data_dir.clone(), tenants, mcp, bus, bus_rooms);
     let session_state = AdminSessionState { meta };
 
     // Same shape as the production protected router: the broadcast route

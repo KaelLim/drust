@@ -31,18 +31,34 @@ async fn read_json(resp: axum::response::Response) -> serde_json::Value {
 }
 
 async fn register(app: &axum::Router, tenant: &str, email: &str, pw: &str) {
-    let resp = app.clone().oneshot(
-        post_json(tenant, "/auth/register", json!({"email": email, "password": pw}))
-    ).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED, "register helper: expected 201");
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            tenant,
+            "/auth/register",
+            json!({"email": email, "password": pw}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "register helper: expected 201"
+    );
 }
 
 #[tokio::test]
 async fn login_success_returns_token() {
     let (app, _tok, _dir) = helpers::spin_up_tenant_self_register("t-login1").await;
     register(&app, "t-login1", "a@b.com", "longpassword").await;
-    let resp = app.oneshot(post_json("t-login1", "/auth/login",
-        json!({"email": "a@b.com", "password": "longpassword"}))).await.unwrap();
+    let resp = app
+        .oneshot(post_json(
+            "t-login1",
+            "/auth/login",
+            json!({"email": "a@b.com", "password": "longpassword"}),
+        ))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let v = read_json(resp).await;
     assert!(v["token"].as_str().unwrap().starts_with("drust_user_"));
@@ -54,8 +70,14 @@ async fn login_success_returns_token() {
 async fn login_wrong_password_returns_invalid_credentials() {
     let (app, _tok, _dir) = helpers::spin_up_tenant_self_register("t-login2").await;
     register(&app, "t-login2", "a@b.com", "longpassword").await;
-    let resp = app.oneshot(post_json("t-login2", "/auth/login",
-        json!({"email": "a@b.com", "password": "wrong___pw"}))).await.unwrap();
+    let resp = app
+        .oneshot(post_json(
+            "t-login2",
+            "/auth/login",
+            json!({"email": "a@b.com", "password": "wrong___pw"}),
+        ))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("INVALID_CREDENTIALS"));
@@ -64,8 +86,14 @@ async fn login_wrong_password_returns_invalid_credentials() {
 #[tokio::test]
 async fn login_unknown_email_also_returns_invalid_credentials() {
     let (app, _tok, _dir) = helpers::spin_up_tenant_self_register("t-login3").await;
-    let resp = app.oneshot(post_json("t-login3", "/auth/login",
-        json!({"email": "ghost@x.com", "password": "longpassword"}))).await.unwrap();
+    let resp = app
+        .oneshot(post_json(
+            "t-login3",
+            "/auth/login",
+            json!({"email": "ghost@x.com", "password": "longpassword"}),
+        ))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("INVALID_CREDENTIALS"));
@@ -92,19 +120,40 @@ async fn login_timing_equalized_unknown_vs_wrong_password() {
         let wrong_ip = format!("198.51.100.{}, 192.0.2.221", i * 2 + 1);
 
         let s = Instant::now();
-        let _ = app.clone().oneshot(post_json_xff("t-loginT", "/auth/login",
-            json!({"email": "ghost@x.com", "password": "longpassword"}), &unknown_ip)).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(post_json_xff(
+                "t-loginT",
+                "/auth/login",
+                json!({"email": "ghost@x.com", "password": "longpassword"}),
+                &unknown_ip,
+            ))
+            .await
+            .unwrap();
         t_unknown.push(s.elapsed().as_millis() as u64);
 
         let s = Instant::now();
-        let _ = app.clone().oneshot(post_json_xff("t-loginT", "/auth/login",
-            json!({"email": "real@x.com", "password": "wrong___pw"}), &wrong_ip)).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(post_json_xff(
+                "t-loginT",
+                "/auth/login",
+                json!({"email": "real@x.com", "password": "wrong___pw"}),
+                &wrong_ip,
+            ))
+            .await
+            .unwrap();
         t_wrong.push(s.elapsed().as_millis() as u64);
     }
-    let med = |mut v: Vec<u64>| { v.sort(); v[v.len()/2] };
+    let med = |mut v: Vec<u64>| {
+        v.sort();
+        v[v.len() / 2]
+    };
     let mu = med(t_unknown.clone());
     let mw = med(t_wrong.clone());
     let diff = mu.abs_diff(mw);
-    assert!(diff < 60,
-        "S1 timing skew: unknown={mu}ms wrong-pw={mw}ms (diff={diff}ms must be <60ms)");
+    assert!(
+        diff < 60,
+        "S1 timing skew: unknown={mu}ms wrong-pw={mw}ms (diff={diff}ms must be <60ms)"
+    );
 }

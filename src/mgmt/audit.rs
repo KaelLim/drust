@@ -72,7 +72,7 @@ pub struct Overview {
     pub p50_ms: u64,
     pub p99_ms: u64,
     pub rps_avg: f64,
-    pub top_tenants: Vec<TopTenant>,  // len ≤ 5
+    pub top_tenants: Vec<TopTenant>,   // len ≤ 5
     pub top_slow_ops: Vec<AuditEntry>, // len ≤ 5
     /// Process-lifetime count of audit entries dropped due to writer
     /// channel-full. Populated from `audit_db::dropped_total()` in
@@ -173,16 +173,15 @@ pub fn resolve_tenant_name(map: &std::collections::HashMap<String, String>, id: 
 /// v1.17.1 — read the live tenants table into a `HashMap<id, name>`.
 /// Soft-deleted rows are skipped. Returns an empty map on SQL error
 /// so the audit page still renders (entries fall back to raw id).
-pub fn build_tenant_name_map(conn: &rusqlite::Connection) -> std::collections::HashMap<String, String> {
-    let mut stmt = match conn
-        .prepare_cached("SELECT id, name FROM tenants WHERE deleted_at IS NULL")
-    {
-        Ok(s) => s,
-        Err(_) => return std::collections::HashMap::new(),
-    };
-    let iter = match stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    }) {
+pub fn build_tenant_name_map(
+    conn: &rusqlite::Connection,
+) -> std::collections::HashMap<String, String> {
+    let mut stmt =
+        match conn.prepare_cached("SELECT id, name FROM tenants WHERE deleted_at IS NULL") {
+            Ok(s) => s,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+    let iter = match stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
         Ok(it) => it,
         Err(_) => return std::collections::HashMap::new(),
     };
@@ -239,8 +238,7 @@ pub fn enumerate_audit_files(
         Err(_) => return Vec::new(),
     };
 
-    let cutoff_date = (now - chrono::Duration::seconds(window.seconds()))
-        .date_naive();
+    let cutoff_date = (now - chrono::Duration::seconds(window.seconds())).date_naive();
 
     let mut out = Vec::new();
     for entry in entries.flatten() {
@@ -316,11 +314,7 @@ use std::io::{BufRead, BufReader};
 /// list. Caller is responsible for further in-memory filter/aggregate.
 ///
 /// `now` is taken as a parameter so tests are deterministic.
-pub fn scan_window(
-    dir: &Path,
-    window: Window,
-    now: chrono::DateTime<chrono::Utc>,
-) -> ScanResult {
+pub fn scan_window(dir: &Path, window: Window, now: chrono::DateTime<chrono::Utc>) -> ScanResult {
     let mut result = ScanResult::default();
     let files = enumerate_audit_files(dir, window, now);
     let cutoff_ts = (now - chrono::Duration::seconds(window.seconds()))
@@ -613,13 +607,7 @@ fn base_link(scope: &AuditScope) -> String {
     }
 }
 
-fn url_with(
-    base: &str,
-    tab: &str,
-    window_str: &str,
-    auto: bool,
-    extra: &[(&str, &str)],
-) -> String {
+fn url_with(base: &str, tab: &str, window_str: &str, auto: bool, extra: &[(&str, &str)]) -> String {
     use std::fmt::Write;
     let mut s = format!("{base}?tab={tab}&window={window_str}");
     for (k, v) in extra {
@@ -681,13 +669,17 @@ pub async fn build_body_ctx(
     let conn_guard = audit_conn.lock().await;
     let conn: &rusqlite::Connection = &conn_guard;
 
-    let (overview, entries, entries_view, distinct_ops, entries_json, next_cursor, top_slow_ops_view) = if tab == "overview" {
-        let mut ov = aggregate_via_sql(
-            conn,
-            &cutoff_ts,
-            tenant_filter_effective.as_deref(),
-            window,
-        );
+    let (
+        overview,
+        entries,
+        entries_view,
+        distinct_ops,
+        entries_json,
+        next_cursor,
+        top_slow_ops_view,
+    ) = if tab == "overview" {
+        let mut ov =
+            aggregate_via_sql(conn, &cutoff_ts, tenant_filter_effective.as_deref(), window);
         // Resolve tenant_name on TopTenant rows (aggregate_via_sql
         // leaves them blank because it doesn't carry the meta map).
         for t in &mut ov.top_tenants {
@@ -698,7 +690,9 @@ pub async fn build_body_ctx(
         let slow_view: Vec<AuditEntryView> = ov
             .top_slow_ops
             .iter()
-            .map(|e| AuditEntryView::from_entry(e, &resolve_tenant_name(&tenant_name_map, &e.tenant)))
+            .map(|e| {
+                AuditEntryView::from_entry(e, &resolve_tenant_name(&tenant_name_map, &e.tenant))
+            })
             .collect();
         (
             Some(ov),
@@ -727,7 +721,9 @@ pub async fn build_body_ctx(
         }
         let page_view: Vec<AuditEntryView> = page
             .iter()
-            .map(|e| AuditEntryView::from_entry(e, &resolve_tenant_name(&tenant_name_map, &e.tenant)))
+            .map(|e| {
+                AuditEntryView::from_entry(e, &resolve_tenant_name(&tenant_name_map, &e.tenant))
+            })
             .collect();
         let distinct_ops = distinct_ops_capped(&page, 200);
         // Inline-JSON-in-HTML safety: escape forward slashes preceded by `<` so
@@ -743,7 +739,15 @@ pub async fn build_body_ctx(
         } else {
             None
         };
-        (None, page, page_view, distinct_ops, entries_json, next, Vec::new())
+        (
+            None,
+            page,
+            page_view,
+            distinct_ops,
+            entries_json,
+            next,
+            Vec::new(),
+        )
     };
 
     drop(conn_guard);
@@ -1050,12 +1054,19 @@ pub fn aggregate_via_sql(
              LIMIT 5",
         ) {
             Ok(s) => s,
-            Err(_) => return Overview {
-                total, error_count, error_pct, p50_ms, p99_ms, rps_avg,
-                top_tenants: Vec::new(),
-                top_slow_ops: Vec::new(),
-                dropped_total: crate::safety::audit_db::dropped_total(),
-            },
+            Err(_) => {
+                return Overview {
+                    total,
+                    error_count,
+                    error_pct,
+                    p50_ms,
+                    p99_ms,
+                    rps_avg,
+                    top_tenants: Vec::new(),
+                    top_slow_ops: Vec::new(),
+                    dropped_total: crate::safety::audit_db::dropped_total(),
+                };
+            }
         };
         let rows: rusqlite::Result<Vec<TopTenant>> = stmt
             .query_map(rusqlite::params![cutoff_ts], |r| {
@@ -1091,11 +1102,19 @@ pub fn aggregate_via_sql(
              LIMIT 5",
         ) {
             Ok(s) => s,
-            Err(_) => return Overview {
-                total, error_count, error_pct, p50_ms, p99_ms, rps_avg,
-                top_tenants, top_slow_ops: Vec::new(),
-                dropped_total: crate::safety::audit_db::dropped_total(),
-            },
+            Err(_) => {
+                return Overview {
+                    total,
+                    error_count,
+                    error_pct,
+                    p50_ms,
+                    p99_ms,
+                    rps_avg,
+                    top_tenants,
+                    top_slow_ops: Vec::new(),
+                    dropped_total: crate::safety::audit_db::dropped_total(),
+                };
+            }
         };
         let rows: rusqlite::Result<Vec<AuditEntry>> = stmt
             .query_map(rusqlite::params![cutoff_ts, tenant_filter], row_to_entry)
@@ -1208,9 +1227,9 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<AuditEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Duration, Utc};
     use std::fs;
     use std::path::PathBuf;
-    use chrono::{Duration, Utc};
 
     fn write(path: &PathBuf, content: &str) {
         fs::write(path, content).unwrap();
@@ -1300,7 +1319,8 @@ mod tests {
         write(&dir.path().join("unrelated.txt"), "");
 
         let files = enumerate_audit_files(dir.path(), Window::H24, now);
-        let names: Vec<String> = files.iter()
+        let names: Vec<String> = files
+            .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert!(names.contains(&format!("audit-{today}.jsonl")));
@@ -1321,7 +1341,8 @@ mod tests {
         write(&dir.path().join(format!("audit-{day10}.jsonl.5.gz")), "");
 
         let files = enumerate_audit_files(dir.path(), Window::D7, now);
-        let names: Vec<String> = files.iter()
+        let names: Vec<String> = files
+            .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert!(names.contains(&format!("audit-{today}.jsonl")));
@@ -1378,7 +1399,13 @@ mod tests {
         let lines = format!(
             "{}\n{}\n{}\n",
             entry_line(&format!("{today}T00:01:00.000Z"), "acme", "GET", "ok", 10),
-            entry_line(&format!("{today}T00:02:00.000Z"), "beta", "POST", "error", 20),
+            entry_line(
+                &format!("{today}T00:02:00.000Z"),
+                "beta",
+                "POST",
+                "error",
+                20
+            ),
             entry_line(&format!("{today}T00:03:00.000Z"), "acme", "DELETE", "ok", 5),
         );
         write(&dir.path().join(format!("audit-{today}.jsonl")), &lines);
@@ -1396,7 +1423,13 @@ mod tests {
         let lines = format!(
             "{}\nnot json\n\n{}\n",
             entry_line(&format!("{today}T00:01:00.000Z"), "acme", "GET", "ok", 10),
-            entry_line(&format!("{today}T00:02:00.000Z"), "beta", "POST", "error", 20),
+            entry_line(
+                &format!("{today}T00:02:00.000Z"),
+                "beta",
+                "POST",
+                "error",
+                20
+            ),
         );
         write(&dir.path().join(format!("audit-{today}.jsonl")), &lines);
 
@@ -1413,7 +1446,10 @@ mod tests {
         let day3 = (now - Duration::days(3)).format("%Y-%m-%d").to_string();
         write(
             &dir.path().join(format!("audit-{today}.jsonl")),
-            &format!("{}\n", entry_line(&format!("{today}T00:01:00.000Z"), "acme", "GET", "ok", 10)),
+            &format!(
+                "{}\n",
+                entry_line(&format!("{today}T00:01:00.000Z"), "acme", "GET", "ok", 10)
+            ),
         );
         write_gz(
             &dir.path().join(format!("audit-{day3}.jsonl.1.gz")),
@@ -1435,7 +1471,10 @@ mod tests {
         let now = Utc::now();
         let day3 = (now - Duration::days(3)).format("%Y-%m-%d").to_string();
         // Not a valid gzip stream:
-        write(&dir.path().join(format!("audit-{day3}.jsonl.1.gz")), "this is not gzip");
+        write(
+            &dir.path().join(format!("audit-{day3}.jsonl.1.gz")),
+            "this is not gzip",
+        );
 
         let res = scan_window(dir.path(), Window::D7, now);
         assert!(res.entries.is_empty());
@@ -1484,7 +1523,15 @@ mod tests {
     #[test]
     fn aggregate_top_tenants_ordered_by_count_capped_at_5() {
         let mut entries = Vec::new();
-        for (tenant, n) in [("a", 10), ("b", 8), ("c", 6), ("d", 4), ("e", 2), ("f", 1), ("g", 1)] {
+        for (tenant, n) in [
+            ("a", 10),
+            ("b", 8),
+            ("c", 6),
+            ("d", 4),
+            ("e", 2),
+            ("f", 1),
+            ("g", 1),
+        ] {
             for _ in 0..n {
                 entries.push(mk_entry("2026-05-05T01:00:00.000Z", tenant, "GET", "ok", 1));
             }
@@ -1543,7 +1590,10 @@ mod tests {
 
     #[test]
     fn filter_by_tenant() {
-        let f = FilterSpec { tenant: Some("acme".into()), ..Default::default() };
+        let f = FilterSpec {
+            tenant: Some("acme".into()),
+            ..Default::default()
+        };
         let r = filter(&fixture(), &f);
         assert_eq!(r.len(), 2);
         assert!(r.iter().all(|e| e.tenant == "acme"));
@@ -1551,7 +1601,10 @@ mod tests {
 
     #[test]
     fn filter_by_op() {
-        let f = FilterSpec { op: Some("GET".into()), ..Default::default() };
+        let f = FilterSpec {
+            op: Some("GET".into()),
+            ..Default::default()
+        };
         let r = filter(&fixture(), &f);
         assert_eq!(r.len(), 2);
         assert!(r.iter().all(|e| e.op == "GET"));
@@ -1559,7 +1612,10 @@ mod tests {
 
     #[test]
     fn filter_by_status_error() {
-        let f = FilterSpec { status: Some("error"), ..Default::default() };
+        let f = FilterSpec {
+            status: Some("error"),
+            ..Default::default()
+        };
         let r = filter(&fixture(), &f);
         assert_eq!(r.len(), 2);
         assert!(r.iter().all(|e| e.status == "error"));
@@ -1567,7 +1623,10 @@ mod tests {
 
     #[test]
     fn filter_by_status_ok() {
-        let f = FilterSpec { status: Some("ok"), ..Default::default() };
+        let f = FilterSpec {
+            status: Some("ok"),
+            ..Default::default()
+        };
         let r = filter(&fixture(), &f);
         assert_eq!(r.len(), 2);
         assert!(r.iter().all(|e| e.status == "ok"));
@@ -1600,25 +1659,24 @@ mod tests {
         );
     }
 
-
     #[test]
     fn audit_entry_view_serializes_extra_as_nested_object() {
         // AuditEntry uses #[serde(flatten)] on `extra`; the view must NOT.
         let mut e = mk_entry("2026-05-20T12:00:00.000Z", "acme", "GET /x", "ok", 5);
-        e.extra.insert("auth_kind".to_string(), serde_json::json!("user"));
-        e.extra.insert("auth_user_id".to_string(), serde_json::json!("u-abc"));
+        e.extra
+            .insert("auth_kind".to_string(), serde_json::json!("user"));
+        e.extra
+            .insert("auth_user_id".to_string(), serde_json::json!("u-abc"));
         let view = AuditEntryView::from_entry(&e, "Acme Inc");
         let json = serde_json::to_string(&view).unwrap();
         // The extra fields must NOT appear at the top level.
         assert!(
-            !json.contains(r#""auth_kind":"user","tenant"#) && !json.contains(r#""tenant":"acme","auth_kind"#),
+            !json.contains(r#""auth_kind":"user","tenant"#)
+                && !json.contains(r#""tenant":"acme","auth_kind"#),
             "extra keys must not flatten to top level: {json}"
         );
         // They must appear nested under `extra`.
-        assert!(
-            json.contains(r#""extra":{"#),
-            "extra block missing: {json}"
-        );
+        assert!(json.contains(r#""extra":{"#), "extra block missing: {json}");
         assert!(json.contains(r#""auth_kind":"user""#));
         assert!(json.contains(r#""auth_user_id":"u-abc""#));
         assert!(json.contains(r#""tenant_name":"Acme Inc""#));
@@ -1648,13 +1706,24 @@ mod tests {
             mk_entry("2026-05-20T12:00:03.000Z", "t", "DELETE /records", "ok", 1),
         ];
         let ops = distinct_ops_capped(&entries, 200);
-        assert_eq!(ops, vec!["DELETE /records", "GET /records", "POST /records"]);
+        assert_eq!(
+            ops,
+            vec!["DELETE /records", "GET /records", "POST /records"]
+        );
     }
 
     #[test]
     fn distinct_ops_capped_truncates_at_limit() {
         let entries: Vec<AuditEntry> = (0..500)
-            .map(|i| mk_entry("2026-05-20T12:00:00.000Z", "t", &format!("op-{i:04}"), "ok", 1))
+            .map(|i| {
+                mk_entry(
+                    "2026-05-20T12:00:00.000Z",
+                    "t",
+                    &format!("op-{i:04}"),
+                    "ok",
+                    1,
+                )
+            })
             .collect();
         let ops = distinct_ops_capped(&entries, 200);
         assert_eq!(ops.len(), 200);
@@ -1686,11 +1755,20 @@ mod tests {
         let view = AuditEntryView::from_entry(&e, "Acme Inc");
         let raw = serde_json::to_string(&[view]).unwrap();
         // Direct serde output contains the literal `</`.
-        assert!(raw.contains("</script>"), "baseline assumption: serde does not escape `</`");
+        assert!(
+            raw.contains("</script>"),
+            "baseline assumption: serde does not escape `</`"
+        );
         // Exercise the shared canonical escaper (same one production now uses).
         let safe = crate::mgmt::script_json::escape_json_for_script(&raw);
-        assert!(!safe.contains("</script>"), "after escape, `</script>` must be gone");
-        assert!(safe.contains("<\\/script>"), "the slash escape must be visible");
+        assert!(
+            !safe.contains("</script>"),
+            "after escape, `</script>` must be gone"
+        );
+        assert!(
+            safe.contains("<\\/script>"),
+            "the slash escape must be visible"
+        );
         // And the result must still round-trip back to the same logical content via JSON.parse-equivalent.
         let parsed: serde_json::Value = serde_json::from_str(&safe).unwrap();
         assert_eq!(parsed[0]["op"], "GET /records/</script><script>x</script>");

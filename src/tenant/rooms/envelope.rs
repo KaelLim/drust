@@ -154,10 +154,8 @@ mod tests {
     #[test]
     fn unknown_extra_field_is_ignored_on_deserialize() {
         // Forward compatibility: clients on v1.32 may add fields.
-        let r: ClientOp = serde_json::from_str(
-            r#"{"op":"subscribe","room":"chat","future_field":42}"#,
-        )
-        .unwrap();
+        let r: ClientOp =
+            serde_json::from_str(r#"{"op":"subscribe","room":"chat","future_field":42}"#).unwrap();
         assert!(matches!(r, ClientOp::Subscribe { .. }));
     }
 }

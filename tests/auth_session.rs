@@ -137,17 +137,26 @@ async fn logout_all_invalidates_every_session() {
 #[tokio::test]
 async fn janitor_deletes_expired_sessions_past_grace() {
     let (app, _svc_tok, dir) = helpers::spin_up_tenant_self_register("t-jan1").await;
-    let _ =
-        helpers::register_and_login_via_app(&app, "t-jan1", "a@b.com", "longpassword").await;
+    let _ = helpers::register_and_login_via_app(&app, "t-jan1", "a@b.com", "longpassword").await;
     // Backdate the session row by ~2 days
-    let p = dir.path().join("tenants").join("t-jan1").join("data.sqlite");
+    let p = dir
+        .path()
+        .join("tenants")
+        .join("t-jan1")
+        .join("data.sqlite");
     let c = rusqlite::Connection::open(&p).unwrap();
     c.execute("UPDATE _system_sessions SET expires_at = '2025-01-01'", [])
         .unwrap();
     drop(c);
 
-    let deleted = drust::storage::janitor::sweep_expired_sessions(dir.path(), 1).await.unwrap();
-    assert!(deleted >= 1, "should delete at least 1 expired session, got {}", deleted);
+    let deleted = drust::storage::janitor::sweep_expired_sessions(dir.path(), 1)
+        .await
+        .unwrap();
+    assert!(
+        deleted >= 1,
+        "should delete at least 1 expired session, got {}",
+        deleted
+    );
 
     let c = rusqlite::Connection::open(&p).unwrap();
     let n: i64 = c
@@ -159,13 +168,18 @@ async fn janitor_deletes_expired_sessions_past_grace() {
 #[tokio::test]
 async fn janitor_keeps_active_sessions() {
     let (app, _svc_tok, dir) = helpers::spin_up_tenant_self_register("t-jan2").await;
-    let _ =
-        helpers::register_and_login_via_app(&app, "t-jan2", "a@b.com", "longpassword").await;
+    let _ = helpers::register_and_login_via_app(&app, "t-jan2", "a@b.com", "longpassword").await;
     // Sessions default to 30d expiry — sweep with 1d grace should leave them.
-    let deleted = drust::storage::janitor::sweep_expired_sessions(dir.path(), 1).await.unwrap();
+    let deleted = drust::storage::janitor::sweep_expired_sessions(dir.path(), 1)
+        .await
+        .unwrap();
     assert_eq!(deleted, 0);
 
-    let p = dir.path().join("tenants").join("t-jan2").join("data.sqlite");
+    let p = dir
+        .path()
+        .join("tenants")
+        .join("t-jan2")
+        .join("data.sqlite");
     let c = rusqlite::Connection::open(&p).unwrap();
     let n: i64 = c
         .query_row("SELECT count(*) FROM _system_sessions", [], |r| r.get(0))
@@ -176,8 +190,7 @@ async fn janitor_keeps_active_sessions() {
 #[tokio::test]
 async fn janitor_skips_soft_deleted_tenants() {
     let (app, _svc_tok, dir) = helpers::spin_up_tenant_self_register("t-jan3").await;
-    let _ =
-        helpers::register_and_login_via_app(&app, "t-jan3", "a@b.com", "longpassword").await;
+    let _ = helpers::register_and_login_via_app(&app, "t-jan3", "a@b.com", "longpassword").await;
     // Mark tenant soft-deleted in meta
     let meta = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
     meta.execute(
@@ -187,6 +200,8 @@ async fn janitor_skips_soft_deleted_tenants() {
     .unwrap();
     drop(meta);
     // Even though the session would be active, janitor should skip the tenant entirely
-    let deleted = drust::storage::janitor::sweep_expired_sessions(dir.path(), 1).await.unwrap();
+    let deleted = drust::storage::janitor::sweep_expired_sessions(dir.path(), 1)
+        .await
+        .unwrap();
     assert_eq!(deleted, 0, "soft-deleted tenants must be skipped");
 }

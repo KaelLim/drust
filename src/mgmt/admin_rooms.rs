@@ -55,12 +55,7 @@ pub async fn evict_all_rooms_handler(
     s.bus_rooms.evict_tenant(&tenant_id);
 
     // v1.31.3 F15 — admin audit row with actor_admin_id attribution.
-    let mut e = AuditEntry::success(
-        &tenant_id,
-        "admin",
-        "admin.broadcast.evict_all",
-        0,
-    );
+    let mut e = AuditEntry::success(&tenant_id, "admin", "admin.broadcast.evict_all", 0);
     e.actor_admin_id = Some(caller_id);
     e.extra.insert(
         "rooms_evicted".into(),
@@ -113,21 +108,12 @@ pub async fn evict_room_handler(
     let subscribers_dropped = s.bus_rooms.current_subscriber_count(&tenant_id, &room);
     let evicted = s.bus_rooms.evict_room(&tenant_id, &room);
 
-    let mut e = AuditEntry::success(
-        &tenant_id,
-        "admin",
-        "admin.broadcast.evict_room",
-        0,
-    );
+    let mut e = AuditEntry::success(&tenant_id, "admin", "admin.broadcast.evict_room", 0);
     e.actor_admin_id = Some(caller_id);
-    e.extra.insert(
-        "room".into(),
-        serde_json::Value::String(room.clone()),
-    );
-    e.extra.insert(
-        "evicted".into(),
-        serde_json::Value::Bool(evicted),
-    );
+    e.extra
+        .insert("room".into(), serde_json::Value::String(room.clone()));
+    e.extra
+        .insert("evicted".into(), serde_json::Value::Bool(evicted));
     e.extra.insert(
         "subscribers_dropped".into(),
         serde_json::Value::Number(subscribers_dropped.into()),

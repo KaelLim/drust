@@ -107,7 +107,8 @@ impl OauthProvider for GitHubAdapter {
         code: &'a str,
         pkce_verifier: &'a str,
         redirect_uri: &'a str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<VerifiedUser, OauthError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<VerifiedUser, OauthError>> + Send + 'a>>
+    {
         Box::pin(async move {
             // 1. code -> access_token
             let tok_resp: TokenResponse = self
@@ -138,8 +139,7 @@ impl OauthProvider for GitHubAdapter {
                 .error_for_status()?
                 .json()
                 .await?;
-            let email = pick_primary_verified(&emails)
-                .ok_or(OauthError::EmailNotProvided)?;
+            let email = pick_primary_verified(&emails).ok_or(OauthError::EmailNotProvided)?;
 
             // 3. /user -> numeric id + display name
             let user: GitHubUser = self

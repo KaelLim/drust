@@ -1,5 +1,5 @@
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use std::sync::OnceLock;
 
 /// argon2id PHC string for a password the attacker cannot guess. Used by login when the
@@ -8,8 +8,7 @@ use std::sync::OnceLock;
 pub fn dummy_hash() -> &'static str {
     static DUMMY_HASH: OnceLock<String> = OnceLock::new();
     DUMMY_HASH.get_or_init(|| {
-        hash_password("__drust_dummy__never_a_real_password__")
-            .expect("DUMMY_HASH bootstrap")
+        hash_password("__drust_dummy__never_a_real_password__").expect("DUMMY_HASH bootstrap")
     })
 }
 
@@ -71,7 +70,8 @@ mod tests {
         assert!(
             ratio < 4.0 && ratio > 0.25,
             "dummy ({:?}) and real ({:?}) verify must be in the same order of magnitude (S1)",
-            dummy_dur, real_dur
+            dummy_dur,
+            real_dur
         );
     }
 }

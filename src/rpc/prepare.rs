@@ -38,18 +38,12 @@ pub enum PrepareError {
 /// connection for BOTH modes; callers should dispatch through
 /// `pool.with_reader` (avoids the per-tenant writer mutex on every
 /// admin-form save).
-pub fn validate_rpc_sql(
-    conn: &Connection,
-    sql: &str,
-    mode: RpcMode,
-) -> Result<(), PrepareError> {
+pub fn validate_rpc_sql(conn: &Connection, sql: &str, mode: RpcMode) -> Result<(), PrepareError> {
     // Preserve pre-C5 behaviour: an empty body was rejected because
     // `conn.prepare("")` errors with "no SQL". The new split-then-prepare
     // path would otherwise loop zero times and silently accept "".
     if sql.trim().is_empty() {
-        return Err(PrepareError::Rejected(
-            "rpc sql body is empty".to_string(),
-        ));
+        return Err(PrepareError::Rejected("rpc sql body is empty".to_string()));
     }
 
     // Defense in depth: if a previous closure on this conn left an
@@ -102,16 +96,20 @@ mod tests {
     fn fresh() -> (TempDir, Connection) {
         let tmp = TempDir::new().unwrap();
         let conn = open_write(tmp.path(), "rpcprep").unwrap();
-        conn.execute_batch(
-            "CREATE TABLE posts (id INTEGER PRIMARY KEY, body TEXT);"
-        ).unwrap();
+        conn.execute_batch("CREATE TABLE posts (id INTEGER PRIMARY KEY, body TEXT);")
+            .unwrap();
         (tmp, conn)
     }
 
     #[test]
     fn valid_select_passes() {
         let (_t, conn) = fresh();
-        validate_rpc_sql(&conn, "SELECT id, body FROM posts WHERE id = :id", RpcMode::Read).unwrap();
+        validate_rpc_sql(
+            &conn,
+            "SELECT id, body FROM posts WHERE id = :id",
+            RpcMode::Read,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -124,7 +122,8 @@ mod tests {
     #[test]
     fn update_rejected() {
         let (_t, conn) = fresh();
-        let err = validate_rpc_sql(&conn, "UPDATE posts SET body = 'x'", RpcMode::Read).unwrap_err();
+        let err =
+            validate_rpc_sql(&conn, "UPDATE posts SET body = 'x'", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 
@@ -145,7 +144,8 @@ mod tests {
     #[test]
     fn sqlite_master_rejected() {
         let (_t, conn) = fresh();
-        let err = validate_rpc_sql(&conn, "SELECT * FROM sqlite_master", RpcMode::Read).unwrap_err();
+        let err =
+            validate_rpc_sql(&conn, "SELECT * FROM sqlite_master", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 

@@ -58,7 +58,12 @@ async fn query_rejects_user_token() {
     let (app, _svc_tok, _dir) = helpers::spin_up_tenant_self_register("t-q1").await;
     let token = register_and_login(&app, "t-q1", "a@b.com").await;
     let r = app
-        .oneshot(post_json("t-q1", "/query", json!({"sql": "SELECT 1"}), &token))
+        .oneshot(post_json(
+            "t-q1",
+            "/query",
+            json!({"sql": "SELECT 1"}),
+            &token,
+        ))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::FORBIDDEN);

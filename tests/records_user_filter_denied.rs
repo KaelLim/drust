@@ -5,14 +5,11 @@
 mod helpers;
 
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use helpers::{spin_up_tenant_self_register, register_and_login_via_app};
+use axum::http::{Request, StatusCode, header};
+use helpers::{register_and_login_via_app, spin_up_tenant_self_register};
 use tower::ServiceExt;
 
-async fn seed_owner_scoped_posts(
-    dir: &tempfile::TempDir,
-    tenant: &str,
-) {
+async fn seed_owner_scoped_posts(dir: &tempfile::TempDir, tenant: &str) {
     let pool = helpers::grab_pool(tenant, dir).await;
     pool.with_writer(|c| {
         c.execute_batch(
@@ -54,7 +51,9 @@ async fn user_filter_on_owner_scoped_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let bytes = axum::body::to_bytes(resp.into_body(), 16_384).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 16_384)
+        .await
+        .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["error_code"], "USER_FILTER_DENIED_ON_OWNER_SCOPED");
 }
@@ -79,7 +78,9 @@ async fn user_sort_on_owner_scoped_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let bytes = axum::body::to_bytes(resp.into_body(), 16_384).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 16_384)
+        .await
+        .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["error_code"], "USER_FILTER_DENIED_ON_OWNER_SCOPED");
 }

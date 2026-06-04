@@ -31,10 +31,8 @@ pub fn write_publish_audit(
         "byte_count".into(),
         serde_json::Value::Number(byte_count.into()),
     );
-    e.extra.insert(
-        "source".into(),
-        serde_json::Value::String(source.into()),
-    );
+    e.extra
+        .insert("source".into(), serde_json::Value::String(source.into()));
     e.extra.insert(
         "delivered_to".into(),
         serde_json::Value::Number(delivered_to.into()),
@@ -53,8 +51,14 @@ pub fn write_publish_audit_failure(
     code: &str,
     actor_admin_id: Option<i64>,
 ) {
-    let mut e =
-        AuditEntry::failure(tenant, token_hint, "broadcast.publish", duration_ms, code, "");
+    let mut e = AuditEntry::failure(
+        tenant,
+        token_hint,
+        "broadcast.publish",
+        duration_ms,
+        code,
+        "",
+    );
     e.actor_admin_id = actor_admin_id;
     e.extra
         .insert("room".into(), serde_json::Value::String(room.into()));
@@ -62,10 +66,8 @@ pub fn write_publish_audit_failure(
         "byte_count".into(),
         serde_json::Value::Number(byte_count.into()),
     );
-    e.extra.insert(
-        "source".into(),
-        serde_json::Value::String(source.into()),
-    );
+    e.extra
+        .insert("source".into(), serde_json::Value::String(source.into()));
     crate::safety::audit_db::try_send(&e);
 }
 

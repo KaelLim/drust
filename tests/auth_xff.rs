@@ -15,14 +15,19 @@ fn fallback() -> SocketAddr {
 
 #[test]
 fn missing_xff_falls_back_to_socket() {
-    assert_eq!(client_ip(&h(None), fallback()), "127.0.0.1".parse::<IpAddr>().unwrap());
+    assert_eq!(
+        client_ip(&h(None), fallback()),
+        "127.0.0.1".parse::<IpAddr>().unwrap()
+    );
 }
 
 #[test]
 fn single_entry_xff_returns_socket() {
     // Only one entry means we don't have a verified hop chain.
-    assert_eq!(client_ip(&h(Some("203.0.113.10")), fallback()),
-        "127.0.0.1".parse::<IpAddr>().unwrap());
+    assert_eq!(
+        client_ip(&h(Some("203.0.113.10")), fallback()),
+        "127.0.0.1".parse::<IpAddr>().unwrap()
+    );
 }
 
 #[test]

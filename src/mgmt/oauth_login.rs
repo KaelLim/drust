@@ -12,9 +12,7 @@ use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 
 pub(crate) fn secure_from_headers(h: &HeaderMap) -> bool {
-    h.get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        == Some("https")
+    h.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https")
 }
 
 fn redirect_login_error(err: &str) -> Response {
@@ -138,8 +136,13 @@ pub async fn oauth_callback(
         Ok(Some(id)) => id,
         Ok(None) => {
             drop(conn);
-            audit_oauth_failure(&s, &provider, Some(&user.email), "oauth_admin_email_missing")
-                .await;
+            audit_oauth_failure(
+                &s,
+                &provider,
+                Some(&user.email),
+                "oauth_admin_email_missing",
+            )
+            .await;
             return redirect_login_error("oauth_admin_email_missing");
         }
         Err(e) => {

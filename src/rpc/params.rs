@@ -33,7 +33,11 @@ pub enum ParamError {
     #[error("missing required param: '{0}'")]
     Missing(String),
     #[error("type mismatch on param '{name}': expected {expected:?}, got {got}")]
-    TypeMismatch { name: String, expected: ParamType, got: String },
+    TypeMismatch {
+        name: String,
+        expected: ParamType,
+        got: String,
+    },
     #[error("unknown param '{0}' in body — not declared on this RPC")]
     Unknown(String),
     #[error("invalid params_json on stored RPC: {0}")]
@@ -102,11 +106,11 @@ fn coerce(spec: &ParamSpec, v: &Json) -> Result<BoundValue, ParamError> {
             .map(BoundValue::Real)
             .ok_or_else(|| mismatch("non-finite number")),
         (ParamType::Boolean, Json::Bool(b)) => Ok(BoundValue::Bool(*b)),
-        (_, Json::String(_))  => Err(mismatch("string")),
-        (_, Json::Number(_))  => Err(mismatch("number")),
-        (_, Json::Bool(_))    => Err(mismatch("boolean")),
-        (_, Json::Array(_))   => Err(mismatch("array")),
-        (_, Json::Object(_))  => Err(mismatch("object")),
+        (_, Json::String(_)) => Err(mismatch("string")),
+        (_, Json::Number(_)) => Err(mismatch("number")),
+        (_, Json::Bool(_)) => Err(mismatch("boolean")),
+        (_, Json::Array(_)) => Err(mismatch("array")),
+        (_, Json::Object(_)) => Err(mismatch("object")),
     }
 }
 
@@ -129,7 +133,12 @@ mod tests {
     use serde_json::json;
 
     fn spec(name: &str, ty: ParamType, required: bool) -> ParamSpec {
-        ParamSpec { name: name.into(), ty, required, default: None }
+        ParamSpec {
+            name: name.into(),
+            ty,
+            required,
+            default: None,
+        }
     }
 
     #[test]

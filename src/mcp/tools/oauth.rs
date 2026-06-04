@@ -12,9 +12,7 @@ use serde_json::json;
 
 // ─── list ────────────────────────────────────────────────────────────────────
 
-pub async fn list_oauth_providers(
-    pool: &SharedTenantPool,
-) -> anyhow::Result<serde_json::Value> {
+pub async fn list_oauth_providers(pool: &SharedTenantPool) -> anyhow::Result<serde_json::Value> {
     let rows = pool
         .with_reader(move |c| oauth_config::list(c))
         .await

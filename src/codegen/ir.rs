@@ -115,7 +115,9 @@ fn build_collections(
         let fields = collect_fields(c, &name)?;
         let indexes = collect_indexes(c, &name, include_descriptions)?;
         let meta = read_meta(c, &name, include_descriptions)?;
-        let has_vector = fields.iter().any(|f| matches!(f.ty, FieldType::Vector { .. }));
+        let has_vector = fields
+            .iter()
+            .any(|f| matches!(f.ty, FieldType::Vector { .. }));
         out.push(CollectionIr {
             name,
             description: meta.description,
@@ -170,21 +172,18 @@ fn read_meta(
     }
 }
 
-fn collect_fields(
-    c: &rusqlite::Connection,
-    coll: &str,
-) -> rusqlite::Result<Vec<FieldIr>> {
+fn collect_fields(c: &rusqlite::Connection, coll: &str) -> rusqlite::Result<Vec<FieldIr>> {
     // PRAGMA table_info: cid, name, type, notnull, dflt_value, pk
     let pragma = format!("PRAGMA table_info(\"{}\")", coll.replace('"', "\"\""));
     let mut stmt = c.prepare(&pragma)?;
     let raw_rows: Vec<(String, String, i64, Option<String>, i64)> = stmt
         .query_map([], |r| {
             Ok((
-                r.get::<_, String>(1)?,           // name
-                r.get::<_, String>(2)?,           // type
-                r.get::<_, i64>(3)?,              // notnull
-                r.get::<_, Option<String>>(4)?,   // dflt_value
-                r.get::<_, i64>(5)?,              // pk
+                r.get::<_, String>(1)?,         // name
+                r.get::<_, String>(2)?,         // type
+                r.get::<_, i64>(3)?,            // notnull
+                r.get::<_, Option<String>>(4)?, // dflt_value
+                r.get::<_, i64>(5)?,            // pk
             ))
         })?
         .collect::<Result<_, _>>()?;
@@ -204,7 +203,9 @@ fn collect_fields(
             "SELECT vector_fields_json FROM _system_collection_meta WHERE collection_name = ?1",
             rusqlite::params![coll],
             |r| r.get::<_, Option<String>>(0),
-        ).optional()?.flatten()
+        )
+        .optional()?
+        .flatten()
     };
     let vec_dims: std::collections::HashMap<String, u32> = vec_json
         .as_deref()
@@ -304,7 +305,11 @@ fn collect_indexes(
     // Cols: seq, name, unique, origin, partial
     let rows: Vec<(String, i64, String)> = stmt
         .query_map([], |r| {
-            Ok((r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
+            Ok((
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+            ))
         })?
         .collect::<Result<_, _>>()?;
 
@@ -336,7 +341,11 @@ fn collect_indexes(
             name: name.clone(),
             fields,
             unique: unique != 0,
-            description: if include_descriptions { idesc_map.get(&name).cloned() } else { None },
+            description: if include_descriptions {
+                idesc_map.get(&name).cloned()
+            } else {
+                None
+            },
         });
     }
     Ok(out)
@@ -348,9 +357,18 @@ mod tests {
 
     #[test]
     fn parse_default_literals() {
-        assert!(matches!(parse_default("NULL".into()), Some(DefaultValue::Literal(serde_json::Value::Null))));
-        assert!(matches!(parse_default("42".into()), Some(DefaultValue::Literal(_))));
-        assert!(matches!(parse_default("'hello'".into()), Some(DefaultValue::Literal(_))));
+        assert!(matches!(
+            parse_default("NULL".into()),
+            Some(DefaultValue::Literal(serde_json::Value::Null))
+        ));
+        assert!(matches!(
+            parse_default("42".into()),
+            Some(DefaultValue::Literal(_))
+        ));
+        assert!(matches!(
+            parse_default("'hello'".into()),
+            Some(DefaultValue::Literal(_))
+        ));
     }
 
     #[test]
@@ -365,6 +383,9 @@ mod tests {
         assert_eq!(sql_type_to_field_type("INTEGER", None), FieldType::Integer);
         assert_eq!(sql_type_to_field_type("BLOB", None), FieldType::Blob);
         assert_eq!(sql_type_to_field_type("JSON", None), FieldType::Json);
-        assert_eq!(sql_type_to_field_type("TEXT", Some(1536)), FieldType::Vector { dim: 1536 });
+        assert_eq!(
+            sql_type_to_field_type("TEXT", Some(1536)),
+            FieldType::Vector { dim: 1536 }
+        );
     }
 }

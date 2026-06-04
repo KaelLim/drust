@@ -148,7 +148,10 @@ pub fn init_palettes() {
         );
         m.insert(
             Theme::SoftLight,
-            parse_palette(include_str!("../../themes/soft-light.toml"), Theme::SoftLight),
+            parse_palette(
+                include_str!("../../themes/soft-light.toml"),
+                Theme::SoftLight,
+            ),
         );
         // Theme::System has no Palette of its own — its partners are
         // looked up from `themes/system.toml` at resolve time. Including
@@ -163,16 +166,24 @@ pub fn init_palettes() {
 /// `init_palettes` — `build.rs` should have caught that already).
 pub fn palette_for(theme: Theme) -> ResolvedPalette {
     init_palettes();
-    let palettes = PALETTES.get().expect("init_palettes must run before palette_for");
+    let palettes = PALETTES
+        .get()
+        .expect("init_palettes must run before palette_for");
     match theme {
         Theme::System => {
             let (light, dark) = system_partners();
             ResolvedPalette::System(SystemPalette {
                 light: palettes.get(&light).unwrap_or_else(|| {
-                    panic!("system.toml [system].light = `{}` but palette not loaded", light.code())
+                    panic!(
+                        "system.toml [system].light = `{}` but palette not loaded",
+                        light.code()
+                    )
                 }),
                 dark: palettes.get(&dark).unwrap_or_else(|| {
-                    panic!("system.toml [system].dark = `{}` but palette not loaded", dark.code())
+                    panic!(
+                        "system.toml [system].dark = `{}` but palette not loaded",
+                        dark.code()
+                    )
                 }),
             })
         }
@@ -260,7 +271,12 @@ fn parse_palette(src: &str, theme: Theme) -> Palette {
             .chars()
             .next()
             .filter(|_| k.chars().count() == 1)
-            .unwrap_or_else(|| panic!("theme {} [mascot] key `{k}` must be single char", theme.code()));
+            .unwrap_or_else(|| {
+                panic!(
+                    "theme {} [mascot] key `{k}` must be single char",
+                    theme.code()
+                )
+            });
         let leaked_v: &'static str = Box::leak(s.to_string().into_boxed_str());
         mascot.insert(ch, leaked_v);
     }
@@ -483,16 +499,23 @@ mod tests {
             _ => panic!("static"),
         };
         let body = *pal.mascot.get(&'B').expect("B");
-        assert_ne!(body, "#0a0a0a", "soft-light must not share body with cozy-dark");
+        assert_ne!(
+            body, "#0a0a0a",
+            "soft-light must not share body with cozy-dark"
+        );
     }
 
     #[test]
     fn all_themes_json_is_script_safe_and_still_valid_json() {
         let raw = build_all_themes_json();
         let safe = crate::mgmt::script_json::escape_json_for_script(&raw);
-        assert!(!safe.contains("</"), "no live `</` may survive in the embed");
+        assert!(
+            !safe.contains("</"),
+            "no live `</` may survive in the embed"
+        );
         // Escaping must not corrupt the payload — it still parses.
-        let _: serde_json::Value = serde_json::from_str(&safe).expect("escaped themes JSON must parse");
+        let _: serde_json::Value =
+            serde_json::from_str(&safe).expect("escaped themes JSON must parse");
     }
 
     #[test]

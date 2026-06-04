@@ -155,4 +155,3 @@ fn validate_owner_column(
     }
     Ok(Ok(()))
 }
-

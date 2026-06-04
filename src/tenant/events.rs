@@ -132,8 +132,7 @@ mod tests {
         // Hot evict_collection loop for 200 ms.
         let bus_evict = bus.clone();
         let evicter = tokio::spawn(async move {
-            let deadline =
-                tokio::time::Instant::now() + tokio::time::Duration::from_millis(200);
+            let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(200);
             while tokio::time::Instant::now() < deadline {
                 for i in 0..50_u32 {
                     bus_evict.evict_collection("t1", &format!("coll{i}"));
@@ -155,16 +154,15 @@ mod tests {
                 // (evicter removed after subscribe, before publish). It must
                 // NOT be a silent orphan (timeout with no message and no error).
                 bus_sub.publish("t1", &coll, Event::Deleted { id: i as i64 });
-                let result = tokio::time::timeout(
-                    tokio::time::Duration::from_millis(500),
-                    rx.recv(),
-                )
-                .await;
+                let result =
+                    tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv()).await;
                 // Either delivered or cleanly closed — never a timeout orphan.
                 match result {
-                    Ok(Ok(_)) => {}   // delivered
-                    Ok(Err(_)) => {}  // RecvError::Closed / Lagged — clean
-                    Err(_) => panic!("recv timed out — Receiver was likely orphaned by evict_collection (A4 bug)"),
+                    Ok(Ok(_)) => {}  // delivered
+                    Ok(Err(_)) => {} // RecvError::Closed / Lagged — clean
+                    Err(_) => panic!(
+                        "recv timed out — Receiver was likely orphaned by evict_collection (A4 bug)"
+                    ),
                 }
             }));
         }

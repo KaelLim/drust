@@ -15,7 +15,11 @@ pub fn client_ip(headers: &HeaderMap, socket_addr: SocketAddr) -> IpAddr {
         Some(s) => s,
         None => return fallback,
     };
-    let parts: Vec<&str> = raw.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.len() < 2 {
         return fallback;
     }

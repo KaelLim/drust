@@ -183,12 +183,7 @@ pub async fn spin_up_tenant_self_register(tenant: &str) -> (Router, String, temp
 
 /// Register a user and log them in via the tenant auth endpoints, returning
 /// the session token. Uses `oneshot` — no live server required.
-pub async fn register_and_login_via_app(
-    app: &Router,
-    tid: &str,
-    email: &str,
-    pw: &str,
-) -> String {
+pub async fn register_and_login_via_app(app: &Router, tid: &str, email: &str, pw: &str) -> String {
     use axum::body::Body;
     use axum::http::{Request, header};
     use tower::ServiceExt;
@@ -221,7 +216,9 @@ pub async fn register_and_login_via_app(
         )
         .await
         .unwrap();
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     v["token"].as_str().unwrap().to_string()
 }

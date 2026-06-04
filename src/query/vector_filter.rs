@@ -112,11 +112,7 @@ fn validate_field(schema: &CollectionSchema, field: &str) -> Result<(), FilterEr
     Ok(())
 }
 
-fn compile_leaf(
-    field: &str,
-    body: &Json,
-    binds: &mut Vec<Value>,
-) -> Result<String, FilterError> {
+fn compile_leaf(field: &str, body: &Json, binds: &mut Vec<Value>) -> Result<String, FilterError> {
     let col = format!("\"{}\"", field.replace('"', "\"\""));
     if !matches!(body, Json::Object(_)) {
         binds.push(json_to_value(body));
@@ -151,7 +147,11 @@ fn compile_leaf(
                 required: "array",
             })?;
             if arr.is_empty() {
-                return Ok(if op == "in" { "1=0".into() } else { "1=1".into() });
+                return Ok(if op == "in" {
+                    "1=0".into()
+                } else {
+                    "1=1".into()
+                });
             }
             let placeholders = vec!["?"; arr.len()].join(", ");
             for v in arr {
@@ -163,7 +163,11 @@ fn compile_leaf(
         "is_null" | "is_not_null" => {
             // No operand — accept any value (typically `true`) and ignore.
             let _ = operand;
-            let sql_op = if op == "is_null" { "IS NULL" } else { "IS NOT NULL" };
+            let sql_op = if op == "is_null" {
+                "IS NULL"
+            } else {
+                "IS NOT NULL"
+            };
             Ok(format!("{col} {sql_op}"))
         }
         other => Err(FilterError::Parse(format!(
@@ -246,10 +250,16 @@ mod tests {
     fn op_object_compiles_each_op() {
         let s = schema_with(&[("created_at", "datetime"), ("n", "integer")], &[]);
         for (json, expected) in [
-            (r#"{"created_at":{"gte":"2026-01-01"}}"#, r#""created_at" >= ?"#),
+            (
+                r#"{"created_at":{"gte":"2026-01-01"}}"#,
+                r#""created_at" >= ?"#,
+            ),
             (r#"{"n":{"lt":42}}"#, r#""n" < ?"#),
             (r#"{"n":{"ne":0}}"#, r#""n" <> ?"#),
-            (r#"{"created_at":{"like":"2026%"}}"#, r#""created_at" LIKE ?"#),
+            (
+                r#"{"created_at":{"like":"2026%"}}"#,
+                r#""created_at" LIKE ?"#,
+            ),
         ] {
             let (sql, _) = compile(&s, &leaf(json)).unwrap();
             assert_eq!(sql, expected, "json: {json}");
@@ -313,7 +323,9 @@ mod tests {
     fn deep_not_chain(n: usize) -> FilterAst {
         let mut node = leaf(r#"{"cat":"x"}"#);
         for _ in 0..n {
-            node = FilterAst::Not { not: Box::new(node) };
+            node = FilterAst::Not {
+                not: Box::new(node),
+            };
         }
         node
     }

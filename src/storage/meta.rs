@@ -277,20 +277,33 @@ mod tests {
 
         crate::db::migrations::run_migrations(&conn, tmp.path()).unwrap();
 
-        let row: (i64, String) = conn.query_row(
-            "SELECT admin_id, plaintext FROM _admin_tokens WHERE revoked_at IS NULL",
-            [], |r| Ok((r.get(0)?, r.get(1)?))
-        ).expect("a PAT row should exist after bootstrap + migrate");
+        let row: (i64, String) = conn
+            .query_row(
+                "SELECT admin_id, plaintext FROM _admin_tokens WHERE revoked_at IS NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("a PAT row should exist after bootstrap + migrate");
         assert_eq!(row.0, 1, "bootstrap admin id is 1");
-        assert!(row.1.starts_with("drust_pat_"), "plaintext must have PAT prefix: {}", row.1);
+        assert!(
+            row.1.starts_with("drust_pat_"),
+            "plaintext must have PAT prefix: {}",
+            row.1
+        );
 
         // Second bootstrap is a no-op (admins table non-empty).
         let inserted2 = bootstrap_admin(&mut conn, "other", "x").unwrap();
         assert!(!inserted2);
-        let cnt: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM _admin_tokens WHERE revoked_at IS NULL",
-            [], |r| r.get(0)
-        ).unwrap();
-        assert_eq!(cnt, 1, "second bootstrap must not produce another active PAT");
+        let cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _admin_tokens WHERE revoked_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            cnt, 1,
+            "second bootstrap must not produce another active PAT"
+        );
     }
 }

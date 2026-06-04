@@ -40,7 +40,7 @@ pub struct PublishBucket {
 }
 
 struct BucketState {
-    tokens: i64,         // scaled by 1_000 so refill is integer-friendly
+    tokens: i64, // scaled by 1_000 so refill is integer-friendly
     last_refill_ms: u64,
 }
 
@@ -199,12 +199,27 @@ mod tests {
     #[test]
     fn check_publish_allowed_matrix() {
         use crate::auth::middleware::AuthCtx;
-        let off = TenantPublishPolicy { allow_user: false, allow_anon: false };
-        let user_on = TenantPublishPolicy { allow_user: true, allow_anon: false };
-        let anon_on = TenantPublishPolicy { allow_user: false, allow_anon: true };
-        let both_on = TenantPublishPolicy { allow_user: true, allow_anon: true };
+        let off = TenantPublishPolicy {
+            allow_user: false,
+            allow_anon: false,
+        };
+        let user_on = TenantPublishPolicy {
+            allow_user: true,
+            allow_anon: false,
+        };
+        let anon_on = TenantPublishPolicy {
+            allow_user: false,
+            allow_anon: true,
+        };
+        let both_on = TenantPublishPolicy {
+            allow_user: true,
+            allow_anon: true,
+        };
         let svc = AuthCtx::Service { admin_id: None };
-        let usr = AuthCtx::User { user_id: "u-1".into(), token_hash: "h".into() };
+        let usr = AuthCtx::User {
+            user_id: "u-1".into(),
+            token_hash: "h".into(),
+        };
         let anon = AuthCtx::Anon;
         // Service: always Allow.
         for p in [&off, &user_on, &anon_on, &both_on] {
@@ -217,7 +232,10 @@ mod tests {
         assert_eq!(check_publish_allowed(&usr, &both_on), PublishGate::Allow);
         // Anon: gated by allow_anon.
         assert_eq!(check_publish_allowed(&anon, &off), PublishGate::DenyAnon);
-        assert_eq!(check_publish_allowed(&anon, &user_on), PublishGate::DenyAnon);
+        assert_eq!(
+            check_publish_allowed(&anon, &user_on),
+            PublishGate::DenyAnon
+        );
         assert_eq!(check_publish_allowed(&anon, &anon_on), PublishGate::Allow);
         assert_eq!(check_publish_allowed(&anon, &both_on), PublishGate::Allow);
     }
@@ -305,11 +323,7 @@ mod tests {
                 let barrier = barrier.clone();
                 thread::spawn(move || {
                     barrier.wait();
-                    if b.try_consume("t1").is_ok() {
-                        1
-                    } else {
-                        0
-                    }
+                    if b.try_consume("t1").is_ok() { 1 } else { 0 }
                 })
             })
             .collect();

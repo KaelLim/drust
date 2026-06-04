@@ -43,8 +43,14 @@ mod tests {
         let safe = escape_json_for_script(r#"</script><!--x--></SCRIPT>"#);
         assert!(!safe.contains("</"), "raw `</` must be gone: {safe}");
         assert!(!safe.contains("<!--"), "raw `<!--` must be gone: {safe}");
-        assert!(safe.contains("<\\/script>"), "closer must become <\\/script>: {safe}");
-        assert!(safe.contains("<\\/SCRIPT>"), "closer is case-insensitive: {safe}");
+        assert!(
+            safe.contains("<\\/script>"),
+            "closer must become <\\/script>: {safe}"
+        );
+        assert!(
+            safe.contains("<\\/SCRIPT>"),
+            "closer is case-insensitive: {safe}"
+        );
     }
 
     #[test]
@@ -52,7 +58,10 @@ mod tests {
         let safe = escape_json_for_script("a\u{2028}b\u{2029}c");
         assert!(!safe.contains('\u{2028}'), "U+2028 must be gone: {safe:?}");
         assert!(!safe.contains('\u{2029}'), "U+2029 must be gone: {safe:?}");
-        assert!(safe.contains("\\u2028") && safe.contains("\\u2029"), "got: {safe:?}");
+        assert!(
+            safe.contains("\\u2028") && safe.contains("\\u2029"),
+            "got: {safe:?}"
+        );
     }
 
     #[test]
@@ -72,13 +81,19 @@ mod tests {
         assert!(out.contains("<\\/script>"), "closer not escaped: {out}");
         // Lossless: re-parses to the exact original description.
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(parsed[0]["description"], "</script><img src=x onerror=alert(1)>");
+        assert_eq!(
+            parsed[0]["description"],
+            "</script><img src=x onerror=alert(1)>"
+        );
     }
 
     #[test]
     fn json_for_script_serialize_failure_yields_valid_js_literal() {
         // Practically unreachable for our types, but the fallback must never be
         // an empty string (which would render `const x = ;` — a JS syntax error).
-        assert_eq!(json_for_script(&serde_json::json!({"ok": true})), r#"{"ok":true}"#);
+        assert_eq!(
+            json_for_script(&serde_json::json!({"ok": true})),
+            r#"{"ok":true}"#
+        );
     }
 }

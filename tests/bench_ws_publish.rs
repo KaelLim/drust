@@ -33,9 +33,14 @@ const ROOM: &str = "bench-room";
 const ITERATIONS: usize = 100;
 
 const SCENARIOS: &[(usize, usize)] = &[
-    (10, 1), (10, 16), (10, 64),
-    (100, 1), (100, 16), (100, 64),
-    (1000, 1), (1000, 16),
+    (10, 1),
+    (10, 16),
+    (10, 64),
+    (100, 1),
+    (100, 16),
+    (100, 64),
+    (1000, 1),
+    (1000, 16),
 ];
 
 /// Pre-D8 shape — receivers deep-clone the payload and serialize the
@@ -69,7 +74,9 @@ async fn bench_ws_publish_baseline() {
                             };
                             let s = serde_json::to_string(&env).unwrap();
                             std::hint::black_box(s);
-                            if tx.send(()).is_err() { break; }
+                            if tx.send(()).is_err() {
+                                break;
+                            }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -86,7 +93,9 @@ async fn bench_ws_publish_baseline() {
             frame_bytes: bytes::Bytes::new(),
         };
         assert_eq!(bus.publish(TENANT, ROOM, warm), n_subs);
-        for _ in 0..n_subs { rx.recv().await.expect("warm recv"); }
+        for _ in 0..n_subs {
+            rx.recv().await.expect("warm recv");
+        }
 
         let start = Instant::now();
         for i in 0..ITERATIONS {
@@ -97,7 +106,9 @@ async fn bench_ws_publish_baseline() {
             };
             let delivered = bus.publish(TENANT, ROOM, msg);
             assert_eq!(delivered, n_subs);
-            for _ in 0..n_subs { rx.recv().await.expect("bench recv"); }
+            for _ in 0..n_subs {
+                rx.recv().await.expect("bench recv");
+            }
         }
         let elapsed = start.elapsed();
         let per_publish_us = elapsed.as_micros() / ITERATIONS as u128;
@@ -107,7 +118,9 @@ async fn bench_ws_publish_baseline() {
         );
 
         drop(bus);
-        for h in handles { let _ = h.await; }
+        for h in handles {
+            let _ = h.await;
+        }
     }
 }
 
@@ -135,7 +148,9 @@ async fn bench_ws_publish_d8() {
                             // Post-D8 send_json work: just forward bytes.
                             let frame = rmsg.frame_bytes.clone();
                             std::hint::black_box(frame);
-                            if tx.send(()).is_err() { break; }
+                            if tx.send(()).is_err() {
+                                break;
+                            }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -153,7 +168,9 @@ async fn bench_ws_publish_d8() {
                 ts: ts_ms,
             };
             let frame_bytes = bytes::Bytes::from(serde_json::to_vec(&frame).unwrap());
-            let ServerMessage::Message { payload, .. } = frame else { unreachable!() };
+            let ServerMessage::Message { payload, .. } = frame else {
+                unreachable!()
+            };
             RoomMessage {
                 payload: Arc::new(payload),
                 ts_ms,
@@ -164,14 +181,18 @@ async fn bench_ws_publish_d8() {
         // Warm-up
         let warm = build_msg(1_700_000_000_000, payload.clone());
         assert_eq!(bus.publish(TENANT, ROOM, warm), n_subs);
-        for _ in 0..n_subs { rx.recv().await.expect("warm recv"); }
+        for _ in 0..n_subs {
+            rx.recv().await.expect("warm recv");
+        }
 
         let start = Instant::now();
         for i in 0..ITERATIONS {
             let msg = build_msg(1_700_000_000_000 + i as i64, payload.clone());
             let delivered = bus.publish(TENANT, ROOM, msg);
             assert_eq!(delivered, n_subs);
-            for _ in 0..n_subs { rx.recv().await.expect("bench recv"); }
+            for _ in 0..n_subs {
+                rx.recv().await.expect("bench recv");
+            }
         }
         let elapsed = start.elapsed();
         let per_publish_us = elapsed.as_micros() / ITERATIONS as u128;
@@ -181,6 +202,8 @@ async fn bench_ws_publish_d8() {
         );
 
         drop(bus);
-        for h in handles { let _ = h.await; }
+        for h in handles {
+            let _ = h.await;
+        }
     }
 }

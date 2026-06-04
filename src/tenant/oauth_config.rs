@@ -62,10 +62,7 @@ pub fn validate_provider(p: &str) -> Result<(), OauthConfigError> {
 }
 
 pub fn validate_redirect_uri(uri: &str) -> Result<(), OauthConfigError> {
-    if uri.is_empty()
-        || uri.len() >= 1024
-        || uri.chars().any(|c| c.is_whitespace() || c == ',')
-    {
+    if uri.is_empty() || uri.len() >= 1024 || uri.chars().any(|c| c.is_whitespace() || c == ',') {
         return Err(OauthConfigError::InvalidRedirectUri(uri.to_string()));
     }
     let ok = uri.starts_with("https://")
@@ -267,8 +264,14 @@ mod tests {
 
     #[test]
     fn error_code_maps_each_variant() {
-        assert_eq!(OauthConfigError::InvalidProvider.error_code(), "INVALID_PROVIDER");
-        assert_eq!(OauthConfigError::InvalidClientId.error_code(), "INVALID_CLIENT_ID");
+        assert_eq!(
+            OauthConfigError::InvalidProvider.error_code(),
+            "INVALID_PROVIDER"
+        );
+        assert_eq!(
+            OauthConfigError::InvalidClientId.error_code(),
+            "INVALID_CLIENT_ID"
+        );
         assert_eq!(
             OauthConfigError::InvalidClientSecret.error_code(),
             "INVALID_CLIENT_SECRET"
@@ -282,8 +285,7 @@ mod tests {
             "INVALID_REDIRECT_URI"
         );
         // Db is the umbrella for the 500-class — error_code is `DB_ERROR`.
-        let db_err =
-            OauthConfigError::Db(rusqlite::Error::InvalidParameterName("x".into()));
+        let db_err = OauthConfigError::Db(rusqlite::Error::InvalidParameterName("x".into()));
         assert_eq!(db_err.error_code(), "DB_ERROR");
     }
 }

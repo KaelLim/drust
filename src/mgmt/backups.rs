@@ -277,18 +277,32 @@ pub async fn inspect(
         .unwrap_or_else(|_| Utc::now());
 
     let backup_path_clone = backup_path.clone();
-    let extract_result = tokio::task::spawn_blocking(move || {
-        extract_meta_and_sizes(&backup_path_clone)
-    })
-    .await;
+    let extract_result =
+        tokio::task::spawn_blocking(move || extract_meta_and_sizes(&backup_path_clone)).await;
 
     let (meta_tmp, sizes) = match extract_result {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, e.to_string(), locale, theme, admin);
+            return render_inspect_error(
+                filename,
+                snapshot_mtime,
+                snapshot_size_human,
+                e.to_string(),
+                locale,
+                theme,
+                admin,
+            );
         }
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("join error: {e}"), locale, theme, admin.clone());
+            return render_inspect_error(
+                filename,
+                snapshot_mtime,
+                snapshot_size_human,
+                format!("join error: {e}"),
+                locale,
+                theme,
+                admin.clone(),
+            );
         }
     };
 
@@ -299,7 +313,15 @@ pub async fn inspect(
     let conn = match conn_res {
         Ok(c) => c,
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("open meta.sqlite: {e}"), locale, theme, admin.clone());
+            return render_inspect_error(
+                filename,
+                snapshot_mtime,
+                snapshot_size_human,
+                format!("open meta.sqlite: {e}"),
+                locale,
+                theme,
+                admin.clone(),
+            );
         }
     };
 
@@ -334,7 +356,15 @@ pub async fn inspect(
             })
             .unwrap_or_default(),
         Err(e) => {
-            return render_inspect_error(filename, snapshot_mtime, snapshot_size_human, format!("query: {e}"), locale, theme, admin.clone());
+            return render_inspect_error(
+                filename,
+                snapshot_mtime,
+                snapshot_size_human,
+                format!("query: {e}"),
+                locale,
+                theme,
+                admin.clone(),
+            );
         }
     };
 
@@ -445,7 +475,9 @@ fn is_uuid_like(s: &str) -> bool {
 /// post-dates the snapshot.
 pub async fn restore_tenant(
     State(state): State<BackupsState>,
-    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<crate::auth::middleware::AdminId>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(filename): Path<String>,
     axum::Form(form): axum::Form<RestoreForm>,

@@ -67,9 +67,7 @@ use tower::ServiceExt;
 async fn seed_with_realtime(dir: &tempfile::TempDir, tenant: &str, enabled: bool) {
     let pool = grab_pool(tenant, dir).await;
     pool.with_writer(move |c| {
-        c.execute_batch(
-            "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT);",
-        )?;
+        c.execute_batch("CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT);")?;
         drust::storage::schema::write_realtime_enabled(c, "posts", enabled)?;
         Ok::<_, rusqlite::Error>(())
     })
@@ -162,11 +160,7 @@ async fn anon_blocked_without_select_cap() {
     // `posts` is still cold — no prior subscribe has populated it.
     let pool = grab_pool("anon-nosel", &d).await;
     pool.with_writer(|c| {
-        drust::storage::schema::write_anon_caps(
-            c,
-            "posts",
-            &std::collections::BTreeSet::new(),
-        )
+        drust::storage::schema::write_anon_caps(c, "posts", &std::collections::BTreeSet::new())
     })
     .await
     .unwrap();
@@ -221,10 +215,9 @@ async fn put_realtime_enable_then_disable_round_trip() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let v: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 4096).await.unwrap())
+            .unwrap();
     assert_eq!(v["realtime_enabled"], true);
 
     // Subscribe now succeeds.
@@ -256,10 +249,9 @@ async fn put_realtime_enable_then_disable_round_trip() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let v: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 4096).await.unwrap())
+            .unwrap();
     assert_eq!(v["realtime_enabled"], false);
 
     // Fresh subscribe now 403's — the disable half landed in the cache.
@@ -274,10 +266,9 @@ async fn put_realtime_enable_then_disable_round_trip() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let v: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 4096).await.unwrap())
+            .unwrap();
     assert_eq!(v["error_code"], "REALTIME_DISABLED");
 }
 
@@ -349,10 +340,9 @@ async fn put_realtime_rejects_anon() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let v: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 4096).await.unwrap())
+            .unwrap();
     assert_eq!(v["error_code"], "WRITE_DENIED");
 }
 
@@ -372,10 +362,9 @@ async fn put_realtime_rejects_protected_collection() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let v: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 4096).await.unwrap())
+            .unwrap();
     assert_eq!(v["error_code"], "PROTECTED_COLLECTION");
 }
 
@@ -395,10 +384,9 @@ async fn put_realtime_unknown_collection_404() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    let v: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 4096).await.unwrap())
+            .unwrap();
     assert_eq!(v["error_code"], "COLLECTION_NOT_FOUND");
 }
 
@@ -421,9 +409,8 @@ async fn user_token_denied_regardless_of_toggle() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let v: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(resp.into_body(), 4096).await.unwrap(),
-    )
-    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 4096).await.unwrap())
+            .unwrap();
     assert_eq!(v["error_code"], "SSE_USER_DENIED");
 }

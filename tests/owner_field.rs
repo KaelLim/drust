@@ -27,9 +27,7 @@ fn req(
 }
 
 async fn read_body(resp: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(resp.into_body(), 65536)
-        .await
-        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
@@ -87,10 +85,7 @@ async fn set_owner_field_unknown_column_returns_409() {
     let status = r.status();
     let body = read_body(r).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
-    assert!(
-        body.contains("OWNER_FIELD_INVALID_COLUMN"),
-        "body={body}"
-    );
+    assert!(body.contains("OWNER_FIELD_INVALID_COLUMN"), "body={body}");
 }
 
 #[tokio::test]

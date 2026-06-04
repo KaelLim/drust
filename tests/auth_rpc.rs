@@ -70,8 +70,7 @@ async fn create_rpc(
 
 #[tokio::test]
 async fn user_can_call_anon_callable_rpc() {
-    let (app, tid, _svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc1").await;
+    let (app, tid, _svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc1").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     pool.with_writer(|c| {
         c.execute_batch(
@@ -83,8 +82,7 @@ async fn user_can_call_anon_callable_rpc() {
     .unwrap();
     create_rpc(&pool, "list_items", "SELECT * FROM items", "[]", true).await;
 
-    let utok =
-        helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
+    let utok = helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
     let r = app
         .oneshot(req("POST", &tid, "/rpc/list_items", Some(json!({})), &utok))
         .await
@@ -94,7 +92,8 @@ async fn user_can_call_anon_callable_rpc() {
     assert!(
         status.is_success(),
         "user must be able to call anon_callable RPC: {} {:?}",
-        status, v
+        status,
+        v
     );
     let rows = v["rows"].as_array().expect("rows array");
     assert_eq!(rows.len(), 2);
@@ -106,8 +105,7 @@ async fn user_can_call_anon_callable_rpc() {
 
 #[tokio::test]
 async fn user_cannot_call_non_anon_rpc() {
-    let (app, tid, _svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc2").await;
+    let (app, tid, _svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc2").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     pool.with_writer(|c| {
         c.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT);")
@@ -116,8 +114,7 @@ async fn user_cannot_call_non_anon_rpc() {
     .unwrap();
     create_rpc(&pool, "private_list", "SELECT * FROM items", "[]", false).await;
 
-    let utok =
-        helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
+    let utok = helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
     let r = app
         .oneshot(req(
             "POST",
@@ -142,8 +139,7 @@ async fn user_cannot_call_non_anon_rpc() {
 #[tokio::test]
 async fn rpc_does_not_apply_owner_field_filter() {
     // RPC SQL is run verbatim; drust does NOT inject a WHERE owner_field=user_id.
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc3").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc3").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     pool.with_writer(|c| {
         c.execute_batch(
@@ -172,10 +168,8 @@ async fn rpc_does_not_apply_owner_field_filter() {
         .await
         .unwrap();
 
-    let ta =
-        helpers::register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-    let tb =
-        helpers::register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
+    let ta = helpers::register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+    let tb = helpers::register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
 
     // Each user inserts one post (auto-sets user_id via owner_field logic).
     let _ = app
@@ -204,13 +198,7 @@ async fn rpc_does_not_apply_owner_field_filter() {
     // RPC returns ALL posts, regardless of who calls it.
     create_rpc(&pool, "all_posts", "SELECT title FROM posts", "[]", true).await;
     let r = app
-        .oneshot(req(
-            "POST",
-            &tid,
-            "/rpc/all_posts",
-            Some(json!({})),
-            &ta,
-        ))
+        .oneshot(req("POST", &tid, "/rpc/all_posts", Some(json!({})), &ta))
         .await
         .unwrap();
     let status = r.status();
@@ -226,8 +214,7 @@ async fn rpc_does_not_apply_owner_field_filter() {
 
 #[tokio::test]
 async fn rpc_auto_binds_user_id_param() {
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc4").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc4").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     pool.with_writer(|c| {
         c.execute_batch(
@@ -256,10 +243,8 @@ async fn rpc_auto_binds_user_id_param() {
         .await
         .unwrap();
 
-    let ta =
-        helpers::register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-    let tb =
-        helpers::register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
+    let ta = helpers::register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+    let tb = helpers::register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
 
     let _ = app
         .clone()
@@ -310,8 +295,8 @@ async fn rpc_auto_binds_user_id_param() {
     let rows = v["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "auto-bind must filter to caller's own posts");
     // rows[0] is an array of column values (column_names: ["title"])
-    let title = rows[0][0].as_str().unwrap_or_else(|| {
-        rows[0]["title"].as_str().unwrap_or("")
-    });
+    let title = rows[0][0]
+        .as_str()
+        .unwrap_or_else(|| rows[0]["title"].as_str().unwrap_or(""));
     assert_eq!(title, "a");
 }

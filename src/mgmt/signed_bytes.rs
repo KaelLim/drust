@@ -73,8 +73,14 @@ pub async fn admin_signed_bytes(
     Query(qs): Query<SigQs>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     let download = is_download(&qs);
-    if !signed_url::verify(&*state.url_sign_secret, &SignOwner::Admin, &key, qs.e, download, &qs.t)
-    {
+    if !signed_url::verify(
+        &*state.url_sign_secret,
+        &SignOwner::Admin,
+        &key,
+        qs.e,
+        download,
+        &qs.t,
+    ) {
         return Err((StatusCode::FORBIDDEN, "invalid or expired token".into()));
     }
 

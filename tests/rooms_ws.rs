@@ -38,7 +38,7 @@ use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message as TM;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 mod helpers;
 
@@ -48,9 +48,7 @@ type WsClient = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Spin up a router on an ephemeral port. Returns the bound addr + the
 /// router's owning helpers tuple so the TempDir lives until test end.
-async fn serve(
-    app: Router,
-) -> SocketAddr {
+async fn serve(app: Router) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     // Official axum testing-websockets pattern: spawn the Future directly via
@@ -274,7 +272,11 @@ async fn unsubscribe_is_idempotent_acked() {
     let addr = serve(app).await;
     let (mut ws, _) = connect_async(ws_url(addr, TENANT, &tok)).await.unwrap();
 
-    send_op(&mut ws, json!({"op":"unsubscribe","room":"ghost","ref":"u1"})).await;
+    send_op(
+        &mut ws,
+        json!({"op":"unsubscribe","room":"ghost","ref":"u1"}),
+    )
+    .await;
     let ack = recv_json(&mut ws).await;
     assert_eq!(ack["kind"], "ack");
     assert_eq!(ack["op"], "unsubscribe");

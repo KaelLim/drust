@@ -1,5 +1,5 @@
 use crate::mcp::server::DrustMcp;
-use crate::storage::schema::{describe_collection, is_protected_collection, VectorField};
+use crate::storage::schema::{VectorField, describe_collection, is_protected_collection};
 use crate::tenant::events::Event;
 use rusqlite::types::Value;
 use serde_json::json;
@@ -84,10 +84,16 @@ fn pre_encode_vectors(
                     out.insert(vf.name.clone(), bytes);
                 }
                 Err(crate::query::vector_codec::VectorCodecError::DimMismatch { .. }) => {
-                    anyhow::bail!("VECTOR_DIM_MISMATCH: vector field {:?} has wrong dim", vf.name);
+                    anyhow::bail!(
+                        "VECTOR_DIM_MISMATCH: vector field {:?} has wrong dim",
+                        vf.name
+                    );
                 }
                 Err(crate::query::vector_codec::VectorCodecError::NonFinite { .. }) => {
-                    anyhow::bail!("VECTOR_NON_FINITE: vector field {:?} contains NaN or Inf", vf.name);
+                    anyhow::bail!(
+                        "VECTOR_NON_FINITE: vector field {:?} contains NaN or Inf",
+                        vf.name
+                    );
                 }
                 Err(e) => {
                     anyhow::bail!("VECTOR_TYPE_ERROR: {e}");
@@ -104,7 +110,9 @@ pub async fn insert_record(
     data: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
-        anyhow::bail!("PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools.");
+        anyhow::bail!(
+            "PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools."
+        );
     }
     let coll = collection.to_string();
     let data_map = data
@@ -134,9 +142,8 @@ pub async fn insert_record(
     let webhooks = s.inner().webhooks.clone();
     let (id, record) = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<(i64, serde_json::Value)> {
-            let schema = describe_collection(tx, &coll)?.ok_or_else(|| {
-                invalid_input(format!("unknown collection: '{}'", coll))
-            })?;
+            let schema = describe_collection(tx, &coll)?
+                .ok_or_else(|| invalid_input(format!("unknown collection: '{}'", coll)))?;
             let allowed: std::collections::HashSet<&str> =
                 schema.fields.iter().map(|f| f.name.as_str()).collect();
             for k in data_map.keys() {
@@ -201,7 +208,9 @@ pub async fn update_record(
     data: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
-        anyhow::bail!("PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools.");
+        anyhow::bail!(
+            "PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools."
+        );
     }
     let coll = collection.to_string();
     let data_map = data
@@ -230,9 +239,8 @@ pub async fn update_record(
 
     let record = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
-            let schema = describe_collection(tx, &coll)?.ok_or_else(|| {
-                invalid_input(format!("unknown collection: '{}'", coll))
-            })?;
+            let schema = describe_collection(tx, &coll)?
+                .ok_or_else(|| invalid_input(format!("unknown collection: '{}'", coll)))?;
             let allowed: std::collections::HashSet<&str> =
                 schema.fields.iter().map(|f| f.name.as_str()).collect();
             for k in data_map.keys() {
@@ -287,11 +295,7 @@ pub async fn update_record(
 /// Runs the existence + protection checks but returns Ok before the
 /// DELETE would execute. Errors mirror the real path 1:1 so dry_run
 /// surfaces the same problems a real call would.
-pub async fn delete_record_validate(
-    s: &DrustMcp,
-    collection: &str,
-    id: i64,
-) -> anyhow::Result<()> {
+pub async fn delete_record_validate(s: &DrustMcp, collection: &str, id: i64) -> anyhow::Result<()> {
     if is_protected_collection(collection) {
         anyhow::bail!("PROTECTED_COLLECTION: cannot delete from {collection}");
     }
@@ -320,7 +324,9 @@ pub async fn delete_record(
     id: i64,
 ) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
-        anyhow::bail!("PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools.");
+        anyhow::bail!(
+            "PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools."
+        );
     }
     let coll = collection.to_string();
     let pool = s.inner().pool.clone();
@@ -337,7 +343,9 @@ pub async fn delete_record(
         })
         .await?;
     if n == 0 {
-        return Ok(json!({ "ok": false, "error_code": "RECORD_NOT_FOUND", "message": format!("record with id {} not found in collection {:?}", id, collection) }));
+        return Ok(
+            json!({ "ok": false, "error_code": "RECORD_NOT_FOUND", "message": format!("record with id {} not found in collection {:?}", id, collection) }),
+        );
     }
     // Build response first; dispatch only after payload exists.
     let response_payload = json!({ "ok": true });

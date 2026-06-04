@@ -72,7 +72,10 @@ async fn bootstrap_tenant_with_oauth(
         provider_name,
         "test-client-id",
         "test-client-secret",
-        &allowed_redirect_uris.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        &allowed_redirect_uris
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
     )
     .unwrap();
     drop(tconn);
@@ -127,12 +130,8 @@ fn build_router(state: TenantAuthState) -> Router {
 pub async fn spin_up_tenant_with_google_fake(
     fake: &Arc<FakeProvider>,
 ) -> (Router, TempDir, String, String, std::path::PathBuf) {
-    spin_up_tenant_with_google_fake_opts(
-        fake,
-        true,
-        &["https://app.example.com/auth/callback"],
-    )
-    .await
+    spin_up_tenant_with_google_fake_opts(fake, true, &["https://app.example.com/auth/callback"])
+        .await
 }
 
 /// Variant that lets callers opt out of `allow_self_register` and tweak
@@ -276,7 +275,12 @@ async fn tenant_oauth_happy_path_google() {
         .await
         .unwrap();
     assert_eq!(cb_resp.status(), StatusCode::FOUND);
-    let loc = cb_resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = cb_resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(loc.starts_with(frontend), "loc={loc}");
     assert!(
         loc.contains("#access_token=drust_user_"),
@@ -332,7 +336,12 @@ async fn tenant_oauth_happy_path_github() {
         .await
         .unwrap();
     assert_eq!(cb_resp.status(), StatusCode::FOUND);
-    let loc = cb_resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = cb_resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(loc.starts_with(frontend), "loc={loc}");
     assert!(loc.contains("#access_token=drust_user_"), "loc={loc}");
     assert_eq!(fake.last_code.lock().await.as_deref(), Some("CODE-H"));
@@ -468,7 +477,12 @@ async fn tenant_oauth_provider_error_returns_typed_redirect() {
     let frontend = "https://app.example.com/auth/callback";
     let resp = drive_callback(&app, &tid, "google", frontend).await;
     assert_eq!(resp.status(), StatusCode::FOUND);
-    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(loc.starts_with(frontend), "loc={loc}");
     assert!(
         loc.contains("#error=oauth_provider_error"),
@@ -489,7 +503,12 @@ async fn tenant_oauth_email_unverified_rejected() {
     let frontend = "https://app.example.com/auth/callback";
     let resp = drive_callback(&app, &tid, "google", frontend).await;
     assert_eq!(resp.status(), StatusCode::FOUND);
-    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(loc.starts_with(frontend), "loc={loc}");
     assert!(loc.contains("#error=oauth_email_unverified"), "loc={loc}");
 }
@@ -578,7 +597,9 @@ async fn tenant_oauth_toctou_invalid_redirect_at_callback() {
         .await
         .unwrap();
     assert_eq!(cb_resp.status(), StatusCode::BAD_REQUEST);
-    let body = axum::body::to_bytes(cb_resp.into_body(), 1024).await.unwrap();
+    let body = axum::body::to_bytes(cb_resp.into_body(), 1024)
+        .await
+        .unwrap();
     assert!(
         std::str::from_utf8(&body)
             .unwrap()
@@ -611,7 +632,12 @@ async fn tenant_oauth_not_allowed_when_self_register_off() {
     let frontend = "https://app.example.com/auth/callback";
     let resp = drive_callback(&app, &tid, "google", frontend).await;
     assert_eq!(resp.status(), StatusCode::FOUND);
-    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(loc.starts_with(frontend), "loc={loc}");
     assert!(loc.contains("#error=oauth_not_allowed"), "loc={loc}");
 
@@ -636,7 +662,12 @@ async fn tenant_oauth_auto_create_when_self_register_on() {
     let frontend = "https://app.example.com/auth/callback";
     let resp = drive_callback(&app, &tid, "google", frontend).await;
     assert_eq!(resp.status(), StatusCode::FOUND);
-    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(loc.starts_with(frontend), "loc={loc}");
     assert!(loc.contains("#access_token=drust_user_"), "loc={loc}");
 
@@ -658,8 +689,7 @@ async fn tenant_oauth_auto_create_when_self_register_on() {
     // Spec §3.3: picture is extracted from the Google id_token claim and
     // persisted in the profile JSON.
     assert_eq!(
-        profile_json["picture"],
-        "https://lh3.googleusercontent.com/newcomer",
+        profile_json["picture"], "https://lh3.googleusercontent.com/newcomer",
         "profile.picture must carry the Google id_token claim"
     );
 }
@@ -690,8 +720,7 @@ async fn tenant_oauth_auto_create_picture_from_github() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_str(&profile).unwrap();
     assert_eq!(
-        v["picture"],
-        "https://avatars.githubusercontent.com/u/424242",
+        v["picture"], "https://avatars.githubusercontent.com/u/424242",
         "profile.picture must carry the GitHub /user.avatar_url field"
     );
 }
@@ -727,7 +756,12 @@ async fn tenant_oauth_auto_links_existing_email() {
     let frontend = "https://app.example.com/auth/callback";
     let resp = drive_callback(&app, &tid, "google", frontend).await;
     assert_eq!(resp.status(), StatusCode::FOUND);
-    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(loc.contains("#access_token=drust_user_"), "loc={loc}");
 
     // Row count stayed at one, password_hash unchanged, profile untouched.
@@ -773,7 +807,12 @@ async fn tenant_oauth_only_user_me_password_rejected() {
     let frontend = "https://app.example.com/auth/callback";
     let cb_resp = drive_callback(&app, &tid, "google", frontend).await;
     assert_eq!(cb_resp.status(), StatusCode::FOUND);
-    let loc = cb_resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = cb_resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     // Extract the drust_user_* token from `#access_token=<tok>&token_type=Bearer`.
     let fragment = loc.split_once('#').expect("location has #fragment").1;
     let token = fragment
@@ -920,7 +959,9 @@ async fn tenant_oauth_cross_tenant_config_isolation() {
         .await
         .unwrap();
     assert_eq!(resp_b.status(), StatusCode::BAD_REQUEST);
-    let body_b = axum::body::to_bytes(resp_b.into_body(), 1024).await.unwrap();
+    let body_b = axum::body::to_bytes(resp_b.into_body(), 1024)
+        .await
+        .unwrap();
     assert!(
         std::str::from_utf8(&body_b)
             .unwrap()
@@ -991,9 +1032,20 @@ async fn tenant_oauth_cross_tenant_user_isolation() {
     let app = build_router(state);
 
     // Drive OAuth at ta only.
-    let resp = drive_callback(&app, "ta", "google", "https://app.example.com/auth/callback").await;
+    let resp = drive_callback(
+        &app,
+        "ta",
+        "google",
+        "https://app.example.com/auth/callback",
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::FOUND);
-    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(loc.contains("#access_token=drust_user_"), "loc={loc}");
 
     // ta has one row, tb has zero.
@@ -1074,7 +1126,12 @@ async fn tenant_oauth_spin_up_compiles_and_serves_start() {
     )
     .expect("state must decode under the test secret");
     assert_eq!(token.redirect_uri, frontend);
-    let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(loc.contains("/authorize?"), "loc={loc}");
 }
 
@@ -1167,10 +1224,18 @@ async fn tenant_oauth_concurrent_callbacks_same_email() {
         uri = urlencoding::encode(frontend)
     );
     let (start_a, start_b) = tokio::join!(
-        app.clone()
-            .oneshot(Request::builder().uri(&start_uri).body(Body::empty()).unwrap()),
-        app.clone()
-            .oneshot(Request::builder().uri(&start_uri).body(Body::empty()).unwrap()),
+        app.clone().oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap()
+        ),
+        app.clone().oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap()
+        ),
     );
     let start_a = start_a.unwrap();
     let start_b = start_b.unwrap();
@@ -1208,7 +1273,12 @@ async fn tenant_oauth_concurrent_callbacks_same_email() {
     assert_eq!(resp_b.status(), StatusCode::FOUND, "B must 302");
 
     let tok = |resp: &axum::http::Response<Body>| -> String {
-        let loc = resp.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+        let loc = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
         let frag = loc.split_once('#').expect("fragment").1;
         frag.split('&')
             .find_map(|kv| kv.strip_prefix("access_token="))
@@ -1324,9 +1394,7 @@ async fn put_oauth_with_body(
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "expected 400");
-    let bytes = axum::body::to_bytes(resp.into_body(), 4096)
-        .await
-        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
@@ -1477,10 +1545,18 @@ async fn two_parallel_oauth_starts_each_returns_to_their_own_redirect() {
         u = urlencoding::encode(frontend_b)
     );
     let (start_a, start_b) = tokio::join!(
-        app.clone()
-            .oneshot(Request::builder().uri(&start_uri_a).body(Body::empty()).unwrap()),
-        app.clone()
-            .oneshot(Request::builder().uri(&start_uri_b).body(Body::empty()).unwrap()),
+        app.clone().oneshot(
+            Request::builder()
+                .uri(&start_uri_a)
+                .body(Body::empty())
+                .unwrap()
+        ),
+        app.clone().oneshot(
+            Request::builder()
+                .uri(&start_uri_b)
+                .body(Body::empty())
+                .unwrap()
+        ),
     );
     let start_a = start_a.unwrap();
     let start_b = start_b.unwrap();
@@ -1491,7 +1567,10 @@ async fn two_parallel_oauth_starts_each_returns_to_their_own_redirect() {
     let state_b = extract_set_cookie(&start_b, "drust_t_oauth_state").unwrap();
     let pkce_b = extract_set_cookie(&start_b, "drust_t_oauth_pkce").unwrap();
     // State envelopes must be distinct (different URI + different nonce).
-    assert_ne!(state_a, state_b, "two starts must mint distinct state envelopes");
+    assert_ne!(
+        state_a, state_b,
+        "two starts must mint distinct state envelopes"
+    );
 
     // Two callbacks back-to-back, each carrying its own state+pkce.
     let cb_a = format!("/t/{tid}/oauth/google/callback?code=CODE-A&state={state_a}");
@@ -1519,8 +1598,18 @@ async fn two_parallel_oauth_starts_each_returns_to_their_own_redirect() {
     assert_eq!(resp_b.status(), StatusCode::FOUND, "B must 302");
 
     // Critical assertion: each callback returned to ITS OWN frontend.
-    let loc_a = resp_a.headers().get(header::LOCATION).unwrap().to_str().unwrap();
-    let loc_b = resp_b.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    let loc_a = resp_a
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let loc_b = resp_b
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(
         loc_a.starts_with(frontend_a),
         "A must redirect to A's frontend, got: {loc_a}"
@@ -1564,7 +1653,12 @@ async fn oauth_callback_rejects_state_with_tampered_redirect_uri() {
     );
     let start_resp = app
         .clone()
-        .oneshot(Request::builder().uri(&start_uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(start_resp.status(), StatusCode::FOUND);
@@ -1623,8 +1717,7 @@ async fn oauth_callback_rejects_state_minted_under_wrong_secret() {
     // Mint a state under a WRONG secret pointing at an off-allowlist URI.
     // We use the public TenantOauthStateToken API.
     let wrong_secret: [u8; 32] = *b"unit-test-secret-32-bytes-foo!!!";
-    let bad_token =
-        drust::oauth::state::TenantOauthStateToken::new("https://attacker.example/cb");
+    let bad_token = drust::oauth::state::TenantOauthStateToken::new("https://attacker.example/cb");
     let bad_state = bad_token.encode(&wrong_secret);
 
     // We need a matching PKCE cookie so Step 3 doesn't short-circuit on
@@ -1638,7 +1731,12 @@ async fn oauth_callback_rejects_state_minted_under_wrong_secret() {
     );
     let start_resp = app
         .clone()
-        .oneshot(Request::builder().uri(&start_uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let pkce = extract_set_cookie(&start_resp, "drust_t_oauth_pkce").expect("pkce");

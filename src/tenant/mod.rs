@@ -13,8 +13,8 @@ pub mod owner_field;
 pub mod query_endpoint;
 pub mod realtime_routes;
 pub mod records;
-pub mod rooms;
 pub mod records_list;
+pub mod rooms;
 pub mod router;
 pub mod sse;
 pub mod uploads;
@@ -23,13 +23,13 @@ pub mod webhook_routes;
 
 use crate::mcp::http_registry::McpHttpRegistry;
 use crate::mgmt::tenant_files::TenantFilesState;
+use auth_routes::{
+    login_handler, logout_all_handler, logout_handler, me_get_handler, me_password_handler,
+    me_patch_handler, register_handler,
+};
 use axum::Router;
 use axum::http::{HeaderValue, Method, header, header::HeaderName};
 use axum::routing::{any, delete, get, post, put};
-use auth_routes::{
-    login_handler, logout_all_handler, logout_handler, me_get_handler, me_patch_handler,
-    me_password_handler, register_handler,
-};
 use events::EventBus;
 use router::TenantAuthState;
 use std::sync::Arc;
@@ -130,7 +130,9 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
                 Method::HEAD,
             ])
             .allow_headers([
-                header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT,
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::ACCEPT,
                 HeaderName::from_static("tus-resumable"),
                 HeaderName::from_static("upload-length"),
                 HeaderName::from_static("upload-offset"),
@@ -260,8 +262,8 @@ mod cors_tests {
         use axum::{Router, routing::post};
         use tower::ServiceExt;
 
-        let cors = super::build_cors_layer(&["https://app.tzuchi.org".to_string()])
-            .expect("cors layer");
+        let cors =
+            super::build_cors_layer(&["https://app.tzuchi.org".to_string()]).expect("cors layer");
         let app: Router = Router::new()
             .route("/t/x/uploads", post(|| async { "ok" }))
             .route("/t/x/collections", post(|| async { "ok" }))
@@ -290,7 +292,11 @@ mod cors_tests {
         assert_eq!(h.get("tus-version").unwrap(), "1.0.0");
         assert_eq!(h.get("tus-resumable").unwrap(), "1.0.0");
         assert!(
-            h.get("tus-extension").unwrap().to_str().unwrap().contains("creation"),
+            h.get("tus-extension")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("creation"),
             "tus-extension must advertise creation"
         );
         assert_eq!(h.get("tus-max-size").unwrap(), "2147483648");
@@ -335,15 +341,24 @@ async fn inject_tus_capabilities(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let is_caps = req.method() == axum::http::Method::OPTIONS
-        && req.uri().path().ends_with("/uploads");
+    let is_caps =
+        req.method() == axum::http::Method::OPTIONS && req.uri().path().ends_with("/uploads");
     let mut resp = next.run(req).await;
     if is_caps {
         use axum::http::HeaderValue;
         let h = resp.headers_mut();
-        h.insert("tus-resumable", HeaderValue::from_static(uploads::TUS_VERSION));
-        h.insert("tus-version", HeaderValue::from_static(uploads::TUS_VERSION));
-        h.insert("tus-extension", HeaderValue::from_static(uploads::TUS_EXTENSION));
+        h.insert(
+            "tus-resumable",
+            HeaderValue::from_static(uploads::TUS_VERSION),
+        );
+        h.insert(
+            "tus-version",
+            HeaderValue::from_static(uploads::TUS_VERSION),
+        );
+        h.insert(
+            "tus-extension",
+            HeaderValue::from_static(uploads::TUS_EXTENSION),
+        );
         if let Ok(v) = HeaderValue::from_str(&max_size.to_string()) {
             h.insert("tus-max-size", v);
         }
@@ -436,7 +451,9 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             get(records::list_handler).post({
                 let b = bus.clone();
                 let wh = webhooks.clone();
-                move |ext, ctx, p, body| records::create_handler(ext, ctx, p, body, b.clone(), wh.clone())
+                move |ext, ctx, p, body| {
+                    records::create_handler(ext, ctx, p, body, b.clone(), wh.clone())
+                }
             }),
         )
         .route(
@@ -445,7 +462,9 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 .patch({
                     let b = bus.clone();
                     let wh = webhooks.clone();
-                    move |ext, ctx, p, body| records::update_handler(ext, ctx, p, body, b.clone(), wh.clone())
+                    move |ext, ctx, p, body| {
+                        records::update_handler(ext, ctx, p, body, b.clone(), wh.clone())
+                    }
                 })
                 .delete({
                     let b = bus.clone();
@@ -496,8 +515,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         // ── Admin user-management (service-only) ──────────────────────────
         .route(
             "/t/{tenant}/admin/users",
-            post(admin_user_routes::create_user_handler)
-                .get(admin_user_routes::list_users_handler),
+            post(admin_user_routes::create_user_handler).get(admin_user_routes::list_users_handler),
         )
         .route(
             "/t/{tenant}/admin/users/{uid}",

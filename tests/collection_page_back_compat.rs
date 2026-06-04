@@ -47,7 +47,10 @@ async fn app_with_tenant_and_notes() -> (axum::Router, tempfile::TempDir) {
         .unwrap();
     drop(writer);
 
-    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2));
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
     let bus = drust::tenant::events::EventBus::new();
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
@@ -110,11 +113,7 @@ async fn login(app: &axum::Router) -> String {
     sc.split(';').next().unwrap().to_string()
 }
 
-async fn get_admin(
-    app: &axum::Router,
-    cookie: &str,
-    path: &str,
-) -> axum::http::Response<Body> {
+async fn get_admin(app: &axum::Router, cookie: &str, path: &str) -> axum::http::Response<Body> {
     app.clone()
         .oneshot(
             Request::builder()

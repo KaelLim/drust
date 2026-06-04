@@ -62,7 +62,7 @@ pub async fn delete_blast_radius(
             let mut user_tables = c.prepare(
                 "SELECT name FROM sqlite_master \
                  WHERE type='table' AND name NOT LIKE 'sqlite_%' \
-                 AND name NOT LIKE '\\_system\\_%' ESCAPE '\\'"
+                 AND name NOT LIKE '\\_system\\_%' ESCAPE '\\'",
             )?;
             let tables: Vec<String> = user_tables
                 .query_map([], |r| r.get::<_, String>(0))?
@@ -72,9 +72,8 @@ pub async fn delete_blast_radius(
                 let pragma = format!("PRAGMA foreign_key_list(\"{}\")", t.replace('"', "\"\""));
                 let mut stmt = c.prepare(&pragma)?;
                 // Cols: id, seq, table, from, to, on_update, on_delete, match
-                let rows = stmt.query_map([], |r| {
-                    Ok((r.get::<_, String>(2)?, r.get::<_, String>(3)?))
-                })?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get::<_, String>(2)?, r.get::<_, String>(3)?)))?;
                 for row in rows {
                     let (target_table, from_col) = row?;
                     if target_table == coll_owned {
@@ -83,7 +82,8 @@ pub async fn delete_blast_radius(
                             t.replace('"', "\"\""),
                             from_col.replace('"', "\"\""),
                         );
-                        let count: i64 = c.query_row(&count_sql, rusqlite::params![id], |r| r.get(0))?;
+                        let count: i64 =
+                            c.query_row(&count_sql, rusqlite::params![id], |r| r.get(0))?;
                         if count > 0 {
                             blocks.push(FkBlocker {
                                 collection: t.clone(),
@@ -113,13 +113,16 @@ pub async fn drop_collection_blast_radius(
     let (row_count, indexes, rpcs, reverse_fks) = pool
         .with_reader(move |c| {
             // row_count
-            let row_count_sql = format!("SELECT COUNT(*) FROM \"{}\"", coll_owned.replace('"', "\"\""));
+            let row_count_sql = format!(
+                "SELECT COUNT(*) FROM \"{}\"",
+                coll_owned.replace('"', "\"\"")
+            );
             let row_count: i64 = c.query_row(&row_count_sql, [], |r| r.get(0))?;
 
             // indexes on this table (excluding sqlite-internal autoindex)
             let mut idx_stmt = c.prepare(
                 "SELECT name FROM sqlite_master \
-                 WHERE type='index' AND tbl_name = ?1 AND name NOT LIKE 'sqlite_%'"
+                 WHERE type='index' AND tbl_name = ?1 AND name NOT LIKE 'sqlite_%'",
             )?;
             let indexes: Vec<String> = idx_stmt
                 .query_map(rusqlite::params![coll_owned], |r| r.get::<_, String>(0))?
@@ -137,9 +140,8 @@ pub async fn drop_collection_blast_radius(
                 .unwrap_or(0);
             if rpc_table_exists > 0 {
                 let mut stmt = c.prepare("SELECT name, sql FROM _system_rpc")?;
-                let rows = stmt.query_map([], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
                 for row in rows {
                     let (name, sql) = row?;
                     if sql.contains(&coll_owned) {
@@ -152,23 +154,25 @@ pub async fn drop_collection_blast_radius(
             let mut user_tables = c.prepare(
                 "SELECT name FROM sqlite_master \
                  WHERE type='table' AND name NOT LIKE 'sqlite_%' \
-                 AND name NOT LIKE '\\_system\\_%' ESCAPE '\\'"
+                 AND name NOT LIKE '\\_system\\_%' ESCAPE '\\'",
             )?;
             let tables: Vec<String> = user_tables
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<Result<_, _>>()?;
             let mut reverse_fks: Vec<ReverseFk> = Vec::new();
             for t in &tables {
-                if t == &coll_owned { continue; }
+                if t == &coll_owned {
+                    continue;
+                }
                 let pragma = format!("PRAGMA foreign_key_list(\"{}\")", t.replace('"', "\"\""));
                 let mut stmt = c.prepare(&pragma)?;
-                let rows = stmt.query_map([], |r| {
-                    Ok((r.get::<_, String>(2)?, r.get::<_, String>(3)?))
-                })?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get::<_, String>(2)?, r.get::<_, String>(3)?)))?;
                 for row in rows {
                     let (target, from_col) = row?;
                     if target == coll_owned {
-                        let cnt_sql = format!("SELECT COUNT(*) FROM \"{}\"", t.replace('"', "\"\""));
+                        let cnt_sql =
+                            format!("SELECT COUNT(*) FROM \"{}\"", t.replace('"', "\"\""));
                         let row_count: i64 = c.query_row(&cnt_sql, [], |r| r.get(0))?;
                         reverse_fks.push(ReverseFk {
                             collection: t.clone(),

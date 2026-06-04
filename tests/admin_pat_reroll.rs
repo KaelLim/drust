@@ -102,7 +102,9 @@ fn insert_admin(dir: &tempfile::TempDir, email: &str, role: &str) -> (i64, Strin
 }
 
 async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
 }
 
@@ -152,7 +154,9 @@ async fn reroll_returns_plaintext_and_revokes_previous() {
 
     assert_eq!(resp.status(), StatusCode::OK, "reroll must return 200");
     let body = body_json(resp).await;
-    let plaintext = body["plaintext"].as_str().expect("response must contain plaintext");
+    let plaintext = body["plaintext"]
+        .as_str()
+        .expect("response must contain plaintext");
     assert!(
         plaintext.starts_with("drust_pat_"),
         "plaintext must start with drust_pat_, got: {plaintext:?}"
@@ -177,8 +181,7 @@ async fn reroll_returns_plaintext_and_revokes_previous() {
         )
         .unwrap();
     assert_ne!(
-        new_hash,
-        initial_hash,
+        new_hash, initial_hash,
         "new PAT hash must differ from original"
     );
 
@@ -256,7 +259,11 @@ async fn reroll_emits_revoke_and_mint_audit_rows() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "reroll must return 200 for audit test");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "reroll must return 200 for audit test"
+    );
 
     // Give the background writer ~250ms to drain.
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -273,19 +280,14 @@ async fn reroll_emits_revoke_and_mint_audit_rows() {
             )
             .unwrap();
         stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
         })
         .unwrap()
         .filter_map(|r| r.ok())
         .collect()
     };
 
-    let matching_revoke = revoke_rows
-        .iter()
-        .find(|(_, aid)| *aid == Some(admin_id));
+    let matching_revoke = revoke_rows.iter().find(|(_, aid)| *aid == Some(admin_id));
     assert!(
         matching_revoke.is_some(),
         "must find admin.token.revoke row for admin_id={admin_id}"
@@ -301,19 +303,14 @@ async fn reroll_emits_revoke_and_mint_audit_rows() {
             )
             .unwrap();
         stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<i64>>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
         })
         .unwrap()
         .filter_map(|r| r.ok())
         .collect()
     };
 
-    let matching_mint = mint_rows
-        .iter()
-        .find(|(_, aid)| *aid == Some(admin_id));
+    let matching_mint = mint_rows.iter().find(|(_, aid)| *aid == Some(admin_id));
     assert!(
         matching_mint.is_some(),
         "must find admin.token.mint row for admin_id={admin_id}"

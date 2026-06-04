@@ -1,8 +1,8 @@
 use crate::storage::garage::GarageClient;
 use crate::storage::pool::{SharedTenantPool, TenantRegistry};
+use crate::tenant::WebhookDispatcher;
 use crate::tenant::events::EventBus;
 use crate::tenant::rooms::{PublishBucket, RoomBus, RoomsConfig};
-use crate::tenant::WebhookDispatcher;
 use dashmap::DashMap;
 use rusqlite::Connection;
 use std::sync::Arc;
@@ -274,8 +274,10 @@ fn test_audit_conn() -> Arc<Mutex<Connection>> {
 /// missing-conn at runtime.
 #[cfg(not(any(test, debug_assertions)))]
 fn test_audit_conn() -> Arc<Mutex<Connection>> {
-    panic!("McpRegistry::new / with_bus are test-only constructors; \
-            release code must use with_bus_and_storage");
+    panic!(
+        "McpRegistry::new / with_bus are test-only constructors; \
+            release code must use with_bus_and_storage"
+    );
 }
 
 /// v1.31 — same release/debug split for the broadcast bucket. `new` /
@@ -290,6 +292,8 @@ fn test_rooms_defaults() -> (RoomBus, Arc<PublishBucket>, RoomsConfig) {
 
 #[cfg(not(any(test, debug_assertions)))]
 fn test_rooms_defaults() -> (RoomBus, Arc<PublishBucket>, RoomsConfig) {
-    panic!("McpRegistry::new / with_bus are test-only constructors; \
-            release code must use with_bus_and_storage");
+    panic!(
+        "McpRegistry::new / with_bus are test-only constructors; \
+            release code must use with_bus_and_storage"
+    );
 }

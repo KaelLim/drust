@@ -17,7 +17,7 @@
 mod helpers;
 
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -281,7 +281,12 @@ async fn user_token_cannot_spoof_user_id_via_body_write_rpc() {
         .unwrap();
     let status = r.status();
     let v = read_json(r).await;
-    assert!(status.is_success(), "insert_post RPC failed: {} {:?}", status, v);
+    assert!(
+        status.is_success(),
+        "insert_post RPC failed: {} {:?}",
+        status,
+        v
+    );
     assert_eq!(
         v["affected_rows"].as_i64(),
         Some(1),

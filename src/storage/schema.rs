@@ -107,10 +107,7 @@ pub fn check_description(raw: &str) -> Result<String, (&'static str, &'static st
         ));
     }
     if trimmed.contains('\0') {
-        return Err((
-            "DESCRIPTION_INVALID",
-            "description must not contain NUL",
-        ));
+        return Err(("DESCRIPTION_INVALID", "description must not contain NUL"));
     }
     Ok(trimmed.to_string())
 }
@@ -227,8 +224,9 @@ mod anon_caps_tests {
 
     #[test]
     fn json_roundtrip_preserves_order() {
-        let caps: BTreeSet<DmlVerb> =
-            [DmlVerb::Delete, DmlVerb::Select, DmlVerb::Insert].into_iter().collect();
+        let caps: BTreeSet<DmlVerb> = [DmlVerb::Delete, DmlVerb::Select, DmlVerb::Insert]
+            .into_iter()
+            .collect();
         let json = anon_caps_to_json(&caps);
         assert_eq!(json, r#"["select","insert","delete"]"#);
         let parsed = parse_anon_caps_json(&json);
@@ -371,10 +369,7 @@ pub fn list_collections(conn: &Connection) -> rusqlite::Result<Vec<Collection>> 
 /// `_system_collection_meta`. Missing rows yield `default_anon_caps()`
 /// (i.e. legacy collections pre-dating the feature behave the same as
 /// status quo).
-fn read_anon_caps(
-    conn: &Connection,
-    coll: &str,
-) -> rusqlite::Result<BTreeSet<DmlVerb>> {
+fn read_anon_caps(conn: &Connection, coll: &str) -> rusqlite::Result<BTreeSet<DmlVerb>> {
     let row: Option<String> = conn
         .query_row(
             "SELECT anon_caps_json FROM _system_collection_meta WHERE collection_name = ?1",
@@ -390,10 +385,7 @@ fn read_anon_caps(
 /// Read the realtime flag for a single collection. Missing rows yield
 /// `true` (matches `read_anon_caps`'s default-allow fallback so legacy
 /// collections pre-dating v1.16 keep their existing SSE behaviour).
-fn read_realtime_enabled(
-    conn: &Connection,
-    coll: &str,
-) -> rusqlite::Result<bool> {
+fn read_realtime_enabled(conn: &Connection, coll: &str) -> rusqlite::Result<bool> {
     let row: Option<i64> = conn
         .query_row(
             "SELECT realtime_enabled FROM _system_collection_meta WHERE collection_name = ?1",
@@ -516,11 +508,14 @@ pub fn write_field_description(
     );
     let mut map = read_field_descriptions(conn, coll)?;
     match description.filter(|s| !s.is_empty()) {
-        Some(text) => { map.insert(field.to_string(), text.to_string()); }
-        None => { map.remove(field); }
+        Some(text) => {
+            map.insert(field.to_string(), text.to_string());
+        }
+        None => {
+            map.remove(field);
+        }
     }
-    let json = serde_json::to_string(&map)
-        .expect("BTreeMap<String,String> always serialises");
+    let json = serde_json::to_string(&map).expect("BTreeMap<String,String> always serialises");
     conn.execute(
         "INSERT INTO _system_collection_meta \
               (collection_name, anon_caps_json, field_descriptions_json, updated_at) \
@@ -548,11 +543,14 @@ pub fn write_index_description(
     );
     let mut map = read_index_descriptions(conn, coll)?;
     match description.filter(|s| !s.is_empty()) {
-        Some(text) => { map.insert(index_name.to_string(), text.to_string()); }
-        None => { map.remove(index_name); }
+        Some(text) => {
+            map.insert(index_name.to_string(), text.to_string());
+        }
+        None => {
+            map.remove(index_name);
+        }
     }
-    let json = serde_json::to_string(&map)
-        .expect("BTreeMap<String,String> always serialises");
+    let json = serde_json::to_string(&map).expect("BTreeMap<String,String> always serialises");
     conn.execute(
         "INSERT INTO _system_collection_meta \
               (collection_name, anon_caps_json, index_descriptions_json, updated_at) \
@@ -784,7 +782,12 @@ pub fn read_owner_field(
         "SELECT owner_field, read_scope FROM _system_collection_meta \
          WHERE collection_name = ?1",
         rusqlite::params![collection],
-        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
+        |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+            ))
+        },
     ) {
         Ok(t) => Ok(t),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok((None, None)),
@@ -800,8 +803,7 @@ pub fn write_vector_fields(
     coll: &str,
     fields: &[VectorField],
 ) -> rusqlite::Result<()> {
-    let json = serde_json::to_string(fields)
-        .expect("VectorField slice serialises");
+    let json = serde_json::to_string(fields).expect("VectorField slice serialises");
     conn.execute(
         "INSERT INTO _system_collection_meta \
               (collection_name, anon_caps_json, vector_fields_json, updated_at) \
@@ -817,10 +819,7 @@ pub fn write_vector_fields(
 /// Read the vector fields registered against a collection. Returns an
 /// empty Vec when the meta row is absent (legacy / non-vector
 /// collections).
-pub fn read_vector_fields(
-    conn: &Connection,
-    coll: &str,
-) -> rusqlite::Result<Vec<VectorField>> {
+pub fn read_vector_fields(conn: &Connection, coll: &str) -> rusqlite::Result<Vec<VectorField>> {
     let raw: Option<String> = conn
         .query_row(
             "SELECT vector_fields_json FROM _system_collection_meta \
@@ -838,10 +837,7 @@ pub fn read_vector_fields(
 
 /// Drop the metadata row for a collection. Called from drop_collection.
 /// Idempotent — missing row is fine.
-pub fn delete_collection_meta(
-    conn: &Connection,
-    coll: &str,
-) -> rusqlite::Result<()> {
+pub fn delete_collection_meta(conn: &Connection, coll: &str) -> rusqlite::Result<()> {
     conn.execute(
         "DELETE FROM _system_collection_meta WHERE collection_name = ?1",
         rusqlite::params![coll],
@@ -867,7 +863,8 @@ mod meta_io_tests {
                 read_scope        TEXT,
                 realtime_enabled  INTEGER NOT NULL DEFAULT 1
             );",
-        ).unwrap();
+        )
+        .unwrap();
         (tmp, conn)
     }
 
@@ -893,8 +890,14 @@ mod meta_io_tests {
     fn write_overwrites_existing() {
         let (_t, conn) = fresh();
         let only_select: BTreeSet<DmlVerb> = [DmlVerb::Select].into_iter().collect();
-        let crud: BTreeSet<DmlVerb> = [DmlVerb::Select, DmlVerb::Insert,
-                                       DmlVerb::Update, DmlVerb::Delete].into_iter().collect();
+        let crud: BTreeSet<DmlVerb> = [
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ]
+        .into_iter()
+        .collect();
         write_anon_caps(&conn, "posts", &only_select).unwrap();
         write_anon_caps(&conn, "posts", &crud).unwrap();
         assert_eq!(read_anon_caps(&conn, "posts").unwrap(), crud);
@@ -924,8 +927,14 @@ mod meta_io_tests {
         )
         .unwrap();
         let fields = vec![
-            VectorField { name: "title_emb".into(), dim: 384 },
-            VectorField { name: "body_emb".into(),  dim: 768 },
+            VectorField {
+                name: "title_emb".into(),
+                dim: 384,
+            },
+            VectorField {
+                name: "body_emb".into(),
+                dim: 768,
+            },
         ];
         write_vector_fields(&conn, "posts", &fields).unwrap();
         let got = read_vector_fields(&conn, "posts").unwrap();
@@ -955,7 +964,10 @@ mod meta_io_tests {
         assert_eq!(s.as_deref(), Some("own"));
         // The implicit row keeps default anon_caps so the collection is
         // not inadvertently locked down.
-        assert_eq!(read_anon_caps(&conn, "legacy").unwrap(), default_anon_caps());
+        assert_eq!(
+            read_anon_caps(&conn, "legacy").unwrap(),
+            default_anon_caps()
+        );
     }
 
     #[test]
@@ -1046,8 +1058,13 @@ mod meta_io_tests {
         ).unwrap();
 
         assert!(read_index_descriptions(&conn, "posts").unwrap().is_empty());
-        write_index_description(&conn, "posts", "idx_posts_author",
-            Some("fast lookup by author")).unwrap();
+        write_index_description(
+            &conn,
+            "posts",
+            "idx_posts_author",
+            Some("fast lookup by author"),
+        )
+        .unwrap();
         let m = read_index_descriptions(&conn, "posts").unwrap();
         assert_eq!(
             m.get("idx_posts_author").map(|s| s.as_str()),
@@ -1070,9 +1087,13 @@ mod meta_io_tests {
                   (collection_name, anon_caps_json, field_descriptions_json, updated_at) \
                   VALUES ('rotten', '[\"select\"]', 'not json', datetime('now'))",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let m = read_field_descriptions(&conn, "rotten").unwrap();
-        assert!(m.is_empty(), "malformed JSON must yield empty map (defensive)");
+        assert!(
+            m.is_empty(),
+            "malformed JSON must yield empty map (defensive)"
+        );
     }
 }
 
@@ -1127,7 +1148,12 @@ mod cap_gate_tests {
     #[test]
     fn service_is_unrestricted() {
         let s = schema_with(&[]);
-        for verb in [DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
+        for verb in [
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ] {
             assert!(has_dml_cap(TokenRole::Service, verb, &s));
         }
     }
@@ -1144,15 +1170,30 @@ mod cap_gate_tests {
     #[test]
     fn anon_locked_collection_denies_all() {
         let s = schema_with(&[]);
-        for verb in [DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
+        for verb in [
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ] {
             assert!(!has_dml_cap(TokenRole::Anon, verb, &s));
         }
     }
 
     #[test]
     fn anon_full_crud_collection() {
-        let s = schema_with(&[DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete]);
-        for verb in [DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
+        let s = schema_with(&[
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ]);
+        for verb in [
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ] {
             assert!(has_dml_cap(TokenRole::Anon, verb, &s));
         }
     }
@@ -1171,13 +1212,15 @@ mod tests {
                 collection_name TEXT PRIMARY KEY, \
                 anon_caps_json TEXT NOT NULL DEFAULT '[\"select\"]', \
                 owner_field TEXT, read_scope TEXT, \
-                updated_at TEXT NOT NULL DEFAULT '');"
-        ).unwrap();
+                updated_at TEXT NOT NULL DEFAULT '');",
+        )
+        .unwrap();
         c.execute(
             "INSERT INTO _system_collection_meta (collection_name, anon_caps_json, updated_at) \
              VALUES ('posts', '[\"select\"]', '2026')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         set_owner_field(&c, "posts", Some("user_id"), Some("own")).unwrap();
         let (f, s) = read_owner_field(&c, "posts").unwrap();
@@ -1197,8 +1240,9 @@ mod tests {
         c.execute_batch(
             "CREATE TABLE _system_collection_meta ( \
                 collection_name TEXT PRIMARY KEY, \
-                anon_caps_json TEXT, owner_field TEXT, read_scope TEXT, updated_at TEXT);"
-        ).unwrap();
+                anon_caps_json TEXT, owner_field TEXT, read_scope TEXT, updated_at TEXT);",
+        )
+        .unwrap();
         let (f, s) = read_owner_field(&c, "absent").unwrap();
         assert_eq!(f, None);
         assert_eq!(s, None);

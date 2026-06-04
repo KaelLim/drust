@@ -1,15 +1,15 @@
-mod webhooks_common;
 mod helpers;
-use webhooks_common::FakeHook;
-use drust::tenant::webhook_dispatcher::{
-    compute_signature, deliver_for_test, DeliverySchedule, WebhookRow,
-};
-use helpers::spin_up_tenant_with_role;
+mod webhooks_common;
 use axum::body::Body;
 use axum::http::{Request, header};
+use drust::tenant::webhook_dispatcher::{
+    DeliverySchedule, WebhookRow, compute_signature, deliver_for_test,
+};
+use helpers::spin_up_tenant_with_role;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use std::sync::Arc;
 use tower::ServiceExt;
+use webhooks_common::FakeHook;
 
 fn fake_row(url: &str) -> WebhookRow {
     WebhookRow {
@@ -90,17 +90,26 @@ async fn deliver_happy_path_signature_matches() {
     let received = hook.requests().await;
     assert_eq!(received.len(), 1);
     assert_eq!(
-        received[0].headers.get("x-drust-signature").map(|s| s.as_str()),
+        received[0]
+            .headers
+            .get("x-drust-signature")
+            .map(|s| s.as_str()),
         Some(expected_sig.as_str()),
         "header must echo the computed HMAC signature",
     );
     assert_eq!(
-        received[0].headers.get("x-drust-delivery-id").map(|s| s.as_str()),
+        received[0]
+            .headers
+            .get("x-drust-delivery-id")
+            .map(|s| s.as_str()),
         Some("test-delivery-id"),
         "header must echo the caller-supplied delivery_id",
     );
     assert_eq!(
-        received[0].headers.get("x-drust-timestamp").map(|s| s.as_str()),
+        received[0]
+            .headers
+            .get("x-drust-timestamp")
+            .map(|s| s.as_str()),
         Some("1970-01-01T00:00:00Z"),
         "header must echo the caller-supplied timestamp",
     );
@@ -331,8 +340,7 @@ async fn create_webhook(
         .unwrap();
     let status = resp.status().as_u16();
     let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, v)
 }
 
@@ -514,7 +522,9 @@ async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::V
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let text = String::from_utf8(bytes.to_vec()).unwrap();
     if ct.starts_with("text/event-stream") {
         let mut out = Vec::new();
@@ -662,7 +672,15 @@ async fn mcp_create_webhook_returns_secret_then_list_redacts() {
     assert_eq!(v["active"], true);
 
     // list_webhooks → redacted secret
-    let txt = mcp_call_tool(&app, tid, &svc, &sid, "list_webhooks", serde_json::json!({})).await;
+    let txt = mcp_call_tool(
+        &app,
+        tid,
+        &svc,
+        &sid,
+        "list_webhooks",
+        serde_json::json!({}),
+    )
+    .await;
     let v: serde_json::Value =
         serde_json::from_str(&txt).expect(&format!("expected JSON, got: {txt}"));
     let items = v["webhooks"].as_array().expect("webhooks array");
@@ -708,7 +726,15 @@ async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
     assert_eq!(v["id"], id);
 
     // Verify via list
-    let txt = mcp_call_tool(&app, tid, &svc, &sid, "list_webhooks", serde_json::json!({})).await;
+    let txt = mcp_call_tool(
+        &app,
+        tid,
+        &svc,
+        &sid,
+        "list_webhooks",
+        serde_json::json!({}),
+    )
+    .await;
     let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let items = v["webhooks"].as_array().unwrap();
     assert_eq!(items[0]["url"].as_str(), Some("https://example.com/b"));
@@ -875,7 +901,11 @@ async fn webhook_does_not_fire_for_other_tenants() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 201, "tenant B record insert must succeed");
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "tenant B record insert must succeed"
+    );
 
     // Poll up to ~500 ms for any stray delivery; assert none happened.
     for _ in 0..10 {

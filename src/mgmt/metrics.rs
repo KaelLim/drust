@@ -18,9 +18,8 @@
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
 use prometheus::{
-    Encoder, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, TextEncoder,
-    register_int_counter, register_int_counter_vec, register_int_gauge,
-    register_int_gauge_vec,
+    Encoder, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, TextEncoder, register_int_counter,
+    register_int_counter_vec, register_int_gauge, register_int_gauge_vec,
 };
 use std::sync::OnceLock;
 
@@ -72,8 +71,10 @@ pub fn metrics() -> &'static Metrics {
         // metric lines even before the first observation — scrapers see a
         // stable set of series from the first scrape. Zero-valued is fine;
         // it distinguishes "counter exists but empty" from "never registered".
-        m.bearer_denied_total.with_label_values(&["none", "HTTP_401"]);
-        m.bearer_denied_total.with_label_values(&["unknown", "HTTP_401"]);
+        m.bearer_denied_total
+            .with_label_values(&["none", "HTTP_401"]);
+        m.bearer_denied_total
+            .with_label_values(&["unknown", "HTTP_401"]);
         m.webhook_attempts_total.with_label_values(&["success"]);
         m.webhook_attempts_total.with_label_values(&["4xx"]);
         m.webhook_attempts_total.with_label_values(&["5xx"]);
@@ -94,16 +95,14 @@ pub async fn handler(State(state): State<MgmtState>) -> impl IntoResponse {
     // Refresh tenant_db_bytes at scrape time.
     {
         let conn = state.meta.lock().await;
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT id, COALESCE(db_bytes, 0) FROM tenants WHERE deleted_at IS NULL",
-        ) {
-            if let Ok(rows) = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            }) {
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT id, COALESCE(db_bytes, 0) FROM tenants WHERE deleted_at IS NULL")
+        {
+            if let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            {
                 for row in rows.flatten() {
-                    m.tenant_db_bytes
-                        .with_label_values(&[&row.0])
-                        .set(row.1);
+                    m.tenant_db_bytes.with_label_values(&[&row.0]).set(row.1);
                 }
             }
         }

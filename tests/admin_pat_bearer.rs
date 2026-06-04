@@ -9,7 +9,9 @@ use drust::auth::admin_token;
 use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
-use drust::tenant::{TenantStack, WebhookDispatcher, build_tenant_router, events::EventBus, router::TenantAuthState};
+use drust::tenant::{
+    TenantStack, WebhookDispatcher, build_tenant_router, events::EventBus, router::TenantAuthState,
+};
 use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,7 +37,8 @@ async fn app_with_pat(tenant: &str) -> (axum::Router, String, i64, tempfile::Tem
     conn.execute(
         "INSERT INTO tenants (id, name) VALUES (?1, 'acme')",
         params![tenant],
-    ).unwrap();
+    )
+    .unwrap();
 
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
@@ -54,7 +57,8 @@ async fn app_with_pat(tenant: &str) -> (axum::Router, String, i64, tempfile::Tem
     conn.execute(
         "INSERT INTO _admin_tokens (admin_id, token_hash) VALUES (?1, ?2)",
         params![admin_id, hash],
-    ).unwrap();
+    )
+    .unwrap();
 
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
@@ -155,7 +159,12 @@ async fn pat_bearer_returns_200_for_tenant_route() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "PAT should resolve to service, got {}", resp.status());
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "PAT should resolve to service, got {}",
+        resp.status()
+    );
 }
 
 #[tokio::test]
@@ -175,15 +184,25 @@ async fn pat_bearer_audit_row_carries_actor_admin_id() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let rows = read_audit_rows_for_tenant("pat-t2").await;
-    let entry = rows.iter().find(|l| {
-        l["op"].as_str().map_or(false, |op| op.contains("collections"))
-    }).expect("no audit entry for collections route");
+    let entry = rows
+        .iter()
+        .find(|l| {
+            l["op"]
+                .as_str()
+                .map_or(false, |op| op.contains("collections"))
+        })
+        .expect("no audit entry for collections route");
 
-    let got_admin_id = entry["actor_admin_id"].as_i64()
+    let got_admin_id = entry["actor_admin_id"]
+        .as_i64()
         .expect("actor_admin_id should be present as an integer in audit row");
-    assert_eq!(got_admin_id, admin_id, "audit actor_admin_id should match the inserted admin");
+    assert_eq!(
+        got_admin_id, admin_id,
+        "audit actor_admin_id should match the inserted admin"
+    );
 
-    let email = entry["actor_email_snapshot"].as_str()
+    let email = entry["actor_email_snapshot"]
+        .as_str()
         .expect("actor_email_snapshot should be present");
     assert_eq!(email, "pat-tester@example.com");
 }

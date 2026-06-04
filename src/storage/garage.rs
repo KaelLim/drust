@@ -5,9 +5,9 @@
 
 use crate::config::StorageConfig;
 use anyhow::{Context, Result};
-use object_store::{ObjectStore, ObjectStoreExt};
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as StorePath;
+use object_store::{ObjectStore, ObjectStoreExt};
 use std::sync::Arc;
 
 pub struct GarageClient {
@@ -507,7 +507,10 @@ impl GarageClient {
         }
         attrs.insert(Attribute::ContentDisposition, AttributeValue::from(cd));
         if let Some(cc) = cache_control {
-            attrs.insert(Attribute::CacheControl, AttributeValue::from(cc.to_string()));
+            attrs.insert(
+                Attribute::CacheControl,
+                AttributeValue::from(cc.to_string()),
+            );
         }
         attrs.insert(
             Attribute::Metadata("original-name".into()),
@@ -517,7 +520,10 @@ impl GarageClient {
             Attribute::Metadata("uploaded-at".into()),
             AttributeValue::from(chrono::Utc::now().to_rfc3339()),
         );
-        let opts = PutMultipartOptions { attributes: attrs, ..Default::default() };
+        let opts = PutMultipartOptions {
+            attributes: attrs,
+            ..Default::default()
+        };
 
         if self.s3_endpoint.is_empty() {
             // from_store / test path: single backing store, bucket ignored.
@@ -720,10 +726,17 @@ mod tests {
         std::fs::write(tmp.path(), b"0123456789abcdefghijklmno").unwrap();
         let dest = StorePath::from("t1/big.bin");
         super::stream_file_to_store(
-            store.as_ref(), &dest, tmp.path(),
-            PutMultipartOptions { attributes: object_store::Attributes::new(), ..Default::default() },
+            store.as_ref(),
+            &dest,
+            tmp.path(),
+            PutMultipartOptions {
+                attributes: object_store::Attributes::new(),
+                ..Default::default()
+            },
             8,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         let got = store.get(&dest).await.unwrap().bytes().await.unwrap();
         assert_eq!(&got[..], b"0123456789abcdefghijklmno");
     }

@@ -110,28 +110,22 @@ async fn create_rpc(
 
 async fn create_orders_table(pool: &drust::storage::pool::SharedTenantPool) {
     pool.with_writer(|c| {
-        c.execute_batch(
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, qty INTEGER);",
-        )
+        c.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, qty INTEGER);")
     })
     .await
     .unwrap();
 }
 
 async fn orders_count(pool: &drust::storage::pool::SharedTenantPool) -> i64 {
-    pool.with_reader(|c| {
-        c.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0))
-    })
-    .await
-    .unwrap()
+    pool.with_reader(|c| c.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)))
+        .await
+        .unwrap()
 }
 
 async fn orders_qty_sum(pool: &drust::storage::pool::SharedTenantPool) -> i64 {
-    pool.with_reader(|c| {
-        c.query_row("SELECT COALESCE(SUM(qty), 0) FROM orders", [], |r| r.get(0))
-    })
-    .await
-    .unwrap()
+    pool.with_reader(|c| c.query_row("SELECT COALESCE(SUM(qty), 0) FROM orders", [], |r| r.get(0)))
+        .await
+        .unwrap()
 }
 
 /// Best-effort: drain audit rows for `tenant` from the global SQLite
@@ -187,8 +181,7 @@ async fn read_audit_lines(tenant: &str) -> Vec<serde_json::Value> {
 
 #[tokio::test]
 async fn case1_read_rpc_unchanged() {
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c1").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c1").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_rpc(&pool, "ping", "SELECT 1 AS x", "[]", false, "read").await;
 
@@ -231,8 +224,7 @@ async fn case1_read_rpc_unchanged() {
 #[tokio::test]
 async fn case2_single_insert_commits_and_audits_affected_one() {
     ensure_global_audit_writer();
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c2").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c2").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_orders_table(&pool).await;
     create_rpc(
@@ -285,8 +277,7 @@ async fn case2_single_insert_commits_and_audits_affected_one() {
 
 #[tokio::test]
 async fn case3_multi_statement_commits_both() {
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c3").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c3").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_orders_table(&pool).await;
     create_rpc(
@@ -326,8 +317,7 @@ async fn case3_multi_statement_commits_both() {
 
 #[tokio::test]
 async fn case4_multi_statement_failure_rolls_all_back() {
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c4").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c4").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_orders_table(&pool).await;
     create_rpc(
@@ -369,8 +359,7 @@ async fn case4_multi_statement_failure_rolls_all_back() {
 
 #[tokio::test]
 async fn case5_dry_run_persists_nothing() {
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c5").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c5").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_orders_table(&pool).await;
     create_rpc(
@@ -416,8 +405,7 @@ async fn case5_dry_run_persists_nothing() {
 
 #[tokio::test]
 async fn case6_anon_with_anon_callable_false_403_rpc_denied() {
-    let (app, tid, _svc, anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c6").await;
+    let (app, tid, _svc, anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c6").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_orders_table(&pool).await;
     create_rpc(
@@ -461,8 +449,7 @@ async fn case6_anon_with_anon_callable_false_403_rpc_denied() {
 
 #[tokio::test]
 async fn case7_user_id_param_with_anon_caller_403_before_sql() {
-    let (app, tid, _svc, anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c7").await;
+    let (app, tid, _svc, anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c7").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     // orders carries a user_id column so the bind would succeed if it
     // got to SQL — but the pre-flight reject must fire first.
@@ -484,13 +471,7 @@ async fn case7_user_id_param_with_anon_caller_403_before_sql() {
     .await;
 
     let r = app
-        .oneshot(req(
-            "POST",
-            &tid,
-            "/rpc/user_add",
-            Some(json!({})),
-            &anon,
-        ))
+        .oneshot(req("POST", &tid, "/rpc/user_add", Some(json!({})), &anon))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
@@ -517,8 +498,7 @@ async fn case7_user_id_param_with_anon_caller_403_before_sql() {
 
 #[tokio::test]
 async fn case8_owner_field_collection_owner_match_succeeds_and_mismatch_blocked() {
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c8").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c8").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     // No FK to _system_users — the writable authorizer denies Read on
     // _system_users (it's a protected collection), which would trip
@@ -538,10 +518,8 @@ async fn case8_owner_field_collection_owner_match_succeeds_and_mismatch_blocked(
     .unwrap();
     let _ = svc; // owner_field not used — INSERT writes user_id verbatim from :user_id
 
-    let ta =
-        helpers::register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-    let tb =
-        helpers::register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
+    let ta = helpers::register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+    let tb = helpers::register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
 
     // RPC: each user inserts a row tagged with their own user_id.
     create_rpc(
@@ -612,7 +590,9 @@ async fn case8_owner_field_collection_owner_match_succeeds_and_mismatch_blocked(
     // B's row must still be qty=20; A's row must now be 11.
     let qtys: Vec<(String, i64)> = pool
         .with_reader(|c| {
-            let mut stmt = c.prepare("SELECT user_id, qty FROM orders ORDER BY id").unwrap();
+            let mut stmt = c
+                .prepare("SELECT user_id, qty FROM orders ORDER BY id")
+                .unwrap();
             let rows = stmt
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
                 .unwrap()
@@ -633,8 +613,7 @@ async fn case8_owner_field_collection_owner_match_succeeds_and_mismatch_blocked(
 
 #[tokio::test]
 async fn case9_returning_clause_shape_matches_select() {
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c9").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c9").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_orders_table(&pool).await;
     create_rpc(
@@ -681,8 +660,7 @@ async fn case9_returning_clause_shape_matches_select() {
 #[tokio::test]
 async fn case10_audit_extra_carries_all_four_new_fields() {
     ensure_global_audit_writer();
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c10").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c10").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_orders_table(&pool).await;
     create_rpc(
@@ -721,8 +699,7 @@ async fn case10_audit_extra_carries_all_four_new_fields() {
 #[tokio::test]
 async fn case10b_read_rpc_audit_has_rpc_mode_read_no_write_fields() {
     ensure_global_audit_writer();
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-c10b").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-c10b").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_rpc(&pool, "ping", "SELECT 1 AS x", "[]", false, "read").await;
 
@@ -763,13 +740,10 @@ async fn case10b_read_rpc_audit_has_rpc_mode_read_no_write_fields() {
 
 #[tokio::test]
 async fn q3_user_id_inside_string_literal_not_autobound() {
-    let (app, tid, _svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-q3").await;
+    let (app, tid, _svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-q3").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     pool.with_writer(|c| {
-        c.execute_batch(
-            "CREATE TABLE logs (id INTEGER PRIMARY KEY AUTOINCREMENT, msg TEXT);",
-        )
+        c.execute_batch("CREATE TABLE logs (id INTEGER PRIMARY KEY AUTOINCREMENT, msg TEXT);")
     })
     .await
     .unwrap();
@@ -789,8 +763,7 @@ async fn q3_user_id_inside_string_literal_not_autobound() {
     )
     .await;
 
-    let utok =
-        helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
+    let utok = helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
     let r = app
         .oneshot(req(
             "POST",

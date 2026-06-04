@@ -37,7 +37,10 @@ async fn app_with_tenant() -> (axum::Router, tempfile::TempDir) {
     let _ = drust::storage::tenant_db::open_write(&data_dir, TENANT).unwrap();
     drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
 
-    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2));
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
     let bus = drust::tenant::events::EventBus::new();
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
@@ -104,9 +107,9 @@ async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), 4_000_000)
         .await
         .unwrap();
-    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-        serde_json::json!({ "_raw": String::from_utf8_lossy(&bytes).to_string() })
-    })
+    serde_json::from_slice(&bytes).unwrap_or_else(
+        |_| serde_json::json!({ "_raw": String::from_utf8_lossy(&bytes).to_string() }),
+    )
 }
 
 async fn post_list(

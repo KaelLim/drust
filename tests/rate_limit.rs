@@ -38,7 +38,11 @@ fn cleanup_drops_expired_entries() {
     assert_eq!(rl.cached_count(), 5);
     std::thread::sleep(Duration::from_millis(60));
     rl.cleanup_once();
-    assert_eq!(rl.cached_count(), 0, "all entries past their window should be dropped");
+    assert_eq!(
+        rl.cached_count(),
+        0,
+        "all entries past their window should be dropped"
+    );
 }
 
 #[test]

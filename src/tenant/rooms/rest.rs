@@ -7,14 +7,14 @@ use crate::auth::middleware::AuthCtx;
 use crate::error::{json_error, json_error_with_aliases};
 use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
 use crate::tenant::rooms::bus::{RoomBus, RoomMessage};
-use crate::tenant::rooms::envelope::{codes, ServerMessage};
+use crate::tenant::rooms::envelope::{ServerMessage, codes};
 use crate::tenant::rooms::policy::{
-    check_payload_size, check_publish_allowed, validate_room_name,
-    PublishBucket, PublishGate, TenantPublishPolicy,
+    PublishBucket, PublishGate, TenantPublishPolicy, check_payload_size, check_publish_allowed,
+    validate_room_name,
 };
 use crate::tenant::rooms::state::RoomsConfig;
 use axum::extract::Path;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use std::sync::Arc;
@@ -233,7 +233,9 @@ pub fn publish_into_bus(
         ts: ts_ms,
     };
     let frame_bytes = bytes::Bytes::from(serde_json::to_vec(&frame).unwrap_or_default());
-    let ServerMessage::Message { payload, .. } = frame else { unreachable!() };
+    let ServerMessage::Message { payload, .. } = frame else {
+        unreachable!()
+    };
     let msg = RoomMessage {
         payload: Arc::new(payload),
         ts_ms,
@@ -263,8 +265,7 @@ mod tests {
             payload: payload.clone(),
             ts: ts_ms,
         };
-        let frame_bytes =
-            bytes::Bytes::from(serde_json::to_vec(&frame).unwrap_or_default());
+        let frame_bytes = bytes::Bytes::from(serde_json::to_vec(&frame).unwrap_or_default());
 
         // Mirror the old subscriber path exactly (what send_json built):
         let legacy_env = ServerMessage::Message {

@@ -249,9 +249,7 @@ pub async fn collection_rows_page(
             _ => None,
         };
         if let Some(v) = view {
-            let to = format!(
-                "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?view={v}"
-            );
+            let to = format!("/drust/admin/tenants/{tenant_id}/collections/{coll_name}?view={v}");
             return Redirect::to(&to).into_response();
         }
     }
@@ -524,9 +522,7 @@ pub async fn create_index_admin(
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
         Ok(p) => p,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     match crate::mcp::tools::index::create_index_with_threshold(
         &pool,
@@ -566,9 +562,7 @@ pub async fn drop_index_admin(
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
         Ok(p) => p,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     match crate::mcp::tools::index::drop_index(&pool, &coll_name, Some(&index_name), None).await {
         Ok(v) => axum::Json(v).into_response(),
@@ -600,9 +594,7 @@ pub async fn explain_admin(
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
         Ok(p) => p,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     match crate::mcp::tools::index::explain_select(&pool, &body.sql).await {
         Ok(v) => (StatusCode::OK, axum::Json(v)).into_response(),
@@ -646,8 +638,7 @@ pub async fn admin_update_collection_description(
     axum::extract::Form(form): axum::extract::Form<DescriptionForm>,
 ) -> Response {
     use crate::storage::schema::{
-        check_description, collection_exists, is_protected_collection,
-        write_collection_description,
+        check_description, collection_exists, is_protected_collection, write_collection_description,
     };
     let meta = state.session.meta.lock().await;
     if !tenant_active(&meta, &tenant_id) {
@@ -656,7 +647,11 @@ pub async fn admin_update_collection_description(
     drop(meta);
 
     if is_protected_collection(&coll_name) {
-        return (StatusCode::FORBIDDEN, "cannot set description on a _system_* collection").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "cannot set description on a _system_* collection",
+        )
+            .into_response();
     }
 
     let validated = match check_description(&form.description) {
@@ -668,7 +663,11 @@ pub async fn admin_update_collection_description(
             .into_response();
         }
     };
-    let value: Option<String> = if validated.is_empty() { None } else { Some(validated) };
+    let value: Option<String> = if validated.is_empty() {
+        None
+    } else {
+        Some(validated)
+    };
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
         Ok(p) => p,
@@ -713,8 +712,7 @@ pub async fn admin_update_field_description(
     axum::extract::Form(form): axum::extract::Form<DescriptionForm>,
 ) -> Response {
     use crate::storage::schema::{
-        check_description, describe_collection, is_protected_collection,
-        write_field_description,
+        check_description, describe_collection, is_protected_collection, write_field_description,
     };
     let meta = state.session.meta.lock().await;
     if !tenant_active(&meta, &tenant_id) {
@@ -723,7 +721,11 @@ pub async fn admin_update_field_description(
     drop(meta);
 
     if is_protected_collection(&coll_name) {
-        return (StatusCode::FORBIDDEN, "cannot set description on a _system_* collection").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "cannot set description on a _system_* collection",
+        )
+            .into_response();
     }
 
     let validated = match check_description(&form.description) {
@@ -735,7 +737,11 @@ pub async fn admin_update_field_description(
             .into_response();
         }
     };
-    let value: Option<String> = if validated.is_empty() { None } else { Some(validated) };
+    let value: Option<String> = if validated.is_empty() {
+        None
+    } else {
+        Some(validated)
+    };
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
         Ok(p) => p,
@@ -760,7 +766,12 @@ pub async fn admin_update_field_description(
     let value_for_writer = value.clone();
     if let Err(e) = pool
         .with_writer(move |c| {
-            write_field_description(c, &coll_for_writer, &field_for_writer, value_for_writer.as_deref())
+            write_field_description(
+                c,
+                &coll_for_writer,
+                &field_for_writer,
+                value_for_writer.as_deref(),
+            )
         })
         .await
     {
@@ -782,8 +793,7 @@ pub async fn admin_update_index_description(
     axum::extract::Form(form): axum::extract::Form<DescriptionForm>,
 ) -> Response {
     use crate::storage::schema::{
-        check_description, describe_collection, is_protected_collection,
-        write_index_description,
+        check_description, describe_collection, is_protected_collection, write_index_description,
     };
     let meta = state.session.meta.lock().await;
     if !tenant_active(&meta, &tenant_id) {
@@ -792,7 +802,11 @@ pub async fn admin_update_index_description(
     drop(meta);
 
     if is_protected_collection(&coll_name) {
-        return (StatusCode::FORBIDDEN, "cannot set description on a _system_* collection").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "cannot set description on a _system_* collection",
+        )
+            .into_response();
     }
 
     let validated = match check_description(&form.description) {
@@ -804,7 +818,11 @@ pub async fn admin_update_index_description(
             .into_response();
         }
     };
-    let value: Option<String> = if validated.is_empty() { None } else { Some(validated) };
+    let value: Option<String> = if validated.is_empty() {
+        None
+    } else {
+        Some(validated)
+    };
 
     let pool = match state.tenants.get_or_open(&tenant_id) {
         Ok(p) => p,
@@ -829,7 +847,12 @@ pub async fn admin_update_index_description(
     let value_for_writer = value.clone();
     if let Err(e) = pool
         .with_writer(move |c| {
-            write_index_description(c, &coll_for_writer, &idx_for_writer, value_for_writer.as_deref())
+            write_index_description(
+                c,
+                &coll_for_writer,
+                &idx_for_writer,
+                value_for_writer.as_deref(),
+            )
         })
         .await
     {
@@ -896,8 +919,14 @@ mod editor_payload_tests {
             "description must reach the payload: {fields_json}"
         );
         // … but its `</script>` closer is neutralized.
-        assert!(!fields_json.contains("</script>"), "live closer leaked: {fields_json}");
-        assert!(fields_json.contains("<\\/script>"), "closer not escaped: {fields_json}");
+        assert!(
+            !fields_json.contains("</script>"),
+            "live closer leaked: {fields_json}"
+        );
+        assert!(
+            fields_json.contains("<\\/script>"),
+            "closer not escaped: {fields_json}"
+        );
         // Identifiers round-trip untouched.
         assert_eq!(tid_json, "\"t-1\"");
         assert_eq!(coll_json, "\"posts\"");

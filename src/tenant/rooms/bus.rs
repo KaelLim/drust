@@ -12,8 +12,7 @@ use tokio::sync::broadcast;
 /// subscriber + every publish on that pair).
 #[derive(Clone, Default)]
 pub struct RoomBus {
-    channels:
-        Arc<DashMap<Arc<str>, DashMap<Arc<str>, broadcast::Sender<RoomMessage>>>>,
+    channels: Arc<DashMap<Arc<str>, DashMap<Arc<str>, broadcast::Sender<RoomMessage>>>>,
 }
 
 /// Carried by the broadcast channel. `payload` is `Arc`-wrapped so
@@ -77,7 +76,12 @@ impl RoomBus {
     pub fn current_subscriber_count(&self, tenant: &str, room: &str) -> usize {
         self.channels
             .get(tenant)
-            .and_then(|outer| outer.value().get(room).map(|tx| tx.value().receiver_count()))
+            .and_then(|outer| {
+                outer
+                    .value()
+                    .get(room)
+                    .map(|tx| tx.value().receiver_count())
+            })
             .unwrap_or(0)
     }
 
@@ -284,13 +288,10 @@ mod tests {
                 tokio::task::yield_now().await;
                 // Now publish — receiver should still be registered.
                 bus_sub.publish("t1", &room, msg("payload"));
-                let got = tokio::time::timeout(
-                    tokio::time::Duration::from_millis(500),
-                    rx.recv(),
-                )
-                .await
-                .expect("recv timed out — Receiver was likely orphaned by sweep")
-                .expect("recv error");
+                let got = tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv())
+                    .await
+                    .expect("recv timed out — Receiver was likely orphaned by sweep")
+                    .expect("recv error");
                 assert_eq!(got.payload["body"], "payload");
             }));
         }

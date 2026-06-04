@@ -26,8 +26,8 @@ pub async fn create_webhook(
     if let Err((code, msg)) = check_events(&events) {
         return Err(anyhow::anyhow!("{code}: {msg}"));
     }
-    let events_json = serde_json::to_string(&events)
-        .map_err(|e| anyhow::anyhow!("ENCODE_FAILED: {e}"))?;
+    let events_json =
+        serde_json::to_string(&events).map_err(|e| anyhow::anyhow!("ENCODE_FAILED: {e}"))?;
     let secret = generate_secret();
     let secret_for_db = secret.clone();
     let now = chrono::Utc::now().to_rfc3339();
@@ -159,10 +159,7 @@ pub async fn update_webhook(
 
 // ─── delete ──────────────────────────────────────────────────────────────────
 
-pub async fn delete_webhook(
-    pool: &SharedTenantPool,
-    id: i64,
-) -> anyhow::Result<serde_json::Value> {
+pub async fn delete_webhook(pool: &SharedTenantPool, id: i64) -> anyhow::Result<serde_json::Value> {
     let n = pool
         .with_writer(move |c| {
             c.execute(

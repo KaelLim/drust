@@ -68,16 +68,13 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
     for ch in sql.chars() {
         current.push(ch);
         if ch == ';' {
-            let cstr = CString::new(current.as_str())
-                .map_err(|e| RpcStatementError {
-                    statement_index: out.len() + 1,
-                    message: format!("statement contains NUL byte: {e}"),
-                    authorizer_denied: false,
-                })?;
+            let cstr = CString::new(current.as_str()).map_err(|e| RpcStatementError {
+                statement_index: out.len() + 1,
+                message: format!("statement contains NUL byte: {e}"),
+                authorizer_denied: false,
+            })?;
             // SAFETY: sqlite3_complete reads the NUL-terminated string we own.
-            let complete = unsafe {
-                rusqlite::ffi::sqlite3_complete(cstr.as_ptr())
-            };
+            let complete = unsafe { rusqlite::ffi::sqlite3_complete(cstr.as_ptr()) };
             if complete != 0 {
                 let trimmed = current.trim();
                 if !trimmed.is_empty() {
@@ -102,9 +99,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
             message: format!("statement contains NUL byte: {e}"),
             authorizer_denied: false,
         })?;
-        let complete = unsafe {
-            rusqlite::ffi::sqlite3_complete(cstr.as_ptr())
-        };
+        let complete = unsafe { rusqlite::ffi::sqlite3_complete(cstr.as_ptr()) };
         if complete == 0 {
             return Err(RpcStatementError {
                 statement_index: out.len() + 1,
@@ -136,12 +131,15 @@ pub fn execute_one(
         .map(|(k, v)| (k.as_str(), v as &dyn rusqlite::ToSql))
         .collect();
 
-    let mut stmt = conn.prepare(sql).map_err(|e| classify(e, statement_index))?;
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| classify(e, statement_index))?;
     let column_count = stmt.column_count();
 
     if column_count == 0 {
         // Pure mutation (no SELECT / RETURNING).
-        let affected = stmt.execute(refs.as_slice())
+        let affected = stmt
+            .execute(refs.as_slice())
             .map_err(|e| classify(e, statement_index))? as i64;
         let last_id = if sql.trim_start().to_ascii_uppercase().starts_with("INSERT") {
             Some(conn.last_insert_rowid())
@@ -156,11 +154,7 @@ pub fn execute_one(
     } else {
         // Rows-returning (SELECT or RETURNING). Mirrors
         // execute_read_query_with_named_inner (src/query/executor.rs).
-        let column_names: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let col_count = column_names.len();
         let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
         let mut types: Vec<String> = vec!["null".into(); col_count];
@@ -168,10 +162,7 @@ pub fn execute_one(
             .query(refs.as_slice())
             .map_err(|e| classify(e, statement_index))?;
         let mut truncated = false;
-        while let Some(r) = rows_iter
-            .next()
-            .map_err(|e| classify(e, statement_index))?
-        {
+        while let Some(r) = rows_iter.next().map_err(|e| classify(e, statement_index))? {
             if rows.len() >= 1_000 {
                 truncated = true;
                 break;
@@ -262,102 +253,101 @@ pub async fn run_write_rpc(
     dry_run: bool,
 ) -> Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError> {
     let res: rusqlite::Result<Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError>> =
-        pool
-            .with_writer(move |conn| {
-                // ── STEP 1: defensive detach. spec §14 Q4 confirms
-                //    with_writer does NOT auto-detach. If any prior
-                //    closure left an authorizer attached it would
-                //    prevent step 2 (Savepoint is Denied).
-                crate::query::authorizer::detach_authorizer(conn);
+        pool.with_writer(move |conn| {
+            // ── STEP 1: defensive detach. spec §14 Q4 confirms
+            //    with_writer does NOT auto-detach. If any prior
+            //    closure left an authorizer attached it would
+            //    prevent step 2 (Savepoint is Denied).
+            crate::query::authorizer::detach_authorizer(conn);
 
-                // ── STEP 2: SAVEPOINT (raw, no authorizer). If this
-                //    fails we have nothing to roll back; surface as
-                //    TxCommitError so the caller's 500 path is uniform.
-                if let Err(e) = conn.execute("SAVEPOINT drust_rpc_v2", []) {
-                    return Ok(Err(TxCommitError(e.to_string())));
-                }
+            // ── STEP 2: SAVEPOINT (raw, no authorizer). If this
+            //    fails we have nothing to roll back; surface as
+            //    TxCommitError so the caller's 500 path is uniform.
+            if let Err(e) = conn.execute("SAVEPOINT drust_rpc_v2", []) {
+                return Ok(Err(TxCommitError(e.to_string())));
+            }
 
-                // ── STEP 3: attach writable authorizer. From here,
-                //    every conn.prepare is gated.
-                crate::query::authorizer::attach_writable_authorizer(conn);
+            // ── STEP 3: attach writable authorizer. From here,
+            //    every conn.prepare is gated.
+            crate::query::authorizer::attach_writable_authorizer(conn);
 
-                // ── STEP 4: split + execute loop.
-                let stmts = match split_statements(&stored_sql) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        // Split failed. Mirror the inline path: detach
-                        // first, ROLLBACK + RELEASE, return statement err.
-                        crate::query::authorizer::detach_authorizer(conn);
-                        let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
-                        if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
-                            return Ok(Err(TxCommitError(rel.to_string())));
-                        }
-                        return Ok(Ok(Err(e)));
-                    }
-                };
-
-                let mut last_rows: Option<QueryResult> = None;
-                let mut combined_affected: i64 = 0;
-                let mut last_insert_rowid: Option<i64> = None;
-                let mut exec_error: Option<RpcStatementError> = None;
-                let mut statement_count: usize = 0;
-
-                // INVARIANT: execute_one MUST NOT panic. A panic here
-                // would leave the writer connection with an open
-                // SAVEPOINT drust_rpc_v2; tokio::sync::Mutex does not
-                // poison and rusqlite::Connection's Drop only runs at
-                // process exit, so the next request's STEP 2 would nest
-                // a savepoint with the same name. The subsequent RELEASE
-                // only releases the innermost — the leaked savepoint
-                // would persist until process restart, holding any
-                // pre-panic mutations in limbo. execute_one returns Err
-                // on all known SQL-error paths; this invariant is
-                // asserted by the `execute_one_never_panics_on_bad_sql`
-                // test below.
-                for (i, stmt) in stmts.iter().enumerate() {
-                    statement_count += 1;
-                    match execute_one(conn, stmt, &bound, i + 1) {
-                        Ok(o) => {
-                            if o.rows.is_some() {
-                                last_rows = o.rows;
-                            }
-                            combined_affected += o.affected_rows;
-                            if let Some(rid) = o.last_insert_rowid {
-                                last_insert_rowid = Some(rid);
-                            }
-                        }
-                        Err(e) => {
-                            exec_error = Some(e);
-                            break;
-                        }
-                    }
-                }
-
-                // ── STEP 5: MANDATORY detach BEFORE savepoint resolution.
-                crate::query::authorizer::detach_authorizer(conn);
-
-                // ── STEP 6: resolve savepoint.
-                let should_rollback = exec_error.is_some() || dry_run;
-                if should_rollback {
+            // ── STEP 4: split + execute loop.
+            let stmts = match split_statements(&stored_sql) {
+                Ok(s) => s,
+                Err(e) => {
+                    // Split failed. Mirror the inline path: detach
+                    // first, ROLLBACK + RELEASE, return statement err.
+                    crate::query::authorizer::detach_authorizer(conn);
                     let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
+                    if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
+                        return Ok(Err(TxCommitError(rel.to_string())));
+                    }
+                    return Ok(Ok(Err(e)));
                 }
-                if let Err(e) = conn.execute("RELEASE drust_rpc_v2", []) {
-                    return Ok(Err(TxCommitError(e.to_string())));
-                }
+            };
 
-                // ── STEP 7: return outcome.
-                Ok(Ok(match exec_error {
-                    Some(e) => Err(e),
-                    None => Ok(WriteRpcOutcome {
-                        last_rows,
-                        affected_rows: combined_affected,
-                        last_insert_rowid,
-                        statement_count,
-                        dry_run,
-                    }),
-                }))
-            })
-            .await;
+            let mut last_rows: Option<QueryResult> = None;
+            let mut combined_affected: i64 = 0;
+            let mut last_insert_rowid: Option<i64> = None;
+            let mut exec_error: Option<RpcStatementError> = None;
+            let mut statement_count: usize = 0;
+
+            // INVARIANT: execute_one MUST NOT panic. A panic here
+            // would leave the writer connection with an open
+            // SAVEPOINT drust_rpc_v2; tokio::sync::Mutex does not
+            // poison and rusqlite::Connection's Drop only runs at
+            // process exit, so the next request's STEP 2 would nest
+            // a savepoint with the same name. The subsequent RELEASE
+            // only releases the innermost — the leaked savepoint
+            // would persist until process restart, holding any
+            // pre-panic mutations in limbo. execute_one returns Err
+            // on all known SQL-error paths; this invariant is
+            // asserted by the `execute_one_never_panics_on_bad_sql`
+            // test below.
+            for (i, stmt) in stmts.iter().enumerate() {
+                statement_count += 1;
+                match execute_one(conn, stmt, &bound, i + 1) {
+                    Ok(o) => {
+                        if o.rows.is_some() {
+                            last_rows = o.rows;
+                        }
+                        combined_affected += o.affected_rows;
+                        if let Some(rid) = o.last_insert_rowid {
+                            last_insert_rowid = Some(rid);
+                        }
+                    }
+                    Err(e) => {
+                        exec_error = Some(e);
+                        break;
+                    }
+                }
+            }
+
+            // ── STEP 5: MANDATORY detach BEFORE savepoint resolution.
+            crate::query::authorizer::detach_authorizer(conn);
+
+            // ── STEP 6: resolve savepoint.
+            let should_rollback = exec_error.is_some() || dry_run;
+            if should_rollback {
+                let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
+            }
+            if let Err(e) = conn.execute("RELEASE drust_rpc_v2", []) {
+                return Ok(Err(TxCommitError(e.to_string())));
+            }
+
+            // ── STEP 7: return outcome.
+            Ok(Ok(match exec_error {
+                Some(e) => Err(e),
+                None => Ok(WriteRpcOutcome {
+                    last_rows,
+                    affected_rows: combined_affected,
+                    last_insert_rowid,
+                    statement_count,
+                    dry_run,
+                }),
+            }))
+        })
+        .await;
 
     match res {
         Ok(inner) => inner,
@@ -416,10 +406,10 @@ mod tests {
         conn.execute_batch("CREATE TABLE t (x INTEGER);").unwrap();
         let binds: BTreeMap<String, BoundValue> = BTreeMap::new();
         for sql in [
-            ";",                            // empty after semicolon strip
-            "DROP TABLE t",                 // DDL: prepare may succeed without authorizer
-            "INSERT INTO nope VALUES (1)",  // unknown table
-            "SELECT ÿþ BAD",                // non-ASCII garbage
+            ";",                           // empty after semicolon strip
+            "DROP TABLE t",                // DDL: prepare may succeed without authorizer
+            "INSERT INTO nope VALUES (1)", // unknown table
+            "SELECT ÿþ BAD",               // non-ASCII garbage
         ] {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 execute_one(&conn, sql, &binds, 1)

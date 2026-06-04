@@ -15,21 +15,21 @@
 use crate::auth::middleware::AuthCtx;
 use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
 use crate::tenant::rooms::bus::RoomMessage;
-use crate::tenant::rooms::envelope::{codes, ClientOp, ServerMessage};
+use crate::tenant::rooms::envelope::{ClientOp, ServerMessage, codes};
 use crate::tenant::rooms::policy::{
-    check_publish_allowed, validate_room_name, PublishGate, TenantPublishPolicy,
+    PublishGate, TenantPublishPolicy, check_publish_allowed, validate_room_name,
 };
-use crate::tenant::rooms::rest::{publish_into_bus, PublishCtx, PublishError};
+use crate::tenant::rooms::rest::{PublishCtx, PublishError, publish_into_bus};
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Path};
 use axum::response::Response;
-use futures::stream::{SplitSink, StreamExt};
 use futures::SinkExt;
+use futures::stream::{SplitSink, StreamExt};
 use std::time::{Duration, Instant};
 use tokio::time::interval;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 /// GET /t/{tenant}/realtime — WS multiplex upgrade.
 pub async fn ws_handler(
@@ -298,7 +298,9 @@ async fn handle_text_frame(
             match publish_into_bus(pc, tenant, &room, payload, "ws") {
                 Ok(n) => {
                     let ms = started.elapsed().as_millis() as u64;
-                    write_publish_audit(tenant, token_hint, ms, &room, byte_count, "ws", n, admin_id);
+                    write_publish_audit(
+                        tenant, token_hint, ms, &room, byte_count, "ws", n, admin_id,
+                    );
                     send_ack(sink, client_ref, "publish", Some(room), Some(n))
                         .await
                         .is_ok()

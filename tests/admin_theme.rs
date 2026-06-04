@@ -8,12 +8,15 @@
 //! tradeoff we accept (it's the same posture as admin_oauth.rs).
 
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use serial_test::serial;
 use tower::ServiceExt;
 
 // Helper: build a minimal admin router with our test meta DB.
-async fn test_router() -> (axum::Router, std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>) {
+async fn test_router() -> (
+    axum::Router,
+    std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+) {
     // Build in-memory meta + populate one admin row.
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(
@@ -65,14 +68,16 @@ async fn test_router() -> (axum::Router, std::sync::Arc<tokio::sync::Mutex<rusql
 async fn theme_default_is_system() {
     let (app, _meta) = test_router().await;
     let resp = app
-        .oneshot(Request::builder().uri("/probe").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/probe")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        resp.headers().get("x-resolved-theme").unwrap(),
-        "system"
-    );
+    assert_eq!(resp.headers().get("x-resolved-theme").unwrap(), "system");
 }
 
 #[tokio::test]
@@ -88,10 +93,7 @@ async fn cookie_wins_over_default() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        resp.headers().get("x-resolved-theme").unwrap(),
-        "cozy-dark"
-    );
+    assert_eq!(resp.headers().get("x-resolved-theme").unwrap(), "cozy-dark");
 }
 
 #[tokio::test]
@@ -107,10 +109,7 @@ async fn unknown_cookie_falls_to_default() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        resp.headers().get("x-resolved-theme").unwrap(),
-        "system"
-    );
+    assert_eq!(resp.headers().get("x-resolved-theme").unwrap(), "system");
 }
 
 #[tokio::test]
@@ -129,7 +128,11 @@ async fn three_themes_each_resolve() {
             .await
             .unwrap();
         assert_eq!(
-            resp.headers().get("x-resolved-theme").unwrap().to_str().unwrap(),
+            resp.headers()
+                .get("x-resolved-theme")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             *code,
             "round-trip failed for theme `{code}`"
         );
@@ -138,7 +141,7 @@ async fn three_themes_each_resolve() {
 
 #[tokio::test]
 async fn palette_for_system_contains_both_partners() {
-    use drust::mgmt::theme::{palette_for, ResolvedPalette, Theme};
+    use drust::mgmt::theme::{ResolvedPalette, Theme, palette_for};
     let resolved = palette_for(Theme::System);
     match resolved {
         ResolvedPalette::System(sys) => {
@@ -153,7 +156,7 @@ async fn palette_for_system_contains_both_partners() {
 
 #[tokio::test]
 async fn palette_for_static_returns_owned_keys() {
-    use drust::mgmt::theme::{palette_for, ResolvedPalette, Theme};
+    use drust::mgmt::theme::{ResolvedPalette, Theme, palette_for};
     match palette_for(Theme::CozyDark) {
         ResolvedPalette::Static(p) => {
             assert_eq!(p.ui.len(), 12);
@@ -166,7 +169,7 @@ async fn palette_for_static_returns_owned_keys() {
 
 #[tokio::test]
 async fn all_themes_in_enum_have_resolvable_palette() {
-    use drust::mgmt::theme::{palette_for, Theme};
+    use drust::mgmt::theme::{Theme, palette_for};
     for t in Theme::ALL {
         let _ = palette_for(*t); // panics if any partner is missing
     }
@@ -223,10 +226,7 @@ async fn setup_meta_with_admin(
         )
         .unwrap();
     }
-    (
-        std::sync::Arc::new(tokio::sync::Mutex::new(conn)),
-        tmp,
-    )
+    (std::sync::Arc::new(tokio::sync::Mutex::new(conn)), tmp)
 }
 
 /// Handler that echoes the resolved Theme as plain text.
@@ -335,7 +335,10 @@ fn theme_cookie_dev_override_drops_secure() {
     }
     assert!(c.contains("drust_theme=soft-light"));
     assert!(c.contains("Path=/drust"));
-    assert!(!c.contains("Secure"), "Secure must be absent when dev override is set; got: {c}");
+    assert!(
+        !c.contains("Secure"),
+        "Secure must be absent when dev override is set; got: {c}"
+    );
 }
 
 /// F5: outer layer (allow_db_fallback=false) ignores DB even if AdminId present.

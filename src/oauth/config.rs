@@ -18,8 +18,12 @@ impl ProviderRegistry {
 
         // Google
         match (
-            std::env::var("DRUST_OAUTH_GOOGLE_CLIENT_ID").ok().filter(|s| !s.is_empty()),
-            std::env::var("DRUST_OAUTH_GOOGLE_CLIENT_SECRET").ok().filter(|s| !s.is_empty()),
+            std::env::var("DRUST_OAUTH_GOOGLE_CLIENT_ID")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            std::env::var("DRUST_OAUTH_GOOGLE_CLIENT_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
         ) {
             (Some(id), Some(secret)) => {
                 providers.insert("google", Arc::new(GoogleAdapter::production(id, secret)));
@@ -32,8 +36,12 @@ impl ProviderRegistry {
 
         // GitHub
         match (
-            std::env::var("DRUST_OAUTH_GITHUB_CLIENT_ID").ok().filter(|s| !s.is_empty()),
-            std::env::var("DRUST_OAUTH_GITHUB_CLIENT_SECRET").ok().filter(|s| !s.is_empty()),
+            std::env::var("DRUST_OAUTH_GITHUB_CLIENT_ID")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            std::env::var("DRUST_OAUTH_GITHUB_CLIENT_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
         ) {
             (Some(id), Some(secret)) => {
                 providers.insert("github", Arc::new(GitHubAdapter::production(id, secret)));
@@ -51,7 +59,9 @@ impl ProviderRegistry {
     /// configured but DRUST_PUBLIC_URL / allowlist is missing (defensive
     /// disable to avoid accepting any email).
     pub fn from_env_empty() -> Self {
-        Self { providers: HashMap::new() }
+        Self {
+            providers: HashMap::new(),
+        }
     }
 
     /// Build a registry from an explicit provider map. Used by integration
@@ -92,10 +102,14 @@ mod tests {
             "DRUST_OAUTH_GITHUB_CLIENT_SECRET",
             "DRUST_ADMIN_OAUTH_ALLOWED_EMAILS",
         ] {
-            unsafe { std::env::remove_var(k); }
+            unsafe {
+                std::env::remove_var(k);
+            }
         }
         for (k, v) in map {
-            unsafe { std::env::set_var(k, v); }
+            unsafe {
+                std::env::set_var(k, v);
+            }
         }
     }
 

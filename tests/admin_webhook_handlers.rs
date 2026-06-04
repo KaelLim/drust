@@ -5,13 +5,14 @@
 //! session middleware. We assert sidebar inclusion, empty-state rendering,
 //! and the create → list flow (including secret-once cookie surfacing).
 
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use axum::routing::{get, post};
 use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use axum::routing::{get, post};
 use drust::mgmt::tenants::{
-    tenant_oauth_provider_delete, tenant_oauth_provider_upsert, tenant_oauth_providers_page,
-    tenant_webhook_create_form, tenant_webhook_delete_form, tenant_webhooks_page, TenantsState,
+    TenantsState, tenant_oauth_provider_delete, tenant_oauth_provider_upsert,
+    tenant_oauth_providers_page, tenant_webhook_create_form, tenant_webhook_delete_form,
+    tenant_webhooks_page,
 };
 use drust::storage::meta::open_meta;
 use std::sync::Arc;
@@ -149,12 +150,14 @@ async fn empty_state_renders_with_add_form() {
     );
     // Add-form: must POST to the same URL and accept collection/events/url
     assert!(
-        body.contains(&format!(
-            "action=\"/drust/admin/tenants/{tid}/_webhooks\""
-        )) || body.contains(&format!("/admin/tenants/{tid}/_webhooks")),
+        body.contains(&format!("action=\"/drust/admin/tenants/{tid}/_webhooks\""))
+            || body.contains(&format!("/admin/tenants/{tid}/_webhooks")),
         "page must render a form pointing at the create endpoint"
     );
-    assert!(body.contains("name=\"collection\""), "form needs collection input");
+    assert!(
+        body.contains("name=\"collection\""),
+        "form needs collection input"
+    );
     assert!(body.contains("name=\"events\""), "form needs events input");
     assert!(body.contains("name=\"url\""), "form needs url input");
     // active_coll highlight should be `_webhooks`
@@ -170,8 +173,7 @@ async fn create_then_list_shows_row_and_surfaces_secret_once() {
     let (app, _data_dir, _td) = build_app(tid).await;
 
     // POST create
-    let form_body =
-        "collection=notes&events=created&url=https%3A%2F%2Fexample.com%2Fone";
+    let form_body = "collection=notes&events=created&url=https%3A%2F%2Fexample.com%2Fone";
     let resp = app
         .clone()
         .oneshot(

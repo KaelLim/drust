@@ -18,11 +18,7 @@ use tower::ServiceExt;
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
 /// Perform a GET request with the given bearer token; return (status, body JSON).
-async fn get_json(
-    app: &axum::Router,
-    uri: &str,
-    tok: &str,
-) -> (StatusCode, serde_json::Value) {
+async fn get_json(app: &axum::Router, uri: &str, tok: &str) -> (StatusCode, serde_json::Value) {
     let resp = app
         .clone()
         .oneshot(
@@ -36,9 +32,10 @@ async fn get_json(
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
-    let json: serde_json::Value =
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, json)
 }
 
@@ -63,9 +60,10 @@ async fn put_json(
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
-    let json: serde_json::Value =
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, json)
 }
 
@@ -90,9 +88,10 @@ async fn post_json(
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
-    let json: serde_json::Value =
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, json)
 }
 
@@ -150,7 +149,11 @@ async fn list_collections_includes_description_when_set() {
         serde_json::json!({ "description": "User blog posts" }),
     )
     .await;
-    assert_eq!(set_status, StatusCode::OK, "set description failed: {set_body}");
+    assert_eq!(
+        set_status,
+        StatusCode::OK,
+        "set description failed: {set_body}"
+    );
 
     let (status, body) = get_json(&app, &format!("/t/{tid}/collections"), &tok).await;
     assert_eq!(status, StatusCode::OK, "list failed: {body}");
@@ -217,7 +220,11 @@ async fn describe_collection_carries_all_three_levels() {
     let (status, cs) = get_json(&app, &format!("/t/{tid}/collections/posts"), &tok).await;
     assert_eq!(status, StatusCode::OK, "describe: {cs}");
 
-    assert_eq!(cs["description"], serde_json::json!("Blog posts"), "collection desc");
+    assert_eq!(
+        cs["description"],
+        serde_json::json!("Blog posts"),
+        "collection desc"
+    );
 
     let title = cs["fields"]
         .as_array()
@@ -225,7 +232,11 @@ async fn describe_collection_carries_all_three_levels() {
         .iter()
         .find(|f| f["name"] == "title")
         .unwrap();
-    assert_eq!(title["description"], serde_json::json!("Post title"), "field desc");
+    assert_eq!(
+        title["description"],
+        serde_json::json!("Post title"),
+        "field desc"
+    );
 
     let idx = cs["indices"]
         .as_array()
@@ -233,7 +244,11 @@ async fn describe_collection_carries_all_three_levels() {
         .iter()
         .find(|i| i["name"] == idx_name.as_str())
         .unwrap();
-    assert_eq!(idx["description"], serde_json::json!("Quick title lookup"), "index desc");
+    assert_eq!(
+        idx["description"],
+        serde_json::json!("Quick title lookup"),
+        "index desc"
+    );
 }
 
 // ── Test 4 ────────────────────────────────────────────────────────────────────
@@ -256,8 +271,14 @@ async fn get_schema_overview_returns_collections_and_rpcs() {
     let (status, body) = get_json(&app, &format!("/t/{tid}/schema/overview"), &tok).await;
     assert_eq!(status, StatusCode::OK, "overview failed: {body}");
 
-    assert!(body["tenant"].is_string(), "tenant must be a string: {body}");
-    assert!(body["collections"].is_array(), "collections must be an array: {body}");
+    assert!(
+        body["tenant"].is_string(),
+        "tenant must be a string: {body}"
+    );
+    assert!(
+        body["collections"].is_array(),
+        "collections must be an array: {body}"
+    );
     assert!(body["rpcs"].is_array(), "rpcs must be an array: {body}");
 
     let posts = body["collections"]
@@ -266,7 +287,11 @@ async fn get_schema_overview_returns_collections_and_rpcs() {
         .iter()
         .find(|c| c["name"] == "posts")
         .unwrap();
-    assert_eq!(posts["description"], serde_json::json!("Blog posts"), "description in overview");
+    assert_eq!(
+        posts["description"],
+        serde_json::json!("Blog posts"),
+        "description in overview"
+    );
 }
 
 // ── Test 5 ────────────────────────────────────────────────────────────────────
@@ -277,6 +302,10 @@ async fn schema_overview_anon_denied() {
     let (app, tok, _dir) = spin_up_tenant_with_role(tid, "anon").await;
 
     let (status, body) = get_json(&app, &format!("/t/{tid}/schema/overview"), &tok).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "expected 403, got: {status} {body}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "expected 403, got: {status} {body}"
+    );
     assert_eq!(body["error_code"], "WRITE_DENIED");
 }

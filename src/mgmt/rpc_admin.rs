@@ -116,7 +116,8 @@ pub async fn rpc_index(
     let page = qs.page.unwrap_or(1).max(1).min(total_pages);
     let start = ((page - 1) as usize) * per_page as usize;
     let end = (start + per_page as usize).min(total_rpcs);
-    let rpcs: Vec<registry::StoredRpc> = all_rpcs.into_iter().skip(start).take(end - start).collect();
+    let rpcs: Vec<registry::StoredRpc> =
+        all_rpcs.into_iter().skip(start).take(end - start).collect();
 
     let pager_url = |p: u32| -> String {
         if per_page == RPC_DEFAULT_PER_PAGE {
@@ -368,10 +369,26 @@ pub async fn rpc_save(
     if let Err(e) = crate::rpc::params::parse_params_json(&form.params_json) {
         let name_for_lookup = form.name.clone();
         let exists_now = pool
-            .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
+            .with_reader(move |c| {
+                Ok(registry::lookup(c, &name_for_lookup)
+                    .ok()
+                    .flatten()
+                    .is_some())
+            })
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), None, locale, theme, admin.clone());
+        return render_form_with_error(
+            &state,
+            &tenant_id,
+            &tenant_name,
+            &form,
+            exists_now,
+            e.to_string(),
+            None,
+            locale,
+            theme,
+            admin.clone(),
+        );
     }
 
     // Validate SQL through the mode-matched authorizer (uses a reader
@@ -398,7 +415,12 @@ pub async fn rpc_save(
         Ok(Err(prep_err)) => {
             let name_for_lookup = form.name.clone();
             let exists_now = pool
-                .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
+                .with_reader(move |c| {
+                    Ok(registry::lookup(c, &name_for_lookup)
+                        .ok()
+                        .flatten()
+                        .is_some())
+                })
                 .await
                 .unwrap_or(false);
             return render_form_with_error(
@@ -417,10 +439,26 @@ pub async fn rpc_save(
         Err(e) => {
             let name_for_lookup = form.name.clone();
             let exists_now = pool
-                .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
+                .with_reader(move |c| {
+                    Ok(registry::lookup(c, &name_for_lookup)
+                        .ok()
+                        .flatten()
+                        .is_some())
+                })
                 .await
                 .unwrap_or(false);
-            return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), None, locale, theme, admin.clone());
+            return render_form_with_error(
+                &state,
+                &tenant_id,
+                &tenant_name,
+                &form,
+                exists_now,
+                e.to_string(),
+                None,
+                locale,
+                theme,
+                admin.clone(),
+            );
         }
     }
 
@@ -454,19 +492,34 @@ pub async fn rpc_save(
                     form_mode,
                 )
             };
-            result.map(|_| exists_now).map_err(|e| rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(1),
-                Some(e.to_string()),
-            ))
+            result.map(|_| exists_now).map_err(|e| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            })
         })
         .await;
     if let Err(e) = writer_res {
         let name_for_lookup = form.name.clone();
         let exists_now = pool
-            .with_reader(move |c| Ok(registry::lookup(c, &name_for_lookup).ok().flatten().is_some()))
+            .with_reader(move |c| {
+                Ok(registry::lookup(c, &name_for_lookup)
+                    .ok()
+                    .flatten()
+                    .is_some())
+            })
             .await
             .unwrap_or(false);
-        return render_form_with_error(&state, &tenant_id, &tenant_name, &form, exists_now, e.to_string(), None, locale, theme, admin.clone());
+        return render_form_with_error(
+            &state,
+            &tenant_id,
+            &tenant_name,
+            &form,
+            exists_now,
+            e.to_string(),
+            None,
+            locale,
+            theme,
+            admin.clone(),
+        );
     }
 
     Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_rpc")).into_response()
@@ -882,17 +935,15 @@ pub async fn rpc_test_run(
 
             let pool = match state.tenants.get_or_open(&tenant_id) {
                 Ok(p) => p,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                }
             };
 
             let started = std::time::Instant::now();
-            let run_res = crate::rpc::exec_write::run_write_rpc(
-                &pool,
-                stored.sql.clone(),
-                bound,
-                dry_run,
-            )
-            .await;
+            let run_res =
+                crate::rpc::exec_write::run_write_rpc(&pool, stored.sql.clone(), bound, dry_run)
+                    .await;
             let duration_ms = started.elapsed().as_millis();
 
             match run_res {
@@ -938,25 +989,25 @@ pub async fn rpc_test_run(
                         stmt_err.statement_index,
                     );
                     render_test_outcome(
-                    tenant_id,
-                    tenant_name,
-                    collections,
-                    &stored,
-                    visible_inputs,
-                    Err(format!("{prefix}: {}", stmt_err.message)),
-                    explain_rows,
-                    duration_ms,
-                    bound_json,
-                    // Statement failed → SAVEPOINT rolled back. Banner
-                    // shows amber "no changes persisted".
-                    true,
-                    is_write_mode,
-                    0,
-                    stmt_err.statement_index,
-                    locale,
-                    theme,
-                    admin,
-                )
+                        tenant_id,
+                        tenant_name,
+                        collections,
+                        &stored,
+                        visible_inputs,
+                        Err(format!("{prefix}: {}", stmt_err.message)),
+                        explain_rows,
+                        duration_ms,
+                        bound_json,
+                        // Statement failed → SAVEPOINT rolled back. Banner
+                        // shows amber "no changes persisted".
+                        true,
+                        is_write_mode,
+                        0,
+                        stmt_err.statement_index,
+                        locale,
+                        theme,
+                        admin,
+                    )
                 }
                 Err(commit_err) => render_test_outcome(
                     tenant_id,
@@ -1136,14 +1187,12 @@ pub async fn rpc_delete(
     };
     let name_for_writer = name.clone();
     let delete_res: Result<(), String> = pool
-        .with_writer(move |c| {
-            match registry::delete(c, &name_for_writer) {
-                Ok(()) | Err(registry::RegistryError::NotFound(_)) => Ok(()),
-                Err(e) => Err(rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(1),
-                    Some(e.to_string()),
-                )),
-            }
+        .with_writer(move |c| match registry::delete(c, &name_for_writer) {
+            Ok(()) | Err(registry::RegistryError::NotFound(_)) => Ok(()),
+            Err(e) => Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(e.to_string()),
+            )),
         })
         .await
         .map_err(|e| e.to_string());

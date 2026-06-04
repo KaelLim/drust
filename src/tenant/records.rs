@@ -7,10 +7,9 @@ use crate::storage::schema::{
     CollectionSchema, DmlVerb, collection_exists, describe_collection, has_dml_cap,
     is_protected_collection,
 };
+use crate::tenant::WebhookDispatcher;
 use crate::tenant::events::{Event, EventBus};
 use crate::tenant::router::TenantRef;
-use crate::tenant::WebhookDispatcher;
-use std::sync::Arc;
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -18,6 +17,7 @@ use axum::{Extension, Json};
 use rusqlite::types::Value;
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ListQs {
@@ -170,7 +170,11 @@ async fn require_write_cap(
 /// - the collection has an `owner_field` with `read_scope = "own"`, AND
 /// - the caller is a `User` token (Service and Anon bypass the filter).
 fn compute_owner_filter(ctx: &AuthCtx, schema: &CollectionSchema) -> Option<(String, String)> {
-    match (ctx, schema.owner_field.as_deref(), schema.read_scope.as_deref()) {
+    match (
+        ctx,
+        schema.owner_field.as_deref(),
+        schema.read_scope.as_deref(),
+    ) {
         (AuthCtx::User { user_id, .. }, Some(field), Some("own")) => {
             Some((field.to_string(), user_id.clone()))
         }
@@ -482,7 +486,9 @@ pub async fn create_handler(
                     return json_error_with_context(
                         StatusCode::CONFLICT,
                         "OWNER_FIELD_REQUIRED",
-                        &format!("service token must supply '{owner_field}' on owner-scoped collection"),
+                        &format!(
+                            "service token must supply '{owner_field}' on owner-scoped collection"
+                        ),
                         &crate::safety::error_fixes::ErrorContext::OwnerFieldRequired {
                             collection: &coll,
                             field: owner_field,
@@ -531,7 +537,11 @@ pub async fn create_handler(
                 Ok(bytes) => {
                     vector_bytes.insert(vf.name.clone(), bytes);
                 }
-                Err(crate::query::vector_codec::VectorCodecError::DimMismatch { field, expected, got }) => {
+                Err(crate::query::vector_codec::VectorCodecError::DimMismatch {
+                    field,
+                    expected,
+                    got,
+                }) => {
                     return json_error_with_context(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "VECTOR_DIM_MISMATCH",
@@ -719,7 +729,11 @@ pub async fn update_handler(
                 Ok(bytes) => {
                     vector_bytes.insert(vf.name.clone(), bytes);
                 }
-                Err(crate::query::vector_codec::VectorCodecError::DimMismatch { field, expected, got }) => {
+                Err(crate::query::vector_codec::VectorCodecError::DimMismatch {
+                    field,
+                    expected,
+                    got,
+                }) => {
                     return json_error_with_context(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "VECTOR_DIM_MISMATCH",
@@ -885,17 +899,16 @@ pub async fn delete_handler(
                 "cannot delete from _system_ collections",
             );
         }
-        let br =
-            match crate::storage::blast_radius::delete_blast_radius(&t.pool, &coll, id).await {
-                Ok(br) => br,
-                Err(e) => {
-                    return json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "INTERNAL_ERROR",
-                        &e.to_string(),
-                    );
-                }
-            };
+        let br = match crate::storage::blast_radius::delete_blast_radius(&t.pool, &coll, id).await {
+            Ok(br) => br,
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    &e.to_string(),
+                );
+            }
+        };
         return Json(serde_json::to_value(br).expect("serialise")).into_response();
     }
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Delete).await {

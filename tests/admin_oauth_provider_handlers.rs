@@ -4,13 +4,13 @@
 //! any admin-typed path. The GET render already runs `load_tenant_shell`
 //! first; this test asserts the POST paths now share the same guard.
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::routing::{get, post};
-use axum::Router;
 use drust::mgmt::tenants::{
-    tenant_oauth_provider_delete, tenant_oauth_provider_upsert, tenant_oauth_providers_page,
-    TenantsState,
+    TenantsState, tenant_oauth_provider_delete, tenant_oauth_provider_upsert,
+    tenant_oauth_providers_page,
 };
 use drust::storage::meta::open_meta;
 use std::sync::Arc;

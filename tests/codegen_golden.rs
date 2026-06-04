@@ -10,7 +10,8 @@ use drust::codegen::{render_openapi_for_test, render_typescript_for_test, render
 
 fn fixture_path(name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/codegen/golden").join(name)
+        .join("tests/codegen/golden")
+        .join(name)
 }
 
 fn check_or_regen(actual: &str, file: &str) {
@@ -24,9 +25,17 @@ fn check_or_regen(actual: &str, file: &str) {
     let expected = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
     if expected != actual {
-        let actual_path = path.with_extension(format!("actual.{}", path.extension().and_then(|s| s.to_str()).unwrap_or("")));
+        let actual_path = path.with_extension(format!(
+            "actual.{}",
+            path.extension().and_then(|s| s.to_str()).unwrap_or("")
+        ));
         std::fs::write(&actual_path, actual).unwrap();
-        panic!("{} drift — diff {} vs {}", file, actual_path.display(), path.display());
+        panic!(
+            "{} drift — diff {} vs {}",
+            file,
+            actual_path.display(),
+            path.display()
+        );
     }
 }
 
