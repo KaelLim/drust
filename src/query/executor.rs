@@ -164,7 +164,7 @@ fn execute_read_query_with_named_inner(
     row_cap: usize,
 ) -> Result<QueryResult, ExecError> {
     let hash = sql_hash(sql);
-    let mut stmt = conn.prepare(sql).map_err(classify)?;
+    let mut stmt = conn.prepare_cached(sql).map_err(classify)?;
     let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let col_count = column_names.len();
 
@@ -266,6 +266,46 @@ mod named_tests {
         )
         .unwrap();
         assert_eq!(qr.rows.len(), 2);
+    }
+
+    #[test]
+    fn cached_stmt_reprepares_after_schema_change() {
+        let tmp = TempDir::new().unwrap();
+        let _conn = open_write(tmp.path(), "cachetest").unwrap();
+        _conn.execute_batch(
+            "CREATE TABLE posts (id INTEGER PRIMARY KEY, body TEXT, n INTEGER);
+             INSERT INTO posts (body, n) VALUES ('a', 1), ('b', 2);",
+        )
+        .unwrap();
+
+        let dbpath = tmp.path().join("tenants").join("cachetest").join("data.sqlite");
+        let read = rusqlite::Connection::open_with_flags(
+            &dbpath,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+
+        let binds = std::collections::BTreeMap::new();
+        // First call: prepares and caches `SELECT count(*) ...`.
+        let q1 = execute_read_query_with_named(
+            &read, "SELECT count(*) AS c FROM posts", &binds, 100, 32_768,
+        )
+        .unwrap();
+        assert_eq!(q1.rows[0][0], serde_json::json!(2));
+
+        // Mutate schema + data on the writer, then re-run the SAME sql through
+        // the SAME read connection (its cache now holds the old statement).
+        _conn.execute_batch(
+            "ALTER TABLE posts ADD COLUMN extra TEXT;
+             INSERT INTO posts (body, n) VALUES ('c', 3);",
+        )
+        .unwrap();
+        let q2 = execute_read_query_with_named(
+            &read, "SELECT count(*) AS c FROM posts", &binds, 100, 32_768,
+        )
+        .unwrap();
+        // Must reflect the new row count — NOT a stale cached 2.
+        assert_eq!(q2.rows[0][0], serde_json::json!(3));
     }
 
     fn conn_setup_data(conn: &rusqlite::Connection) {
