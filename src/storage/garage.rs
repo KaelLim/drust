@@ -422,7 +422,7 @@ impl GarageClient {
         cache_control: Option<&str>,
         meta_json: Option<&str>,
     ) -> anyhow::Result<()> {
-        use object_store::{Attribute, AttributeValue, Attributes, ObjectStore, ObjectStoreExt, PutOptions};
+        use object_store::{Attribute, AttributeValue, Attributes, ObjectStore, PutOptions};
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
 
@@ -530,7 +530,7 @@ impl GarageClient {
 
     /// Cross-bucket DELETE. Idempotent: missing key is `Ok`.
     pub async fn delete_object_in(&self, bucket: &str, key: &str) -> anyhow::Result<()> {
-        use object_store::{ObjectStore, ObjectStoreExt};
+        use object_store::ObjectStoreExt;
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
         match s3.delete(&path).await {
@@ -546,7 +546,7 @@ impl GarageClient {
         bucket: &str,
         key: &str,
     ) -> anyhow::Result<bytes::Bytes> {
-        use object_store::{ObjectStore, ObjectStoreExt};
+        use object_store::ObjectStoreExt;
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
         let result = s3.get(&path).await?;
@@ -559,7 +559,7 @@ impl GarageClient {
         bucket: &str,
         key: &str,
     ) -> anyhow::Result<impl futures::Stream<Item = anyhow::Result<bytes::Bytes>> + use<>> {
-        use object_store::{ObjectStore, ObjectStoreExt};
+        use object_store::ObjectStoreExt;
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
         let result = s3.get(&path).await?;
