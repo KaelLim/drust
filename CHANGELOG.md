@@ -44,11 +44,23 @@ found marginal, and **deferred** in favour of a cheaper, security-neutral cut.
 > ≥77 µs) and the authorizer attach-once trim (provisional; needs a coupling
 > audit of every `detach_authorizer` site — its own spec when pulled).
 
-> **Benchmark honesty:** on the shared 2-core host (the test instance is
-> co-resident with the live service) run-to-run variance exceeded the per-cut
-> deltas, so these ship on correctness + mechanism (test-proven
-> behaviour-preserving, profiled hot spots) rather than a precise headline
-> percentage. No regression was observed on any leg.
+> **Benchmark (paired A/B, measured):** the shared 2-core host's run-to-run
+> drift (±20 %) initially swamped the per-cut deltas in an absolute-rps
+> comparison. A paired design fixes that: the v1.33.2 baseline (`fb09293`) and
+> v1.33.3 binaries were measured **alternately within each round** (~25 s apart,
+> server pinned to core 0, load generator to core 1, same seeded datadir),
+> across 10 rounds — drift hits both equally, so it cancels in the paired
+> difference. Median throughput gains, all paired-significant (95 % CI excludes
+> zero; 9–10/10 rounds favour the new binary):
+>
+> | hot path | workload | median Δ |
+> |---|---|---|
+> | auth skip (O1′) | `POST /query SELECT 1` | **+8.5 %** |
+> | result serialization (O2) | `POST /query SELECT *` (5 000 rows) | **+12.5 %** |
+> | RPC `prepare_cached` (O3, + O1′) | `POST /rpc/<name>` | **+4.3 %** |
+>
+> Each binary carries all three cuts; the workloads isolate where each dominates.
+> No regression on any leg.
 
 ---
 
