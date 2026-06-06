@@ -15,6 +15,13 @@ pub struct AdminSessionState {
     pub meta: Arc<Mutex<Connection>>,
 }
 
+#[cfg(any(test, debug_assertions))]
+impl AdminSessionState {
+    pub fn test_default(meta: Arc<Mutex<Connection>>) -> Self {
+        Self { meta }
+    }
+}
+
 /// Tri-state authentication context attached to every request after `bearer_auth_layer`.
 #[derive(Clone, Debug)]
 pub enum AuthCtx {
