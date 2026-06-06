@@ -44,6 +44,25 @@ pub struct PublicFilesState {
     pub url_sign_secret: Arc<[u8; 32]>,
 }
 
+#[cfg(any(test, debug_assertions))]
+impl PublicFilesState {
+    pub fn test_default(
+        session_meta: Arc<Mutex<Connection>>,
+        meta: Arc<Mutex<Connection>>,
+    ) -> Self {
+        Self {
+            session: AdminSessionState::test_default(session_meta),
+            meta,
+            garage: None,
+            base_url: "http://localhost".to_string(),
+            max_upload_bytes: 1_048_576,
+            disk_min_free_pct: 20,
+            garage_client_key_id: String::new(),
+            url_sign_secret: Arc::new([0u8; 32]),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PublicFileRow {
     pub id: i64,

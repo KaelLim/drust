@@ -588,6 +588,61 @@ pub fn build_mgmt_router(state: MgmtState) -> Router {
         .with_state(state)
 }
 
+#[cfg(any(test, debug_assertions))]
+impl MgmtState {
+    /// Test/debug-only constructor. Mirrors `TenantsState::test_default`:
+    /// callers pass the inputs that vary per test; everything else defaults to
+    /// production-equivalent values. Override a `pub` field post-construction
+    /// for the rare non-default case.
+    pub fn test_default(
+        meta: Arc<Mutex<Connection>>,
+        data_dir: std::path::PathBuf,
+        tenants: Arc<crate::storage::pool::TenantRegistry>,
+        mcp: Arc<crate::mcp::http_registry::McpHttpRegistry>,
+        bus: crate::tenant::events::EventBus,
+        bus_rooms: crate::tenant::rooms::RoomBus,
+    ) -> Self {
+        let audit_meta_read = Arc::new(tokio::sync::Mutex::new(
+            crate::safety::audit_db::open_audit_db_memory()
+                .expect("in-memory audit DB for tests"),
+        ));
+        let log_dir = data_dir.join("logs");
+        Self {
+            meta,
+            audit_meta_read,
+            session_ttl_days: 7,
+            garage: None,
+            public_base_url: "http://localhost:8793".to_string(),
+            max_upload_bytes: 52_428_800, // 50 MiB
+            garage_client_key_id: String::new(),
+            disk_min_free_pct: 20,
+            log_dir,
+            url_sign_secret: Arc::new([0u8; 32]),
+            tenants,
+            mcp,
+            bus,
+            bus_rooms,
+            index_large_table_rows: 1_000_000,
+            public_url: String::new(),
+            oauth_registry: Arc::new(crate::oauth::ProviderRegistry::from_env_empty()),
+            admin_login_rl: Arc::new(crate::safety::rate_limit_ip::IpRateLimit::new(
+                5,
+                std::time::Duration::from_secs(60),
+                4096,
+            )),
+            admin_oauth_callback_rl: Arc::new(crate::safety::rate_limit_ip::IpRateLimit::new(
+                5,
+                std::time::Duration::from_secs(60),
+                4096,
+            )),
+            large_upload_max_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB
+            large_upload_chunk_max_bytes: 64 * 1024 * 1024, // 64 MiB
+            large_upload_max_sessions_per_tenant: 5,
+            large_upload_session_ttl_secs: 86_400,
+        }
+    }
+}
+
 impl MgmtState {
     pub fn with_data_dir(self, data_dir: std::path::PathBuf) -> Router {
         // v1.22 — idempotent (OnceLock::get_or_init). Production main also
