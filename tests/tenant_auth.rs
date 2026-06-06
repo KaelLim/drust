@@ -24,12 +24,15 @@ async fn app() -> (Router, String, tempfile::TempDir) {
         rusqlite::params![hash],
     )
     .unwrap();
+    // Seed the tenant data file, then run migrations so the meta `tenants`
+    // table gains the v1.32.5 allow_*_publish columns the bearer-auth CTE reads
+    // (open_meta only creates the base schema; without this the CTE 404s).
+    let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let state = TenantAuthState::test_default(
         Arc::new(Mutex::new(conn)),
         Arc::new(TenantRegistry::new(data.clone(), 2)),
     );
-    // Need to seed tenant data file
-    let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();
     let app =
         Router::new()
             .route(

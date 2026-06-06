@@ -79,6 +79,9 @@ async fn app_with_audit(tenant: &str) -> (axum::Router, String, tempfile::TempDi
     )
     .unwrap();
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    // Migrate so meta `tenants` gains the v1.32.5 allow_*_publish columns the
+    // bearer-auth CTE reads (open_meta only creates the base schema).
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
