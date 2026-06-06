@@ -229,22 +229,13 @@ async fn upload_submit_returns_503_when_garage_none() {
     let mut conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
 
-    let state = PublicFilesState {
-        session: AdminSessionState {
-            meta: Arc::new(Mutex::new(conn)),
-        },
-        meta: {
-            let mut c2 = open_meta(&dir.path().join("meta2.sqlite")).unwrap();
-            bootstrap_admin(&mut c2, "root", "pw").unwrap();
-            Arc::new(Mutex::new(c2))
-        },
-        garage: None,
-        base_url: "http://localhost".to_string(),
-        max_upload_bytes: 1_048_576,
-        disk_min_free_pct: 20,
-        garage_client_key_id: String::new(),
-        url_sign_secret: Arc::new([0u8; 32]),
+    let session_meta = Arc::new(Mutex::new(conn));
+    let meta = {
+        let mut c2 = open_meta(&dir.path().join("meta2.sqlite")).unwrap();
+        bootstrap_admin(&mut c2, "root", "pw").unwrap();
+        Arc::new(Mutex::new(c2))
     };
+    let state = PublicFilesState::test_default(session_meta, meta);
 
     // Build a trivial multipart request.
     let (boundary, body_bytes) = make_multipart(&[("file", "hi", Some("hi.txt"))]);

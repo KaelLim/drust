@@ -305,7 +305,7 @@ async fn unauthenticated_request_redirects_to_drust_login() {
     let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let state =
         TenantsState::test_default(meta.clone(), data_dir.clone(), tenants, mcp, bus, bus_rooms);
-    let session_state = AdminSessionState { meta };
+    let session_state = AdminSessionState::test_default(meta);
 
     // Same shape as the production protected router: the broadcast route
     // sits inside a sub-router that gets `admin_session_layer` applied via

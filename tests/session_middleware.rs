@@ -16,9 +16,7 @@ async fn test_app() -> (Router, String) {
     bootstrap_admin(&mut conn, "root", "pw").unwrap();
     drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
     let token = create_session(&mut conn, 1, 3600).unwrap();
-    let state = AdminSessionState {
-        meta: Arc::new(Mutex::new(conn)),
-    };
+    let state = AdminSessionState::test_default(Arc::new(Mutex::new(conn)));
     let app = Router::new()
         .route("/protected", get(|| async { "ok" }))
         .layer(axum::middleware::from_fn_with_state(
