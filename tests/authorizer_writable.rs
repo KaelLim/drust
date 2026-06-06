@@ -203,14 +203,13 @@ fn case4_all_system_collections_insert_denied() {
     let d = seed("t");
     let conn = open_write(d.path(), "t").unwrap();
 
-    // open_write applies tenant_db::SCHEMA_SQL which creates _system_files,
-    // _system_collection_meta, _system_rpc, _system_oauth_providers, and
-    // _system_webhooks. _system_users / _system_sessions are created lazily
-    // by the user-auth layer (src/db/migrations.rs); materialize them here
-    // so each INSERT below would prepare cleanly WITHOUT the authorizer —
-    // making authorizer denial the only reason prepare can error.
+    // open_write applies tenant_db::SCHEMA_SQL plus per-tenant migrations,
+    // which now create _system_users / _system_sessions themselves. Use
+    // CREATE TABLE IF NOT EXISTS so this batch is a no-op when they already
+    // exist, while still guaranteeing every protected _system_* collection is
+    // present so each INSERT below can only fail via the authorizer.
     conn.execute_batch(
-        "CREATE TABLE _system_users (
+        "CREATE TABLE IF NOT EXISTS _system_users (
            id            TEXT PRIMARY KEY,
            email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
            password_hash TEXT NOT NULL,
@@ -219,7 +218,7 @@ fn case4_all_system_collections_insert_denied() {
            created_at    TEXT NOT NULL,
            updated_at    TEXT NOT NULL
          );
-         CREATE TABLE _system_sessions (
+         CREATE TABLE IF NOT EXISTS _system_sessions (
            token_hash    TEXT PRIMARY KEY,
            user_id       TEXT NOT NULL REFERENCES _system_users(id) ON DELETE CASCADE,
            created_at    TEXT NOT NULL,
