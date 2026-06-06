@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-06-04
+updated: 2026-06-06
 version: 1.33.2
 ---
 
@@ -30,7 +30,7 @@ cargo test --test mcp_write_schema        # one test file
 cargo test set_anon_caps -- --nocapture   # one test, with stdout
 ```
 
-The `tests/` directory holds 100+ integration test files covering MCP, REST, auth, audit, backups, storage, the SQL authorizer, schema codegen, and the admin `_list` endpoint. Each module's `#[cfg(test)]` blocks compile as part of the lib — no separate unit-test layout. Test factories `TenantAuthState::test_default` / `TenantsState::test_default` / `TenantFilesState::test_default` (gated on `cfg(any(test, debug_assertions))`) keep inline struct literals out of test files; prefer them when adding new tests.
+The `tests/` directory holds 100+ integration test files covering MCP, REST, auth, audit, backups, storage, the SQL authorizer, schema codegen, and the admin `_list` endpoint. Each module's `#[cfg(test)]` blocks compile as part of the lib — no separate unit-test layout. Test factories `TenantAuthState::test_default` / `TenantsState::test_default` / `TenantFilesState::test_default` / `MgmtState::test_default` / `PublicFilesState::test_default` / `AdminSessionState::test_default` (gated on `cfg(any(test, debug_assertions))`) keep inline struct literals out of test files; prefer them when adding new tests.
 
 ## Architecture at a glance
 
