@@ -4,7 +4,6 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use drust::mgmt::routes::MgmtState;
-use drust::oauth::ProviderRegistry;
 use drust::safety::rate_limit_ip::IpRateLimit;
 use drust::storage::meta::open_meta;
 use std::sync::Arc;
@@ -17,36 +16,30 @@ async fn build_login_router(rl_capacity: u32) -> Router {
     let dir = tempdir().unwrap();
     let meta_conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
     let meta = Arc::new(Mutex::new(meta_conn));
-    let mgmt_state = MgmtState {
-        meta: meta.clone(),
-        audit_meta_read: Arc::new(Mutex::new(
-            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        dir.path().to_path_buf(),
+        2,
+    ));
+    let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
+        drust::mcp::server::McpRegistry::new(Arc::new(
+            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
         )),
-        session_ttl_days: 1,
-        garage: None,
-        public_base_url: "http://localhost".into(),
-        max_upload_bytes: 1024,
-        garage_client_key_id: String::new(),
-        disk_min_free_pct: 20,
-        log_dir: dir.path().join("logs"),
-        url_sign_secret: Arc::new([0u8; 32]),
-        tenants: Arc::new(drust::storage::pool::TenantRegistry::new(
-            dir.path().to_path_buf(),
-            2,
-        )),
-        mcp: Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
-            drust::mcp::server::McpRegistry::new(Arc::new(
-                drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-            )),
-        ))),
-        bus: drust::tenant::events::EventBus::new(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
-        index_large_table_rows: 1_000_000,
-        public_url: String::new(),
-        oauth_registry: Arc::new(ProviderRegistry::from_env_empty()),
-        admin_login_rl: Arc::new(IpRateLimit::new(rl_capacity, Duration::from_secs(60), 4096)),
-        admin_oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
-    };
+    )));
+    let bus = drust::tenant::events::EventBus::new();
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
+    let admin_login_rl = Arc::new(IpRateLimit::new(rl_capacity, Duration::from_secs(60), 4096));
+    let mut mgmt_state = MgmtState::test_default(
+        meta.clone(),
+        dir.path().to_path_buf(),
+        tenants,
+        mcp,
+        bus,
+        bus_rooms,
+    );
+    mgmt_state.session_ttl_days = 1;
+    mgmt_state.public_base_url = "http://localhost".into();
+    mgmt_state.max_upload_bytes = 1024;
+    mgmt_state.admin_login_rl = admin_login_rl;
     // Keep the tempdir alive for the duration of the test by leaking it.
     std::mem::forget(dir);
     drust::mgmt::routes::build_mgmt_router(mgmt_state)
