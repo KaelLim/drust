@@ -150,6 +150,15 @@
                   {% else %}
                   <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">{{ t.s("tenant_files_admin.row.sign_url") }}</button>
                   {% endif %}
+                  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/files/{{ f.key }}/visibility" style="display:inline">
+                    {% if f.visibility == "public" %}
+                    <input type="hidden" name="visibility" value="private">
+                    <button type="submit" class="btn btn-sm btn-ghost">{{ t.s("tenant_files_admin.row.make_private") }}</button>
+                    {% else %}
+                    <input type="hidden" name="visibility" value="public">
+                    <button type="submit" class="btn btn-sm btn-ghost">{{ t.s("tenant_files_admin.row.make_public") }}</button>
+                    {% endif %}
+                  </form>
                   <button type="button" class="btn btn-sm btn-ghost" data-delete-key="{{ f.key }}" data-delete-name="{{ f.original_name }}" style="color:var(--danger);">{{ t.s("tenant_files_admin.row.delete") }}</button>
                 </td>
               </tr>

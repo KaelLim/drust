@@ -791,6 +791,8 @@ title = "drust admin — files"
 copied = "copied ✓"
 copy_url = "copy URL"
 delete = "delete"
+make_private = "make private"
+make_public = "make public"
 sign_url = "Sign URL"
 
 [tenant_files_admin.sign]

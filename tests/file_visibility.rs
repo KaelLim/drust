@@ -504,3 +504,55 @@ async fn rest_invalid_visibility_422() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["error_code"], "INVALID_VISIBILITY");
 }
+
+// ─── admin: POST /admin/tenants/<id>/files/<key>/visibility ───────────────────
+
+#[tokio::test]
+async fn admin_toggle_moves_object_and_redirects() {
+    use axum::extract::{Path, State};
+    use axum::response::IntoResponse;
+    use drust::mgmt::tenant_files::{AdminVisibilityForm, set_visibility_admin};
+
+    let dir = tempfile::tempdir().unwrap();
+    let tenant = "blog";
+    let pool = make_tenant(&dir, tenant);
+    let key = "admin-aaaa-0000-0000-0000-0000000000aa.txt";
+    insert_row(&pool, key, "public").await;
+    let object_key = compose_key(&Owner::Tenant(tenant.to_string()), key);
+    let garage = mem_garage();
+    garage
+        .put_object_in(
+            "public",
+            &object_key,
+            bytes::Bytes::from_static(b"hi"),
+            Some("text/plain"),
+            "inline",
+            "x.txt",
+            Some("public, max-age=86400"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let state = TenantFilesState::test_default(
+        Some(garage.clone()),
+        dir.path().to_path_buf(),
+        Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2)),
+    );
+
+    let resp = set_visibility_admin(
+        State(state),
+        Path((tenant.to_string(), key.to_string())),
+        axum::Form(AdminVisibilityForm {
+            visibility: "private".into(),
+        }),
+    )
+    .await
+    .into_response();
+
+    assert!(resp.status().is_redirection());
+    assert!(garage.get_object_bytes_in("private", &object_key).await.is_ok());
+    assert!(garage.get_object_bytes_in("public", &object_key).await.is_err());
+    let (vis, _) = read_vis_cc(&pool, key).await;
+    assert_eq!(vis, "private");
+}

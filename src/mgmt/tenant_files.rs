@@ -661,3 +661,46 @@ pub async fn set_visibility(
             .into_response(),
     }
 }
+
+#[derive(serde::Deserialize)]
+pub struct AdminVisibilityForm {
+    pub visibility: String,
+}
+
+/// POST /drust/admin/tenants/<id>/files/<key>/visibility
+/// Admin-session-authed visibility toggle (no bearer / TenantRef — the admin
+/// router sits behind admin_session_layer). Calls the same core mover, then
+/// redirects back to the tenant files page.
+pub async fn set_visibility_admin(
+    State(state): State<TenantFilesState>,
+    Path((tenant_id, key)): Path<(String, String)>,
+    axum::Form(form): axum::Form<AdminVisibilityForm>,
+) -> axum::response::Response {
+    let target = match form.visibility.as_str() {
+        "public" => Visibility::Public,
+        "private" => Visibility::Private,
+        _ => return (StatusCode::UNPROCESSABLE_ENTITY, "invalid visibility").into_response(),
+    };
+    let Some(garage) = state.garage.clone() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
+    };
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("db open: {e}")).into_response();
+        }
+    };
+    match crate::storage::visibility::change_visibility(&garage, &pool, &tenant_id, &key, target)
+        .await
+    {
+        Ok(_) => {
+            axum::response::Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_files"))
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("visibility change: {e:#}"),
+        )
+            .into_response(),
+    }
+}
