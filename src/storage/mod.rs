@@ -10,3 +10,4 @@ pub mod schema;
 pub mod schema_cache;
 pub mod signed_url;
 pub mod tenant_db;
+pub mod visibility;

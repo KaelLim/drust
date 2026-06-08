@@ -423,8 +423,6 @@ impl GarageClient {
         meta_json: Option<&str>,
     ) -> anyhow::Result<()> {
         use object_store::{Attribute, AttributeValue, Attributes, ObjectStore, PutOptions};
-        let s3 = self.build_s3_for_bucket(bucket)?;
-        let path = StorePath::from(key);
 
         let ascii = ascii_fallback_filename(original_name);
         let pct = urlencoding::encode(original_name);
@@ -473,6 +471,17 @@ impl GarageClient {
             attributes: attrs,
             ..Default::default()
         };
+        // Test affordance: a from_store client (empty endpoint) has no real S3;
+        // route to the in-memory store, namespaced by `<bucket>/<key>` so the
+        // public/private buckets stay distinguishable. Production (non-empty
+        // endpoint) always uses the per-bucket S3 client — behaviour unchanged.
+        if self.s3_endpoint.is_empty() {
+            let path = StorePath::from(format!("{bucket}/{key}"));
+            self.store.put_opts(&path, body.into(), opts).await?;
+            return Ok(());
+        }
+        let s3 = self.build_s3_for_bucket(bucket)?;
+        let path = StorePath::from(key);
         s3.put_opts(&path, body.into(), opts).await?;
         Ok(())
     }
@@ -537,6 +546,14 @@ impl GarageClient {
     /// Cross-bucket DELETE. Idempotent: missing key is `Ok`.
     pub async fn delete_object_in(&self, bucket: &str, key: &str) -> anyhow::Result<()> {
         use object_store::ObjectStoreExt;
+        if self.s3_endpoint.is_empty() {
+            let path = StorePath::from(format!("{bucket}/{key}"));
+            return match self.store.delete(&path).await {
+                Ok(()) => Ok(()),
+                Err(object_store::Error::NotFound { .. }) => Ok(()),
+                Err(e) => Err(e.into()),
+            };
+        }
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
         match s3.delete(&path).await {
@@ -553,6 +570,11 @@ impl GarageClient {
         key: &str,
     ) -> anyhow::Result<bytes::Bytes> {
         use object_store::ObjectStoreExt;
+        if self.s3_endpoint.is_empty() {
+            let path = StorePath::from(format!("{bucket}/{key}"));
+            let result = self.store.get(&path).await?;
+            return Ok(result.bytes().await?);
+        }
         let s3 = self.build_s3_for_bucket(bucket)?;
         let path = StorePath::from(key);
         let result = s3.get(&path).await?;
