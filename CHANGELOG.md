@@ -1,3 +1,30 @@
+## v1.34.0 — 2026-06-07
+
+### File visibility toggle (public ⇄ private)
+
+Files could only be made public/private at upload time; changing it meant
+delete + re-upload. This adds an in-place toggle on all three surfaces. Because
+`public` and `private` are two distinct host-wide Garage buckets, a toggle is a
+**bucket move**, not a flag flip.
+
+- **Core** (`src/storage/visibility.rs::change_visibility`): reads the
+  `_system_files` row, copies the object to the target bucket, UPDATEs
+  `visibility` + `cache_control` (reset to the target's default so a now-private
+  file never keeps a public cache header), then deletes the old object. Ordering
+  **copy → UPDATE → delete-old** keeps the live row always pointing at an
+  existing object; a crash leaves only a space-only reconcile orphan and retries
+  are idempotent. This is the first (and only) UPDATE path on `_system_files`.
+- **MCP** `set_file_visibility { id, visibility }` (service-only by dispatch).
+- **REST** `PATCH /t/<id>/files/<key>` `{"visibility":"public|private"}`
+  (service-only via `require_service` → 403 `WRITE_DENIED`; 422
+  `INVALID_VISIBILITY`).
+- **Admin UI** per-row make-public / make-private toggle on the tenant files
+  page (admin-session-authed).
+- **Test affordance**: `GarageClient::{put,get,delete}_object_in` now route to
+  the in-memory store (namespaced `<bucket>/<key>`) when `s3_endpoint` is empty,
+  so the cross-bucket move is exercised in tests. Production (non-empty endpoint)
+  is unchanged. Covered by `tests/file_visibility.rs` (11 tests).
+
 ## v1.33.3 — 2026-06-04
 
 ### Performance
