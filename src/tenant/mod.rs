@@ -578,7 +578,8 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             .route(
                 "/t/{tenant}/files/{key}",
                 get(crate::mgmt::tenant_files::get_one)
-                    .delete(crate::mgmt::tenant_files::delete_one),
+                    .delete(crate::mgmt::tenant_files::delete_one)
+                    .patch(crate::mgmt::tenant_files::set_visibility),
             )
             .route(
                 "/t/{tenant}/files/{key}/bytes",
