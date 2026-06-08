@@ -101,11 +101,12 @@ Optional. Activated by setting `GARAGE_S3_ENDPOINT` + friends in `.env`. When en
 
 ## Per-tenant files (v1.5.0+)
 
-On tenant create, drust auto-provisions `tenant-<id>-pub` (website enabled) + `tenant-<id>-prv` (private) buckets and grants the drust-client key owner access. Rollback on partial failure is compensating; leftover local state captured in `_trash_pending_revokes` / `_orphan_buckets` for the `reconcile` page to retry.
+Tenant files live in two **host-wide** buckets — `public` (website-enabled, served via Caddy `/public/*`) and `private` (drust-proxied) — namespaced by a `<tenant-id>/` key prefix. Per-tenant buckets were retired (`src/mgmt/tenants.rs`); `_trash_pending_revokes` / `_orphan_buckets` + the `reconcile` page only clean up legacy per-tenant buckets left from before that change.
 
-- **REST** at `/drust/t/<id>/files`: POST multipart upload / GET list / GET one / DELETE one / POST `<key>/sign` (pre-signed URL) / GET `<key>/bytes` (private proxy). Service-key-only.
-- **MCP tools**: `list_files`, `delete_file`, `get_file_url`. No upload tool by design — the tenant MCP's `instructions` field points the LLM at the REST endpoint with a curl example.
-- **Admin UI parity** at `/drust/admin/tenants/<id>/files`.
+- **REST** at `/drust/t/<id>/files`: POST multipart upload / GET list / GET one / DELETE one / PATCH one (`{"visibility":"public|private"}`, v1.34+) / POST `<key>/sign` (pre-signed URL) / GET `<key>/bytes` (private proxy). Service-key-only.
+- **MCP tools**: `list_files`, `delete_file`, `get_file_url`, `set_file_visibility` (v1.34+). No upload tool by design — the tenant MCP's `instructions` field points the LLM at the REST endpoint with a curl example.
+- **Visibility toggle** (v1.34+, `src/storage/visibility.rs::change_visibility`): public ⇄ private is a bucket move (copy → UPDATE row → delete-old), not a flag flip — the bytes physically move between the two buckets. Ordering keeps the live row always pointing at an existing object; a crash leaves a space-only reconcile orphan, retries are idempotent. The only UPDATE path on `_system_files`. Surfaced on all three faces (MCP `set_file_visibility`, REST `PATCH`, admin per-row toggle).
+- **Admin UI parity** at `/drust/admin/tenants/<id>/files` (incl. per-row make-public/make-private toggle).
 - **Disk guard**: uploads return 507 when `/var/lib/garage` has less than `DRUST_DISK_MIN_FREE_PCT` (default 20) percent free.
 
 ## Invariants
