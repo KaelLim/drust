@@ -336,3 +336,171 @@ async fn mcp_set_visibility_success_returns_from_to() {
     assert!(garage.get_object_bytes_in("private", &object_key).await.is_ok());
     assert!(garage.get_object_bytes_in("public", &object_key).await.is_err());
 }
+
+// ─── REST: PATCH /t/<tenant>/files/<key> (service-only) ──────────────────────
+
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use drust::auth::bearer::{generate_token, hash_token};
+use drust::mgmt::tenant_files::{TenantFilesState, set_visibility};
+use drust::storage::meta::open_meta;
+use drust::tenant::router::{TenantAuthState, bearer_auth_layer};
+use tokio::sync::Mutex;
+use tower::ServiceExt;
+
+/// Build an app exposing only the PATCH route behind bearer auth, with a seeded
+/// public file (row + object). Returns (app, service_tok, anon_tok, garage, object_key, key).
+async fn rest_setup(
+    tenant: &str,
+) -> (
+    Router,
+    String,
+    String,
+    Arc<GarageClient>,
+    String,
+    String,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let svc = generate_token();
+    let anon = generate_token();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, label, role) VALUES (?1, ?2, 'svc', 'service')",
+        rusqlite::params![tenant, hash_token(&svc)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, label, role) VALUES (?1, ?2, 'anon', 'anon')",
+        rusqlite::params![tenant, hash_token(&anon)],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    // Bearer-auth CTE reads v1.32.5 allow_*_publish columns; migrate so it
+    // doesn't 404 every authed request.
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let key = "rrrrrrrr-0000-0000-0000-0000000000aa.txt".to_string();
+    let object_key = compose_key(&Owner::Tenant(tenant.to_string()), &key);
+
+    // Seed a public file row.
+    let pool = tenants.get_or_open(tenant).unwrap();
+    {
+        let key = key.clone();
+        pool.with_writer(move |c| {
+            c.execute_batch(
+                "CREATE TABLE IF NOT EXISTS _system_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL UNIQUE, original_name TEXT NOT NULL,
+                    content_type TEXT, size_bytes INTEGER NOT NULL DEFAULT 0,
+                    content_disposition TEXT, visibility TEXT NOT NULL DEFAULT 'public',
+                    cache_control TEXT, meta_json TEXT,
+                    uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    uploader TEXT NOT NULL DEFAULT 'service');",
+            )?;
+            c.execute(
+                "INSERT INTO _system_files (key, original_name, content_type, size_bytes,
+                    content_disposition, visibility, cache_control, uploader)
+                 VALUES (?1, 'x.txt', 'text/plain', 2, 'inline', 'public',
+                    'public, max-age=86400', 'service')",
+                rusqlite::params![key],
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    }
+
+    // Seed the object in the public bucket.
+    let garage = mem_garage();
+    garage
+        .put_object_in(
+            "public",
+            &object_key,
+            bytes::Bytes::from_static(b"hi"),
+            Some("text/plain"),
+            "inline",
+            "x.txt",
+            Some("public, max-age=86400"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let meta = Arc::new(Mutex::new(conn));
+    let auth_state = TenantAuthState::test_default(meta, tenants.clone());
+    let files_state = TenantFilesState::test_default(Some(garage.clone()), data.clone(), tenants);
+
+    let app = Router::new()
+        .route(
+            "/t/{tenant}/files/{key}",
+            axum::routing::patch(set_visibility),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            bearer_auth_layer,
+        ))
+        .with_state(files_state);
+
+    (app, svc, anon, garage, object_key, key, dir)
+}
+
+fn patch_req(tenant: &str, key: &str, bearer: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri(format!("/t/{tenant}/files/{key}"))
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn rest_anon_token_denied_403() {
+    let (app, _svc, anon, _g, _ok, key, _d) = rest_setup("blog").await;
+    let resp = app
+        .oneshot(patch_req("blog", &key, &anon, r#"{"visibility":"private"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "WRITE_DENIED");
+}
+
+#[tokio::test]
+async fn rest_service_token_toggles_and_moves_object() {
+    let (app, svc, _anon, garage, object_key, key, _d) = rest_setup("blog").await;
+    let resp = app
+        .oneshot(patch_req("blog", &key, &svc, r#"{"visibility":"private"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["from"], "public");
+    assert_eq!(v["to"], "private");
+    assert!(garage.get_object_bytes_in("private", &object_key).await.is_ok());
+    assert!(garage.get_object_bytes_in("public", &object_key).await.is_err());
+}
+
+#[tokio::test]
+async fn rest_invalid_visibility_422() {
+    let (app, svc, _anon, _g, _ok, key, _d) = rest_setup("blog").await;
+    let resp = app
+        .oneshot(patch_req("blog", &key, &svc, r#"{"visibility":"bogus"}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "INVALID_VISIBILITY");
+}

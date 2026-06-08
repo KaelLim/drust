@@ -598,3 +598,66 @@ pub async fn delete_one(
 
     StatusCode::NO_CONTENT.into_response()
 }
+
+#[derive(serde::Deserialize)]
+pub struct SetVisibilityBody {
+    pub visibility: String,
+}
+
+/// PATCH /drust/t/<tenant>/files/<key>
+/// Toggle a file between `public` and `private`. Service-key-only. Moves the
+/// Garage object to the target bucket and updates the row (see
+/// `crate::storage::visibility::change_visibility`).
+pub async fn set_visibility(
+    State(state): State<TenantFilesState>,
+    axum::Extension(t): axum::Extension<crate::tenant::router::TenantRef>,
+    Path((tenant_id, key)): Path<(String, String)>,
+    axum::Json(body): axum::Json<SetVisibilityBody>,
+) -> axum::response::Response {
+    // Service-key-only — anon/user are rejected before any work.
+    if let Err(r) = crate::tenant::router::require_service(&t) {
+        return r;
+    }
+    let target = match body.visibility.as_str() {
+        "public" => Visibility::Public,
+        "private" => Visibility::Private,
+        _ => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                axum::Json(serde_json::json!({
+                    "error_code": "INVALID_VISIBILITY",
+                    "message": "visibility must be 'public' or 'private'"
+                })),
+            )
+                .into_response();
+        }
+    };
+    let Some(garage) = state.garage.clone() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
+    };
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("db open: {e}")).into_response();
+        }
+    };
+    use crate::storage::visibility::{VisibilityOutcome, change_visibility};
+    match change_visibility(&garage, &pool, &tenant_id, &key, target).await {
+        Ok(VisibilityOutcome::Changed { from, to }) => {
+            axum::Json(serde_json::json!({ "ok": true, "from": from, "to": to })).into_response()
+        }
+        Ok(VisibilityOutcome::NoOp) => {
+            axum::Json(serde_json::json!({ "ok": true, "noop": true })).into_response()
+        }
+        Ok(VisibilityOutcome::NotFound) => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error_code": "NOT_FOUND" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("visibility change: {e:#}"),
+        )
+            .into_response(),
+    }
+}
