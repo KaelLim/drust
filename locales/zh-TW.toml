@@ -809,6 +809,8 @@ title = "drust 管理 — 檔案"
 copied = "已複製 ✓"
 copy_url = "複製 URL"
 delete = "刪除"
+make_private = "設為私有"
+make_public = "設為公開"
 sign_url = "簽署 URL"
 
 [tenant_files_admin.sign]

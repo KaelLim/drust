@@ -654,7 +654,8 @@ impl MgmtState {
             list_page as public_files_list_page, reconcile_apply, reconcile_page, upload_submit,
         };
         use crate::mgmt::tenant_files::{
-            TenantFilesState, delete_one as tfiles_delete, sign_url as tfiles_sign,
+            TenantFilesState, delete_one as tfiles_delete,
+            set_visibility_admin as tfiles_set_vis, sign_url as tfiles_sign,
             stream_bytes as tfiles_stream, upload as tfiles_upload,
         };
         use crate::mgmt::tenants::{
@@ -972,6 +973,10 @@ impl MgmtState {
             )
             .route("/admin/tenants/{id}/files/{key}/sign", post(tfiles_sign))
             .route("/admin/tenants/{id}/files/{key}/bytes", get(tfiles_stream))
+            .route(
+                "/admin/tenants/{id}/files/{key}/visibility",
+                post(tfiles_set_vis),
+            )
             .with_state(tenant_files_state);
 
         // Internal design-system showcase. Renders every component class
