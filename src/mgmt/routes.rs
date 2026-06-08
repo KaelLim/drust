@@ -654,9 +654,8 @@ impl MgmtState {
             list_page as public_files_list_page, reconcile_apply, reconcile_page, upload_submit,
         };
         use crate::mgmt::tenant_files::{
-            TenantFilesState, delete_one as tfiles_delete,
-            set_visibility_admin as tfiles_set_vis, sign_url as tfiles_sign,
-            stream_bytes as tfiles_stream, upload as tfiles_upload,
+            TenantFilesState, delete_one as tfiles_delete, set_visibility_admin as tfiles_set_vis,
+            sign_url as tfiles_sign, stream_bytes as tfiles_stream, upload as tfiles_upload,
         };
         use crate::mgmt::tenants::{
             TenantsState, cmdk_tenants_json, create_tenant_form, create_tenant_json,

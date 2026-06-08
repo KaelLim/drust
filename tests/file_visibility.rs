@@ -22,10 +22,7 @@ fn mem_garage() -> Arc<GarageClient> {
 
 /// Build a temp dir with a tenant data.sqlite carrying _system_files, and
 /// return an open pool for it via the registry.
-fn make_tenant(
-    dir: &tempfile::TempDir,
-    tenant_id: &str,
-) -> drust::storage::pool::SharedTenantPool {
+fn make_tenant(dir: &tempfile::TempDir, tenant_id: &str) -> drust::storage::pool::SharedTenantPool {
     let tenant_dir = dir.path().join("tenants").join(tenant_id);
     std::fs::create_dir_all(&tenant_dir).unwrap();
     let db_path = tenant_dir.join("data.sqlite");
@@ -156,9 +153,17 @@ async fn change_public_to_private_moves_bucket_and_updates_row() {
     assert_eq!(cc, "private, no-store");
 
     // Object physically moved: in private, gone from public.
-    let moved = garage.get_object_bytes_in("private", &object_key).await.unwrap();
+    let moved = garage
+        .get_object_bytes_in("private", &object_key)
+        .await
+        .unwrap();
     assert_eq!(&moved[..], b"hello");
-    assert!(garage.get_object_bytes_in("public", &object_key).await.is_err());
+    assert!(
+        garage
+            .get_object_bytes_in("public", &object_key)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -333,8 +338,18 @@ async fn mcp_set_visibility_success_returns_from_to() {
     assert_eq!(v["from"], "public");
     assert_eq!(v["to"], "private");
     // Object moved to private bucket.
-    assert!(garage.get_object_bytes_in("private", &object_key).await.is_ok());
-    assert!(garage.get_object_bytes_in("public", &object_key).await.is_err());
+    assert!(
+        garage
+            .get_object_bytes_in("private", &object_key)
+            .await
+            .is_ok()
+    );
+    assert!(
+        garage
+            .get_object_bytes_in("public", &object_key)
+            .await
+            .is_err()
+    );
 }
 
 // ─── REST: PATCH /t/<tenant>/files/<key> (service-only) ──────────────────────
@@ -467,11 +482,18 @@ fn patch_req(tenant: &str, key: &str, bearer: &str, body: &str) -> Request<Body>
 async fn rest_anon_token_denied_403() {
     let (app, _svc, anon, _g, _ok, key, _d) = rest_setup("blog").await;
     let resp = app
-        .oneshot(patch_req("blog", &key, &anon, r#"{"visibility":"private"}"#))
+        .oneshot(patch_req(
+            "blog",
+            &key,
+            &anon,
+            r#"{"visibility":"private"}"#,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["error_code"], "WRITE_DENIED");
 }
@@ -484,12 +506,24 @@ async fn rest_service_token_toggles_and_moves_object() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["from"], "public");
     assert_eq!(v["to"], "private");
-    assert!(garage.get_object_bytes_in("private", &object_key).await.is_ok());
-    assert!(garage.get_object_bytes_in("public", &object_key).await.is_err());
+    assert!(
+        garage
+            .get_object_bytes_in("private", &object_key)
+            .await
+            .is_ok()
+    );
+    assert!(
+        garage
+            .get_object_bytes_in("public", &object_key)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -500,7 +534,9 @@ async fn rest_invalid_visibility_422() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let body = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["error_code"], "INVALID_VISIBILITY");
 }
@@ -551,8 +587,18 @@ async fn admin_toggle_moves_object_and_redirects() {
     .into_response();
 
     assert!(resp.status().is_redirection());
-    assert!(garage.get_object_bytes_in("private", &object_key).await.is_ok());
-    assert!(garage.get_object_bytes_in("public", &object_key).await.is_err());
+    assert!(
+        garage
+            .get_object_bytes_in("private", &object_key)
+            .await
+            .is_ok()
+    );
+    assert!(
+        garage
+            .get_object_bytes_in("public", &object_key)
+            .await
+            .is_err()
+    );
     let (vis, _) = read_vis_cc(&pool, key).await;
     assert_eq!(vis, "private");
 }

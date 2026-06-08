@@ -1013,12 +1013,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Change a file's visibility between public and private by \
+    #[tool(
+        description = "Change a file's visibility between public and private by \
         its id (the UUID key). Moves the S3 object to the target bucket and updates \
         the metadata row (cache_control is reset to the target's default). Returns \
         {\"ok\": true, \"from\", \"to\"} on change, {\"ok\": true, \"noop\": true} if \
         already that visibility, or {\"error_code\": \"NOT_FOUND\" | \
-        \"INVALID_VISIBILITY\" | \"STORAGE_UNAVAILABLE\"}.")]
+        \"INVALID_VISIBILITY\" | \"STORAGE_UNAVAILABLE\"}."
+    )]
     async fn set_file_visibility(
         &self,
         Parameters(args): Parameters<file_tools::SetFileVisibilityArgs>,
