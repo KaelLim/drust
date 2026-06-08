@@ -654,11 +654,7 @@ pub async fn set_visibility(
             axum::Json(serde_json::json!({ "error_code": "NOT_FOUND" })),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("visibility change: {e:#}"),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("visibility change: {e:#}")).into_response(),
     }
 }
 
@@ -693,14 +689,8 @@ pub async fn set_visibility_admin(
     match crate::storage::visibility::change_visibility(&garage, &pool, &tenant_id, &key, target)
         .await
     {
-        Ok(_) => {
-            axum::response::Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_files"))
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("visibility change: {e:#}"),
-        )
+        Ok(_) => axum::response::Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_files"))
             .into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("visibility change: {e:#}")).into_response(),
     }
 }
