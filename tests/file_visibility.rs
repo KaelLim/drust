@@ -191,3 +191,148 @@ async fn change_not_found_for_missing_key() {
         .unwrap();
     assert!(matches!(outcome, VisibilityOutcome::NotFound));
 }
+
+// ─── MCP tool: set_file_visibility ───────────────────────────────────────────
+
+use drust::mcp::server::McpRegistry;
+use drust::mcp::tools::files::{SetFileVisibilityArgs, set_file_visibility};
+
+#[tokio::test]
+async fn mcp_set_visibility_rejects_bad_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let tr = std::sync::Arc::new(TenantRegistry::new(data.clone(), 2));
+    let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();
+    let reg = McpRegistry::new(tr); // garage = None
+    let s = reg.get_or_create("blog").await.unwrap();
+
+    // Input validation runs before the storage check.
+    let v = set_file_visibility(
+        &s,
+        SetFileVisibilityArgs {
+            id: "x".into(),
+            visibility: "bogus".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(v["error_code"], "INVALID_VISIBILITY");
+}
+
+#[tokio::test]
+async fn mcp_set_visibility_storage_unavailable_without_garage() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let tr = std::sync::Arc::new(TenantRegistry::new(data.clone(), 2));
+    let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();
+    let reg = McpRegistry::new(tr); // garage = None
+    let s = reg.get_or_create("blog").await.unwrap();
+
+    let v = set_file_visibility(
+        &s,
+        SetFileVisibilityArgs {
+            id: "x".into(),
+            visibility: "private".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(v["error_code"], "STORAGE_UNAVAILABLE");
+}
+
+#[tokio::test]
+async fn mcp_set_visibility_success_returns_from_to() {
+    use drust::tenant::WebhookDispatcher;
+    use drust::tenant::events::EventBus;
+    use drust::tenant::rooms::{RoomBus, RoomsConfig};
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let tenant_id = "blog";
+    let tr = std::sync::Arc::new(TenantRegistry::new(data.clone(), 2));
+    let _ = drust::storage::tenant_db::open_write(&data, tenant_id).unwrap();
+
+    let garage = mem_garage();
+    let webhooks = WebhookDispatcher::new(tr.clone(), None);
+    let audit = std::sync::Arc::new(tokio::sync::Mutex::new(
+        rusqlite::Connection::open_in_memory().unwrap(),
+    ));
+    let rooms_cfg = RoomsConfig::test_defaults();
+    let bucket = rooms_cfg.bucket();
+    let reg = McpRegistry::with_bus_and_storage(
+        tr,
+        EventBus::new(),
+        webhooks,
+        Some(garage.clone()),
+        "http://localhost".into(),
+        std::sync::Arc::new([0u8; 32]),
+        None,
+        52_428_800,
+        1_000_000,
+        audit,
+        RoomBus::new(),
+        bucket,
+        rooms_cfg,
+    );
+    let s = reg.get_or_create(tenant_id).await.unwrap();
+
+    // Seed a public file: _system_files row + object in the public bucket.
+    let key = "aaaaaaaa-0000-0000-0000-0000000000aa.txt";
+    let object_key = compose_key(&Owner::Tenant(tenant_id.to_string()), key);
+    garage
+        .put_object_in(
+            "public",
+            &object_key,
+            bytes::Bytes::from_static(b"hi"),
+            Some("text/plain"),
+            "inline",
+            "x.txt",
+            Some("public, max-age=86400"),
+            None,
+        )
+        .await
+        .unwrap();
+    s.inner()
+        .pool
+        .with_writer({
+            let key = key.to_string();
+            move |c| {
+                c.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS _system_files (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        key TEXT NOT NULL UNIQUE, original_name TEXT NOT NULL,
+                        content_type TEXT, size_bytes INTEGER NOT NULL DEFAULT 0,
+                        content_disposition TEXT, visibility TEXT NOT NULL DEFAULT 'public',
+                        cache_control TEXT, meta_json TEXT,
+                        uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        uploader TEXT NOT NULL DEFAULT 'service');",
+                )?;
+                c.execute(
+                    "INSERT INTO _system_files (key, original_name, content_type, size_bytes,
+                        content_disposition, visibility, cache_control, uploader)
+                     VALUES (?1, 'x.txt', 'text/plain', 2, 'inline', 'public',
+                        'public, max-age=86400', 'service')",
+                    rusqlite::params![key],
+                )
+                .map(|_| ())
+            }
+        })
+        .await
+        .unwrap();
+
+    let v = set_file_visibility(
+        &s,
+        SetFileVisibilityArgs {
+            id: key.into(),
+            visibility: "private".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["from"], "public");
+    assert_eq!(v["to"], "private");
+    // Object moved to private bucket.
+    assert!(garage.get_object_bytes_in("private", &object_key).await.is_ok());
+    assert!(garage.get_object_bytes_in("public", &object_key).await.is_err());
+}
