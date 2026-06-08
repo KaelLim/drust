@@ -1013,6 +1013,22 @@ impl DrustMcpService {
         }
     }
 
+    #[tool(description = "Change a file's visibility between public and private by \
+        its id (the UUID key). Moves the S3 object to the target bucket and updates \
+        the metadata row (cache_control is reset to the target's default). Returns \
+        {\"ok\": true, \"from\", \"to\"} on change, {\"ok\": true, \"noop\": true} if \
+        already that visibility, or {\"error_code\": \"NOT_FOUND\" | \
+        \"INVALID_VISIBILITY\" | \"STORAGE_UNAVAILABLE\"}.")]
+    async fn set_file_visibility(
+        &self,
+        Parameters(args): Parameters<file_tools::SetFileVisibilityArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match file_tools::set_file_visibility(&self.state, args).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
     #[tool(description = "Get a URL to download a file by its id. \
         Public files → stable public URL (expires_at is null). \
         Private files → pre-signed URL with TTL (1..=604800s, default 3600); \
@@ -1761,7 +1777,7 @@ CAPABILITY GROUPS
    Procedures:      create_rpc, update_rpc, delete_rpc, list_rpc, call_rpc
 
 3. STORAGE (per-tenant Garage buckets — public + private)
-   Manage: list_files, delete_file, get_file_url  (pass download=true for attachment disposition)
+   Manage: list_files, delete_file, get_file_url, set_file_visibility  (get_file_url: pass download=true for attachment disposition)
    Upload (small): single request — MCP has no upload tool by design. Use REST:
      POST {base}/drust/t/{tenant_id}/files
      Header: Authorization: Bearer $DRUST_TOKEN

@@ -259,3 +259,41 @@ pub async fn get_file_url(s: &DrustMcp, args: GetFileUrlArgs) -> anyhow::Result<
         "expires_at": expires_at,
     }))
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetFileVisibilityArgs {
+    /// The file's id (the UUID key returned by upload / list_files).
+    pub id: String,
+    /// Target visibility: "public" or "private".
+    pub visibility: String,
+}
+
+/// Toggle a file between public and private. Moves the Garage object to the
+/// target bucket and updates the `_system_files` row (see
+/// `crate::storage::visibility::change_visibility`). MCP is service-only by
+/// dispatch, so no extra role check is needed here.
+pub async fn set_file_visibility(
+    s: &DrustMcp,
+    args: SetFileVisibilityArgs,
+) -> anyhow::Result<serde_json::Value> {
+    // Validate input before touching storage so a bad value is rejected
+    // regardless of whether Garage is configured.
+    let target = match args.visibility.as_str() {
+        "public" => Visibility::Public,
+        "private" => Visibility::Private,
+        _ => return Ok(serde_json::json!({ "error_code": "INVALID_VISIBILITY" })),
+    };
+    let Some(garage) = s.garage().cloned() else {
+        return Ok(storage_unavailable());
+    };
+    let tenant_id = s.tenant_id().to_string();
+    let pool = s.inner().pool.clone();
+    use crate::storage::visibility::{VisibilityOutcome, change_visibility};
+    match change_visibility(&garage, &pool, &tenant_id, &args.id, target).await? {
+        VisibilityOutcome::Changed { from, to } => {
+            Ok(serde_json::json!({ "ok": true, "from": from, "to": to }))
+        }
+        VisibilityOutcome::NoOp => Ok(serde_json::json!({ "ok": true, "noop": true })),
+        VisibilityOutcome::NotFound => Ok(serde_json::json!({ "error_code": "NOT_FOUND" })),
+    }
+}
