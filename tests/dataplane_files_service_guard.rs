@@ -304,3 +304,39 @@ async fn dataplane_service_get_list_200() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
 }
+
+// ─── Section 3: CORS OPTIONS preflight short-circuit (regression lock) ────────
+// build_tenant_router applies the CORS layer OUTSIDE bearer_auth_layer, so it is
+// two layers outside the new guard. A no-token OPTIONS preflight must still get
+// a 2xx — proving the guard never interferes with CORS preflight. This is a
+// green-on-arrival regression lock (CORS short-circuits regardless of the
+// guard), not a red-first test.
+#[tokio::test]
+async fn cors_options_preflight_no_token_short_circuits() {
+    let (app, _svc, _anon, _dir) =
+        files_stack("corsblog", vec!["https://app.example.com".to_string()]).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/t/corsblog/files")
+                .header("origin", "https://app.example.com")
+                .header("access-control-request-method", "POST")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "OPTIONS preflight must short-circuit before the guard, got {}",
+        resp.status()
+    );
+    // CORS echoed the allowed origin without the request ever carrying a token.
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("https://app.example.com")
+    );
+}
