@@ -1,3 +1,28 @@
+## v1.34.1 — 2026-06-09
+
+### Data-plane files routes are service-key-only at the router layer
+
+Anon and end-user (`drust_user_*`) bearer tokens could reach the data-plane
+tenant-files routes. Only `set_visibility` (`PATCH /t/<id>/files/<key>`) and the
+Mode-B tus handlers carried an inline `require_service` check; the other Mode-A
+handlers (`upload`, `list`, `get_one`, `delete_one`, `stream_bytes`, `sign_url`)
+had no guard at the router. This closes the gap with one fail-closed middleware.
+
+- **Core** (`src/tenant/router.rs::require_service_layer`): a `from_fn`
+  middleware that reads the `TenantRef` injected by `bearer_auth_layer` and
+  returns `403 WRITE_DENIED` for `TokenRole::Anon` / `TokenRole::User` (same
+  response shape as the inline checks). A missing `TenantRef` is treated as a
+  denied request (fail closed), not an allowed one.
+- **Wiring** (`src/tenant/mod.rs`): the layer is applied INNER to
+  `bearer_auth_layer` on `files_router`, so it runs after bearer (when the
+  `TenantRef` exists) on every routed method — `POST/GET /t/<id>/files`,
+  `GET/DELETE/PATCH /t/<id>/files/<key>`, `GET …/bytes`, `POST …/sign`, and all
+  `…/uploads*` (Mode-B tus) routes.
+- **Defense-in-depth retained**: the inline `require_service` in `set_visibility`
+  and the six `uploads/*` handlers is unchanged (layer 2).
+- No handler signature changes; the admin files router (`set_visibility_admin`)
+  is untouched; CORS OPTIONS preflight is unaffected (CORS stays outermost).
+
 ## v1.34.0 — 2026-06-07
 
 ### File visibility toggle (public ⇄ private)

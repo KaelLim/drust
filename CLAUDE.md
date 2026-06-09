@@ -5,8 +5,8 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-06-06
-version: 1.33.2
+updated: 2026-06-09
+version: 1.34.1
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -103,7 +103,7 @@ Optional. Activated by setting `GARAGE_S3_ENDPOINT` + friends in `.env`. When en
 
 Tenant files live in two **host-wide** buckets — `public` (website-enabled, served via Caddy `/public/*`) and `private` (drust-proxied) — namespaced by a `<tenant-id>/` key prefix. Per-tenant buckets were retired (`src/mgmt/tenants.rs`); `_trash_pending_revokes` / `_orphan_buckets` + the `reconcile` page only clean up legacy per-tenant buckets left from before that change.
 
-- **REST** at `/drust/t/<id>/files`: POST multipart upload / GET list / GET one / DELETE one / PATCH one (`{"visibility":"public|private"}`, v1.34+) / POST `<key>/sign` (pre-signed URL) / GET `<key>/bytes` (private proxy). Service-key-only.
+- **REST** at `/drust/t/<id>/files`: POST multipart upload / GET list / GET one / DELETE one / PATCH one (`{"visibility":"public|private"}`, v1.34+) / POST `<key>/sign` (pre-signed URL) / GET `<key>/bytes` (private proxy). Service-key-only — enforced by the data-plane `require_service_layer` (`src/tenant/router.rs`, applied inner to `bearer_auth_layer` on `files_router` in `src/tenant/mod.rs`), with `set_visibility` + the six `uploads/*` inline `require_service` checks retained as defense-in-depth (v1.34.1).
 - **MCP tools**: `list_files`, `delete_file`, `get_file_url`, `set_file_visibility` (v1.34+). No upload tool by design — the tenant MCP's `instructions` field points the LLM at the REST endpoint with a curl example.
 - **Visibility toggle** (v1.34+, `src/storage/visibility.rs::change_visibility`): public ⇄ private is a bucket move (copy → UPDATE row → delete-old), not a flag flip — the bytes physically move between the two buckets. Ordering keeps the live row always pointing at an existing object; a crash leaves a space-only reconcile orphan, retries are idempotent. The only UPDATE path on `_system_files`. Surfaced on all three faces (MCP `set_file_visibility`, REST `PATCH`, admin per-row toggle).
 - **Admin UI parity** at `/drust/admin/tenants/<id>/files` (incl. per-row make-public/make-private toggle).
