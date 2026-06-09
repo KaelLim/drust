@@ -22,9 +22,10 @@ use tower::ServiceExt;
 /// Pull `error_code` out of a JSON error body; returns "" for a non-JSON body
 /// (e.g. the probe handler's plain-text success response).
 async fn body_error_code(resp: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     v["error_code"].as_str().unwrap_or("").to_string()
 }
 
@@ -58,7 +59,12 @@ async fn guard_status_for(role: TokenRole) -> (StatusCode, String) {
         // injector: applied last -> OUTER -> inserts TenantRef before the guard.
         .layer(axum::Extension(tref));
     let resp = app
-        .oneshot(Request::builder().uri("/probe").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/probe")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let status = resp.status();
@@ -88,7 +94,10 @@ async fn guard_denies_user_403_write_denied() {
 async fn guard_passes_service_reaches_handler() {
     let (status, code) = guard_status_for(TokenRole::Service).await;
     assert_eq!(status, StatusCode::OK, "service must reach the handler");
-    assert_eq!(code, "", "success body is plain text, not a WRITE_DENIED error");
+    assert_eq!(
+        code, "",
+        "success body is plain text, not a WRITE_DENIED error"
+    );
 }
 
 /// Fail-closed: a request reaching the guard with NO `TenantRef` in extensions
@@ -100,7 +109,12 @@ async fn guard_fails_closed_without_tenantref() {
         .route("/probe", get(|| async { "reached-handler" }))
         .layer(axum::middleware::from_fn(require_service_layer));
     let resp = app
-        .oneshot(Request::builder().uri("/probe").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/probe")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
