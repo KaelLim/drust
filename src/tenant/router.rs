@@ -552,6 +552,30 @@ pub fn require_service(t: &TenantRef) -> Result<(), Response> {
     Ok(())
 }
 
+/// Data-plane-only gate: every route under the tenant `files_router` (Mode-A
+/// files + Mode-B tus uploads) is service-key-only. Runs INNER to
+/// `bearer_auth_layer`, so the `TenantRef` it reads is already in extensions.
+/// Fail closed: a missing `TenantRef` (impossible behind bearer auth — its
+/// absence would mean the layer order is broken) is denied, never run open.
+pub async fn require_service_layer(req: Request<axum::body::Body>, next: Next) -> Response {
+    match req.extensions().get::<TenantRef>() {
+        Some(t) => {
+            if let Err(resp) = require_service(t) {
+                return resp; // 403 WRITE_DENIED — same shape as the inline checks
+            }
+        }
+        None => {
+            return json_error_with_aliases(
+                StatusCode::FORBIDDEN,
+                "WRITE_DENIED",
+                &["SERVICE_REQUIRED"],
+                "service key required",
+            );
+        }
+    }
+    next.run(req).await
+}
+
 fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
     let raw = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
     raw.strip_prefix("Bearer ").map(|s| s.to_string())
