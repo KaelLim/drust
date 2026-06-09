@@ -1,3 +1,16 @@
+## v1.34.2 — 2026-06-09
+
+### Record bodies up to 8 MiB (was capped at axum's 2 MiB default)
+
+`POST`/`PATCH /t/<id>/records/<coll>[/<id>]` buffered the request body under
+axum's built-in 2 MiB default, so saving a record larger than 2 MiB failed with
+`413 Failed to buffer the request body: length limit exceeded` (reported in
+production on `PATCH /records/docs/16`). The two records routes now carry an
+explicit `DefaultBodyLimit` of 8 MiB, overridable via
+`DRUST_MAX_RECORD_BODY_BYTES`. Records are buffered fully in memory so the limit
+stays bounded, and 8 MiB is well under the ~200 MB Caddy/.221 ingress cap. Large
+binary/file content should still use the file-upload API, not a record field.
+
 ## v1.34.1 — 2026-06-09
 
 ### Data-plane files routes are service-key-only at the router layer
