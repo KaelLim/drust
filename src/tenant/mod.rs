@@ -366,12 +366,26 @@ async fn inject_tus_capabilities(
     resp
 }
 
+/// Max request-body size for record create/update (`POST`/`PATCH /records/*`).
+/// Records are buffered fully in memory, so this is bounded. Default 8 MiB —
+/// above axum's 2 MiB built-in default so large document records save — and well
+/// under the ~200 MB Caddy/.221 ingress cap. Override with
+/// `DRUST_MAX_RECORD_BODY_BYTES`.
+fn max_record_body_bytes() -> usize {
+    std::env::var("DRUST_MAX_RECORD_BODY_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(8 * 1024 * 1024)
+}
+
 pub fn build_tenant_router(state: TenantStack) -> Router {
     let auth_state = state.auth.clone();
     let bus = state.bus.clone();
     let webhooks = state.webhooks.clone();
     let mcp = state.mcp.clone();
     let cors = build_cors_layer(&state.cors_origins);
+    let rec_body_limit = max_record_body_bytes();
     // Captured before `state.files` is moved into files_router below; feeds the
     // tus capability layer (Tus-Max-Size) that re-attaches headers onto the
     // CORS-shadowed OPTIONS /uploads response. None when Garage is unconfigured
@@ -448,13 +462,15 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         )
         .route(
             "/t/{tenant}/records/{coll}",
-            get(records::list_handler).post({
-                let b = bus.clone();
-                let wh = webhooks.clone();
-                move |ext, ctx, p, body| {
-                    records::create_handler(ext, ctx, p, body, b.clone(), wh.clone())
-                }
-            }),
+            get(records::list_handler)
+                .post({
+                    let b = bus.clone();
+                    let wh = webhooks.clone();
+                    move |ext, ctx, p, body| {
+                        records::create_handler(ext, ctx, p, body, b.clone(), wh.clone())
+                    }
+                })
+                .layer(axum::extract::DefaultBodyLimit::max(rec_body_limit)),
         )
         .route(
             "/t/{tenant}/records/{coll}/{id}",
@@ -472,7 +488,8 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     move |ext, ctx, p, q| {
                         records::delete_handler(ext, ctx, p, q, b.clone(), wh.clone())
                     }
-                }),
+                })
+                .layer(axum::extract::DefaultBodyLimit::max(rec_body_limit)),
         )
         // /t/{tenant}/records/{coll}/subscribe lives on `ws_router` below,
         // NOT on `core` — its outer layer must be `ws_query_token_adapter`
