@@ -121,6 +121,10 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         drust::tenant::rooms::RoomBus::new(),
         drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         drust::tenant::rooms::RoomsConfig::test_defaults(),
+        Arc::new(drust::tenant::auth_cache::AuthCache::new(
+            std::time::Duration::from_secs(10),
+            200_000,
+        )),
     );
     let svc = reg.get_or_create("blog").await.unwrap();
 

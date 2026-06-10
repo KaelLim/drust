@@ -649,6 +649,10 @@ async fn mcp_set_self_register_tool() {
         drust::tenant::rooms::RoomBus::new(),
         drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         drust::tenant::rooms::RoomsConfig::test_defaults(),
+        Arc::new(drust::tenant::auth_cache::AuthCache::new(
+            std::time::Duration::from_secs(10),
+            200_000,
+        )),
     ));
     let state = TenantAuthState::test_default(meta_arc.clone(), tenants.clone());
     let stack = TenantStack {

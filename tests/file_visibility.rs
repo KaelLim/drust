@@ -278,6 +278,10 @@ async fn mcp_set_visibility_success_returns_from_to() {
         RoomBus::new(),
         bucket,
         rooms_cfg,
+        std::sync::Arc::new(drust::tenant::auth_cache::AuthCache::new(
+            std::time::Duration::from_secs(10),
+            200_000,
+        )),
     );
     let s = reg.get_or_create(tenant_id).await.unwrap();
 

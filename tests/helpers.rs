@@ -335,6 +335,35 @@ pub async fn mgmt_state_with_cache_and_admin(
     (state, dir)
 }
 
+/// Seed a tenant with one `_system_users` row + an active session; returns
+/// `(pool, tempdir, user_id)`. For the MCP hook-7/8 auth-cache tests that
+/// call the tool fns in `drust::mcp::tools::user` directly.
+pub async fn seed_user_for_mcp(tenant: &str) -> (SharedTenantPool, tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    seed_tenant_fs(&dir, tenant);
+    let tenants = TenantRegistry::new(dir.path().to_path_buf(), 2);
+    let pool = tenants.get_or_open(tenant).unwrap();
+    let uid = "u-mcp-cache".to_string();
+    let uid2 = uid.clone();
+    pool.with_writer(move |c| {
+        c.execute(
+            "INSERT INTO _system_users (id, email, password_hash, created_at, updated_at) \
+             VALUES (?1, 'u@x', 'h', datetime('now'), datetime('now'))",
+            rusqlite::params![uid2],
+        )?;
+        c.execute(
+            "INSERT INTO _system_sessions \
+             (token_hash, user_id, created_at, expires_at, last_seen_at) \
+             VALUES ('sess-hash-mcp', ?1, datetime('now'), datetime('now', '+1 day'), \
+             datetime('now'))",
+            rusqlite::params![uid2],
+        )
+    })
+    .await
+    .unwrap();
+    (pool, dir, uid)
+}
+
 /// Real `TenantAuthState` for `tenant` sharing `cache`. For hook-7/8/9 REST tests.
 pub async fn auth_state_with_cache(
     tenant: &str,

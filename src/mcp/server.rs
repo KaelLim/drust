@@ -48,6 +48,12 @@ pub struct DrustMcpInner {
     /// per-room subscriber cap, refill rate). The MCP tool consults
     /// `payload_max_bytes` directly.
     pub rooms_cfg: RoomsConfig,
+    /// v1.35 — shared auth cache (same `Arc` as `TenantAuthState`). `None` in
+    /// the test-only `McpRegistry::new` / `with_bus` ctors. The MCP
+    /// user-mutation tool wrappers pass it into `tools::user::delete_user` /
+    /// `revoke_user_sessions`, which invalidate the user's cached session
+    /// entries (hooks 7-MCP / 8-MCP).
+    pub auth_cache: Option<Arc<crate::tenant::auth_cache::AuthCache>>,
 }
 
 /// Newtype so we can hand out `Arc` without exposing the inner struct.
@@ -73,6 +79,7 @@ impl DrustMcp {
         bus_rooms: RoomBus,
         bucket: Arc<PublishBucket>,
         rooms_cfg: RoomsConfig,
+        auth_cache: Option<Arc<crate::tenant::auth_cache::AuthCache>>,
     ) -> Self {
         Self {
             inner: Arc::new(DrustMcpInner {
@@ -90,6 +97,7 @@ impl DrustMcp {
                 bus_rooms,
                 bucket,
                 rooms_cfg,
+                auth_cache,
             }),
         }
     }
@@ -147,6 +155,11 @@ pub struct McpRegistry {
     bus_rooms: RoomBus,
     bucket: Arc<PublishBucket>,
     rooms_cfg: RoomsConfig,
+    /// v1.35 — shared auth cache forwarded into every `DrustMcp` so the MCP
+    /// user-mutation tools can fire invalidation hooks 7-MCP / 8-MCP. `None`
+    /// in the test-only `new` / `with_bus` ctors; the prod path
+    /// (`with_bus_and_storage`) always carries the `main.rs` instance.
+    auth_cache: Option<Arc<crate::tenant::auth_cache::AuthCache>>,
     services: DashMap<String, DrustMcp>,
 }
 
@@ -168,6 +181,7 @@ impl McpRegistry {
             bus_rooms,
             bucket,
             rooms_cfg,
+            auth_cache: None,
             services: DashMap::new(),
         }
     }
@@ -188,6 +202,7 @@ impl McpRegistry {
             bus_rooms,
             bucket,
             rooms_cfg,
+            auth_cache: None,
             services: DashMap::new(),
         }
     }
@@ -206,6 +221,7 @@ impl McpRegistry {
         bus_rooms: RoomBus,
         bucket: Arc<PublishBucket>,
         rooms_cfg: RoomsConfig,
+        auth_cache: Arc<crate::tenant::auth_cache::AuthCache>,
     ) -> Self {
         Self {
             tenants,
@@ -221,6 +237,7 @@ impl McpRegistry {
             bus_rooms,
             bucket,
             rooms_cfg,
+            auth_cache: Some(auth_cache),
             services: DashMap::new(),
         }
     }
@@ -244,6 +261,7 @@ impl McpRegistry {
             self.bus_rooms.clone(),
             self.bucket.clone(),
             self.rooms_cfg.clone(),
+            self.auth_cache.clone(),
         );
         self.services.insert(tenant_id.to_string(), svc.clone());
         Ok(svc)
