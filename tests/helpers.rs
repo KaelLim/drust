@@ -265,3 +265,40 @@ pub fn seed_tenant_fs(dir: &tempfile::TempDir, tenant: &str) {
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
 }
+
+/// Build a real `TenantsState` for `tenant` (service token seeded) that
+/// shares `cache`, so auth-cache hook tests can fire admin handlers directly
+/// and observe the cache.
+pub async fn tenants_state_with_cache(
+    tenant: &str,
+    cache: Arc<drust::tenant::auth_cache::AuthCache>,
+) -> (drust::mgmt::tenants::TenantsState, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, 'seed', 'service')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
+    let meta = Arc::new(Mutex::new(conn));
+    let mut state = drust::mgmt::tenants::TenantsState::test_default(
+        meta,
+        data,
+        tenants.clone(),
+        test_mcp_http(tenants, bus.clone()),
+        bus,
+        drust::tenant::rooms::RoomBus::new(),
+    );
+    state.auth_cache = cache;
+    (state, dir)
+}

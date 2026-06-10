@@ -123,6 +123,21 @@ pub async fn reroll_token_json(
     let id = tx.last_insert_rowid();
     tx.commit().unwrap();
 
+    // v1.35 hook 1 — the bulk reroll soft-revoked every active (tenant, role)
+    // token; the handler holds only the NEW hash, not the old ones, so
+    // scan-clear all cached Bearer entries for this (tenant_id, role).
+    {
+        use crate::tenant::auth_cache::CachedRole;
+        let cached_role = match role_str {
+            "service" => Some(CachedRole::Service),
+            "anon" => Some(CachedRole::Anon),
+            _ => None,
+        };
+        if let Some(r) = cached_role {
+            state.auth_cache.clear_tenant_role(&tenant_id, &r);
+        }
+    }
+
     let created: String = conn
         .query_row(
             "SELECT created_at FROM tokens WHERE id = ?1",
