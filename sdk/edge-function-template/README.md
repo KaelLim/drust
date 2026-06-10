@@ -1,14 +1,15 @@
 ---
-type: service
-kind: sdk
+type: sdk-template
 name: edge-function-template
-status: production
+target: wasm32-wasip2
+status: wip
 updated: 2026-06-10
 ---
 
 # drust edge-function template
 
 ```bash
+rustup target add wasm32-wasip2   # one-time
 cp -r sdk/edge-function-template my_fn && cd my_fn
 cargo build --target wasm32-wasip2 --release
 curl -X POST https://tool.tzuchi-org.tw/drust/t/<tenant>/functions \
