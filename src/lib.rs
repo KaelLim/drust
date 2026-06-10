@@ -4,6 +4,7 @@ pub mod codegen;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod functions;
 pub mod mcp;
 pub mod mgmt;
 pub mod oauth;
