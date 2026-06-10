@@ -61,6 +61,7 @@ tempfile           = "3"
 prometheus         = { version = "0.14", default-features = false }
 wasmtime           = { version = "45", default-features = false, features = ["runtime", "component-model", "async", "parallel-compilation", "cranelift"] }
 wasmtime-wasi      = "45"
+async-trait        = "0.1"
 
 [dev-dependencies]
 serial_test        = "3"
