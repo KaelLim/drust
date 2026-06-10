@@ -243,4 +243,36 @@ mod tests {
             other => panic!("expected Bearer, got {other:?}"),
         }
     }
+
+    #[test]
+    fn entry_expires_after_safety_ttl() {
+        let c = AuthCache::new(Duration::from_millis(50), 200_000);
+        c.insert(
+            "h2".to_string(),
+            CachedAuth::Bearer {
+                bound_tenant_id: "t1".to_string(),
+                role: CachedRole::Service,
+                publish_user_allowed: false,
+                publish_anon_allowed: false,
+                email_snapshot: None,
+            },
+        );
+        // Fresh: hit.
+        assert!(c.get("h2").is_some());
+        assert_eq!(c.hits(), 1);
+        // After the 50 ms window: miss + entry dropped.
+        std::thread::sleep(Duration::from_millis(70));
+        assert!(c.get("h2").is_none());
+        assert_eq!(c.misses(), 1);
+        assert_eq!(c.len(), 0);
+    }
+
+    #[test]
+    fn miss_on_absent_increments_miss_and_does_not_grow() {
+        let c = AuthCache::new(Duration::from_secs(10), 200_000);
+        assert!(c.get("nope").is_none());
+        assert!(c.get("nope").is_none());
+        assert_eq!(c.misses(), 2);
+        assert_eq!(c.len(), 0);
+    }
 }
