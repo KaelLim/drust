@@ -390,9 +390,12 @@ pub async fn revoke_sessions_handler(
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
+    let uid_for_clear = uid.clone();
     let n = pool
         .with_writer(move |c| crate::auth::user_session::revoke_all_sessions(c, &uid))
         .await
         .unwrap_or(0);
+    // v1.35 hook 7 (REST) — drop every cached User entry for this user_id.
+    state.auth_cache.clear_user(&uid_for_clear);
     (StatusCode::OK, Json(json!({"revoked": n}))).into_response()
 }
