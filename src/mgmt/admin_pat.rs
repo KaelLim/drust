@@ -90,6 +90,11 @@ pub async fn reroll(
         return resp;
     }
 
+    // v1.35 hook 2 — the bulk reroll soft-revoked every active PAT for this
+    // admin; the handler holds only the NEW hash. Scan-clear all cached
+    // Bearer entries whose role is AdminPat { admin_id == caller_id }.
+    s.auth_cache.clear_admin_pat(caller_id);
+
     emit_audit_revoke(caller_id);
     emit_audit_mint(caller_id);
 
