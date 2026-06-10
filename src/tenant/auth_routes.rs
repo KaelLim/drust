@@ -352,6 +352,15 @@ pub async fn logout_handler(
     let _ = pool
         .with_writer(move |c| crate::auth::user_session::revoke_session_by_hash(c, &token_hash))
         .await;
+    // v1.35 hooks 5/6 — drop the cached User entry keyed on the HEX bearer
+    // hash. `ctx.token_hash` is the BASE64 session hash; the cache keys on
+    // the hex `hash_token(bearer)`. We only hold the base64 hash here, so
+    // clear by user_id is the safe single-op (the user is logging out one
+    // session, but clearing all their cached entries is correct-and-sufficient
+    // — the other sessions re-fill on next use).
+    if let AuthCtx::User { user_id, .. } = &ctx {
+        state.auth_cache.clear_user(user_id);
+    }
     (StatusCode::OK, Json(json!({}))).into_response()
 }
 
