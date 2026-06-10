@@ -210,6 +210,8 @@ async fn files_stack(
         tenants.clone(),
         bus.clone(),
     ))));
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: auth_state,
         bus: bus.clone(),
@@ -219,6 +221,9 @@ async fn files_stack(
         mcp,
         files: Some(files_state),
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins,
     };
     (build_tenant_router(stack), svc, anon, dir)

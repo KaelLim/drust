@@ -41,6 +41,8 @@ async fn missed_hook_revocation_honored_within_safety_ttl() {
     let cache = Arc::new(AuthCache::new(Duration::from_millis(50), 200_000));
     let mut state = TenantAuthState::test_default(meta.clone(), tenants.clone());
     state.auth_cache = cache.clone();
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -50,6 +52,9 @@ async fn missed_hook_revocation_honored_within_safety_ttl() {
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

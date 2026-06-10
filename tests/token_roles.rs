@@ -58,6 +58,8 @@ async fn tenant_with_two_tokens(tenant: &str) -> (axum::Router, String, String, 
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(meta, tenants.clone());
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -67,6 +69,9 @@ async fn tenant_with_two_tokens(tenant: &str) -> (axum::Router, String, String, 
         mcp: test_mcp_http(tenants, bus),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

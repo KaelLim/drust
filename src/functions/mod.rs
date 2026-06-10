@@ -62,3 +62,44 @@ impl FnConfig {
         }
     }
 }
+
+/// Test factory — builds the (dispatcher, executor, cfg) triple a
+/// `TenantStack` literal needs, with a no-op runner. Keeps inline struct
+/// builds out of test files (v1.35 MgmtState E0063 lesson).
+#[cfg(any(test, debug_assertions))]
+pub fn test_stack_parts(
+    tenants: std::sync::Arc<crate::storage::pool::TenantRegistry>,
+) -> (
+    std::sync::Arc<dispatcher::FunctionDispatcher>,
+    std::sync::Arc<executor::Executor>,
+    FnConfig,
+) {
+    let cfg = FnConfig::test_default();
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let d = dispatcher::FunctionDispatcher::new(tenants.clone(), tx, cfg.clone());
+    struct NoopRunner;
+    #[async_trait::async_trait]
+    impl executor::FunctionRunner for NoopRunner {
+        async fn run(
+            &self,
+            _t: &str,
+            _p: &std::path::Path,
+            _e: &str,
+        ) -> executor::RunOutcome {
+            executor::RunOutcome {
+                status: executor::RunStatus::Ok,
+                result: "{}".into(),
+                log_text: String::new(),
+            }
+        }
+    }
+    let exec = executor::Executor::new(
+        std::sync::Arc::new(NoopRunner),
+        tenants,
+        cfg.clone(),
+        std::env::temp_dir(),
+        d.depth.clone(),
+    );
+    exec.spawn_loop(rx);
+    (d, exec, cfg)
+}

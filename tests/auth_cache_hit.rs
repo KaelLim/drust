@@ -42,6 +42,8 @@ async fn spin_with_cache(
     let cache = Arc::new(AuthCache::new(Duration::from_secs(10), 200_000));
     let mut state = TenantAuthState::test_default(meta, tenants.clone());
     state.auth_cache = cache.clone();
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -51,6 +53,9 @@ async fn spin_with_cache(
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     };
     (build_tenant_router(stack), tok, cache, dir)
