@@ -1,0 +1,16 @@
+package drust:function@0.1.0;
+
+world edge-function {
+  import host: interface {
+    /// Structured list-read. body-json is the same shape as POST /t/<id>/collections/<c>/list
+    /// minus the collection key: {"filter":…,"sort":…,"page":…,"per_page":…,"select":…}.
+    query-list:    func(collection: string, body-json: string) -> result<string, string>;
+    insert-record: func(collection: string, data-json: string) -> result<string, string>;
+    update-record: func(collection: string, id: s64, data-json: string) -> result<string, string>;
+    delete-record: func(collection: string, id: s64) -> result<string, string>;
+    get-file-bytes: func(key: string) -> result<list<u8>, string>;
+    put-file:      func(key: string, bytes: list<u8>, content-type: string, visibility: string) -> result<string, string>;
+    log:           func(level: string, msg: string);
+  }
+  export handle: func(event-json: string) -> result<string, string>;
+}
