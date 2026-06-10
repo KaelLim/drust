@@ -57,6 +57,8 @@ async fn expired_user_entry_rejected_from_cache_without_db_read() {
 
     let mut state = TenantAuthState::test_default(meta, tenants.clone());
     state.auth_cache = cache.clone();
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -66,6 +68,9 @@ async fn expired_user_entry_rejected_from_cache_without_db_read() {
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

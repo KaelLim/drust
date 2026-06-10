@@ -186,10 +186,10 @@ async fn main() -> anyhow::Result<()> {
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
 
     // v1.36 — edge functions: dispatcher (producer) + executor (consumer).
-    // The executor consuming `_fn_rx` is wired in Task 9; until then the
-    // receiver is kept alive here so dispatches are queued, not dropped.
+    // The executor consuming `fn_rx` is spawned below, once the host-state
+    // seed's inputs (garage, url_sign_secret, …) exist.
     let fn_cfg = drust::functions::FnConfig::from_env();
-    let (fn_tx, _fn_rx) = tokio::sync::mpsc::channel::<drust::functions::executor::Invocation>(
+    let (fn_tx, fn_rx) = tokio::sync::mpsc::channel::<drust::functions::executor::Invocation>(
         1024, // global channel bound; per-tenant fairness is the depth counter's job
     );
     let functions = drust::functions::dispatcher::FunctionDispatcher::new(
@@ -256,6 +256,35 @@ async fn main() -> anyhow::Result<()> {
         std::time::Duration::from_secs(10),
         200_000,
     ));
+
+    // v1.36 — edge functions executor: HostStateSeed mirrors the DrustMcp
+    // constructor args below (minus auth_cache — host calls carry no token —
+    // and minus functions, which is the depth-1 recursion guard).
+    let fn_seed = drust::functions::runtime::HostStateSeed {
+        tenants: tenants.clone(),
+        bus: bus.clone(),
+        webhooks: webhooks.clone(),
+        garage: garage.clone(),
+        public_base_url: cfg.public_base_url.clone(),
+        url_sign_secret: url_sign_secret.clone(),
+        meta: Some(meta.clone()),
+        max_upload_bytes,
+        index_large_table_rows: cfg.index_large_table_rows,
+        audit_meta_read: audit_meta_read.clone(),
+        bus_rooms: bus_rooms.clone(),
+        bucket: bucket.clone(),
+        rooms_cfg: rooms_cfg.clone(),
+        disk_min_free_pct,
+    };
+    let fn_runner = drust::functions::runtime::WasmRunner::new(fn_cfg.clone(), fn_seed);
+    let fn_executor = drust::functions::executor::Executor::new(
+        fn_runner,
+        tenants.clone(),
+        fn_cfg.clone(),
+        cfg.data_dir.clone(), // same root the tenant pools use
+        functions.depth.clone(),
+    );
+    fn_executor.spawn_loop(fn_rx);
 
     let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
         tenants.clone(),
@@ -436,6 +465,9 @@ async fn main() -> anyhow::Result<()> {
         mcp: mcp_http,
         files: tenant_files_state,
         webhooks: webhooks.clone(),
+        functions: functions.clone(),
+        functions_exec: fn_executor.clone(),
+        fn_cfg: fn_cfg.clone(),
         cors_origins: cfg.cors_origins.clone(),
     };
     let tenant_router = build_tenant_router(tenant_stack);

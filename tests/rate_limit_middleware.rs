@@ -44,6 +44,8 @@ async fn app_with_limiter(
     let mut state = TenantAuthState::test_default(meta, tenants.clone());
     // Override the default limiter with the test-specific budget + window.
     state.limiter = Arc::new(RateLimiter::new(budget, window));
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let app = build_tenant_router(TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -53,6 +55,9 @@ async fn app_with_limiter(
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     });
     (app, tok, dir)

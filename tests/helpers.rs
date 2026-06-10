@@ -39,6 +39,8 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(meta, tenants.clone());
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -48,6 +50,114 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         mcp: test_mcp_http(tenants, bus),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
+        cors_origins: Vec::new(),
+    };
+    let app = build_tenant_router(stack);
+    (app, tok, dir)
+}
+
+/// Like `spin_up_tenant` but injects a custom `FunctionRunner` and binds one
+/// `_system_functions` row (triggers = `triggers_json`) on the tenant, so
+/// dispatch tests can observe REST write → function invocation end to end.
+/// Also creates a `posts` collection (text `title`) for the writes to hit.
+pub async fn spin_up_tenant_with_fn_runner(
+    tenant: &str,
+    runner: Arc<dyn drust::functions::executor::FunctionRunner>,
+    triggers_json: &str,
+) -> (Router, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let tok = generate_token();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash) VALUES (?1, ?2)",
+        rusqlite::params![tenant, hash_token(&tok)],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
+    let webhooks = WebhookDispatcher::new(tenants.clone(), None);
+    let meta = Arc::new(Mutex::new(conn));
+    let state = TenantAuthState::test_default(meta, tenants.clone());
+
+    // Manual dispatcher + executor build with the injected runner — same
+    // shape as `drust::functions::test_stack_parts` minus the noop runner.
+    let fn_cfg = drust::functions::FnConfig::test_default();
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let functions = drust::functions::dispatcher::FunctionDispatcher::new(
+        tenants.clone(),
+        tx,
+        fn_cfg.clone(),
+    );
+    let functions_exec = drust::functions::executor::Executor::new(
+        runner,
+        tenants.clone(),
+        fn_cfg.clone(),
+        data.clone(),
+        functions.depth.clone(),
+    );
+    functions_exec.spawn_loop(rx);
+
+    // `posts` collection via the canonical MCP schema tool (same pool /
+    // schema_cache the REST path reads).
+    let mcp_reg = drust::mcp::server::McpRegistry::new(tenants.clone());
+    let svc = mcp_reg.get_or_create(tenant).await.unwrap();
+    drust::mcp::tools::schema::create_collection(
+        &svc,
+        "posts",
+        &[drust::mcp::tools::schema::FieldSpec {
+            name: "title".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: None,
+            description: None,
+        }],
+    )
+    .await
+    .unwrap();
+
+    // One function row bound per `triggers_json`, then refresh the cache.
+    let pool = tenants.get_or_open(tenant).unwrap();
+    drust::functions::schema::create_function(
+        &pool,
+        drust::functions::schema::CreateFunctionParams {
+            name: "hook".into(),
+            wasm_sha256: "00".repeat(32),
+            size_bytes: 1,
+            triggers_json: triggers_json.into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .unwrap();
+    functions.bindings.invalidate(tenant);
+
+    let stack = TenantStack {
+        auth: state,
+        bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
+        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
+        mcp: test_mcp_http(tenants, bus),
+        files: None,
+        webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
@@ -106,6 +216,8 @@ pub async fn spin_up_tenant_with_role_cached(
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(meta, tenants.clone());
     let cache = state.auth_cache.clone();
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -115,6 +227,9 @@ pub async fn spin_up_tenant_with_role_cached(
         mcp: test_mcp_http(tenants, bus),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
@@ -151,6 +266,8 @@ pub async fn spin_up_tenant_with_threshold(
     let meta = Arc::new(Mutex::new(conn));
     let mut state = TenantAuthState::test_default(meta, tenants.clone());
     state.index_large_table_rows = index_large_table_rows;
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -160,6 +277,9 @@ pub async fn spin_up_tenant_with_threshold(
         mcp: test_mcp_http(tenants, bus),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

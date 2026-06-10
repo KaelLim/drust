@@ -456,6 +456,7 @@ pub async fn create_handler(
     Json(body): Json<DataBody>,
     bus: EventBus,
     webhooks: Arc<WebhookDispatcher>,
+    functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
 ) -> Response {
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Insert).await {
         Ok(s) => s,
@@ -654,6 +655,7 @@ pub async fn create_handler(
             *r.status_mut() = StatusCode::CREATED;
             let ev = Event::Created { record: rec };
             bus.publish(&tenant_id, &coll, ev.clone());
+            functions.dispatch(&tenant_id, &coll, &ev);
             webhooks.dispatch(&tenant_id, &coll, ev);
             r
         }
@@ -689,6 +691,7 @@ pub async fn update_handler(
     Json(body): Json<DataBody>,
     bus: EventBus,
     webhooks: Arc<WebhookDispatcher>,
+    functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
 ) -> Response {
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Update).await {
         Ok(s) => s,
@@ -846,6 +849,7 @@ pub async fn update_handler(
             let r = Json(json!({ "record": rec.clone() })).into_response();
             let ev = Event::Updated { record: rec };
             bus.publish(&tenant_id, &coll, ev.clone());
+            functions.dispatch(&tenant_id, &coll, &ev);
             webhooks.dispatch(&tenant_id, &coll, ev);
             r
         }
@@ -890,6 +894,7 @@ pub async fn delete_handler(
     Query(q): Query<DeleteQs>,
     bus: EventBus,
     webhooks: Arc<WebhookDispatcher>,
+    functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
 ) -> Response {
     if q.dry_run.unwrap_or(false) {
         if is_protected_collection(&coll) {
@@ -945,6 +950,7 @@ pub async fn delete_handler(
             let r = StatusCode::NO_CONTENT.into_response();
             let ev = Event::Deleted { id };
             bus.publish(&tenant_id, &coll, ev.clone());
+            functions.dispatch(&tenant_id, &coll, &ev);
             webhooks.dispatch(&tenant_id, &coll, ev);
             r
         }

@@ -660,6 +660,8 @@ async fn mcp_set_self_register_tool() {
         ),
     ));
     let state = TenantAuthState::test_default(meta_arc.clone(), tenants.clone());
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -669,6 +671,9 @@ async fn mcp_set_self_register_tool() {
         mcp: Arc::new(McpHttpRegistry::new(mcp_reg)),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

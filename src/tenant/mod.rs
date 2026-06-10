@@ -53,6 +53,13 @@ pub struct TenantStack {
     pub mcp: Arc<McpHttpRegistry>,
     pub files: Option<TenantFilesState>,
     pub webhooks: Arc<WebhookDispatcher>,
+    /// v1.36 — record-event function dispatch (threaded into the three
+    /// records.rs write closures, same pattern as bus/webhooks).
+    pub functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
+    /// v1.36 — executor handle for the synchronous test-invoke REST path.
+    pub functions_exec: Arc<crate::functions::executor::Executor>,
+    /// v1.36 — env knobs (wasm size cap etc.) for the functions REST routes.
+    pub fn_cfg: crate::functions::FnConfig,
     /// Allow-list for cross-origin browser fetch on tenant routes (parsed
     /// from `DRUST_CORS_ORIGINS`). Empty Vec ⇒ no CORS layer, browsers
     /// keep blocking — same as before this feature shipped.
@@ -384,6 +391,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     let auth_state = state.auth.clone();
     let bus = state.bus.clone();
     let webhooks = state.webhooks.clone();
+    let functions = state.functions.clone();
     let mcp = state.mcp.clone();
     let cors = build_cors_layer(&state.cors_origins);
     let rec_body_limit = max_record_body_bytes();
@@ -467,8 +475,9 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 .post({
                     let b = bus.clone();
                     let wh = webhooks.clone();
+                    let fns = functions.clone();
                     move |ext, ctx, p, body| {
-                        records::create_handler(ext, ctx, p, body, b.clone(), wh.clone())
+                        records::create_handler(ext, ctx, p, body, b.clone(), wh.clone(), fns.clone())
                     }
                 })
                 .layer(axum::extract::DefaultBodyLimit::max(rec_body_limit)),
@@ -479,15 +488,17 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 .patch({
                     let b = bus.clone();
                     let wh = webhooks.clone();
+                    let fns = functions.clone();
                     move |ext, ctx, p, body| {
-                        records::update_handler(ext, ctx, p, body, b.clone(), wh.clone())
+                        records::update_handler(ext, ctx, p, body, b.clone(), wh.clone(), fns.clone())
                     }
                 })
                 .delete({
                     let b = bus.clone();
                     let wh = webhooks.clone();
+                    let fns = functions.clone();
                     move |ext, ctx, p, q| {
-                        records::delete_handler(ext, ctx, p, q, b.clone(), wh.clone())
+                        records::delete_handler(ext, ctx, p, q, b.clone(), wh.clone(), fns.clone())
                     }
                 })
                 .layer(axum::extract::DefaultBodyLimit::max(rec_body_limit)),

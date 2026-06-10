@@ -87,6 +87,8 @@ async fn app_with_audit(tenant: &str) -> (axum::Router, String, tempfile::TempDi
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(meta, tenants.clone());
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
     let app = build_tenant_router(TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -96,6 +98,9 @@ async fn app_with_audit(tenant: &str) -> (axum::Router, String, tempfile::TempDi
         mcp: helpers::test_mcp_http(tenants, bus),
         files: None,
         webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
         cors_origins: Vec::new(),
     });
     (app, tok, dir)
