@@ -236,6 +236,14 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(b)
     };
 
+    // v1.35 — process-local auth cache, constructed ONCE and shared by Arc
+    // clone into TenantAuthState (read path) and the invalidation-hook owners
+    // (TenantsState / MgmtState / McpRegistry). Prod safety TTL: 10 s.
+    let auth_cache = Arc::new(drust::tenant::auth_cache::AuthCache::new(
+        std::time::Duration::from_secs(10),
+        200_000,
+    ));
+
     let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
         tenants.clone(),
         bus.clone(),
@@ -403,6 +411,7 @@ async fn main() -> anyhow::Result<()> {
                 rand::thread_rng().fill_bytes(&mut b);
                 Arc::new(b)
             },
+            auth_cache: auth_cache.clone(),
         },
         bus: bus.clone(),
         bus_rooms: bus_rooms.clone(),
