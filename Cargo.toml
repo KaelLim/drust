@@ -59,6 +59,8 @@ tar                = { version = "0.4", default-features = false }
 zstd               = { version = "0.13", default-features = false }
 tempfile           = "3"
 prometheus         = { version = "0.14", default-features = false }
+wasmtime           = { version = "45", default-features = false, features = ["runtime", "component-model", "async", "parallel-compilation", "cranelift"] }
+wasmtime-wasi      = "45"
 
 [dev-dependencies]
 serial_test        = "3"
