@@ -79,6 +79,8 @@ pub struct MgmtState {
     pub large_upload_max_sessions_per_tenant: u32,
     /// v1.33 — abandoned Mode B session TTL (seconds).
     pub large_upload_session_ttl_secs: u64,
+    /// v1.35 — shared auth cache, threaded into `TenantsState` at router build.
+    pub auth_cache: Arc<crate::tenant::auth_cache::AuthCache>,
 }
 
 #[derive(Template)]
@@ -639,6 +641,10 @@ impl MgmtState {
             large_upload_chunk_max_bytes: 64 * 1024 * 1024, // 64 MiB
             large_upload_max_sessions_per_tenant: 5,
             large_upload_session_ttl_secs: 86_400,
+            auth_cache: Arc::new(crate::tenant::auth_cache::AuthCache::new(
+                std::time::Duration::from_secs(10),
+                200_000,
+            )),
         }
     }
 }
@@ -685,6 +691,7 @@ impl MgmtState {
             log_dir: self.log_dir.clone(),
             audit_meta_read: self.audit_meta_read.clone(),
             index_large_table_rows: self.index_large_table_rows,
+            auth_cache: self.auth_cache.clone(),
         };
         let public_files_state = PublicFilesState {
             session: session.clone(),

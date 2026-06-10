@@ -61,6 +61,10 @@ pub struct TenantsState {
     /// table" and returns `LARGE_TABLE` unless `force=true`. Sourced from
     /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
     pub index_large_table_rows: u64,
+    /// v1.35 — shared auth cache (same `Arc` as `TenantAuthState`/`MgmtState`).
+    /// Admin write handlers invalidate it so a rerolled/revoked token misses
+    /// on its next data-plane request. See `crate::tenant::auth_cache`.
+    pub auth_cache: Arc<crate::tenant::auth_cache::AuthCache>,
 }
 
 /// Test-only constructor available in debug builds.
@@ -105,6 +109,10 @@ impl TenantsState {
             log_dir,
             audit_meta_read,
             index_large_table_rows: 1_000_000,
+            auth_cache: Arc::new(crate::tenant::auth_cache::AuthCache::new(
+                std::time::Duration::from_secs(10),
+                200_000,
+            )),
         }
     }
 }
