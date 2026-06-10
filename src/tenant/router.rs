@@ -48,6 +48,12 @@ pub struct TenantAuthState {
     /// round-trips — acceptable given the 5-minute cookie TTL on PKCE.
     /// See [`crate::oauth::state::TenantOauthStateToken`] for the wire format.
     pub tenant_oauth_state_secret: Arc<[u8; 32]>,
+    /// v1.35 — process-local auth cache. Consulted on the hot path of
+    /// `bearer_auth_layer` AFTER the rate-limit/audit side effects, so a
+    /// hit skips the global `meta` mutex + bearer-auth CTE. Shared by `Arc`
+    /// with `TenantsState` / `MgmtState` / `McpRegistry` so every write
+    /// path can invalidate. See `crate::tenant::auth_cache`.
+    pub auth_cache: Arc<crate::tenant::auth_cache::AuthCache>,
 }
 
 /// Test-only constructor available in debug builds (integration tests run
@@ -88,6 +94,10 @@ impl TenantAuthState {
             // instances would break the OAuth chain in any test that calls
             // /start and /callback on the same router (which they all do).
             tenant_oauth_state_secret: Arc::new(*b"drust-test-state-secret-32bytesx"),
+            auth_cache: Arc::new(crate::tenant::auth_cache::AuthCache::new(
+                std::time::Duration::from_secs(10),
+                200_000,
+            )),
         }
     }
 }
