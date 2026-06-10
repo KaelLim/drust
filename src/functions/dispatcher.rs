@@ -3,8 +3,12 @@
 //! `&Event` (callers keep ownership for the webhook move) and enqueues onto
 //! the global bounded mpsc instead of spawning HTTP tasks.
 //!
-//! Hot-path cost for tenants with zero functions: one DashMap get (the
-//! binding cache) — the 13k-rps positioning is unaffected (spec §4).
+//! Hot-path cost per CRUD: one `Event` clone (full record JSON), six Arc
+//! clones, and one unconditional `tokio::spawn` — the binding-cache DashMap
+//! get happens inside the spawned task, off the caller's thread. Same shape
+//! as the webhook precedent (spec §4); revisit with a sync cached-empty
+//! fast-path on `BindingCache` if the spawn-per-CRUD ever shows up in a
+//! profile against the 13k-rps positioning.
 
 use crate::functions::FnConfig;
 use crate::functions::bindings::BindingCache;
@@ -48,7 +52,8 @@ impl FunctionDispatcher {
 
     /// Record-CRUD entry point — call beside the existing
     /// `bus.publish` + `webhooks.dispatch` pairs at all SIX emission sites.
-    /// Borrow-only: builds the payload lazily, only when a binding matches.
+    /// Borrow-only for the caller; the spawned task builds the payload once
+    /// the tenant has any binding (before the per-binding trigger filter).
     pub fn dispatch(&self, tenant: &str, collection: &str, event: &Event) {
         let me_tenant = tenant.to_string();
         let me_coll = collection.to_string();
@@ -63,7 +68,10 @@ impl FunctionDispatcher {
         tokio::spawn(async move {
             let pool = match tenants.get_or_open(&me_tenant) {
                 Ok(p) => p,
-                Err(_) => return,
+                Err(e) => {
+                    tracing::warn!(error = ?e, tenant = %me_tenant, "function dispatch: get_or_open failed");
+                    return;
+                }
             };
             let binds = bindings.get_or_load(&me_tenant, &pool).await;
             if binds.is_empty() {
@@ -128,7 +136,10 @@ impl FunctionDispatcher {
         tokio::spawn(async move {
             let pool = match tenants.get_or_open(&me_tenant) {
                 Ok(p) => p,
-                Err(_) => return,
+                Err(e) => {
+                    tracing::warn!(error = ?e, tenant = %me_tenant, "function dispatch: get_or_open failed");
+                    return;
+                }
             };
             let binds = bindings.get_or_load(&me_tenant, &pool).await;
             for b in binds.iter().filter(|b| b.matches_file_uploaded()) {
@@ -168,11 +179,17 @@ async fn enqueue(
     let prev = counter.fetch_add(1, Ordering::Relaxed);
     if prev >= cap {
         counter.fetch_sub(1, Ordering::Relaxed);
-        dropped.fetch_add(1, Ordering::Relaxed);
-        tracing::warn!(
-            tenant = %inv.tenant_id, function = %inv.function_name,
-            "function queue full — invocation dropped"
-        );
+        let n = dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        // Sampled WARN (spec §8) — sustained overflow would otherwise emit
+        // one identical line per drop and drown the journal. Same threshold
+        // idiom as audit_db.rs::try_send_inner.
+        if n == 1 || n.is_multiple_of(10_000) {
+            tracing::warn!(
+                tenant = %inv.tenant_id, function = %inv.function_name,
+                total_dropped = n,
+                "function queue full — invocation dropped (rate-limited log)"
+            );
+        }
         if let Ok(pool) = tenants.get_or_open(&inv.tenant_id) {
             let _ = crate::functions::schema::insert_log(
                 &pool,
