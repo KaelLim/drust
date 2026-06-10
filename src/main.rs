@@ -185,6 +185,19 @@ async fn main() -> anyhow::Result<()> {
 
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
 
+    // v1.36 — edge functions: dispatcher (producer) + executor (consumer).
+    // The executor consuming `_fn_rx` is wired in Task 9; until then the
+    // receiver is kept alive here so dispatches are queued, not dropped.
+    let fn_cfg = drust::functions::FnConfig::from_env();
+    let (fn_tx, _fn_rx) = tokio::sync::mpsc::channel::<drust::functions::executor::Invocation>(
+        1024, // global channel bound; per-tenant fairness is the depth counter's job
+    );
+    let functions = drust::functions::dispatcher::FunctionDispatcher::new(
+        tenants.clone(),
+        fn_tx,
+        fn_cfg.clone(),
+    );
+
     let garage = match &cfg.storage {
         Some(sc) => match drust::storage::garage::GarageClient::new(sc) {
             Ok(client) => match client.ping().await {
@@ -259,6 +272,7 @@ async fn main() -> anyhow::Result<()> {
         bucket.clone(),
         rooms_cfg.clone(),
         auth_cache.clone(),
+        functions.clone(),
     ));
     let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 

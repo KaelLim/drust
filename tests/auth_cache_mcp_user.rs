@@ -90,6 +90,11 @@ async fn with_bus_and_storage_threads_cache_into_inner() {
         bucket,
         rooms_cfg,
         cache.clone(),
+        drust::functions::dispatcher::FunctionDispatcher::new(
+            tenants.clone(),
+            tokio::sync::mpsc::channel(8).0,
+            drust::functions::FnConfig::test_default(),
+        ),
     );
     let svc = reg.get_or_create("t-mcpwire").await.unwrap();
     let threaded = svc

@@ -197,6 +197,9 @@ pub async fn insert_record(
     let response_payload = json!({ "id": id, "record": record.clone() });
     let ev = Event::Created { record };
     bus.publish(&tenant, collection, ev.clone());
+    if let Some(f) = s.inner().functions.as_ref() {
+        f.dispatch(&tenant, collection, &ev);
+    }
     webhooks.dispatch(&tenant, collection, ev);
     Ok(response_payload)
 }
@@ -287,6 +290,9 @@ pub async fn update_record(
     let response_payload = json!({ "record": record.clone() });
     let ev = Event::Updated { record };
     bus.publish(&tenant, collection, ev.clone());
+    if let Some(f) = s.inner().functions.as_ref() {
+        f.dispatch(&tenant, collection, &ev);
+    }
     webhooks.dispatch(&tenant, collection, ev);
     Ok(response_payload)
 }
@@ -351,6 +357,9 @@ pub async fn delete_record(
     let response_payload = json!({ "ok": true });
     let ev = Event::Deleted { id };
     bus.publish(&tenant, collection, ev.clone());
+    if let Some(f) = s.inner().functions.as_ref() {
+        f.dispatch(&tenant, collection, &ev);
+    }
     webhooks.dispatch(&tenant, collection, ev);
     Ok(response_payload)
 }

@@ -125,6 +125,11 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
             std::time::Duration::from_secs(10),
             200_000,
         )),
+        drust::functions::dispatcher::FunctionDispatcher::new(
+            tr.clone(),
+            tokio::sync::mpsc::channel(8).0,
+            drust::functions::FnConfig::test_default(),
+        ),
     );
     let svc = reg.get_or_create("blog").await.unwrap();
 

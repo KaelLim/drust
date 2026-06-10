@@ -653,6 +653,11 @@ async fn mcp_set_self_register_tool() {
             std::time::Duration::from_secs(10),
             200_000,
         )),
+        drust::functions::dispatcher::FunctionDispatcher::new(
+            tenants.clone(),
+            tokio::sync::mpsc::channel(8).0,
+            drust::functions::FnConfig::test_default(),
+        ),
     ));
     let state = TenantAuthState::test_default(meta_arc.clone(), tenants.clone());
     let stack = TenantStack {
