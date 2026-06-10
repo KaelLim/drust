@@ -654,6 +654,10 @@ pub async fn me_password_handler(
         Ok(t) => t,
         Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     };
+    // v1.35 hook 9 — the inline DELETE FROM _system_sessions wiped every
+    // session for this user; clear the cache so the old sessions miss on
+    // their next request. The new session is uncached until first use.
+    state.auth_cache.clear_user(&user_id);
     let exp = chrono::Utc::now() + chrono::Duration::days(30);
     (
         StatusCode::OK,
