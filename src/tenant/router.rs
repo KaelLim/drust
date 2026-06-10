@@ -500,6 +500,20 @@ SELECT \
                 pool,
                 role: TokenRole::User,
             });
+            // v1.35 — fill the User cache entry. publish_* MUST come from the
+            // CTE-derived `publish_policy` (read here BEFORE `insert(publish_policy)`
+            // moves it on the next line), so a later cache HIT reconstructs the
+            // SAME TenantPublishPolicy the DB path produces — never false/false.
+            state.auth_cache.insert(
+                hash.clone(),
+                crate::tenant::auth_cache::CachedAuth::User {
+                    tenant_id: tenant_id.clone(),
+                    user_id: session_info.user_id.clone(),
+                    expires_at: chrono::Utc::now() + chrono::Duration::days(30),
+                    publish_user_allowed: publish_policy.allow_user,
+                    publish_anon_allowed: publish_policy.allow_anon,
+                },
+            );
             req.extensions_mut().insert(publish_policy);
             return next.run(req).await;
         }
@@ -547,6 +561,21 @@ SELECT \
                     role: TokenRole::Service,
                 });
                 req.extensions_mut().insert(publish_policy);
+                state.auth_cache.insert(
+                    hash.clone(),
+                    crate::tenant::auth_cache::CachedAuth::Bearer {
+                        bound_tenant_id: tenant_id.clone(),
+                        role: crate::tenant::auth_cache::CachedRole::AdminPat { admin_id },
+                        publish_user_allowed: publish_policy.allow_user,
+                        publish_anon_allowed: publish_policy.allow_anon,
+                        // Audit parity — cache the PAT email so a HIT can restore
+                        // `resolved_email_snapshot`. `resolved_email_snapshot` was
+                        // just set from `pat_email_snapshot` above; clone it (an
+                        // `Option<String>`) so the original still flows to the
+                        // audit branch this request.
+                        email_snapshot: resolved_email_snapshot.clone(),
+                    },
+                );
             }
             Some(role_str @ ("service" | "anon")) => {
                 // Cross-tenant token guard (preserves pre-D9 wire 404).
@@ -583,6 +612,24 @@ SELECT \
                     role,
                 });
                 req.extensions_mut().insert(publish_policy);
+                let cached_role = match role {
+                    TokenRole::Anon => crate::tenant::auth_cache::CachedRole::Anon,
+                    TokenRole::Service => crate::tenant::auth_cache::CachedRole::Service,
+                    TokenRole::User => unreachable!(),
+                };
+                state.auth_cache.insert(
+                    hash.clone(),
+                    crate::tenant::auth_cache::CachedAuth::Bearer {
+                        bound_tenant_id: tenant_id.clone(),
+                        role: cached_role,
+                        publish_user_allowed: publish_policy.allow_user,
+                        publish_anon_allowed: publish_policy.allow_anon,
+                        // Service/anon bearers have no admin email — None keeps
+                        // the audit `actor_email_snapshot` empty on a hit, exactly
+                        // as the DB path leaves it for these roles.
+                        email_snapshot: None,
+                    },
+                );
             }
             // None or any unexpected kind — bearer unresolved.
             _ => {
