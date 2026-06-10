@@ -1,3 +1,16 @@
+## v1.35.1 — 2026-06-10
+
+### Admin UI: MCP tool-count pill is now live, not hardcoded
+
+The "N tools" pill on `_api_keys` (`tenant_api_keys.html`) hardcoded `48`
+while the MCP router actually serves 52 tools — it had silently drifted
+across four tool additions. The template now renders
+`DrustMcpService::tool_count()` (new, `OnceLock`-cached
+`tool_router().list_all().len()`), threaded through `ApiKeysPage` as
+`mcp_tool_count`, so the pill can never drift again. A regression test
+(`tool_count_tests` in `src/mcp/handler.rs`) locks the router count against
+the number of tool annotations in the source.
+
 ## v1.35.0 — 2026-06-10
 
 ### Auth cache: the global meta-mutex leaves the hot path
