@@ -264,6 +264,11 @@ async fn mcp_set_visibility_success_returns_from_to() {
     ));
     let rooms_cfg = RoomsConfig::test_defaults();
     let bucket = rooms_cfg.bucket();
+    let functions = drust::functions::dispatcher::FunctionDispatcher::new(
+        tr.clone(),
+        tokio::sync::mpsc::channel(8).0,
+        drust::functions::FnConfig::test_default(),
+    );
     let reg = McpRegistry::with_bus_and_storage(
         tr,
         EventBus::new(),
@@ -282,6 +287,7 @@ async fn mcp_set_visibility_success_returns_from_to() {
             std::time::Duration::from_secs(10),
             200_000,
         )),
+        functions,
     );
     let s = reg.get_or_create(tenant_id).await.unwrap();
 

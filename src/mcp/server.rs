@@ -54,6 +54,12 @@ pub struct DrustMcpInner {
     /// `revoke_user_sessions`, which invalidate the user's cached session
     /// entries (hooks 7-MCP / 8-MCP).
     pub auth_cache: Option<Arc<crate::tenant::auth_cache::AuthCache>>,
+    /// v1.36 — function dispatcher for the three MCP record-write emission
+    /// sites. `None` in: (a) test-only ctors, (b) the executor-built host
+    /// state (`HostStateSeed::build_mcp`) — THAT None is the depth=1
+    /// recursion guard (spec §4): a guest-initiated write fires SSE +
+    /// webhooks but can never enqueue another function.
+    pub functions: Option<Arc<crate::functions::dispatcher::FunctionDispatcher>>,
 }
 
 /// Newtype so we can hand out `Arc` without exposing the inner struct.
@@ -80,6 +86,7 @@ impl DrustMcp {
         bucket: Arc<PublishBucket>,
         rooms_cfg: RoomsConfig,
         auth_cache: Option<Arc<crate::tenant::auth_cache::AuthCache>>,
+        functions: Option<Arc<crate::functions::dispatcher::FunctionDispatcher>>,
     ) -> Self {
         Self {
             inner: Arc::new(DrustMcpInner {
@@ -98,6 +105,7 @@ impl DrustMcp {
                 bucket,
                 rooms_cfg,
                 auth_cache,
+                functions,
             }),
         }
     }
@@ -160,6 +168,11 @@ pub struct McpRegistry {
     /// in the test-only `new` / `with_bus` ctors; the prod path
     /// (`with_bus_and_storage`) always carries the `main.rs` instance.
     auth_cache: Option<Arc<crate::tenant::auth_cache::AuthCache>>,
+    /// v1.36 — function dispatcher forwarded into every `DrustMcp` so the
+    /// three MCP record-write tools dispatch function invocations. `None` in
+    /// the test-only `new` / `with_bus` ctors; the prod path
+    /// (`with_bus_and_storage`) always carries the `main.rs` instance.
+    functions: Option<Arc<crate::functions::dispatcher::FunctionDispatcher>>,
     services: DashMap<String, DrustMcp>,
 }
 
@@ -182,6 +195,7 @@ impl McpRegistry {
             bucket,
             rooms_cfg,
             auth_cache: None,
+            functions: None,
             services: DashMap::new(),
         }
     }
@@ -203,6 +217,7 @@ impl McpRegistry {
             bucket,
             rooms_cfg,
             auth_cache: None,
+            functions: None,
             services: DashMap::new(),
         }
     }
@@ -222,6 +237,7 @@ impl McpRegistry {
         bucket: Arc<PublishBucket>,
         rooms_cfg: RoomsConfig,
         auth_cache: Arc<crate::tenant::auth_cache::AuthCache>,
+        functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
     ) -> Self {
         Self {
             tenants,
@@ -238,6 +254,7 @@ impl McpRegistry {
             bucket,
             rooms_cfg,
             auth_cache: Some(auth_cache),
+            functions: Some(functions),
             services: DashMap::new(),
         }
     }
@@ -262,6 +279,7 @@ impl McpRegistry {
             self.bucket.clone(),
             self.rooms_cfg.clone(),
             self.auth_cache.clone(),
+            self.functions.clone(),
         );
         self.services.insert(tenant_id.to_string(), svc.clone());
         Ok(svc)
