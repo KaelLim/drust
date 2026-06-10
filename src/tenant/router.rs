@@ -200,6 +200,83 @@ pub async fn bearer_auth_layer(
             );
             return r;
         }
+        // v1.35 — auth cache consult. Runs AFTER the rate-limit probe (so a
+        // hit can never bypass rate limiting) and BEFORE the meta CTE. On a
+        // hit we reconstruct the request extensions from the cached identity
+        // and skip the global `meta.lock()` entirely. last_used_at / audit
+        // still run (audit is emitted post-`next.run` regardless of this
+        // branch; last_used_at is best-effort telemetry intentionally not
+        // refreshed on a hit, matching the spec's "cache the identity, not
+        // the usage write").
+        if let Some(cached) = state.auth_cache.get(&hash) {
+            use crate::tenant::auth_cache::{CachedAuth, CachedRole};
+            match cached {
+                CachedAuth::Bearer {
+                    bound_tenant_id,
+                    role,
+                    publish_user_allowed,
+                    publish_anon_allowed,
+                    email_snapshot,
+                } => {
+                    // Cross-tenant guard: the cached entry is bound to one
+                    // tenant; a request for a different tenant in the path
+                    // must not be served from it.
+                    if bound_tenant_id != tenant_id {
+                        // Fall through to the DB path (do NOT serve from cache).
+                    } else {
+                        let pool = match state.registry.get_or_open(&tenant_id) {
+                            Ok(p) => p,
+                            Err(_) => {
+                                return json_error(
+                                    StatusCode::NOT_FOUND,
+                                    "TENANT_NOT_FOUND",
+                                    "tenant data missing",
+                                );
+                            }
+                        };
+                        let publish_policy = crate::tenant::rooms::policy::TenantPublishPolicy {
+                            allow_user: publish_user_allowed,
+                            allow_anon: publish_anon_allowed,
+                        };
+                        let (ctx, role_for_ref) = match role {
+                            CachedRole::Anon => (AuthCtx::Anon, TokenRole::Anon),
+                            CachedRole::Service => {
+                                (AuthCtx::Service { admin_id: None }, TokenRole::Service)
+                            }
+                            CachedRole::AdminPat { admin_id } => (
+                                AuthCtx::Service {
+                                    admin_id: Some(admin_id),
+                                },
+                                TokenRole::Service,
+                            ),
+                        };
+                        if let CachedRole::AdminPat { admin_id } = role {
+                            req.extensions_mut()
+                                .insert(crate::auth::middleware::AdminId(admin_id));
+                        }
+                        // Audit parity — the DB path sets `resolved_email_snapshot`
+                        // from the CTE `pat_email` column so the audit row keeps
+                        // `actor_email_snapshot`. On a cache hit we restore it from
+                        // the cached `email_snapshot` (None for service/anon,
+                        // Some(email) for admin-PAT).
+                        resolved_email_snapshot = email_snapshot;
+                        resolved_auth_ctx = Some(ctx.clone());
+                        req.extensions_mut().insert(ctx);
+                        req.extensions_mut().insert(TenantRef {
+                            tenant_id: tenant_id.clone(),
+                            token_hint: token_hint(&bearer),
+                            pool,
+                            role: role_for_ref,
+                        });
+                        req.extensions_mut().insert(publish_policy);
+                        return next.run(req).await;
+                    }
+                }
+                CachedAuth::User { .. } => {
+                    // Handled in Task 5; fall through to DB for now.
+                }
+            }
+        }
         // v1.32.3 D9 — collapsed meta lookup. Pre-D9 this section took
         // the meta mutex THREE separate times per request: once for the
         // tenant-exists check, once for the per-admin PAT lookup, once
