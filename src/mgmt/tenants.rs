@@ -14,6 +14,8 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod common;
+
 #[derive(Clone)]
 pub struct TenantsState {
     pub session: AdminSessionState,
@@ -1273,56 +1275,6 @@ pub struct OauthProviderUpsertForm {
     pub allowed_redirect_uris: String,
 }
 
-/// Internal: resolve tenant name (404 if missing/deleted) and pull the
-/// collection list for the sidebar. Mirrors what `_api_keys` does.
-async fn load_tenant_shell(
-    state: &TenantsState,
-    tenant_id: &str,
-) -> Result<(String, Vec<crate::storage::schema::Collection>), Response> {
-    let tenant_name: Option<String> = {
-        let conn = state.session.meta.lock().await;
-        conn.query_row(
-            "SELECT name FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
-            rusqlite::params![tenant_id],
-            |r| r.get(0),
-        )
-        .ok()
-    };
-    let tenant_name = match tenant_name {
-        Some(n) => n,
-        None => {
-            return Err((StatusCode::NOT_FOUND, "no such tenant").into_response());
-        }
-    };
-    let collections = open_read(&state.data_dir, tenant_id)
-        .ok()
-        .and_then(|c| crate::storage::schema::list_collections(&c).ok())
-        .unwrap_or_default();
-    Ok((tenant_name, collections))
-}
-
-/// Lightweight existence guard for admin POST handlers (DELETE / upsert):
-/// returns `None` if the tenant exists in `meta.tenants` and isn't
-/// soft-deleted, or a 404 response otherwise. Used before
-/// `state.tenants.get_or_open(...)` so we don't materialise an empty
-/// `tenants/<bogus_id>/data.sqlite` for an admin-typed path. Cheaper than
-/// `load_tenant_shell` (no collection list).
-async fn ensure_tenant_exists(state: &TenantsState, tenant_id: &str) -> Option<Response> {
-    let exists: bool = {
-        let conn = state.session.meta.lock().await;
-        conn.query_row(
-            "SELECT 1 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
-            rusqlite::params![tenant_id],
-            |_| Ok(()),
-        )
-        .is_ok()
-    };
-    if !exists {
-        return Some((StatusCode::NOT_FOUND, "no such tenant").into_response());
-    }
-    None
-}
-
 /// Render the page. Internal helper so the upsert handler can surface an
 /// error inline without an extra round-trip.
 async fn render_oauth_providers_page(
@@ -1333,7 +1285,7 @@ async fn render_oauth_providers_page(
     theme: crate::mgmt::theme::Theme,
     admin: crate::mgmt::admin_profile::AdminProfileExt,
 ) -> Response {
-    let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
+    let (tenant_name, collections) = match common::load_tenant_shell(state, &tenant_id).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -1405,7 +1357,7 @@ pub async fn tenant_oauth_provider_upsert(
     // by the writer-mutex below via get_or_open → open_write → create_dir_all.
     // GET path runs the same check via load_tenant_shell; DELETE and the
     // upsert error-leg need it too.
-    if let Some(r) = ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) = common::ensure_tenant_exists(&state, &tenant_id).await {
         return r;
     }
 
@@ -1478,7 +1430,7 @@ pub async fn tenant_oauth_provider_delete(
     // Guard FIRST: a missing/soft-deleted tenant must not be re-materialised
     // by get_or_open → open_write → create_dir_all. GET path runs the same
     // check via load_tenant_shell.
-    if let Some(r) = ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) = common::ensure_tenant_exists(&state, &tenant_id).await {
         return r;
     }
     if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
@@ -1655,7 +1607,7 @@ async fn render_webhooks_page(
     theme: crate::mgmt::theme::Theme,
     admin: crate::mgmt::admin_profile::AdminProfileExt,
 ) -> Response {
-    let (tenant_name, collections) = match load_tenant_shell(state, &tenant_id).await {
+    let (tenant_name, collections) = match common::load_tenant_shell(state, &tenant_id).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -1741,7 +1693,7 @@ pub async fn tenant_webhook_create_form(
     Form(form): Form<WebhookCreateForm>,
 ) -> Response {
     // Guard FIRST so a missing tenant doesn't re-materialise its dir.
-    if let Some(r) = ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) = common::ensure_tenant_exists(&state, &tenant_id).await {
         return r;
     }
     let events: Vec<String> = form
@@ -1903,7 +1855,7 @@ pub async fn tenant_webhook_delete_form(
     State(state): State<TenantsState>,
     Path((tenant_id, wid)): Path<(String, i64)>,
 ) -> Response {
-    if let Some(r) = ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) = common::ensure_tenant_exists(&state, &tenant_id).await {
         return r;
     }
     if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
