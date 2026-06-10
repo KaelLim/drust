@@ -258,6 +258,7 @@ async fn main() -> anyhow::Result<()> {
         bus_rooms.clone(),
         bucket.clone(),
         rooms_cfg.clone(),
+        auth_cache.clone(),
     ));
     let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 

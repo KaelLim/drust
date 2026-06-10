@@ -1371,7 +1371,10 @@ impl DrustMcpService {
         &self,
         Parameters(UserIdArgs { user_id }): Parameters<UserIdArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match user_tools::delete_user(&self.state.inner().pool, user_id).await {
+        // v1.35 hook 8-MCP — pass the shared auth cache so the tool fn can
+        // drop the deleted user's cached session entries synchronously.
+        let inner = self.state.inner();
+        match user_tools::delete_user(&inner.pool, user_id, inner.auth_cache.as_deref()).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -1385,7 +1388,12 @@ impl DrustMcpService {
         &self,
         Parameters(UserIdArgs { user_id }): Parameters<UserIdArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match user_tools::revoke_user_sessions(&self.state.inner().pool, user_id).await {
+        // v1.35 hook 7-MCP — pass the shared auth cache so the tool fn can
+        // drop the user's cached session entries synchronously.
+        let inner = self.state.inner();
+        match user_tools::revoke_user_sessions(&inner.pool, user_id, inner.auth_cache.as_deref())
+            .await
+        {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }

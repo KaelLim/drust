@@ -216,6 +216,7 @@ pub async fn update_user(
 pub async fn delete_user(
     pool: &SharedTenantPool,
     user_id: String,
+    auth_cache: Option<&crate::tenant::auth_cache::AuthCache>,
 ) -> anyhow::Result<serde_json::Value> {
     let uid2 = user_id.clone();
     let res = pool
@@ -263,7 +264,17 @@ pub async fn delete_user(
         .await;
 
     match res {
-        Ok((dr, rs)) => Ok(json!({"deleted_records": dr, "revoked_sessions": rs})),
+        Ok((dr, rs)) => {
+            // v1.35 hook 8-MCP — the cascade just deleted the user row AND
+            // its sessions inside the writer tx; synchronously drop every
+            // cached `CachedAuth::User` entry for this user so a live
+            // `drust_user_*` bearer cannot outlive the delete via the auth
+            // cache (Finding #3 invalidate-on-write).
+            if let Some(cache) = auth_cache {
+                cache.clear_user(&user_id);
+            }
+            Ok(json!({"deleted_records": dr, "revoked_sessions": rs}))
+        }
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             Err(anyhow::anyhow!("NOT_FOUND: user not found"))
         }
@@ -276,11 +287,18 @@ pub async fn delete_user(
 pub async fn revoke_user_sessions(
     pool: &SharedTenantPool,
     user_id: String,
+    auth_cache: Option<&crate::tenant::auth_cache::AuthCache>,
 ) -> anyhow::Result<serde_json::Value> {
     let uid = user_id.clone();
     let n = pool
         .with_writer(move |c| crate::auth::user_session::revoke_all_sessions(c, &uid))
         .await
         .unwrap_or(0);
+    // v1.35 hook 7-MCP — drop the user's cached session entries synchronously
+    // after the revocation write. Cleared even when n == 0 (conservative: a
+    // spurious clear only forces a DB re-read on the next request).
+    if let Some(cache) = auth_cache {
+        cache.clear_user(&user_id);
+    }
     Ok(json!({"revoked": n}))
 }
