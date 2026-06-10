@@ -1496,11 +1496,15 @@ impl DrustMcpService {
             }
         };
         let tenant_id = self.state.tenant_id().to_string();
+        // v1.35 hook 11 (MCP face) — pass the cache so a flag change drops
+        // the tenant's cached auth entries synchronously.
+        let inner = self.state.inner();
         match owner_field_tools::set_publish_policy(
             &meta,
             &tenant_id,
             allow_user_publish,
             allow_anon_publish,
+            inner.auth_cache.as_deref(),
         )
         .await
         {

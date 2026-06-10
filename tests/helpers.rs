@@ -65,6 +65,25 @@ pub async fn spin_up_tenant_with_role(
     tenant: &str,
     role: &str,
 ) -> (Router, String, tempfile::TempDir) {
+    let (app, tok, _cache, dir) = spin_up_tenant_with_role_cached(tenant, role).await;
+    (app, tok, dir)
+}
+
+/// Like `spin_up_tenant_with_role`, but ALSO returns the stack's `AuthCache`
+/// handle (v1.35 Finding #3). Tests that flip auth-relevant `meta.sqlite`
+/// columns OUT-OF-BAND (raw SQL — no production handler, so no invalidation
+/// hook fires) must mirror the handlers' invalidation themselves, e.g.
+/// `cache.clear_tenant(tenant)` after the flip; otherwise the flipped value
+/// is invisible until the safety TTL expires.
+pub async fn spin_up_tenant_with_role_cached(
+    tenant: &str,
+    role: &str,
+) -> (
+    Router,
+    String,
+    Arc<drust::tenant::auth_cache::AuthCache>,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
     let conn = open_meta(&data.join("meta.sqlite")).unwrap();
@@ -86,6 +105,7 @@ pub async fn spin_up_tenant_with_role(
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(meta, tenants.clone());
+    let cache = state.auth_cache.clone();
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -98,7 +118,7 @@ pub async fn spin_up_tenant_with_role(
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
-    (app, tok, dir)
+    (app, tok, cache, dir)
 }
 
 /// Like `spin_up_tenant_with_role` but uses a specific `index_large_table_rows`
