@@ -286,6 +286,11 @@ pub async fn create_tenant_json(
     };
     drop(conn);
 
+    // v1.35 hook 4 — if this create recycled a soft-deleted tenant's id,
+    // make_tenant_inner hard-DELETEd the old tokens/row; drop any cached
+    // grant for that id so no stale entry survives the incarnation boundary.
+    state.auth_cache.clear_tenant(&id);
+
     // v1.15.0 — immediate stats sample so the new row renders with real
     // numbers on the next dashboard load, without waiting for a sampler tick.
     crate::mgmt::stats::sample_one(&state.session.meta, &state.tenants, &id).await;
@@ -386,6 +391,9 @@ pub async fn soft_delete_tenant(
     state.mcp.evict(&id);
     state.bus.evict_tenant(&id);
     state.bus_rooms.evict_tenant(&id);
+    // v1.35 hook 3 — drop every cached Bearer + User bound to this
+    // tenant so no stale grant survives the soft-delete.
+    state.auth_cache.clear_tenant(&id);
     StatusCode::NO_CONTENT.into_response()
 }
 
