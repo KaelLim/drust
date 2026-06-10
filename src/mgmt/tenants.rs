@@ -14,7 +14,7 @@ mod webhooks_page;
 pub use crud::{
     cmdk_tenants_json, create_tenant_form, create_tenant_json, get_publish_policy,
     list_page_axum, patch_publish_policy, soft_delete_tenant, soft_delete_tenant_form,
-    toggle_self_register,
+    toggle_self_register, PublishPolicyPatch,
 };
 pub use files_page::tenant_files_admin_page;
 pub use oauth_page::{
