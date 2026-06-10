@@ -1,7 +1,8 @@
-//! Invocation executor: drains the global bounded queue, enforces the global
-//! concurrency semaphore + per-tenant serialization (FIFO tokio::sync::Mutex),
-//! writes one `_system_function_logs` row + one `function.invoke` audit row
-//! per invocation. Failure semantics per spec §8: no retry, loss-on-crash
+//! Invocation executor: drains the global bounded queue into per-tenant FIFO
+//! lanes (one unbounded channel + one worker task per tenant), enforces the
+//! global concurrency semaphore + per-tenant serialization, writes one
+//! `_system_function_logs` row + one `function.invoke` audit row per
+//! invocation. Failure semantics per spec §8: no retry, loss-on-crash
 //! accepted (webhook philosophy).
 
 use crate::functions::FnConfig;
@@ -69,14 +70,28 @@ pub trait FunctionRunner: Send + Sync {
 pub struct Executor {
     runner: Arc<dyn FunctionRunner>,
     tenants: Arc<TenantRegistry>,
-    cfg: FnConfig,
     data_root: std::path::PathBuf,
     semaphore: Arc<Semaphore>,
-    /// FIFO per-tenant serialization (tokio Mutex is queue-fair).
+    /// Per-tenant mutual exclusion. Both the lane worker (queued path) and
+    /// synchronous `run_one` callers (REST /invoke, MCP invoke_function)
+    /// take this, so a manual test-invoke never overlaps a queued run.
+    /// FIFO *ordering* of queued invocations is NOT this lock's job — the
+    /// single lane worker per tenant provides that by construction.
     tenant_locks: DashMap<String, Arc<Mutex<()>>>,
-    /// Per-tenant queued+running count — decremented HERE on completion,
-    /// incremented by the dispatcher at enqueue. Shared Arc with dispatcher.
+    /// Per-tenant FIFO lanes: the global drain loop forwards each invocation
+    /// to its tenant's lane in dequeue order, and the lane's single worker
+    /// task drains sequentially — so same-tenant execution order is enqueue
+    /// order by construction. Lanes are unbounded channels so the global
+    /// loop never awaits a send (one busy tenant cannot head-of-line-block
+    /// the others); real capacity is bounded by the dispatcher's per-tenant
+    /// depth cap (DRUST_FN_QUEUE_DEPTH) enforced at enqueue.
+    tenant_lanes: DashMap<String, mpsc::UnboundedSender<Invocation>>,
+    /// Per-tenant queued+running count — incremented by the dispatcher at
+    /// enqueue, decremented (saturating, never wraps below zero) by the lane
+    /// worker after a queued run completes. Shared Arc with the dispatcher.
+    /// Synchronous `run_one` callers neither increment nor decrement.
     pub depth: Arc<DashMap<String, Arc<std::sync::atomic::AtomicUsize>>>,
+    /// Total completed runs, queued AND synchronous.
     pub completed_total: AtomicU64,
 }
 
@@ -92,10 +107,10 @@ impl Executor {
         Arc::new(Self {
             runner,
             tenants,
-            cfg,
             data_root,
             semaphore: Arc::new(Semaphore::new(permits)),
             tenant_locks: DashMap::new(),
+            tenant_lanes: DashMap::new(),
             depth,
             completed_total: AtomicU64::new(0),
         })
@@ -121,21 +136,63 @@ impl Executor {
         let me = self.clone();
         tokio::spawn(async move {
             while let Some(inv) = rx.recv().await {
-                let me2 = me.clone();
-                tokio::spawn(async move {
-                    me2.run_one(inv).await;
-                });
+                me.route_to_lane(inv);
             }
             tracing::info!("function executor queue closed — loop ends");
         });
     }
 
+    /// Forward one invocation onto its tenant's FIFO lane, spawning the lane
+    /// worker on first use. Never awaits, so a slow tenant cannot stall the
+    /// global drain loop.
+    fn route_to_lane(self: &Arc<Self>, inv: Invocation) {
+        let tx = self
+            .tenant_lanes
+            .entry(inv.tenant_id.clone())
+            .or_insert_with(|| {
+                let (tx, mut lane_rx) = mpsc::unbounded_channel::<Invocation>();
+                let me = self.clone();
+                tokio::spawn(async move {
+                    while let Some(inv) = lane_rx.recv().await {
+                        let tenant = inv.tenant_id.clone();
+                        me.run_one(inv).await;
+                        me.decrement_depth(&tenant);
+                    }
+                });
+                tx
+            })
+            .clone();
+        if let Err(e) = tx.send(inv) {
+            // Unreachable while the lane sender lives in the map (the worker
+            // exits only once every sender is dropped); guard the accounting
+            // anyway so a dropped invocation can't leak a depth slot.
+            tracing::warn!(tenant = %e.0.tenant_id, "function lane closed — invocation dropped");
+            self.decrement_depth(&e.0.tenant_id);
+        }
+    }
+
+    /// Saturating decrement of the dispatcher-shared depth counter:
+    /// `checked_sub` makes 0 stay 0. An unguarded `fetch_sub` would wrap
+    /// 0 → usize::MAX and permanently trip the dispatcher's queue-depth cap
+    /// for the tenant.
+    fn decrement_depth(&self, tenant: &str) {
+        if let Some(d) = self.depth.get(tenant) {
+            let _ = d.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
+        }
+    }
+
     /// Full pipeline for one invocation: tenant lock → semaphore → resolve
     /// row → run → log + audit. Public so the synchronous test-invoke path
     /// (REST /invoke, MCP invoke_function) reuses it and returns the outcome.
+    ///
+    /// Depth accounting: `run_one` itself never touches `depth`. Queued
+    /// invocations are incremented by the dispatcher at enqueue and
+    /// decremented by the lane worker after this returns; synchronous callers
+    /// must NOT increment — they bypass the queue cap by design, and keeping
+    /// them out of the counter means their completion can never corrupt it.
     pub async fn run_one(&self, inv: Invocation) -> RunOutcome {
-        // Per-tenant FIFO first, then the global permit — no lock cycle
-        // (permits are not held while waiting for a tenant lock elsewhere).
+        // Per-tenant exclusion first, then the global permit — no lock cycle
+        // (permits are never held while waiting for a tenant lock elsewhere).
         let tlock = self.tenant_lock(&inv.tenant_id);
         let _t = tlock.lock().await;
         let _p = self.semaphore.acquire().await.expect("semaphore closed");
@@ -145,9 +202,6 @@ impl Executor {
         let duration_ms = started.elapsed().as_millis() as i64;
 
         self.record(&inv, &outcome, duration_ms).await;
-        if let Some(d) = self.depth.get(&inv.tenant_id) {
-            d.fetch_sub(1, Ordering::Relaxed);
-        }
         self.completed_total.fetch_add(1, Ordering::Relaxed);
         outcome
     }
@@ -236,6 +290,7 @@ impl Executor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     struct OkRunner;
     #[async_trait::async_trait]
@@ -249,9 +304,8 @@ mod tests {
         }
     }
 
-    async fn setup(dir: &std::path::Path) -> (Arc<Executor>, Arc<TenantRegistry>) {
-        let reg = Arc::new(TenantRegistry::new(dir.to_path_buf(), 2));
-        let pool = reg.get_or_open("t-e").unwrap();
+    async fn create_echo_fn(reg: &Arc<TenantRegistry>, tenant: &str) {
+        let pool = reg.get_or_open(tenant).unwrap();
         schema::create_function(
             &pool,
             schema::CreateFunctionParams {
@@ -265,6 +319,11 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    async fn setup(dir: &std::path::Path) -> (Arc<Executor>, Arc<TenantRegistry>) {
+        let reg = Arc::new(TenantRegistry::new(dir.to_path_buf(), 2));
+        create_echo_fn(&reg, "t-e").await;
         let exec = Executor::new(
             Arc::new(OkRunner),
             reg.clone(),
@@ -339,5 +398,152 @@ mod tests {
         assert_eq!(exec.completed_total.load(Ordering::Relaxed), 5);
         let pool = reg.get_or_open("t-e").unwrap();
         assert_eq!(schema::list_logs(&pool, "echo", 100).await.unwrap().len(), 5);
+    }
+
+    /// Records (tenant, seq) at run entry and flags any same-tenant overlap.
+    struct SeqRunner {
+        entries: Arc<std::sync::Mutex<Vec<(String, u64)>>>,
+        in_flight: Arc<DashMap<String, AtomicUsize>>,
+        overlap: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl FunctionRunner for SeqRunner {
+        async fn run(&self, t: &str, _p: &std::path::Path, ev: &str) -> RunOutcome {
+            let seq = serde_json::from_str::<serde_json::Value>(ev).unwrap()["seq"]
+                .as_u64()
+                .unwrap();
+            let prev = self
+                .in_flight
+                .entry(t.to_string())
+                .or_insert_with(|| AtomicUsize::new(0))
+                .fetch_add(1, Ordering::SeqCst);
+            if prev > 0 {
+                self.overlap.store(true, Ordering::SeqCst);
+            }
+            self.entries.lock().unwrap().push((t.to_string(), seq));
+            // widen the race window so an ordering/serialization regression
+            // actually manifests instead of passing by luck
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            self.in_flight.get(t).unwrap().fetch_sub(1, Ordering::SeqCst);
+            RunOutcome {
+                status: RunStatus::Ok,
+                result: "{}".into(),
+                log_text: String::new(),
+            }
+        }
+    }
+
+    /// The commit's headline claim: same-tenant invocations run serialized
+    /// AND in enqueue order, while two tenants still run in parallel under
+    /// the global semaphore (concurrency=2 in test_default). The old
+    /// spawn-per-invocation shape could invert same-tenant order via the
+    /// multi-thread scheduler's LIFO slot — hence the multi_thread flavor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn same_tenant_fifo_order_and_serialization() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
+        for t in ["t-a", "t-b"] {
+            create_echo_fn(&reg, t).await;
+        }
+        let entries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let overlap = Arc::new(AtomicBool::new(false));
+        let exec = Executor::new(
+            Arc::new(SeqRunner {
+                entries: entries.clone(),
+                in_flight: Arc::new(DashMap::new()),
+                overlap: overlap.clone(),
+            }),
+            reg.clone(),
+            FnConfig::test_default(),
+            dir.path().to_path_buf(),
+            Arc::new(DashMap::new()),
+        );
+        let (tx, rx) = mpsc::channel(64);
+        exec.spawn_loop(rx);
+        // interleaved A/B burst — the shape that used to make inversion likely
+        for seq in 0..20u64 {
+            for t in ["t-a", "t-b"] {
+                tx.send(Invocation {
+                    tenant_id: t.into(),
+                    function_name: "echo".into(),
+                    trigger: "manual".into(),
+                    event_json: format!(r#"{{"seq":{seq}}}"#),
+                })
+                .await
+                .unwrap();
+            }
+        }
+        for _ in 0..300 {
+            if exec.completed_total.load(Ordering::Relaxed) == 40 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(exec.completed_total.load(Ordering::Relaxed), 40);
+        assert!(!overlap.load(Ordering::SeqCst), "same-tenant runs overlapped");
+        let entries = entries.lock().unwrap();
+        for t in ["t-a", "t-b"] {
+            let seqs: Vec<u64> =
+                entries.iter().filter(|(tt, _)| tt == t).map(|(_, s)| *s).collect();
+            assert_eq!(
+                seqs,
+                (0..20).collect::<Vec<u64>>(),
+                "tenant {t}: execution order != enqueue order"
+            );
+        }
+    }
+
+    /// A synchronous run_one (REST /invoke, MCP invoke_function) must never
+    /// touch the dispatcher's depth counter — the old unguarded fetch_sub
+    /// wrapped 0 → usize::MAX here and permanently bricked the tenant queue.
+    #[tokio::test]
+    async fn sync_run_one_never_wraps_depth_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let (exec, _reg) = setup(dir.path()).await;
+        let d = Arc::new(AtomicUsize::new(0));
+        exec.depth.insert("t-e".into(), d.clone());
+        let out = exec
+            .run_one(Invocation {
+                tenant_id: "t-e".into(),
+                function_name: "echo".into(),
+                trigger: "manual".into(),
+                event_json: "{}".into(),
+            })
+            .await;
+        assert_eq!(out.status, RunStatus::Ok);
+        assert_eq!(d.load(Ordering::Relaxed), 0, "sync invoke corrupted queue depth");
+    }
+
+    /// Queued completions decrement depth; the decrement saturates at zero
+    /// even if accounting drifted (here: depth pre-set to 1 but 2 queued).
+    #[tokio::test]
+    async fn queued_depth_decrement_saturates_at_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let (exec, _reg) = setup(dir.path()).await;
+        let d = Arc::new(AtomicUsize::new(1));
+        exec.depth.insert("t-e".into(), d.clone());
+        let (tx, rx) = mpsc::channel(16);
+        exec.spawn_loop(rx);
+        for _ in 0..2 {
+            tx.send(Invocation {
+                tenant_id: "t-e".into(),
+                function_name: "echo".into(),
+                trigger: "record.created:posts".into(),
+                event_json: "{}".into(),
+            })
+            .await
+            .unwrap();
+        }
+        for _ in 0..100 {
+            if d.load(Ordering::Relaxed) == 0
+                && exec.completed_total.load(Ordering::Relaxed) == 2
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(exec.completed_total.load(Ordering::Relaxed), 2);
+        assert_eq!(d.load(Ordering::Relaxed), 0, "decrement wrapped instead of saturating");
     }
 }
