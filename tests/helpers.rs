@@ -385,3 +385,38 @@ pub async fn auth_state_with_cache(
     state.auth_cache = cache;
     (state, dir)
 }
+
+/// Like `auth_state_with_cache`, but seeds one `_system_users` row in the
+/// tenant db and returns its id. The state carries the fresh cache that
+/// `test_default` builds — reach it via `state.auth_cache.clone()`. For the
+/// hook-8 (user-delete cascade) REST test.
+pub async fn auth_state_with_seeded_user(
+    tenant: &str,
+) -> (TenantAuthState, tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data, 2));
+    let pool = tenants.get_or_open(tenant).unwrap();
+    let uid = "u-del-cache".to_string();
+    let uid2 = uid.clone();
+    pool.with_writer(move |c| {
+        c.execute(
+            "INSERT INTO _system_users (id, email, password_hash, created_at, updated_at) \
+             VALUES (?1, 'u@x', 'h', datetime('now'), datetime('now'))",
+            rusqlite::params![uid2],
+        )
+    })
+    .await
+    .unwrap();
+    let meta = Arc::new(Mutex::new(conn));
+    let state = TenantAuthState::test_default(meta, tenants);
+    (state, dir, uid)
+}
