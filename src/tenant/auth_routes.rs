@@ -387,10 +387,17 @@ pub async fn logout_all_handler(
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
+    let uid_for_clear = user_id.clone();
     let n = pool
         .with_writer(move |c| crate::auth::user_session::revoke_all_sessions(c, &user_id))
         .await
         .unwrap_or(0);
+    // v1.35 hook 7 (user-facing logout-all) — the THIRD caller of
+    // revoke_all_sessions (alongside the admin REST handler and MCP
+    // revoke_user_sessions). Without this clear, the user's OTHER cached
+    // sessions keep authenticating until the safety TTL — caught by
+    // tests/auth_session.rs::logout_all_invalidates_every_session.
+    state.auth_cache.clear_user(&uid_for_clear);
     (StatusCode::OK, Json(json!({"revoked": n}))).into_response()
 }
 
