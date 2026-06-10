@@ -358,6 +358,10 @@ pub async fn delete_user_handler(
         .await;
     match res {
         Ok((dr, rs)) => {
+            // v1.35 hook 8 — the inline DELETE FROM _system_sessions above does
+            // NOT route through user_session::revoke_*, so clear the deleted
+            // user's cached entries here.
+            state.auth_cache.clear_user(&uid);
             let mut resp = (
                 StatusCode::OK,
                 Json(json!({"deleted_records": dr, "revoked_sessions": rs})),
