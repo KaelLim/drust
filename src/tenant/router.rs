@@ -272,8 +272,65 @@ pub async fn bearer_auth_layer(
                         return next.run(req).await;
                     }
                 }
-                CachedAuth::User { .. } => {
-                    // Handled in Task 5; fall through to DB for now.
+                CachedAuth::User {
+                    tenant_id: cached_tid,
+                    user_id,
+                    expires_at,
+                    publish_user_allowed,
+                    publish_anon_allowed,
+                } => {
+                    if cached_tid != tenant_id {
+                        // Cross-tenant: do not serve from cache; fall through.
+                    } else if chrono::Utc::now() < expires_at {
+                        let pool = match state.registry.get_or_open(&tenant_id) {
+                            Ok(p) => p,
+                            Err(_) => {
+                                return json_error(
+                                    StatusCode::NOT_FOUND,
+                                    "TENANT_NOT_FOUND",
+                                    "tenant data missing",
+                                );
+                            }
+                        };
+                        // PARITY with the CTE path (the user-session success block
+                        // below): reconstruct the tenant publish policy from the
+                        // cached flags, NEVER false/false — hardcoding false would
+                        // wrongly deny a permitted user publish (the real user DB
+                        // path inserts the CTE-derived publish_policy here, not a
+                        // default).
+                        let publish_policy = crate::tenant::rooms::policy::TenantPublishPolicy {
+                            allow_user: publish_user_allowed,
+                            allow_anon: publish_anon_allowed,
+                        };
+                        let session_hash = crate::auth::user_session::hash_token(&bearer);
+                        let ctx = AuthCtx::User {
+                            user_id: user_id.clone(),
+                            token_hash: session_hash,
+                        };
+                        resolved_auth_ctx = Some(ctx.clone());
+                        req.extensions_mut().insert(ctx);
+                        req.extensions_mut().insert(TenantRef {
+                            tenant_id: tenant_id.clone(),
+                            token_hint: token_hint(&bearer),
+                            pool,
+                            role: TokenRole::User,
+                        });
+                        req.extensions_mut().insert(publish_policy);
+                        return next.run(req).await;
+                    } else {
+                        // Expired per the cached source of truth: reject WITHOUT
+                        // a _system_sessions read. Drop the stale entry and 401.
+                        state.auth_cache.remove(&hash);
+                        crate::mgmt::metrics::metrics()
+                            .bearer_denied_total
+                            .with_label_values(&["user", "HTTP_401"])
+                            .inc();
+                        return json_error(
+                            StatusCode::UNAUTHORIZED,
+                            "UNAUTHENTICATED",
+                            "session expired",
+                        );
+                    }
                 }
             }
         }
