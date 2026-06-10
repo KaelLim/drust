@@ -42,6 +42,9 @@ struct ApiKeysPage {
     /// the page as `<span id="key-mcp-pat" data-plain="...">` so the
     /// "Copy MCP config" button can build the snippet without a fetch.
     pat_plaintext: Option<String>,
+    /// Live MCP tool count from the macro-generated router — drives the
+    /// "N tools" pill so it never drifts when tools are added/removed.
+    mcp_tool_count: usize,
 }
 
 pub struct TokenSlotInfo {
@@ -286,6 +289,7 @@ pub async fn api_keys_page(
             mascot_json_light: trc.mascot_json_light,
             mascot_json_dark: trc.mascot_json_dark,
             pat_plaintext,
+            mcp_tool_count: crate::mcp::handler::DrustMcpService::tool_count(),
         }
         .render()
         .unwrap(),

@@ -458,6 +458,15 @@ impl DrustMcpService {
         Self { state }
     }
 
+    /// Number of MCP tools this service exposes, derived from the
+    /// macro-generated router so it can never drift from reality.
+    /// Cached: building the router walks every tool's schema once.
+    /// Drives the "N tools" pill on the admin `_api_keys` page.
+    pub fn tool_count() -> usize {
+        static COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *COUNT.get_or_init(|| Self::tool_router().list_all().len())
+    }
+
     #[tool(description = "List all collections in this tenant's database, with their row counts.")]
     async fn list_collections(&self) -> Result<CallToolResult, McpError> {
         match exploration::list_collections(&self.state).await {
@@ -1845,6 +1854,28 @@ impl ServerHandler for DrustMcpService {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("drust", env!("CARGO_PKG_VERSION")))
             .with_instructions(instructions)
+    }
+}
+
+#[cfg(test)]
+mod tool_count_tests {
+    use super::DrustMcpService;
+
+    #[test]
+    fn tool_count_matches_source_annotations() {
+        // The admin `_api_keys` page renders an "N tools" pill from
+        // `tool_count()`. Lock router reality against the source: every
+        // tool annotation in this file must be registered by the macro,
+        // and the count must be what the pill shows. The needle is
+        // assembled at runtime so this test doesn't count itself.
+        let needle = format!("#[tool{}", "(");
+        let annotated = include_str!("handler.rs").matches(&needle).count();
+        assert_eq!(
+            DrustMcpService::tool_count(),
+            annotated,
+            "router tool count drifted from #[tool] annotations in handler.rs"
+        );
+        assert!(DrustMcpService::tool_count() > 0, "router must not be empty");
     }
 }
 

@@ -82,7 +82,7 @@
             <svg viewBox="0 0 24 24"><path d="M4 4l8 4 8-4M4 12l8 4 8-4M4 20l8-4 8 4" stroke-linejoin="round" stroke-linecap="round"/></svg>
           </div>
           <div class="key-info">
-            <div class="key-name">{{ t.s("tenant_api_keys.mcp.name") }} <span class="pill lilac"><span class="dot"></span>{{ t.fmt1("tenant_api_keys.mcp.tools_pill", "n", 48) }}</span></div>
+            <div class="key-name">{{ t.s("tenant_api_keys.mcp.name") }} <span class="pill lilac"><span class="dot"></span>{{ t.fmt1("tenant_api_keys.mcp.tools_pill", "n", mcp_tool_count) }}</span></div>
             <div class="key-desc">{{ t.s("tenant_api_keys.mcp.desc") }}</div>
           </div>
           <code class="key-val" id="mcp-url" data-tenant="{{ tenant_id }}">/drust/t/{{ tenant_id }}/mcp</code>
