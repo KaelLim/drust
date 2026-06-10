@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-06-09
+updated: 2026-06-10
 version: 1.34.2
 ---
 
@@ -65,6 +65,7 @@ Stored in per-tenant `_system_collection_meta` (one row per collection). Surface
 ### Auth
 
 - **Bearer tokens** (`meta.sqlite`): per-tenant anon + service. Resolved in `bearer_auth_layer`, which also wires rate-limit + audit; denials get `error_code: HTTP_<status>`.
+- **Auth cache** (v1.35+, `src/tenant/auth_cache.rs`): process-local invalidate-on-write `DashMap<token_hash, CachedAuth>` consulted in `bearer_auth_layer` AFTER the rate-limit probe (a hit skips the global `meta` mutex + bearer-auth CTE). Negatives never cached. Eleven enumerated invalidation hooks fire at every write path that changes auth state (token/PAT reroll, tenant soft-delete/id-recycle, logout, revoke-all, user-delete cascade, change-password wipe, publish-policy change); a per-entry 10 s safety TTL (`safety_ttl` field, injectable in tests) bounds any missed hook to ≤ 10 s. Hook 10 (out-of-process session janitor) is intentionally unwired — cached `expires_at` self-reject + TTL cover it. ANY new code path that sets `revoked_at` / a tenant's `deleted_at`/id / deletes `_system_sessions` rows / mutates a publish flag MUST add a hook.
 - **End-user auth** (v1.9+): per-tenant `_system_users` + `_system_sessions`. Tokens `drust_user_*`, SHA-256-hashed, sliding 30d. argon2id verify with fixed `DUMMY_HASH` for timing equalization. Brute-force defenses: per-IP rate-limit on login (5/min) + register (3/min), IP = XFF[-2]. Self-register opt-in via `tenants.allow_self_register`. Admin REST `/t/<id>/admin/users` + 9 MCP tools + admin UI virtual entry. Daily janitor binary `drust_session_janitor` (async, per-tenant DELETEs via `pool.with_writer`) sweeps expired sessions with 1d grace.
 - **Admin OAuth** (v1.11+): Google + GitHub buttons on `/drust/login`. Env-driven (`DRUST_OAUTH_*` + `DRUST_ADMIN_OAUTH_ALLOWED_EMAILS` + `DRUST_PUBLIC_URL`). `src/mgmt/oauth_login.rs::oauth_callback` runs a 9-step chain. Google id_token base64-decoded WITHOUT sig verification (confidential client, TLS-trusted token endpoint, per OIDC Core §3.1.3.7). Per-IP 5/min on callback. See [`docs/oauth-setup.md`](docs/oauth-setup.md).
 - **Per-tenant OAuth** (v1.12+): each tenant configures Google/GitHub for its own end users. Config in per-tenant `_system_oauth_providers`. End-user flow returns to frontend with `<cb>#access_token=drust_user_xxx` (Supabase/Auth0 URL-fragment pattern). Allowlisted redirect URIs exact-match, re-checked TOCTOU-safe at callback. Sentinel `password_hash="$oauth-only$"` blocks password login + `/me/password` (`409 OAUTH_ONLY_NO_PASSWORD`). Per-IP 5/min on callback.
