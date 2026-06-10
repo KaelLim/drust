@@ -1,3 +1,53 @@
+## v1.35.0 — 2026-06-10
+
+### Auth cache: the global meta-mutex leaves the hot path
+
+Every authenticated tenant request used to serialize on one global
+`Arc<Mutex<Connection>>` (`meta`) to run the bearer-auth CTE — the top
+contention point at ~13k rps. `bearer_auth_layer` now consults a process-local
+invalidate-on-write `DashMap<token_hash, CachedAuth>` (`src/tenant/auth_cache.rs`)
+first: a hit reconstructs `AuthCtx` + publish policy (+ PAT email snapshot for
+audit parity) without touching `meta.sqlite`; user-session hits self-check the
+cached `expires_at` and reject expired sessions without a DB read.
+
+Security posture (defense-in-depth ≥ 2, see the spec):
+
+- **Layer 1 — 11 synchronous invalidation hooks**: token reroll (scan-clear by
+  tenant+role), admin-PAT reroll (scan-clear by admin), tenant soft-delete +
+  id-recycle (tenant-scoped clear), logout / revoke-by-hash / revoke-all
+  (per-user clear, REST + MCP), user-delete cascade, change-password session
+  wipe, publish-policy change. Janitor (hook 10) is a documented no-op — it
+  runs out-of-process; cached `expires_at` self-reject + TTL cover it.
+- **Layer 2 — per-entry 10 s safety TTL** (`safety_ttl` is an injectable
+  `Duration` field): a future revoke path that forgets its hook degrades to a
+  ≤ 10 s window, never a permanent bypass.
+- The cache consult runs AFTER the rate-limit probe; audit rows still emit on
+  hits; negative results are NEVER cached (no poisoning, no timing oracle);
+  Bearer/User hits cross-check `bound_tenant_id` against the path tenant.
+
+New: `tests/auth_cache_*.rs` (14 files, 17 tests) + 4 unit tests.
+
+### XFF client-IP extraction: named constant + warn-not-silent
+
+`src/safety/ip.rs::client_ip` now pins the trusted trailing-hop count as
+`TRUSTED_TRAILING_HOPS = 1` (client = `parts[len-2]`, same value as before —
+all six existing tests pass unchanged) and replaces the silent
+`unwrap_or(fallback)` with `tracing::warn!` + socket-peer fallback on too-short
+or unparseable chains, so topology drift is loud instead of silently herding
+clients into a shared rate-limit bucket. The cross-host nginx invariant
+(`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for` on `.221`) is
+now documented in `services.md` with a tracked manual verification item.
+Three new forge-resistance tests (9 total in `tests/auth_xff.rs`).
+
+### tenants.rs split (behavior-preserving)
+
+`src/mgmt/tenants.rs` (1920 lines) is now a 167-line re-export anchor +
+six submodules under `src/mgmt/tenants/` (`common`, `crud`, `overview`,
+`files_page`, `oauth_page`, `webhooks_page`). Pure relocation: `routes.rs` and
+all sibling importers are byte-unchanged; the only visibility change is
+`load_tenant_shell` / `ensure_tenant_exists` widening to `pub(crate)` in
+`common.rs`. New GET→200 smoke tests for the relocated overview + files pages.
+
 ## v1.34.2 — 2026-06-09
 
 ### Record bodies up to 8 MiB (was capped at axum's 2 MiB default)
