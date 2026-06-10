@@ -199,7 +199,8 @@ async fn publish_anon_succeeds_once_allow_anon_publish_is_on() {
 async fn publish_user_denied_when_flag_off_and_allowed_when_on() {
     // Anon flag stays off — opening anon publish must NOT open user publish.
     let tenant = "ab10b1a4-0000-0000-0000-000000000099";
-    let (app, _svc_tok, dir) = helpers::spin_up_tenant_with_role(tenant, "service").await;
+    let (app, _svc_tok, cache, dir) =
+        helpers::spin_up_tenant_with_role_cached(tenant, "service").await;
     // Mint a user session directly in the tenant DB so bearer_auth_layer
     // resolves AuthCtx::User. Schema lives in src/auth/user_session.rs.
     use drust::auth::user_session;
@@ -229,7 +230,12 @@ async fn publish_user_denied_when_flag_off_and_allowed_when_on() {
     let aliases = v["error_aliases"].as_array().expect("aliases");
     assert!(aliases.iter().any(|x| x == "WRITE_DENIED"));
     // Flip user flag, leave anon off. User publish must now succeed.
+    // The flip is an OUT-OF-BAND raw-SQL write (no production handler runs,
+    // so no v1.35 auth-cache hook fires) — mirror what every production
+    // writer (REST patch_publish_policy / MCP set_publish_policy) does and
+    // drop the tenant's cached entries so the next request re-reads the CTE.
     flip_publish_flag(&dir, tenant, "allow_user_publish", true);
+    cache.clear_tenant(tenant);
     let req2 = Request::builder()
         .method("POST")
         .uri(format!("/t/{tenant}/rooms/chat"))

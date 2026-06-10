@@ -114,11 +114,18 @@ pub async fn set_self_register(
 /// MCP `broadcast` does NOT consult these flags — MCP dispatch is service-only
 /// by construction. These flags only affect REST `POST /t/{tenant}/rooms/{room}`
 /// and WS `op:publish` on `/t/{tenant}/realtime`.
+///
+/// v1.35 hook 11 (MCP face) — `auth_cache` is the same seam as the hooks 7/8
+/// MCP tools: when a flag actually changes, every cached entry for this tenant
+/// is dropped so the next request re-reads the new policy from the CTE
+/// (otherwise cached `publish_*_allowed` values would serve the OLD policy
+/// for up to the safety TTL).
 pub async fn set_publish_policy(
     meta: &std::sync::Arc<Mutex<Connection>>,
     tenant_id: &str,
     allow_user: Option<bool>,
     allow_anon: Option<bool>,
+    auth_cache: Option<&crate::tenant::auth_cache::AuthCache>,
 ) -> anyhow::Result<serde_json::Value> {
     let tid = tenant_id.to_string();
     let conn = meta.lock().await;
@@ -155,6 +162,14 @@ pub async fn set_publish_policy(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    // v1.35 hook 11 (MCP face) — the UPDATEs above committed; drop the
+    // tenant's cached entries so the next request refills with the new
+    // policy. Skipped when neither flag was supplied (no auth state changed).
+    if allow_user.is_some() || allow_anon.is_some() {
+        if let Some(cache) = auth_cache {
+            cache.clear_tenant(&tid);
+        }
+    }
     Ok(json!({
         "allow_user_publish": u != 0,
         "allow_anon_publish": a != 0,
