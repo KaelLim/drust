@@ -302,3 +302,35 @@ pub async fn tenants_state_with_cache(
     state.auth_cache = cache;
     (state, dir)
 }
+
+/// Build a real `MgmtState` sharing `cache`, with one `admins` row id=`admin_id`
+/// so admin-PAT reroll's INSERT satisfies its FK. For hook-2 tests.
+pub async fn mgmt_state_with_cache_and_admin(
+    admin_id: i64,
+    cache: Arc<drust::tenant::auth_cache::AuthCache>,
+) -> (drust::mgmt::routes::MgmtState, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    // run_migrations creates _admin_tokens, which the reroll handler
+    // UPDATEs + INSERTs into.
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    conn.execute(
+        "INSERT INTO admins (id, username, email, password_hash) VALUES (?1, 'a', 'a@x', 'x')",
+        rusqlite::params![admin_id],
+    )
+    .unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
+    let meta = Arc::new(Mutex::new(conn));
+    let mut state = drust::mgmt::routes::MgmtState::test_default(
+        meta,
+        data,
+        tenants.clone(),
+        test_mcp_http(tenants, bus.clone()),
+        bus,
+        drust::tenant::rooms::RoomBus::new(),
+    );
+    state.auth_cache = cache;
+    (state, dir)
+}
