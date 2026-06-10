@@ -5,7 +5,7 @@ use drust::functions::schema::{self, CreateFunctionParams, FN_LOG_KEEP_PER_FUNCT
 use drust::storage::pool::TenantRegistry;
 use std::sync::Arc;
 
-async fn pool_for(dir: &std::path::Path) -> drust::storage::pool::SharedTenantPool {
+fn pool_for(dir: &std::path::Path) -> drust::storage::pool::SharedTenantPool {
     let reg = Arc::new(TenantRegistry::new(dir.to_path_buf(), 2));
     reg.get_or_open("t-fn").expect("open tenant pool")
 }
@@ -13,7 +13,7 @@ async fn pool_for(dir: &std::path::Path) -> drust::storage::pool::SharedTenantPo
 #[tokio::test]
 async fn create_list_get_delete_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let pool = pool_for(dir.path()).await;
+    let pool = pool_for(dir.path());
 
     let row = schema::create_function(
         &pool,
@@ -48,7 +48,7 @@ async fn create_list_get_delete_roundtrip() {
 #[tokio::test]
 async fn name_validation_and_per_tenant_cap() {
     let dir = tempfile::tempdir().unwrap();
-    let pool = pool_for(dir.path()).await;
+    let pool = pool_for(dir.path());
     // invalid names rejected
     for bad in ["", "UPPER", "has space", &"x".repeat(65)] {
         let r = schema::create_function(
@@ -63,7 +63,8 @@ async fn name_validation_and_per_tenant_cap() {
             10,
         )
         .await;
-        assert!(r.is_err(), "name {bad:?} must be rejected");
+        let msg = r.expect_err(&format!("name {bad:?} must be rejected")).to_string();
+        assert!(msg.starts_with("FN_NAME_INVALID:"), "name {bad:?}: got {msg}");
     }
     // cap enforced
     for i in 0..2 {
@@ -100,7 +101,7 @@ async fn name_validation_and_per_tenant_cap() {
 #[tokio::test]
 async fn create_with_same_name_replaces() {
     let dir = tempfile::tempdir().unwrap();
-    let pool = pool_for(dir.path()).await;
+    let pool = pool_for(dir.path());
     for sha in ["aa", "bb"] {
         schema::create_function(
             &pool,
@@ -124,7 +125,7 @@ async fn create_with_same_name_replaces() {
 #[tokio::test]
 async fn log_insert_and_trim() {
     let dir = tempfile::tempdir().unwrap();
-    let pool = pool_for(dir.path()).await;
+    let pool = pool_for(dir.path());
     for i in 0..(FN_LOG_KEEP_PER_FUNCTION + 20) {
         schema::insert_log(
             &pool,
@@ -145,4 +146,44 @@ async fn log_insert_and_trim() {
     assert_eq!(logs.len(), FN_LOG_KEEP_PER_FUNCTION as usize, "trim-on-write keeps newest N");
     // newest first
     assert_eq!(logs[0].invocation_id, format!("inv-{}", FN_LOG_KEEP_PER_FUNCTION + 19));
+}
+
+#[tokio::test]
+async fn delete_purges_logs_for_that_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = pool_for(dir.path());
+    schema::create_function(
+        &pool,
+        CreateFunctionParams {
+            name: "ephemeral".into(),
+            wasm_sha256: "cc".repeat(32),
+            size_bytes: 1,
+            triggers_json: "[]".into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .expect("create");
+    for i in 0..3 {
+        schema::insert_log(
+            &pool,
+            schema::LogRow {
+                invocation_id: format!("inv-{i}"),
+                function_name: "ephemeral".into(),
+                trigger: "manual".into(),
+                status: "ok".into(),
+                duration_ms: 1,
+                log_text: String::new(),
+                result_json: None,
+            },
+        )
+        .await
+        .expect("log");
+    }
+    assert!(schema::delete_function(&pool, "ephemeral").await.expect("del"));
+    // Trim-on-write only fires per live function_name; delete must purge the
+    // dead name's logs or repeated create/invoke/delete grows the table forever.
+    let logs = schema::list_logs(&pool, "ephemeral", 1000).await.expect("list");
+    assert!(logs.is_empty(), "delete_function must purge that name's log rows");
 }
