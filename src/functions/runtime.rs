@@ -98,6 +98,8 @@ pub struct HostState {
     /// guard IS this absence (spec §4).
     mcp: DrustMcp,
     file_read_max: u64,
+    /// DRUST_DISK_MIN_FREE_PCT — put-file disk guard (parity with Mode A/B).
+    disk_min_free_pct: u8,
     log_buf: String,
 }
 
@@ -208,12 +210,17 @@ impl host::Host for StoreData {
     async fn get_file_bytes(&mut self, key: String) -> Result<Vec<u8>, String> {
         let cap = self.host.file_read_max;
         let inner = self.host.mcp.inner();
-        let garage = inner.garage.as_ref().ok_or("storage not configured")?;
+        let garage = inner
+            .garage
+            .as_ref()
+            .ok_or("STORAGE_UNAVAILABLE: storage not configured")?;
         // Resolve visibility → bucket from the tenant's _system_files row.
+        // Pure single-row SELECT — reader lane, same as get_file_url
+        // (mcp/tools/files.rs); never occupy the serialized writer mutex.
         let pool = inner.pool.clone();
         let key2 = key.clone();
         let row: Option<(String, i64)> = pool
-            .with_writer(move |c| {
+            .with_reader(move |c| {
                 match c.query_row(
                     "SELECT visibility, size_bytes FROM _system_files WHERE key = ?1",
                     rusqlite::params![key2],
@@ -225,7 +232,7 @@ impl host::Host for StoreData {
                 }
             })
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("DB_ERROR: {e}"))?;
         let (visibility, size) = row.ok_or("FILE_NOT_FOUND: no such key")?;
         if size as u64 > cap {
             return Err(format!(
@@ -238,7 +245,7 @@ impl host::Host for StoreData {
             .get_object_bytes_in(bucket, &object_key)
             .await
             .map(|b| b.to_vec())
-            .map_err(|e| e.to_string())
+            .map_err(|e| format!("GARAGE_GET_FAILED: {e:#}"))
     }
 
     async fn put_file(
@@ -249,10 +256,39 @@ impl host::Host for StoreData {
         visibility: String,
     ) -> Result<String, String> {
         if !matches!(visibility.as_str(), "public" | "private") {
-            return Err("visibility must be public|private".into());
+            return Err("INVALID_VISIBILITY: visibility must be public|private".into());
         }
         let inner = self.host.mcp.inner();
-        let garage = inner.garage.as_ref().ok_or("storage not configured")?;
+        let garage = inner
+            .garage
+            .as_ref()
+            .ok_or("STORAGE_UNAVAILABLE: storage not configured")?;
+        // Defense-in-depth parity with every other Garage write surface:
+        // Mode A enforces max_upload_bytes + the disk guard
+        // (mgmt/tenant_files.rs), Mode B enforces the disk guard
+        // (tenant/uploads/mod.rs). The guest host API enforces both too —
+        // otherwise a function could loop Garage puts up to the wasm memory
+        // cap per call with no disk-full stop.
+        if bytes.len() > inner.max_upload_bytes {
+            return Err(format!(
+                "FN_PUT_TOO_LARGE: {} bytes exceeds upload limit {}",
+                bytes.len(),
+                inner.max_upload_bytes
+            ));
+        }
+        // Best-effort like Mode A: skip (with a warn) if the path is absent.
+        match crate::storage::disk::disk_stats(std::path::Path::new("/var/lib/garage")) {
+            Ok(stats) if (stats.free_pct as u8) < self.host.disk_min_free_pct => {
+                return Err(format!(
+                    "DISK_FULL: {:.1}% free, minimum {}% required",
+                    stats.free_pct, self.host.disk_min_free_pct
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "disk_stats for /var/lib/garage failed — skipping disk check");
+            }
+        }
         let pool = inner.pool.clone();
         let size = bytes.len() as i64;
         // SQLite-first (Mode A ordering): row, then object, compensate on failure.
@@ -270,7 +306,7 @@ impl host::Host for StoreData {
             .map(|_| ())
         })
         .await
-        .map_err(|e| format!("db insert: {e}"))?;
+        .map_err(|e| format!("DB_INSERT_FAILED: {e}"))?;
 
         let bucket = crate::storage::files::bucket_for(vis_from_str(&visibility));
         let object_key = format!("{}/{}", inner.tenant_id, key);
@@ -297,7 +333,7 @@ impl host::Host for StoreData {
                     .map(|_| ())
                 })
                 .await;
-            return Err(format!("garage put: {e:#}"));
+            return Err(format!("GARAGE_PUT_FAILED: {e:#}"));
         }
         Ok(serde_json::json!({"key": key, "size_bytes": size}).to_string())
     }
@@ -347,6 +383,10 @@ pub struct HostStateSeed {
     pub bus_rooms: crate::tenant::rooms::RoomBus,
     pub bucket: Arc<crate::tenant::rooms::PublishBucket>,
     pub rooms_cfg: crate::tenant::rooms::RoomsConfig,
+    /// DRUST_DISK_MIN_FREE_PCT (same value main.rs threads into MgmtState /
+    /// TenantFilesState; default 20) — enforced by the `put-file` host call.
+    /// Not a DrustMcp field: consumed by HostState, not build_mcp.
+    pub disk_min_free_pct: u8,
 }
 
 impl HostStateSeed {
@@ -448,6 +488,7 @@ impl FunctionRunner for WasmRunner {
             host: HostState {
                 mcp,
                 file_read_max: self.cfg.file_read_max_bytes,
+                disk_min_free_pct: self.seed.disk_min_free_pct,
                 log_buf: String::new(),
             },
         };
@@ -456,7 +497,6 @@ impl FunctionRunner for WasmRunner {
         // 100ms ticks ⇒ deadline = secs * 10 ticks.
         store.set_epoch_deadline(self.cfg.timeout_secs * 10);
 
-        let started = std::time::Instant::now();
         let run = async {
             let bindings = EdgeFunctionPre::new(pre)?.instantiate_async(&mut store).await?;
             bindings.call_handle(&mut store, event_json).await
@@ -474,11 +514,18 @@ impl FunctionRunner for WasmRunner {
             },
             Err(trap) => {
                 let oom = store.data().limits.oom_hit;
-                let timed_out =
-                    started.elapsed() >= std::time::Duration::from_secs(self.cfg.timeout_secs);
+                // Epoch-deadline expiry raises wasmtime::Trap::Interrupt
+                // (wasmtime-45 vm/libcalls.rs: `UpdateDeadline::Interrupt =>
+                // Err(Trap::Interrupt)`). Classify by trap code, NOT wall
+                // clock: the deadline fires on the Nth global ticker tick,
+                // which lands up to one tick (100ms) BEFORE `timeout_secs`
+                // of wall time has elapsed, so an elapsed-time comparison
+                // misreports essentially every genuine timeout as a trap.
+                let interrupted = trap.downcast_ref::<wasmtime::Trap>()
+                    == Some(&wasmtime::Trap::Interrupt);
                 let status = if oom {
                     RunStatus::Oom
-                } else if timed_out {
+                } else if interrupted {
                     RunStatus::Timeout
                 } else {
                     RunStatus::Trap
