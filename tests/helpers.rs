@@ -334,3 +334,25 @@ pub async fn mgmt_state_with_cache_and_admin(
     state.auth_cache = cache;
     (state, dir)
 }
+
+/// Real `TenantAuthState` for `tenant` sharing `cache`. For hook-7/8/9 REST tests.
+pub async fn auth_state_with_cache(
+    tenant: &str,
+    cache: Arc<drust::tenant::auth_cache::AuthCache>,
+) -> (TenantAuthState, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data, 2));
+    let meta = Arc::new(Mutex::new(conn));
+    let mut state = TenantAuthState::test_default(meta, tenants);
+    state.auth_cache = cache;
+    (state, dir)
+}
