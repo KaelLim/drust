@@ -492,14 +492,19 @@ pub async fn patch_publish_policy(
         rusqlite::params![tid],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
     ) {
-        Ok((u, a)) => (
-            StatusCode::OK,
-            axum::Json(PublishPolicyView {
-                allow_user_publish: u != 0,
-                allow_anon_publish: a != 0,
-            }),
-        )
-            .into_response(),
+        Ok((u, a)) => {
+            // v1.35 hook 11 — drop cached Bearers for this tenant so the new
+            // publish flags are re-read on the next request.
+            state.auth_cache.clear_tenant(&tid);
+            (
+                StatusCode::OK,
+                axum::Json(PublishPolicyView {
+                    allow_user_publish: u != 0,
+                    allow_anon_publish: a != 0,
+                }),
+            )
+                .into_response()
+        }
         Err(_) => (StatusCode::NOT_FOUND, "no such tenant").into_response(),
     }
 }
