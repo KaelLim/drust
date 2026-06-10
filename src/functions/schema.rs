@@ -1,7 +1,10 @@
-//! `_system_functions` + `_system_function_logs` — lazy DDL (v1.33
-//! `_system_upload_sessions` pattern) + row CRUD through `pool.with_writer`.
-//! Both tables are `_system_`-prefixed ⇒ automatically drop-protected and
-//! invisible to `/records/*` / MCP record tools / SSE (storage/schema.rs:8).
+//! `_system_functions` + `_system_function_logs` — lazy DDL (idempotent
+//! `CREATE TABLE IF NOT EXISTS` run inside every write closure, so the tables
+//! appear on first use with no migration step) + row CRUD through the pool's
+//! writer helpers (`with_writer_tx` for multi-statement writes, `with_writer`
+//! for single statements). Both tables are `_system_`-prefixed ⇒ automatically
+//! drop-protected and invisible to `/records/*` / MCP record tools / SSE
+//! (storage/schema.rs:8).
 
 use crate::storage::pool::SharedTenantPool;
 use serde::Serialize;
@@ -95,7 +98,10 @@ pub async fn create_function(
     if !valid_name(&p.name) {
         anyhow::bail!("FN_NAME_INVALID: function name must match [a-z0-9_-]{{1,64}}");
     }
-    pool.with_writer(move |c| {
+    // with_writer_tx: insert + readback must commit atomically — a readback
+    // failure after a committed INSERT would return Err while an ACTIVE row
+    // exists and fires on triggers.
+    pool.with_writer_tx(move |c| {
         ensure_tables(c)?;
         let existing: i64 = c.query_row(
             "SELECT COUNT(*) FROM _system_functions WHERE name != ?1",
@@ -128,10 +134,10 @@ pub async fn create_function(
     .map_err(|e| anyhow::anyhow!(unwrap_module_err(e)))
 }
 
-/// `rusqlite::Error::InvalidParameterName` is our sentinel carrier through
-/// `with_writer` (the plan's `ModuleError` is gated behind rusqlite's `vtab`
-/// feature, which this crate does not enable — same String payload, same
-/// semantics); unwrap it back to the bare `CODE: message` string.
+/// `rusqlite::Error::InvalidParameterName` is our sentinel carrier through the
+/// writer helpers: it is the only stable rusqlite variant with a plain String
+/// payload that does not require the `vtab` feature (which this crate does not
+/// enable). Unwrap it back to the bare `CODE: message` string.
 fn unwrap_module_err(e: rusqlite::Error) -> String {
     match e {
         rusqlite::Error::InvalidParameterName(s) => s,
@@ -195,7 +201,9 @@ pub async fn update_meta(
     description: Option<String>,
 ) -> anyhow::Result<bool> {
     let name = name.to_string();
-    pool.with_writer(move |c| {
+    // with_writer_tx: both column updates land or neither — otherwise an Err
+    // return could leave triggers_json committed with description unapplied.
+    pool.with_writer_tx(move |c| {
         ensure_tables(c)?;
         let mut n = 0;
         if let Some(t) = triggers_json {
@@ -218,14 +226,22 @@ pub async fn update_meta(
     .map_err(|e| anyhow::anyhow!(unwrap_module_err(e)))
 }
 
-/// Returns true if a row was deleted. Also reports whether any OTHER row
-/// still references the same sha (artifact GC decision belongs to the caller).
+/// Returns true if a row was deleted. Also purges the deleted name's
+/// `_system_function_logs` rows in the same transaction — trim-on-write only
+/// fires per live function_name, so without this every dead name would retain
+/// up to `FN_LOG_KEEP_PER_FUNCTION` rows forever. For the artifact-GC decision
+/// (is the wasm blob still referenced by another row?) callers use
+/// [`sha_still_referenced`].
 pub async fn delete_function(pool: &SharedTenantPool, name: &str) -> anyhow::Result<bool> {
     let name = name.to_string();
-    pool.with_writer(move |c| {
+    pool.with_writer_tx(move |c| {
         ensure_tables(c)?;
         let n = c.execute(
             "DELETE FROM _system_functions WHERE name = ?1",
+            rusqlite::params![name],
+        )?;
+        c.execute(
+            "DELETE FROM _system_function_logs WHERE function_name = ?1",
             rusqlite::params![name],
         )?;
         Ok(n > 0)
@@ -273,8 +289,10 @@ pub struct LogRowOut {
 }
 
 /// Insert + trim-on-write (keep newest FN_LOG_KEEP_PER_FUNCTION per function).
+/// A lost trim would self-heal on the next insert, but the transaction costs
+/// nothing and matches the multi-statement-write convention.
 pub async fn insert_log(pool: &SharedTenantPool, row: LogRow) -> anyhow::Result<()> {
-    pool.with_writer(move |c| {
+    pool.with_writer_tx(move |c| {
         ensure_tables(c)?;
         c.execute(
             "INSERT INTO _system_function_logs
