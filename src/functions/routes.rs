@@ -100,15 +100,34 @@ pub async fn create(
         );
     }
 
-    // SQLite-first (mirrors `_system_files`): the row is the authority. Insert
-    // first so a cap/validation Err never leaves an orphaned `{sha}.wasm` on
-    // disk (no janitor sweeps `_functions/`), then materialize the artifact.
+    // Artifact-first, NOT SQLite-first. `create_function` is an UPSERT
+    // (ON CONFLICT(name) DO UPDATE — replace-in-place), so a SQLite-first
+    // ordering plus compensate-delete would, on the REPLACE path, DELETE a
+    // pre-existing working function AND cascade-purge its entire
+    // `_system_function_logs` history on a transient artifact-write failure.
+    // The `_system_files` analogy does NOT hold there: that upload uses a
+    // plain non-replacing INSERT keyed by a unique `key`, so its compensate
+    // can only ever remove the row this request just created — the upsert
+    // here breaks that invariant. Writing the artifact first keeps the row
+    // untouched on write failure (true no-op on error), and the only failure
+    // residue is an orphaned `{sha}.wasm` the executor never loads (it loads
+    // strictly by a live row's wasm_sha256) and that a same-sha re-create
+    // reuses / delete GCs via `sha_still_referenced`.
     let sha = hex_lower(&sha2::Sha256::digest(&wasm));
-    let row = match schema::create_function(
+    let dir = artifact_dir(&st.data_root, &t.tenant_id);
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return crate::error::json_error(StatusCode::INTERNAL_SERVER_ERROR, "FN_IO", &e.to_string());
+    }
+    let path = dir.join(format!("{sha}.wasm"));
+    if let Err(e) = tokio::fs::write(&path, &wasm).await {
+        return crate::error::json_error(StatusCode::INTERNAL_SERVER_ERROR, "FN_IO", &e.to_string());
+    }
+
+    match schema::create_function(
         &t.pool,
         schema::CreateFunctionParams {
             name: name.clone(),
-            wasm_sha256: sha.clone(),
+            wasm_sha256: sha,
             size_bytes: wasm.len() as i64,
             triggers_json: triggers,
             description,
@@ -117,27 +136,13 @@ pub async fn create(
     )
     .await
     {
-        Ok(row) => row,
-        Err(e) => return map_sentinel(e),
-    };
-
-    let dir = artifact_dir(&st.data_root, &t.tenant_id);
-    let path = dir.join(format!("{sha}.wasm"));
-    let write_res = match tokio::fs::create_dir_all(&dir).await {
-        Ok(()) => tokio::fs::write(&path, &wasm).await,
-        Err(e) => Err(e),
-    };
-    if let Err(e) = write_res {
-        // Compensate the SQLite-first insert (mirrors `_system_files` put
-        // failure): drop the row we just created so no row points at a
-        // missing artifact.
-        let _ = schema::delete_function(&t.pool, &name).await;
-        return crate::error::json_error(StatusCode::INTERNAL_SERVER_ERROR, "FN_IO", &e.to_string());
+        Ok(row) => {
+            st.dispatcher.bindings.invalidate(&t.tenant_id);
+            audit_fn(&t, "function.create", &name);
+            (StatusCode::CREATED, Json(row)).into_response()
+        }
+        Err(e) => map_sentinel(e),
     }
-
-    st.dispatcher.bindings.invalidate(&t.tenant_id);
-    audit_fn(&t, "function.create", &name);
-    (StatusCode::CREATED, Json(row)).into_response()
 }
 
 pub async fn list(
