@@ -274,6 +274,39 @@ pub async fn grab_pool(tenant: &str, dir: &tempfile::TempDir) -> SharedTenantPoo
     reg.get_or_open(tenant).unwrap()
 }
 
+/// Create a collection directly against a pool, in the same shape the
+/// canonical MCP `create_collection` tool produces (`id` PK +
+/// `created_at`/`updated_at` + the named fields). The host-API write path
+/// (`insert_record` / `read_record`) derives schema from `sqlite_master` +
+/// PRAGMA, not `_system_collection_meta`, so a raw `CREATE TABLE` is all the
+/// real-wasm fixtures need. `fields` is `(name, sql_type)` where sql_type is
+/// the same lowercase keyword `FieldSpec.sql_type` accepts (text/integer/
+/// real/blob); unknown types fall back to TEXT affinity.
+pub async fn create_collection_via_pool(
+    pool: &SharedTenantPool,
+    collection: &str,
+    fields: &[(&str, &str)],
+) {
+    let mut cols = vec!["id INTEGER PRIMARY KEY AUTOINCREMENT".to_string()];
+    for (name, ty) in fields {
+        let sql_ty = match ty.to_ascii_lowercase().as_str() {
+            "integer" | "int" => "INTEGER",
+            "real" | "float" => "REAL",
+            "blob" => "BLOB",
+            _ => "TEXT",
+        };
+        cols.push(format!("\"{}\" {}", name.replace('"', "\"\""), sql_ty));
+    }
+    cols.push("created_at TEXT NOT NULL DEFAULT (datetime('now'))".into());
+    cols.push("updated_at TEXT NOT NULL DEFAULT (datetime('now'))".into());
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS \"{}\" ({})",
+        collection.replace('"', "\"\""),
+        cols.join(", ")
+    );
+    pool.with_writer(move |c| c.execute_batch(&sql)).await.unwrap();
+}
+
 /// Fixed multipart boundary used by `multipart_file_body`; the
 /// `content-type` header on the request must carry this exact boundary.
 pub const MULTIPART_BOUNDARY: &str = "drustfnboundary99";
