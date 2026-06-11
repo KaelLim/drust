@@ -55,6 +55,24 @@ fn artifact_dir(root: &std::path::Path, tenant: &str) -> std::path::PathBuf {
     root.join("tenants").join(tenant).join("_functions")
 }
 
+/// Remove the content-addressed `{sha}.wasm` artifact iff no live
+/// `_system_functions` row still references that sha. The store's invariant is
+/// "a file exists ⟺ some live row references it"; this is the single primitive
+/// that enforces it, shared by `create` (rejection + replace-displacement
+/// paths) and `delete_one`. Best-effort: a failed unlink self-heals on the next
+/// GC pass (any later delete / same-sha create re-runs the check).
+pub async fn gc_artifact_if_unreferenced(
+    pool: &crate::storage::pool::SharedTenantPool,
+    data_root: &std::path::Path,
+    tenant_id: &str,
+    sha: &str,
+) {
+    if let Ok(false) = schema::sha_still_referenced(pool, sha).await {
+        let p = artifact_dir(data_root, tenant_id).join(format!("{sha}.wasm"));
+        let _ = tokio::fs::remove_file(p).await;
+    }
+}
+
 /// POST /t/<id>/functions — multipart: name, wasm, triggers, description?
 pub async fn create(
     State(st): State<FunctionsRouteState>,
@@ -105,14 +123,13 @@ pub async fn create(
     // ordering plus compensate-delete would, on the REPLACE path, DELETE a
     // pre-existing working function AND cascade-purge its entire
     // `_system_function_logs` history on a transient artifact-write failure.
-    // The `_system_files` analogy does NOT hold there: that upload uses a
-    // plain non-replacing INSERT keyed by a unique `key`, so its compensate
-    // can only ever remove the row this request just created — the upsert
-    // here breaks that invariant. Writing the artifact first keeps the row
-    // untouched on write failure (true no-op on error), and the only failure
-    // residue is an orphaned `{sha}.wasm` the executor never loads (it loads
-    // strictly by a live row's wasm_sha256) and that a same-sha re-create
-    // reuses / delete GCs via `sha_still_referenced`.
+    // Writing the content-addressed `{sha}.wasm` first keeps the row untouched
+    // on write failure (true no-op on error). The store's invariant — a file
+    // exists iff a live row references its sha — is then held by GCing the two
+    // paths that can leave an unreferenced blob: `create_function` rejecting
+    // (FN_LIMIT / DB error → row unchanged) and a successful replace displacing
+    // the previous sha. Both route through `gc_artifact_if_unreferenced`, the
+    // same primitive `delete_one` uses.
     let sha = hex_lower(&sha2::Sha256::digest(&wasm));
     let dir = artifact_dir(&st.data_root, &t.tenant_id);
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
@@ -123,11 +140,18 @@ pub async fn create(
         return crate::error::json_error(StatusCode::INTERNAL_SERVER_ERROR, "FN_IO", &e.to_string());
     }
 
+    // The sha this name currently resolves to (if any), captured before the
+    // upsert so a successful replace can GC the artifact it displaces.
+    let prev_sha = match schema::get_function(&t.pool, &name).await {
+        Ok(Some(r)) => Some(r.wasm_sha256),
+        _ => None,
+    };
+
     match schema::create_function(
         &t.pool,
         schema::CreateFunctionParams {
             name: name.clone(),
-            wasm_sha256: sha,
+            wasm_sha256: sha.clone(),
             size_bytes: wasm.len() as i64,
             triggers_json: triggers,
             description,
@@ -138,10 +162,22 @@ pub async fn create(
     {
         Ok(row) => {
             st.dispatcher.bindings.invalidate(&t.tenant_id);
+            // A replace with new bytes displaced the old artifact — GC it.
+            if let Some(prev) = prev_sha {
+                if prev != sha {
+                    gc_artifact_if_unreferenced(&t.pool, &st.data_root, &t.tenant_id, &prev).await;
+                }
+            }
             audit_fn(&t, "function.create", &name);
             (StatusCode::CREATED, Json(row)).into_response()
         }
-        Err(e) => map_sentinel(e),
+        Err(e) => {
+            // Rejected (FN_LIMIT / DB error): the row is unchanged, so the blob
+            // we just wrote is orphaned unless another row already references
+            // the same bytes. GC it.
+            gc_artifact_if_unreferenced(&t.pool, &st.data_root, &t.tenant_id, &sha).await;
+            map_sentinel(e)
+        }
     }
 }
 
@@ -234,10 +270,7 @@ pub async fn delete_one(
         Ok(true) => {
             st.dispatcher.bindings.invalidate(&t.tenant_id);
             // GC the artifact only when no other row references the sha.
-            if let Ok(false) = schema::sha_still_referenced(&t.pool, &sha).await {
-                let p = artifact_dir(&st.data_root, &t.tenant_id).join(format!("{sha}.wasm"));
-                let _ = tokio::fs::remove_file(p).await;
-            }
+            gc_artifact_if_unreferenced(&t.pool, &st.data_root, &t.tenant_id, &sha).await;
             audit_fn(&t, "function.delete", &name);
             StatusCode::NO_CONTENT.into_response()
         }

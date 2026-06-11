@@ -109,3 +109,52 @@ async fn list_get_patch_delete_logs_roundtrip() {
     ).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+// Regression: `create()` writes `{sha}.wasm` BEFORE create_function enforces
+// the per-tenant cap, and a replace swaps a row's sha — both can leave an
+// unreferenced blob on disk with no GC path (unbounded growth). The shared
+// `gc_artifact_if_unreferenced` primitive closes it; prove it keeps a sha a
+// live row references and removes an orphan. End-to-end create-route coverage
+// (FN_LIMIT-then-no-orphan) lives in the isolation suite, which has a real
+// component fixture to clear `validate_component`.
+#[tokio::test]
+async fn gc_keeps_referenced_artifact_removes_orphan() {
+    use drust::functions::routes::gc_artifact_if_unreferenced;
+    use drust::functions::schema::{self, CreateFunctionParams};
+    use drust::storage::pool::TenantRegistry;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
+    let pool = reg.get_or_open("t-gc").expect("open tenant pool");
+
+    let referenced = "aa".repeat(32);
+    let orphan = "bb".repeat(32);
+    schema::create_function(
+        &pool,
+        CreateFunctionParams {
+            name: "live".into(),
+            wasm_sha256: referenced.clone(),
+            size_bytes: 1,
+            triggers_json: "[]".into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .expect("seed live function");
+
+    let fdir = dir.path().join("tenants").join("t-gc").join("_functions");
+    tokio::fs::create_dir_all(&fdir).await.unwrap();
+    let p_ref = fdir.join(format!("{referenced}.wasm"));
+    let p_orphan = fdir.join(format!("{orphan}.wasm"));
+    tokio::fs::write(&p_ref, b"REF").await.unwrap();
+    tokio::fs::write(&p_orphan, b"ORPHAN").await.unwrap();
+
+    // A still-referenced sha must be kept; an unreferenced one must be removed.
+    gc_artifact_if_unreferenced(&pool, dir.path(), "t-gc", &referenced).await;
+    gc_artifact_if_unreferenced(&pool, dir.path(), "t-gc", &orphan).await;
+
+    assert!(p_ref.exists(), "artifact referenced by a live row must be kept");
+    assert!(!p_orphan.exists(), "unreferenced artifact must be GC'd");
+}
