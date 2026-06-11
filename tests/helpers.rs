@@ -274,6 +274,215 @@ pub async fn grab_pool(tenant: &str, dir: &tempfile::TempDir) -> SharedTenantPoo
     reg.get_or_open(tenant).unwrap()
 }
 
+/// Returned by [`spin_up_isolation_stack`]: the dispatcher to fire record
+/// events at, plus an SSE-reach counter incremented by a bus subscriber task.
+pub struct IsolationStack {
+    pub dispatcher: Arc<drust::functions::dispatcher::FunctionDispatcher>,
+    pub sse_events_seen: Arc<std::sync::atomic::AtomicUsize>,
+    /// Keeps the tenant data dir alive for the lifetime of the stack.
+    pub _dir: tempfile::TempDir,
+}
+
+/// Build the full functions dispatcher + executor over a REAL `HostStateSeed`
+/// (so the injected `WritingRunner` exercises the depth=1 `functions: None`
+/// wiring), with a `fn_out` collection and one function row bound to
+/// `{"collection":"fn_out","events":["created"]}` — the SAME collection the
+/// `WritingRunner` writes into. A bus subscriber task increments
+/// `sse_events_seen` so the test can prove the function's own insert reached
+/// SSE. `counter` (returned) is bumped once per completed run; if a function
+/// write could re-trigger, the binding would re-fire and `counter` would
+/// exceed 1.
+///
+/// Every piece composes earlier tasks' primitives — the HostStateSeed field
+/// sourcing mirrors `tests/functions_wasm_real.rs::real_runner`, the
+/// dispatcher/executor wiring mirrors `spin_up_tenant_with_fn_runner`.
+pub async fn spin_up_isolation_stack(
+    tenant: &str,
+    runner_factory: impl FnOnce(
+        drust::functions::runtime::HostStateSeed,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Arc<dyn drust::functions::executor::FunctionRunner>,
+) -> (IsolationStack, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    let bus = EventBus::new();
+    let webhooks = WebhookDispatcher::new(tenants.clone(), None);
+
+    // `fn_out` collection — the runner's host insert target AND the bound
+    // trigger collection (the deliberate self-write loop the depth=1 guard
+    // must break).
+    let pool = tenants.get_or_open(tenant).unwrap();
+    create_collection_via_pool(&pool, "fn_out", &[("payload", "text")]).await;
+
+    // One function row bound to fn_out/created, then prime the cache.
+    drust::functions::schema::create_function(
+        &pool,
+        drust::functions::schema::CreateFunctionParams {
+            name: "self_writer".into(),
+            wasm_sha256: "00".repeat(32),
+            size_bytes: 1,
+            triggers_json: r#"[{"collection":"fn_out","events":["created"]}]"#.into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .unwrap();
+
+    // Real HostStateSeed — `build_mcp` constructs the per-tenant DrustMcp with
+    // functions: None (the recursion guard under test). Field sourcing mirrors
+    // tests/functions_wasm_real.rs::real_runner.
+    let rooms_cfg = drust::tenant::rooms::RoomsConfig::test_defaults();
+    let bucket = rooms_cfg.bucket();
+    let seed = drust::functions::runtime::HostStateSeed {
+        tenants: tenants.clone(),
+        bus: bus.clone(),
+        webhooks: webhooks.clone(),
+        garage: None,
+        public_base_url: String::new(),
+        url_sign_secret: Arc::new([0u8; 32]),
+        meta: None,
+        max_upload_bytes: 52_428_800,
+        index_large_table_rows: 1_000_000,
+        audit_meta_read: Arc::new(Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bucket,
+        rooms_cfg,
+        disk_min_free_pct: 20,
+    };
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let runner = runner_factory(seed, counter.clone());
+
+    let fn_cfg = drust::functions::FnConfig::test_default();
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let dispatcher =
+        drust::functions::dispatcher::FunctionDispatcher::new(tenants.clone(), tx, fn_cfg.clone());
+    let executor = drust::functions::executor::Executor::new(
+        runner,
+        tenants.clone(),
+        fn_cfg,
+        data.clone(),
+        dispatcher.depth.clone(),
+    );
+    executor.spawn_loop(rx);
+    dispatcher.bindings.invalidate(tenant);
+
+    // SSE-reach probe: subscribe on (tenant, fn_out) and count published
+    // events. The function's own insert_record into fn_out publishes here;
+    // the original dispatch event is NOT published by the dispatcher, so this
+    // counts exactly the function-initiated write.
+    let sse_events_seen = Arc::new(AtomicUsize::new(0));
+    let mut rx_sse = bus.subscribe(tenant, "fn_out");
+    let seen = sse_events_seen.clone();
+    tokio::spawn(async move {
+        while rx_sse.recv().await.is_ok() {
+            seen.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    (
+        IsolationStack {
+            dispatcher,
+            sse_events_seen,
+            _dir: dir,
+        },
+        counter,
+    )
+}
+
+/// Build a full tenant router with the functions REST surface mounted, a
+/// service token, a SMALL per-tenant function cap (`max_per_tenant`), and a
+/// `data_root` the caller can inspect (the returned `TempDir`). Used by the
+/// route-level artifact-GC test, which POSTs real wasm fixtures through
+/// `create` and asserts on-disk `{sha}.wasm` presence/absence.
+///
+/// Returns `(router, service_token, data_root_tempdir)`. Artifacts land under
+/// `<data_root>/tenants/<tenant>/_functions/`.
+pub async fn spin_up_functions_route_stack(
+    tenant: &str,
+    max_per_tenant: u32,
+) -> (Router, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let service = generate_token();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, 'service')",
+        rusqlite::params![tenant, hash_token(&service)],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
+    let webhooks = WebhookDispatcher::new(tenants.clone(), None);
+    let meta = Arc::new(Mutex::new(conn));
+    let state = TenantAuthState::test_default(meta, tenants.clone());
+
+    // (dispatcher, executor, cfg) with the small cap. `test_stack_parts`
+    // hardwires max_per_tenant=10, so build the triple inline with a patched
+    // FnConfig — same noop-runner shape; the route create() path never invokes
+    // the runner.
+    let mut fn_cfg = drust::functions::FnConfig::test_default();
+    fn_cfg.max_per_tenant = max_per_tenant;
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let functions =
+        drust::functions::dispatcher::FunctionDispatcher::new(tenants.clone(), tx, fn_cfg.clone());
+    struct NoopRunner;
+    #[async_trait::async_trait]
+    impl drust::functions::executor::FunctionRunner for NoopRunner {
+        async fn run(
+            &self,
+            _t: &str,
+            _p: &std::path::Path,
+            _e: &str,
+        ) -> drust::functions::executor::RunOutcome {
+            drust::functions::executor::RunOutcome {
+                status: drust::functions::executor::RunStatus::Ok,
+                result: "{}".into(),
+                log_text: String::new(),
+            }
+        }
+    }
+    let functions_exec = drust::functions::executor::Executor::new(
+        Arc::new(NoopRunner),
+        tenants.clone(),
+        fn_cfg.clone(),
+        data.clone(),
+        functions.depth.clone(),
+    );
+    functions_exec.spawn_loop(rx);
+
+    let stack = TenantStack {
+        auth: state,
+        bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
+        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
+        mcp: test_mcp_http(tenants, bus),
+        files: None,
+        webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
+        cors_origins: Vec::new(),
+    };
+    let app = build_tenant_router(stack);
+    (app, service, dir)
+}
+
 /// Create a collection directly against a pool, in the same shape the
 /// canonical MCP `create_collection` tool produces (`id` PK +
 /// `created_at`/`updated_at` + the named fields). The host-API write path
