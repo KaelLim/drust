@@ -30,6 +30,9 @@ cargo test --test mcp_write_schema        # one test file
 cargo test set_anon_caps -- --nocapture   # one test, with stdout
 ```
 
+> [!TIP]
+> Cost here is COMPILE, not run: each `tests/*.rs` is its own binary statically linking the drust lib + wasmtime (~142 of them), so a bare `cargo test <name>` still compiles all 142 — only `--test <name>` limits what compiles. The `Makefile` groups by the `tests/<prefix>_*.rs` convention: `make test-lib` (fast inner loop), `make test-functions` / `make test-auth` / any prefix (`make groups` lists them), `make test-all` (full gate). Glob-based, so new test files need no edits. Per-task workflow agents should run `make test-lib` + the relevant group; only the final review runs `make test-all`.
+
 The `tests/` directory holds 100+ integration test files covering MCP, REST, auth, audit, backups, storage, the SQL authorizer, schema codegen, and the admin `_list` endpoint. Each module's `#[cfg(test)]` blocks compile as part of the lib — no separate unit-test layout. Test factories `TenantAuthState::test_default` / `TenantsState::test_default` / `TenantFilesState::test_default` / `MgmtState::test_default` / `PublicFilesState::test_default` / `AdminSessionState::test_default` (gated on `cfg(any(test, debug_assertions))`) keep inline struct literals out of test files; prefer them when adding new tests.
 
 ## Architecture at a glance
