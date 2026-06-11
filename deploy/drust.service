@@ -25,7 +25,12 @@ ProtectControlGroups=yes
 LockPersonality=yes
 RestrictNamespaces=yes
 RestrictSUIDSGID=yes
-MemoryDenyWriteExecute=yes
+# NOTE: MemoryDenyWriteExecute is intentionally NOT set. Edge functions
+# (v1.36+) JIT-compile guest wasm via wasmtime's Cranelift backend, which
+# must make anonymous memory executable; W^X enforcement makes every
+# function upload/invoke fail with "unable to make memory executable
+# (EPERM)". The guest sandbox is enforced inside wasmtime (epoch deadline +
+# ResourceLimiter memory cap + locked-down WasiCtx), not by this directive.
 
 [Install]
 WantedBy=multi-user.target

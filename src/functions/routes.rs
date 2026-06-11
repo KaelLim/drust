@@ -163,10 +163,10 @@ pub async fn create(
         Ok(row) => {
             st.dispatcher.bindings.invalidate(&t.tenant_id);
             // A replace with new bytes displaced the old artifact — GC it.
-            if let Some(prev) = prev_sha {
-                if prev != sha {
-                    gc_artifact_if_unreferenced(&t.pool, &st.data_root, &t.tenant_id, &prev).await;
-                }
+            if let Some(prev) = prev_sha
+                && prev != sha
+            {
+                gc_artifact_if_unreferenced(&t.pool, &st.data_root, &t.tenant_id, &prev).await;
             }
             audit_fn(&t, "function.create", &name);
             (StatusCode::CREATED, Json(row)).into_response()
