@@ -81,6 +81,9 @@ pub struct MgmtState {
     pub large_upload_session_ttl_secs: u64,
     /// v1.35 — shared auth cache, threaded into `TenantsState` at router build.
     pub auth_cache: Arc<crate::tenant::auth_cache::AuthCache>,
+    /// v1.36 — file.uploaded function dispatch, forwarded to the admin-side
+    /// `TenantFilesState` so admin uploads trigger the same hooks.
+    pub functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
 }
 
 #[derive(Template)]
@@ -609,6 +612,7 @@ impl MgmtState {
                 .expect("in-memory audit DB for tests"),
         ));
         let log_dir = data_dir.join("logs");
+        let (functions, _exec, _cfg) = crate::functions::test_stack_parts(tenants.clone());
         Self {
             meta,
             audit_meta_read,
@@ -645,6 +649,7 @@ impl MgmtState {
                 std::time::Duration::from_secs(10),
                 200_000,
             )),
+            functions,
         }
     }
 }
@@ -715,6 +720,7 @@ impl MgmtState {
             large_upload_chunk_max_bytes: self.large_upload_chunk_max_bytes,
             large_upload_max_sessions_per_tenant: self.large_upload_max_sessions_per_tenant,
             large_upload_session_ttl_secs: self.large_upload_session_ttl_secs,
+            functions: self.functions.clone(),
         };
         let signed_bytes_state = crate::mgmt::signed_bytes::SignedBytesState {
             meta: self.meta.clone(),

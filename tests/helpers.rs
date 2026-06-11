@@ -146,6 +146,21 @@ pub async fn spin_up_tenant_with_fn_runner(
     .unwrap();
     functions.bindings.invalidate(tenant);
 
+    // Wire a files router backed by an in-memory Garage + the SAME functions
+    // dispatcher, so Mode A / Mode B upload-completion triggers are observable
+    // end to end.
+    let garage = Arc::new(drust::storage::garage::GarageClient::from_store(
+        Arc::new(object_store::memory::InMemory::new()),
+        "unused",
+    ));
+    let mut files_state = drust::mgmt::tenant_files::TenantFilesState::test_default(
+        Some(garage),
+        data.clone(),
+        tenants.clone(),
+    );
+    files_state.disk_min_free_pct = 0;
+    files_state.functions = functions.clone();
+
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -153,7 +168,7 @@ pub async fn spin_up_tenant_with_fn_runner(
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: test_mcp_http(tenants, bus),
-        files: None,
+        files: Some(files_state),
         webhooks,
         functions,
         functions_exec,
@@ -167,6 +182,37 @@ pub async fn spin_up_tenant_with_fn_runner(
 pub async fn grab_pool(tenant: &str, dir: &tempfile::TempDir) -> SharedTenantPool {
     let reg = TenantRegistry::new(dir.path().to_path_buf(), 2);
     reg.get_or_open(tenant).unwrap()
+}
+
+/// Fixed multipart boundary used by `multipart_file_body`; the
+/// `content-type` header on the request must carry this exact boundary.
+pub const MULTIPART_BOUNDARY: &str = "drustfnboundary99";
+/// Matching `content-type` header value for `multipart_file_body` requests.
+pub const MULTIPART_CONTENT_TYPE: &str =
+    "multipart/form-data; boundary=drustfnboundary99";
+
+/// Build a minimal multipart/form-data body carrying one file part.
+/// Mirrors the canonical boundary builder from `tests/admin_files_upgrade.rs`.
+pub fn multipart_file_body(
+    field_name: &str,
+    filename: &str,
+    bytes: &[u8],
+    content_type: &str,
+) -> Vec<u8> {
+    let b = MULTIPART_BOUNDARY;
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(format!("--{b}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"{field_name}\"; filename=\"{filename}\"\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{b}--\r\n").as_bytes());
+    body
 }
 
 /// Like `spin_up_tenant` but inserts the token with an explicit role

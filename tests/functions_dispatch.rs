@@ -51,3 +51,45 @@ async fn rest_insert_triggers_bound_function() {
     }
     panic!("function was not invoked within 3s of the REST insert");
 }
+
+#[tokio::test]
+async fn mode_a_upload_triggers_file_function() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (router, service_token, _tmp) = helpers::spin_up_tenant_with_fn_runner(
+        "t-ffile",
+        Arc::new(CountRunner2(counter.clone())),
+        r#"[{"file_uploaded":true}]"#,
+    )
+    .await;
+    let body = helpers::multipart_file_body("file", "a.txt", b"hello", "text/plain");
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::post("/t/t-ffile/files")
+                .header("authorization", format!("Bearer {service_token}"))
+                .header("content-type", helpers::MULTIPART_CONTENT_TYPE)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Mode A upload responds 200 OK (axum::Json default), not 201.
+    assert_eq!(resp.status(), StatusCode::OK);
+    for _ in 0..150 {
+        if counter.load(Ordering::SeqCst) == 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("file.uploaded function not invoked");
+}
+
+struct CountRunner2(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl FunctionRunner for CountRunner2 {
+    async fn run(&self, _t: &str, _p: &std::path::Path, ev: &str) -> RunOutcome {
+        assert!(ev.contains(r#""trigger":"file.uploaded""#));
+        self.0.fetch_add(1, Ordering::SeqCst);
+        RunOutcome { status: RunStatus::Ok, result: "{}".into(), log_text: String::new() }
+    }
+}
