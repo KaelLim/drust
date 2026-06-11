@@ -84,6 +84,12 @@ pub struct MgmtState {
     /// v1.36 — file.uploaded function dispatch, forwarded to the admin-side
     /// `TenantFilesState` so admin uploads trigger the same hooks.
     pub functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
+    /// v1.36 — executor handle, forwarded to `TenantsState` so the admin
+    /// `ƒ _functions` page can run a synchronous test-invoke.
+    pub functions_exec: Arc<crate::functions::executor::Executor>,
+    /// v1.36 — artifact root (same dir the tenant pools use), forwarded to
+    /// `TenantsState` so the admin delete handler can GC the wasm blob.
+    pub fn_data_root: std::path::PathBuf,
 }
 
 #[derive(Template)]
@@ -612,7 +618,8 @@ impl MgmtState {
                 .expect("in-memory audit DB for tests"),
         ));
         let log_dir = data_dir.join("logs");
-        let (functions, _exec, _cfg) = crate::functions::test_stack_parts(tenants.clone());
+        let (functions, functions_exec, _cfg) =
+            crate::functions::test_stack_parts(tenants.clone());
         Self {
             meta,
             audit_meta_read,
@@ -650,6 +657,8 @@ impl MgmtState {
                 200_000,
             )),
             functions,
+            functions_exec,
+            fn_data_root: data_dir,
         }
     }
 }
@@ -697,6 +706,9 @@ impl MgmtState {
             audit_meta_read: self.audit_meta_read.clone(),
             index_large_table_rows: self.index_large_table_rows,
             auth_cache: self.auth_cache.clone(),
+            functions: self.functions.clone(),
+            functions_exec: self.functions_exec.clone(),
+            fn_data_root: self.fn_data_root.clone(),
         };
         let public_files_state = PublicFilesState {
             session: session.clone(),
@@ -929,6 +941,28 @@ impl MgmtState {
             .route(
                 "/admin/tenants/{id}/_webhooks/{wid}/delete",
                 post(tenant_webhook_delete_form),
+            )
+            // v1.36 edge-functions admin UI — virtual sidebar entry
+            // `ƒ _functions`. GET renders the list + per-function logs + the
+            // test-invoke form; `<name>/toggle` flips active; `<name>/delete`
+            // removes the row + GCs the wasm artifact; `<name>/invoke` runs a
+            // synchronous test-invoke and re-renders with the outcome inline.
+            // Upload stays REST-only in v1 (the page shows the curl snippet).
+            .route(
+                "/admin/tenants/{id}/_functions",
+                get(super::functions_admin::page),
+            )
+            .route(
+                "/admin/tenants/{id}/_functions/{name}/toggle",
+                post(super::functions_admin::toggle),
+            )
+            .route(
+                "/admin/tenants/{id}/_functions/{name}/delete",
+                post(super::functions_admin::delete),
+            )
+            .route(
+                "/admin/tenants/{id}/_functions/{name}/invoke",
+                post(super::functions_admin::invoke),
             )
             .with_state(tenants_state);
 

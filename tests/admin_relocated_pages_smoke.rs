@@ -100,3 +100,54 @@ async fn files_admin_page_renders_200() {
         "tenant_files_admin_page (tenants/files_page.rs) must render 200 after relocation"
     );
 }
+
+/// v1.36 — the new `ƒ _functions` admin page renders 200 on an empty tenant
+/// (empty-state path), and the sidebar carries the `_functions` virtual entry.
+/// Drives the real MgmtState router so the template + `TenantsState` field
+/// plumbing (functions/functions_exec/fn_data_root) is exercised end-to-end —
+/// the layer-stack/render bugs a oneshot catches but a unit test would miss.
+#[tokio::test]
+async fn functions_admin_page_renders_200() {
+    let (app, tok, _d) = app().await;
+    create_tenant(&app, &tok, "smoke3").await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/tenants/smoke3/_functions")
+                .header(header::COOKIE, format!("drust_session={tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let html = String::from_utf8_lossy(&body);
+    assert!(
+        html.contains("/admin/tenants/smoke3/_functions"),
+        "sidebar must carry the _functions virtual entry"
+    );
+}
+
+/// A delete on a non-existent function is idempotent — the admin handler 303s
+/// back to the list rather than 500-ing.
+#[tokio::test]
+async fn functions_admin_delete_missing_redirects() {
+    let (app, tok, _d) = app().await;
+    create_tenant(&app, &tok, "smoke4").await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/tenants/smoke4/_functions/nope/delete")
+                .header(header::COOKIE, format!("drust_session={tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+}

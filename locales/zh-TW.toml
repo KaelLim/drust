@@ -439,6 +439,8 @@ title = "已註冊終端使用者"
 
 [collection_sidebar.files]
 title = "檔案儲存 (S3)"
+[collection_sidebar.functions]
+title = "邊緣函式 (wasm)"
 [collection_sidebar.logs]
 title = "稽核 · 請求歷史"
 
@@ -447,6 +449,7 @@ api_keys = "API 金鑰"
 broadcast = "廣播"
 end_users = "終端使用者"
 files = "檔案"
+functions = "函式"
 logs = "日誌"
 oauth_providers = "OAuth 供應商"
 overview = "總覽"
@@ -850,6 +853,29 @@ no_file = "— 尚未選擇檔案 —"
 uploading = "上傳中…"
 vis_private = "私人"
 vis_public = "公開"
+
+[tenant_functions]
+active_off = "停用"
+active_on = "啟用"
+btn_delete = "刪除"
+btn_disable = "停用"
+btn_enable = "啟用"
+btn_invoke = "測試執行"
+col_actions = "操作"
+col_active = "啟用"
+col_last_run = "最近執行"
+col_name = "名稱"
+col_size = "大小"
+col_triggers = "觸發條件"
+delete_confirm = "確定刪除此函式?"
+desc = "由資料與檔案事件觸發的使用者自訂 wasm 函式。"
+empty = "尚無函式。用下方 curl 指令上傳第一個。"
+invoke_label = "事件 JSON"
+logs_heading = "最近呼叫紀錄"
+never_run = "尚未執行"
+title = "邊緣函式"
+upload_hint = "透過 REST 上傳(service token):"
+upload_title = "上傳函式"
 
 [tenant_oauth_providers.callback_banner]
 title = "Callback URL 為各租戶固定值"

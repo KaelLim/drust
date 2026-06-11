@@ -6,8 +6,9 @@
        active_coll: String              // virtual id (_overview, _api_keys, …) or coll name
        version: &'static str
 
-     Virtual entries: _overview, _api_keys, _rpc, _system_files,
-                      _system_users, _oauth_providers, _webhooks, _logs.
+     Virtual entries: _overview, _api_keys, _rpc, _broadcast, _system_files,
+                      _system_users, _oauth_providers, _webhooks, _functions,
+                      _logs.
 -->
 <aside class="tenant-sidebar">
   <div class="brand">
@@ -81,6 +82,11 @@
        href="/drust/admin/tenants/{{ tenant_id }}/_webhooks" title="{{ t.s("collection_sidebar.webhooks.title") }}">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M15 17l2 4 5-12-10 5 3 3-3 3z"/><path d="M3 11l8-3"/></svg></span>
       {{ t.s("collection_sidebar.nav.webhooks") }}
+    </a>
+    <a class="nav-item{% if active_coll == "_functions" %} on{% endif %}"
+       href="/drust/admin/tenants/{{ tenant_id }}/_functions" title="{{ t.s("collection_sidebar.functions.title") }}">
+      <span class="nav-icon" style="font:600 15px/1 var(--mono);display:grid;place-items:center;">ƒ</span>
+      {{ t.s("collection_sidebar.nav.functions") }}
     </a>
     <a class="nav-item{% if active_coll == "_logs" %} on{% endif %}"
        href="/drust/admin/tenants/{{ tenant_id }}/_logs" title="{{ t.s("collection_sidebar.logs.title") }}">

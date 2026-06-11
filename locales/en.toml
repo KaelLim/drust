@@ -424,6 +424,8 @@ title = "registered end-users"
 
 [collection_sidebar.files]
 title = "file storage (S3)"
+[collection_sidebar.functions]
+title = "edge functions (wasm)"
 [collection_sidebar.logs]
 title = "audit · request history"
 
@@ -432,6 +434,7 @@ api_keys = "API keys"
 broadcast = "Broadcast"
 end_users = "End-users"
 files = "Files"
+functions = "Functions"
 logs = "Logs"
 oauth_providers = "OAuth providers"
 overview = "Overview"
@@ -832,6 +835,29 @@ no_file = "— no file chosen —"
 uploading = "uploading…"
 vis_private = "private"
 vis_public = "public"
+
+[tenant_functions]
+active_off = "off"
+active_on = "on"
+btn_delete = "Delete"
+btn_disable = "Disable"
+btn_enable = "Enable"
+btn_invoke = "Test invoke"
+col_actions = "Actions"
+col_active = "Active"
+col_last_run = "Last run"
+col_name = "Name"
+col_size = "Size"
+col_triggers = "Triggers"
+delete_confirm = "Delete this function?"
+desc = "User-uploaded wasm functions triggered by record and file events."
+empty = "No functions yet. Upload one with the curl snippet below."
+invoke_label = "Event JSON"
+logs_heading = "Recent invocations"
+never_run = "never run"
+title = "Edge Functions"
+upload_hint = "Upload via REST (service token):"
+upload_title = "Upload a function"
 
 [tenant_oauth_providers.callback_banner]
 title = "Callback URL is fixed per tenant"

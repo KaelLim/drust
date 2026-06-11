@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-mod common;
+pub(crate) mod common;
 mod crud;
 mod files_page;
 mod oauth_page;
@@ -65,6 +65,15 @@ pub struct TenantsState {
     /// Admin write handlers invalidate it so a rerolled/revoked token misses
     /// on its next data-plane request. See `crate::tenant::auth_cache`.
     pub auth_cache: Arc<crate::tenant::auth_cache::AuthCache>,
+    /// v1.36 — edge-function dispatcher. The `ƒ _functions` admin page calls
+    /// `functions.bindings.invalidate(tenant)` after toggle/delete so the
+    /// trigger-match cache picks up the change on the next event.
+    pub functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
+    /// v1.36 — executor handle for the admin page's synchronous test-invoke.
+    pub functions_exec: Arc<crate::functions::executor::Executor>,
+    /// v1.36 — artifact root (same dir the tenant pools use). The admin
+    /// delete handler GCs the content-addressed `{sha}.wasm` blob from here.
+    pub fn_data_root: PathBuf,
 }
 
 /// Test-only constructor available in debug builds.
@@ -91,9 +100,12 @@ impl TenantsState {
     ) -> Self {
         use crate::auth::middleware::AdminSessionState;
         let log_dir = data_dir.join("logs");
+        let fn_data_root = data_dir.clone();
         let audit_meta_read = std::sync::Arc::new(tokio::sync::Mutex::new(
             crate::safety::audit_db::open_audit_db_memory().expect("in-memory audit DB for tests"),
         ));
+        let (functions, functions_exec, _cfg) =
+            crate::functions::test_stack_parts(tenants.clone());
         Self {
             session: AdminSessionState { meta: meta.clone() },
             data_dir,
@@ -113,6 +125,9 @@ impl TenantsState {
                 std::time::Duration::from_secs(10),
                 200_000,
             )),
+            functions,
+            functions_exec,
+            fn_data_root,
         }
     }
 }

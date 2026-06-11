@@ -8,6 +8,7 @@ pub mod browse;
 pub mod collection_list;
 pub mod docs;
 pub mod format;
+pub mod functions_admin;
 pub mod i18n;
 pub mod locale_layer;
 pub mod metrics;
