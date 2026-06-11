@@ -256,21 +256,38 @@ pub async fn patch(
     }
 }
 
+/// Shared delete body for both the REST `delete_one` route and the admin
+/// `ƒ _functions` page's delete button. Returns `Ok(true)` when a row was
+/// removed, `Ok(false)` when the name did not exist. Invalidates the
+/// trigger-match cache and GCs the content-addressed artifact (only when no
+/// surviving row still references the sha) on a real delete.
+pub async fn delete_impl(
+    pool: &crate::storage::pool::SharedTenantPool,
+    dispatcher: &FunctionDispatcher,
+    data_root: &std::path::Path,
+    tenant_id: &str,
+    name: &str,
+) -> anyhow::Result<bool> {
+    let sha = match schema::get_function(pool, name).await? {
+        Some(r) => r.wasm_sha256,
+        None => return Ok(false),
+    };
+    if schema::delete_function(pool, name).await? {
+        dispatcher.bindings.invalidate(tenant_id);
+        gc_artifact_if_unreferenced(pool, data_root, tenant_id, &sha).await;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 pub async fn delete_one(
     State(st): State<FunctionsRouteState>,
     Extension(t): Extension<TenantRef>,
     Path((_tenant, name)): Path<(String, String)>,
 ) -> Response {
-    let sha = match schema::get_function(&t.pool, &name).await {
-        Ok(Some(r)) => r.wasm_sha256,
-        Ok(None) => return crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
-        Err(e) => return map_sentinel(e),
-    };
-    match schema::delete_function(&t.pool, &name).await {
+    match delete_impl(&t.pool, &st.dispatcher, &st.data_root, &t.tenant_id, &name).await {
         Ok(true) => {
-            st.dispatcher.bindings.invalidate(&t.tenant_id);
-            // GC the artifact only when no other row references the sha.
-            gc_artifact_if_unreferenced(&t.pool, &st.data_root, &t.tenant_id, &sha).await;
             audit_fn(&t, "function.delete", &name);
             StatusCode::NO_CONTENT.into_response()
         }

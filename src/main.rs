@@ -371,6 +371,8 @@ async fn main() -> anyhow::Result<()> {
         large_upload_session_ttl_secs: lu_ttl,
         auth_cache: auth_cache.clone(),
         functions: functions.clone(),
+        functions_exec: fn_executor.clone(),
+        fn_data_root: cfg.data_dir.clone(),
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
