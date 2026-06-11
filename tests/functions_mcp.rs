@@ -84,6 +84,60 @@ async fn delete_then_second_delete_is_not_found() {
 }
 
 #[tokio::test]
+async fn delete_gcs_unreferenced_artifact() {
+    // The MCP delete path must reclaim the on-disk `{sha}.wasm` blob when no
+    // other live row references it — same store invariant the REST `delete_one`
+    // path holds (src/functions/routes.rs:58-63). Regression guard: a prior
+    // attempt deleted DB rows only and orphaned the artifact on disk.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    seed_fn(&s, "f1").await; // wasm_sha256 == "00".repeat(32)
+    let sha = "00".repeat(32);
+
+    // Materialize the artifact the seeded row points at.
+    let dir = d
+        .path()
+        .join("tenants")
+        .join("blog")
+        .join("_functions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let blob = dir.join(format!("{sha}.wasm"));
+    std::fs::write(&blob, b"\0asm").unwrap();
+    assert!(blob.exists(), "precondition: artifact present");
+
+    delete_function(&s, "f1").await.unwrap();
+
+    // No remaining row references the sha ⇒ blob is unlinked.
+    assert!(
+        !blob.exists(),
+        "MCP delete must GC the now-unreferenced artifact"
+    );
+}
+
+#[tokio::test]
+async fn delete_keeps_artifact_still_referenced() {
+    // Two functions share one sha (same wasm uploaded twice). Deleting one must
+    // NOT unlink the blob — the other row still references it.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    seed_fn(&s, "a").await;
+    seed_fn(&s, "b").await; // both seeded with the same "00".repeat(32) sha
+    let sha = "00".repeat(32);
+
+    let dir = d.path().join("tenants").join("blog").join("_functions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let blob = dir.join(format!("{sha}.wasm"));
+    std::fs::write(&blob, b"\0asm").unwrap();
+
+    delete_function(&s, "a").await.unwrap();
+
+    assert!(
+        blob.exists(),
+        "blob must survive while another row references the sha"
+    );
+}
+
+#[tokio::test]
 async fn get_logs_returns_inserted_rows() {
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;
