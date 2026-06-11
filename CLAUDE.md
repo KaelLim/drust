@@ -119,6 +119,9 @@ Tenant files live in two **host-wide** buckets — `public` (website-enabled, se
 > [!CAUTION]
 > **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects non-loopback Hosts with a 403/421 that looks like a WAF. Same family for Garage `/public/*` which routes by `Host: <bucket>.web.local` (see Storage section).
 
+> [!CAUTION]
+> **drust's systemd unit deliberately OMITS `MemoryDenyWriteExecute`** (v1.36+). wasmtime's Cranelift JIT must `mmap(PROT_EXEC)` to run guest wasm; re-adding W^X makes EVERY edge-function upload/invoke fail the compile gate with `WASM_COMPILE_FAILED: unable to make memory executable` (EPERM) — and the unsandboxed `cargo test` suite stays green, so ONLY a live smoke against the running service catches it. The guest sandbox is enforced inside wasmtime (epoch deadline + `ResourceLimiter` + empty `WasiCtx` + WIT import-absence), not by process-wide W^X — a conscious posture trade-off. Rationale is inline in `deploy/drust.service`; the top-level `tool/CLAUDE.md` "never skip the sandbox directives" WARNING does **not** apply to this one line. If W^X must return, move functions to an AOT/out-of-process model — do not just re-add the directive.
+
 Four further invariants are enforced in code; they don't need callouts but must not be loosened without re-reasoning:
 
 - **User tokens (`drust_user_*`) cannot use `/query`, `/query/explain`, or `/mcp`.** drust does not rewrite user-supplied SQL, so `owner_field` cannot be enforced on those surfaces. Reject with `403 QUERY_USER_DENIED` / `MCP_USER_DENIED`. For per-user reads of owner-scoped data, expose a stored RPC with `:user_id` (auto-bound from `AuthCtx`), or use `/search` (v1.10+) / `/list` (v1.21+) where drust builds the SQL.
