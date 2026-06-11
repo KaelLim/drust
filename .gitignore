@@ -10,3 +10,5 @@ llms.md
 /.mcp.json
 /meta.sqlite*
 /meta_logs.sqlite*
+tests/fixtures/functions/src-*/target/
+tests/fixtures/functions/src-*/Cargo.lock
