@@ -179,6 +179,78 @@ pub async fn spin_up_tenant_with_fn_runner(
     (app, tok, dir)
 }
 
+/// Like `spin_up_tenant` (noop runner) but also mints an anon token and seeds
+/// one `_system_functions` row named `f1` (sha `00…`, triggers `[]`), so the
+/// functions REST CRUD tests can exercise list/get/patch/invoke/logs/delete
+/// without a wasm toolchain. Returns `(router, service_token, anon_token, tmp)`.
+pub async fn spin_up_tenant_with_fn_seed(
+    tenant: &str,
+) -> (Router, String, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let service = generate_token();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, 'service')",
+        rusqlite::params![tenant, hash_token(&service)],
+    )
+    .unwrap();
+    let anon = generate_token();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, 'anon')",
+        rusqlite::params![tenant, hash_token(&anon)],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
+    let webhooks = WebhookDispatcher::new(tenants.clone(), None);
+    let meta = Arc::new(Mutex::new(conn));
+    let state = TenantAuthState::test_default(meta, tenants.clone());
+    let (functions, functions_exec, fn_cfg) =
+        drust::functions::test_stack_parts(tenants.clone());
+
+    // Seed one function row `f1`, then refresh the binding cache.
+    let pool = tenants.get_or_open(tenant).unwrap();
+    drust::functions::schema::create_function(
+        &pool,
+        drust::functions::schema::CreateFunctionParams {
+            name: "f1".into(),
+            wasm_sha256: "00".repeat(32),
+            size_bytes: 1,
+            triggers_json: "[]".into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .unwrap();
+    functions.bindings.invalidate(tenant);
+
+    let stack = TenantStack {
+        auth: state,
+        bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
+        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
+        mcp: test_mcp_http(tenants, bus),
+        files: None,
+        webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
+        cors_origins: Vec::new(),
+    };
+    let app = build_tenant_router(stack);
+    (app, service, anon, dir)
+}
+
 pub async fn grab_pool(tenant: &str, dir: &tempfile::TempDir) -> SharedTenantPool {
     let reg = TenantRegistry::new(dir.path().to_path_buf(), 2);
     reg.get_or_open(tenant).unwrap()

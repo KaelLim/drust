@@ -647,6 +647,47 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         Router::new()
     };
 
+    // v1.36 — functions REST surface, same auth stack as files_router:
+    // require_service_layer INNER to bearer_auth_layer ⇒ service-key-only.
+    let functions_router = {
+        let fr_state = crate::functions::routes::FunctionsRouteState {
+            tenants: state.auth.registry.clone(),
+            dispatcher: state.functions.clone(),
+            executor: state.functions_exec.clone(),
+            cfg: state.fn_cfg.clone(),
+            data_root: state.auth.registry.data_root().to_path_buf(),
+        };
+        Router::new()
+            .route(
+                "/t/{tenant}/functions",
+                post(crate::functions::routes::create)
+                    .layer(axum::extract::DefaultBodyLimit::max(
+                        state.fn_cfg.max_wasm_bytes + 64 * 1024, // wasm + multipart overhead
+                    ))
+                    .get(crate::functions::routes::list),
+            )
+            .route(
+                "/t/{tenant}/functions/{name}",
+                get(crate::functions::routes::get_one)
+                    .patch(crate::functions::routes::patch)
+                    .delete(crate::functions::routes::delete_one),
+            )
+            .route(
+                "/t/{tenant}/functions/{name}/invoke",
+                post(crate::functions::routes::invoke),
+            )
+            .route(
+                "/t/{tenant}/functions/{name}/logs",
+                get(crate::functions::routes::logs),
+            )
+            .layer(axum::middleware::from_fn(router::require_service_layer))
+            .layer(axum::middleware::from_fn_with_state(
+                auth_state.clone(),
+                router::bearer_auth_layer,
+            ))
+            .with_state(fr_state)
+    };
+
     // Auth routes: no bearer token required (register/login are public entry points).
     // State is TenantAuthState (for meta db + registry + rate limiters), but
     // these routes are NOT wrapped in bearer_auth_layer.
@@ -704,7 +745,11 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         ))
         .with_state(auth_state);
 
-    let merged = core.merge(files_router).merge(auth_router).merge(ws_router);
+    let merged = core
+        .merge(files_router)
+        .merge(functions_router)
+        .merge(auth_router)
+        .merge(ws_router);
     // CORS layer goes OUTSIDE bearer_auth_layer (= applied last) so OPTIONS
     // preflight is intercepted by tower_http before reaching auth, returning
     // 200 + ACA* headers without seeing the bearer token. Real GET/POST/etc.

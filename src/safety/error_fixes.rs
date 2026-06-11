@@ -32,6 +32,26 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Row is referenced by another collection's foreign key (ON DELETE RESTRICT). Delete the referencing rows first, or use `dry_run: true` to see which collections block.",
     ),
     (
+        "FN_LIMIT",
+        "Tenant function cap reached (DRUST_FN_MAX_PER_TENANT, default 10). Delete an unused function first (GET /t/<id>/functions to list).",
+    ),
+    (
+        "FN_NAME_INVALID",
+        "Function names must match [a-z0-9_-]{1,64}.",
+    ),
+    (
+        "FN_NOT_FOUND",
+        "No function with that name. GET /t/<id>/functions to list existing ones.",
+    ),
+    (
+        "FN_TRIGGERS_INVALID",
+        "triggers must be a JSON array of {\"collection\":\"…\",\"events\":[\"created\"|\"updated\"|\"deleted\"]} or {\"file_uploaded\":true}.",
+    ),
+    (
+        "FN_WASM_TOO_LARGE",
+        "Artifact exceeds DRUST_FN_MAX_WASM_BYTES (default 20 MiB). Build with --release, opt-level=\"s\", lto=true, strip=true.",
+    ),
+    (
         "INDEX_NOT_FOUND",
         "Named index does not exist on this collection. Call `describe_collection` to see existing indexes.",
     ),
@@ -134,6 +154,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
     (
         "VECTOR_TYPE_ERROR",
         "Vector field expects an array of numbers. Check the input type.",
+    ),
+    (
+        "WASM_COMPILE_FAILED",
+        "The uploaded file is not a valid wasm32-wasip2 component for the drust:function world. Build from sdk/edge-function-template with `cargo build --target wasm32-wasip2 --release`.",
     ),
     (
         "WRITE_DENIED",

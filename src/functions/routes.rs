@@ -1,0 +1,315 @@
+//! REST surface: /t/<id>/functions[…]. Service-only via the router-level
+//! require_service_layer (mounted in tenant/mod.rs, files_router pattern).
+
+use crate::functions::FnConfig;
+use crate::functions::dispatcher::FunctionDispatcher;
+use crate::functions::executor::{Executor, Invocation};
+use crate::functions::schema;
+use crate::storage::pool::TenantRegistry;
+use crate::tenant::router::TenantRef;
+use axum::Extension;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Json, Response};
+use sha2::Digest;
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct FunctionsRouteState {
+    pub tenants: Arc<TenantRegistry>,
+    pub dispatcher: Arc<FunctionDispatcher>,
+    pub executor: Arc<Executor>,
+    pub cfg: FnConfig,
+    pub data_root: std::path::PathBuf,
+}
+
+/// Lower-hex encode bytes. The repo has no `hex` crate dependency (the
+/// `hex::encode_lower` call in `auth/bearer.rs` resolves to a private
+/// in-file module); this mirrors that helper's semantics for the wasm sha.
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// Uniform error JSON, mirroring the house `json_error` shape + suggested_fix.
+fn fn_error(status: StatusCode, code: &str, msg: &str) -> Response {
+    let fix = crate::safety::error_fixes::lookup(code);
+    let mut body = serde_json::json!({ "error_code": code, "message": msg });
+    if let Some(f) = fix {
+        body["suggested_fix"] = serde_json::Value::String(f.to_string());
+    }
+    (status, Json(body)).into_response()
+}
+
+/// Map a sentinel-prefixed anyhow error ("CODE: msg") to a response.
+fn map_sentinel(e: anyhow::Error) -> Response {
+    let s = e.to_string();
+    let code = s.split(':').next().unwrap_or("").trim().to_string();
+    let status = match code.as_str() {
+        "FN_LIMIT" => StatusCode::CONFLICT,
+        "FN_NAME_INVALID" | "FN_TRIGGERS_INVALID" => StatusCode::UNPROCESSABLE_ENTITY,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    fn_error(status, &code, &s)
+}
+
+fn artifact_dir(root: &std::path::Path, tenant: &str) -> std::path::PathBuf {
+    root.join("tenants").join(tenant).join("_functions")
+}
+
+/// POST /t/<id>/functions — multipart: name, wasm, triggers, description?
+pub async fn create(
+    State(st): State<FunctionsRouteState>,
+    Extension(t): Extension<TenantRef>,
+    Path(_tenant): Path<String>,
+    mut mp: Multipart,
+) -> Response {
+    let mut name = String::new();
+    let mut triggers = String::from("[]");
+    let mut description = String::new();
+    let mut wasm: Option<Vec<u8>> = None;
+    while let Ok(Some(field)) = mp.next_field().await {
+        match field.name().unwrap_or("") {
+            "name" => name = field.text().await.unwrap_or_default(),
+            "triggers" => triggers = field.text().await.unwrap_or_default(),
+            "description" => description = field.text().await.unwrap_or_default(),
+            "wasm" => wasm = field.bytes().await.ok().map(|b| b.to_vec()),
+            _ => {}
+        }
+    }
+    let Some(wasm) = wasm else {
+        return fn_error(StatusCode::UNPROCESSABLE_ENTITY, "INVALID_PARAMS", "missing wasm field");
+    };
+    if wasm.len() > st.cfg.max_wasm_bytes {
+        return fn_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "FN_WASM_TOO_LARGE",
+            &format!("{} bytes > cap {}", wasm.len(), st.cfg.max_wasm_bytes),
+        );
+    }
+    if !schema::valid_name(&name) {
+        return fn_error(StatusCode::UNPROCESSABLE_ENTITY, "FN_NAME_INVALID", "bad name");
+    }
+    if let Err(e) = crate::functions::bindings::parse_triggers(&triggers) {
+        return map_sentinel(e);
+    }
+    // Compile gate (spec §8): 422 + suggested_fix on a non-component upload.
+    if let Err(e) = crate::functions::runtime::validate_component(&wasm) {
+        return fn_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "WASM_COMPILE_FAILED",
+            &format!("{e:#}"),
+        );
+    }
+
+    let sha = hex_lower(&sha2::Sha256::digest(&wasm));
+    let dir = artifact_dir(&st.data_root, &t.tenant_id);
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return fn_error(StatusCode::INTERNAL_SERVER_ERROR, "IO", &e.to_string());
+    }
+    let path = dir.join(format!("{sha}.wasm"));
+    if let Err(e) = tokio::fs::write(&path, &wasm).await {
+        return fn_error(StatusCode::INTERNAL_SERVER_ERROR, "IO", &e.to_string());
+    }
+
+    match schema::create_function(
+        &t.pool,
+        schema::CreateFunctionParams {
+            name: name.clone(),
+            wasm_sha256: sha,
+            size_bytes: wasm.len() as i64,
+            triggers_json: triggers,
+            description,
+        },
+        st.cfg.max_per_tenant,
+    )
+    .await
+    {
+        Ok(row) => {
+            st.dispatcher.bindings.invalidate(&t.tenant_id);
+            audit_fn(&t, "function.create", &name);
+            (StatusCode::CREATED, Json(row)).into_response()
+        }
+        Err(e) => map_sentinel(e),
+    }
+}
+
+pub async fn list(
+    State(_st): State<FunctionsRouteState>,
+    Extension(t): Extension<TenantRef>,
+    Path(_tenant): Path<String>,
+) -> Response {
+    match schema::list_functions(&t.pool).await {
+        Ok(rows) => Json(serde_json::json!({ "functions": rows })).into_response(),
+        Err(e) => map_sentinel(e),
+    }
+}
+
+pub async fn get_one(
+    State(_st): State<FunctionsRouteState>,
+    Extension(t): Extension<TenantRef>,
+    Path((_tenant, name)): Path<(String, String)>,
+) -> Response {
+    match schema::get_function(&t.pool, &name).await {
+        Ok(Some(row)) => Json(row).into_response(),
+        Ok(None) => fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Err(e) => map_sentinel(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct PatchBody {
+    pub active: Option<bool>,
+    pub triggers: Option<serde_json::Value>,
+    pub description: Option<String>,
+}
+
+pub async fn patch(
+    State(st): State<FunctionsRouteState>,
+    Extension(t): Extension<TenantRef>,
+    Path((_tenant, name)): Path<(String, String)>,
+    Json(body): Json<PatchBody>,
+) -> Response {
+    let triggers_json = match body.triggers {
+        Some(v) => {
+            let s = v.to_string();
+            if let Err(e) = crate::functions::bindings::parse_triggers(&s) {
+                return map_sentinel(e);
+            }
+            Some(s)
+        }
+        None => None,
+    };
+    let mut touched = false;
+    if let Some(active) = body.active {
+        match schema::set_active(&t.pool, &name, active).await {
+            Ok(true) => touched = true,
+            Ok(false) => {
+                return fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function");
+            }
+            Err(e) => return map_sentinel(e),
+        }
+    }
+    if triggers_json.is_some() || body.description.is_some() {
+        match schema::update_meta(&t.pool, &name, triggers_json, body.description).await {
+            Ok(true) => touched = true,
+            Ok(false) if !touched => {
+                return fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function");
+            }
+            Ok(false) => {}
+            Err(e) => return map_sentinel(e),
+        }
+    }
+    st.dispatcher.bindings.invalidate(&t.tenant_id);
+    audit_fn(&t, "function.update", &name);
+    match schema::get_function(&t.pool, &name).await {
+        Ok(Some(row)) => Json(row).into_response(),
+        _ => fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+    }
+}
+
+pub async fn delete_one(
+    State(st): State<FunctionsRouteState>,
+    Extension(t): Extension<TenantRef>,
+    Path((_tenant, name)): Path<(String, String)>,
+) -> Response {
+    let sha = match schema::get_function(&t.pool, &name).await {
+        Ok(Some(r)) => r.wasm_sha256,
+        Ok(None) => return fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Err(e) => return map_sentinel(e),
+    };
+    match schema::delete_function(&t.pool, &name).await {
+        Ok(true) => {
+            st.dispatcher.bindings.invalidate(&t.tenant_id);
+            // GC the artifact only when no other row references the sha.
+            if let Ok(false) = schema::sha_still_referenced(&t.pool, &sha).await {
+                let p = artifact_dir(&st.data_root, &t.tenant_id).join(format!("{sha}.wasm"));
+                let _ = tokio::fs::remove_file(p).await;
+            }
+            audit_fn(&t, "function.delete", &name);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Err(e) => map_sentinel(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct InvokeBody {
+    pub event: serde_json::Value,
+}
+
+/// POST /t/<id>/functions/<name>/invoke — synchronous test-invoke.
+pub async fn invoke(
+    State(st): State<FunctionsRouteState>,
+    Extension(t): Extension<TenantRef>,
+    Path((_tenant, name)): Path<(String, String)>,
+    Json(body): Json<InvokeBody>,
+) -> Response {
+    match schema::get_function(&t.pool, &name).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Err(e) => return map_sentinel(e),
+    }
+    let started = std::time::Instant::now();
+    let out = st
+        .executor
+        .run_one(Invocation {
+            tenant_id: t.tenant_id.clone(),
+            function_name: name,
+            trigger: "manual".into(),
+            event_json: body.event.to_string(),
+        })
+        .await;
+    Json(serde_json::json!({
+        "status": out.status.as_str(),
+        "result": out.result,
+        "logs": out.log_text,
+        "duration_ms": started.elapsed().as_millis() as u64,
+    }))
+    .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct LogsQs {
+    pub limit: Option<i64>,
+}
+
+pub async fn logs(
+    State(_st): State<FunctionsRouteState>,
+    Extension(t): Extension<TenantRef>,
+    Path((_tenant, name)): Path<(String, String)>,
+    Query(qs): Query<LogsQs>,
+) -> Response {
+    match schema::list_logs(&t.pool, &name, qs.limit.unwrap_or(50)).await {
+        Ok(rows) => Json(serde_json::json!({ "logs": rows })).into_response(),
+        Err(e) => map_sentinel(e),
+    }
+}
+
+fn audit_fn(t: &TenantRef, op: &str, name: &str) {
+    crate::safety::audit_db::try_send(&crate::safety::audit::AuditEntry {
+        ts: chrono::Utc::now().to_rfc3339(),
+        tenant: t.tenant_id.clone(),
+        token_hint: t.token_hint.clone(),
+        op: op.to_string(),
+        status: "ok".to_string(),
+        duration_ms: 0,
+        collection: Some(name.to_string()),
+        sql_hash: None,
+        record_id: None,
+        error_code: None,
+        error_message: None,
+        auth_method: None,
+        oauth_email: None,
+        oauth_error_code: None,
+        actor_admin_id: None,
+        actor_email_snapshot: None,
+        extra: Default::default(),
+    });
+}
