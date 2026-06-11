@@ -36,17 +36,10 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-/// Uniform error JSON, mirroring the house `json_error` shape + suggested_fix.
-fn fn_error(status: StatusCode, code: &str, msg: &str) -> Response {
-    let fix = crate::safety::error_fixes::lookup(code);
-    let mut body = serde_json::json!({ "error_code": code, "message": msg });
-    if let Some(f) = fix {
-        body["suggested_fix"] = serde_json::Value::String(f.to_string());
-    }
-    (status, Json(body)).into_response()
-}
-
 /// Map a sentinel-prefixed anyhow error ("CODE: msg") to a response.
+/// Bodies go through the canonical `crate::error::json_error` so the
+/// service-only functions surface shares one error code path with the
+/// rest of drust (`error_code` + `message` + catalog `suggested_fix`).
 fn map_sentinel(e: anyhow::Error) -> Response {
     let s = e.to_string();
     let code = s.split(':').next().unwrap_or("").trim().to_string();
@@ -55,7 +48,7 @@ fn map_sentinel(e: anyhow::Error) -> Response {
         "FN_NAME_INVALID" | "FN_TRIGGERS_INVALID" => StatusCode::UNPROCESSABLE_ENTITY,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    fn_error(status, &code, &s)
+    crate::error::json_error(status, &code, &s)
 }
 
 fn artifact_dir(root: &std::path::Path, tenant: &str) -> std::path::PathBuf {
@@ -83,45 +76,39 @@ pub async fn create(
         }
     }
     let Some(wasm) = wasm else {
-        return fn_error(StatusCode::UNPROCESSABLE_ENTITY, "INVALID_PARAMS", "missing wasm field");
+        return crate::error::json_error(StatusCode::UNPROCESSABLE_ENTITY, "INVALID_PARAMS", "missing wasm field");
     };
     if wasm.len() > st.cfg.max_wasm_bytes {
-        return fn_error(
+        return crate::error::json_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             "FN_WASM_TOO_LARGE",
             &format!("{} bytes > cap {}", wasm.len(), st.cfg.max_wasm_bytes),
         );
     }
     if !schema::valid_name(&name) {
-        return fn_error(StatusCode::UNPROCESSABLE_ENTITY, "FN_NAME_INVALID", "bad name");
+        return crate::error::json_error(StatusCode::UNPROCESSABLE_ENTITY, "FN_NAME_INVALID", "bad name");
     }
     if let Err(e) = crate::functions::bindings::parse_triggers(&triggers) {
         return map_sentinel(e);
     }
     // Compile gate (spec §8): 422 + suggested_fix on a non-component upload.
     if let Err(e) = crate::functions::runtime::validate_component(&wasm) {
-        return fn_error(
+        return crate::error::json_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "WASM_COMPILE_FAILED",
             &format!("{e:#}"),
         );
     }
 
+    // SQLite-first (mirrors `_system_files`): the row is the authority. Insert
+    // first so a cap/validation Err never leaves an orphaned `{sha}.wasm` on
+    // disk (no janitor sweeps `_functions/`), then materialize the artifact.
     let sha = hex_lower(&sha2::Sha256::digest(&wasm));
-    let dir = artifact_dir(&st.data_root, &t.tenant_id);
-    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        return fn_error(StatusCode::INTERNAL_SERVER_ERROR, "IO", &e.to_string());
-    }
-    let path = dir.join(format!("{sha}.wasm"));
-    if let Err(e) = tokio::fs::write(&path, &wasm).await {
-        return fn_error(StatusCode::INTERNAL_SERVER_ERROR, "IO", &e.to_string());
-    }
-
-    match schema::create_function(
+    let row = match schema::create_function(
         &t.pool,
         schema::CreateFunctionParams {
             name: name.clone(),
-            wasm_sha256: sha,
+            wasm_sha256: sha.clone(),
             size_bytes: wasm.len() as i64,
             triggers_json: triggers,
             description,
@@ -130,13 +117,27 @@ pub async fn create(
     )
     .await
     {
-        Ok(row) => {
-            st.dispatcher.bindings.invalidate(&t.tenant_id);
-            audit_fn(&t, "function.create", &name);
-            (StatusCode::CREATED, Json(row)).into_response()
-        }
-        Err(e) => map_sentinel(e),
+        Ok(row) => row,
+        Err(e) => return map_sentinel(e),
+    };
+
+    let dir = artifact_dir(&st.data_root, &t.tenant_id);
+    let path = dir.join(format!("{sha}.wasm"));
+    let write_res = match tokio::fs::create_dir_all(&dir).await {
+        Ok(()) => tokio::fs::write(&path, &wasm).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = write_res {
+        // Compensate the SQLite-first insert (mirrors `_system_files` put
+        // failure): drop the row we just created so no row points at a
+        // missing artifact.
+        let _ = schema::delete_function(&t.pool, &name).await;
+        return crate::error::json_error(StatusCode::INTERNAL_SERVER_ERROR, "FN_IO", &e.to_string());
     }
+
+    st.dispatcher.bindings.invalidate(&t.tenant_id);
+    audit_fn(&t, "function.create", &name);
+    (StatusCode::CREATED, Json(row)).into_response()
 }
 
 pub async fn list(
@@ -157,7 +158,7 @@ pub async fn get_one(
 ) -> Response {
     match schema::get_function(&t.pool, &name).await {
         Ok(Some(row)) => Json(row).into_response(),
-        Ok(None) => fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Ok(None) => crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
         Err(e) => map_sentinel(e),
     }
 }
@@ -185,23 +186,24 @@ pub async fn patch(
         }
         None => None,
     };
-    let mut touched = false;
     if let Some(active) = body.active {
         match schema::set_active(&t.pool, &name, active).await {
-            Ok(true) => touched = true,
+            Ok(true) => {}
+            // Row absent — 404 and stop before any further write.
             Ok(false) => {
-                return fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function");
+                return crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function");
             }
             Err(e) => return map_sentinel(e),
         }
     }
     if triggers_json.is_some() || body.description.is_some() {
         match schema::update_meta(&t.pool, &name, triggers_json, body.description).await {
-            Ok(true) => touched = true,
-            Ok(false) if !touched => {
-                return fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function");
+            Ok(true) => {}
+            // Reaching here means no `set_active` 404 fired (that early-returns),
+            // so a zero-row update can only mean the function does not exist.
+            Ok(false) => {
+                return crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function");
             }
-            Ok(false) => {}
             Err(e) => return map_sentinel(e),
         }
     }
@@ -209,7 +211,7 @@ pub async fn patch(
     audit_fn(&t, "function.update", &name);
     match schema::get_function(&t.pool, &name).await {
         Ok(Some(row)) => Json(row).into_response(),
-        _ => fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        _ => crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
     }
 }
 
@@ -220,7 +222,7 @@ pub async fn delete_one(
 ) -> Response {
     let sha = match schema::get_function(&t.pool, &name).await {
         Ok(Some(r)) => r.wasm_sha256,
-        Ok(None) => return fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Ok(None) => return crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
         Err(e) => return map_sentinel(e),
     };
     match schema::delete_function(&t.pool, &name).await {
@@ -234,7 +236,7 @@ pub async fn delete_one(
             audit_fn(&t, "function.delete", &name);
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(false) => fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Ok(false) => crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
         Err(e) => map_sentinel(e),
     }
 }
@@ -253,7 +255,7 @@ pub async fn invoke(
 ) -> Response {
     match schema::get_function(&t.pool, &name).await {
         Ok(Some(_)) => {}
-        Ok(None) => return fn_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Ok(None) => return crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
         Err(e) => return map_sentinel(e),
     }
     let started = std::time::Instant::now();

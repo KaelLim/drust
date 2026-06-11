@@ -179,13 +179,16 @@ pub async fn spin_up_tenant_with_fn_runner(
     (app, tok, dir)
 }
 
-/// Like `spin_up_tenant` (noop runner) but also mints an anon token and seeds
+/// Like `spin_up_tenant` (noop runner) but also mints an anon token AND a real
+/// `drust_user_*` session token (so service-only gating can be proven against
+/// the user-session branch of `bearer_auth_layer`, not just anon), and seeds
 /// one `_system_functions` row named `f1` (sha `00…`, triggers `[]`), so the
 /// functions REST CRUD tests can exercise list/get/patch/invoke/logs/delete
-/// without a wasm toolchain. Returns `(router, service_token, anon_token, tmp)`.
+/// without a wasm toolchain. Returns
+/// `(router, service_token, anon_token, user_token, tmp)`.
 pub async fn spin_up_tenant_with_fn_seed(
     tenant: &str,
-) -> (Router, String, String, tempfile::TempDir) {
+) -> (Router, String, String, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
     let conn = open_meta(&data.join("meta.sqlite")).unwrap();
@@ -233,6 +236,21 @@ pub async fn spin_up_tenant_with_fn_seed(
     .unwrap();
     functions.bindings.invalidate(tenant);
 
+    // Seed one `_system_users` row + an active session so the test can hit the
+    // user-session branch of `bearer_auth_layer` with a real `drust_user_*`
+    // bearer (distinct code path from the anon token).
+    let user_token = pool
+        .with_writer(|c| {
+            c.execute(
+                "INSERT INTO _system_users (id, email, password_hash, created_at, updated_at) \
+                 VALUES ('u-fn-seed', 'u@x', 'h', datetime('now'), datetime('now'))",
+                [],
+            )?;
+            drust::auth::user_session::create_session(c, "u-fn-seed", None, 30)
+        })
+        .await
+        .unwrap();
+
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -248,7 +266,7 @@ pub async fn spin_up_tenant_with_fn_seed(
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
-    (app, service, anon, dir)
+    (app, service, anon, user_token, dir)
 }
 
 pub async fn grab_pool(tenant: &str, dir: &tempfile::TempDir) -> SharedTenantPool {
