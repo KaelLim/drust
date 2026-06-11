@@ -1,5 +1,6 @@
 pub mod exploration;
 pub mod files;
+pub mod functions;
 pub mod index;
 pub mod oauth;
 pub mod owner_field;
