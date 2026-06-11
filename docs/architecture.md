@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-06-04
+updated: 2026-06-11
 generated_by: docs/gen-architecture.py
 ---
 
@@ -18,19 +18,20 @@ generated_by: docs/gen-architecture.py
 
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
-| [`(root)/`](#srcroot) | 5 | 22 | 3 | 22 |
-| [`auth/`](#srcauth) | 10 | 49 | 2 | 34 |
+| [`(root)/`](#srcroot) | 5 | 23 | 3 | 22 |
+| [`auth/`](#srcauth) | 10 | 50 | 2 | 34 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`db/`](#srcdb) | 2 | 11 | 0 | 0 |
-| [`mcp/`](#srcmcp) | 17 | 120 | 53 | 24 |
-| [`mgmt/`](#srcmgmt) | 27 | 233 | 80 | 36 |
+| [`functions/`](#srcfunctions) | 7 | 53 | 20 | 14 |
+| [`mcp/`](#srcmcp) | 18 | 132 | 55 | 26 |
+| [`mgmt/`](#srcmgmt) | 34 | 246 | 94 | 43 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
-| [`query/`](#srcquery) | 7 | 33 | 5 | 23 |
+| [`query/`](#srcquery) | 7 | 34 | 5 | 23 |
 | [`rpc/`](#srcrpc) | 6 | 31 | 15 | 7 |
 | [`safety/`](#srcsafety) | 8 | 38 | 1 | 11 |
-| [`storage/`](#srcstorage) | 13 | 89 | 9 | 59 |
-| [`tenant/`](#srctenant) | 31 | 188 | 98 | 49 |
+| [`storage/`](#srcstorage) | 14 | 92 | 12 | 72 |
+| [`tenant/`](#srctenant) | 32 | 193 | 99 | 53 |
 
 ## Group-level dependency graph
 
@@ -44,11 +45,15 @@ graph LR
   codegen --> auth
   codegen --> storage
   codegen --> tenant
+  functions --> mcp
+  functions --> storage
+  functions --> tenant
   mcp --> query
   mcp --> storage
   mcp --> tenant
   mgmt --> root
   mgmt --> auth
+  mgmt --> functions
   mgmt --> mcp
   mgmt --> oauth
   mgmt --> query
@@ -163,6 +168,7 @@ _Shared between bin/set_admin_password.rs and tests._
 - [`src/config.rs`](../src/config.rs)
 - [`src/db/mod.rs`](../src/db/mod.rs)
 - [`src/error.rs`](../src/error.rs)
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
 - [`src/mcp/mod.rs`](../src/mcp/mod.rs)
 - [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
 - [`src/oauth/mod.rs`](../src/oauth/mod.rs)
@@ -180,6 +186,7 @@ _Shared between bin/set_admin_password.rs and tests._
 - `mod config`
 - `mod db`
 - `mod error`
+- `mod functions`
 - `mod mcp`
 - `mod mgmt`
 - `mod oauth`
@@ -250,7 +257,7 @@ _Per-admin Personal Access Token (PAT) primitives. v1.29.0._
 
 **Imported by:**
 
-- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+- [`src/mgmt/tenants/crud.rs`](../src/mgmt/tenants/crud.rs)
 - [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
 
@@ -404,6 +411,7 @@ _Profile encoding/decoding helpers shared by REST + MCP user paths._
 - `struct SessionInfo`
 - `fn generate_token`
 - `fn hash_token`
+- `fn is_user_token` — True iff `token` carries the user-session prefix. Used by the auth layer to
 - `fn create_session`
 - `fn lookup_session`
 - `fn slide_expiry`
@@ -627,6 +635,216 @@ _v1.27 — Zod renderer. Mirrors the TypeScript renderer's shape with_
 
 - `mod migrations`
 
+<a id="srcfunctions"></a>
+
+## `src/functions/`
+
+### [`src/functions/bindings.rs`](../src/functions/bindings.rs)
+
+_Trigger parsing + per-tenant binding cache._
+
+**Declared by:**
+
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+
+**Public items:**
+
+- `enum TriggerSpec`
+- `fn parse_triggers` — Validate a triggers_json string. Returns the parsed list or a
+- `struct Binding`
+- `const DEFAULT_SAFETY_TTL` — Default per-entry safety TTL (Layer 2) — matches the auth cache's 10 s.
+- `struct BindingCache` — Per-tenant cache of ACTIVE bindings, keyed by tenant id. Each entry holds
+
+**Imports from:**
+
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
+
+**Imported by:**
+
+- [`src/functions/dispatcher.rs`](../src/functions/dispatcher.rs)
+- [`src/mgmt/functions_admin.rs`](../src/mgmt/functions_admin.rs)
+
+### [`src/functions/dispatcher.rs`](../src/functions/dispatcher.rs)
+
+_`FunctionDispatcher` — mirrors `WebhookDispatcher.dispatch(&self, tenant,_
+
+**Declared by:**
+
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+
+**Public items:**
+
+- `struct FunctionDispatcher`
+
+**Imports from:**
+
+- [`src/functions/bindings.rs`](../src/functions/bindings.rs)
+- [`src/functions/executor.rs`](../src/functions/executor.rs)
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+- [`src/functions/schema.rs`](../src/functions/schema.rs)
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
+- [`src/tenant/events.rs`](../src/tenant/events.rs)
+
+**Imported by:**
+
+- [`src/functions/routes.rs`](../src/functions/routes.rs)
+
+### [`src/functions/executor.rs`](../src/functions/executor.rs)
+
+_Invocation executor: drains the global bounded queue into per-tenant FIFO_
+
+**Declared by:**
+
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+
+**Public items:**
+
+- `struct Invocation`
+- `enum RunStatus`
+- `struct RunOutcome`
+- `trait FunctionRunner`
+- `struct Executor`
+
+**Imports from:**
+
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+- [`src/functions/schema.rs`](../src/functions/schema.rs)
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
+
+**Imported by:**
+
+- [`src/functions/dispatcher.rs`](../src/functions/dispatcher.rs)
+- [`src/functions/routes.rs`](../src/functions/routes.rs)
+- [`src/functions/runtime.rs`](../src/functions/runtime.rs)
+
+### [`src/functions/mod.rs`](../src/functions/mod.rs)
+
+_v1.36 — Edge functions: per-tenant user-uploaded wasm components,_
+
+**Declares submodules:**
+
+- [`src/functions/bindings.rs`](../src/functions/bindings.rs)
+- [`src/functions/dispatcher.rs`](../src/functions/dispatcher.rs)
+- [`src/functions/executor.rs`](../src/functions/executor.rs)
+- [`src/functions/routes.rs`](../src/functions/routes.rs)
+- [`src/functions/runtime.rs`](../src/functions/runtime.rs)
+- [`src/functions/schema.rs`](../src/functions/schema.rs)
+
+**Declared by:**
+
+- [`src/lib.rs`](../src/lib.rs)
+
+**Public items:**
+
+- `mod bindings`
+- `mod dispatcher`
+- `mod executor`
+- `mod routes`
+- `mod runtime`
+- `mod schema`
+- `struct FnConfig`
+- `fn test_stack_parts`
+
+**Imported by:**
+
+- [`src/functions/dispatcher.rs`](../src/functions/dispatcher.rs)
+- [`src/functions/executor.rs`](../src/functions/executor.rs)
+- [`src/functions/routes.rs`](../src/functions/routes.rs)
+- [`src/functions/runtime.rs`](../src/functions/runtime.rs)
+
+### [`src/functions/routes.rs`](../src/functions/routes.rs)
+
+_REST surface: /t/<id>/functions[…]. Service-only via the router-level_
+
+**Declared by:**
+
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+
+**Public items:**
+
+- `struct FunctionsRouteState`
+- `fn gc_artifact_if_unreferenced` — Remove the content-addressed `{sha}.wasm` artifact iff no live
+- `fn create` — POST /t/<id>/functions — multipart: name, wasm, triggers, description?
+- `fn list`
+- `fn get_one`
+- `struct PatchBody`
+- `fn patch`
+- `fn delete_impl` — Shared delete body for both the REST `delete_one` route and the admin
+- `fn delete_one`
+- `struct InvokeBody`
+- `fn invoke` — POST /t/<id>/functions/<name>/invoke — synchronous test-invoke.
+- `struct LogsQs`
+- `fn logs`
+
+**Imports from:**
+
+- [`src/functions/dispatcher.rs`](../src/functions/dispatcher.rs)
+- [`src/functions/executor.rs`](../src/functions/executor.rs)
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+- [`src/functions/schema.rs`](../src/functions/schema.rs)
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
+
+### [`src/functions/runtime.rs`](../src/functions/runtime.rs)
+
+_wasmtime runtime: global Engine (OnceLock + epoch ticker thread),_
+
+**Declared by:**
+
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+
+**Public items:**
+
+- `fn engine` — Global engine + ticker. Lazy: the ticker thread only exists once the
+- `fn validate_component` — Upload-time validation: compiles (cheaply discards) the artifact.
+- `struct StoreData` — Per-invocation store data: WASI ctx (locked down), the resource limiter,
+- `struct HostState`
+- `struct WasmRunner` — Production runner.
+- `struct HostStateSeed`
+
+**Imports from:**
+
+- [`src/functions/executor.rs`](../src/functions/executor.rs)
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+- [`src/mcp/server.rs`](../src/mcp/server.rs)
+
+### [`src/functions/schema.rs`](../src/functions/schema.rs)
+
+_`_system_functions` + `_system_function_logs` — lazy DDL (idempotent_
+
+**Declared by:**
+
+- [`src/functions/mod.rs`](../src/functions/mod.rs)
+
+**Public items:**
+
+- `const FN_LOG_KEEP_PER_FUNCTION` — Trim-on-write retention: newest N log rows kept per function.
+- `struct FunctionRow`
+- `struct CreateFunctionParams`
+- `fn valid_name` — `[a-z0-9_-]{1,64}` — enforced here so every surface shares one rule.
+- `fn create_function` — Create-or-replace by name. Errors are sentinel-prefixed (`FN_NAME_INVALID:`,
+- `fn list_functions`
+- `fn get_function`
+- `fn set_active`
+- `fn update_meta`
+- `fn delete_function` — Returns true if a row was deleted. Also purges the deleted name's
+- `fn sha_still_referenced`
+- `struct LogRow`
+- `struct LogRowOut`
+- `fn insert_log` — Insert + trim-on-write (keep newest FN_LOG_KEEP_PER_FUNCTION per function).
+- `fn list_logs`
+
+**Imports from:**
+
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
+
+**Imported by:**
+
+- [`src/functions/dispatcher.rs`](../src/functions/dispatcher.rs)
+- [`src/functions/executor.rs`](../src/functions/executor.rs)
+- [`src/functions/routes.rs`](../src/functions/routes.rs)
+- [`src/mgmt/functions_admin.rs`](../src/mgmt/functions_admin.rs)
+
 <a id="srcmcp"></a>
 
 ## `src/mcp/`
@@ -661,6 +879,10 @@ _rmcp Streamable HTTP handler that exposes the 13 drust tools._
 - `struct InsertRecordArgs`
 - `struct UpdateRecordArgs`
 - `struct DeleteRecordArgs`
+- `struct DeleteFunctionArgs`
+- `struct SetFunctionActiveArgs`
+- `struct InvokeFunctionArgs`
+- `struct GetFunctionLogsArgs`
 - `struct CreateRpcParams`
 - `struct UpdateRpcParams`
 - `struct NameOnly`
@@ -768,10 +990,12 @@ _Per-tenant cache of `StreamableHttpService` instances._
 
 **Imported by:**
 
+- [`src/functions/runtime.rs`](../src/functions/runtime.rs)
 - [`src/mcp/handler.rs`](../src/mcp/handler.rs)
 - [`src/mcp/http_registry.rs`](../src/mcp/http_registry.rs)
 - [`src/mcp/tools/exploration.rs`](../src/mcp/tools/exploration.rs)
 - [`src/mcp/tools/files.rs`](../src/mcp/tools/files.rs)
+- [`src/mcp/tools/functions.rs`](../src/mcp/tools/functions.rs)
 - [`src/mcp/tools/read.rs`](../src/mcp/tools/read.rs)
 - [`src/mcp/tools/realtime.rs`](../src/mcp/tools/realtime.rs)
 - [`src/mcp/tools/schema.rs`](../src/mcp/tools/schema.rs)
@@ -821,15 +1045,38 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 - `fn delete_file`
 - `struct GetFileUrlArgs`
 - `fn get_file_url`
+- `struct SetFileVisibilityArgs`
+- `fn set_file_visibility` — Toggle a file between public and private. Moves the Garage object to the
 
 **Imports from:**
 
 - [`src/mcp/server.rs`](../src/mcp/server.rs)
 - [`src/storage/files.rs`](../src/storage/files.rs)
+- [`src/storage/visibility.rs`](../src/storage/visibility.rs)
 
 **Imported by:**
 
 - [`src/mcp/handler.rs`](../src/mcp/handler.rs)
+
+### [`src/mcp/tools/functions.rs`](../src/mcp/tools/functions.rs)
+
+_v1.36 — MCP function tools. Service-only by MCP dispatch (transport_
+
+**Declared by:**
+
+- [`src/mcp/tools/mod.rs`](../src/mcp/tools/mod.rs)
+
+**Public items:**
+
+- `fn list_functions`
+- `fn delete_function`
+- `fn set_function_active`
+- `fn get_function_logs`
+- `fn invoke_function` — Async invoke: enqueues through the same dispatcher queue as real events;
+
+**Imports from:**
+
+- [`src/mcp/server.rs`](../src/mcp/server.rs)
 
 ### [`src/mcp/tools/index.rs`](../src/mcp/tools/index.rs)
 
@@ -858,6 +1105,7 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 
 - [`src/mcp/tools/exploration.rs`](../src/mcp/tools/exploration.rs)
 - [`src/mcp/tools/files.rs`](../src/mcp/tools/files.rs)
+- [`src/mcp/tools/functions.rs`](../src/mcp/tools/functions.rs)
 - [`src/mcp/tools/index.rs`](../src/mcp/tools/index.rs)
 - [`src/mcp/tools/oauth.rs`](../src/mcp/tools/oauth.rs)
 - [`src/mcp/tools/owner_field.rs`](../src/mcp/tools/owner_field.rs)
@@ -877,6 +1125,7 @@ _Y-scope MCP file tools — list / delete / get_file_url._
 
 - `mod exploration`
 - `mod files`
+- `mod functions`
 - `mod index`
 - `mod oauth`
 - `mod owner_field`
@@ -1360,7 +1609,31 @@ _Small formatting helpers shared across the admin UI._
 
 - [`src/mgmt/backups.rs`](../src/mgmt/backups.rs)
 - [`src/mgmt/public_files.rs`](../src/mgmt/public_files.rs)
-- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+- [`src/mgmt/tenants/crud.rs`](../src/mgmt/tenants/crud.rs)
+- [`src/mgmt/tenants/files_page.rs`](../src/mgmt/tenants/files_page.rs)
+- [`src/mgmt/tenants/overview.rs`](../src/mgmt/tenants/overview.rs)
+
+### [`src/mgmt/functions_admin.rs`](../src/mgmt/functions_admin.rs)
+
+_v1.36 — admin UI for the `ƒ _functions` virtual sidebar entry._
+
+**Declared by:**
+
+- [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
+
+**Public items:**
+
+- `fn page` — `GET /admin/tenants/{id}/_functions` — render the management page.
+- `fn toggle` — `POST /admin/tenants/{id}/_functions/{name}/toggle` — flip the active flag,
+- `fn delete` — `POST /admin/tenants/{id}/_functions/{name}/delete` — delete + artifact GC
+- `struct InvokeForm`
+- `fn invoke` — `POST /admin/tenants/{id}/_functions/{name}/invoke` — synchronous
+
+**Imports from:**
+
+- [`src/functions/bindings.rs`](../src/functions/bindings.rs)
+- [`src/functions/schema.rs`](../src/functions/schema.rs)
+- [`src/mgmt/i18n.rs`](../src/mgmt/i18n.rs)
 
 ### [`src/mgmt/i18n.rs`](../src/mgmt/i18n.rs)
 
@@ -1389,12 +1662,17 @@ _Server-side i18n for the admin UI. See spec_
 - [`src/mgmt/backups.rs`](../src/mgmt/backups.rs)
 - [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
 - [`src/mgmt/docs.rs`](../src/mgmt/docs.rs)
+- [`src/mgmt/functions_admin.rs`](../src/mgmt/functions_admin.rs)
 - [`src/mgmt/locale_layer.rs`](../src/mgmt/locale_layer.rs)
 - [`src/mgmt/public_files.rs`](../src/mgmt/public_files.rs)
 - [`src/mgmt/routes.rs`](../src/mgmt/routes.rs)
 - [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
 - [`src/mgmt/tenant_broadcast.rs`](../src/mgmt/tenant_broadcast.rs)
-- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+- [`src/mgmt/tenants/crud.rs`](../src/mgmt/tenants/crud.rs)
+- [`src/mgmt/tenants/files_page.rs`](../src/mgmt/tenants/files_page.rs)
+- [`src/mgmt/tenants/oauth_page.rs`](../src/mgmt/tenants/oauth_page.rs)
+- [`src/mgmt/tenants/overview.rs`](../src/mgmt/tenants/overview.rs)
+- [`src/mgmt/tenants/webhooks_page.rs`](../src/mgmt/tenants/webhooks_page.rs)
 - [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
 
 ### [`src/mgmt/locale_layer.rs`](../src/mgmt/locale_layer.rs)
@@ -1446,6 +1724,7 @@ _v1.32 C1 — Prometheus metrics endpoint._
 - [`src/mgmt/collection_list.rs`](../src/mgmt/collection_list.rs)
 - [`src/mgmt/docs.rs`](../src/mgmt/docs.rs)
 - [`src/mgmt/format.rs`](../src/mgmt/format.rs)
+- [`src/mgmt/functions_admin.rs`](../src/mgmt/functions_admin.rs)
 - [`src/mgmt/i18n.rs`](../src/mgmt/i18n.rs)
 - [`src/mgmt/locale_layer.rs`](../src/mgmt/locale_layer.rs)
 - [`src/mgmt/metrics.rs`](../src/mgmt/metrics.rs)
@@ -1479,6 +1758,7 @@ _v1.32 C1 — Prometheus metrics endpoint._
 - `mod collection_list`
 - `mod docs`
 - `mod format`
+- `mod functions_admin`
 - `mod i18n`
 - `mod locale_layer`
 - `mod metrics`
@@ -1724,12 +2004,17 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - `fn list` — GET /drust/t/<tenant>/files
 - `fn get_one` — GET /drust/t/<tenant>/files/<key>
 - `fn delete_one` — DELETE /drust/t/<tenant>/files/<key>
+- `struct SetVisibilityBody`
+- `fn set_visibility` — PATCH /drust/t/<tenant>/files/<key>
+- `struct AdminVisibilityForm`
+- `fn set_visibility_admin` — POST /drust/admin/tenants/<id>/files/<key>/visibility
 
 **Imports from:**
 
 - [`src/mgmt/public_files.rs`](../src/mgmt/public_files.rs)
 - [`src/storage/files.rs`](../src/storage/files.rs)
 - [`src/storage/garage.rs`](../src/storage/garage.rs)
+- [`src/storage/visibility.rs`](../src/storage/visibility.rs)
 
 **Imported by:**
 
@@ -1739,12 +2024,22 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 
 ### [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
 
+**Declares submodules:**
+
+- [`src/mgmt/tenants/common.rs`](../src/mgmt/tenants/common.rs)
+- [`src/mgmt/tenants/crud.rs`](../src/mgmt/tenants/crud.rs)
+- [`src/mgmt/tenants/files_page.rs`](../src/mgmt/tenants/files_page.rs)
+- [`src/mgmt/tenants/oauth_page.rs`](../src/mgmt/tenants/oauth_page.rs)
+- [`src/mgmt/tenants/overview.rs`](../src/mgmt/tenants/overview.rs)
+- [`src/mgmt/tenants/webhooks_page.rs`](../src/mgmt/tenants/webhooks_page.rs)
+
 **Declared by:**
 
 - [`src/mgmt/mod.rs`](../src/mgmt/mod.rs)
 
 **Public items:**
 
+- `mod common`
 - `struct TenantsState`
 - `struct CreateTenantJson`
 - `struct CreateTenantForm`
@@ -1752,6 +2047,49 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - `struct InitialTokens`
 - `struct TenantInfo`
 - `fn valid_slug`
+
+**Imports from:**
+
+- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
+- [`src/storage/garage.rs`](../src/storage/garage.rs)
+
+**Imported by:**
+
+- [`src/mgmt/admin_rooms.rs`](../src/mgmt/admin_rooms.rs)
+- [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
+- [`src/mgmt/collection_list.rs`](../src/mgmt/collection_list.rs)
+- [`src/mgmt/routes.rs`](../src/mgmt/routes.rs)
+- [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
+- [`src/mgmt/tenant_broadcast.rs`](../src/mgmt/tenant_broadcast.rs)
+- [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
+
+### [`src/mgmt/tenants/common.rs`](../src/mgmt/tenants/common.rs)
+
+_Cross-page helpers shared by the OAuth-providers and Webhooks admin pages._
+
+**Declared by:**
+
+- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+
+**Public items:**
+
+- `fn load_tenant_shell` — Internal: resolve tenant name (404 if missing/deleted) and pull the
+- `fn ensure_tenant_exists` — Lightweight existence guard for admin POST handlers (DELETE / upsert):
+
+**Imports from:**
+
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+
+### [`src/mgmt/tenants/crud.rs`](../src/mgmt/tenants/crud.rs)
+
+_Tenant CRUD / lifecycle (group B): list page, create/delete, self-register_
+
+**Declared by:**
+
+- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+
+**Public items:**
+
 - `fn list_page_axum`
 - `fn create_tenant_json` — Roll back everything `make_tenant_inner` did for `id`: delete token rows,
 - `fn create_tenant_form`
@@ -1763,15 +2101,82 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 - `struct PublishPolicyView`
 - `fn patch_publish_policy` — `PATCH /admin/tenants/{id}/publish-policy`
 - `fn get_publish_policy` — `GET /admin/tenants/{id}/publish-policy` — read-only view of the
+- `fn cmdk_tenants_json` — `GET /admin/api/cmdk/tenants` — JSON `[{id, name}, ...]` used by the
+
+**Imports from:**
+
+- [`src/auth/bearer.rs`](../src/auth/bearer.rs)
+- [`src/mgmt/format.rs`](../src/mgmt/format.rs)
+- [`src/mgmt/i18n.rs`](../src/mgmt/i18n.rs)
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+
+### [`src/mgmt/tenants/files_page.rs`](../src/mgmt/tenants/files_page.rs)
+
+_Tenant-files admin page (group D). Relocated from `tenants.rs` by Finding #4._
+
+**Declared by:**
+
+- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+
+**Public items:**
+
 - `struct TenantFilesPerPageOption`
 - `struct TenantFilesListQs`
-- `fn cmdk_tenants_json` — `GET /admin/api/cmdk/tenants` — JSON `[{id, name}, ...]` used by the
-- `fn tenant_overview_page` — `GET /admin/tenants/{id}/_overview` — virtual sidebar entry that summarises
 - `fn tenant_files_admin_page` — GET /admin/tenants/{id}/files
+
+**Imports from:**
+
+- [`src/mgmt/format.rs`](../src/mgmt/format.rs)
+- [`src/mgmt/i18n.rs`](../src/mgmt/i18n.rs)
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+
+### [`src/mgmt/tenants/oauth_page.rs`](../src/mgmt/tenants/oauth_page.rs)
+
+_OAuth-providers admin page (group E). Relocated from `tenants.rs` by Finding #4._
+
+**Declared by:**
+
+- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+
+**Public items:**
+
 - `struct OauthProviderUpsertForm`
 - `fn tenant_oauth_providers_page` — `GET /admin/tenants/{id}/_oauth_providers`
 - `fn tenant_oauth_provider_upsert` — `POST /admin/tenants/{id}/_oauth_providers` — upsert. Splits the
 - `fn tenant_oauth_provider_delete` — `POST /admin/tenants/{id}/_oauth_providers/{provider}/delete` —
+
+**Imports from:**
+
+- [`src/mgmt/i18n.rs`](../src/mgmt/i18n.rs)
+
+### [`src/mgmt/tenants/overview.rs`](../src/mgmt/tenants/overview.rs)
+
+_Tenant overview admin page (group C). Relocated from `tenants.rs` by Finding #4._
+
+**Declared by:**
+
+- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+
+**Public items:**
+
+- `fn tenant_overview_page` — `GET /admin/tenants/{id}/_overview` — virtual sidebar entry that summarises
+
+**Imports from:**
+
+- [`src/mgmt/format.rs`](../src/mgmt/format.rs)
+- [`src/mgmt/i18n.rs`](../src/mgmt/i18n.rs)
+- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+
+### [`src/mgmt/tenants/webhooks_page.rs`](../src/mgmt/tenants/webhooks_page.rs)
+
+_Webhooks admin page (group F). Relocated from `tenants.rs` by Finding #4._
+
+**Declared by:**
+
+- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+
+**Public items:**
+
 - `struct WebhookCreateForm`
 - `fn tenant_webhooks_page` — `GET /admin/tenants/{id}/_webhooks` — render the management page.
 - `fn tenant_webhook_create_form` — `POST /admin/tenants/{id}/_webhooks` — form submit. Splits the events
@@ -1779,22 +2184,7 @@ _Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign)._
 
 **Imports from:**
 
-- [`src/auth/bearer.rs`](../src/auth/bearer.rs)
-- [`src/auth/middleware.rs`](../src/auth/middleware.rs)
-- [`src/mgmt/format.rs`](../src/mgmt/format.rs)
 - [`src/mgmt/i18n.rs`](../src/mgmt/i18n.rs)
-- [`src/storage/garage.rs`](../src/storage/garage.rs)
-- [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
-
-**Imported by:**
-
-- [`src/mgmt/admin_rooms.rs`](../src/mgmt/admin_rooms.rs)
-- [`src/mgmt/browse.rs`](../src/mgmt/browse.rs)
-- [`src/mgmt/collection_list.rs`](../src/mgmt/collection_list.rs)
-- [`src/mgmt/routes.rs`](../src/mgmt/routes.rs)
-- [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
-- [`src/mgmt/tenant_broadcast.rs`](../src/mgmt/tenant_broadcast.rs)
-- [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
 
 ### [`src/mgmt/theme.rs`](../src/mgmt/theme.rs)
 
@@ -1866,6 +2256,7 @@ _Theme resolution + `Extension<Theme>` attachment for admin requests._
 - [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
 - [`src/storage/schema.rs`](../src/storage/schema.rs)
 - [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+- [`src/tenant/auth_cache.rs`](../src/tenant/auth_cache.rs)
 
 <a id="srcoauth"></a>
 
@@ -2045,7 +2436,8 @@ _CSRF state token + cookie helpers for the OAuth start/callback flow._
 - `struct QueryResult`
 - `enum ExecError`
 - `fn sql_hash`
-- `fn value_to_json`
+- `enum Cell`
+- `fn value_to_cell` — Build a `Cell` from a borrowed `ValueRef` — replaces `value_to_json` at the
 - `fn type_name`
 - `fn execute_read_query`
 - `fn execute_read_query_admin` — Like [`execute_read_query`] but skips the read-only authorizer. Only
@@ -2414,7 +2806,7 @@ _v1.26 — Static suggested_fix catalog. Maps every error_code drust_
 
 **Public items:**
 
-- `fn client_ip` — Returns the verified client IP behind a known proxy chain.
+- `fn client_ip` — Returns the verified client IP behind the known proxy chain
 
 ### [`src/safety/mod.rs`](../src/safety/mod.rs)
 
@@ -2555,6 +2947,7 @@ _Shared file-storage helpers used by both admin and tenant upload flows._
 - [`src/mgmt/public_files.rs`](../src/mgmt/public_files.rs)
 - [`src/mgmt/signed_bytes.rs`](../src/mgmt/signed_bytes.rs)
 - [`src/mgmt/tenant_files.rs`](../src/mgmt/tenant_files.rs)
+- [`src/storage/visibility.rs`](../src/storage/visibility.rs)
 - [`src/tenant/uploads/mod.rs`](../src/tenant/uploads/mod.rs)
 
 ### [`src/storage/garage.rs`](../src/storage/garage.rs)
@@ -2584,6 +2977,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - [`src/mgmt/signed_bytes.rs`](../src/mgmt/signed_bytes.rs)
 - [`src/mgmt/tenant_files.rs`](../src/mgmt/tenant_files.rs)
 - [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+- [`src/storage/visibility.rs`](../src/storage/visibility.rs)
 
 ### [`src/storage/janitor.rs`](../src/storage/janitor.rs)
 
@@ -2635,6 +3029,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - [`src/storage/schema_cache.rs`](../src/storage/schema_cache.rs)
 - [`src/storage/signed_url.rs`](../src/storage/signed_url.rs)
 - [`src/storage/tenant_db.rs`](../src/storage/tenant_db.rs)
+- [`src/storage/visibility.rs`](../src/storage/visibility.rs)
 
 **Declared by:**
 
@@ -2654,6 +3049,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - `mod schema_cache`
 - `mod signed_url`
 - `mod tenant_db`
+- `mod visibility`
 
 ### [`src/storage/pool.rs`](../src/storage/pool.rs)
 
@@ -2675,6 +3071,11 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 **Imported by:**
 
 - [`src/codegen/ir.rs`](../src/codegen/ir.rs)
+- [`src/functions/bindings.rs`](../src/functions/bindings.rs)
+- [`src/functions/dispatcher.rs`](../src/functions/dispatcher.rs)
+- [`src/functions/executor.rs`](../src/functions/executor.rs)
+- [`src/functions/routes.rs`](../src/functions/routes.rs)
+- [`src/functions/schema.rs`](../src/functions/schema.rs)
 - [`src/mcp/server.rs`](../src/mcp/server.rs)
 - [`src/mcp/tools/index.rs`](../src/mcp/tools/index.rs)
 - [`src/mcp/tools/oauth.rs`](../src/mcp/tools/oauth.rs)
@@ -2685,6 +3086,7 @@ _Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the_
 - [`src/rpc/exec_write.rs`](../src/rpc/exec_write.rs)
 - [`src/storage/blast_radius.rs`](../src/storage/blast_radius.rs)
 - [`src/storage/janitor.rs`](../src/storage/janitor.rs)
+- [`src/storage/visibility.rs`](../src/storage/visibility.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
 - [`src/tenant/uploads/session.rs`](../src/tenant/uploads/session.rs)
 - [`src/tenant/webhook_dispatcher.rs`](../src/tenant/webhook_dispatcher.rs)
@@ -2827,7 +3229,10 @@ _Drust-minted, drust-served signed URLs for private file downloads._
 - [`src/mgmt/rpc_admin.rs`](../src/mgmt/rpc_admin.rs)
 - [`src/mgmt/stats.rs`](../src/mgmt/stats.rs)
 - [`src/mgmt/tenant_broadcast.rs`](../src/mgmt/tenant_broadcast.rs)
-- [`src/mgmt/tenants.rs`](../src/mgmt/tenants.rs)
+- [`src/mgmt/tenants/common.rs`](../src/mgmt/tenants/common.rs)
+- [`src/mgmt/tenants/crud.rs`](../src/mgmt/tenants/crud.rs)
+- [`src/mgmt/tenants/files_page.rs`](../src/mgmt/tenants/files_page.rs)
+- [`src/mgmt/tenants/overview.rs`](../src/mgmt/tenants/overview.rs)
 - [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
 - [`src/query/authorizer.rs`](../src/query/authorizer.rs)
 - [`src/query/executor.rs`](../src/query/executor.rs)
@@ -2835,6 +3240,30 @@ _Drust-minted, drust-served signed URLs for private file downloads._
 - [`src/rpc/registry.rs`](../src/rpc/registry.rs)
 - [`src/storage/pool.rs`](../src/storage/pool.rs)
 - [`src/storage/schema_cache.rs`](../src/storage/schema_cache.rs)
+
+### [`src/storage/visibility.rs`](../src/storage/visibility.rs)
+
+_In-place file visibility toggle (public <-> private)._
+
+**Declared by:**
+
+- [`src/storage/mod.rs`](../src/storage/mod.rs)
+
+**Public items:**
+
+- `enum VisibilityOutcome`
+- `fn change_visibility` — Toggle one tenant file between `public` and `private`. Service-only gating is
+
+**Imports from:**
+
+- [`src/storage/files.rs`](../src/storage/files.rs)
+- [`src/storage/garage.rs`](../src/storage/garage.rs)
+- [`src/storage/pool.rs`](../src/storage/pool.rs)
+
+**Imported by:**
+
+- [`src/mcp/tools/files.rs`](../src/mcp/tools/files.rs)
+- [`src/mgmt/tenant_files.rs`](../src/mgmt/tenant_files.rs)
 
 <a id="srctenant"></a>
 
@@ -2864,6 +3293,25 @@ _Service-only admin endpoints for managing users within a tenant._
 
 - [`src/auth/middleware.rs`](../src/auth/middleware.rs)
 - [`src/error.rs`](../src/error.rs)
+- [`src/tenant/router.rs`](../src/tenant/router.rs)
+
+### [`src/tenant/auth_cache.rs`](../src/tenant/auth_cache.rs)
+
+_v1.35 — process-local invalidate-on-write auth cache for `bearer_auth_layer`._
+
+**Declared by:**
+
+- [`src/tenant/mod.rs`](../src/tenant/mod.rs)
+
+**Public items:**
+
+- `enum CachedRole`
+- `enum CachedAuth`
+- `struct AuthCache` — Process-local auth cache. Cloned by `Arc` into every state that needs to
+
+**Imported by:**
+
+- [`src/mgmt/tokens.rs`](../src/mgmt/tokens.rs)
 - [`src/tenant/router.rs`](../src/tenant/router.rs)
 
 ### [`src/tenant/auth_routes.rs`](../src/tenant/auth_routes.rs)
@@ -2933,6 +3381,7 @@ _Service-only admin endpoints for managing users within a tenant._
 
 **Imported by:**
 
+- [`src/functions/dispatcher.rs`](../src/functions/dispatcher.rs)
 - [`src/mcp/server.rs`](../src/mcp/server.rs)
 - [`src/mcp/tools/write.rs`](../src/mcp/tools/write.rs)
 - [`src/tenant/realtime_routes.rs`](../src/tenant/realtime_routes.rs)
@@ -2963,6 +3412,7 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 **Declares submodules:**
 
 - [`src/tenant/admin_user_routes.rs`](../src/tenant/admin_user_routes.rs)
+- [`src/tenant/auth_cache.rs`](../src/tenant/auth_cache.rs)
 - [`src/tenant/auth_routes.rs`](../src/tenant/auth_routes.rs)
 - [`src/tenant/collections.rs`](../src/tenant/collections.rs)
 - [`src/tenant/events.rs`](../src/tenant/events.rs)
@@ -2996,6 +3446,7 @@ _Axum handler that forwards `/t/:tenant/mcp` traffic to the_
 - `mod events`
 - `mod webhook_dispatcher`
 - `mod webhook_resolver`
+- `mod auth_cache`
 - `mod mcp_dispatch`
 - `mod oauth_admin_routes`
 - `mod oauth_config`
@@ -3430,6 +3881,7 @@ _v1.31 query-string-to-header bearer adapter for WS upgrade._
 - `struct TenantRef`
 - `fn bearer_auth_layer`
 - `fn require_service`
+- `fn require_service_layer` — Data-plane-only gate: every route under the tenant `files_router` (Mode-A
 
 **Imports from:**
 
@@ -3440,10 +3892,12 @@ _v1.31 query-string-to-header bearer adapter for WS upgrade._
 - [`src/safety/rate_limit.rs`](../src/safety/rate_limit.rs)
 - [`src/safety/rate_limit_ip.rs`](../src/safety/rate_limit_ip.rs)
 - [`src/storage/pool.rs`](../src/storage/pool.rs)
+- [`src/tenant/auth_cache.rs`](../src/tenant/auth_cache.rs)
 
 **Imported by:**
 
 - [`src/codegen/handlers.rs`](../src/codegen/handlers.rs)
+- [`src/functions/routes.rs`](../src/functions/routes.rs)
 - [`src/rpc/handler.rs`](../src/rpc/handler.rs)
 - [`src/rpc/registry.rs`](../src/rpc/registry.rs)
 - [`src/storage/schema.rs`](../src/storage/schema.rs)

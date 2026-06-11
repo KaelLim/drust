@@ -1,3 +1,47 @@
+## v1.36.0 — 2026-06-11
+
+### Edge functions: per-tenant Rust→Wasm, triggered by data events
+
+drust now runs per-tenant user-uploaded `.wasm` functions (wasm32-wasip2
+components) in-process via wasmtime 45. A function declares triggers and fires
+on `record.created` / `record.updated` / `record.deleted` (per collection) and
+`file.uploaded`. The whole vertical lives in `src/functions/`: two lazy
+`_system_` tables (`_system_functions` + `_system_function_logs`), an
+invalidate-on-write trigger-binding cache, a `FunctionDispatcher` mirroring
+`WebhookDispatcher` (global bounded mpsc + per-tenant depth counters), an
+executor (global concurrency semaphore + per-tenant FIFO serialization), and a
+wasmtime runtime (`OnceLock` Engine + epoch ticker + compiled-component LRU).
+
+- **Host API** = the existing transport-agnostic tool layer. A guest calls
+  `insert/update/delete-record`, `list-records`, `put-file`, and
+  `get-file-bytes`; these route through the same `mcp/tools/{write,read}.rs`
+  functions the MCP/REST surfaces use, so a function write fans out to SSE +
+  webhooks with zero extra code. Guest SDK template:
+  `sdk/edge-function-template/` (WIT is the single source of truth).
+- **Three surfaces**: service-only REST (`/t/<id>/functions/*` — CRUD + sync
+  `/invoke` playground + `/logs`), admin UI (`ƒ _functions` sidebar page —
+  upload / toggle active / delete / test-invoke / logs), and 5 new MCP tools
+  (`list_functions`, `delete_function`, `set_function_active`,
+  `invoke_function`, `get_function_logs`) — MCP tool count 52 → 57. No upload
+  MCP tool by design; the multipart REST route is the only ingest path.
+- **Isolation model** (spec §7, proven not asserted): capability absence — a
+  guest can reach only the host functions explicitly linked, nothing else;
+  tenant-scoping by construction — the executor builds its per-tenant `DrustMcp`
+  bound to one tenant; depth = 1 — that `DrustMcp` is built with
+  `functions: None` (`HostStateSeed::build_mcp`), so a function-initiated write
+  can never re-trigger functions; CPU + memory caps — epoch-deadline wall clock
+  (`DRUST_FN_TIMEOUT_SECS`) + a `ResourceLimiter` linear-memory ceiling
+  (`DRUST_FN_MEMORY_MAX_BYTES`). `_system_functions` / `_system_function_logs`
+  inherit `_system_`-prefix drop-protection for free.
+- **Failure semantics**: no retry, ever — a failed invocation writes a log row
+  and stops. Queue saturation drops the invocation (per-tenant depth counter +
+  sampled warn); loss-on-crash is accepted (no outbox). REST `/create` compiles
+  the component eagerly and returns `422` on a bad artifact.
+- **8 env knobs**: `DRUST_FN_MAX_WASM_BYTES` (20 MiB), `DRUST_FN_MEMORY_MAX_BYTES`
+  (256 MiB), `DRUST_FN_TIMEOUT_SECS` (30), `DRUST_FN_MAX_PER_TENANT` (10),
+  `DRUST_FN_QUEUE_DEPTH` (100), `DRUST_FN_CONCURRENCY` (2),
+  `DRUST_FN_FILE_READ_MAX_BYTES` (32 MiB), `DRUST_FN_MODULE_CACHE` (32).
+
 ## v1.35.1 — 2026-06-10
 
 ### Admin UI: MCP tool-count pill is now live, not hardcoded
