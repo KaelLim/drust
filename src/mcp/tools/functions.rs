@@ -13,6 +13,15 @@ pub async fn list_functions(s: &DrustMcp) -> anyhow::Result<Value> {
 
 pub async fn delete_function(s: &DrustMcp, name: &str) -> anyhow::Result<Value> {
     let inner = s.inner();
+    // Capture the sha BEFORE the delete so a successful delete can GC the
+    // now-unreferenced `{sha}.wasm` blob — mirrors REST `delete_one`
+    // (src/functions/routes.rs:264-273). The artifact dir is derived from the
+    // pool's data_root (== the registry's data_root the REST surface threads),
+    // so no extra field on DrustMcpInner is needed.
+    let sha = crate::functions::schema::get_function(&inner.pool, name)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("FN_NOT_FOUND: no function named {name}"))?
+        .wasm_sha256;
     let deleted = crate::functions::schema::delete_function(&inner.pool, name).await?;
     if !deleted {
         anyhow::bail!("FN_NOT_FOUND: no function named {name}");
@@ -20,6 +29,16 @@ pub async fn delete_function(s: &DrustMcp, name: &str) -> anyhow::Result<Value> 
     if let Some(f) = inner.functions.as_ref() {
         f.bindings.invalidate(&inner.tenant_id);
     }
+    // GC the artifact only when no other live row references the sha. Holds the
+    // store invariant ("a file exists ⟺ some live row references it",
+    // src/functions/routes.rs:58-63) on the MCP delete path too.
+    crate::functions::routes::gc_artifact_if_unreferenced(
+        &inner.pool,
+        inner.pool.data_root(),
+        &inner.tenant_id,
+        &sha,
+    )
+    .await;
     Ok(json!({ "deleted": name }))
 }
 
