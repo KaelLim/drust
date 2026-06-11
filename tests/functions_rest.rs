@@ -1,57 +1,57 @@
-// tests/functions_rest.rs — REST CRUD + auth gating. Mock runner (no wasm
-// toolchain): upload uses a REAL tiny component? No — create() calls
-// validate_component which needs real wasm. Strategy: this file tests
-// everything EXCEPT create-with-wasm using rows seeded via schema::, and
-// tests create() against fixtures in Task 15. Auth-gating tests need no
-// valid body (they must 403 BEFORE parsing).
+// tests/functions_rest.rs — REST CRUD + auth gating against the mock (noop)
+// runner, so no wasm toolchain is needed. Rows are seeded via `schema::`;
+// create()-with-wasm (which needs a real component for validate_component) is
+// exercised separately against fixtures in the isolation suite. Auth-gating
+// tests need no valid body — they must reject BEFORE parsing.
 mod helpers;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-async fn seeded(tenant: &str) -> (axum::Router, String, String, tempfile::TempDir) {
-    // returns (router, service_token, anon_token, tmp)
-    let (router, service, anon, tmp) = helpers::spin_up_tenant_with_fn_seed(tenant).await;
-    (router, service, anon, tmp)
-}
-
 #[tokio::test]
 async fn anon_and_user_tokens_are_403_on_every_functions_route() {
-    let (router, _service, anon, _tmp) = seeded("t-fr1").await;
-    for (method, path) in [
-        ("GET", "/t/t-fr1/functions"),
-        ("POST", "/t/t-fr1/functions"),
-        ("GET", "/t/t-fr1/functions/f1"),
-        ("PATCH", "/t/t-fr1/functions/f1"),
-        ("DELETE", "/t/t-fr1/functions/f1"),
-        ("POST", "/t/t-fr1/functions/f1/invoke"),
-        ("GET", "/t/t-fr1/functions/f1/logs"),
-    ] {
-        let resp = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(method)
-                    .uri(path)
-                    .header("authorization", format!("Bearer {anon}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::FORBIDDEN,
-            "{method} {path} must be service-only"
-        );
+    // Both non-service roles must be rejected by `require_service`. They reach
+    // it through DIFFERENT branches of `bearer_auth_layer` (anon-token vs
+    // user-session), so assert BOTH bearers, not just anon.
+    let (router, _service, anon, user, _tmp) =
+        helpers::spin_up_tenant_with_fn_seed("t-fr1").await;
+    for token in [&anon, &user] {
+        for (method, path) in [
+            ("GET", "/t/t-fr1/functions"),
+            ("POST", "/t/t-fr1/functions"),
+            ("GET", "/t/t-fr1/functions/f1"),
+            ("PATCH", "/t/t-fr1/functions/f1"),
+            ("DELETE", "/t/t-fr1/functions/f1"),
+            ("POST", "/t/t-fr1/functions/f1/invoke"),
+            ("GET", "/t/t-fr1/functions/f1/logs"),
+        ] {
+            let resp = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {path} must be service-only (token {token})"
+            );
+        }
     }
 }
 
 #[tokio::test]
 async fn list_get_patch_delete_logs_roundtrip() {
-    let (router, service, _anon, _tmp) = seeded("t-fr2").await;
+    let (router, service, _anon, _user, _tmp) =
+        helpers::spin_up_tenant_with_fn_seed("t-fr2").await;
     let auth = format!("Bearer {service}");
 
     // list — seeded helper created one function named "f1"
@@ -72,8 +72,8 @@ async fn list_get_patch_delete_logs_roundtrip() {
     ).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // invoke (mock runner ⇒ ok even though deactivated? NO — run_one
-    // re-checks active and returns error status in the 200 body)
+    // invoke — run_one re-checks the active flag at execution time, so the now
+    // deactivated function reports an error status inside a 200 body.
     let resp = router.clone().oneshot(
         Request::post("/t/t-fr2/functions/f1/invoke")
             .header("authorization", &auth)
