@@ -203,6 +203,27 @@ pub struct DeleteRecordArgs {
     pub dry_run: Option<bool>,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct DeleteFunctionArgs {
+    pub name: String,
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct SetFunctionActiveArgs {
+    pub name: String,
+    pub active: bool,
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct InvokeFunctionArgs {
+    pub name: String,
+    pub event: serde_json::Value,
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct GetFunctionLogsArgs {
+    pub name: String,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
 #[derive(Debug, Clone, schemars::JsonSchema, Deserialize)]
 pub struct CreateRpcParams {
     pub name: String,
@@ -1768,6 +1789,71 @@ impl DrustMcpService {
             }
         }
     }
+
+    #[tool(description = "v1.36 — List this tenant's edge functions: name, \
+        wasm sha256, size, trigger bindings, active flag, description. \
+        There is NO MCP upload tool by design — POST the .wasm to \
+        /t/<tenant>/functions (multipart: name, wasm, triggers, description) \
+        with the service bearer; call whoami for the exact URL.")]
+    async fn list_functions(&self) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::functions::list_functions(&self.state).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.36 — Delete an edge function by name. The wasm \
+        artifact is garbage-collected when no other function references it. \
+        Irreversible; re-upload to restore.")]
+    async fn delete_function(
+        &self,
+        Parameters(DeleteFunctionArgs { name }): Parameters<DeleteFunctionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::functions::delete_function(&self.state, &name).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.36 — Enable/disable an edge function without \
+        deleting it. Disabled functions keep their logs and bindings.")]
+    async fn set_function_active(
+        &self,
+        Parameters(SetFunctionActiveArgs { name, active }): Parameters<SetFunctionActiveArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::functions::set_function_active(&self.state, &name, active).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.36 — Enqueue a manual invocation of an edge \
+        function with an arbitrary event JSON. ASYNC: returns the enqueue \
+        ack immediately; read the outcome via get_function_logs \
+        (trigger=manual). For synchronous test runs use REST \
+        POST /t/<tenant>/functions/<name>/invoke.")]
+    async fn invoke_function(
+        &self,
+        Parameters(InvokeFunctionArgs { name, event }): Parameters<InvokeFunctionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::functions::invoke_function(&self.state, &name, event).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.36 — Recent invocation log rows for one edge \
+        function (newest first): status ok|error|trap|timeout|oom|dropped, \
+        duration_ms, captured guest log() text, result/error JSON.")]
+    async fn get_function_logs(
+        &self,
+        Parameters(GetFunctionLogsArgs { name, limit }): Parameters<GetFunctionLogsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::functions::get_function_logs(&self.state, &name, limit).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
 }
 
 // v1.31.4 — onboarding map for LLM clients. Replaces the legacy 50-name
@@ -1827,6 +1913,13 @@ CAPABILITY GROUPS
 
 5. OBSERVABILITY (service-only)
    recent_writes — last 100 mutations for THIS tenant. Use after a retry to see what the previous attempt wrote.
+
+6. FUNCTIONS (v1.36+, service-only — edge functions: user-uploaded wasm triggered by record CRUD + file.uploaded)
+   Manage:  list_functions, set_function_active, delete_function
+   Run:     invoke_function (async — returns enqueue ack; read outcome via get_function_logs, trigger=manual)
+   Logs:    get_function_logs
+   Upload:  NO MCP upload tool by design. POST the .wasm via REST:
+     POST {base}/drust/t/{tenant_id}/functions   (multipart: name, wasm, triggers, description; service bearer)
 
 RECIPES
   "Look around"           → get_schema_overview
@@ -1901,6 +1994,7 @@ mod instructions_tests {
             "3. STORAGE",
             "4. IDENTITY",
             "5. OBSERVABILITY",
+            "6. FUNCTIONS",
         ] {
             assert!(s.contains(group), "missing group heading: {group}");
         }

@@ -109,6 +109,24 @@ impl FunctionDispatcher {
         });
     }
 
+    /// Manual (test-invoke) enqueue — same depth accounting as event dispatch.
+    pub async fn enqueue_manual(&self, tenant: &str, function_name: &str, event_json: String) {
+        enqueue(
+            &self.tx,
+            &self.depth,
+            self.cfg.queue_depth,
+            &self.tenants,
+            &self.dropped_total,
+            Invocation {
+                tenant_id: tenant.to_string(),
+                function_name: function_name.to_string(),
+                trigger: "manual".into(),
+                event_json,
+            },
+        )
+        .await;
+    }
+
     /// file.uploaded entry point — called at Mode A / Mode B completion.
     /// Deliberately NOT an `Event` variant (spec §4: file events must not
     /// leak into SSE/webhooks).
