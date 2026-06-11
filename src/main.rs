@@ -370,6 +370,7 @@ async fn main() -> anyhow::Result<()> {
         large_upload_max_sessions_per_tenant: lu_sessions,
         large_upload_session_ttl_secs: lu_ttl,
         auth_cache: auth_cache.clone(),
+        functions: functions.clone(),
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
@@ -393,6 +394,7 @@ async fn main() -> anyhow::Result<()> {
         large_upload_chunk_max_bytes: lu_chunk,
         large_upload_max_sessions_per_tenant: lu_sessions,
         large_upload_session_ttl_secs: lu_ttl,
+        functions: functions.clone(),
     });
 
     // v1.33 — Mode B abandoned-upload janitor. Hourly sweep of expired

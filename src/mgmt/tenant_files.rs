@@ -50,6 +50,8 @@ pub struct TenantFilesState {
     pub large_upload_max_sessions_per_tenant: u32,
     /// v1.33 — abandoned Mode B session TTL (seconds).
     pub large_upload_session_ttl_secs: u64,
+    /// v1.36 — file.uploaded function dispatch (Mode A + Mode B completion).
+    pub functions: std::sync::Arc<crate::functions::dispatcher::FunctionDispatcher>,
 }
 
 /// Test-only constructor available in debug builds.
@@ -69,6 +71,7 @@ impl TenantFilesState {
         data_root: std::path::PathBuf,
         tenants: std::sync::Arc<crate::storage::pool::TenantRegistry>,
     ) -> Self {
+        let (functions, _exec, _cfg) = crate::functions::test_stack_parts(tenants.clone());
         Self {
             garage,
             data_root,
@@ -81,6 +84,7 @@ impl TenantFilesState {
             large_upload_chunk_max_bytes: 67_108_864,
             large_upload_max_sessions_per_tenant: 5,
             large_upload_session_ttl_secs: 86_400,
+            functions,
         }
     }
 }
@@ -437,6 +441,15 @@ pub async fn upload(
         }
         return (StatusCode::BAD_GATEWAY, format!("garage put: {e:#}")).into_response();
     }
+
+    // v1.36 — file.uploaded function trigger (fire-and-forget).
+    state.functions.dispatch_file(
+        &tenant_id,
+        &key,
+        size,
+        vis_str,
+        sniffed_ct.as_deref().unwrap_or("application/octet-stream"),
+    );
 
     let url = build_public_url(
         &state.public_base_url,

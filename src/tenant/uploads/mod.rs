@@ -454,6 +454,15 @@ async fn finalize_and_respond(
     let _ = session::delete_session(&t.pool, token).await;
     token_locks().remove(token);
 
+    // v1.36 — file.uploaded function trigger (fire-and-forget).
+    state.functions.dispatch_file(
+        &t.tenant_id,
+        &sess.key,
+        sess.total_length,
+        &sess.visibility,
+        sess.content_type.as_deref().unwrap_or("application/octet-stream"),
+    );
+
     let mut h = tus_headers();
     h.insert(hname("upload-offset"), offset.to_string().parse().unwrap());
     (StatusCode::NO_CONTENT, h).into_response()
