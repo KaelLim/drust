@@ -218,3 +218,66 @@ async fn overview_collections_always_surface_access_state() {
     assert_eq!(docs["owner_field"], "author");
     assert_eq!(docs["read_scope"], "own");
 }
+
+/// Recursively collect every object key in a JSON Value (lowercased).
+fn all_keys(v: &serde_json::Value, out: &mut Vec<String>) {
+    match v {
+        serde_json::Value::Object(m) => {
+            for (k, val) in m {
+                out.push(k.to_ascii_lowercase());
+                all_keys(val, out);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for val in a {
+                all_keys(val, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[tokio::test]
+async fn overview_flags_vector_fields_with_dim() {
+    let d = tempfile::tempdir().unwrap();
+    seed_tenant_fs(&d, "blog");
+    let s = svc(&d).await;
+    let pool = s.inner().pool.clone();
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "ALTER TABLE posts ADD COLUMN embedding BLOB;\
+             INSERT INTO _system_collection_meta \
+               (collection_name, anon_caps_json, vector_fields_json, updated_at) \
+             VALUES ('posts', '[\"select\"]', \
+                     '[{\"name\":\"embedding\",\"dim\":8,\"metric\":\"cosine\"}]', \
+                     datetime('now')) \
+             ON CONFLICT(collection_name) DO UPDATE SET \
+               vector_fields_json = excluded.vector_fields_json;",
+        )
+    })
+    .await
+    .unwrap();
+
+    let v = get_schema_overview(&s).await.unwrap();
+    let posts = v["collections"].as_array().unwrap().iter()
+        .find(|c| c["name"] == "posts").expect("posts present");
+    let vf = posts["vector_fields"].as_array().expect("vector_fields array");
+    let emb = vf.iter().find(|f| f["name"] == "embedding").expect("embedding vector field present");
+    assert_eq!(emb["dim"], 8, "vector field must be flagged with its dim");
+}
+
+#[tokio::test]
+async fn overview_never_leaks_tokens_or_secrets() {
+    let d = tempfile::tempdir().unwrap();
+    seed_tenant_fs(&d, "blog");
+    let s = svc(&d).await;
+    let v = get_schema_overview(&s).await.unwrap();
+    let mut keys = Vec::new();
+    all_keys(&v, &mut keys);
+    for forbidden in ["plaintext", "token", "token_hash", "secret", "password", "password_hash"] {
+        assert!(!keys.iter().any(|k| k.contains(forbidden)),
+            "get_schema_overview must not expose `{forbidden}`-shaped keys; got keys: {keys:?}");
+    }
+    assert!(keys.iter().any(|k| k == "collections"));
+    assert!(keys.iter().any(|k| k == "rpcs"));
+}
