@@ -1785,9 +1785,26 @@ fn build_instructions(tenant_id: &str, base: &str) -> String {
     format!(
         r#"drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.
 
-START HERE
-  • `get_schema_overview` — collections + fields + indexes + RPCs + AI hints in one call
-  • `whoami` — tenant identity + bearer tokens + REST/upload base URLs
+START HERE — make these two calls first, before anything else:
+  1. `get_schema_overview` — everything this tenant has in ONE call: collections,
+     fields, indexes, RPCs (with their params + callable contract), and each
+     collection's access state (owner_field, anon_caps, realtime_enabled, vector
+     dims). After this one call you know enough to act correctly on THIS tenant.
+  2. `whoami` — your identity, both bearer tokens (plaintext), the REST/MCP/files
+     base URLs, and `max_upload_bytes`. (Tokens live ONLY here, never in the
+     schema overview.)
+
+CHOOSING A READ TOOL (the most common mis-pick — pick once, here):
+  • `list_records` — THE DEFAULT. Structured filter / sort / paginate over ONE
+    collection; returns the rows AND `total` + `per_page`. Use it to read, to
+    just count (read `total`), or to just sample N (set `per_page:n`, no filter).
+    Input is a FilterAst (`?`-bound), so owner_field is always enforced.
+  • `query` — raw read-only `SELECT` across non-system tables; SERVICE-ONLY and
+    it does NOT enforce owner_field (drust does not rewrite your SQL). Use ONLY
+    for ad-hoc analytics a FilterAst cannot express (joins, aggregates).
+  • `search_collection` — vector similarity ONLY (a `vector` field + metric).
+    Vector fields are excluded from list/GET responses, so this is how you read
+    them.
 
 CAPABILITY GROUPS
 
@@ -1795,15 +1812,14 @@ CAPABILITY GROUPS
    Inspect:  get_schema_overview, list_collections, describe_collection
    Mutate:   create_collection, add_field, drop_field, drop_collection
    Indexes:  create_index, drop_index
-   Docs:     set_collection_description, set_field_description, set_index_description
-   Gates:    set_realtime, set_anon_caps, set_owner_field, clear_owner_field
+   Docs:     set_description (target: collection | field | index)
+   Gates:    set_realtime, set_anon_caps, set_owner_field (field: name | null to clear)
 
 2. DATA (per-collection CRUD + search)
-   Read structured: list_records (FilterAst), sample_rows, count_rows
-   Read raw SQL:    query (SELECT only) + explain
-   Vector search:   search_collection
-   Write:           insert_record, update_record, delete_record   (all accept dry_run: true)
-   Procedures:      create_rpc, update_rpc, delete_rpc, list_rpc, call_rpc
+   Read:    list_records (default), query (raw SELECT, service-only) + explain,
+            search_collection (vector)   — see CHOOSING A READ TOOL above
+   Write:   insert_record, update_record, delete_record   (all accept dry_run: true)
+   RPCs:    create_rpc, update_rpc, delete_rpc, list_rpc, call_rpc
 
 3. STORAGE (per-tenant Garage buckets — public + private)
    Manage: list_files, delete_file, get_file_url, set_file_visibility  (get_file_url: pass download=true for attachment disposition)
@@ -1844,16 +1860,24 @@ CAPABILITY GROUPS
 RECIPES
   "Look around"           → get_schema_overview
   "Read a collection"     → list_records (filter + select + sort + page)
-  "Run my own SELECT"     → query (read-only; no system tables)
+  "Just count rows"       → list_records, read `total` (no separate count tool)
+  "Sample a few rows"     → list_records with per_page:n and no filter
+  "Run my own SELECT"     → query (read-only; service-only; no owner_field enforcement)
   "Find by similarity"    → search_collection (vector field + metric)
   "Write rows safely"     → <op>_record with dry_run: true first, then again without
   "Recover after a retry" → recent_writes
   "Live broadcast"        → broadcast  (room name regex ^[a-zA-Z][a-zA-Z0-9_:.-]{{0,127}}$)
 
+RECOVERY — experiment cheaply, you can always see and undo-plan:
+  • Every destructive tool (delete_record, drop_collection, drop_index) accepts
+    `dry_run: true` and returns would_* counts + blast radius WITHOUT mutating.
+  • Every error JSON carries a `suggested_fix` hint tailored to the failure —
+    read it before retrying.
+  • `recent_writes` returns your last 100 mutations, so after a failed/retried
+    attempt you can recover exactly what already changed.
+
 NOTES
-  • All destructive tools (delete_record, drop_collection, drop_index) accept dry_run: true and return would_* counts.
-  • Every error JSON includes a `suggested_fix` hint tailored to the failure.
-  • Schema drops and delete_file are irreversible.
+  • Schema drops and delete_file are irreversible (use dry_run first).
   • Call `tools/list` for the canonical input schema of every tool listed above."#
     )
 }
@@ -1952,5 +1976,39 @@ mod instructions_tests {
         }
         // Tenant id must appear (identity line + upload URL = at least once).
         assert!(s.contains("alpha"), "own tenant id must appear");
+    }
+
+    #[test]
+    fn instructions_lead_with_bootstrap_and_disambiguate_reads() {
+        let s = build_instructions("test-tenant-abc", "https://example.test");
+
+        // (a) Leads with the two bootstrap calls.
+        assert!(s.contains("get_schema_overview"), "must name get_schema_overview as a bootstrap call");
+        assert!(s.contains("whoami"), "must name whoami as a bootstrap call");
+        let go = s.find("get_schema_overview").expect("get_schema_overview present");
+        let groups = s.find("CAPABILITY GROUPS").expect("CAPABILITY GROUPS present");
+        assert!(go < groups, "bootstrap calls must appear before the capability-group body");
+
+        // (b) The CHOOSING A READ TOOL disambiguation block exists and names all three.
+        assert!(s.contains("CHOOSING A READ TOOL"), "missing CHOOSING A READ TOOL disambiguation block");
+        assert!(s.contains("list_records"), "read block must name list_records");
+        assert!(s.contains("search_collection"), "read block must name search_collection");
+        assert!(s.contains("does not enforce") || s.contains("does NOT enforce"),
+            "read block must warn that query does not enforce owner_field");
+
+        // (c) Recovery affordances are stated by name (Lever 5).
+        assert!(s.contains("dry_run"), "missing dry_run recovery affordance");
+        assert!(s.contains("suggested_fix"), "missing suggested_fix recovery affordance");
+        assert!(s.contains("recent_writes"), "missing recent_writes recovery affordance");
+
+        // (d) Post-Lever-4 tool set: merged names present, removed names absent.
+        assert!(s.contains("set_description"), "must advertise merged set_description");
+        assert!(s.contains("set_owner_field"), "must advertise set_owner_field");
+        for removed in &[
+            "sample_rows", "count_rows", "set_collection_description",
+            "set_field_description", "set_index_description", "clear_owner_field",
+        ] {
+            assert!(!s.contains(removed), "instructions still reference removed/merged tool: {removed}");
+        }
     }
 }
