@@ -561,12 +561,23 @@ impl DrustMcpService {
     }
 
     #[tool(description = "Create a new collection (SQLite table). \
-        Every collection implicitly gets: id INTEGER PRIMARY KEY AUTOINCREMENT, \
-        created_at, updated_at (both auto-maintained). \
-        Each field in `fields` is {name, sql_type, nullable?, unique?, default_value?, foreign_key?}. \
-        `sql_type` must be lowercase and one of: `text`, `integer`, `real`, `boolean`, `datetime`, `json`. \
-        `default_value` accepts JSON scalars or {\"sql\": \"datetime('now')\"} (allowlisted expressions). \
-        `foreign_key` names another collection; emits ON DELETE RESTRICT.")]
+        USE WHEN: defining a brand-new entity for this tenant. NOT WHEN: adding \
+        one column to an existing collection — use `add_field` (same FieldSpec \
+        shape). Every collection implicitly gets id INTEGER PRIMARY KEY \
+        AUTOINCREMENT, created_at, updated_at (all auto-maintained — do NOT \
+        declare them). Each entry in `fields` is {name, sql_type, nullable?, \
+        unique?, default_value?, foreign_key?, dim?}. `sql_type` is lowercase, one \
+        of: text, integer, real, boolean, datetime, json, vector. `default_value` \
+        accepts JSON scalars or {\"sql\": \"datetime('now')\"} (allowlisted \
+        expressions). `foreign_key` names another existing collection; emits \
+        ON DELETE RESTRICT. `dim` (1..=4096) is REQUIRED when sql_type is vector \
+        and ignored otherwise. EXAMPLE call: {\"name\": \"posts\", \"fields\": [\
+        {\"name\": \"title\", \"sql_type\": \"text\", \"nullable\": false}, \
+        {\"name\": \"published_at\", \"sql_type\": \"datetime\", \
+        \"default_value\": {\"sql\": \"datetime('now')\"}}, \
+        {\"name\": \"author_id\", \"sql_type\": \"integer\", \
+        \"foreign_key\": \"users\"}, {\"name\": \"embedding\", \
+        \"sql_type\": \"vector\", \"dim\": 384}]}")]
     async fn create_collection(
         &self,
         Parameters(CreateCollectionArgs {
@@ -849,7 +860,10 @@ impl DrustMcpService {
         injected `_distance` column. Default metric `cosine`; alternatives `l2`, \
         `l1`. Optional `where` is an and/or/not tree of eq/ne/gt/gte/lt/lte/like/\
         in/nin leaves; vector fields cannot appear in the filter. Optional `select` \
-        lists projected columns (default: all non-vector columns).")]
+        lists projected columns (default: all non-vector columns). \
+        EXAMPLE call: {\"collection\": \"posts\", \"field\": \"embedding\", \
+        \"vector\": [0.1, 0.1, 0.1, 0.1], \"k\": 5, \"metric\": \"cosine\", \
+        \"where\": {\"status\": \"published\"}, \"select\": [\"id\", \"title\"]}")]
     async fn search_collection(
         &self,
         Parameters(input): Parameters<vector_tools::SearchInput>,
@@ -876,7 +890,11 @@ impl DrustMcpService {
         `select` lists column names; vector fields are auto-excluded. Returns \
         `{records, total, page, perPage}`. owner_field enforcement is guaranteed \
         by drust; MCP is service-only at the transport layer so this tool sees all \
-        rows."
+        rows. \
+        EXAMPLE call: {\"collection\": \"posts\", \"filter\": {\"and\": [\
+        {\"status\": \"published\"}, {\"views\": {\"gte\": 10}}]}, \
+        \"sort\": {\"field\": \"created_at\", \"dir\": \"desc\"}, \
+        \"page\": 1, \"per_page\": 20, \"select\": [\"id\", \"title\"]}"
     )]
     async fn list_records(
         &self,
@@ -1979,6 +1997,37 @@ mod description_tests {
         assert!(d.contains("USE WHEN"), "search_collection missing USE WHEN line");
         assert!(d.contains("NOT WHEN"), "search_collection missing NOT WHEN line");
         assert!(d.contains("list_records"), "search_collection must point at sibling `list_records`");
+    }
+
+    #[test]
+    fn list_records_description_has_filterast_example() {
+        let d = desc_of("list_records");
+        assert!(d.contains("EXAMPLE"), "list_records missing EXAMPLE block");
+        assert!(d.contains("\"filter\""), "example must show `filter`");
+        assert!(d.contains("\"and\""), "example must use an and/or/not node");
+        assert!(d.contains("\"gte\""), "example must show an operator leaf");
+        assert!(d.contains("\"sort\""), "example must show `sort`");
+        assert!(d.contains("\"per_page\""), "example must show `per_page`");
+    }
+
+    #[test]
+    fn create_collection_description_has_fieldspec_example() {
+        let d = desc_of("create_collection");
+        assert!(d.contains("EXAMPLE"), "create_collection missing EXAMPLE block");
+        assert!(d.contains("\"nullable\": false"), "example must show a required field");
+        assert!(d.contains("{\"sql\": \"datetime('now')\"}"), "example must show the allowlisted SQL default form");
+        assert!(d.contains("\"foreign_key\""), "example must show a foreign_key field");
+        assert!(d.contains("\"vector\""), "example must show a vector field type");
+        assert!(d.contains("\"dim\""), "example must show the vector dim");
+    }
+
+    #[test]
+    fn search_collection_description_has_body_example() {
+        let d = desc_of("search_collection");
+        assert!(d.contains("EXAMPLE"), "search_collection missing EXAMPLE block");
+        for key in ["\"field\"", "\"vector\"", "\"k\"", "\"metric\"", "\"where\"", "\"select\""] {
+            assert!(d.contains(key), "search example must show {key}");
+        }
     }
 }
 
