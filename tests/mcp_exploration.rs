@@ -1,6 +1,8 @@
 mod helpers;
 use drust::mcp::server::McpRegistry;
-use drust::mcp::tools::exploration::{describe_collection, list_collections, whoami};
+use drust::mcp::tools::exploration::{
+    describe_collection, get_schema_overview, list_collections, whoami,
+};
 use drust::storage::pool::TenantRegistry;
 use helpers::seed_tenant_fs;
 use std::sync::Arc;
@@ -137,4 +139,82 @@ async fn whoami_bails_when_meta_unavailable() {
         err.to_string().contains("META_UNAVAILABLE"),
         "expected META_UNAVAILABLE error, got: {err}"
     );
+}
+
+#[tokio::test]
+async fn overview_rpc_surfaces_params_anon_callable_and_user_id_autobound() {
+    let d = tempfile::tempdir().unwrap();
+    seed_tenant_fs(&d, "blog");
+    let s = svc(&d).await;
+    let pool = s.inner().pool.clone();
+    // RPC 1: declares a `user_id` param → must auto-bind.
+    // RPC 2: declares only `limit`, no user_id → must NOT auto-bind.
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "INSERT INTO _system_rpc \
+             (name, sql, params_json, description, anon_callable, \
+              anon_calls, service_calls, last_called_at, created_at, updated_at) \
+             VALUES \
+             ('my_posts', 'SELECT * FROM posts WHERE author = :user_id', \
+              '[{\"name\":\"user_id\",\"type\":\"text\"}]', 'mine', 1, \
+              0, 0, NULL, datetime('now'), datetime('now')), \
+             ('recent', 'SELECT * FROM posts LIMIT :limit', \
+              '[{\"name\":\"limit\",\"type\":\"integer\"}]', 'recent', 0, \
+              0, 0, NULL, datetime('now'), datetime('now'))",
+        )
+    })
+    .await
+    .unwrap();
+
+    let v = get_schema_overview(&s).await.unwrap();
+    let rpcs = v["rpcs"].as_array().expect("rpcs array");
+    let my_posts = rpcs.iter().find(|r| r["name"] == "my_posts").expect("my_posts rpc present");
+    let recent = rpcs.iter().find(|r| r["name"] == "recent").expect("recent rpc present");
+
+    assert_eq!(my_posts["params"][0]["name"], "user_id");
+    assert_eq!(recent["params"][0]["name"], "limit");
+    assert_eq!(my_posts["anon_callable"], true);
+    assert_eq!(recent["anon_callable"], false);
+    // NEW: derived user_id_autobound — true only when a `user_id` param is declared.
+    assert_eq!(my_posts["user_id_autobound"], true, "rpc declaring a user_id param must be flagged auto-bound");
+    assert_eq!(recent["user_id_autobound"], false, "rpc with no user_id param must not be flagged auto-bound");
+}
+
+#[tokio::test]
+async fn overview_collections_always_surface_access_state() {
+    let d = tempfile::tempdir().unwrap();
+    seed_tenant_fs(&d, "blog");
+    let s = svc(&d).await; // svc() seeds `posts` (no owner field)
+    let pool = s.inner().pool.clone();
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE docs (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                author TEXT NOT NULL,\
+                title TEXT\
+             );\
+             INSERT INTO _system_collection_meta \
+               (collection_name, anon_caps_json, owner_field, read_scope, updated_at) \
+             VALUES ('docs', '[\"select\"]', 'author', 'own', datetime('now'));",
+        )
+    })
+    .await
+    .unwrap();
+
+    let v = get_schema_overview(&s).await.unwrap();
+    let cols = v["collections"].as_array().expect("collections array");
+    let posts = cols.iter().find(|c| c["name"] == "posts").expect("posts present");
+    let docs = cols.iter().find(|c| c["name"] == "docs").expect("docs present");
+
+    assert!(posts["anon_caps"].is_array(), "anon_caps always present");
+    assert!(posts["realtime_enabled"].is_boolean(), "realtime_enabled always present");
+    // NEW: non-owner-scoped collection emits explicit null (not an absent key).
+    assert!(posts.get("owner_field").map(|v| v.is_null()).unwrap_or(false),
+        "posts.owner_field must be present and null, got {:?}", posts.get("owner_field"));
+    assert!(posts.get("read_scope").map(|v| v.is_null()).unwrap_or(false),
+        "posts.read_scope must be present and null, got {:?}", posts.get("read_scope"));
+    assert!(posts["vector_fields"].is_array(),
+        "vector_fields always present as array, got {:?}", posts.get("vector_fields"));
+    assert_eq!(docs["owner_field"], "author");
+    assert_eq!(docs["read_scope"], "own");
 }

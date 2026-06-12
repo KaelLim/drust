@@ -143,6 +143,26 @@ pub async fn get_schema_overview(s: &DrustMcp) -> anyhow::Result<serde_json::Val
             Ok::<_, rusqlite::Error>(out)
         })
         .await?;
+    // `collections` was fetched above as Vec<CollectionSchema>.
+    // Normalize each so owner_field/read_scope/vector_fields are ALWAYS present.
+    // CollectionSchema uses #[serde(skip_serializing_if=...)] on those, so they
+    // vanish when None/empty and the model can't tell "no owner field" from
+    // "key omitted". Override for the OVERVIEW surface only — the REST handler +
+    // codegen keep the lean shape (CollectionSchema serde attrs are NOT changed).
+    let collections_enriched: Vec<serde_json::Value> = collections
+        .iter()
+        .map(|cs| {
+            let mut v = serde_json::to_value(cs).expect("CollectionSchema serialises");
+            if let Some(obj) = v.as_object_mut() {
+                obj.entry("owner_field").or_insert(serde_json::Value::Null);
+                obj.entry("read_scope").or_insert(serde_json::Value::Null);
+                obj.entry("vector_fields")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            }
+            v
+        })
+        .collect();
+
     let rpcs = pool
         .with_reader(|c| {
             crate::rpc::registry::list(c).map_err(|e| {
@@ -150,10 +170,25 @@ pub async fn get_schema_overview(s: &DrustMcp) -> anyhow::Result<serde_json::Val
             })
         })
         .await?;
+    // Enrich each RPC with a derived `user_id_autobound` flag so the model
+    // doesn't have to know the `user_id`-param naming convention. Mirrors the
+    // auto-bind predicate in src/rpc/handler.rs (params.iter().any(|p| p.name == "user_id")).
+    let rpcs_enriched: Vec<serde_json::Value> = rpcs
+        .iter()
+        .map(|r| {
+            let mut v = serde_json::to_value(r).expect("StoredRpc serialises");
+            let autobound = r.params.iter().any(|p| p.name == "user_id");
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("user_id_autobound".to_string(), serde_json::Value::Bool(autobound));
+            }
+            v
+        })
+        .collect();
+
     let tenant_id = s.inner().tenant_id.clone();
     Ok(serde_json::json!({
         "tenant": tenant_id,
-        "collections": collections,
-        "rpcs": rpcs,
+        "collections": collections_enriched,
+        "rpcs": rpcs_enriched,
     }))
 }
