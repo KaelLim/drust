@@ -35,6 +35,8 @@ unchanged. `tool_count()` is annotation-counted and self-adjusts to 52; the admi
     post-processes already-read schema metadata. owner_field-by-construction
     (src/query/list_builder.rs) and service-only MCP gating are unchanged.
 - MCP: rewrote the connect-time `instructions` prologue — leads with the two bootstrap calls (`get_schema_overview` + `whoami`), adds a `CHOOSING A READ TOOL` block disambiguating `list_records` vs `query` vs `search_collection`, names the recovery affordances (`dry_run` / `suggested_fix` / `recent_writes`, satisfying Lever 5), and reflects the merged tool set (`set_description`, `set_owner_field{field|null}`).
+- MCP tool descriptions (Lever 3): rewrote the read-cluster (`list_records` / `query` / `search_collection`) with use / not / vs-sibling disambiguation, embedded copy-pasteable example calls in `list_records` (FilterAst), `create_collection` (FieldSpec) and `search_collection` (search body), and made `list_records`'s `owner_field` framing explicit. A description-introspection test guards every tool description against naming a removed tool.
+- Onboarding eval harness (Lever 0, greenfield `eval/mcp_onboarding/`): a pure, network-free scorer (turns-to-success, wrong-tool count, overview-first / dry-run-before-destructive flags) with a green pytest suite, plus an agentic before/after runner that drives the live per-tenant MCP against a throwaway tenant. Before/after comparison **deferred** — the scorer is validated by its pytest suite; the live agentic run is pending an `ANTHROPIC_API_KEY` in the deploy environment (harness is ready to run on demand).
 
 ## v1.36.0 — 2026-06-11
 
