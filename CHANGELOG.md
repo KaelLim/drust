@@ -1,3 +1,27 @@
+## v1.37.0 — 2026-06-12
+
+### MCP comprehension & activation overhaul (AI time-to-competence)
+
+Sharpens the surfaces a freshly-connected LLM reads first and prunes 4 genuine
+duplicates so first-pick is less confusable. Capability-only shrink — no new auth
+surface, no new auth-cache invalidation hook (same conclusion as v1.35/v1.36);
+`_system_*` write-protection and service-key-only MCP gating preserved.
+
+**MCP tool surface: prune 4 duplicates (57 -> 52).** Removed tools have no alias
+shim (drust has no external MCP consumers; a removed tool simply stops appearing
+in `tools/list`). Mapping for any future integrator:
+
+- `set_collection_description` / `set_field_description` / `set_index_description`
+  -> `set_description{target:"collection"|"field"|"index", ...}` (one tool).
+- `clear_owner_field` -> `set_owner_field{field: null}` (null / "" clears).
+- `count_rows` removed -> `list_records` already returns `total`.
+- `sample_rows` removed -> `list_records{per_page: n}` with no filter.
+
+MCP-surface only: REST `/records/*`, `/list`, `/query`, the REST
+`DELETE /collections/<c>/owner-field` clear, and all data-plane SQL building are
+unchanged. `tool_count()` is annotation-counted and self-adjusts to 52; the admin
+`_api_keys` pill tracks it live.
+
 ## v1.36.0 — 2026-06-11
 
 ### Edge functions: per-tenant Rust→Wasm, triggered by data events

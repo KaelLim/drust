@@ -108,3 +108,28 @@ async fn set_owner_field_null_clears() {
         "SELECT owner_field FROM _system_collection_meta WHERE collection_name='posts'", [], |r| r.get(0))).await.unwrap();
     assert!(of.is_none(), "owner_field should be NULL after clear, got {of:?}");
 }
+
+#[tokio::test]
+async fn sample_and_count_removed_list_records_covers() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-nosample").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    pool.with_writer(|c| c.execute_batch(
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')));\n         INSERT INTO posts (title) VALUES ('a'),('b'),('c');")).await.unwrap();
+    let sid = mcp_init(&app, &tid, &svc).await;
+
+    // tools/list must NOT contain the removed names.
+    let list = mcp_req_with_session(&tid, &svc, &sid, serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}));
+    let resp = app.clone().oneshot(list).await.unwrap();
+    let msgs = parse_mcp_response(resp).await;
+    let names: Vec<String> = msgs.iter().find_map(|m| m["result"]["tools"].as_array().cloned()).unwrap()
+        .iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+    assert!(!names.iter().any(|n| n == "sample_rows"), "sample_rows must be gone: {names:?}");
+    assert!(!names.iter().any(|n| n == "count_rows"), "count_rows must be gone: {names:?}");
+
+    // list_records subsumes both: it returns total + perPage.
+    let lr = mcp_call_tool(&app, &tid, &svc, &sid, "list_records", serde_json::json!({"collection":"posts","per_page":2})).await;
+    let v: serde_json::Value = serde_json::from_str(&lr).unwrap();
+    assert_eq!(v["total"], 3, "total covers count_rows: {lr}");
+    assert_eq!(v["perPage"], 2, "perPage present: {lr}");
+    assert_eq!(v["records"].as_array().unwrap().len(), 2, "per_page sample covers sample_rows: {lr}");
+}
