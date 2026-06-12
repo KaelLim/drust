@@ -304,20 +304,18 @@ pub struct UpdateUserArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetOwnerFieldArgs {
     pub collection: String,
-    pub field: String,
-    /// `"own"` (default) — anon reads see only their own rows.
-    /// `"all"` — anon reads see all rows.
+    /// The owner column (FK to _system_users(id)). Pass `null` or "" to CLEAR
+    /// the owner-field declaration (reverting to no ownership filtering).
+    #[serde(default)]
+    pub field: Option<String>,
+    /// `"own"` (default) — anon reads see only their own rows. `"all"` — unfiltered.
+    /// Ignored when clearing.
     #[serde(default = "default_own")]
     pub read_scope: String,
 }
 
 fn default_own() -> String {
     "own".to_string()
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ClearOwnerFieldArgs {
-    pub collection: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1415,7 +1413,8 @@ impl DrustMcpService {
         `read_scope`: 'own' (default) — anon reads filtered to caller's user_id; \
         'all' — anon reads unfiltered. \
         Returns {owner_field, read_scope}. \
-        Errors: OWNER_FIELD_INVALID_COLUMN (no such column), OWNER_FIELD_NOT_FK (missing FK)."
+        Errors: OWNER_FIELD_INVALID_COLUMN (no such column), OWNER_FIELD_NOT_FK (missing FK). \
+        Pass field: null (or \"\") to CLEAR the owner-field (returns {cleared:true})."
     )]
     async fn set_owner_field(
         &self,
@@ -1433,19 +1432,6 @@ impl DrustMcpService {
         )
         .await
         {
-            Ok(v) => json_content(v),
-            Err(e) => bail_mcp(e),
-        }
-    }
-
-    #[tool(description = "Remove the owner-field declaration from a collection, \
-        reverting to no ownership filtering. Does not touch row data. \
-        Returns {cleared: true}.")]
-    async fn clear_owner_field(
-        &self,
-        Parameters(ClearOwnerFieldArgs { collection }): Parameters<ClearOwnerFieldArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        match owner_field_tools::clear_owner_field(&self.state.inner().pool, collection).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }

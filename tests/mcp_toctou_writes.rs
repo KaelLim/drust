@@ -108,7 +108,7 @@ async fn set_owner_field_collection_not_found_no_orphan() {
     let err = set_owner_field(
         &mcp.inner().pool,
         "ghost".to_string(),
-        "user_id".to_string(),
+        Some("user_id".to_string()),
         "own".to_string(),
     )
     .await
