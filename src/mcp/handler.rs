@@ -1917,6 +1917,31 @@ mod tool_count_tests {
 }
 
 #[cfg(test)]
+mod description_tests {
+    use super::DrustMcpService;
+    use rmcp::model::Tool;
+
+    /// Pull one tool's description text out of the live macro-generated
+    /// router. `tool_router()` has inherited (private) visibility, so this
+    /// MUST live in-file (like `tool_count_tests`); an external
+    /// `tests/*.rs` file cannot reach it.
+    fn desc_of(name: &str) -> String {
+        let tools: Vec<Tool> = DrustMcpService::tool_router().list_all();
+        let t = tools.into_iter().find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("tool {name:?} not in router"));
+        t.description.unwrap_or_else(|| panic!("tool {name:?} has no description")).to_string()
+    }
+
+    #[test]
+    fn router_exposes_read_cluster_descriptions() {
+        for name in ["list_records", "query", "search_collection"] {
+            let d = desc_of(name);
+            assert!(!d.is_empty(), "{name} description empty");
+        }
+    }
+}
+
+#[cfg(test)]
 mod instructions_tests {
     use super::build_instructions;
 
