@@ -155,26 +155,18 @@ pub struct SetRealtimeArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetCollectionDescriptionArgs {
+pub struct SetDescriptionArgs {
+    /// One of "collection" | "field" | "index".
+    pub target: String,
     pub collection: String,
-    /// Empty string clears the description (column → NULL).
-    /// Trimmed to ≤2048 bytes (MAX_DESCRIPTION_BYTES).
-    pub description: String,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetFieldDescriptionArgs {
-    pub collection: String,
-    pub field: String,
-    /// Empty string removes the key from field_descriptions_json.
-    pub description: String,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetIndexDescriptionArgs {
-    pub collection: String,
-    pub index_name: String,
-    /// Empty string removes the key from index_descriptions_json.
+    /// Required when target == "field".
+    #[serde(default)]
+    pub field: Option<String>,
+    /// Required when target == "index".
+    #[serde(default)]
+    pub index_name: Option<String>,
+    /// Empty string clears (collection -> NULL, field/index -> key removed).
+    /// Trimmed to <=2048 bytes (MAX_DESCRIPTION_BYTES).
     pub description: String,
 }
 
@@ -832,66 +824,51 @@ impl DrustMcpService {
     }
 
     #[tool(
-        description = "Set or clear the collection-level description for a tenant \
-        collection. Service-key only. Empty / whitespace description clears (column → NULL). \
-        Bounded to 2048 bytes after trimming. Returns the post-state description."
+        description = "Set or clear a plain-text description on a tenant collection, \
+        one of its fields, or one of its indexes. `target` selects which: \
+        \"collection\" (needs `collection`), \"field\" (needs `collection` + `field`), \
+        \"index\" (needs `collection` + `index_name`). Service-key only. Empty / \
+        whitespace `description` clears (collection -> NULL; field/index -> key removed). \
+        Bounded to 2048 bytes after trimming. Errors: COLLECTION_NOT_FOUND, \
+        FIELD_NOT_FOUND, INDEX_NOT_FOUND, PROTECTED_COLLECTION, DESCRIPTION_TOO_LONG, \
+        DESCRIPTION_INVALID. Example: \
+        {\"target\":\"field\",\"collection\":\"posts\",\"field\":\"title\",\"description\":\"Post title\"}."
     )]
-    async fn set_collection_description(
+    async fn set_description(
         &self,
-        Parameters(args): Parameters<SetCollectionDescriptionArgs>,
+        Parameters(args): Parameters<SetDescriptionArgs>,
     ) -> Result<CallToolResult, McpError> {
         let pool = self.state.inner().pool.clone();
-        match schema_tools::set_collection_description(&pool, &args.collection, &args.description)
-            .await
-        {
-            Ok(v) => Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&v).expect("serialise"),
-            )])),
-            Err(e) => Err(map_desc_error(e)),
-        }
-    }
-
-    #[tool(
-        description = "Set or clear a per-field description on a tenant collection. \
-        Service-key only. Returns FIELD_NOT_FOUND if the named field is not on the collection."
-    )]
-    async fn set_field_description(
-        &self,
-        Parameters(args): Parameters<SetFieldDescriptionArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let pool = self.state.inner().pool.clone();
-        match schema_tools::set_field_description(
-            &pool,
-            &args.collection,
-            &args.field,
-            &args.description,
-        )
-        .await
-        {
-            Ok(v) => Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&v).expect("serialise"),
-            )])),
-            Err(e) => Err(map_desc_error(e)),
-        }
-    }
-
-    #[tool(
-        description = "Set or clear a per-index description on a tenant collection. \
-        Service-key only. Returns INDEX_NOT_FOUND if the named index is not on the collection."
-    )]
-    async fn set_index_description(
-        &self,
-        Parameters(args): Parameters<SetIndexDescriptionArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let pool = self.state.inner().pool.clone();
-        match schema_tools::set_index_description(
-            &pool,
-            &args.collection,
-            &args.index_name,
-            &args.description,
-        )
-        .await
-        {
+        let result = match args.target.as_str() {
+            "collection" => {
+                schema_tools::set_collection_description(&pool, &args.collection, &args.description).await
+            }
+            "field" => {
+                let Some(field) = args.field.as_deref() else {
+                    return Err(McpError::invalid_params(
+                        "FIELD_REQUIRED: target=field requires `field`".to_string(),
+                        None,
+                    ));
+                };
+                schema_tools::set_field_description(&pool, &args.collection, field, &args.description).await
+            }
+            "index" => {
+                let Some(index_name) = args.index_name.as_deref() else {
+                    return Err(McpError::invalid_params(
+                        "INDEX_NAME_REQUIRED: target=index requires `index_name`".to_string(),
+                        None,
+                    ));
+                };
+                schema_tools::set_index_description(&pool, &args.collection, index_name, &args.description).await
+            }
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("INVALID_TARGET: target must be collection|field|index, got {other}"),
+                    None,
+                ));
+            }
+        };
+        match result {
             Ok(v) => Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&v).expect("serialise"),
             )])),
