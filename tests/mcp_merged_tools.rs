@@ -88,3 +88,23 @@ async fn set_description_on_system_table_is_protected() {
         serde_json::json!({"target":"collection","collection":"_system_files","description":"nope"})).await;
     assert!(r.contains("PROTECTED_COLLECTION"), "_system_* must stay protected on set_description: {r}");
 }
+
+#[tokio::test]
+async fn set_owner_field_null_clears() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-ofnull").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    pool.with_writer(|c| c.execute_batch(
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT REFERENCES _system_users(id), title TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')));")).await.unwrap();
+    let sid = mcp_init(&app, &tid, &svc).await;
+
+    let set = mcp_call_tool(&app, &tid, &svc, &sid, "set_owner_field", serde_json::json!({"collection":"posts","field":"user_id","read_scope":"own"})).await;
+    assert!(set.contains("owner_field") && set.contains("user_id"), "set: {set}");
+
+    let cleared = mcp_call_tool(&app, &tid, &svc, &sid, "set_owner_field", serde_json::json!({"collection":"posts","field":serde_json::Value::Null})).await;
+    assert!(cleared.contains("cleared"), "null clears: {cleared}");
+
+    // Verify persisted state: owner_field back to NULL.
+    let of: Option<String> = pool.with_reader(|c| c.query_row(
+        "SELECT owner_field FROM _system_collection_meta WHERE collection_name='posts'", [], |r| r.get(0))).await.unwrap();
+    assert!(of.is_none(), "owner_field should be NULL after clear, got {of:?}");
+}

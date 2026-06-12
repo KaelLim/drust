@@ -12,22 +12,33 @@ use tokio::sync::Mutex;
 pub async fn set_owner_field(
     pool: &SharedTenantPool,
     collection: String,
-    field: String,
+    field: Option<String>,
     read_scope: String,
 ) -> anyhow::Result<serde_json::Value> {
+    // null / empty field => clear ownership (absorbs the old clear_owner_field tool).
+    let field = field.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    let Some(field) = field else {
+        let pool = pool.clone();
+        let coll_for_clear = collection.clone();
+        pool.with_writer(move |c| {
+            crate::storage::schema::set_owner_field(c, &coll_for_clear, None, None)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("DB_ERROR: {e}"))?;
+        pool.schema_cache.invalidate(&collection);
+        return Ok(json!({"cleared": true}));
+    };
+
     if read_scope != "own" && read_scope != "all" {
         anyhow::bail!("INVALID_READ_SCOPE: read_scope must be 'own' or 'all'");
     }
-
-    // v1.20 TOCTOU fix: fold the existence + FK validation AND the write into a
-    // single writer closure so a concurrent drop_collection between the two
-    // cannot leave an orphan _system_collection_meta row.
+    // v1.20 TOCTOU fix: fold existence + FK validation AND the write into a single
+    // writer closure so a concurrent drop_collection cannot leave an orphan row.
     let pool = pool.clone();
     let coll_for_set = collection.clone();
     let field_for_set = field.clone();
     let scope_for_set = read_scope.clone();
     pool.with_writer(move |c| {
-        // 1) Check collection exists.
         let tbl_count: i64 = c.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
             rusqlite::params![coll_for_set],
@@ -39,7 +50,6 @@ pub async fn set_owner_field(
                 Some(format!("COLLECTION_NOT_FOUND: {coll_for_set}")),
             ));
         }
-        // 2) Validate the column + FK inside the writer (PRAGMAs are read-only).
         let validation = validate_owner_column(c, &coll_for_set, &field_for_set)?;
         if let Err(code) = validation {
             return Err(rusqlite::Error::SqliteFailure(
@@ -47,39 +57,12 @@ pub async fn set_owner_field(
                 Some(code.to_string()),
             ));
         }
-        // 3) Persist.
-        crate::storage::schema::set_owner_field(
-            c,
-            &coll_for_set,
-            Some(&field_for_set),
-            Some(&scope_for_set),
-        )
+        crate::storage::schema::set_owner_field(c, &coll_for_set, Some(&field_for_set), Some(&scope_for_set))
     })
     .await
-    .map_err(|e| {
-        let msg = e.to_string();
-        anyhow::anyhow!("{msg}")
-    })?;
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     pool.schema_cache.invalidate(&collection);
-
     Ok(json!({"owner_field": field, "read_scope": read_scope}))
-}
-
-// ─── clear_owner_field ───────────────────────────────────────────────────────
-
-pub async fn clear_owner_field(
-    pool: &SharedTenantPool,
-    collection: String,
-) -> anyhow::Result<serde_json::Value> {
-    let pool = pool.clone();
-    let coll_for_clear = collection.clone();
-    pool.with_writer(move |c| {
-        crate::storage::schema::set_owner_field(c, &coll_for_clear, None, None)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("DB_ERROR: {e}"))?;
-    pool.schema_cache.invalidate(&collection);
-    Ok(json!({"cleared": true}))
 }
 
 // ─── set_self_register ───────────────────────────────────────────────────────
