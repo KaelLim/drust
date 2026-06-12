@@ -524,9 +524,16 @@ impl DrustMcpService {
     }
 
     #[tool(
-        description = "Run a read-only SELECT against this tenant's database. \
-        The SQL is validated by a strict authorizer: no INSERT/UPDATE/DELETE/DDL, \
-        no ATTACH, no sqlite_master reads. Limits: 16 KB SQL, 10,000 rows, 5 second timeout."
+        description = "Raw read-only SELECT across this tenant's non-system tables. \
+        USE WHEN: an ad-hoc analytic shape a FilterAst cannot express (GROUP BY, \
+        JOIN-free aggregates, expressions). NOT WHEN: you just want filtered/\
+        sorted/paginated rows of ONE collection — use `list_records` (it builds \
+        the SQL for you and returns `total`). VS SIBLINGS: `query` takes raw SELECT \
+        and does NOT enforce `owner_field`, so it is service-only and un-rewritable; \
+        `list_records` and `search_collection` take structured input and always \
+        enforce scoping. The SQL is validated by a strict authorizer: no INSERT/\
+        UPDATE/DELETE/DDL, no ATTACH, no sqlite_master reads. Limits: 16 KB SQL, \
+        10,000 rows, 5 second timeout."
     )]
     async fn query(
         &self,
@@ -831,14 +838,18 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Search a collection by vector similarity. Builds the \
-        SQL itself from the structured body — no raw SQL accepted. Returns up to \
-        `k` nearest rows ordered by distance, each row carrying an injected \
-        `_distance` column. Default metric is `cosine`; alternatives are `l2` \
-        and `l1`. Optional `where` filter accepts an and/or/not tree of \
-        eq/ne/gt/gte/lt/lte/like/in/nin leaves; vector fields cannot appear \
-        in the filter. Optional `select` lists projected columns (default: all \
-        non-vector columns).")]
+    #[tool(description = "Nearest-neighbour search over a `vector` field. \
+        USE WHEN: you have a query vector and want the `k` most-similar rows \
+        (semantic/embedding search). NOT WHEN: you can express the match as a \
+        scalar filter — use `list_records` (vector fields are excluded from its \
+        output, so similarity is the ONLY reason to reach here). VS SIBLINGS: \
+        `list_records`/`query` cannot rank by vector distance; this tool can do \
+        nothing but. Builds the SQL itself from the structured body — no raw SQL. \
+        Returns up to `k` nearest rows ordered by distance, each carrying an \
+        injected `_distance` column. Default metric `cosine`; alternatives `l2`, \
+        `l1`. Optional `where` is an and/or/not tree of eq/ne/gt/gte/lt/lte/like/\
+        in/nin leaves; vector fields cannot appear in the filter. Optional `select` \
+        lists projected columns (default: all non-vector columns).")]
     async fn search_collection(
         &self,
         Parameters(input): Parameters<vector_tools::SearchInput>,
@@ -850,18 +861,21 @@ impl DrustMcpService {
     }
 
     #[tool(
-        description = "List records from a collection with structured filter, \
-        sort, and pagination. Reuses the same FilterAst as `search_collection`; \
-        rejects raw SQL by construction. `filter` is a tree of \
-        `{and:[...]}` / `{or:[...]}` / `{not:...}` over leaves \
-        `{field: scalar}` (eq) or `{field: {op: operand}}`. Operators: eq, ne, \
-        gt, gte, lt, lte, like, in (array), nin (array). `sort` is \
-        `{field, dir}` with dir in {asc, desc}. `per_page` must be 1..=500 \
-        (default 20). `select` is a list of column names; vector \
-        fields are auto-excluded. Returns up to 500 rows per page. \
-        owner_field enforcement is guaranteed by drust — service tokens \
-        bypass; user tokens (REST only) get an auto-appended owner clause; \
-        MCP is service-only at the transport layer so this tool sees all \
+        description = "THE DEFAULT READ TOOL: structured filter + sort + pagination \
+        over ONE collection. USE WHEN: you want rows of a collection by some \
+        condition, a sorted/paged slice, just a count (read `total` in the \
+        response), or just a sample (set `per_page`, omit `filter`). NOT WHEN: you \
+        need a raw SQL shape a FilterAst can't express (use `query`) or vector \
+        similarity ranking (use `search_collection`). VS SIBLINGS: `list_records` \
+        reuses the same FilterAst as `search_collection` and rejects raw SQL by \
+        construction, so `owner_field` is always enforceable — unlike `query`. \
+        `filter` is a tree of `{and:[...]}` / `{or:[...]}` / `{not:...}` over \
+        leaves `{field: scalar}` (eq) or `{field: {op: operand}}`. Operators: eq, \
+        ne, gt, gte, lt, lte, like, in (array), nin (array). `sort` is \
+        `{field, dir}` with dir in {asc, desc}. `per_page` is 1..=500 (default 20). \
+        `select` lists column names; vector fields are auto-excluded. Returns \
+        `{records, total, page, perPage}`. owner_field enforcement is guaranteed \
+        by drust; MCP is service-only at the transport layer so this tool sees all \
         rows."
     )]
     async fn list_records(
@@ -1938,6 +1952,33 @@ mod description_tests {
             let d = desc_of(name);
             assert!(!d.is_empty(), "{name} description empty");
         }
+    }
+
+    #[test]
+    fn list_records_description_disambiguates_siblings() {
+        let d = desc_of("list_records");
+        assert!(d.contains("USE WHEN"), "list_records missing USE WHEN line");
+        assert!(d.contains("NOT WHEN"), "list_records missing NOT WHEN line");
+        assert!(d.contains("query"), "list_records must name sibling `query`");
+        assert!(d.contains("search_collection"), "list_records must name sibling `search_collection`");
+        assert!(d.contains("total"), "list_records must mention it returns `total`");
+    }
+
+    #[test]
+    fn query_description_disambiguates_siblings() {
+        let d = desc_of("query");
+        assert!(d.contains("USE WHEN"), "query missing USE WHEN line");
+        assert!(d.contains("NOT WHEN"), "query missing NOT WHEN line");
+        assert!(d.contains("owner_field"), "query must warn it does NOT enforce owner_field");
+        assert!(d.contains("list_records"), "query must point at sibling `list_records`");
+    }
+
+    #[test]
+    fn search_collection_description_disambiguates_siblings() {
+        let d = desc_of("search_collection");
+        assert!(d.contains("USE WHEN"), "search_collection missing USE WHEN line");
+        assert!(d.contains("NOT WHEN"), "search_collection missing NOT WHEN line");
+        assert!(d.contains("list_records"), "search_collection must point at sibling `list_records`");
     }
 }
 
