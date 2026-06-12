@@ -1,0 +1,4 @@
+anthropic>=0.40
+mcp>=1.2
+requests>=2.31
+pytest>=8.0
