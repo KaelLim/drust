@@ -503,12 +503,16 @@ impl DrustMcpService {
     }
 
     #[tool(
-        description = "One-shot schema bootstrap for the tenant. Returns every \
-        collection's full schema (fields, indices, descriptions, anon_caps, owner_field, \
-        realtime_enabled, vector_fields) plus every stored RPC's metadata in a single \
-        response. Service-key only. Use this when an LLM first connects to learn the data \
-        model; the cheaper `list_collections` + `describe_collection` round-trips remain \
-        available for per-collection inspection."
+        description = "One-shot schema bootstrap for the tenant — your FIRST call on \
+        connect. Returns every collection's full schema plus its access state \
+        (anon_caps, owner_field + read_scope ALWAYS present — null when not owner-scoped, \
+        realtime_enabled, vector_fields flagged with `dim`) and every stored RPC's callable \
+        contract (declared `params`, `anon_callable`, and `user_id_autobound` — true when the \
+        RPC declares a `user_id` param, which drust auto-binds from the caller's user token). \
+        After this one call you know enough to act: which collections require an owner field on \
+        INSERT, which won't be visible to anon, and which fields are vectors (use \
+        `search_collection`, not list — vectors are excluded from default list/get responses). \
+        Service-key only. `list_collections` + `describe_collection` remain for narrower inspection."
     )]
     async fn get_schema_overview(&self) -> Result<CallToolResult, McpError> {
         match exploration::get_schema_overview(&self.state).await {
