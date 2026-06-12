@@ -22,6 +22,19 @@ MCP-surface only: REST `/records/*`, `/list`, `/query`, the REST
 unchanged. `tool_count()` is annotation-counted and self-adjusts to 52; the admin
 `_api_keys` pill tracks it live.
 
+- feat(mcp): `get_schema_overview` enriched into a true one-call bootstrap.
+  - Per-collection access state is now ALWAYS present: `owner_field` and
+    `read_scope` emit explicit `null` when the collection is not owner-scoped
+    (previously the keys were omitted), and `vector_fields` is always an array.
+  - Each RPC entry gains a derived `user_id_autobound` boolean (true when the
+    RPC declares a `user_id` param, which drust auto-binds from a user token).
+  - The REST `GET /t/<id>/schema/overview` mirror keeps the lean serde shape
+    (omits empty owner_field/read_scope/vector_fields, no `user_id_autobound`);
+    the enrichment is MCP-surface-only by design.
+  - No new auth-cache hook: this adds no token/session/publish surface, only
+    post-processes already-read schema metadata. owner_field-by-construction
+    (src/query/list_builder.rs) and service-only MCP gating are unchanged.
+
 ## v1.36.0 — 2026-06-11
 
 ### Edge functions: per-tenant Rust→Wasm, triggered by data events
