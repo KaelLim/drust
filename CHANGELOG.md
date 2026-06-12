@@ -34,6 +34,7 @@ unchanged. `tool_count()` is annotation-counted and self-adjusts to 52; the admi
   - No new auth-cache hook: this adds no token/session/publish surface, only
     post-processes already-read schema metadata. owner_field-by-construction
     (src/query/list_builder.rs) and service-only MCP gating are unchanged.
+- MCP: rewrote the connect-time `instructions` prologue — leads with the two bootstrap calls (`get_schema_overview` + `whoami`), adds a `CHOOSING A READ TOOL` block disambiguating `list_records` vs `query` vs `search_collection`, names the recovery affordances (`dry_run` / `suggested_fix` / `recent_writes`, satisfying Lever 5), and reflects the merged tool set (`set_description`, `set_owner_field{field|null}`).
 
 ## v1.36.0 — 2026-06-11
 
