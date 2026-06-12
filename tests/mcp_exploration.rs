@@ -1,8 +1,6 @@
 mod helpers;
 use drust::mcp::server::McpRegistry;
-use drust::mcp::tools::exploration::{
-    count_rows, describe_collection, list_collections, sample_rows, whoami,
-};
+use drust::mcp::tools::exploration::{describe_collection, list_collections, whoami};
 use drust::storage::pool::TenantRegistry;
 use helpers::seed_tenant_fs;
 use std::sync::Arc;
@@ -52,26 +50,6 @@ async fn describe() {
             .iter()
             .any(|f| f["name"] == "title")
     );
-}
-
-#[tokio::test]
-async fn sample_5() {
-    let d = tempfile::tempdir().unwrap();
-    seed_tenant_fs(&d, "blog");
-    let s = svc(&d).await;
-    let v = sample_rows(&s, "posts", 5).await.unwrap();
-    assert_eq!(v["rows"].as_array().unwrap().len(), 3);
-}
-
-#[tokio::test]
-async fn count_all() {
-    let d = tempfile::tempdir().unwrap();
-    seed_tenant_fs(&d, "blog");
-    let s = svc(&d).await;
-    let v = count_rows(&s, "posts", None).await.unwrap();
-    assert_eq!(v["count"], 3);
-    let v2 = count_rows(&s, "posts", Some("title='b'")).await.unwrap();
-    assert_eq!(v2["count"], 1);
 }
 
 #[tokio::test]

@@ -48,20 +48,6 @@ pub struct DescribeCollectionArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SampleRowsArgs {
-    pub collection: String,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct CountRowsArgs {
-    pub collection: String,
-    #[serde(default)]
-    pub where_clause: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct QueryArgs {
     pub sql: String,
 }
@@ -530,39 +516,6 @@ impl DrustMcpService {
                 serde_json::to_string_pretty(&v).expect("serialise"),
             )])),
             Err(e) => Err(McpError::internal_error(e.to_string(), None)),
-        }
-    }
-
-    #[tool(
-        description = "Return up to `limit` rows from a collection, ordered by id ascending. \
-        `limit` defaults to 20 and is clamped to 500. Use this to peek at a collection's data shape."
-    )]
-    async fn sample_rows(
-        &self,
-        Parameters(SampleRowsArgs { collection, limit }): Parameters<SampleRowsArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let n = limit.unwrap_or(20);
-        match exploration::sample_rows(&self.state, &collection, n).await {
-            Ok(v) => json_content(v),
-            Err(e) => bail_mcp(e),
-        }
-    }
-
-    #[tool(
-        description = "Return COUNT(*) for a collection, with an optional SQL WHERE fragment \
-        (e.g. \"status = 'published' AND created_at > '2026-01-01'\"). \
-        The WHERE clause passes through the read-only SQL authorizer — no writes, no joins, no DDL."
-    )]
-    async fn count_rows(
-        &self,
-        Parameters(CountRowsArgs {
-            collection,
-            where_clause,
-        }): Parameters<CountRowsArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        match exploration::count_rows(&self.state, &collection, where_clause.as_deref()).await {
-            Ok(v) => json_content(v),
-            Err(e) => bail_mcp(e),
         }
     }
 

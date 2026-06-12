@@ -218,8 +218,6 @@ async fn initialize_then_tools_list_returns_core_tools() {
     for expected in [
         "list_collections",
         "describe_collection",
-        "sample_rows",
-        "count_rows",
         "query",
         "explain",
         "create_collection",
