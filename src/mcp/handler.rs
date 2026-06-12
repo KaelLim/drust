@@ -2029,6 +2029,31 @@ mod description_tests {
             assert!(d.contains(key), "search example must show {key}");
         }
     }
+
+    #[test]
+    fn no_description_names_a_removed_tool() {
+        let removed = [
+            "sample_rows", "count_rows", "clear_owner_field",
+            "set_field_description", "set_index_description",
+        ];
+        let tools = DrustMcpService::tool_router().list_all();
+        for t in &tools {
+            let d = t.description.as_deref().unwrap_or("");
+            for r in removed {
+                assert!(!d.contains(r), "tool {:?} description names removed tool {r:?}", t.name);
+            }
+        }
+    }
+
+    #[test]
+    fn list_records_description_keeps_ownerfield_framing() {
+        // Prose must not drift into implying /list takes raw SQL: it stays
+        // structured-only so owner_field is enforceable by construction.
+        let d = desc_of("list_records");
+        assert!(d.contains("owner_field"), "list_records must keep the owner_field-enforcement framing");
+        assert!(d.contains("rejects raw SQL") || d.contains("FilterAst") || d.contains("raw SQL"),
+            "list_records must state it is structured-only / rejects raw SQL");
+    }
 }
 
 #[cfg(test)]
