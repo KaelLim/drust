@@ -77,9 +77,33 @@ pub async fn subscribe_handler(
     }
 
     // Pass — open the stream.
+    //
+    // Anon subscribers are filtered per-event by the select-policy USING
+    // (auth_id = None). Service bypasses; users are denied above. Deleted
+    // events (id-only, no record) always pass — documented v1 limitation.
+    let select_using: Option<crate::query::vector_filter::FilterAst> =
+        if matches!(ctx, AuthCtx::Anon) {
+            schema.policies.select.as_ref().and_then(|p| p.using.clone())
+        } else {
+            None
+        };
     let rx = bus.subscribe(&tenant, &coll);
     let stream = BroadcastStream::new(rx)
         .filter_map(|r| r.ok())
+        .filter(move |ev: &Event| match (&select_using, ev) {
+            (Some(using), Event::Created { record }) | (Some(using), Event::Updated { record }) => {
+                let map = record.as_object().cloned().unwrap_or_default();
+                crate::query::policy::eval_policy(
+                    using,
+                    &map,
+                    &crate::query::policy::PolicyCtx {
+                        auth_id: None,
+                        data: None,
+                    },
+                )
+            }
+            _ => true,
+        })
         .map(to_sse_event);
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(30)))
