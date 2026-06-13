@@ -140,7 +140,8 @@ pub async fn post_list(
 
     // ── Compile SQL ──────────────────────────────────────────────────
     let owner_ref = owner_pair.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
-    let (list_sql, count_sql, binds) = match build_structured_list_sql(&schema, &req, owner_ref) {
+    let (list_sql, count_sql, binds) = match build_structured_list_sql(&schema, &req, owner_ref, None)
+    {
         Ok(x) => x,
         Err(e) => return map_list_error(e),
     };
@@ -282,7 +283,7 @@ pub async fn post_list_explain(
         }
     };
 
-    let (list_sql, _count, binds) = match build_structured_list_sql(&schema, &req, None) {
+    let (list_sql, _count, binds) = match build_structured_list_sql(&schema, &req, None, None) {
         Ok(x) => x,
         Err(e) => return map_list_error(e),
     };
