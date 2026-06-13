@@ -1,3 +1,4 @@
+use crate::query::policy::{CollectionPolicies, Policy};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -330,6 +331,10 @@ pub struct CollectionSchema {
     /// Collection-level free-form description (v1.19).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Per-operation row-level security policies (v1.38). All-`None` for
+    /// collections with no explicit policy (the common case).
+    #[serde(skip_serializing_if = "CollectionPolicies::is_empty", default)]
+    pub policies: CollectionPolicies,
 }
 
 fn user_tables(conn: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -654,6 +659,7 @@ pub fn describe_collection(
     let vector_fields = read_vector_fields(conn, name)?;
     let realtime_enabled = read_realtime_enabled(conn, name)?;
     let description = read_collection_description(conn, name)?;
+    let policies = read_policies(conn, name)?;
     Ok(Some(CollectionSchema {
         name: name.to_string(),
         fields,
@@ -665,6 +671,7 @@ pub fn describe_collection(
         vector_fields,
         realtime_enabled,
         description,
+        policies,
     }))
 }
 
@@ -795,6 +802,60 @@ pub fn read_owner_field(
     }
 }
 
+/// Read the four per-op policies for a collection. Missing meta row → all
+/// `None`. A NULL or malformed column → `None` for that op (forgiving parse,
+/// matching `read_field_descriptions`).
+pub fn read_policies(conn: &Connection, coll: &str) -> rusqlite::Result<CollectionPolicies> {
+    let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT select_policy_json, insert_policy_json, update_policy_json, delete_policy_json \
+             FROM _system_collection_meta WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .ok();
+    let parse = |o: Option<String>| -> Option<Policy> {
+        o.as_deref().and_then(|j| serde_json::from_str::<Policy>(j).ok())
+    };
+    let (s, i, u, d) = row.unwrap_or((None, None, None, None));
+    Ok(CollectionPolicies {
+        select: parse(s),
+        insert: parse(i),
+        update: parse(u),
+        delete: parse(d),
+    })
+}
+
+/// Upsert (or clear) one op's policy. `None` clears the column to NULL.
+/// Upserts the meta row if absent (default anon_caps), mirroring
+/// `set_owner_field`. Caller holds the writer mutex.
+pub fn write_policy(
+    conn: &Connection,
+    coll: &str,
+    op: DmlVerb,
+    policy: Option<&Policy>,
+) -> rusqlite::Result<()> {
+    let col = match op {
+        DmlVerb::Select => "select_policy_json",
+        DmlVerb::Insert => "insert_policy_json",
+        DmlVerb::Update => "update_policy_json",
+        DmlVerb::Delete => "delete_policy_json",
+    };
+    let json: Option<String> = match policy {
+        Some(p) => Some(serde_json::to_string(p).expect("Policy serialises")),
+        None => None,
+    };
+    // Column name is from a fixed match (not user input) → safe to format.
+    let sql = format!(
+        "INSERT INTO _system_collection_meta (collection_name, anon_caps_json, {col}, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              {col} = excluded.{col}, updated_at = excluded.updated_at"
+    );
+    conn.execute(&sql, rusqlite::params![coll, json])?;
+    Ok(())
+}
+
 /// Write the full set of vector fields for a collection. Caller holds
 /// the writer mutex. Overwrites whatever was there. Upserts so legacy
 /// collections (pre-v1.10) get a meta row on first vector add.
@@ -856,12 +917,16 @@ mod meta_io_tests {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "CREATE TABLE _system_collection_meta (
-                collection_name   TEXT PRIMARY KEY,
-                anon_caps_json    TEXT NOT NULL,
-                updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
-                owner_field       TEXT,
-                read_scope        TEXT,
-                realtime_enabled  INTEGER NOT NULL DEFAULT 1
+                collection_name    TEXT PRIMARY KEY,
+                anon_caps_json     TEXT NOT NULL,
+                updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                owner_field        TEXT,
+                read_scope         TEXT,
+                realtime_enabled   INTEGER NOT NULL DEFAULT 1,
+                select_policy_json TEXT,
+                insert_policy_json TEXT,
+                update_policy_json TEXT,
+                delete_policy_json TEXT
             );",
         )
         .unwrap();
@@ -916,6 +981,24 @@ mod meta_io_tests {
     fn delete_missing_row_is_noop() {
         let (_t, conn) = fresh();
         delete_collection_meta(&conn, "nonexistent").unwrap();
+    }
+
+    #[test]
+    fn policy_write_then_read_roundtrips() {
+        let (_t, conn) = fresh();
+        use crate::query::policy::Policy;
+        use crate::query::vector_filter::FilterAst;
+        let p = Policy {
+            using: Some(serde_json::from_str::<FilterAst>(r#"{"status":"published"}"#).unwrap()),
+            check: None,
+        };
+        write_policy(&conn, "posts", DmlVerb::Select, Some(&p)).unwrap();
+        let got = read_policies(&conn, "posts").unwrap();
+        assert!(got.select.is_some(), "select policy should be present");
+        assert!(got.insert.is_none());
+        // Clear it.
+        write_policy(&conn, "posts", DmlVerb::Select, None).unwrap();
+        assert!(read_policies(&conn, "posts").unwrap().select.is_none());
     }
 
     #[test]
@@ -1142,6 +1225,7 @@ mod cap_gate_tests {
             vector_fields: vec![],
             realtime_enabled: true,
             description: None,
+            policies: Default::default(),
         }
     }
 

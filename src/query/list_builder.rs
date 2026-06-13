@@ -249,6 +249,7 @@ mod tests {
             }],
             realtime_enabled: true,
             description: None,
+            policies: Default::default(),
         }
     }
 
