@@ -25,6 +25,23 @@ pub async fn query_handler(
             "user token cannot use /query",
         );
     }
+    // Anon cannot use /query on a tenant that has adopted ANY row-level rule
+    // (owner_field or an explicit policy) — drust does not rewrite raw SQL, so
+    // owner/policy clauses cannot be enforced here. Fail closed on a DB error.
+    if matches!(ctx, AuthCtx::Anon) {
+        let pool = t.pool.clone();
+        let protected = pool
+            .with_reader(|c| crate::storage::schema::tenant_has_protected_collection(c))
+            .await
+            .unwrap_or(true);
+        if protected {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "ANON_QUERY_DENIED_ON_POLICY",
+                "anon cannot use /query on a tenant with row-level policies; use POST /collections/<c>/list or /search",
+            );
+        }
+    }
     const ROW_CAP: usize = 10_000;
     const MAX_SQL: usize = 16_384;
     let pool = t.pool.clone();
@@ -88,6 +105,22 @@ pub async fn explain_handler(
             "QUERY_USER_DENIED",
             "user token cannot use /query/explain",
         );
+    }
+    // Same anon deny as /query — EXPLAIN exposes the same un-rewritable SQL
+    // surface, so it must be gated identically. Fail closed on a DB error.
+    if matches!(ctx, AuthCtx::Anon) {
+        let pool = t.pool.clone();
+        let protected = pool
+            .with_reader(|c| crate::storage::schema::tenant_has_protected_collection(c))
+            .await
+            .unwrap_or(true);
+        if protected {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "ANON_QUERY_DENIED_ON_POLICY",
+                "anon cannot use /query/explain on a tenant with row-level policies; use POST /collections/<c>/list or /search",
+            );
+        }
     }
     match crate::mcp::tools::index::explain_select(&t.pool, &body.sql).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),

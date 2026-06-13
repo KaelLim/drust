@@ -856,6 +856,26 @@ pub fn write_policy(
     Ok(())
 }
 
+/// True if the tenant has adopted row-level rules on ANY collection
+/// (`owner_field` set or any explicit policy column populated). Used to
+/// gate anon `/query` / `/query/explain` / legacy `?filter` — surfaces drust
+/// cannot row-filter (raw un-rewritable SQL). Returns `Err` only on a real
+/// DB failure; an absent `_system_collection_meta` table or no rows → `false`.
+/// The caller fails closed (treats `Err` as protected).
+pub fn tenant_has_protected_collection(conn: &Connection) -> rusqlite::Result<bool> {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM _system_collection_meta WHERE \
+                 owner_field IS NOT NULL \
+              OR select_policy_json IS NOT NULL OR insert_policy_json IS NOT NULL \
+              OR update_policy_json IS NOT NULL OR delete_policy_json IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    Ok(n > 0)
+}
+
 /// Write the full set of vector fields for a collection. Caller holds
 /// the writer mutex. Overwrites whatever was there. Upserts so legacy
 /// collections (pre-v1.10) get a meta row on first vector add.
@@ -999,6 +1019,32 @@ mod meta_io_tests {
         // Clear it.
         write_policy(&conn, "posts", DmlVerb::Select, None).unwrap();
         assert!(read_policies(&conn, "posts").unwrap().select.is_none());
+    }
+
+    #[test]
+    fn tenant_protected_flips_with_owner_field() {
+        let (_t, conn) = fresh();
+        // No owner_field, no policy → not protected.
+        assert!(!tenant_has_protected_collection(&conn).unwrap());
+        set_owner_field(&conn, "posts", Some("u"), Some("own")).unwrap();
+        assert!(tenant_has_protected_collection(&conn).unwrap());
+    }
+
+    #[test]
+    fn tenant_protected_flips_with_policy() {
+        let (_t, conn) = fresh();
+        use crate::query::policy::Policy;
+        use crate::query::vector_filter::FilterAst;
+        assert!(!tenant_has_protected_collection(&conn).unwrap());
+        let p = Policy {
+            using: Some(serde_json::from_str::<FilterAst>(r#"{"status":"published"}"#).unwrap()),
+            check: None,
+        };
+        write_policy(&conn, "posts", DmlVerb::Select, Some(&p)).unwrap();
+        assert!(tenant_has_protected_collection(&conn).unwrap());
+        // Clearing the only policy makes it unprotected again.
+        write_policy(&conn, "posts", DmlVerb::Select, None).unwrap();
+        assert!(!tenant_has_protected_collection(&conn).unwrap());
     }
 
     #[test]
