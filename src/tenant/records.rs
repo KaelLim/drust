@@ -612,6 +612,13 @@ pub async fn create_handler(
         .map(|v| v.name.clone())
         .collect();
 
+    // Explicit-policy CHECK for INSERT (service bypasses → None). Evaluated
+    // on the persisted (read-back) row INSIDE the writer transaction so a
+    // failing predicate rolls the INSERT back (sentinel → 403 below).
+    let check_ast: Option<crate::query::vector_filter::FilterAst> =
+        crate::query::policy::effective_policy_check(&ctx, &schema, DmlVerb::Insert).cloned();
+    let auth_id_for_check: Option<String> = ctx.user_id().map(|s| s.to_string());
+
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
@@ -676,6 +683,18 @@ pub async fn create_handler(
             if let Some(obj) = rec.as_object_mut() {
                 obj.retain(|k, _| !vector_names.contains(k));
             }
+            // Explicit-policy CHECK on the persisted row. A failing predicate
+            // returns the sentinel error, rolling back this INSERT.
+            if let Some(check) = &check_ast {
+                let row_map = rec.as_object().cloned().unwrap_or_default();
+                let pc = crate::query::policy::PolicyCtx {
+                    auth_id: auth_id_for_check.clone(),
+                    data: Some(row_map.clone()),
+                };
+                if !crate::query::policy::eval_policy(check, &row_map, &pc) {
+                    return Err(crate::query::policy::policy_check_sentinel());
+                }
+            }
             Ok((id, rec))
         })
         .await;
@@ -690,6 +709,11 @@ pub async fn create_handler(
             webhooks.dispatch(&tenant_id, &coll, ev);
             r
         }
+        Err(ref e) if crate::query::policy::is_policy_check_failure(e) => json_error(
+            StatusCode::FORBIDDEN,
+            "POLICY_CHECK_FAILED",
+            "insert rejected by the collection's insert policy CHECK",
+        ),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("InvalidQuery") {
