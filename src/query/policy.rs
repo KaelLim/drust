@@ -268,6 +268,148 @@ fn compile_leaf(
     }
 }
 
+/// In-memory evaluation of a policy AST against a JSON row + caller context.
+/// MUST agree with `compile_policy_using` (see the consistency corpus test).
+/// Comparison semantics mirror SQLite's: numbers compare numerically, text
+/// lexically, NULL comparisons are false (SQL `NULL = x` → not-true).
+pub fn eval_policy(ast: &FilterAst, row: &serde_json::Map<String, Json>, ctx: &PolicyCtx) -> bool {
+    eval_node(ast, row, ctx, 0)
+}
+
+fn eval_node(
+    node: &FilterAst,
+    row: &serde_json::Map<String, Json>,
+    ctx: &PolicyCtx,
+    depth: usize,
+) -> bool {
+    if depth >= MAX_FILTER_DEPTH {
+        return false;
+    }
+    match node {
+        FilterAst::And { and } => and.iter().all(|n| eval_node(n, row, ctx, depth + 1)),
+        FilterAst::Or { or } => or.iter().any(|n| eval_node(n, row, ctx, depth + 1)),
+        FilterAst::Not { not } => !eval_node(not, row, ctx, depth + 1),
+        FilterAst::Leaf(obj) => {
+            if obj.len() != 1 {
+                return false;
+            }
+            let Some((key, body)) = obj.iter().next() else {
+                return false;
+            };
+            if key == "$authenticated" {
+                let want = body.as_bool().unwrap_or(true);
+                return ctx.auth_id.is_some() == want;
+            }
+            eval_leaf(key, body, row, ctx)
+        }
+    }
+}
+
+/// Resolve an operand JSON to a comparable `Value` (mirrors `resolve_operand`
+/// but returns the json_to_value-shaped SQL value for comparison).
+fn resolve_eval_operand(operand: &Json, ctx: &PolicyCtx) -> Value {
+    if let Json::Object(o) = operand {
+        if o.get("$auth").and_then(|v| v.as_str()) == Some("id") {
+            return ctx.auth_id.clone().map(Value::Text).unwrap_or(Value::Null);
+        }
+        if let Some(f) = o.get("$data").and_then(|v| v.as_str()) {
+            return ctx
+                .data
+                .as_ref()
+                .and_then(|d| d.get(f))
+                .map(json_to_value)
+                .unwrap_or(Value::Null);
+        }
+    }
+    json_to_value(operand)
+}
+
+fn eval_leaf(field: &str, body: &Json, row: &serde_json::Map<String, Json>, ctx: &PolicyCtx) -> bool {
+    let lhs = row.get(field).map(json_to_value).unwrap_or(Value::Null);
+    let (op, operand): (&str, &Json) = if let Json::Object(o) = body {
+        if o.contains_key("$auth") || o.contains_key("$data") {
+            ("$eq", body)
+        } else if o.len() == 1 {
+            let (k, v) = o.iter().next().unwrap();
+            (k.as_str(), v)
+        } else {
+            return false;
+        }
+    } else {
+        ("$eq", body)
+    };
+    match op.trim_start_matches('$') {
+        "is_null" => return matches!(lhs, Value::Null),
+        "is_not_null" => return !matches!(lhs, Value::Null),
+        "in" | "nin" => {
+            let arr = match operand.as_array() {
+                Some(a) => a,
+                None => return false,
+            };
+            let hit = arr.iter().any(|v| {
+                value_cmp(&lhs, &resolve_eval_operand(v, ctx)) == Some(std::cmp::Ordering::Equal)
+            });
+            return if op.contains("nin") { !hit } else { hit };
+        }
+        _ => {}
+    }
+    let rhs = resolve_eval_operand(operand, ctx);
+    let ord = value_cmp(&lhs, &rhs);
+    match op.trim_start_matches('$') {
+        "eq" => ord == Some(std::cmp::Ordering::Equal),
+        "ne" => ord.is_some() && ord != Some(std::cmp::Ordering::Equal),
+        "gt" => ord == Some(std::cmp::Ordering::Greater),
+        "gte" => matches!(ord, Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)),
+        "lt" => ord == Some(std::cmp::Ordering::Less),
+        "lte" => matches!(ord, Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)),
+        "like" => like_match(&lhs, &rhs),
+        _ => false,
+    }
+}
+
+/// Three-way compare of two SQL `Value`s. `None` when either is NULL or types
+/// are not comparable (matches SQL: NULL comparisons are never true).
+fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    use Value::*;
+    match (a, b) {
+        (Null, _) | (_, Null) => None,
+        (Integer(x), Integer(y)) => Some(x.cmp(y)),
+        (Real(x), Real(y)) => x.partial_cmp(y),
+        (Integer(x), Real(y)) => (*x as f64).partial_cmp(y),
+        (Real(x), Integer(y)) => x.partial_cmp(&(*y as f64)),
+        (Text(x), Text(y)) => Some(x.cmp(y)),
+        _ => None,
+    }
+}
+
+/// Minimal SQL LIKE: `%` = any run, `_` = one char, case-sensitive (SQLite
+/// default for non-ASCII; ASCII LIKE is case-insensitive but v1 policies use
+/// `%`-prefix/suffix patterns where this rarely bites — documented limitation).
+fn like_match(lhs: &Value, rhs: &Value) -> bool {
+    let (Value::Text(s), Value::Text(pat)) = (lhs, rhs) else {
+        return false;
+    };
+    let re = pat.chars().fold(String::from("(?s)^"), |mut acc, c| {
+        match c {
+            '%' => acc.push_str(".*"),
+            '_' => acc.push('.'),
+            c => acc.push_str(&regex_lite_escape(c)),
+        }
+        acc
+    }) + "$";
+    regex_lite::Regex::new(&re)
+        .map(|r| r.is_match(s))
+        .unwrap_or(false)
+}
+
+fn regex_lite_escape(c: char) -> String {
+    if "\\.^$|?*+()[]{}".contains(c) {
+        format!("\\{c}")
+    } else {
+        c.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +549,78 @@ mod tests {
         let ctx = crate::auth::middleware::AuthCtx::Anon;
         let pc = PolicyCtx::from_auth(&ctx);
         assert!(pc.auth_id.is_none());
+    }
+
+    #[test]
+    fn eval_eq_against_row() {
+        let row: serde_json::Map<String, Json> =
+            serde_json::from_str(r#"{"status":"published","author":"u-1"}"#).unwrap();
+        let published: FilterAst = serde_json::from_str(r#"{"status":"published"}"#).unwrap();
+        let ctx = PolicyCtx {
+            auth_id: Some("u-1".into()),
+            data: None,
+        };
+        assert!(eval_policy(&published, &row, &ctx));
+        let draft: FilterAst = serde_json::from_str(r#"{"status":"draft"}"#).unwrap();
+        assert!(!eval_policy(&draft, &row, &ctx));
+    }
+
+    #[test]
+    fn eval_auth_ref_and_authenticated() {
+        let row: serde_json::Map<String, Json> =
+            serde_json::from_str(r#"{"author":"u-1"}"#).unwrap();
+        let owner: FilterAst = serde_json::from_str(r#"{"author":{"$eq":{"$auth":"id"}}}"#).unwrap();
+        assert!(eval_policy(
+            &owner,
+            &row,
+            &PolicyCtx {
+                auth_id: Some("u-1".into()),
+                data: None
+            }
+        ));
+        assert!(!eval_policy(
+            &owner,
+            &row,
+            &PolicyCtx {
+                auth_id: Some("u-2".into()),
+                data: None
+            }
+        ));
+        // anon: author = NULL comparison is false
+        assert!(!eval_policy(
+            &owner,
+            &row,
+            &PolicyCtx {
+                auth_id: None,
+                data: None
+            }
+        ));
+
+        let authed: FilterAst = serde_json::from_str(r#"{"$authenticated":true}"#).unwrap();
+        assert!(eval_policy(
+            &authed,
+            &row,
+            &PolicyCtx {
+                auth_id: Some("u-1".into()),
+                data: None
+            }
+        ));
+        assert!(!eval_policy(
+            &authed,
+            &row,
+            &PolicyCtx {
+                auth_id: None,
+                data: None
+            }
+        ));
+    }
+
+    #[test]
+    fn eval_and_or_not() {
+        let row: serde_json::Map<String, Json> =
+            serde_json::from_str(r#"{"status":"published","n":5}"#).unwrap();
+        let ast: FilterAst =
+            serde_json::from_str(r#"{"or":[{"status":"published"},{"n":{"$gt":100}}]}"#).unwrap();
+        assert!(eval_policy(&ast, &row, &PolicyCtx::default()));
     }
 }
