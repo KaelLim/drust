@@ -89,6 +89,45 @@ async fn seed_status_posts_updatable(dir: &tempfile::TempDir, tenant: &str) {
     .unwrap();
 }
 
+/// `posts(status TEXT)` with anon `select`+`delete` caps, no owner_field.
+async fn seed_status_posts_deletable(dir: &tempfile::TempDir, tenant: &str) {
+    let pool = grab_pool(tenant, dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO _system_collection_meta
+                  (collection_name, anon_caps_json)
+                  VALUES ('posts', '[\"select\",\"delete\"]')
+                  ON CONFLICT(collection_name) DO UPDATE SET
+                    anon_caps_json = '[\"select\",\"delete\"]';",
+        )
+    })
+    .await
+    .unwrap();
+}
+
+/// `DELETE /t/<id>/records/posts/<id>` → just the HTTP status.
+async fn delete_status(app: &axum::Router, tid: &str, tok: &str, id: i64) -> u16 {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/t/{tid}/records/posts/{id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    resp.status().as_u16()
+}
+
 /// `POST /t/<id>/records/posts` with `{data:{status}}` → just the HTTP status.
 async fn insert_status(app: &axum::Router, tid: &str, tok: &str, status: &str) -> u16 {
     let resp = app
@@ -215,4 +254,27 @@ async fn update_post_image_check() {
     assert_eq!(update_status(&app, &tid, &anon, id, "open").await, 200);
     // status=published fails the CHECK → rolled back → 403.
     assert_eq!(update_status(&app, &tid, &anon, id, "published").await, 403);
+}
+
+#[tokio::test]
+async fn delete_target_filtered_by_using() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("rls-write-del-using").await;
+    seed_status_posts_deletable(&dir, &tid).await;
+    // delete USING: only rows where status != "locked" may be deleted.
+    // Written to disk BEFORE the cache-populating service insert so the app's
+    // schema_cache picks up the policy on first load (the test's grab_pool uses
+    // a separate registry/cache and cannot invalidate the running app's cache).
+    set_policy(
+        &dir,
+        &tid,
+        "posts",
+        DmlVerb::Delete,
+        json!({"using": {"status": {"$ne": "locked"}}}),
+    )
+    .await;
+    // Service inserts a locked row (service bypasses policy on the insert).
+    let id = insert_status_returning_id(&app, &tid, &svc, "locked").await;
+
+    let st = delete_status(&app, &tid, &anon, id).await;
+    assert_eq!(st, 404, "locked row is not a deletable target");
 }

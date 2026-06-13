@@ -1034,11 +1034,44 @@ pub async fn delete_handler(
         Err(r) => return r,
     };
     let owner_filter = compute_owner_filter(&ctx, &schema);
+    // Explicit-policy USING (pre-flight target filter) for DELETE. Service
+    // bypasses (`policy_using_sql` → None). The USING fragment AND-composes
+    // ALONGSIDE the unchanged owner clause: a row failing the explicit USING is
+    // not a deletable target (→ 404 via the existing `Ok(0)` arm).
+    let using_sql: Option<(String, Vec<rusqlite::types::Value>)> =
+        match crate::query::policy::policy_using_sql(&ctx, &schema, DmlVerb::Delete) {
+            Ok(c) => c,
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "POLICY_COMPILE_ERROR",
+                    &e.to_string(),
+                );
+            }
+        };
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
     let res = pool
         .with_writer_tx(move |tx| {
+            if let Some((frag, pbinds)) = &using_sql {
+                use rusqlite::OptionalExtension;
+                let q = format!(
+                    "SELECT 1 FROM \"{}\" WHERE id = ?1 AND ({frag})",
+                    coll_clone.replace('"', "\"\"")
+                );
+                let mut pp: Vec<Value> = vec![Value::Integer(id)];
+                pp.extend(pbinds.iter().cloned());
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    pp.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                if tx
+                    .query_row(&q, &refs[..], |r| r.get::<_, i64>(0))
+                    .optional()?
+                    .is_none()
+                {
+                    return Ok(0usize); // → existing `Ok(0) => 404` arm
+                }
+            }
             let owner_clause = if let Some((field, user_id)) = &owner_filter {
                 format!(
                     " AND \"{}\" = '{}'",
