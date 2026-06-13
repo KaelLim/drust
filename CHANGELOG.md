@@ -1,3 +1,23 @@
+## v1.38.1 — 2026-06-13
+
+### MCP comprehension: advertise RLS policies in the server prologue
+
+v1.38.0 shipped the three RLS tools (`set_policy` / `get_policies` /
+`clear_policy`) with thorough individual descriptions and enriched the
+`get_schema_overview` payload to always carry a per-collection `policies` key, but
+the v1.37.0 comprehension scaffold — the per-tenant MCP `initialize.instructions`
+prologue — was not updated, so a model reading the prologue learned RLS only by
+exhausting `tools/list`. This release integrates RLS into that scaffold:
+`build_instructions` now lists `RLS policies` in the START-HERE access-state
+summary, registers the three tools as an `RLS:` line in the SCHEMA capability
+group, and adds a `"Restrict who sees rows" → set_policy` recipe. The
+`get_schema_overview` tool description now also enumerates the `policies` key it
+already returns. A new `instructions_register_rls_policy_tools` test asserts the
+three tool names appear in the prologue, closing the gap that let the omission
+ship silently (the existing tests only guard against referencing *removed*
+tools). Comprehension/documentation only — no behaviour, payload, route, auth, or
+enforcement change; `whoami` is intentionally unchanged.
+
 ## v1.38.0 — 2026-06-13
 
 ### Row-Level Security (RLS) policies: per-collection, per-operation
