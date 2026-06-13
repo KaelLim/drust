@@ -23,7 +23,7 @@ pub struct Policy {
 
 /// The four per-operation policies for a collection. All `None` = the
 /// collection has no explicit policy (governed by tier rules + owner_field).
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CollectionPolicies {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub select: Option<Policy>,

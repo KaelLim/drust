@@ -525,6 +525,7 @@ mod tests {
             vector_fields: vec![],
             realtime_enabled: true,
             description: None,
+            policies: Default::default(),
         }
     }
 
