@@ -753,6 +753,26 @@ pub async fn update_handler(
         Err(r) => return r,
     };
     let owner_filter = compute_owner_filter(&ctx, &schema);
+    // Explicit-policy USING (pre-flight target filter) + CHECK (post-image)
+    // for UPDATE. Service bypasses both (`effective_policy_*` → None). The
+    // USING fragment AND-composes ALONGSIDE the unchanged owner clause: a row
+    // failing the explicit USING is not an updatable target (→ 404). The
+    // CHECK is evaluated on the persisted (read-back) row INSIDE the writer
+    // transaction so a failing predicate rolls the UPDATE back (→ 403).
+    let using_sql: Option<(String, Vec<rusqlite::types::Value>)> =
+        match crate::query::policy::policy_using_sql(&ctx, &schema, DmlVerb::Update) {
+            Ok(c) => c,
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "POLICY_COMPILE_ERROR",
+                    &e.to_string(),
+                );
+            }
+        };
+    let check_ast: Option<crate::query::vector_filter::FilterAst> =
+        crate::query::policy::effective_policy_check(&ctx, &schema, DmlVerb::Update).cloned();
+    let auth_id_for_check: Option<String> = ctx.user_id().map(|s| s.to_string());
     let mut data = match body.data.as_object() {
         Some(o) => o.clone(),
         None => {
@@ -847,6 +867,27 @@ pub async fn update_handler(
                     return Err(rusqlite::Error::InvalidQuery);
                 }
             }
+            // Explicit-policy USING pre-flight: the target row must satisfy the
+            // compiled fragment (bound via `?`). A miss is indistinguishable
+            // from "no such row" by design — returns the same 404 arm.
+            if let Some((frag, pbinds)) = &using_sql {
+                use rusqlite::OptionalExtension;
+                let q = format!(
+                    "SELECT 1 FROM \"{}\" WHERE id = ? AND ({frag})",
+                    coll_clone.replace('"', "\"\"")
+                );
+                let mut pp: Vec<Value> = vec![Value::Integer(id)];
+                pp.extend(pbinds.iter().cloned());
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    pp.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                if tx
+                    .query_row(&q, &refs[..], |r| r.get::<_, i64>(0))
+                    .optional()?
+                    .is_none()
+                {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                }
+            }
             let set_exprs: Vec<String> = data
                 .keys()
                 .enumerate()
@@ -895,6 +936,18 @@ pub async fn update_handler(
             if let Some(obj) = rec.as_object_mut() {
                 obj.retain(|k, _| !vector_names.contains(k));
             }
+            // Explicit-policy CHECK on the persisted (post-image) row. A failing
+            // predicate returns the sentinel error, rolling back this UPDATE.
+            if let Some(check) = &check_ast {
+                let row_map = rec.as_object().cloned().unwrap_or_default();
+                let pc = crate::query::policy::PolicyCtx {
+                    auth_id: auth_id_for_check.clone(),
+                    data: Some(row_map.clone()),
+                };
+                if !crate::query::policy::eval_policy(check, &row_map, &pc) {
+                    return Err(crate::query::policy::policy_check_sentinel());
+                }
+            }
             Ok(rec)
         })
         .await;
@@ -911,6 +964,11 @@ pub async fn update_handler(
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             (StatusCode::NOT_FOUND, "no such record").into_response()
         }
+        Err(ref e) if crate::query::policy::is_policy_check_failure(e) => json_error(
+            StatusCode::FORBIDDEN,
+            "POLICY_CHECK_FAILED",
+            "update rejected by the collection's update policy CHECK",
+        ),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("InvalidQuery") {
