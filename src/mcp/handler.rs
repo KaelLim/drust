@@ -536,7 +536,7 @@ impl DrustMcpService {
         description = "One-shot schema bootstrap for the tenant — your FIRST call on \
         connect. Returns every collection's full schema plus its access state \
         (anon_caps, owner_field + read_scope ALWAYS present — null when not owner-scoped, \
-        realtime_enabled, vector_fields flagged with `dim`) and every stored RPC's callable \
+        realtime_enabled, vector_fields flagged with `dim`, and a per-op RLS `policies` map — ALWAYS present, empty when none) and every stored RPC's callable \
         contract (declared `params`, `anon_callable`, and `user_id_autobound` — true when the \
         RPC declares a `user_id` param, which drust auto-binds from the caller's user token). \
         After this one call you know enough to act: which collections require an owner field on \
@@ -1907,7 +1907,7 @@ START HERE — make these two calls first, before anything else:
   1. `get_schema_overview` — everything this tenant has in ONE call: collections,
      fields, indexes, RPCs (with their params + callable contract), and each
      collection's access state (owner_field, anon_caps, realtime_enabled, vector
-     dims). After this one call you know enough to act correctly on THIS tenant.
+     dims, RLS policies). After this one call you know enough to act correctly on THIS tenant.
   2. `whoami` — your identity, both bearer tokens (plaintext), the REST/MCP/files
      base URLs, and `max_upload_bytes`. (Tokens live ONLY here, never in the
      schema overview.)
@@ -1932,6 +1932,9 @@ CAPABILITY GROUPS
    Indexes:  create_index, drop_index
    Docs:     set_description (target: collection | field | index)
    Gates:    set_realtime, set_anon_caps, set_owner_field (field: name | null to clear)
+   RLS:      set_policy, get_policies, clear_policy — per-op (select|insert|update|
+             delete) row filters as FilterAst; AND-compose ALONGSIDE owner_field
+             (does NOT replace it); service tokens bypass. See each tool's description.
 
 2. DATA (per-collection CRUD + search)
    Read:    list_records (default), query (raw SELECT, service-only) + explain,
@@ -1985,6 +1988,7 @@ RECIPES
   "Write rows safely"     → <op>_record with dry_run: true first, then again without
   "Recover after a retry" → recent_writes
   "Live broadcast"        → broadcast  (room name regex ^[a-zA-Z][a-zA-Z0-9_:.-]{{0,127}}$)
+  "Restrict who sees rows"→ set_policy (per-op FilterAst; layered on owner_field)
 
 RECOVERY — experiment cheaply, you can always see and undo-plan:
   • Every destructive tool (delete_record, drop_collection, drop_index) accepts
@@ -2145,6 +2149,17 @@ mod description_tests {
 #[cfg(test)]
 mod instructions_tests {
     use super::build_instructions;
+
+    #[test]
+    fn instructions_register_rls_policy_tools() {
+        let s = build_instructions("test-tenant-abc", "https://example.test");
+        for tool in ["set_policy", "get_policies", "clear_policy"] {
+            assert!(
+                s.contains(tool),
+                "instructions prologue must register RLS tool: {tool}"
+            );
+        }
+    }
 
     #[test]
     fn instructions_includes_all_groups_and_tenant_id() {
