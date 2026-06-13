@@ -194,6 +194,25 @@ pub async fn search_handler(
         }
     }
 
+    // Explicit-policy USING (AND-ed alongside the owner clause). Service →
+    // None (bypass). Binds append after the owner bind, matching the SQL
+    // placeholder order. compile error → 500 with a typed code.
+    let mut policy_clause = String::new();
+    match crate::query::policy::policy_using_sql(&ctx, &schema, DmlVerb::Select) {
+        Ok(None) => {}
+        Ok(Some((frag, mut pbinds))) => {
+            policy_clause = format!(" AND ({frag})");
+            where_binds.append(&mut pbinds);
+        }
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "POLICY_COMPILE_ERROR",
+                &e.to_string(),
+            );
+        }
+    }
+
     // Default select: all non-vector fields.
     let select_cols: Vec<String> = match &body.select {
         Some(req) => req
@@ -216,7 +235,7 @@ pub async fn search_handler(
 
     let sql = format!(
         "SELECT {select_list}, {distance_fn}(\"{}\", ?) AS _distance \
-         FROM \"{}\" WHERE {where_sql}{owner_clause} \
+         FROM \"{}\" WHERE {where_sql}{owner_clause}{policy_clause} \
          ORDER BY _distance LIMIT ?",
         vf.name.replace('"', "\"\""),
         coll.replace('"', "\"\""),
