@@ -5,10 +5,12 @@
 //! See `docs/superpowers/specs/2026-06-12-drust-rls-policies-design.md`.
 
 use crate::auth::middleware::AuthCtx;
-use crate::query::vector_filter::FilterAst;
-use crate::storage::schema::DmlVerb;
+use crate::query::vector_filter::{FilterAst, MAX_FILTER_DEPTH, json_to_value};
+use crate::storage::schema::{CollectionSchema, DmlVerb};
+use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use thiserror::Error;
 
 /// One operation's policy: a `using` predicate (which existing rows) and/or
 /// a `check` predicate (is the new/post-image row allowed). Both are
@@ -76,10 +78,308 @@ impl PolicyCtx {
     }
 }
 
+#[derive(Debug, Error, PartialEq)]
+pub enum PolicyError {
+    #[error("policy parse error: {0}")]
+    Parse(String),
+    #[error("unknown field in policy: {0:?}")]
+    UnknownField(String),
+    #[error("policy cannot target vector field: {0:?}")]
+    VectorField(String),
+    #[error("policy nesting exceeds max depth ({MAX_FILTER_DEPTH})")]
+    TooDeep,
+    #[error("$data ref {0:?} not available in this context")]
+    DataUnavailable(String),
+}
+
+/// Resolve a leaf operand that may be a literal, `{"$auth":"id"}`, or
+/// `{"$data":"<field>"}`. Returns the SQL `Value` to bind.
+fn resolve_operand(operand: &Json, ctx: &PolicyCtx) -> Result<Value, PolicyError> {
+    if let Json::Object(o) = operand {
+        if let Some(k) = o.get("$auth") {
+            // Only `{"$auth":"id"}` is defined in v1.
+            if k.as_str() == Some("id") {
+                return Ok(ctx.auth_id.clone().map(Value::Text).unwrap_or(Value::Null));
+            }
+            return Err(PolicyError::Parse(format!("unknown $auth ref: {k}")));
+        }
+        if let Some(f) = o.get("$data").and_then(|v| v.as_str()) {
+            let row = ctx
+                .data
+                .as_ref()
+                .ok_or_else(|| PolicyError::DataUnavailable(f.to_string()))?;
+            return Ok(row.get(f).map(json_to_value).unwrap_or(Value::Null));
+        }
+    }
+    Ok(json_to_value(operand))
+}
+
+pub fn compile_policy_using(
+    schema: &CollectionSchema,
+    ast: &FilterAst,
+    ctx: &PolicyCtx,
+) -> Result<(String, Vec<Value>), PolicyError> {
+    let mut binds = Vec::new();
+    let sql = compile_node(schema, ast, ctx, &mut binds, 0)?;
+    Ok((sql, binds))
+}
+
+fn compile_node(
+    schema: &CollectionSchema,
+    node: &FilterAst,
+    ctx: &PolicyCtx,
+    binds: &mut Vec<Value>,
+    depth: usize,
+) -> Result<String, PolicyError> {
+    if depth >= MAX_FILTER_DEPTH {
+        return Err(PolicyError::TooDeep);
+    }
+    match node {
+        FilterAst::And { and } => {
+            if and.is_empty() {
+                return Ok("1=1".into());
+            }
+            let parts: Result<Vec<_>, _> = and
+                .iter()
+                .map(|n| compile_node(schema, n, ctx, binds, depth + 1))
+                .collect();
+            Ok(format!("({})", parts?.join(" AND ")))
+        }
+        FilterAst::Or { or } => {
+            if or.is_empty() {
+                return Ok("1=0".into());
+            }
+            let parts: Result<Vec<_>, _> = or
+                .iter()
+                .map(|n| compile_node(schema, n, ctx, binds, depth + 1))
+                .collect();
+            Ok(format!("({})", parts?.join(" OR ")))
+        }
+        FilterAst::Not { not } => Ok(format!(
+            "(NOT {})",
+            compile_node(schema, not, ctx, binds, depth + 1)?
+        )),
+        FilterAst::Leaf(obj) => {
+            if obj.len() != 1 {
+                return Err(PolicyError::Parse(
+                    "leaf must have exactly one key".into(),
+                ));
+            }
+            let (key, body) = obj.iter().next().unwrap();
+            // Special leaf: {"$authenticated": bool}.
+            if key == "$authenticated" {
+                let want = body.as_bool().unwrap_or(true);
+                let is_auth = ctx.auth_id.is_some();
+                return Ok(if is_auth == want {
+                    "1=1".into()
+                } else {
+                    "1=0".into()
+                });
+            }
+            compile_leaf(schema, key, body, ctx, binds)
+        }
+    }
+}
+
+fn validate_field(schema: &CollectionSchema, field: &str) -> Result<(), PolicyError> {
+    if schema.vector_fields.iter().any(|v| v.name == field) {
+        return Err(PolicyError::VectorField(field.to_string()));
+    }
+    // system columns id/created_at/updated_at are always present.
+    let system = matches!(field, "id" | "created_at" | "updated_at");
+    if !system && !schema.fields.iter().any(|f| f.name == field) {
+        return Err(PolicyError::UnknownField(field.to_string()));
+    }
+    Ok(())
+}
+
+fn compile_leaf(
+    schema: &CollectionSchema,
+    field: &str,
+    body: &Json,
+    ctx: &PolicyCtx,
+    binds: &mut Vec<Value>,
+) -> Result<String, PolicyError> {
+    validate_field(schema, field)?;
+    let col = format!("\"{}\"", field.replace('"', "\"\""));
+    // eq shorthand: {field: <scalar-or-ref>}
+    if !matches!(body, Json::Object(_)) {
+        binds.push(resolve_operand(body, ctx)?);
+        return Ok(format!("{col} = ?"));
+    }
+    let op_obj = body.as_object().unwrap();
+    // An object body is EITHER an operand ref ({"$auth"/"$data"}) used as eq
+    // shorthand, OR an op object ({"$eq": ...}). Distinguish by key.
+    if op_obj.contains_key("$auth") || op_obj.contains_key("$data") {
+        binds.push(resolve_operand(body, ctx)?);
+        return Ok(format!("{col} = ?"));
+    }
+    if op_obj.len() != 1 {
+        return Err(PolicyError::Parse(format!(
+            "field {field:?}: op object must have one key"
+        )));
+    }
+    let (op, operand) = op_obj.iter().next().unwrap();
+    match op.as_str() {
+        "$eq" | "$ne" | "$gt" | "$gte" | "$lt" | "$lte" | "$like" | "eq" | "ne" | "gt" | "gte"
+        | "lt" | "lte" | "like" => {
+            let sql_op = match op.trim_start_matches('$') {
+                "eq" => "=",
+                "ne" => "<>",
+                "gt" => ">",
+                "gte" => ">=",
+                "lt" => "<",
+                "lte" => "<=",
+                "like" => "LIKE",
+                _ => unreachable!(),
+            };
+            binds.push(resolve_operand(operand, ctx)?);
+            Ok(format!("{col} {sql_op} ?"))
+        }
+        "$in" | "$nin" | "in" | "nin" => {
+            let arr = operand.as_array().ok_or_else(|| {
+                PolicyError::Parse(format!("field {field:?}: {op} requires array"))
+            })?;
+            if arr.is_empty() {
+                return Ok(if op.ends_with("in") && !op.contains("nin") {
+                    "1=0".into()
+                } else {
+                    "1=1".into()
+                });
+            }
+            let ph = vec!["?"; arr.len()].join(", ");
+            for v in arr {
+                binds.push(resolve_operand(v, ctx)?);
+            }
+            let kw = if op.contains("nin") { "NOT IN" } else { "IN" };
+            Ok(format!("{col} {kw} ({ph})"))
+        }
+        "$is_null" | "$is_not_null" | "is_null" | "is_not_null" => {
+            let kw = if op.contains("not") {
+                "IS NOT NULL"
+            } else {
+                "IS NULL"
+            };
+            Ok(format!("{col} {kw}"))
+        }
+        other => Err(PolicyError::Parse(format!(
+            "field {field:?}: unknown op {other:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::schema::DmlVerb;
+    use crate::storage::schema::{CollectionSchema, DmlVerb, Field};
+    use rusqlite::types::Value;
+    use std::collections::BTreeSet;
+
+    fn schema(fields: &[&str]) -> CollectionSchema {
+        CollectionSchema {
+            name: "posts".into(),
+            fields: fields
+                .iter()
+                .map(|n| Field {
+                    name: n.to_string(),
+                    sql_type: "TEXT".into(),
+                    nullable: true,
+                    pk: false,
+                    default_value: None,
+                    foreign_key: None,
+                    description: None,
+                })
+                .collect(),
+            indices: vec![],
+            row_count: 0,
+            anon_caps: BTreeSet::new(),
+            owner_field: None,
+            read_scope: None,
+            vector_fields: vec![],
+            realtime_enabled: true,
+            description: None,
+            policies: Default::default(),
+        }
+    }
+
+    #[test]
+    fn compile_auth_ref_binds_user_id() {
+        let s = schema(&["author"]);
+        let ast: FilterAst = serde_json::from_str(r#"{"author":{"$eq":{"$auth":"id"}}}"#).unwrap();
+        let ctx = PolicyCtx {
+            auth_id: Some("u-abc".into()),
+            data: None,
+        };
+        let (sql, binds) = compile_policy_using(&s, &ast, &ctx).unwrap();
+        assert_eq!(sql, r#""author" = ?"#);
+        assert_eq!(binds, vec![Value::Text("u-abc".into())]);
+    }
+
+    #[test]
+    fn compile_auth_ref_for_anon_is_null_bind() {
+        let s = schema(&["author"]);
+        let ast: FilterAst = serde_json::from_str(r#"{"author":{"$eq":{"$auth":"id"}}}"#).unwrap();
+        let ctx = PolicyCtx {
+            auth_id: None,
+            data: None,
+        };
+        let (sql, binds) = compile_policy_using(&s, &ast, &ctx).unwrap();
+        assert_eq!(sql, r#""author" = ?"#);
+        assert_eq!(binds, vec![Value::Null]); // "author" = NULL → no rows, as intended
+    }
+
+    #[test]
+    fn compile_authenticated_leaf() {
+        let s = schema(&["author"]);
+        let user: FilterAst = serde_json::from_str(r#"{"$authenticated":true}"#).unwrap();
+        let ctx_user = PolicyCtx {
+            auth_id: Some("u-x".into()),
+            data: None,
+        };
+        let ctx_anon = PolicyCtx {
+            auth_id: None,
+            data: None,
+        };
+        assert_eq!(compile_policy_using(&s, &user, &ctx_user).unwrap().0, "1=1");
+        assert_eq!(compile_policy_using(&s, &user, &ctx_anon).unwrap().0, "1=0");
+    }
+
+    #[test]
+    fn compile_plain_literal_still_works() {
+        let s = schema(&["status"]);
+        let ast: FilterAst = serde_json::from_str(r#"{"status":"published"}"#).unwrap();
+        let ctx = PolicyCtx::default();
+        let (sql, binds) = compile_policy_using(&s, &ast, &ctx).unwrap();
+        assert_eq!(sql, r#""status" = ?"#);
+        assert_eq!(binds, vec![Value::Text("published".into())]);
+    }
+
+    #[test]
+    fn compile_or_published_or_owner() {
+        let s = schema(&["status", "author"]);
+        let ast: FilterAst = serde_json::from_str(
+            r#"{"or":[{"status":"published"},{"and":[{"$authenticated":true},{"author":{"$eq":{"$auth":"id"}}}]}]}"#,
+        )
+        .unwrap();
+        let ctx = PolicyCtx {
+            auth_id: Some("u-1".into()),
+            data: None,
+        };
+        let (sql, binds) = compile_policy_using(&s, &ast, &ctx).unwrap();
+        assert_eq!(sql, r#"("status" = ? OR (1=1 AND "author" = ?))"#);
+        assert_eq!(
+            binds,
+            vec![Value::Text("published".into()), Value::Text("u-1".into())]
+        );
+    }
+
+    #[test]
+    fn compile_unknown_field_rejected() {
+        let s = schema(&["status"]);
+        let ast: FilterAst = serde_json::from_str(r#"{"ghost":"x"}"#).unwrap();
+        let err = compile_policy_using(&s, &ast, &PolicyCtx::default()).unwrap_err();
+        assert!(matches!(err, PolicyError::UnknownField(_)));
+    }
 
     #[test]
     fn policy_roundtrips_json() {
