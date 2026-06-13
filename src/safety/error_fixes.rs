@@ -12,6 +12,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Anonymous role lacks the required DML capability on this collection. Either authenticate with a user/service token, or have the tenant owner widen anon_caps.",
     ),
     (
+        "ANON_QUERY_DENIED_ON_POLICY",
+        "Use POST /collections/<c>/list (FilterAst) or /search; /query (raw SELECT) is unavailable to anon once the tenant uses row-level policies, because drust cannot rewrite raw SQL to enforce them.",
+    ),
+    (
         "COLLECTION_NOT_FOUND",
         "Collection does not exist. Call `get_schema_overview` or `list_collections` to see existing collections.",
     ),
@@ -82,6 +86,18 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
     (
         "OWNER_FIELD_REQUIRED",
         "This collection has an owner_field; service-key INSERT must populate it explicitly. User-token INSERT auto-fills it from the authenticated user.",
+    ),
+    (
+        "POLICY_CHECK_FAILED",
+        "The row violates this collection's row-level policy CHECK for this op. Adjust the field values so they satisfy the policy, or change the policy via PUT /collections/<c>/policies.",
+    ),
+    (
+        "POLICY_COMPILE_ERROR",
+        "drust could not compile this collection's policy to SQL. The policy references an unknown field or a bad operand. Valid operands are field names, {\"$auth\":\"id\"}, {\"$data\":\"<field>\"}, and {\"$authenticated\":true}. Fix the policy via PUT /collections/<c>/policies.",
+    ),
+    (
+        "POLICY_INVALID",
+        "The submitted policy failed validation: it references an unknown field or uses a bad operand. Valid operands are field names, {\"$auth\":\"id\"}, {\"$data\":\"<field>\"}, and {\"$authenticated\":true}.",
     ),
     (
         "PROTECTED_COLLECTION",
@@ -302,6 +318,38 @@ mod tests {
         let s = contextual_fix(&ctx);
         assert!(s.contains("dim=1536"));
         assert!(s.contains("length=768"));
+    }
+
+    #[test]
+    fn lookup_finds_policy_check_failed() {
+        let fix = lookup("POLICY_CHECK_FAILED").expect("POLICY_CHECK_FAILED present");
+        assert!(fix.contains("policies"), "got: {fix}");
+        assert!(fix.contains("CHECK"), "got: {fix}");
+    }
+
+    #[test]
+    fn lookup_finds_anon_query_denied_on_policy() {
+        let fix =
+            lookup("ANON_QUERY_DENIED_ON_POLICY").expect("ANON_QUERY_DENIED_ON_POLICY present");
+        assert!(fix.contains("/list"), "got: {fix}");
+        assert!(fix.contains("/search"), "got: {fix}");
+        assert!(fix.contains("/query"), "got: {fix}");
+    }
+
+    #[test]
+    fn lookup_finds_policy_invalid() {
+        let fix = lookup("POLICY_INVALID").expect("POLICY_INVALID present");
+        assert!(fix.contains("$auth"), "got: {fix}");
+        assert!(fix.contains("$data"), "got: {fix}");
+        assert!(fix.contains("$authenticated"), "got: {fix}");
+    }
+
+    #[test]
+    fn lookup_finds_policy_compile_error() {
+        let fix = lookup("POLICY_COMPILE_ERROR").expect("POLICY_COMPILE_ERROR present");
+        assert!(fix.contains("$auth"), "got: {fix}");
+        assert!(fix.contains("$data"), "got: {fix}");
+        assert!(fix.contains("$authenticated"), "got: {fix}");
     }
 
     #[test]
