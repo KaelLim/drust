@@ -1162,7 +1162,19 @@ title = "Collection settings"
 [collection_page.settings.section]
 anon = "Anonymous access"
 developer = "Developer"
+policies = "Row-level policies"
 realtime = "Realtime broadcast"
+
+[collection_page.policies]
+intro = "Per-operation row-level rules. Each op AND-composes with the anon cap gate and, when set, the owner rule. Operands: a field name, the literal you type, the current user's id, or \"any authenticated user\"."
+owner_note = "This collection is owner-scoped; explicit policies AND with the owner rule."
+view_json = "View policy JSON"
+save = "Save policies"
+add_rule = "+ Rule"
+using_label = "USING (which existing rows)"
+check_label = "CHECK (allow new/updated row)"
+saved = "Policies saved."
+save_failed = "Save failed"
 
 [collection_page.toolbar]
 add_filter = "+ Filter"

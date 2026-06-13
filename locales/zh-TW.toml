@@ -1187,7 +1187,19 @@ title = "資料表設定"
 [collection_page.settings.section]
 anon = "匿名存取"
 developer = "開發者"
+policies = "資料列權限政策"
 realtime = "即時推播"
+
+[collection_page.policies]
+intro = "每個操作的資料列權限規則。各規則會與匿名能力閘門 AND 組合；若有設定 owner 欄位，也會與 owner 規則 AND 組合。運算元可為：欄位名稱、你輸入的字面值、目前使用者的 id，或「任何已登入使用者」。"
+owner_note = "此資料表為 owner-scoped；明確政策會與 owner 規則 AND 組合。"
+view_json = "檢視政策 JSON"
+save = "儲存政策"
+add_rule = "+ 規則"
+using_label = "USING（套用於哪些既有資料列）"
+check_label = "CHECK（是否允許新／更新後的資料列）"
+saved = "政策已儲存。"
+save_failed = "儲存失敗"
 
 [collection_page.toolbar]
 add_filter = "+ 篩選"
