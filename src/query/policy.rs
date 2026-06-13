@@ -443,6 +443,68 @@ pub fn validate_policy(
     Ok(())
 }
 
+/// Resolve the explicit USING predicate that applies to `op` for this caller.
+/// Service callers bypass all explicit policies (returns `None`); User/Anon get
+/// the collection's op policy `using` clause if one is set. `owner_field` is
+/// **not** consulted here — the existing `compute_owner_filter` + cap gate
+/// handle it independently (spec §6.2/§7).
+pub fn effective_policy_using<'a>(
+    ctx: &AuthCtx,
+    schema: &'a CollectionSchema,
+    op: DmlVerb,
+) -> Option<&'a FilterAst> {
+    if matches!(ctx, AuthCtx::Service { .. }) {
+        return None;
+    }
+    schema.policies.get(op).and_then(|p| p.using.as_ref())
+}
+
+/// Resolve the explicit CHECK predicate that applies to `op` for this caller.
+/// Same bypass rule as `effective_policy_using`.
+pub fn effective_policy_check<'a>(
+    ctx: &AuthCtx,
+    schema: &'a CollectionSchema,
+    op: DmlVerb,
+) -> Option<&'a FilterAst> {
+    if matches!(ctx, AuthCtx::Service { .. }) {
+        return None;
+    }
+    schema.policies.get(op).and_then(|p| p.check.as_ref())
+}
+
+/// Convenience: resolve + compile the USING for `op` into `(sql_fragment, binds)`.
+/// `None` when there is no explicit policy (or the caller is service).
+pub fn policy_using_sql(
+    ctx: &AuthCtx,
+    schema: &CollectionSchema,
+    op: DmlVerb,
+) -> Result<Option<(String, Vec<Value>)>, PolicyError> {
+    match effective_policy_using(ctx, schema, op) {
+        None => Ok(None),
+        Some(ast) => Ok(Some(compile_policy_using(
+            schema,
+            ast,
+            &PolicyCtx::from_auth(ctx),
+        )?)),
+    }
+}
+
+/// Sentinel error returned from inside a `with_writer` transaction closure to
+/// roll the transaction back when a CHECK clause rejects the row. Detected by
+/// `is_policy_check_failure` in the handler match.
+pub fn policy_check_sentinel() -> rusqlite::Error {
+    rusqlite::Error::SqlInputError {
+        error: rusqlite::ffi::Error::new(1),
+        msg: "POLICY_CHECK_FAILED".into(),
+        sql: String::new(),
+        offset: 0,
+    }
+}
+
+pub fn is_policy_check_failure(e: &rusqlite::Error) -> bool {
+    e.to_string().contains("POLICY_CHECK_FAILED")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,5 +737,46 @@ mod tests {
         )
         .unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p).is_ok());
+    }
+
+    #[test]
+    fn service_bypasses_policy() {
+        let mut s = schema(&["status"]);
+        s.policies.select = Some(Policy {
+            using: Some(serde_json::from_str(r#"{"status":"published"}"#).unwrap()),
+            check: None,
+        });
+        let svc = crate::auth::middleware::AuthCtx::Service { admin_id: None };
+        assert!(effective_policy_using(&svc, &s, DmlVerb::Select).is_none());
+        let anon = crate::auth::middleware::AuthCtx::Anon;
+        assert!(effective_policy_using(&anon, &s, DmlVerb::Select).is_some());
+    }
+
+    #[test]
+    fn policy_using_sql_compiles_for_anon() {
+        let mut s = schema(&["author"]);
+        s.policies.update = Some(Policy {
+            using: Some(serde_json::from_str(r#"{"author":{"$eq":{"$auth":"id"}}}"#).unwrap()),
+            check: None,
+        });
+        let anon = crate::auth::middleware::AuthCtx::Anon;
+        let out = policy_using_sql(&anon, &s, DmlVerb::Update).unwrap();
+        let (frag, binds) = out.unwrap();
+        assert_eq!(frag, r#""author" = ?"#);
+        assert_eq!(binds, vec![rusqlite::types::Value::Null]); // anon → NULL → no rows
+    }
+
+    #[test]
+    fn owner_field_is_not_consulted_by_resolver() {
+        let mut s = schema(&["author"]);
+        s.owner_field = Some("author".into());
+        s.read_scope = Some("own".into());
+        let user = crate::auth::middleware::AuthCtx::User {
+            user_id: "u-1".into(),
+            token_hash: "h".into(),
+        };
+        // No explicit policy → resolver returns None; owner_field is handled by
+        // compute_owner_filter at the call site, not here.
+        assert!(effective_policy_using(&user, &s, DmlVerb::Select).is_none());
     }
 }
