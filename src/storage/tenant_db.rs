@@ -90,7 +90,11 @@ CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
   realtime_enabled         INTEGER NOT NULL DEFAULT 1,
   description              TEXT,
   field_descriptions_json  TEXT NOT NULL DEFAULT '{}',
-  index_descriptions_json  TEXT NOT NULL DEFAULT '{}'
+  index_descriptions_json  TEXT NOT NULL DEFAULT '{}',
+  select_policy_json       TEXT,
+  insert_policy_json       TEXT,
+  update_policy_json       TEXT,
+  delete_policy_json       TEXT
 );
 
 -- v1.6: stored RPC functions (Supabase-style named SELECTs).
