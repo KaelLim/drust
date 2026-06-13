@@ -9,7 +9,7 @@
 
 use crate::storage::schema::CollectionSchema;
 use rusqlite::types::Value;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use thiserror::Error;
 
@@ -37,7 +37,7 @@ pub enum FilterError {
     TooDeep,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FilterAst {
     And { and: Vec<FilterAst> },
@@ -176,7 +176,7 @@ fn compile_leaf(field: &str, body: &Json, binds: &mut Vec<Value>) -> Result<Stri
     }
 }
 
-fn json_to_value(v: &Json) -> Value {
+pub fn json_to_value(v: &Json) -> Value {
     match v {
         Json::Null => Value::Null,
         Json::Bool(b) => Value::Integer(if *b { 1 } else { 0 }),
