@@ -398,6 +398,17 @@ pub async fn get_handler(
         Err(r) => return r,
     };
     let owner_filter = compute_owner_filter(&ctx, &schema);
+    // Explicit select-policy USING (None for service callers / no policy).
+    let policy_sql = match crate::query::policy::policy_using_sql(&ctx, &schema, DmlVerb::Select) {
+        Ok(c) => c,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "POLICY_COMPILE_ERROR",
+                &e.to_string(),
+            );
+        }
+    };
     let vector_names: std::collections::HashSet<String> = schema
         .vector_fields
         .iter()
@@ -405,10 +416,30 @@ pub async fn get_handler(
         .collect();
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
+    let policy_sql_c = policy_sql.clone();
     let out = pool
         .with_reader(move |c| {
             if !collection_exists(c, &coll_clone)? {
                 return Ok(None);
+            }
+            // Pre-flight visibility SELECT under the policy USING: if the row
+            // doesn't satisfy the explicit select-policy, treat it as absent
+            // (same 404 as a missing row). Leaves the owner-inline read below
+            // unchanged. Service callers have `policy_sql_c == None`.
+            if let Some((frag, pbinds)) = &policy_sql_c {
+                use rusqlite::OptionalExtension;
+                let q = format!(
+                    "SELECT 1 FROM \"{}\" WHERE id = ? AND ({frag})",
+                    coll_clone.replace('"', "\"\"")
+                );
+                let mut pp: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(id)];
+                pp.extend(pbinds.iter().cloned());
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    pp.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                let visible: Option<i64> = c.query_row(&q, &refs[..], |r| r.get(0)).optional()?;
+                if visible.is_none() {
+                    return Ok(None); // → 404, same as a missing row
+                }
             }
             // Build the query; append owner filter as a literal when needed.
             let mut sql = format!(
