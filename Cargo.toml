@@ -62,6 +62,7 @@ prometheus         = { version = "0.14", default-features = false }
 wasmtime           = { version = "45", default-features = false, features = ["runtime", "component-model", "async", "parallel-compilation", "cranelift", "anyhow"] }
 wasmtime-wasi      = "45"
 async-trait        = "0.1"
+regex-lite         = "0.1"
 
 [dev-dependencies]
 serial_test        = "3"
