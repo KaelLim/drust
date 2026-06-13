@@ -143,6 +143,12 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         "index_descriptions_json",
         "TEXT NOT NULL DEFAULT '{}'",
     )?;
+    // RLS v1 — per-op row-level security policies (nullable; NULL = no
+    // explicit policy, governed by tier rules + owner_field).
+    add_column_if_missing(&tx, "_system_collection_meta", "select_policy_json", "TEXT")?;
+    add_column_if_missing(&tx, "_system_collection_meta", "insert_policy_json", "TEXT")?;
+    add_column_if_missing(&tx, "_system_collection_meta", "update_policy_json", "TEXT")?;
+    add_column_if_missing(&tx, "_system_collection_meta", "delete_policy_json", "TEXT")?;
     // v1.29.5 — _system_rpc.callable_by (H3-1 phase 1). Idempotent
     // backfill from anon_callable: 1 → ["anon","user"], 0 → [].
     // Guarded by table existence — _system_rpc only exists on tenants
@@ -889,6 +895,43 @@ mod tests {
             id, "{}",
             "legacy row index_descriptions_json should default to {{}}"
         );
+    }
+
+    #[test]
+    fn migrate_tenant_db_adds_policy_columns() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tid = "tpolicy";
+        let dir = tmp.path().join("tenants").join(tid);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Legacy meta table WITHOUT the policy columns.
+        {
+            let c = Connection::open(dir.join("data.sqlite")).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (
+                    collection_name TEXT PRIMARY KEY,
+                    anon_caps_json  TEXT NOT NULL DEFAULT '[\"select\"]',
+                    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )
+            .unwrap();
+        }
+        migrate_tenant_db(tmp.path(), tid).unwrap();
+        let c = Connection::open(dir.join("data.sqlite")).unwrap();
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(_system_collection_meta)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for col in [
+            "select_policy_json",
+            "insert_policy_json",
+            "update_policy_json",
+            "delete_policy_json",
+        ] {
+            assert!(cols.contains(&col.to_string()), "missing {col}; cols={cols:?}");
+        }
     }
 
     #[test]
