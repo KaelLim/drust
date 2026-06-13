@@ -78,6 +78,52 @@ async fn insert_post(app: &axum::Router, tid: &str, tok: &str, status: &str, bod
     assert_eq!(resp.status(), StatusCode::CREATED, "insert {status} failed");
 }
 
+/// `POST /t/<id>/records/posts` → the new row's `id` from the 201 body.
+async fn insert_post_returning_id(
+    app: &axum::Router,
+    tid: &str,
+    tok: &str,
+    status: &str,
+    body: &str,
+) -> i64 {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/records/posts"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"data": {"status": status, "body": body}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "insert {status} failed");
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    v["id"].as_i64().expect("create body has numeric id")
+}
+
+/// `GET /t/<id>/records/<coll>/<row_id>` → just the HTTP status.
+async fn get_one_status(app: &axum::Router, tid: &str, tok: &str, coll: &str, row_id: i64) -> u16 {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/t/{tid}/records/{coll}/{row_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    resp.status().as_u16()
+}
+
 /// `POST /t/<id>/collections/posts/list` → the `records` array.
 async fn list_records(app: &axum::Router, tid: &str, tok: &str, coll: &str) -> Vec<Value> {
     let resp = app
@@ -203,4 +249,34 @@ async fn anon_search_filtered_by_select_policy() {
 
     let svc_hits = search(svc.clone()).await;
     assert_eq!(svc_hits.len(), 2, "service search bypasses select policy");
+}
+
+#[tokio::test]
+async fn anon_get_one_blocked_by_select_policy() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("rls-read-getone").await;
+    seed_status_posts(&dir, &tid).await;
+    // Policy must be set before any router read caches a policy-free view.
+    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+
+    // Service inserts both rows and records their ids.
+    let draft_id = insert_post_returning_id(&app, &tid, &svc, "draft", "b").await;
+    let published_id = insert_post_returning_id(&app, &tid, &svc, "published", "a").await;
+
+    // Anon: the draft is invisible under the published-only USING → 404.
+    let draft_status = get_one_status(&app, &tid, &anon, "posts", draft_id).await;
+    assert_eq!(
+        draft_status, 404,
+        "anon must not see a draft under a published-only policy"
+    );
+
+    // Anon: the published row passes the USING → 200.
+    let published_status = get_one_status(&app, &tid, &anon, "posts", published_id).await;
+    assert_eq!(
+        published_status, 200,
+        "anon may see the published row under the policy"
+    );
+
+    // Service bypasses the policy → the draft is visible (200).
+    let svc_status = get_one_status(&app, &tid, &svc, "posts", draft_id).await;
+    assert_eq!(svc_status, 200, "service bypasses the select policy on GET-one");
 }
