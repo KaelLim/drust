@@ -138,13 +138,27 @@ pub async fn post_list(
         t.role,
     );
 
+    // Explicit-policy USING (AND-ed alongside the owner clause). Service →
+    // None (bypass). A compile error → 500 with a typed code.
+    let policy_clause =
+        match crate::query::policy::policy_using_sql(&ctx, &schema, DmlVerb::Select) {
+            Ok(c) => c,
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "POLICY_COMPILE_ERROR",
+                    &e.to_string(),
+                );
+            }
+        };
+
     // ── Compile SQL ──────────────────────────────────────────────────
     let owner_ref = owner_pair.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
-    let (list_sql, count_sql, binds) = match build_structured_list_sql(&schema, &req, owner_ref, None)
-    {
-        Ok(x) => x,
-        Err(e) => return map_list_error(e),
-    };
+    let (list_sql, count_sql, binds) =
+        match build_structured_list_sql(&schema, &req, owner_ref, policy_clause) {
+            Ok(x) => x,
+            Err(e) => return map_list_error(e),
+        };
 
     // Vector field names — server-side default-hide on the response
     // (matches GET /records behaviour). For `/list`, we already excluded

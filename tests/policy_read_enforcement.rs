@@ -1,0 +1,206 @@
+//! RLS Phase 4 (Read) — explicit-policy USING enforcement on `/list` and
+//! `/search`.
+//!
+//! A `select` policy `{"using":{"status":"published"}}` must filter the
+//! `POST /t/<id>/collections/<c>/list` result for non-service callers
+//! (anon / user) while the service token bypasses it entirely. The USING
+//! AND-composes alongside the (here absent) owner clause; owner_field
+//! behaviour is unchanged.
+//!
+//! Until Task 17 (the REST `set_policy`) lands, policies are written
+//! directly via `storage::schema::write_policy` + `schema_cache.invalidate`
+//! per the plan's Test Harness appendix.
+
+#[path = "helpers.rs"]
+mod helpers;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use drust::storage::schema::DmlVerb;
+use helpers::{grab_pool, spin_up_dual_role_self_register};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+// ── Fixtures ──────────────────────────────────────────────────────────
+
+/// `posts(status TEXT, body TEXT)` with anon select cap, no owner_field.
+async fn seed_status_posts(dir: &tempfile::TempDir, tenant: &str) {
+    let pool = grab_pool(tenant, dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL,
+                body TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO _system_collection_meta
+                  (collection_name, anon_caps_json)
+                  VALUES ('posts', '[\"select\"]')
+                  ON CONFLICT(collection_name) DO UPDATE SET
+                    anon_caps_json = '[\"select\"]';",
+        )
+    })
+    .await
+    .unwrap();
+}
+
+/// Write a select-policy USING directly (pre-Task-17) + invalidate cache.
+async fn set_select_using(dir: &tempfile::TempDir, tenant: &str, coll: &str, policy_json: Value) {
+    let pool = grab_pool(tenant, dir).await;
+    let policy: drust::query::policy::Policy = serde_json::from_value(policy_json).unwrap();
+    let coll_owned = coll.to_string();
+    pool.with_writer(move |c| {
+        drust::storage::schema::write_policy(c, &coll_owned, DmlVerb::Select, Some(&policy))
+    })
+    .await
+    .unwrap();
+    pool.schema_cache.invalidate(coll);
+}
+
+async fn insert_post(app: &axum::Router, tid: &str, tok: &str, status: &str, body: &str) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/records/posts"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"data": {"status": status, "body": body}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "insert {status} failed");
+}
+
+/// `POST /t/<id>/collections/posts/list` → the `records` array.
+async fn list_records(app: &axum::Router, tid: &str, tok: &str, coll: &str) -> Vec<Value> {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/collections/{coll}/list"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "list {coll} non-OK");
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    v["records"].as_array().cloned().unwrap_or_default()
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn anon_list_filtered_by_select_policy() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("rls-read-list").await;
+    seed_status_posts(&dir, &tid).await;
+    // Set the policy BEFORE any router read so the router's own per-pool
+    // schema_cache never caches a policy-free view (the test harness pool
+    // from grab_pool is a SEPARATE registry/cache instance).
+    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+
+    // Service inserts both rows.
+    insert_post(&app, &tid, &svc, "published", "a").await;
+    insert_post(&app, &tid, &svc, "draft", "b").await;
+
+    // Anon: only the published row.
+    let anon_rows = list_records(&app, &tid, &anon, "posts").await;
+    assert_eq!(anon_rows.len(), 1, "anon should see only published");
+    assert_eq!(anon_rows[0]["status"], "published");
+
+    // Service bypasses the policy: both rows.
+    let svc_rows = list_records(&app, &tid, &svc, "posts").await;
+    assert_eq!(svc_rows.len(), 2, "service bypasses the select policy");
+}
+
+#[tokio::test]
+async fn anon_search_filtered_by_select_policy() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("rls-read-search").await;
+    // posts with a vector field so /search has something to scan.
+    let pool = grab_pool(&tid, &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL,
+                embedding BLOB,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO _system_collection_meta
+                  (collection_name, anon_caps_json, vector_fields_json)
+                  VALUES ('posts', '[\"select\"]',
+                          '[{\"name\":\"embedding\",\"dim\":3}]');",
+        )
+    })
+    .await
+    .unwrap();
+    drop(pool);
+
+    // Set the policy BEFORE any router read (see the list test for why).
+    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+
+    // Insert two rows with embeddings (service token).
+    for (status, vec) in [("published", [1.0, 0.0, 0.0]), ("draft", [0.0, 1.0, 0.0])] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/t/{tid}/records/posts"))
+                    .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"data": {"status": status, "embedding": vec}}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED, "insert {status} failed");
+    }
+
+    let search = |tok: String| {
+        let app = app.clone();
+        let tid = tid.clone();
+        async move {
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/t/{tid}/collections/posts/search"))
+                        .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({"field": "embedding", "vector": [1.0, 0.0, 0.0], "k": 10})
+                                .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "search non-OK");
+            let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+            let v: Value = serde_json::from_slice(&bytes).unwrap();
+            v["rows"].as_array().cloned().unwrap_or_default()
+        }
+    };
+
+    let anon_hits = search(anon.clone()).await;
+    assert_eq!(anon_hits.len(), 1, "anon search filtered to published");
+    assert_eq!(anon_hits[0]["status"], "published");
+
+    let svc_hits = search(svc.clone()).await;
+    assert_eq!(svc_hits.len(), 2, "service search bypasses select policy");
+}
