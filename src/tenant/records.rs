@@ -282,6 +282,24 @@ pub async fn list_handler(
              internally.",
         );
     }
+    // RLS Task 15 — anon cannot pass raw `?filter=` / `?sort=` on a
+    // collection that has adopted ANY row-level rule (owner_field OR an
+    // explicit policy). Those query-string values interpolate verbatim into
+    // SQL (build_list_sql), so a `--` comment could void the owner/policy
+    // clause that anon must be subject to. Reject; point at the structured
+    // /list endpoint (FilterAst, `?`-bound). A plain list (no filter/sort)
+    // still works — owner/policy USING is enforced on the SQL drust builds.
+    if matches!(ctx, AuthCtx::Anon)
+        && (schema.owner_field.is_some() || !schema.policies.is_empty())
+        && (qs.filter.is_some() || qs.sort.is_some())
+    {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "ANON_QUERY_DENIED_ON_POLICY",
+            "anon raw filter/sort is unsupported on a policy-protected collection; \
+             use POST /collections/<c>/list (FilterAst)",
+        );
+    }
     // require_dml_cap already loaded the schema (via the cache); a
     // successful return proves the collection exists. The previous
     // standalone collection_exists reader hit + "existing collections"
