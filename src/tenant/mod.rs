@@ -11,6 +11,7 @@ pub mod oauth_admin_routes;
 pub mod oauth_config;
 pub mod oauth_routes;
 pub mod owner_field;
+pub mod policy_routes;
 pub mod query_endpoint;
 pub mod realtime_routes;
 pub mod records;
@@ -440,6 +441,14 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     realtime_routes::put_realtime_handler(ext, path, body, b.clone())
                 }
             }),
+        )
+        .route(
+            "/t/{tenant}/collections/{coll}/policies",
+            put(policy_routes::put_policies).get(policy_routes::get_policies),
+        )
+        .route(
+            "/t/{tenant}/collections/{coll}/policies/{op}",
+            delete(policy_routes::delete_policy),
         )
         .route(
             "/t/{tenant}/collections/{coll}/description",
