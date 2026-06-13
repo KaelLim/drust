@@ -48,6 +48,16 @@ struct RowsPage {
     indices: Vec<IndexInfo>,
     /// v1.19 — collection-level description for the description tile.
     collection_description: Option<String>,
+    /// RLS v1.38 — pre-serialized `CollectionPolicies` JSON consumed by the
+    /// settings popover's Policies panel to hydrate the per-op builders.
+    policies_json: String,
+    /// RLS v1.38 — the collection's `owner_field` (None when not owner-scoped).
+    /// Drives the "this collection is owner-scoped; explicit policies AND with
+    /// the owner rule" note in the Policies panel (§6.2).
+    owner_field: Option<String>,
+    /// RLS v1.38 — `owner_field` pre-serialized as a JSON string|null for the
+    /// JS module (avoids the non-existent `|json` askama filter).
+    owner_field_json: String,
     /// v1.19.1 — error code surfaced when the description form bounced off
     /// the server-side validator. `None` on the plain GET render.
     desc_error: Option<String>,
@@ -230,6 +240,22 @@ fn editor_json_payloads<F: serde::Serialize>(
     )
 }
 
+/// RLS v1.38 — `<script>`-safe escaper for the settings popover's Policies
+/// panel payloads. A `Policy` FilterAst literal operand is arbitrary
+/// tenant-supplied free text, so a stored `</script>` literal must not be
+/// able to break out of the JS island — these MUST route through the
+/// canonical escaper exactly like `editor_json_payloads`, never a raw
+/// `serde_json::to_string` (drust/CLAUDE.md script-island invariant).
+/// `owner_field` is a validated SQL column name, escaped here too for
+/// defense-in-depth / consistency. Returns `(policies_json, owner_field_json)`.
+fn policy_json_payloads(
+    policies: &crate::query::policy::CollectionPolicies,
+    owner_field: &Option<String>,
+) -> (String, String) {
+    use crate::mgmt::script_json::json_for_script;
+    (json_for_script(policies), json_for_script(owner_field))
+}
+
 pub async fn collection_rows_page(
     State(state): State<TenantsState>,
     LocaleHint(locale): LocaleHint,
@@ -334,6 +360,16 @@ pub async fn collection_rows_page(
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     let (fields_json, tenant_id_json, coll_name_json) =
         editor_json_payloads(&schema.fields, &tenant_id, &coll_name);
+    // RLS v1.38 — serialize the stored policy set + owner_field for the
+    // settings popover's Policies panel. Both carry tenant-controlled free
+    // text (a `Policy` FilterAst literal operand is an arbitrary tenant-
+    // supplied string), so they MUST route through the canonical
+    // `<script>`-island escaper exactly like `fields_json` above — a raw
+    // `serde_json::to_string` would let a stored `</script>` literal break
+    // out of the JS island (drust/CLAUDE.md script-island invariant).
+    let owner_field = schema.owner_field.clone();
+    let (policies_json, owner_field_json) =
+        policy_json_payloads(&schema.policies, &owner_field);
     Html(
         RowsPage {
             tenant_id,
@@ -347,6 +383,9 @@ pub async fn collection_rows_page(
             anon_cap_choices,
             realtime_enabled,
             collection_description: schema.description,
+            policies_json,
+            owner_field,
+            owner_field_json,
             desc_error: qs.desc_error.clone(),
             fields_json,
             tenant_id_json,
@@ -489,6 +528,113 @@ pub async fn update_realtime(
         "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=realtime"
     ))
     .into_response()
+}
+
+/// JSON body for the admin policy editor. Each op is optional; `Some` replaces
+/// that op's stored policy, `None` (key absent) clears it. Mirrors the
+/// data-plane `tenant::policy_routes::PutPoliciesBody` shape so the same JSON
+/// the [⚙] popover's "view JSON" disclosure shows round-trips through either
+/// surface.
+#[derive(serde::Deserialize)]
+pub struct AdminPoliciesBody {
+    #[serde(default)]
+    pub select: Option<crate::query::policy::Policy>,
+    #[serde(default)]
+    pub insert: Option<crate::query::policy::Policy>,
+    #[serde(default)]
+    pub update: Option<crate::query::policy::Policy>,
+    #[serde(default)]
+    pub delete: Option<crate::query::policy::Policy>,
+}
+
+/// POST `/admin/tenants/{id}/collections/{coll}/policies`
+///
+/// Admin-plane wrapper over `write_policy` — the [⚙] settings popover's
+/// Policies panel posts here via `fetch()` (the admin UI holds the admin
+/// session, not a bearer token, so it cannot reuse the service-only data-plane
+/// `PUT …/policies` route). Validates each supplied policy and replaces the
+/// stored set in one writer transaction (existence + `validate_policy` run
+/// INSIDE the writer closure, TOCTOU-safe — mirrors `put_policies` and
+/// `set_owner_field`), then invalidates the schema cache. Returns JSON,
+/// matching the other admin JSON endpoints (`create_index_admin`,
+/// `explain_admin`).
+pub async fn admin_update_policies(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name)): Path<(String, String)>,
+    Json(body): Json<AdminPoliciesBody>,
+) -> Response {
+    use crate::storage::schema::{DmlVerb, is_protected_collection};
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    if is_protected_collection(&coll_name) {
+        return json_err(
+            StatusCode::FORBIDDEN,
+            "PROTECTED_COLLECTION",
+            "cannot set policies on a _system_* collection",
+        );
+    }
+
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let cache = pool.schema_cache.clone();
+    let coll_c = coll_name.clone();
+    let res = pool
+        .with_writer(move |c| {
+            // Existence + validation INSIDE the writer closure (TOCTOU-safe,
+            // mirrors put_policies / set_owner_field).
+            let schema = match crate::storage::schema::describe_collection(c, &coll_c)? {
+                Some(s) => s,
+                None => {
+                    return Ok(Err((
+                        "COLLECTION_NOT_FOUND",
+                        "no such collection".to_string(),
+                    )));
+                }
+            };
+            for (op, p) in [
+                (DmlVerb::Select, &body.select),
+                (DmlVerb::Insert, &body.insert),
+                (DmlVerb::Update, &body.update),
+                (DmlVerb::Delete, &body.delete),
+            ] {
+                if let Some(policy) = p {
+                    if let Err(e) = crate::query::policy::validate_policy(&schema, op, policy) {
+                        return Ok(Err(("POLICY_INVALID", e.to_string())));
+                    }
+                }
+                crate::storage::schema::write_policy(c, &coll_c, op, p.as_ref())?;
+            }
+            Ok(Ok(()))
+        })
+        .await;
+    cache.invalidate(&coll_name);
+    match res {
+        Ok(Ok(())) => axum::Json(serde_json::json!({"ok": true})).into_response(),
+        Ok(Err((code @ "COLLECTION_NOT_FOUND", msg))) => {
+            json_err(StatusCode::NOT_FOUND, code, &msg)
+        }
+        Ok(Err((code, msg))) => json_err(StatusCode::BAD_REQUEST, code, &msg),
+        Err(e) => json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DB_ERROR",
+            &e.to_string(),
+        ),
+    }
+}
+
+/// Build a JSON error body with `error_code` + `message`, matching the shape
+/// the other admin JSON endpoints (`create_index_admin`, `explain_admin`) emit.
+fn json_err(status: StatusCode, code: &str, msg: &str) -> Response {
+    let body = serde_json::json!({ "error_code": code, "message": msg });
+    let mut r = axum::Json(body).into_response();
+    *r.status_mut() = status;
+    r
 }
 
 // ── Admin index DDL endpoints ─────────────────────────────────────────────────
@@ -930,5 +1076,73 @@ mod editor_payload_tests {
         // Identifiers round-trip untouched.
         assert_eq!(tid_json, "\"t-1\"");
         assert_eq!(coll_json, "\"posts\"");
+    }
+
+    // RLS v1.38 — the Policies panel injects `policies_json` into the page
+    // `<script>` island via `policy_json_payloads` (the same path the handler
+    // calls). A `Policy` FilterAst literal operand is arbitrary tenant-supplied
+    // free text, so a stored `</script>` literal must NOT be able to break out
+    // of the JS island. This pins that the real handler helper neutralizes the
+    // closer (and that the naive `serde_json::to_string` the review caught
+    // would have leaked it).
+    #[test]
+    fn policies_payload_escapes_hostile_literal() {
+        use super::policy_json_payloads;
+        use crate::query::policy::{CollectionPolicies, Policy};
+        use crate::query::vector_filter::FilterAst;
+
+        let mut leaf = serde_json::Map::new();
+        leaf.insert(
+            "title".into(),
+            serde_json::json!({ "$eq": "</script><img src=x onerror=alert(1)>" }),
+        );
+        let policies = CollectionPolicies {
+            select: Some(Policy {
+                using: Some(FilterAst::Leaf(leaf)),
+                check: None,
+            }),
+            ..Default::default()
+        };
+
+        // What the handler actually emits.
+        let (policies_json, _) = policy_json_payloads(&policies, &None);
+        // The hostile literal really is serialized into the payload …
+        assert!(
+            policies_json.contains("onerror=alert(1)"),
+            "literal must reach the payload: {policies_json}"
+        );
+        // … but its `</script>` closer is neutralized.
+        assert!(
+            !policies_json.contains("</script>"),
+            "live closer leaked: {policies_json}"
+        );
+        assert!(
+            policies_json.contains("<\\/script>"),
+            "closer not escaped: {policies_json}"
+        );
+
+        // Guard against regressing to the naive path the review rejected: the
+        // raw serializer would leave the live `</script>` closer intact, so
+        // this assertion proves the test is not vacuous.
+        let raw = serde_json::to_string(&policies).unwrap();
+        assert!(
+            raw.contains("</script>"),
+            "test is vacuous unless the naive path leaks the closer: {raw}"
+        );
+    }
+
+    // RLS v1.38 — `owner_field_json` shares the island; a validated SQL column
+    // name is not exploitable in practice, but it MUST use the same escaper for
+    // defense-in-depth / consistency (per the review). Pin that None → `null`
+    // and a value round-trips through the handler helper unchanged.
+    #[test]
+    fn owner_field_payload_uses_escaper() {
+        use super::policy_json_payloads;
+        use crate::query::policy::CollectionPolicies;
+        let empty = CollectionPolicies::default();
+        let (_, none_json) = policy_json_payloads(&empty, &None);
+        assert_eq!(none_json, "null");
+        let (_, some_json) = policy_json_payloads(&empty, &Some("user_id".to_string()));
+        assert_eq!(some_json, "\"user_id\"");
     }
 }

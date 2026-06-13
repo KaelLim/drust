@@ -439,6 +439,22 @@ for (;;) {
             </details>
           </section>
           <section>
+            <h3>{{ t.s("collection_page.settings.section.policies") }}</h3>
+            <p style="font:400 12px/1.5 var(--sans);color:var(--muted);margin:0 0 8px;">{{ t.s("collection_page.policies.intro") }}</p>
+            {% if owner_field.is_some() %}
+            <p class="pill warn" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 10px;font:400 11.5px/1.4 var(--sans);"><span class="dot"></span>{{ t.s("collection_page.policies.owner_note") }}</p>
+            {% endif %}
+            <div id="policy-builders"></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:10px;">
+              <button type="button" id="policy-save" class="btn btn-sm btn-primary">{{ t.s("collection_page.policies.save") }}</button>
+              <span id="policy-save-msg" style="font:400 12px/1.4 var(--sans);color:var(--muted);"></span>
+            </div>
+            <details style="margin-top:10px;">
+              <summary style="cursor:pointer;color:var(--muted);font:400 12px/1.4 var(--sans);">{{ t.s("collection_page.policies.view_json") }}</summary>
+              <pre id="policy-json-view" class="code" style="margin-top:6px;max-height:240px;overflow:auto;"></pre>
+            </details>
+          </section>
+          <section>
             <h3>{{ t.s("collection_page.settings.section.developer") }}</h3>
             <button type="button" id="open-explain-modal" class="btn btn-sm">{{ t.s("collection_page.settings.run_explain") }}</button>
           </section>
@@ -462,6 +478,8 @@ for (;;) {
   const tenantId = {{ tenant_id_json|safe }};
   const collName = {{ coll_name_json|safe }};
   const fields   = {{ fields_json|safe }};   // [{name, sql_type, nullable, pk, ...}]
+  const policies   = {{ policies_json|safe }};      // CollectionPolicies {select?,insert?,update?,delete?}
+  const ownerField = {{ owner_field_json|safe }};   // string | null
   const state = {
     view: 'table',
     filters: [],
@@ -858,6 +876,216 @@ for (;;) {
     out.textContent = j.plan ? j.plan.map(p => (p.parent > 0 ? '  ' : '') + p.detail).join('\n')
                               : `${j.error_code || 'ERROR'}: ${j.message || ''}`;
   });
+
+  // ── Policy builder (RLS v1.38) ───────────────────────────────────────
+  // Guided per-op editor reusing the chip-filter operand vocabulary. Each op
+  // has two rule-lists — USING (which existing rows) and CHECK (allow the
+  // new/updated row). A rule = {field, op, operandKind, value}; rules in a
+  // list AND-compose into a FilterAst leaf (single) or {and:[...]} (many).
+  // Operand kinds: 'literal' (typed value), 'auth' ({"$auth":"id"}), and the
+  // standalone 'authenticated' rule ({"$authenticated":true}). Mirrors the
+  // policy grammar in src/query/policy.rs.
+  (function(){
+    const root = document.getElementById('policy-builders');
+    if (!root) return;
+    const OPS = ['select','insert','update','delete'];
+    // Leaf comparison ops the policy engine accepts (bare form — policy.rs
+    // also accepts the $-prefixed aliases, but the bare form is canonical).
+    const POL_OPS = ['eq','ne','gt','gte','lt','lte','like','is_null','is_not_null'];
+    const POL_OP_LABELS = { eq:'=', ne:'≠', gt:'>', gte:'≥', lt:'<', lte:'≤', like:'LIKE', is_null:'is null', is_not_null:'is not null' };
+    // Field names available as leaf keys (id/created_at/updated_at are always
+    // valid per validate_field; exclude vector columns — they can't be filtered).
+    const policyFields = ['id'].concat(fields.filter(f => f.sql_type !== 'vector').map(f => f.name))
+                               .concat(['created_at','updated_at'])
+                               .filter((v, i, a) => a.indexOf(v) === i);
+
+    // model: { select:{using:[rule],check:[rule]}, insert:{...}, ... }
+    const model = {};
+    OPS.forEach(op => { model[op] = { using: [], check: [] }; });
+
+    // Decompose a stored FilterAst into the flat rule-list the builder edits.
+    // Only shapes the builder itself can emit round-trip exactly; anything
+    // else (nested or/not, multi-key leaves) is left to the JSON view and not
+    // editable here — we surface it read-only by keeping it out of the model
+    // but still showing it in "view JSON".
+    function astToRules(ast){
+      if (!ast) return [];
+      const leaves = (ast.and && Array.isArray(ast.and)) ? ast.and : [ast];
+      const rules = [];
+      for (const leaf of leaves) {
+        if (!leaf || typeof leaf !== 'object') return null;
+        const keys = Object.keys(leaf);
+        if (keys.length !== 1) return null;
+        const key = keys[0];
+        if (key === '$authenticated') { rules.push({ kind:'authenticated', value: leaf[key] !== false }); continue; }
+        const body = leaf[key];
+        // eq-shorthand: {field: scalar} or {field:{"$auth":"id"}}
+        if (body === null || typeof body !== 'object') { rules.push({ field:key, op:'eq', operandKind:'literal', value: body }); continue; }
+        if (body.$auth !== undefined) { rules.push({ field:key, op:'eq', operandKind:'auth', value:'' }); continue; }
+        const bk = Object.keys(body);
+        if (bk.length !== 1) return null;
+        let op = bk[0].replace(/^\$/, '');
+        let operand = body[bk[0]];
+        if (op === 'is_null' || op === 'is_not_null') { rules.push({ field:key, op:op, operandKind:'literal', value:'' }); continue; }
+        if (operand !== null && typeof operand === 'object' && operand.$auth !== undefined) { rules.push({ field:key, op:op, operandKind:'auth', value:'' }); continue; }
+        rules.push({ field:key, op:op, operandKind:'literal', value: operand });
+      }
+      return rules;
+    }
+
+    // Hydrate the model from the stored policies; flag any clause the builder
+    // cannot represent so we render it read-only ("advanced — edit via JSON").
+    const advanced = {}; // op -> {using?:true, check?:true}
+    OPS.forEach(op => {
+      const p = policies[op];
+      if (!p) return;
+      ['using','check'].forEach(dir => {
+        const r = astToRules(p[dir]);
+        if (r === null) { advanced[op] = advanced[op] || {}; advanced[op][dir] = true; }
+        else model[op][dir] = r;
+      });
+    });
+
+    function operandJson(rule){
+      if (rule.operandKind === 'auth') return { $auth: 'id' };
+      return coerce(rule.value);
+    }
+    // A single rule → a FilterAst leaf.
+    function ruleToLeaf(rule){
+      if (rule.kind === 'authenticated') return { $authenticated: rule.value !== false };
+      if (rule.op === 'is_null' || rule.op === 'is_not_null') {
+        const o = {}; o[rule.field] = {}; o[rule.field]['$' + rule.op] = true; return o;
+      }
+      if (rule.op === 'eq') { const o = {}; o[rule.field] = operandJson(rule); return o; }
+      const o = {}; o[rule.field] = {}; o[rule.field]['$' + rule.op] = operandJson(rule); return o;
+    }
+    function rulesToAst(rules){
+      if (!rules.length) return undefined;
+      if (rules.length === 1) return ruleToLeaf(rules[0]);
+      return { and: rules.map(ruleToLeaf) };
+    }
+    // Build the CollectionPolicies body for PUT, skipping empty ops.
+    function buildBody(){
+      const body = {};
+      OPS.forEach(op => {
+        const adv = advanced[op] || {};
+        const u = adv.using ? policies[op].using : rulesToAst(model[op].using);
+        const c = adv.check ? policies[op].check : rulesToAst(model[op].check);
+        if (u !== undefined || c !== undefined) {
+          const pol = {};
+          if (u !== undefined) pol.using = u;
+          if (c !== undefined) pol.check = c;
+          body[op] = pol;
+        }
+      });
+      return body;
+    }
+
+    function ruleRow(op, dir, idx, rule){
+      const wrap = document.createElement('div');
+      wrap.className = 'row';
+      wrap.style.cssText = 'gap:6px;align-items:center;margin:4px 0;';
+      if (rule.kind === 'authenticated') {
+        wrap.innerHTML = '<span class="coll-chip">@authenticated</span>';
+      } else {
+        const fieldSel = '<select class="p-field">' + policyFields.map(f => '<option value="'+escapeHtml(f)+'"'+(f===rule.field?' selected':'')+'>'+escapeHtml(f)+'</option>').join('') + '</select>';
+        const opSel = '<select class="p-op">' + POL_OPS.map(o => '<option value="'+o+'"'+(o===rule.op?' selected':'')+'>'+escapeHtml(POL_OP_LABELS[o])+'</option>').join('') + '</select>';
+        const kindSel = '<select class="p-kind"><option value="literal"'+(rule.operandKind==='literal'?' selected':'')+'>value…</option><option value="auth"'+(rule.operandKind==='auth'?' selected':'')+'>@request.auth.id</option></select>';
+        const valIn = '<input class="p-val" type="text" placeholder="value" value="'+escapeHtml(rule.value==null?'':String(rule.value))+'" style="flex:1;min-width:80px;">';
+        wrap.innerHTML = fieldSel + opSel + kindSel + valIn;
+      }
+      const x = document.createElement('button');
+      x.type = 'button'; x.className = 'chip-x'; x.textContent = '×'; x.setAttribute('aria-label','remove');
+      x.addEventListener('click', () => { model[op][dir].splice(idx, 1); render(); });
+      wrap.appendChild(x);
+      // Bind edits.
+      const fs = wrap.querySelector('.p-field'); if (fs) fs.addEventListener('change', e => { rule.field = e.target.value; syncJson(); });
+      const os = wrap.querySelector('.p-op');    if (os) os.addEventListener('change', e => { rule.op = e.target.value; render(); });
+      const ks = wrap.querySelector('.p-kind');  if (ks) ks.addEventListener('change', e => { rule.operandKind = e.target.value; render(); });
+      const vi = wrap.querySelector('.p-val');   if (vi) vi.addEventListener('input', e => { rule.value = e.target.value; syncJson(); });
+      // Hide the value input for null-ops and for the @auth operand.
+      if (rule.kind !== 'authenticated') {
+        const isNullOp = (rule.op === 'is_null' || rule.op === 'is_not_null');
+        if (vi) vi.style.display = (isNullOp || rule.operandKind === 'auth') ? 'none' : '';
+        if (ks) ks.style.display = isNullOp ? 'none' : '';
+      }
+      return wrap;
+    }
+
+    function dirBlock(op, dir, labelKey){
+      const block = document.createElement('div');
+      block.style.cssText = 'margin:6px 0;';
+      const lbl = document.createElement('div');
+      lbl.style.cssText = 'font:600 11px/1.4 var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.04em;';
+      lbl.textContent = labelKey;
+      block.appendChild(lbl);
+      const adv = (advanced[op] || {})[dir];
+      if (adv) {
+        const note = document.createElement('div');
+        note.style.cssText = 'font:400 12px/1.4 var(--sans);color:var(--muted);';
+        note.textContent = 'advanced expression — edit via PUT …/policies';
+        block.appendChild(note);
+        return block;
+      }
+      model[op][dir].forEach((rule, idx) => block.appendChild(ruleRow(op, dir, idx, rule)));
+      const add = document.createElement('button');
+      add.type = 'button'; add.className = 'btn btn-sm btn-ghost'; add.textContent = '{{ t.s("collection_page.policies.add_rule") }}';
+      add.style.cssText = 'margin-top:2px;';
+      add.addEventListener('click', () => {
+        model[op][dir].push({ field: policyFields[0], op:'eq', operandKind:'literal', value:'' });
+        render();
+      });
+      block.appendChild(add);
+      // For USING, also offer the @authenticated standalone rule.
+      const addAuth = document.createElement('button');
+      addAuth.type = 'button'; addAuth.className = 'btn btn-sm btn-ghost'; addAuth.textContent = '+ @authenticated';
+      addAuth.style.cssText = 'margin-top:2px;margin-left:6px;';
+      addAuth.addEventListener('click', () => { model[op][dir].push({ kind:'authenticated', value:true }); render(); });
+      block.appendChild(addAuth);
+      return block;
+    }
+
+    function render(){
+      root.innerHTML = '';
+      OPS.forEach(op => {
+        const det = document.createElement('details');
+        det.style.cssText = 'margin:4px 0;border:1px solid var(--border-mid,currentColor);border-radius:6px;padding:6px 8px;';
+        const sum = document.createElement('summary');
+        sum.style.cssText = 'cursor:pointer;font:600 12px/1.4 var(--sans);';
+        const hasAny = (model[op].using.length || model[op].check.length || (advanced[op] && (advanced[op].using||advanced[op].check)));
+        sum.textContent = op + (hasAny ? ' •' : '');
+        det.appendChild(sum);
+        det.appendChild(dirBlock(op, 'using', '{{ t.s("collection_page.policies.using_label") }}'));
+        det.appendChild(dirBlock(op, 'check', '{{ t.s("collection_page.policies.check_label") }}'));
+        root.appendChild(det);
+      });
+      syncJson();
+    }
+    function syncJson(){
+      const view = document.getElementById('policy-json-view');
+      if (view) view.textContent = JSON.stringify(buildBody(), null, 2);
+    }
+
+    render();
+
+    document.getElementById('policy-save').addEventListener('click', async () => {
+      const msg = document.getElementById('policy-save-msg');
+      msg.style.color = 'var(--muted)'; msg.textContent = '…';
+      try {
+        const r = await fetch('/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/policies', {
+          method: 'POST', headers: {'content-type':'application/json'},
+          body: JSON.stringify(buildBody()),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((j.error_code ? j.error_code + ': ' : '') + (j.message || r.statusText));
+        msg.style.color = 'var(--ok, currentColor)';
+        msg.textContent = '{{ t.s("collection_page.policies.saved") }}';
+      } catch (e) {
+        msg.style.color = 'var(--danger, currentColor)';
+        msg.textContent = '{{ t.s("collection_page.policies.save_failed") }}: ' + (e.message || e);
+      }
+    });
+  })();
 
   // Expose for Task 17 (filter popover) + Task 18 (sort/settings/explain) wiring.
   window.drustColl = { state: state, refresh: refresh, fields: fields, tenantId: tenantId, collName: collName };

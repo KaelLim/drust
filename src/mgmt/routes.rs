@@ -897,6 +897,10 @@ impl MgmtState {
                 post(super::browse::explain_admin),
             )
             .route(
+                "/admin/tenants/{id}/collections/{coll}/policies",
+                post(super::browse::admin_update_policies),
+            )
+            .route(
                 "/admin/tenants/{id}/collections/{coll}/_list",
                 post(super::collection_list::admin_list_handler),
             )
