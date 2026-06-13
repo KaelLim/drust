@@ -158,6 +158,13 @@ pub async fn get_schema_overview(s: &DrustMcp) -> anyhow::Result<serde_json::Val
                 obj.entry("read_scope").or_insert(serde_json::Value::Null);
                 obj.entry("vector_fields")
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                // RLS (v1.38): CollectionPolicies is #[serde(skip_serializing_if=
+                // is_empty)] so the key vanishes for the common no-policy case.
+                // Force it present (as {}) on the OVERVIEW surface so the model
+                // can tell "no policy" from "key omitted" — same posture as
+                // owner_field/read_scope above.
+                obj.entry("policies")
+                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
             }
             v
         })

@@ -141,6 +141,36 @@ pub struct SetRealtimeArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetPolicyArgs {
+    pub collection: String,
+    /// One of "select" | "insert" | "update" | "delete".
+    pub op: String,
+    /// `using` clause: a FilterAst (and/or/not tree of eq/ne/gt/.../like/in
+    /// leaves) selecting WHICH existing rows the op may touch. Operands may
+    /// reference `{"$auth":"id"}` (the caller's user id), `{"$data":"<field>"}`
+    /// (the new/post-image row, CHECK only), or `{"$authenticated":true}`.
+    /// Omit to leave the op's `using` clause unset.
+    #[serde(default)]
+    pub using: Option<serde_json::Value>,
+    /// `check` clause: a FilterAst asserting the NEW row (post-image) is
+    /// allowed (insert/update). Omit to leave the op's `check` clause unset.
+    #[serde(default)]
+    pub check: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetPoliciesArgs {
+    pub collection: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ClearPolicyArgs {
+    pub collection: String,
+    /// One of "select" | "insert" | "update" | "delete".
+    pub op: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetDescriptionArgs {
     /// One of "collection" | "field" | "index".
     pub target: String,
@@ -791,6 +821,62 @@ impl DrustMcpService {
         }): Parameters<SetRealtimeArgs>,
     ) -> Result<CallToolResult, McpError> {
         match crate::mcp::tools::realtime::set_realtime(&self.state, &collection, enabled).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Set (replace) one operation's row-level-security policy on a \
+        collection. `op` is select|insert|update|delete. `using` is a FilterAst \
+        (and/or/not tree of eq/ne/gt/.../like/in leaves) selecting WHICH existing \
+        rows the op may read or target; `check` is a FilterAst asserting the NEW \
+        row (post-image) is allowed (insert/update). Operands may reference \
+        {\"$auth\":\"id\"} (caller's user id), {\"$data\":\"<field>\"} (post-image \
+        row, CHECK only), or {\"$authenticated\":true}. The policy AND-composes \
+        ALONGSIDE any owner_field rule — it does not replace it. Service tokens \
+        bypass all explicit policies. Validated at write time: unknown fields / \
+        vector fields / over-deep nesting are rejected (POLICY_INVALID). Refuses \
+        `_system_*` collections. EXAMPLE call: {\"collection\":\"posts\",\"op\":\
+        \"select\",\"using\":{\"owner\":{\"$auth\":\"id\"}}}.")]
+    async fn set_policy(
+        &self,
+        Parameters(SetPolicyArgs {
+            collection,
+            op,
+            using,
+            check,
+        }): Parameters<SetPolicyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::policy::set_policy(&self.state, &collection, &op, using, check)
+            .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Read the stored row-level-security policy set for a \
+        collection (all four ops). Returns `{collection, stored:{select?,insert?,\
+        update?,delete?}}`; an op key is absent when that op has no policy. See \
+        `set_policy` for the policy shape.")]
+    async fn get_policies(
+        &self,
+        Parameters(GetPoliciesArgs { collection }): Parameters<GetPoliciesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::policy::get_policies(&self.state, &collection).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Clear (remove) one operation's row-level-security policy \
+        on a collection, reverting that op to owner_field + cap-gate rules only. \
+        `op` is select|insert|update|delete. Refuses `_system_*` collections.")]
+    async fn clear_policy(
+        &self,
+        Parameters(ClearPolicyArgs { collection, op }): Parameters<ClearPolicyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::policy::clear_policy(&self.state, &collection, &op).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
