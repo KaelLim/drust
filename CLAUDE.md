@@ -5,8 +5,8 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-06-11
-version: 1.36.0
+updated: 2026-06-13
+version: 1.38.0
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -52,6 +52,7 @@ Stored in per-tenant `_system_collection_meta` (one row per collection). Surface
 - **`owner_field` + `read_scope`** (v1.9+): row-level filter for user tokens. INSERT auto-populates owner_field; UPDATE/DELETE foreign rows → 404; anon → 403 on owner-scoped collections; service bypasses but must populate owner_field on INSERT (409 OWNER_FIELD_REQUIRED).
 - **Vector fields** (v1.10+): `FieldSpec.type = "vector"` + required `dim` (1..=4096), lowered to BLOB of packed little-endian f32. Excluded from GET/list responses by default. sqlite-vec registered as auto-extension at process start.
 - **`description`** (v1.19+): per-collection / field / index / RPC plain-text (≤2048 bytes, no NUL). Stored in `description`, `field_descriptions_json`, `index_descriptions_json` columns. `get_schema_overview` MCP tool + `GET /t/<id>/schema/overview` REST return everything in one call for LLM bootstrap.
+- **RLS policies** (v1.38+, `src/query/policy.rs`): per-operation `Policy {using, check}` in four nullable `{select,insert,update,delete}_policy_json` columns, expressed as the existing `FilterAst` extended with three operands — `{"$auth":"id"}` (caller's `_system_users` id, or SQL `NULL` for anon), `{"$data":"<field>"}` (post-image field, CHECK only), `{"$authenticated":true}`. Two evaluators share the grammar: `compile_policy_using` → `?`-bound SQL `WHERE` (reads + update/delete target pre-flights), `eval_policy` → in-memory bool (insert/update CHECK + anon SSE filtering); a consistency corpus (`tests/policy_expression.rs`) proves they agree. Service bypasses; User/Anon get the op policy. Config is **service-only**: REST `PUT/GET/DELETE /t/<id>/collections/<c>/policies`, MCP `set_policy`/`get_policies`/`clear_policy`, admin `[⚙]` popover. `owner_field`/`read_scope` are unchanged — explicit policies AND-compose alongside the unchanged owner clause. Anon `/query` (raw, un-rewritable SELECT) is denied tenant-wide once any collection adopts `owner_field` or a policy (`ANON_QUERY_DENIED_ON_POLICY`, fail-closed).
 
 ### Tools & endpoints
 
@@ -125,13 +126,14 @@ Tenant files live in two **host-wide** buckets — `public` (website-enabled, se
 > [!CAUTION]
 > **drust's systemd unit deliberately OMITS `MemoryDenyWriteExecute`** (v1.36+). wasmtime's Cranelift JIT must `mmap(PROT_EXEC)` to run guest wasm; re-adding W^X makes EVERY edge-function upload/invoke fail the compile gate with `WASM_COMPILE_FAILED: unable to make memory executable` (EPERM) — and the unsandboxed `cargo test` suite stays green, so ONLY a live smoke against the running service catches it. The guest sandbox is enforced inside wasmtime (epoch deadline + `ResourceLimiter` + empty `WasiCtx` + WIT import-absence), not by process-wide W^X — a conscious posture trade-off. Rationale is inline in `deploy/drust.service`; the top-level `tool/CLAUDE.md` "never skip the sandbox directives" WARNING does **not** apply to this one line. If W^X must return, move functions to an AOT/out-of-process model — do not just re-add the directive.
 
-Four further invariants are enforced in code; they don't need callouts but must not be loosened without re-reasoning:
+Six further invariants are enforced in code; they don't need callouts but must not be loosened without re-reasoning:
 
 - **User tokens (`drust_user_*`) cannot use `/query`, `/query/explain`, or `/mcp`.** drust does not rewrite user-supplied SQL, so `owner_field` cannot be enforced on those surfaces. Reject with `403 QUERY_USER_DENIED` / `MCP_USER_DENIED`. For per-user reads of owner-scoped data, expose a stored RPC with `:user_id` (auto-bound from `AuthCtx`), or use `/search` (v1.10+) / `/list` (v1.21+) where drust builds the SQL.
 - **`/search` and `/list` accept user tokens; `/query` does not.** All three take structured input from users, but `/query` accepts raw SELECT (un-rewritable) while `/search` and `/list` take only `FilterAst` (`src/query/vector_filter.rs`) compiled with `?` binds, so `owner_field` is always enforceable. Any new endpoint accepting user input that lands in SQL must explicitly pick a camp.
 - **Anon SSE access requires `realtime_enabled AND anon_caps[select]`.** Both flags surface the same row content — opening one without the other is a side-channel leak. Disable order: PUT `/realtime` and MCP `set_realtime` invalidate `pool.schema_cache` BEFORE `bus.evict_collection`, so subscribers racing the gap read fresh schema and fail the gate immediately.
 - **Mode B keeps every HTTP request small by design (chunks ≤ `DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES`, default 64 MiB) so it stays under the 200 MB Caddy/.221 ingress limit.** Never raise a body-limit to accommodate large uploads — the tus chunking protocol exists precisely so each individual request stays small.
 - **The executor's host state is built with `functions: None` (`HostStateSeed::build_mcp`)** — restoring a dispatcher there reintroduces unbounded recursion; any new `DrustMcp` construction site must decide this field consciously.
+- **Explicit RLS policies AND-compose with the unchanged owner clause; `compute_owner_filter`, the cap-gate, and the insert-stamp / update-strip transforms are never modified** (v1.38+). Policy USING is `?`-compiled (`src/query/policy.rs::compile_policy_using`) and AND-ed into the same `WHERE` the owner clause already builds; policy CHECK runs `eval_policy` on the read-back row INSIDE the `with_writer_tx` closure (sentinel `POLICY_CHECK_FAILED` → rollback → `403`). Policy input must stay structured (`FilterAst`, never raw user SQL) so enforcement is by construction — same camp rule as `/search` and `/list`. The two evaluators must stay in lockstep: any grammar change updates both `compile_policy_using` and `eval_policy` and the `tests/policy_expression.rs` corpus.
 
 ## Directory map
 

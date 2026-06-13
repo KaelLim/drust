@@ -1,3 +1,74 @@
+## v1.38.0 — 2026-06-13
+
+### Row-Level Security (RLS) policies: per-collection, per-operation
+
+PocketBase-style row-level policies layered on top of — not replacing — the
+existing `owner_field`/`read_scope` model. A policy is a per-operation pair of
+bounded predicates over the existing `FilterAst`: `using` (which existing rows
+this caller may read/target) and `check` (is the new/post-image row allowed).
+`owner_field`, `compute_owner_filter`, the cap-gate, and the insert-stamp /
+update-strip transforms are **100% unchanged**; explicit policies AND-compose
+alongside the unchanged owner clause. No new auth surface, no new auth-cache
+hook (policies live in per-tenant `_system_collection_meta`, not in
+`meta.sqlite` token/session state).
+
+**Expression engine** (`src/query/policy.rs`). The `FilterAst` grammar gains
+three operands — `{"$auth":"id"}` (binds the caller's `_system_users` id, or SQL
+`NULL` for anon), `{"$data":"<field>"}` (the post-image row field, CHECK only),
+and the special leaf `{"$authenticated":true}`. Two evaluators share the one
+grammar: `compile_policy_using` → `?`-bound SQL `WHERE` fragment (reads +
+update/delete target pre-flights), `eval_policy` → in-memory bool (insert/update
+CHECK + anon SSE event filtering). A load-bearing consistency corpus
+(`tests/policy_expression.rs`) inserts each `(ast, row, ctx)` into a throwaway
+SQLite and asserts the SQL verdict equals the in-memory verdict, so the two
+paths can never silently diverge.
+
+**Tiers.** Service bypasses all policy (resolver returns `None`). User is
+subject to the op policy with `@auth.id` = their `_system_users` id. Anon passes
+the existing `anon_caps` gate, then the policy USING with `auth_id = NULL` (so an
+owner-comparison naturally yields no rows).
+
+**Enforcement, every data-plane surface:**
+- Reads — `/list`, `/search`, and `GET /records/<id>` AND the select-policy USING
+  into the SQL `WHERE` (single-row read uses a pre-flight visibility SELECT; the
+  existing owner clause + `record_as_json` path is untouched).
+- Writes — insert/update CHECK runs on the persisted/post-image row INSIDE the
+  `with_writer_tx` closure; a failing CHECK returns the `POLICY_CHECK_FAILED`
+  sentinel that rolls the transaction back (`403`). update/delete USING is a
+  pre-flight SELECT against the writer tx (non-matching target → `404`, identical
+  to a missing row — no existence oracle).
+- Deny posture — anon `/query` / `/query/explain` and legacy `GET ?filter/?sort`
+  are raw, un-rewritable SQL, so once a tenant adopts row-level rules (any
+  collection with `owner_field` or a policy) anon is denied them tenant-wide
+  (`ANON_QUERY_DENIED_ON_POLICY`, fail-closed); anon uses `/list` / `/search`.
+- Realtime — SSE subscribers are only ever anon or service; for anon on a
+  collection with a select policy, each `Created`/`Updated` event's record runs
+  through `eval_policy` and is dropped if it doesn't match. `Deleted` events are
+  id-only (no field leak) and pass — a documented v1 limitation.
+
+**Configuration (service-only, three faces):** REST `PUT/GET/DELETE
+/t/<id>/collections/<c>/policies` (validated at write time — unknown field / bad
+operand → `400 POLICY_INVALID`), MCP `set_policy` / `get_policies` /
+`clear_policy` (live tool count 52 → 55; service-key-only by MCP dispatch), and a
+guided builder in the collection `[⚙]` settings popover. `suggested_fix` catalog
+entries added for `POLICY_CHECK_FAILED` / `ANON_QUERY_DENIED_ON_POLICY` /
+`POLICY_INVALID` / `POLICY_COMPILE_ERROR`.
+
+**Isolation & security.** Policies are per-tenant (`_system_collection_meta`),
+never cross-tenant. All policy/runtime values reach SQL via `?` binds — only
+fixed column names from a closed match arm are interpolated. Defense in depth:
+the un-rewritable `/query` surface is closed for anon at the tenant level AND
+`/search` + `/list` enforce structurally; write CHECK is atomic-with-rollback
+inside the writer tx. `_system_*` collections stay drop/policy-protected.
+Backward-compat goldens (`tests/policy_backward_compat.rs`) pin that
+`owner_field` behaviour is byte-identical with no explicit policy, and that anon
+cannot bypass a select policy via `/query`. Full suite green: **1326 tests, 0
+failed** across 158 binaries.
+
+Four new nullable `*_policy_json` columns on `_system_collection_meta` (migration
+is additive — absent/NULL = no explicit policy). `regex-lite` promoted to a
+normal dependency (runtime `LIKE` in `eval_policy`).
+
 ## v1.37.0 — 2026-06-12
 
 ### MCP comprehension & activation overhaul (AI time-to-competence)
