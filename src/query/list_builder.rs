@@ -78,6 +78,7 @@ pub fn build_structured_list_sql(
     schema: &CollectionSchema,
     req: &ListRequest,
     owner: Option<(&str, &str)>,
+    policy_clause: Option<(String, Vec<Value>)>,
 ) -> Result<(String, String, Vec<Value>), ListError> {
     let table = q(&schema.name);
 
@@ -117,6 +118,13 @@ pub fn build_structured_list_sql(
     if let Some((field, uid)) = owner {
         wheres.push(format!("{} = ?", q(field)));
         binds.push(Value::Text(uid.to_string()));
+    }
+    // Explicit-policy USING — AND-ed alongside the unchanged owner clause.
+    // The fragment is already `?`-bound; its binds append after the owner
+    // bind so the parameter order matches the `?` order in the assembled SQL.
+    if let Some((frag, mut pbinds)) = policy_clause {
+        wheres.push(format!("({frag})"));
+        binds.append(&mut pbinds);
     }
     let where_clause = if wheres.is_empty() {
         String::new()
@@ -262,7 +270,7 @@ mod tests {
     fn empty_request_yields_default_list_sql() {
         let s = fixture_schema();
         let (list, count, binds) =
-            build_structured_list_sql(&s, &ListRequest::default(), None).unwrap();
+            build_structured_list_sql(&s, &ListRequest::default(), None, None).unwrap();
         assert!(list.contains("FROM \"posts\""), "list: {list}");
         assert!(
             list.contains("ORDER BY \"created_at\" DESC"),
@@ -288,7 +296,7 @@ mod tests {
             filter: Some(leaf(r#"{"title":"hello"}"#)),
             ..Default::default()
         };
-        let (list, count, binds) = build_structured_list_sql(&s, &req, None).unwrap();
+        let (list, count, binds) = build_structured_list_sql(&s, &req, None, None).unwrap();
         assert!(list.contains("WHERE (\"title\" = ?)"), "list: {list}");
         assert!(count.contains("WHERE (\"title\" = ?)"), "count: {count}");
         assert_eq!(binds.len(), 1);
@@ -308,7 +316,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let (list, _c, _b) = build_structured_list_sql(&s, &req, None).unwrap();
+        let (list, _c, _b) = build_structured_list_sql(&s, &req, None, None).unwrap();
         assert!(list.contains("ORDER BY \"score\" ASC"), "list: {list}");
     }
 
@@ -317,7 +325,7 @@ mod tests {
         let s = fixture_schema();
         let req = ListRequest::default();
         let (list, count, binds) =
-            build_structured_list_sql(&s, &req, Some(("owner_id", "u-deadbeef"))).unwrap();
+            build_structured_list_sql(&s, &req, Some(("owner_id", "u-deadbeef")), None).unwrap();
         assert!(list.contains("WHERE \"owner_id\" = ?"), "list: {list}");
         assert!(count.contains("WHERE \"owner_id\" = ?"), "count: {count}");
         assert_eq!(binds.len(), 1);
@@ -325,6 +333,23 @@ mod tests {
             Value::Text(t) => assert_eq!(t, "u-deadbeef"),
             other => panic!("expected Text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn policy_clause_ands_after_owner() {
+        let s = fixture_schema();
+        let req = ListRequest::default();
+        let policy = Some((r#""score" > ?"#.to_string(), vec![Value::Integer(10)]));
+        let (list, _count, binds) =
+            build_structured_list_sql(&s, &req, Some(("owner_id", "u-1")), policy).unwrap();
+        assert!(
+            list.contains(r#"WHERE "owner_id" = ? AND ("score" > ?)"#),
+            "list: {list}"
+        );
+        // owner bind first, policy bind second
+        assert_eq!(binds.len(), 2);
+        assert!(matches!(binds[0], Value::Text(_)));
+        assert!(matches!(binds[1], Value::Integer(10)));
     }
 
     #[test]
@@ -339,7 +364,7 @@ mod tests {
             ..Default::default()
         };
         let (list, _c, binds) =
-            build_structured_list_sql(&s, &req, Some(("owner_id", "u-1234"))).unwrap();
+            build_structured_list_sql(&s, &req, Some(("owner_id", "u-1234")), None).unwrap();
         // Filter clause first, owner clause AND-joined second.
         assert!(
             list.contains("WHERE (\"score\" > ?) AND \"owner_id\" = ?"),
@@ -368,7 +393,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let err = build_structured_list_sql(&s, &req, None).unwrap_err();
+        let err = build_structured_list_sql(&s, &req, None, None).unwrap_err();
         assert!(matches!(err, ListError::SortFieldUnknown(_)), "got {err:?}");
     }
 
@@ -382,7 +407,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let err = build_structured_list_sql(&s, &req, None).unwrap_err();
+        let err = build_structured_list_sql(&s, &req, None, None).unwrap_err();
         assert!(matches!(err, ListError::SortVectorField(_)), "got {err:?}");
     }
 
@@ -396,7 +421,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let err = build_structured_list_sql(&s, &req, None).unwrap_err();
+        let err = build_structured_list_sql(&s, &req, None, None).unwrap_err();
         assert!(matches!(err, ListError::SortDirInvalid), "got {err:?}");
     }
 
@@ -407,7 +432,7 @@ mod tests {
             per_page: Some(501),
             ..Default::default()
         };
-        let err = build_structured_list_sql(&s, &req, None).unwrap_err();
+        let err = build_structured_list_sql(&s, &req, None, None).unwrap_err();
         assert!(matches!(err, ListError::PageRangeInvalid), "got {err:?}");
     }
 
@@ -418,7 +443,7 @@ mod tests {
             per_page: Some(0),
             ..Default::default()
         };
-        let err = build_structured_list_sql(&s, &req, None).unwrap_err();
+        let err = build_structured_list_sql(&s, &req, None, None).unwrap_err();
         assert!(matches!(err, ListError::PageRangeInvalid), "got {err:?}");
     }
 
@@ -429,7 +454,7 @@ mod tests {
             page: Some(0),
             ..Default::default()
         };
-        let err = build_structured_list_sql(&s, &req, None).unwrap_err();
+        let err = build_structured_list_sql(&s, &req, None, None).unwrap_err();
         assert!(matches!(err, ListError::PageRangeInvalid), "got {err:?}");
     }
 
@@ -440,7 +465,7 @@ mod tests {
             select: Some(vec!["title".into(), "ghost".into()]),
             ..Default::default()
         };
-        let err = build_structured_list_sql(&s, &req, None).unwrap_err();
+        let err = build_structured_list_sql(&s, &req, None, None).unwrap_err();
         assert!(
             matches!(err, ListError::SelectFieldUnknown(_)),
             "got {err:?}"
@@ -454,7 +479,7 @@ mod tests {
             select: Some(vec!["title".into(), "embedding".into()]),
             ..Default::default()
         };
-        let (list, _c, _b) = build_structured_list_sql(&s, &req, None).unwrap();
+        let (list, _c, _b) = build_structured_list_sql(&s, &req, None, None).unwrap();
         assert!(list.contains("\"title\""), "list: {list}");
         assert!(
             !list.contains("\"embedding\""),
@@ -469,7 +494,7 @@ mod tests {
             filter: Some(leaf(r#"{"embedding":[0.0]}"#)),
             ..Default::default()
         };
-        let err = build_structured_list_sql(&s, &req, None).unwrap_err();
+        let err = build_structured_list_sql(&s, &req, None, None).unwrap_err();
         assert!(
             matches!(err, ListError::Filter(FilterError::VectorField(_))),
             "got {err:?}"
@@ -483,7 +508,7 @@ mod tests {
             filter: Some(leaf(r#"{"ghost":"x"}"#)),
             ..Default::default()
         };
-        let err = build_structured_list_sql(&s, &req, None).unwrap_err();
+        let err = build_structured_list_sql(&s, &req, None, None).unwrap_err();
         assert!(
             matches!(err, ListError::Filter(FilterError::UnknownField(_))),
             "got {err:?}"
@@ -498,7 +523,7 @@ mod tests {
             per_page: Some(7),
             ..Default::default()
         };
-        let (list, _c, _b) = build_structured_list_sql(&s, &req, None).unwrap();
+        let (list, _c, _b) = build_structured_list_sql(&s, &req, None, None).unwrap();
         assert!(list.contains("LIMIT 7 OFFSET 14"), "list: {list}");
     }
 }
