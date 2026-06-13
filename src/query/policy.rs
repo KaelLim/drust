@@ -410,6 +410,39 @@ fn regex_lite_escape(c: char) -> String {
     }
 }
 
+/// Validate a policy at write time: every field reference must resolve against
+/// the schema and the grammar must be well-formed. We validate by compiling
+/// each clause against a probe context (so `$auth`/`$data`/`$authenticated`
+/// operands are accepted) and discarding the SQL — only the field/grammar
+/// checks (`UnknownField`, `VectorField`, `TooDeep`, `Parse`) are wanted.
+pub fn validate_policy(
+    schema: &CollectionSchema,
+    op: DmlVerb,
+    policy: &Policy,
+) -> Result<(), PolicyError> {
+    // A probe ctx: authenticated, with a data map containing every field so
+    // $data refs validate. The compiled SQL is thrown away — we only want the
+    // field/grammar checks to fire.
+    let mut data = serde_json::Map::new();
+    for f in &schema.fields {
+        data.insert(f.name.clone(), Json::Null);
+    }
+    let ctx = PolicyCtx {
+        auth_id: Some("u-probe".into()),
+        data: Some(data),
+    };
+    if let Some(u) = &policy.using {
+        compile_policy_using(schema, u, &ctx)?;
+    }
+    if let Some(c) = &policy.check {
+        compile_policy_using(schema, c, &ctx)?;
+        // $data is only meaningful in CHECK; in USING a $data ref on a delete
+        // is nonsensical but harmless. v1 does not separately reject it.
+        let _ = op;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,5 +655,25 @@ mod tests {
         let ast: FilterAst =
             serde_json::from_str(r#"{"or":[{"status":"published"},{"n":{"$gt":100}}]}"#).unwrap();
         assert!(eval_policy(&ast, &row, &PolicyCtx::default()));
+    }
+
+    #[test]
+    fn validate_rejects_unknown_field() {
+        let s = schema(&["status"]);
+        let p: Policy = serde_json::from_str(r#"{"using":{"ghost":"x"}}"#).unwrap();
+        assert!(matches!(
+            validate_policy(&s, DmlVerb::Select, &p),
+            Err(PolicyError::UnknownField(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_good_policy() {
+        let s = schema(&["status", "author"]);
+        let p: Policy = serde_json::from_str(
+            r#"{"using":{"or":[{"status":"published"},{"author":{"$eq":{"$auth":"id"}}}]}}"#,
+        )
+        .unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p).is_ok());
     }
 }
