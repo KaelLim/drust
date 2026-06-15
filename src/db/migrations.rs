@@ -930,7 +930,10 @@ mod tests {
             "update_policy_json",
             "delete_policy_json",
         ] {
-            assert!(cols.contains(&col.to_string()), "missing {col}; cols={cols:?}");
+            assert!(
+                cols.contains(&col.to_string()),
+                "missing {col}; cols={cols:?}"
+            );
         }
     }
 

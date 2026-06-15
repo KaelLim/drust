@@ -11,8 +11,7 @@ async fn logout_drops_cached_user_entry() {
     // the tenant id is the literal string we passed in.
     let (app, _svc_tok, _dir) = helpers::spin_up_tenant_self_register("t-logout").await;
     let tid = "t-logout";
-    let token =
-        helpers::register_and_login_via_app(&app, tid, "u@x.com", "pw-correct-horse").await;
+    let token = helpers::register_and_login_via_app(&app, tid, "u@x.com", "pw-correct-horse").await;
 
     // First authed request fills the cache.
     let r1 = app

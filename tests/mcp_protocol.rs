@@ -59,8 +59,7 @@ async fn mcp_stack(tenant: &str) -> (axum::Router, String, String, tempfile::Tem
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(meta, tenants.clone());
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let app = build_tenant_router(TenantStack {
         auth: state,
         bus: bus.clone(),

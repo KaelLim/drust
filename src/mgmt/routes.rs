@@ -614,12 +614,10 @@ impl MgmtState {
         bus_rooms: crate::tenant::rooms::RoomBus,
     ) -> Self {
         let audit_meta_read = Arc::new(tokio::sync::Mutex::new(
-            crate::safety::audit_db::open_audit_db_memory()
-                .expect("in-memory audit DB for tests"),
+            crate::safety::audit_db::open_audit_db_memory().expect("in-memory audit DB for tests"),
         ));
         let log_dir = data_dir.join("logs");
-        let (functions, functions_exec, _cfg) =
-            crate::functions::test_stack_parts(tenants.clone());
+        let (functions, functions_exec, _cfg) = crate::functions::test_stack_parts(tenants.clone());
         Self {
             meta,
             audit_meta_read,

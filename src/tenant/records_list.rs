@@ -140,17 +140,17 @@ pub async fn post_list(
 
     // Explicit-policy USING (AND-ed alongside the owner clause). Service →
     // None (bypass). A compile error → 500 with a typed code.
-    let policy_clause =
-        match crate::query::policy::policy_using_sql(&ctx, &schema, DmlVerb::Select) {
-            Ok(c) => c,
-            Err(e) => {
-                return json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "POLICY_COMPILE_ERROR",
-                    &e.to_string(),
-                );
-            }
-        };
+    let policy_clause = match crate::query::policy::policy_using_sql(&ctx, &schema, DmlVerb::Select)
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "POLICY_COMPILE_ERROR",
+                &e.to_string(),
+            );
+        }
+    };
 
     // ── Compile SQL ──────────────────────────────────────────────────
     let owner_ref = owner_pair.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));

@@ -34,9 +34,11 @@ pub fn engine() -> &'static Engine {
         let ticker = engine.clone();
         std::thread::Builder::new()
             .name("drust-fn-epoch".into())
-            .spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                ticker.increment_epoch();
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    ticker.increment_epoch();
+                }
             })
             .expect("spawn epoch ticker");
         engine
@@ -433,7 +435,10 @@ impl HostStateSeed {
 impl WasmRunner {
     pub fn new(cfg: FnConfig, seed: HostStateSeed) -> Arc<Self> {
         Arc::new(Self {
-            cache: PreCache { cap: cfg.module_cache, entries: StdMutex::new(Vec::new()) },
+            cache: PreCache {
+                cap: cfg.module_cache,
+                entries: StdMutex::new(Vec::new()),
+            },
             cfg,
             linker: OnceLock::new(),
             seed,
@@ -500,7 +505,10 @@ impl FunctionRunner for WasmRunner {
         let data = StoreData {
             wasi,
             table: wasmtime::component::ResourceTable::new(),
-            limits: MemLimiter { cap: self.cfg.memory_max_bytes, oom_hit: false },
+            limits: MemLimiter {
+                cap: self.cfg.memory_max_bytes,
+                oom_hit: false,
+            },
             host: HostState {
                 mcp,
                 file_read_max: self.cfg.file_read_max_bytes,
@@ -514,7 +522,9 @@ impl FunctionRunner for WasmRunner {
         store.set_epoch_deadline(self.cfg.timeout_secs * 10);
 
         let run = async {
-            let bindings = EdgeFunctionPre::new(pre)?.instantiate_async(&mut store).await?;
+            let bindings = EdgeFunctionPre::new(pre)?
+                .instantiate_async(&mut store)
+                .await?;
             bindings.call_handle(&mut store, event_json).await
         };
         let outcome = match run.await {
@@ -537,8 +547,8 @@ impl FunctionRunner for WasmRunner {
                 // which lands up to one tick (100ms) BEFORE `timeout_secs`
                 // of wall time has elapsed, so an elapsed-time comparison
                 // misreports essentially every genuine timeout as a trap.
-                let interrupted = trap.downcast_ref::<wasmtime::Trap>()
-                    == Some(&wasmtime::Trap::Interrupt);
+                let interrupted =
+                    trap.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::Interrupt);
                 let status = if oom {
                     RunStatus::Oom
                 } else if interrupted {
@@ -546,11 +556,18 @@ impl FunctionRunner for WasmRunner {
                 } else {
                     RunStatus::Trap
                 };
-                RunOutcome { status, result: format!("{trap:#}"), log_text: String::new() }
+                RunOutcome {
+                    status,
+                    result: format!("{trap:#}"),
+                    log_text: String::new(),
+                }
             }
         };
         let log_text = store.data().host.log_buf.clone();
-        RunOutcome { log_text, ..outcome }
+        RunOutcome {
+            log_text,
+            ..outcome
+        }
     }
 }
 
@@ -579,7 +596,11 @@ mod tests {
     // asserted, and stayed green when the bug was reintroduced.)
     async fn build_store_with_garage(
         tenant_id: &str,
-    ) -> (StoreData, crate::storage::pool::SharedTenantPool, tempfile::TempDir) {
+    ) -> (
+        StoreData,
+        crate::storage::pool::SharedTenantPool,
+        tempfile::TempDir,
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let tenants = Arc::new(crate::storage::pool::TenantRegistry::new(
             tmp.path().to_path_buf(),
@@ -615,7 +636,10 @@ mod tests {
         let store = StoreData {
             wasi: wasmtime_wasi::WasiCtxBuilder::new().build(),
             table: wasmtime::component::ResourceTable::new(),
-            limits: MemLimiter { cap: 64 * 1024 * 1024, oom_hit: false },
+            limits: MemLimiter {
+                cap: 64 * 1024 * 1024,
+                oom_hit: false,
+            },
             host: HostState {
                 mcp,
                 file_read_max: 4 * 1024 * 1024,

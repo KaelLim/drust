@@ -108,8 +108,7 @@ fn build_router(state: TenantAuthState) -> Router {
     let registry = state.registry.clone();
     let bus = EventBus::new();
     let webhooks = drust::tenant::WebhookDispatcher::new(registry.clone(), None);
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(registry.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(registry.clone());
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(registry),
     )));
@@ -1830,12 +1829,7 @@ async fn oauth_callback_unknown_tenant_creates_no_dir() {
     let unknown = format!("ghost-{}", uuid::Uuid::new_v4());
     let cb_uri = format!("/t/{unknown}/oauth/google/callback?code=C&state=ANY");
     let resp = app
-        .oneshot(
-            Request::builder()
-                .uri(&cb_uri)
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri(&cb_uri).body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(

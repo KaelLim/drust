@@ -41,11 +41,8 @@ async fn mcp_set_publish_policy_clears_tenant_scoped_entries() {
     let conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
     // migrations add tenants.allow_user_publish / allow_anon_publish
     drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES ('t-pp', 'x')",
-        [],
-    )
-    .unwrap();
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('t-pp', 'x')", [])
+        .unwrap();
     let meta = Arc::new(Mutex::new(conn));
 
     let cache = Arc::new(AuthCache::new(Duration::from_secs(10), 200_000));
@@ -83,11 +80,8 @@ async fn mcp_set_publish_policy_noop_call_still_clears_nothing_foreign() {
     let conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
     // migrations add tenants.allow_user_publish / allow_anon_publish
     drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES ('t-pp', 'x')",
-        [],
-    )
-    .unwrap();
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('t-pp', 'x')", [])
+        .unwrap();
     let meta = Arc::new(Mutex::new(conn));
 
     let cache = Arc::new(AuthCache::new(Duration::from_secs(10), 200_000));

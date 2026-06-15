@@ -1,7 +1,9 @@
 //! Tenant CRUD / lifecycle (group B): list page, create/delete, self-register
 //! toggle, publish-policy, cmdk JSON. Relocated from `tenants.rs` by Finding #4.
 
-use super::{CreateTenantForm, CreateTenantJson, CreatedResp, InitialTokens, TenantInfo, TenantsState};
+use super::{
+    CreateTenantForm, CreateTenantJson, CreatedResp, InitialTokens, TenantInfo, TenantsState,
+};
 use crate::auth::bearer::{generate_token, hash_token};
 use crate::mgmt::format::humanize_bytes;
 use crate::mgmt::i18n::{LocaleHint, Translator};

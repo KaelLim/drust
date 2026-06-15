@@ -146,13 +146,7 @@ async fn get_list_records(app: &axum::Router, tid: &str, tok: &str, coll: &str) 
 }
 
 /// `GET /t/<id>/records/<coll>?<query>` → just the HTTP status code.
-async fn get_list_status(
-    app: &axum::Router,
-    tid: &str,
-    tok: &str,
-    coll: &str,
-    query: &str,
-) -> u16 {
+async fn get_list_status(app: &axum::Router, tid: &str, tok: &str, coll: &str, query: &str) -> u16 {
     let resp = app
         .clone()
         .oneshot(
@@ -198,7 +192,13 @@ async fn anon_list_filtered_by_select_policy() {
     // Set the policy BEFORE any router read so the router's own per-pool
     // schema_cache never caches a policy-free view (the test harness pool
     // from grab_pool is a SEPARATE registry/cache instance).
-    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+    set_select_using(
+        &dir,
+        &tid,
+        "posts",
+        json!({"using": {"status": "published"}}),
+    )
+    .await;
 
     // Service inserts both rows.
     insert_post(&app, &tid, &svc, "published", "a").await;
@@ -239,7 +239,13 @@ async fn anon_search_filtered_by_select_policy() {
     drop(pool);
 
     // Set the policy BEFORE any router read (see the list test for why).
-    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+    set_select_using(
+        &dir,
+        &tid,
+        "posts",
+        json!({"using": {"status": "published"}}),
+    )
+    .await;
 
     // Insert two rows with embeddings (service token).
     for (status, vec) in [("published", [1.0, 0.0, 0.0]), ("draft", [0.0, 1.0, 0.0])] {
@@ -300,7 +306,13 @@ async fn anon_get_one_blocked_by_select_policy() {
     let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("rls-read-getone").await;
     seed_status_posts(&dir, &tid).await;
     // Policy must be set before any router read caches a policy-free view.
-    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+    set_select_using(
+        &dir,
+        &tid,
+        "posts",
+        json!({"using": {"status": "published"}}),
+    )
+    .await;
 
     // Service inserts both rows and records their ids.
     let draft_id = insert_post_returning_id(&app, &tid, &svc, "draft", "b").await;
@@ -322,7 +334,10 @@ async fn anon_get_one_blocked_by_select_policy() {
 
     // Service bypasses the policy → the draft is visible (200).
     let svc_status = get_one_status(&app, &tid, &svc, "posts", draft_id).await;
-    assert_eq!(svc_status, 200, "service bypasses the select policy on GET-one");
+    assert_eq!(
+        svc_status, 200,
+        "service bypasses the select policy on GET-one"
+    );
 }
 
 // ── H1: legacy GET-list must enforce the select-policy USING ────────────
@@ -335,7 +350,13 @@ async fn anon_get_list_filtered_by_select_policy() {
     let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("rls-getlist-policy").await;
     seed_status_posts(&dir, &tid).await;
     // Policy set before any router read caches a policy-free view.
-    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+    set_select_using(
+        &dir,
+        &tid,
+        "posts",
+        json!({"using": {"status": "published"}}),
+    )
+    .await;
 
     // Service inserts both rows.
     insert_post(&app, &tid, &svc, "published", "a").await;
@@ -364,10 +385,15 @@ async fn anon_get_list_filtered_by_select_policy() {
 /// comment the AND-ed policy clause away) → 403 `ANON_QUERY_DENIED_ON_POLICY`.
 #[tokio::test]
 async fn anon_get_list_raw_filter_sort_denied_on_policy() {
-    let (app, tid, _svc, anon, dir) =
-        spin_up_dual_role_self_register("rls-getlist-rawdeny").await;
+    let (app, tid, _svc, anon, dir) = spin_up_dual_role_self_register("rls-getlist-rawdeny").await;
     seed_status_posts(&dir, &tid).await;
-    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+    set_select_using(
+        &dir,
+        &tid,
+        "posts",
+        json!({"using": {"status": "published"}}),
+    )
+    .await;
 
     let filter_status = get_list_status(&app, &tid, &anon, "posts", "filter=status='draft'").await;
     assert_eq!(

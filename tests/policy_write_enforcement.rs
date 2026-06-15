@@ -161,7 +161,11 @@ async fn insert_status_returning_id(app: &axum::Router, tid: &str, tok: &str, st
         )
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 201, "service insert {status} failed");
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "service insert {status} failed"
+    );
     let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     v["id"].as_i64().expect("create body has numeric id")

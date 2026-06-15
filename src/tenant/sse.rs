@@ -100,7 +100,11 @@ pub async fn subscribe_handler(
     // events (id-only, no record) always pass — documented v1 limitation.
     let select_using: Option<crate::query::vector_filter::FilterAst> =
         if matches!(ctx, AuthCtx::Anon) {
-            schema.policies.select.as_ref().and_then(|p| p.using.clone())
+            schema
+                .policies
+                .select
+                .as_ref()
+                .and_then(|p| p.using.clone())
         } else {
             None
         };

@@ -86,7 +86,8 @@ fn row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<FunctionRow> {
     })
 }
 
-const COLS: &str = "id, name, wasm_sha256, size_bytes, triggers_json, active, description, created_at, updated_at";
+const COLS: &str =
+    "id, name, wasm_sha256, size_bytes, triggers_json, active, description, created_at, updated_at";
 
 /// Create-or-replace by name. Errors are sentinel-prefixed (`FN_NAME_INVALID:`,
 /// `FN_LIMIT:`) so REST/MCP layers map them to error codes mechanically.

@@ -95,11 +95,7 @@ async fn delete_gcs_unreferenced_artifact() {
     let sha = "00".repeat(32);
 
     // Materialize the artifact the seeded row points at.
-    let dir = d
-        .path()
-        .join("tenants")
-        .join("blog")
-        .join("_functions");
+    let dir = d.path().join("tenants").join("blog").join("_functions");
     std::fs::create_dir_all(&dir).unwrap();
     let blob = dir.join(format!("{sha}.wasm"));
     std::fs::write(&blob, b"\0asm").unwrap();

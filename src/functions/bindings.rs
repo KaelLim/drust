@@ -43,8 +43,8 @@ pub enum TriggerSpec {
 /// Validate a triggers_json string. Returns the parsed list or a
 /// sentinel-prefixed error.
 pub fn parse_triggers(s: &str) -> anyhow::Result<Vec<TriggerSpec>> {
-    let list: Vec<TriggerSpec> = serde_json::from_str(s)
-        .map_err(|e| anyhow::anyhow!("FN_TRIGGERS_INVALID: {e}"))?;
+    let list: Vec<TriggerSpec> =
+        serde_json::from_str(s).map_err(|e| anyhow::anyhow!("FN_TRIGGERS_INVALID: {e}"))?;
     for t in &list {
         if let TriggerSpec::Record { events, collection } = t {
             if collection.is_empty() {
@@ -77,16 +77,22 @@ pub struct Binding {
 impl Binding {
     pub fn matches_record(&self, collection: &str, event_name: &str) -> bool {
         self.triggers.iter().any(|t| match t {
-            TriggerSpec::Record { collection: c, events } => {
-                c == collection && events.iter().any(|e| e == event_name)
-            }
+            TriggerSpec::Record {
+                collection: c,
+                events,
+            } => c == collection && events.iter().any(|e| e == event_name),
             TriggerSpec::FileUploaded { .. } => false,
         })
     }
     pub fn matches_file_uploaded(&self) -> bool {
-        self.triggers
-            .iter()
-            .any(|t| matches!(t, TriggerSpec::FileUploaded { file_uploaded: true }))
+        self.triggers.iter().any(|t| {
+            matches!(
+                t,
+                TriggerSpec::FileUploaded {
+                    file_uploaded: true
+                }
+            )
+        })
     }
 }
 
@@ -119,7 +125,10 @@ impl BindingCache {
     }
 
     pub fn with_safety_ttl(safety_ttl: Duration) -> Self {
-        Self { map: DashMap::new(), safety_ttl }
+        Self {
+            map: DashMap::new(),
+            safety_ttl,
+        }
     }
 
     pub fn invalidate(&self, tenant: &str) {
@@ -130,11 +139,7 @@ impl BindingCache {
     /// ACTIVE rows from `_system_functions`. A tenant with zero functions
     /// caches an empty Vec — the hot-path cost for function-less tenants is
     /// one DashMap get.
-    pub async fn get_or_load(
-        &self,
-        tenant: &str,
-        pool: &SharedTenantPool,
-    ) -> Arc<Vec<Binding>> {
+    pub async fn get_or_load(&self, tenant: &str, pool: &SharedTenantPool) -> Arc<Vec<Binding>> {
         if let Some(e) = self.map.get(tenant)
             && e.inserted.elapsed() < self.safety_ttl
         {
@@ -153,7 +158,10 @@ impl BindingCache {
             .into_iter()
             .filter(|r| r.active)
             .filter_map(|r| match parse_triggers(&r.triggers_json) {
-                Ok(triggers) => Some(Binding { function_name: r.name, triggers }),
+                Ok(triggers) => Some(Binding {
+                    function_name: r.name,
+                    triggers,
+                }),
                 Err(e) => {
                     // A bound function silently never firing is this
                     // codebase's textbook silent-misbehavior class — log it.
@@ -170,7 +178,10 @@ impl BindingCache {
         let arc = Arc::new(bindings);
         self.map.insert(
             tenant.to_string(),
-            CacheEntry { inserted: Instant::now(), bindings: arc.clone() },
+            CacheEntry {
+                inserted: Instant::now(),
+                bindings: arc.clone(),
+            },
         );
         arc
     }
@@ -187,7 +198,10 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(l.len(), 2);
-        let b = Binding { function_name: "f".into(), triggers: l };
+        let b = Binding {
+            function_name: "f".into(),
+            triggers: l,
+        };
         assert!(b.matches_record("posts", "created"));
         assert!(b.matches_record("posts", "deleted"));
         assert!(!b.matches_record("posts", "updated"));
@@ -207,7 +221,10 @@ mod tests {
     #[test]
     fn file_uploaded_false_does_not_match() {
         let l = parse_triggers(r#"[{"file_uploaded":false}]"#).expect("parse");
-        let b = Binding { function_name: "f".into(), triggers: l };
+        let b = Binding {
+            function_name: "f".into(),
+            triggers: l,
+        };
         assert!(!b.matches_file_uploaded());
     }
 

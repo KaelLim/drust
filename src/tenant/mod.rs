@@ -486,7 +486,15 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     let wh = webhooks.clone();
                     let fns = functions.clone();
                     move |ext, ctx, p, body| {
-                        records::create_handler(ext, ctx, p, body, b.clone(), wh.clone(), fns.clone())
+                        records::create_handler(
+                            ext,
+                            ctx,
+                            p,
+                            body,
+                            b.clone(),
+                            wh.clone(),
+                            fns.clone(),
+                        )
                     }
                 })
                 .layer(axum::extract::DefaultBodyLimit::max(rec_body_limit)),
@@ -499,7 +507,15 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     let wh = webhooks.clone();
                     let fns = functions.clone();
                     move |ext, ctx, p, body| {
-                        records::update_handler(ext, ctx, p, body, b.clone(), wh.clone(), fns.clone())
+                        records::update_handler(
+                            ext,
+                            ctx,
+                            p,
+                            body,
+                            b.clone(),
+                            wh.clone(),
+                            fns.clone(),
+                        )
                     }
                 })
                 .delete({

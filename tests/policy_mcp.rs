@@ -47,9 +47,10 @@ async fn mcp_set_get_policy_round_trip() {
 
     // Set a select policy: USING owner == $auth.id
     let using = json!({ "owner": { "$auth": "id" } });
-    let v = drust::mcp::tools::policy::set_policy(&mcp, "posts", "select", Some(using.clone()), None)
-        .await
-        .unwrap();
+    let v =
+        drust::mcp::tools::policy::set_policy(&mcp, "posts", "select", Some(using.clone()), None)
+            .await
+            .unwrap();
     assert_eq!(v["ok"], true);
     assert_eq!(v["collection"], "posts");
     assert_eq!(v["op"], "select");
@@ -71,10 +72,9 @@ async fn mcp_set_policy_bad_field_errors() {
 
     // USING references a column that does not exist on the collection.
     let using = json!({ "nonexistent": { "$auth": "id" } });
-    let err =
-        drust::mcp::tools::policy::set_policy(&mcp, "posts", "select", Some(using), None)
-            .await
-            .unwrap_err();
+    let err = drust::mcp::tools::policy::set_policy(&mcp, "posts", "select", Some(using), None)
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("nonexistent") || msg.to_lowercase().contains("unknown field"),
@@ -121,15 +121,10 @@ async fn mcp_set_policy_rejects_system_collection() {
     let d = tempfile::tempdir().unwrap();
     let mcp = svc(&d, "mcppol-sys").await;
     let using = json!({ "id": 1 });
-    let err = drust::mcp::tools::policy::set_policy(
-        &mcp,
-        "_system_users",
-        "select",
-        Some(using),
-        None,
-    )
-    .await
-    .unwrap_err();
+    let err =
+        drust::mcp::tools::policy::set_policy(&mcp, "_system_users", "select", Some(using), None)
+            .await
+            .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("system collection") || msg.contains("_system_"),
@@ -142,10 +137,9 @@ async fn mcp_set_policy_unknown_collection_errors() {
     let d = tempfile::tempdir().unwrap();
     let mcp = svc(&d, "mcppol-ghost").await;
     let using = json!({ "id": 1 });
-    let err =
-        drust::mcp::tools::policy::set_policy(&mcp, "ghost", "select", Some(using), None)
-            .await
-            .unwrap_err();
+    let err = drust::mcp::tools::policy::set_policy(&mcp, "ghost", "select", Some(using), None)
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("unknown collection") || msg.contains("no such"),
@@ -159,14 +153,12 @@ async fn mcp_set_policy_bad_op_errors() {
     let mcp = svc(&d, "mcppol-badop").await;
     make_posts(&mcp).await;
     let using = json!({ "owner": { "$auth": "id" } });
-    let err =
-        drust::mcp::tools::policy::set_policy(&mcp, "posts", "upsert", Some(using), None)
-            .await
-            .unwrap_err();
+    let err = drust::mcp::tools::policy::set_policy(&mcp, "posts", "upsert", Some(using), None)
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.to_lowercase().contains("op")
-            || msg.contains("select|insert|update|delete"),
+        msg.to_lowercase().contains("op") || msg.contains("select|insert|update|delete"),
         "expected bad-op error, got: {msg}"
     );
 }
@@ -201,10 +193,17 @@ async fn overview_surfaces_effective_policies() {
     let posts = find("posts");
     // policies must ALWAYS be present (so the model can tell "no policy" from
     // "key omitted"), and the select.using must round-trip.
-    assert!(posts.get("policies").is_some(), "policies key must be present");
+    assert!(
+        posts.get("policies").is_some(),
+        "policies key must be present"
+    );
     assert_eq!(posts["policies"]["select"]["using"], using);
 
     // The no-policy collection still carries an (empty) policies object.
     let tags = find("tags");
-    assert_eq!(tags["policies"], json!({}), "no-policy collection -> empty policies object");
+    assert_eq!(
+        tags["policies"],
+        json!({}),
+        "no-policy collection -> empty policies object"
+    );
 }

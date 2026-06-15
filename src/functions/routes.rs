@@ -94,7 +94,11 @@ pub async fn create(
         }
     }
     let Some(wasm) = wasm else {
-        return crate::error::json_error(StatusCode::UNPROCESSABLE_ENTITY, "INVALID_PARAMS", "missing wasm field");
+        return crate::error::json_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_PARAMS",
+            "missing wasm field",
+        );
     };
     if wasm.len() > st.cfg.max_wasm_bytes {
         return crate::error::json_error(
@@ -104,7 +108,11 @@ pub async fn create(
         );
     }
     if !schema::valid_name(&name) {
-        return crate::error::json_error(StatusCode::UNPROCESSABLE_ENTITY, "FN_NAME_INVALID", "bad name");
+        return crate::error::json_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "FN_NAME_INVALID",
+            "bad name",
+        );
     }
     if let Err(e) = crate::functions::bindings::parse_triggers(&triggers) {
         return map_sentinel(e);
@@ -133,11 +141,19 @@ pub async fn create(
     let sha = hex_lower(&sha2::Sha256::digest(&wasm));
     let dir = artifact_dir(&st.data_root, &t.tenant_id);
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        return crate::error::json_error(StatusCode::INTERNAL_SERVER_ERROR, "FN_IO", &e.to_string());
+        return crate::error::json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "FN_IO",
+            &e.to_string(),
+        );
     }
     let path = dir.join(format!("{sha}.wasm"));
     if let Err(e) = tokio::fs::write(&path, &wasm).await {
-        return crate::error::json_error(StatusCode::INTERNAL_SERVER_ERROR, "FN_IO", &e.to_string());
+        return crate::error::json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "FN_IO",
+            &e.to_string(),
+        );
     }
 
     // The sha this name currently resolves to (if any), captured before the
@@ -199,7 +215,9 @@ pub async fn get_one(
 ) -> Response {
     match schema::get_function(&t.pool, &name).await {
         Ok(Some(row)) => Json(row).into_response(),
-        Ok(None) => crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Ok(None) => {
+            crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function")
+        }
         Err(e) => map_sentinel(e),
     }
 }
@@ -232,7 +250,11 @@ pub async fn patch(
             Ok(true) => {}
             // Row absent — 404 and stop before any further write.
             Ok(false) => {
-                return crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function");
+                return crate::error::json_error(
+                    StatusCode::NOT_FOUND,
+                    "FN_NOT_FOUND",
+                    "no such function",
+                );
             }
             Err(e) => return map_sentinel(e),
         }
@@ -243,7 +265,11 @@ pub async fn patch(
             // Reaching here means no `set_active` 404 fired (that early-returns),
             // so a zero-row update can only mean the function does not exist.
             Ok(false) => {
-                return crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function");
+                return crate::error::json_error(
+                    StatusCode::NOT_FOUND,
+                    "FN_NOT_FOUND",
+                    "no such function",
+                );
             }
             Err(e) => return map_sentinel(e),
         }
@@ -291,7 +317,9 @@ pub async fn delete_one(
             audit_fn(&t, "function.delete", &name);
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(false) => crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Ok(false) => {
+            crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function")
+        }
         Err(e) => map_sentinel(e),
     }
 }
@@ -310,7 +338,13 @@ pub async fn invoke(
 ) -> Response {
     match schema::get_function(&t.pool, &name).await {
         Ok(Some(_)) => {}
-        Ok(None) => return crate::error::json_error(StatusCode::NOT_FOUND, "FN_NOT_FOUND", "no such function"),
+        Ok(None) => {
+            return crate::error::json_error(
+                StatusCode::NOT_FOUND,
+                "FN_NOT_FOUND",
+                "no such function",
+            );
+        }
         Err(e) => return map_sentinel(e),
     }
     let started = std::time::Instant::now();

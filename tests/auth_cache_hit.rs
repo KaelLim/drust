@@ -42,8 +42,7 @@ async fn spin_with_cache(
     let cache = Arc::new(AuthCache::new(Duration::from_secs(10), 200_000));
     let mut state = TenantAuthState::test_default(meta, tenants.clone());
     state.auth_cache = cache.clone();
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -87,6 +86,10 @@ async fn second_service_request_is_cache_hit() {
 
     let s2 = auth_get(&app, "t-hit", &tok).await;
     assert!(s2.is_success(), "second request authed, got {s2}");
-    assert_eq!(cache.hits(), 1, "second request is a HIT (skipped meta CTE)");
+    assert_eq!(
+        cache.hits(),
+        1,
+        "second request is a HIT (skipped meta CTE)"
+    );
     assert_eq!(cache.misses(), 1, "miss count unchanged on the hit");
 }

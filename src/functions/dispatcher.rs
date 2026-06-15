@@ -261,12 +261,21 @@ mod tests {
     #[tokio::test]
     async fn record_event_enqueues_matching_only() {
         let dir = tempfile::tempdir().unwrap();
-        let (reg, _pool) =
-            tenant_with_fn(dir.path(), r#"[{"collection":"posts","events":["created"]}]"#).await;
+        let (reg, _pool) = tenant_with_fn(
+            dir.path(),
+            r#"[{"collection":"posts","events":["created"]}]"#,
+        )
+        .await;
         let (tx, mut rx) = mpsc::channel(8);
         let d = FunctionDispatcher::new(reg, tx, FnConfig::test_default());
 
-        d.dispatch("t-d", "posts", &Event::Created { record: serde_json::json!({"id":1}) });
+        d.dispatch(
+            "t-d",
+            "posts",
+            &Event::Created {
+                record: serde_json::json!({"id":1}),
+            },
+        );
         let inv = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
             .await
             .expect("enqueued")
@@ -277,7 +286,13 @@ mod tests {
 
         // non-matching: wrong event + wrong collection ⇒ nothing arrives
         d.dispatch("t-d", "posts", &Event::Deleted { id: 1 });
-        d.dispatch("t-d", "other", &Event::Created { record: serde_json::json!({}) });
+        d.dispatch(
+            "t-d",
+            "other",
+            &Event::Created {
+                record: serde_json::json!({}),
+            },
+        );
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv())
                 .await

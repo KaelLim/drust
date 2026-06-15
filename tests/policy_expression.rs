@@ -3,7 +3,7 @@
 //! throwaway in-memory table, and check whether the row survives the WHERE;
 //! (b) run eval_policy in memory. They must return the same bool.
 
-use drust::query::policy::{compile_policy_using, eval_policy, PolicyCtx};
+use drust::query::policy::{PolicyCtx, compile_policy_using, eval_policy};
 use drust::query::vector_filter::FilterAst;
 use drust::storage::schema::{CollectionSchema, Field};
 use rusqlite::Connection;
@@ -63,11 +63,13 @@ fn sql_says_match(s: &CollectionSchema, ast: &FilterAst, ctx: &PolicyCtx, row_js
         .iter()
         .map(|k| drust::query::vector_filter::json_to_value(&row[*k]))
         .collect();
-    let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     conn.execute(&insert, &refs[..]).unwrap();
     let (frag, binds) = compile_policy_using(s, ast, ctx).unwrap();
     let q = format!("SELECT COUNT(*) FROM t WHERE {frag}");
-    let brefs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let brefs: Vec<&dyn rusqlite::ToSql> =
+        binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let n: i64 = conn.query_row(&q, &brefs[..], |r| r.get(0)).unwrap();
     n > 0
 }
@@ -104,8 +106,7 @@ fn evaluators_agree_on_corpus() {
     for a in asts {
         let ast: FilterAst = serde_json::from_str(a).unwrap();
         for r in rows {
-            let row: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_str(r).unwrap();
+            let row: serde_json::Map<String, serde_json::Value> = serde_json::from_str(r).unwrap();
             for ctx in &ctxs {
                 let mem = eval_policy(&ast, &row, ctx);
                 let sql = sql_says_match(&s, &ast, ctx, r);

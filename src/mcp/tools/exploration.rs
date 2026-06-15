@@ -186,7 +186,10 @@ pub async fn get_schema_overview(s: &DrustMcp) -> anyhow::Result<serde_json::Val
             let mut v = serde_json::to_value(r).expect("StoredRpc serialises");
             let autobound = r.params.iter().any(|p| p.name == "user_id");
             if let Some(obj) = v.as_object_mut() {
-                obj.insert("user_id_autobound".to_string(), serde_json::Value::Bool(autobound));
+                obj.insert(
+                    "user_id_autobound".to_string(),
+                    serde_json::Value::Bool(autobound),
+                );
             }
             v
         })

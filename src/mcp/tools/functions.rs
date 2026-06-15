@@ -54,7 +54,11 @@ pub async fn set_function_active(s: &DrustMcp, name: &str, active: bool) -> anyh
     Ok(json!({ "name": name, "active": active }))
 }
 
-pub async fn get_function_logs(s: &DrustMcp, name: &str, limit: Option<i64>) -> anyhow::Result<Value> {
+pub async fn get_function_logs(
+    s: &DrustMcp,
+    name: &str,
+    limit: Option<i64>,
+) -> anyhow::Result<Value> {
     let rows =
         crate::functions::schema::list_logs(&s.inner().pool, name, limit.unwrap_or(50)).await?;
     Ok(json!({ "logs": rows }))
@@ -71,6 +75,7 @@ pub async fn invoke_function(s: &DrustMcp, name: &str, event: Value) -> anyhow::
     let Some(f) = inner.functions.as_ref() else {
         anyhow::bail!("FN_UNAVAILABLE: function dispatch not wired on this surface");
     };
-    f.enqueue_manual(&inner.tenant_id, &row.name, event.to_string()).await;
+    f.enqueue_manual(&inner.tenant_id, &row.name, event.to_string())
+        .await;
     Ok(json!({ "enqueued": name, "note": "read result via get_function_logs (trigger=manual)" }))
 }

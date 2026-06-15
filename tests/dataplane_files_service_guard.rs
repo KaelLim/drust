@@ -210,8 +210,7 @@ async fn files_stack(
         tenants.clone(),
         bus.clone(),
     ))));
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: auth_state,
         bus: bus.clone(),

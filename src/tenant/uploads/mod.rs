@@ -460,7 +460,9 @@ async fn finalize_and_respond(
         &sess.key,
         sess.total_length,
         &sess.visibility,
-        sess.content_type.as_deref().unwrap_or("application/octet-stream"),
+        sess.content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream"),
     );
 
     let mut h = tus_headers();

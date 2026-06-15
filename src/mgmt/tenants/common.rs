@@ -4,9 +4,9 @@
 //! deliberate visibility widening in the refactor (was module-private).
 
 use super::TenantsState;
-use axum::response::{IntoResponse, Response};
-use axum::http::StatusCode;
 use crate::storage::tenant_db::open_read;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 
 /// Internal: resolve tenant name (404 if missing/deleted) and pull the
 /// collection list for the sidebar. Mirrors what `_api_keys` does.
@@ -42,7 +42,10 @@ pub(crate) async fn load_tenant_shell(
 /// `state.tenants.get_or_open(...)` so we don't materialise an empty
 /// `tenants/<bogus_id>/data.sqlite` for an admin-typed path. Cheaper than
 /// `load_tenant_shell` (no collection list).
-pub(crate) async fn ensure_tenant_exists(state: &TenantsState, tenant_id: &str) -> Option<Response> {
+pub(crate) async fn ensure_tenant_exists(
+    state: &TenantsState,
+    tenant_id: &str,
+) -> Option<Response> {
     let exists: bool = {
         let conn = state.session.meta.lock().await;
         conn.query_row(
