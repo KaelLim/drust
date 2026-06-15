@@ -68,8 +68,18 @@ fn is_loopback_authority(authority: &str) -> bool {
     if authority.contains('@') {
         return false; // userinfo form — never loopback
     }
-    let host = authority.split(':').next().unwrap_or("");
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+    // Split off an optional `:port` without mangling a bracketed IPv6 literal
+    // (which itself contains colons). For `[::1]` the host is the bracketed
+    // form; valid suffixes are "" or ":<port>".
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((inner, after)) if after.is_empty() || after.starts_with(':') => inner,
+            _ => return false,
+        }
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 pub fn validate_redirect_uri(uri: &str) -> Result<(), OauthConfigError> {
@@ -259,6 +269,11 @@ mod tests {
         assert!(validate_redirect_uri("http://localhost:5173/cb").is_ok());
         assert!(validate_redirect_uri("http://127.0.0.1:8080/cb").is_ok());
         assert!(validate_redirect_uri("http://127.0.0.1").is_ok());
+        // IPv6 loopback accepted (bracketed, with/without port); bracket
+        // confusion rejected.
+        assert!(validate_redirect_uri("http://[::1]/cb").is_ok());
+        assert!(validate_redirect_uri("http://[::1]:8080/cb").is_ok());
+        assert!(validate_redirect_uri("http://[::1]evil.com/cb").is_err());
     }
 
     #[test]
