@@ -61,13 +61,38 @@ pub fn validate_provider(p: &str) -> Result<(), OauthConfigError> {
     }
 }
 
+/// True iff `authority` (the part after `scheme://`, up to the first `/`,`?`,`#`)
+/// is exactly a loopback host, optionally `:<port>`. Rejects extra labels
+/// (`localhost.evil.com`), userinfo (`127.0.0.1@evil.com`), and hyphen tricks.
+fn is_loopback_authority(authority: &str) -> bool {
+    if authority.contains('@') {
+        return false; // userinfo form — never loopback
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+}
+
 pub fn validate_redirect_uri(uri: &str) -> Result<(), OauthConfigError> {
-    if uri.is_empty() || uri.len() >= 1024 || uri.chars().any(|c| c.is_whitespace() || c == ',') {
+    // Reject empties, over-length, and any whitespace / comma / control char /
+    // fragment marker — the fragment append in redirect_with_fragment_success
+    // assumes no pre-existing '#', and control bytes would panic the header build.
+    if uri.is_empty()
+        || uri.len() >= 1024
+        || uri
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == ',' || c == '#')
+    {
         return Err(OauthConfigError::InvalidRedirectUri(uri.to_string()));
     }
-    let ok = uri.starts_with("https://")
-        || uri.starts_with("http://localhost")
-        || uri.starts_with("http://127.0.0.1");
+    let ok = if let Some(rest) = uri.strip_prefix("https://") {
+        !rest.is_empty()
+    } else if let Some(rest) = uri.strip_prefix("http://") {
+        // Plaintext allowed ONLY for an exact loopback host.
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        is_loopback_authority(authority)
+    } else {
+        false
+    };
     if !ok {
         return Err(OauthConfigError::InvalidRedirectUri(uri.to_string()));
     }
@@ -220,6 +245,20 @@ mod tests {
         assert!(validate_redirect_uri("https://comma,inside").is_err());
         let long = format!("https://{}", "a".repeat(1100));
         assert!(validate_redirect_uri(&long).is_err());
+    }
+
+    #[test]
+    fn validate_redirect_uri_rejects_loopback_prefix_confusion() {
+        // Attacker-registrable PUBLIC domains the prefix check wrongly admitted.
+        assert!(validate_redirect_uri("http://localhost.evil.com/cb").is_err());
+        assert!(validate_redirect_uri("http://127.0.0.1.evil.com/cb").is_err());
+        assert!(validate_redirect_uri("http://127.0.0.1@evil.com/").is_err());
+        assert!(validate_redirect_uri("http://localhost-evil.com").is_err());
+        // Genuine loopback forms still accepted.
+        assert!(validate_redirect_uri("http://localhost/cb").is_ok());
+        assert!(validate_redirect_uri("http://localhost:5173/cb").is_ok());
+        assert!(validate_redirect_uri("http://127.0.0.1:8080/cb").is_ok());
+        assert!(validate_redirect_uri("http://127.0.0.1").is_ok());
     }
 
     #[test]
