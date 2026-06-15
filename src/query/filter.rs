@@ -47,7 +47,11 @@ fn sql_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
 
-pub fn build_list_sql(collection: &str, p: &ListParams) -> String {
+pub fn build_list_sql(
+    collection: &str,
+    p: &ListParams,
+    policy_clause: Option<&(String, Vec<rusqlite::types::Value>)>,
+) -> String {
     let table = q(collection);
     let dir = match p.sort_dir {
         SortDir::Asc => "ASC",
@@ -61,6 +65,13 @@ pub fn build_list_sql(collection: &str, p: &ListParams) -> String {
     let mut wheres: Vec<String> = Vec::new();
     if let Some(f) = &p.filter {
         wheres.push(format!("({f})"));
+    }
+    // Explicit select-policy USING: a `?`-bound fragment AND-ed alongside the
+    // owner clause. The fragment is the ONLY part carrying `?` placeholders;
+    // the binds (`.1`) are passed by the caller to `params_from_iter`. The
+    // owner/filter parts above interpolate literals and contain no `?`.
+    if let Some((frag, _binds)) = policy_clause {
+        wheres.push(format!("({frag})"));
     }
     if let Some((field, val)) = &p.owner_filter {
         // v1.21 — defense-in-depth: user IDs are minted as `u-<uuid4-hex>`
@@ -91,11 +102,16 @@ pub fn build_count_sql(
     collection: &str,
     filter: Option<&str>,
     owner_filter: Option<(&str, &str)>,
+    policy_clause: Option<&(String, Vec<rusqlite::types::Value>)>,
 ) -> String {
     let table = q(collection);
     let mut wheres: Vec<String> = Vec::new();
     if let Some(f) = filter {
         wheres.push(format!("({f})"));
+    }
+    // Explicit select-policy USING (`?`-bound fragment); see build_list_sql.
+    if let Some((frag, _binds)) = policy_clause {
+        wheres.push(format!("({frag})"));
     }
     if let Some((field, val)) = owner_filter {
         wheres.push(format!("{} = '{}'", q(field), sql_escape(val)));
