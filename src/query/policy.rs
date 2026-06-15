@@ -359,8 +359,7 @@ fn eval_leaf(
             if matches!(lhs, Value::Null) {
                 return false;
             }
-            let resolved: Vec<Value> =
-                arr.iter().map(|v| resolve_eval_operand(v, ctx)).collect();
+            let resolved: Vec<Value> = arr.iter().map(|v| resolve_eval_operand(v, ctx)).collect();
             let hit = resolved
                 .iter()
                 .any(|v| value_cmp(&lhs, v) == Some(std::cmp::Ordering::Equal));
