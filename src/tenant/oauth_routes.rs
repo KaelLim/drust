@@ -354,11 +354,7 @@ fn find_or_create_user(
             conn.execute(
                 "UPDATE _system_users SET password_hash = ?1, verified = 1, updated_at = ?2 \
                  WHERE id = ?3",
-                rusqlite::params![
-                    crate::auth::oauth_sentinel::OAUTH_ONLY_SENTINEL,
-                    now,
-                    id
-                ],
+                rusqlite::params![crate::auth::oauth_sentinel::OAUTH_ONLY_SENTINEL, now, id],
             )?;
             crate::auth::user_session::revoke_all_sessions(conn, &id)?;
             return Ok(Some(ResolvedUser { id, claimed: true }));
