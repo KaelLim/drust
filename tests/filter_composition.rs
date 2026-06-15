@@ -2,7 +2,7 @@ use drust::query::filter::{ListParams, SortDir, build_list_sql};
 
 #[test]
 fn default_no_filter() {
-    let sql = build_list_sql("posts", &ListParams::default());
+    let sql = build_list_sql("posts", &ListParams::default(), None);
     assert_eq!(
         sql,
         "SELECT * FROM \"posts\" ORDER BY \"created_at\" DESC LIMIT 20 OFFSET 0"
@@ -15,10 +15,22 @@ fn with_filter() {
         filter: Some("status='published' AND views>100".into()),
         ..ListParams::default()
     };
-    let sql = build_list_sql("posts", &p);
+    let sql = build_list_sql("posts", &p, None);
     assert_eq!(
         sql,
         "SELECT * FROM \"posts\" WHERE (status='published' AND views>100) ORDER BY \"created_at\" DESC LIMIT 20 OFFSET 0"
+    );
+}
+
+#[test]
+fn with_policy_clause_and_composed() {
+    // The `?`-bound select-policy fragment is AND-ed into the WHERE; its
+    // placeholders are left intact for params_from_iter at execute time.
+    let clause = ("\"status\" = ?".to_string(), vec![rusqlite::types::Value::Text("published".into())]);
+    let sql = build_list_sql("posts", &ListParams::default(), Some(&clause));
+    assert_eq!(
+        sql,
+        "SELECT * FROM \"posts\" WHERE (\"status\" = ?) ORDER BY \"created_at\" DESC LIMIT 20 OFFSET 0"
     );
 }
 
@@ -29,7 +41,7 @@ fn with_sort_asc() {
         sort_dir: SortDir::Asc,
         ..ListParams::default()
     };
-    let sql = build_list_sql("posts", &p);
+    let sql = build_list_sql("posts", &p, None);
     assert!(sql.contains("ORDER BY \"views\" ASC"));
 }
 
@@ -40,7 +52,7 @@ fn page_offset() {
         per_page: 10,
         ..ListParams::default()
     };
-    let sql = build_list_sql("posts", &p);
+    let sql = build_list_sql("posts", &p, None);
     assert!(sql.ends_with("LIMIT 10 OFFSET 20"));
 }
 
@@ -51,7 +63,7 @@ fn per_page_caps_at_500() {
         per_page: 10_000,
         ..ListParams::default()
     };
-    let sql = build_list_sql("posts", &p);
+    let sql = build_list_sql("posts", &p, None);
     assert!(sql.contains("LIMIT 500"));
 }
 

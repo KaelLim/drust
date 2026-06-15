@@ -227,6 +227,51 @@ fn record_as_json(
     Ok(row)
 }
 
+/// Run a `?`-bound legacy list SELECT and materialise each row as a JSON
+/// object keyed by column name, default-hiding declared vector columns and
+/// honoring `row_cap`. Mirrors `records_list::run_bound_select` but applies
+/// the vector-name hide inline (the legacy path projects `SELECT *`). The
+/// caller is responsible for attaching/detaching the read-only authorizer.
+fn list_bound_rows(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    binds: &[Value],
+    vector_names: &std::collections::HashSet<String>,
+    row_cap: usize,
+) -> rusqlite::Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(sql)?;
+    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    while let Some(r) = rows_iter.next()? {
+        if out.len() >= row_cap {
+            break;
+        }
+        let mut obj = serde_json::Map::new();
+        for (i, name) in col_names.iter().enumerate() {
+            if vector_names.contains(name) {
+                continue;
+            }
+            let v = r.get_ref(i)?;
+            obj.insert(
+                name.clone(),
+                match v {
+                    rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+                    rusqlite::types::ValueRef::Integer(n) => json!(n),
+                    rusqlite::types::ValueRef::Real(f) => json!(f),
+                    rusqlite::types::ValueRef::Text(t) => {
+                        serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+                    }
+                    rusqlite::types::ValueRef::Blob(b) => json!({ "__blob_bytes": b.len() }),
+                },
+            );
+        }
+        out.push(serde_json::Value::Object(obj));
+    }
+    Ok(out)
+}
+
 /// Attach RFC 8594 Deprecation + Sunset + Link headers to a response.
 /// Called by `list_handler` when the legacy `?filter` / `?sort` query
 /// params are present.  The headers are informational only (phase 1);
@@ -282,21 +327,38 @@ pub async fn list_handler(
              internally.",
         );
     }
-    // RLS Task 15 — anon cannot pass raw `?filter=` / `?sort=` on a
-    // collection that has adopted ANY row-level rule (owner_field OR an
-    // explicit policy). Those query-string values interpolate verbatim into
-    // SQL (build_list_sql), so a `--` comment could void the owner/policy
-    // clause that anon must be subject to. Reject; point at the structured
-    // /list endpoint (FilterAst, `?`-bound). A plain list (no filter/sort)
-    // still works — owner/policy USING is enforced on the SQL drust builds.
-    if matches!(ctx, AuthCtx::Anon)
-        && (schema.owner_field.is_some() || !schema.policies.is_empty())
-        && (qs.filter.is_some() || qs.sort.is_some())
+    // H1 — explicit select-policy USING must be enforced on this legacy
+    // GET-list path too (not only POST /list). policy_using_sql returns None
+    // for service / no-policy. A compile error is a 500.
+    let policy_clause = match crate::query::policy::policy_using_sql(&ctx, &schema, DmlVerb::Select)
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "POLICY_COMPILE_ERROR",
+                &e.to_string(),
+            );
+        }
+    };
+    // RLS Task 15 / H1 — raw `?filter=` / `?sort=` interpolate verbatim into
+    // SQL (build_list_sql) so a trailing `--` comment could void an AND-ed
+    // owner/policy clause. Refuse when ANY row-level rule applies. The anon
+    // owner_field/policy guard keys on the schema (so anon is refused even
+    // when service-only policy_clause is None); the policy_clause guard
+    // additionally covers any non-service caller subject to a select policy.
+    // Either way, point at the structured /list endpoint (FilterAst, `?`-bound).
+    // A plain list (no filter/sort) still works — owner_field is interpolated
+    // and the explicit policy USING is AND-ed in as a `?`-bound clause below.
+    if (qs.filter.is_some() || qs.sort.is_some())
+        && (policy_clause.is_some()
+            || (matches!(ctx, AuthCtx::Anon)
+                && (schema.owner_field.is_some() || !schema.policies.is_empty())))
     {
         return json_error(
             StatusCode::FORBIDDEN,
             "ANON_QUERY_DENIED_ON_POLICY",
-            "anon raw filter/sort is unsupported on a policy-protected collection; \
+            "raw filter/sort is unsupported on a policy-protected collection; \
              use POST /collections/<c>/list (FilterAst)",
         );
     }
@@ -325,42 +387,15 @@ pub async fn list_handler(
         per_page: qs.per_page.unwrap_or(20),
         owner_filter,
     };
-    let list_sql = build_list_sql(&coll, &params);
+    let list_sql = build_list_sql(&coll, &params, policy_clause.as_ref());
     let count_sql = build_count_sql(
         &coll,
         qs.filter.as_deref(),
         owner_filter_for_count
             .as_ref()
             .map(|(f, v)| (f.as_str(), v.as_str())),
+        policy_clause.as_ref(),
     );
-    let records_res = {
-        let sql = list_sql.clone();
-        pool.with_reader(move |c| {
-            execute_read_query(c, &sql, 500, 32_768).map_err(|_e| rusqlite::Error::InvalidQuery)
-        })
-        .await
-    };
-    let records = match records_res {
-        Ok(qr) => qr,
-        Err(_) => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "QUERY_FORBIDDEN",
-                "filter rejected",
-            );
-        }
-    };
-    let total = {
-        let sql = count_sql.clone();
-        pool.with_reader(move |c| {
-            attach_readonly_authorizer(c);
-            let r = c.query_row(&sql, [], |r| r.get::<_, i64>(0));
-            detach_authorizer(c);
-            r
-        })
-        .await
-        .unwrap_or(0)
-    };
     // Vector fields are excluded from list responses by default — they
     // serialise to a useless `{"__blob_bytes": n}` sentinel anyway via
     // the read-only executor, and a 384-dim vector inflates each row by
@@ -370,20 +405,99 @@ pub async fn list_handler(
         .iter()
         .map(|v| v.name.clone())
         .collect();
-    let records_out: Vec<serde_json::Value> = records
-        .rows
-        .iter()
-        .map(|row| {
-            let mut m = serde_json::Map::new();
-            for (i, name) in records.column_names.iter().enumerate() {
-                if vector_names.contains(name) {
-                    continue;
-                }
-                m.insert(name.clone(), row[i].to_json());
+
+    let (records_out, total): (Vec<serde_json::Value>, i64) = if let Some((_frag, binds)) =
+        policy_clause.as_ref()
+    {
+        // Policy path — the SQL carries `?` placeholders for the select-policy
+        // USING fragment; execute under the read-only authorizer with the
+        // policy binds (mirrors records_list::post_list). The 500-row cap is
+        // applied at materialise time. owner_field (if any) is still inlined
+        // into the SQL above; the only `?` are the policy's.
+        let binds_list = binds.clone();
+        let binds_count = binds.clone();
+        let vnames = vector_names.clone();
+        let list_sql_owned = list_sql.clone();
+        let rows_res: rusqlite::Result<Vec<serde_json::Value>> = pool
+            .with_reader(move |c| {
+                attach_readonly_authorizer(c);
+                let r = list_bound_rows(c, &list_sql_owned, &binds_list, &vnames, 500);
+                detach_authorizer(c);
+                r
+            })
+            .await;
+        let records_out = match rows_res {
+            Ok(v) => v,
+            Err(_) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "QUERY_FORBIDDEN",
+                    "filter rejected",
+                );
             }
-            serde_json::Value::Object(m)
-        })
-        .collect();
+        };
+        let count_sql_owned = count_sql.clone();
+        let total = pool
+            .with_reader(move |c| -> rusqlite::Result<i64> {
+                attach_readonly_authorizer(c);
+                let r = (|| -> rusqlite::Result<i64> {
+                    let refs: Vec<&dyn rusqlite::ToSql> =
+                        binds_count.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                    c.query_row(&count_sql_owned, rusqlite::params_from_iter(refs), |r| r.get(0))
+                })();
+                detach_authorizer(c);
+                r
+            })
+            .await
+            .unwrap_or(0);
+        (records_out, total)
+    } else {
+        // Non-policy path — verbatim (zero behavior change). owner_field and
+        // any raw ?filter are interpolated as literals; the SQL has no `?`.
+        let records_res = {
+            let sql = list_sql.clone();
+            pool.with_reader(move |c| {
+                execute_read_query(c, &sql, 500, 32_768).map_err(|_e| rusqlite::Error::InvalidQuery)
+            })
+            .await
+        };
+        let records = match records_res {
+            Ok(qr) => qr,
+            Err(_) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "QUERY_FORBIDDEN",
+                    "filter rejected",
+                );
+            }
+        };
+        let total = {
+            let sql = count_sql.clone();
+            pool.with_reader(move |c| {
+                attach_readonly_authorizer(c);
+                let r = c.query_row(&sql, [], |r| r.get::<_, i64>(0));
+                detach_authorizer(c);
+                r
+            })
+            .await
+            .unwrap_or(0)
+        };
+        let records_out: Vec<serde_json::Value> = records
+            .rows
+            .iter()
+            .map(|row| {
+                let mut m = serde_json::Map::new();
+                for (i, name) in records.column_names.iter().enumerate() {
+                    if vector_names.contains(name) {
+                        continue;
+                    }
+                    m.insert(name.clone(), row[i].to_json());
+                }
+                serde_json::Value::Object(m)
+            })
+            .collect();
+        (records_out, total)
+    };
     let per_page = params.per_page.clamp(1, 500) as u64;
     let total_pages = (total as u64).div_ceil(per_page.max(1));
     let mut resp = Json(json!({

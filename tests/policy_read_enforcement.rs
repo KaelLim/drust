@@ -124,6 +124,50 @@ async fn get_one_status(app: &axum::Router, tid: &str, tok: &str, coll: &str, ro
     resp.status().as_u16()
 }
 
+/// Bare `GET /t/<id>/records/<coll>` (legacy list path, no query string) →
+/// the `records` array. Asserts 200.
+async fn get_list_records(app: &axum::Router, tid: &str, tok: &str, coll: &str) -> Vec<Value> {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/t/{tid}/records/{coll}"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "GET list {coll} non-OK");
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    v["records"].as_array().cloned().unwrap_or_default()
+}
+
+/// `GET /t/<id>/records/<coll>?<query>` → just the HTTP status code.
+async fn get_list_status(
+    app: &axum::Router,
+    tid: &str,
+    tok: &str,
+    coll: &str,
+    query: &str,
+) -> u16 {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/t/{tid}/records/{coll}?{query}"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    resp.status().as_u16()
+}
+
 /// `POST /t/<id>/collections/posts/list` → the `records` array.
 async fn list_records(app: &axum::Router, tid: &str, tok: &str, coll: &str) -> Vec<Value> {
     let resp = app
@@ -279,4 +323,61 @@ async fn anon_get_one_blocked_by_select_policy() {
     // Service bypasses the policy → the draft is visible (200).
     let svc_status = get_one_status(&app, &tid, &svc, "posts", draft_id).await;
     assert_eq!(svc_status, 200, "service bypasses the select policy on GET-one");
+}
+
+// ── H1: legacy GET-list must enforce the select-policy USING ────────────
+
+/// H1 (a) + (b): the legacy bare `GET /records/<coll>` list path must apply
+/// the explicit select-policy USING for non-service callers (it previously
+/// applied only the owner clause), and the service token must bypass it.
+#[tokio::test]
+async fn anon_get_list_filtered_by_select_policy() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("rls-getlist-policy").await;
+    seed_status_posts(&dir, &tid).await;
+    // Policy set before any router read caches a policy-free view.
+    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+
+    // Service inserts both rows.
+    insert_post(&app, &tid, &svc, "published", "a").await;
+    insert_post(&app, &tid, &svc, "draft", "b").await;
+
+    // (a) Anon bare GET-list: only the published row passes the USING.
+    let anon_rows = get_list_records(&app, &tid, &anon, "posts").await;
+    assert_eq!(
+        anon_rows.len(),
+        1,
+        "anon GET-list should see only the published row under the policy"
+    );
+    assert_eq!(anon_rows[0]["status"], "published");
+
+    // (b) Service bypasses the policy on the same GET-list path: both rows.
+    let svc_rows = get_list_records(&app, &tid, &svc, "posts").await;
+    assert_eq!(
+        svc_rows.len(),
+        2,
+        "service GET-list bypasses the select policy"
+    );
+}
+
+/// H1 (c): raw `?filter` / `?sort` on a policy-protected collection must be
+/// refused for anon (those interpolate verbatim and a trailing `--` could
+/// comment the AND-ed policy clause away) → 403 `ANON_QUERY_DENIED_ON_POLICY`.
+#[tokio::test]
+async fn anon_get_list_raw_filter_sort_denied_on_policy() {
+    let (app, tid, _svc, anon, dir) =
+        spin_up_dual_role_self_register("rls-getlist-rawdeny").await;
+    seed_status_posts(&dir, &tid).await;
+    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+
+    let filter_status = get_list_status(&app, &tid, &anon, "posts", "filter=status='draft'").await;
+    assert_eq!(
+        filter_status, 403,
+        "anon raw ?filter on a policy collection must be 403"
+    );
+
+    let sort_status = get_list_status(&app, &tid, &anon, "posts", "sort=-status").await;
+    assert_eq!(
+        sort_status, 403,
+        "anon raw ?sort on a policy collection must be 403"
+    );
 }
