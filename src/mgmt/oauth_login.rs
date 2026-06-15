@@ -117,7 +117,7 @@ pub async fn oauth_callback(
         let conn = s.meta.lock().await;
         let admin_exists: bool = conn
             .query_row(
-                "SELECT 1 FROM admins WHERE email = ?1",
+                "SELECT 1 FROM admins WHERE email = ?1 COLLATE NOCASE",
                 rusqlite::params![&user.email],
                 |_| Ok(()),
             )
