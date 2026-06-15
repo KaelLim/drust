@@ -1,10 +1,3 @@
----
-type: index
-name: drust
-status: production
-updated: 2026-06-15
----
-
 <div align="center">
 
 <img src="assets/banner.svg" alt="drust — the AI-native, self-hosted BaaS" width="100%">
