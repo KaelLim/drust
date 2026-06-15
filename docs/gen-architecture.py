@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Regenerate drust/docs/architecture.md from the current src/ tree.
 
-Purpose: give future agents (and humans) a browsable index of which file
-does what, which file imports which, and which public items each file
-exposes — so they don't have to re-read every .rs file to orient.
+Purpose: a CONCISE orientation map — which module group depends on which,
+and a one-line "what does this file do" per file. It is deliberately NOT an
+exhaustive per-symbol dump: per-file public items, imports, callers, and
+call graphs are available on demand from the CodeGraph MCP (`codegraph_*`),
+which is a live AST index. Duplicating that here just produced a 4000-line
+file nobody reads top to bottom.
 
-Index, not tutorial. Summaries come from each file's //! module doc.
-Public item lists come from `pub (fn|struct|enum|trait|const|static|type|mod)`.
-Cross-file edges come from `use crate::...` imports and `mod X;` declarations.
-This is textual, not AST: fully-qualified calls that bypass a `use` will not
-be captured. Good enough for orientation.
+Index, not tutorial. Summaries come from each file's `//!` module doc.
+Group dependency edges come from `use crate::...` imports. This is textual,
+not AST — good enough for orientation; use codegraph for ground truth.
 
 Usage:
     python3 drust/docs/gen-architecture.py
@@ -40,11 +41,6 @@ RE_PUB_ITEM = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)"
 )
 
-# `mod X;` declarations (top-level only) — these build the module tree.
-RE_MOD_DECL = re.compile(
-    r"^(?:pub(?:\(crate\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
-)
-
 RE_USE_CRATE_START = re.compile(r"(?:\b(?:pub\s+)?use\s+crate::)")
 
 
@@ -65,37 +61,13 @@ def parse_module_doc(text: str) -> str:
     return ""
 
 
-def parse_pub_items(text: str) -> list[tuple[str, str, str]]:
-    """Return [(kind, name, one_line_doc)] for each top-level pub item."""
-    out: list[tuple[str, str, str]] = []
-    pending_doc: list[str] = []
+def count_pub_items(text: str) -> int:
+    """Count top-level pub items (for the per-file one-liner)."""
+    n = 0
     for raw in text.splitlines():
-        s = raw.rstrip()
-        if s.lstrip().startswith("///"):
-            pending_doc.append(s.lstrip()[3:].lstrip())
-            continue
-        if s.strip() == "":
-            # Blank line severs a pending doc block from its item.
-            pending_doc = []
-            continue
-        m = RE_PUB_ITEM.match(s)
-        if m:
-            doc = next((d.strip() for d in pending_doc if d.strip()), "")
-            out.append((m.group(1), m.group(2), doc))
-            pending_doc = []
-        else:
-            pending_doc = []
-    return out
-
-
-def parse_mod_decls(text: str) -> list[str]:
-    """Return submodule names declared with `mod X;` at the top level."""
-    out: list[str] = []
-    for raw in text.splitlines():
-        m = RE_MOD_DECL.match(raw.rstrip())
-        if m:
-            out.append(m.group(1))
-    return out
+        if RE_PUB_ITEM.match(raw.rstrip()):
+            n += 1
+    return n
 
 
 def extract_use_crate_bodies(text: str) -> list[str]:
@@ -151,7 +123,6 @@ def expand_use_body(body: str) -> list[str]:
       → ['a::b::c', 'a::b::d::e', 'a::b::d::f', 'a::b::g']
     """
     body = body.strip()
-    # Strip `as ALIAS` — aliases don't affect which file is being imported.
     body = re.sub(r"\s+as\s+[A-Za-z_][A-Za-z0-9_]*", "", body)
     if "{" not in body:
         return [body.strip().rstrip(":")]
@@ -175,8 +146,7 @@ def expand_use_body(body: str) -> list[str]:
         p = p.strip()
         if not p:
             continue
-        sub = expand_use_body(p)
-        for s in sub:
+        for s in expand_use_body(p):
             if prefix and s:
                 out.append(prefix + "::" + s)
             else:
@@ -185,12 +155,7 @@ def expand_use_body(body: str) -> list[str]:
 
 
 def resolve_module_file(parts: list[str]) -> str | None:
-    """Resolve crate-relative module path parts to the deepest existing .rs file.
-
-    Returns the path relative to DRUST root, or None if no match. We try
-    (a) `<parts-1>/<last>.rs`, (b) `<parts>/mod.rs`, and walk up if neither
-    matches — this handles both `mod foo;` style and `mod foo { ... }` inline.
-    """
+    """Resolve crate-relative module path parts to the deepest existing .rs file."""
     parts = list(parts)
     while parts:
         leaf = SRC.joinpath(*parts[:-1], parts[-1] + ".rs")
@@ -213,14 +178,8 @@ def build_records(files: list[str]) -> dict[str, dict]:
     records: dict[str, dict] = {}
     for fpath in files:
         text = (DRUST / fpath).read_text()
-        mod_doc = parse_module_doc(text)
-        items = parse_pub_items(text)
-        use_bodies = extract_use_crate_bodies(text)
-        mod_decls = parse_mod_decls(text)
-
-        # use crate::... imports → list of resolved sibling files
         imports: set[str] = set()
-        for b in use_bodies:
+        for b in extract_use_crate_bodies(text):
             for full in expand_use_body(b):
                 parts = [
                     seg
@@ -232,164 +191,102 @@ def build_records(files: list[str]) -> dict[str, dict]:
                 target = resolve_module_file(parts)
                 if target and target != fpath:
                     imports.add(target)
-
-        # mod X; declarations → child module files (relative to this file's dir)
-        children: set[str] = set()
-        if mod_decls:
-            parent = Path(fpath).parent  # e.g. src/auth
-            # If this file is foo/mod.rs, children live under foo/; otherwise
-            # under <file-without-.rs>/.
-            if Path(fpath).name == "mod.rs" or Path(fpath).name == "lib.rs" or Path(fpath).name == "main.rs":
-                child_dir = parent
-            else:
-                child_dir = parent / Path(fpath).stem
-            for name in mod_decls:
-                leaf = DRUST / child_dir / f"{name}.rs"
-                mod = DRUST / child_dir / name / "mod.rs"
-                if leaf.exists():
-                    children.add(str(leaf.relative_to(DRUST)))
-                elif mod.exists():
-                    children.add(str(mod.relative_to(DRUST)))
-
         records[fpath] = {
-            "doc": mod_doc,
-            "items": items,
+            "doc": parse_module_doc(text),
+            "n_items": count_pub_items(text),
             "imports": sorted(imports),
-            "children": sorted(children),
         }
     return records
 
 
+def group_of(fpath: str) -> str:
+    rel = fpath[len("src/") :]
+    return rel.split("/", 1)[0] if "/" in rel else "(root)"
+
+
 def emit(records: dict[str, dict]) -> str:
-    # Reverse indexes.
     imported_by: dict[str, set[str]] = defaultdict(set)
-    parent_of: dict[str, set[str]] = defaultdict(set)
     for f, r in records.items():
         for dep in r["imports"]:
             imported_by[dep].add(f)
-        for child in r["children"]:
-            parent_of[child].add(f)
 
-    # Group by top-level src subdir.
     groups: dict[str, list[str]] = defaultdict(list)
     for f in sorted(records.keys()):
-        rel = f[len("src/") :]
-        top = rel.split("/", 1)[0] if "/" in rel else "(root)"
-        groups[top].append(f)
+        groups[group_of(f)].append(f)
 
     today = _dt.date.today().isoformat()
-
-    def rel_src_link(target: str) -> str:
-        """Link from docs/architecture.md back to a file in src/."""
-        return "../" + target
+    rel_src_link = lambda target: "../" + target  # noqa: E731
 
     lines: list[str] = []
-    lines.append("---")
-    lines.append("type: reference")
-    lines.append("name: drust source architecture index")
-    lines.append("status: production")
-    lines.append(f"updated: {today}")
-    lines.append("generated_by: docs/gen-architecture.py")
-    lines.append("---")
-    lines.append("")
-    lines.append("# drust — source architecture index")
-    lines.append("")
-    lines.append("> [!NOTE]")
-    lines.append("> **Auto-generated** from `src/**/*.rs`. Do not hand-edit — rebuild with")
-    lines.append("> `python3 drust/docs/gen-architecture.py` after code changes.")
-    lines.append(">")
-    lines.append("> Summaries come from each file's `//!` module doc. Public items come from top-level `pub` declarations. Cross-file edges come from `use crate::...` imports and `mod X;` declarations — this is **textual, not AST**, so calls through fully-qualified paths without a `use` won't appear. Good enough for orientation.")
-    lines.append("")
-
-    # High-level module overview.
-    lines.append("## Module overview")
-    lines.append("")
-    lines.append("| group | files | public items | imports out | imports in |")
-    lines.append("|---|---:|---:|---:|---:|")
+    lines += [
+        "---",
+        "type: reference",
+        "name: drust source architecture index",
+        "status: production",
+        f"updated: {today}",
+        "generated_by: docs/gen-architecture.py",
+        "---",
+        "",
+        "# drust — source architecture index",
+        "",
+        "> [!NOTE]",
+        "> **Auto-generated** from `src/**/*.rs` — rebuild with",
+        "> `python3 drust/docs/gen-architecture.py` after code changes. Do not hand-edit.",
+        "> This is a deliberately concise **orientation map**: module groups, their",
+        "> dependency graph, and a one-line summary per file (from each file's `//!`",
+        "> doc). For per-file detail — public items, signatures, imports, callers, and",
+        "> call graphs — query the **CodeGraph MCP** (`codegraph_*`), which is a live",
+        "> AST index. (Edges here are textual `use crate::` imports, not AST.)",
+        "",
+        "## Module overview",
+        "",
+        "| group | files | public items | imports out | imports in |",
+        "|---|---:|---:|---:|---:|",
+    ]
     for g in sorted(groups.keys()):
         fs = groups[g]
-        nitems = sum(len(records[f]["items"]) for f in fs)
+        nitems = sum(records[f]["n_items"] for f in fs)
         out_edges = sum(len(records[f]["imports"]) for f in fs)
         in_edges = sum(len(imported_by.get(f, [])) for f in fs)
         anchor = g.replace("/", "").strip("()") or "root"
         lines.append(f"| [`{g}/`](#src{anchor}) | {len(fs)} | {nitems} | {out_edges} | {in_edges} |")
     lines.append("")
 
-    # Group-level dependency graph — one edge per (group A → group B) if ANY
-    # file in A imports from B.
-    lines.append("## Group-level dependency graph")
-    lines.append("")
-    lines.append("```mermaid")
-    lines.append("graph LR")
+    # Group-level dependency graph — one edge per (group A → group B).
+    lines += ["## Group dependency graph", "", "```mermaid", "graph LR"]
     edges: set[tuple[str, str]] = set()
     for f, r in records.items():
-        ftop = f[len("src/") :].split("/", 1)[0] if "/" in f[len("src/") :] else "(root)"
+        ftop = group_of(f)
         for dep in r["imports"]:
-            dtop = dep[len("src/") :].split("/", 1)[0] if "/" in dep[len("src/") :] else "(root)"
+            dtop = group_of(dep)
             if ftop != dtop:
                 edges.add((ftop, dtop))
     for a, b in sorted(edges):
         a_id = a.replace("(", "").replace(")", "") or "root"
         b_id = b.replace("(", "").replace(")", "") or "root"
         lines.append(f"  {a_id} --> {b_id}")
-    lines.append("```")
-    lines.append("")
+    lines += ["```", ""]
 
-    # Per-file sections.
+    # Files by module — one line per file: name, summary, pub-item count.
+    lines += [
+        "## Files by module",
+        "",
+        "_One line per file (its `//!` summary). Use `codegraph_files` /"
+        " `codegraph_node` for the symbols and signatures inside each._",
+        "",
+    ]
     for g in sorted(groups.keys()):
         anchor = g.replace("/", "").strip("()") or "root"
-        heading = f"## `src/{g}/`" if g != "(root)" else "## `src/` (root)"
-        # For the anchor to match the TOC, rewrite heading id.
-        lines.append(f'<a id="src{anchor}"></a>')
-        lines.append("")
-        lines.append(heading)
-        lines.append("")
+        heading = f"### `src/{g}/`" if g != "(root)" else "### `src/` (root)"
+        lines += [f'<a id="src{anchor}"></a>', "", heading, ""]
         for fpath in groups[g]:
             r = records[fpath]
-            lines.append(f"### [`{fpath}`]({rel_src_link(fpath)})")
-            lines.append("")
-            if r["doc"]:
-                lines.append(f"_{r['doc']}_")
-                lines.append("")
-            # Children first (module tree goes down), then imports, then inbound.
-            if r["children"]:
-                lines.append("**Declares submodules:**")
-                lines.append("")
-                for c in r["children"]:
-                    lines.append(f"- [`{c}`]({rel_src_link(c)})")
-                lines.append("")
-            parents = sorted(parent_of.get(fpath, []))
-            if parents:
-                lines.append("**Declared by:**")
-                lines.append("")
-                for p in parents:
-                    lines.append(f"- [`{p}`]({rel_src_link(p)})")
-                lines.append("")
-            if r["items"]:
-                lines.append("**Public items:**")
-                lines.append("")
-                for kind, name, doc in r["items"]:
-                    line = f"- `{kind} {name}`"
-                    if doc:
-                        line += f" — {doc}"
-                    lines.append(line)
-                lines.append("")
-            else:
-                lines.append("_(no top-level pub items)_")
-                lines.append("")
-            if r["imports"]:
-                lines.append("**Imports from:**")
-                lines.append("")
-                for dep in r["imports"]:
-                    lines.append(f"- [`{dep}`]({rel_src_link(dep)})")
-                lines.append("")
-            inbound = sorted(imported_by.get(fpath, []))
-            if inbound:
-                lines.append("**Imported by:**")
-                lines.append("")
-                for src in inbound:
-                    lines.append(f"- [`{src}`]({rel_src_link(src)})")
-                lines.append("")
+            rel = fpath[len("src/") :]
+            sub = rel[len(g) + 1 :] if g != "(root)" and rel.startswith(g + "/") else rel
+            doc = r["doc"] or "—"
+            badge = f" · {r['n_items']} pub" if r["n_items"] else ""
+            lines.append(f"- [`{sub}`]({rel_src_link(fpath)}) — {doc}{badge}")
+        lines.append("")
 
     return "\n".join(lines) + "\n"
 
@@ -398,7 +295,7 @@ def main() -> int:
     files = collect_files()
     records = build_records(files)
     OUT.write_text(emit(records))
-    total_items = sum(len(r["items"]) for r in records.values())
+    total_items = sum(r["n_items"] for r in records.values())
     total_edges = sum(len(r["imports"]) for r in records.values())
     print(
         f"Wrote {OUT.relative_to(DRUST)} — {len(records)} files, "
