@@ -283,9 +283,13 @@ def emit(records: dict[str, dict]) -> str:
             r = records[fpath]
             rel = fpath[len("src/") :]
             sub = rel[len(g) + 1 :] if g != "(root)" and rel.startswith(g + "/") else rel
-            doc = r["doc"] or "—"
-            badge = f" · {r['n_items']} pub" if r["n_items"] else ""
-            lines.append(f"- [`{sub}`]({rel_src_link(fpath)}) — {doc}{badge}")
+            meta = []
+            if r["doc"]:
+                meta.append(r["doc"])
+            if r["n_items"]:
+                meta.append(f"{r['n_items']} pub")
+            suffix = (" — " + " · ".join(meta)) if meta else ""
+            lines.append(f"- [`{sub}`]({rel_src_link(fpath)}){suffix}")
         lines.append("")
 
     return "\n".join(lines) + "\n"
