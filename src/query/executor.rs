@@ -289,7 +289,11 @@ mod o2_golden {
                 Cell::Text("ctrl\u{0001}\ttab\nnl\"quote\\back".into()),
                 Cell::Text("unicode-\u{2028}\u{2029}-\u{1F600}".into()),
             ],
-            vec![Cell::Blob(42), Cell::Int(-9223372036854775808), Cell::Real(-0.0)],
+            vec![
+                Cell::Blob(42),
+                Cell::Int(-9223372036854775808),
+                Cell::Real(-0.0),
+            ],
         ]
     }
     fn old_json(rows: &[Vec<Cell>]) -> String {
@@ -370,13 +374,18 @@ mod named_tests {
     fn cached_stmt_reprepares_after_schema_change() {
         let tmp = TempDir::new().unwrap();
         let _conn = open_write(tmp.path(), "cachetest").unwrap();
-        _conn.execute_batch(
-            "CREATE TABLE posts (id INTEGER PRIMARY KEY, body TEXT, n INTEGER);
+        _conn
+            .execute_batch(
+                "CREATE TABLE posts (id INTEGER PRIMARY KEY, body TEXT, n INTEGER);
              INSERT INTO posts (body, n) VALUES ('a', 1), ('b', 2);",
-        )
-        .unwrap();
+            )
+            .unwrap();
 
-        let dbpath = tmp.path().join("tenants").join("cachetest").join("data.sqlite");
+        let dbpath = tmp
+            .path()
+            .join("tenants")
+            .join("cachetest")
+            .join("data.sqlite");
         let read = rusqlite::Connection::open_with_flags(
             &dbpath,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -386,20 +395,29 @@ mod named_tests {
         let binds = std::collections::BTreeMap::new();
         // First call: prepares and caches `SELECT count(*) ...`.
         let q1 = execute_read_query_with_named(
-            &read, "SELECT count(*) AS c FROM posts", &binds, 100, 32_768,
+            &read,
+            "SELECT count(*) AS c FROM posts",
+            &binds,
+            100,
+            32_768,
         )
         .unwrap();
         assert_eq!(q1.rows[0][0], Cell::Int(2));
 
         // Mutate schema + data on the writer, then re-run the SAME sql through
         // the SAME read connection (its cache now holds the old statement).
-        _conn.execute_batch(
-            "ALTER TABLE posts ADD COLUMN extra TEXT;
+        _conn
+            .execute_batch(
+                "ALTER TABLE posts ADD COLUMN extra TEXT;
              INSERT INTO posts (body, n) VALUES ('c', 3);",
-        )
-        .unwrap();
+            )
+            .unwrap();
         let q2 = execute_read_query_with_named(
-            &read, "SELECT count(*) AS c FROM posts", &binds, 100, 32_768,
+            &read,
+            "SELECT count(*) AS c FROM posts",
+            &binds,
+            100,
+            32_768,
         )
         .unwrap();
         // Must reflect the new row count — NOT a stale cached 2.

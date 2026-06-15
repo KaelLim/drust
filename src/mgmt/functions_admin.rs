@@ -100,7 +100,9 @@ async fn load_function_views(state: &TenantsState, tenant_id: &str) -> Vec<Funct
     };
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
-        let logs = schema::list_logs(&pool, &r.name, 20).await.unwrap_or_default();
+        let logs = schema::list_logs(&pool, &r.name, 20)
+            .await
+            .unwrap_or_default();
         let (last_status, last_run_at) = logs
             .first()
             .map(|l| (l.status.clone(), l.created_at.clone()))

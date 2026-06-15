@@ -660,8 +660,7 @@ async fn mcp_set_self_register_tool() {
         ),
     ));
     let state = TenantAuthState::test_default(meta_arc.clone(), tenants.clone());
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),

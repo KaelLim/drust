@@ -16,7 +16,9 @@ pub async fn set_owner_field(
     read_scope: String,
 ) -> anyhow::Result<serde_json::Value> {
     // null / empty field => clear ownership (absorbs the old clear_owner_field tool).
-    let field = field.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    let field = field
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty());
     let Some(field) = field else {
         let pool = pool.clone();
         let coll_for_clear = collection.clone();
@@ -57,7 +59,12 @@ pub async fn set_owner_field(
                 Some(code.to_string()),
             ));
         }
-        crate::storage::schema::set_owner_field(c, &coll_for_set, Some(&field_for_set), Some(&scope_for_set))
+        crate::storage::schema::set_owner_field(
+            c,
+            &coll_for_set,
+            Some(&field_for_set),
+            Some(&scope_for_set),
+        )
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;

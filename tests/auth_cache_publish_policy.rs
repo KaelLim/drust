@@ -33,5 +33,9 @@ async fn publish_policy_change_clears_tenant_entries() {
     )
     .await;
     assert!(resp.status().is_success());
-    assert_eq!(cache.len(), 0, "hook 11 cleared t1's cached entry so flags refill");
+    assert_eq!(
+        cache.len(),
+        0,
+        "hook 11 cleared t1's cached entry so flags refill"
+    );
 }

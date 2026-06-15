@@ -33,5 +33,9 @@ async fn reroll_clears_cached_service_bearer() {
     assert!(resp.status().is_success(), "reroll succeeded");
 
     // The cached service Bearer for t1 is gone.
-    assert_eq!(cache.len(), 0, "hook 1 scan-cleared the (t1, service) Bearer");
+    assert_eq!(
+        cache.len(),
+        0,
+        "hook 1 scan-cleared the (t1, service) Bearer"
+    );
 }

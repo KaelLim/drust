@@ -244,7 +244,9 @@ impl Executor {
             }
         };
         let path = self.artifact_path(&inv.tenant_id, &row.wasm_sha256);
-        self.runner.run(&inv.tenant_id, &path, &inv.event_json).await
+        self.runner
+            .run(&inv.tenant_id, &path, &inv.event_json)
+            .await
     }
 
     async fn record(&self, inv: &Invocation, out: &RunOutcome, duration_ms: i64) {
@@ -397,7 +399,10 @@ mod tests {
         }
         assert_eq!(exec.completed_total.load(Ordering::Relaxed), 5);
         let pool = reg.get_or_open("t-e").unwrap();
-        assert_eq!(schema::list_logs(&pool, "echo", 100).await.unwrap().len(), 5);
+        assert_eq!(
+            schema::list_logs(&pool, "echo", 100).await.unwrap().len(),
+            5
+        );
     }
 
     /// Records (tenant, seq) at run entry and flags any same-tenant overlap.
@@ -425,7 +430,10 @@ mod tests {
             // widen the race window so an ordering/serialization regression
             // actually manifests instead of passing by luck
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            self.in_flight.get(t).unwrap().fetch_sub(1, Ordering::SeqCst);
+            self.in_flight
+                .get(t)
+                .unwrap()
+                .fetch_sub(1, Ordering::SeqCst);
             RunOutcome {
                 status: RunStatus::Ok,
                 result: "{}".into(),
@@ -481,11 +489,17 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert_eq!(exec.completed_total.load(Ordering::Relaxed), 40);
-        assert!(!overlap.load(Ordering::SeqCst), "same-tenant runs overlapped");
+        assert!(
+            !overlap.load(Ordering::SeqCst),
+            "same-tenant runs overlapped"
+        );
         let entries = entries.lock().unwrap();
         for t in ["t-a", "t-b"] {
-            let seqs: Vec<u64> =
-                entries.iter().filter(|(tt, _)| tt == t).map(|(_, s)| *s).collect();
+            let seqs: Vec<u64> = entries
+                .iter()
+                .filter(|(tt, _)| tt == t)
+                .map(|(_, s)| *s)
+                .collect();
             assert_eq!(
                 seqs,
                 (0..20).collect::<Vec<u64>>(),
@@ -512,7 +526,11 @@ mod tests {
             })
             .await;
         assert_eq!(out.status, RunStatus::Ok);
-        assert_eq!(d.load(Ordering::Relaxed), 0, "sync invoke corrupted queue depth");
+        assert_eq!(
+            d.load(Ordering::Relaxed),
+            0,
+            "sync invoke corrupted queue depth"
+        );
     }
 
     /// Queued completions decrement depth; the decrement saturates at zero
@@ -536,14 +554,16 @@ mod tests {
             .unwrap();
         }
         for _ in 0..100 {
-            if d.load(Ordering::Relaxed) == 0
-                && exec.completed_total.load(Ordering::Relaxed) == 2
-            {
+            if d.load(Ordering::Relaxed) == 0 && exec.completed_total.load(Ordering::Relaxed) == 2 {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert_eq!(exec.completed_total.load(Ordering::Relaxed), 2);
-        assert_eq!(d.load(Ordering::Relaxed), 0, "decrement wrapped instead of saturating");
+        assert_eq!(
+            d.load(Ordering::Relaxed),
+            0,
+            "decrement wrapped instead of saturating"
+        );
     }
 }

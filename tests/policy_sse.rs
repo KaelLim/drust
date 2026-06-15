@@ -112,7 +112,13 @@ async fn insert_post(app: &axum::Router, tid: &str, tok: &str, status: &str) {
 async fn anon_sse_only_gets_policy_matching_events() {
     let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("policy-sse").await;
     seed_realtime_posts(&dir, &tid).await;
-    set_select_using(&dir, &tid, "posts", json!({"using": {"status": "published"}})).await;
+    set_select_using(
+        &dir,
+        &tid,
+        "posts",
+        json!({"using": {"status": "published"}}),
+    )
+    .await;
 
     // Open the anon SSE stream.
     let resp = app

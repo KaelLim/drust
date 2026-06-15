@@ -154,8 +154,7 @@ fn sha_hex(bytes: &[u8]) -> String {
 #[tokio::test]
 async fn create_route_leaves_no_orphan_artifacts() {
     // cap = 1 so a second distinct-name create rejects with FN_LIMIT.
-    let (router, service, dir) =
-        helpers::spin_up_functions_route_stack("t-isogc", 1).await;
+    let (router, service, dir) = helpers::spin_up_functions_route_stack("t-isogc", 1).await;
     let auth = format!("Bearer {service}");
     let fn_dir = dir
         .path()
@@ -201,8 +200,14 @@ async fn create_route_leaves_no_orphan_artifacts() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "second create over cap");
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "second create over cap"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["error_code"], "FN_LIMIT");
     assert!(

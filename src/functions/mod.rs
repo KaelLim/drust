@@ -33,7 +33,10 @@ pub struct FnConfig {
 impl FnConfig {
     pub fn from_env() -> Self {
         fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
-            std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
         }
         Self {
             max_wasm_bytes: env_or("DRUST_FN_MAX_WASM_BYTES", 20 * 1024 * 1024),
@@ -80,12 +83,7 @@ pub fn test_stack_parts(
     struct NoopRunner;
     #[async_trait::async_trait]
     impl executor::FunctionRunner for NoopRunner {
-        async fn run(
-            &self,
-            _t: &str,
-            _p: &std::path::Path,
-            _e: &str,
-        ) -> executor::RunOutcome {
+        async fn run(&self, _t: &str, _p: &std::path::Path, _e: &str) -> executor::RunOutcome {
             executor::RunOutcome {
                 status: executor::RunStatus::Ok,
                 result: "{}".into(),

@@ -826,7 +826,8 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Set (replace) one operation's row-level-security policy on a \
+    #[tool(
+        description = "Set (replace) one operation's row-level-security policy on a \
         collection. `op` is select|insert|update|delete. `using` is a FilterAst \
         (and/or/not tree of eq/ne/gt/.../like/in leaves) selecting WHICH existing \
         rows the op may read or target; `check` is a FilterAst asserting the NEW \
@@ -837,7 +838,8 @@ impl DrustMcpService {
         bypass all explicit policies. Validated at write time: unknown fields / \
         vector fields / over-deep nesting are rejected (POLICY_INVALID). Refuses \
         `_system_*` collections. EXAMPLE call: {\"collection\":\"posts\",\"op\":\
-        \"select\",\"using\":{\"owner\":{\"$auth\":\"id\"}}}.")]
+        \"select\",\"using\":{\"owner\":{\"$auth\":\"id\"}}}."
+    )]
     async fn set_policy(
         &self,
         Parameters(SetPolicyArgs {
@@ -869,9 +871,11 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Clear (remove) one operation's row-level-security policy \
+    #[tool(
+        description = "Clear (remove) one operation's row-level-security policy \
         on a collection, reverting that op to owner_field + cap-gate rules only. \
-        `op` is select|insert|update|delete. Refuses `_system_*` collections.")]
+        `op` is select|insert|update|delete. Refuses `_system_*` collections."
+    )]
     async fn clear_policy(
         &self,
         Parameters(ClearPolicyArgs { collection, op }): Parameters<ClearPolicyArgs>,
@@ -900,7 +904,8 @@ impl DrustMcpService {
         let pool = self.state.inner().pool.clone();
         let result = match args.target.as_str() {
             "collection" => {
-                schema_tools::set_collection_description(&pool, &args.collection, &args.description).await
+                schema_tools::set_collection_description(&pool, &args.collection, &args.description)
+                    .await
             }
             "field" => {
                 let Some(field) = args.field.as_deref() else {
@@ -909,7 +914,13 @@ impl DrustMcpService {
                         None,
                     ));
                 };
-                schema_tools::set_field_description(&pool, &args.collection, field, &args.description).await
+                schema_tools::set_field_description(
+                    &pool,
+                    &args.collection,
+                    field,
+                    &args.description,
+                )
+                .await
             }
             "index" => {
                 let Some(index_name) = args.index_name.as_deref() else {
@@ -918,7 +929,13 @@ impl DrustMcpService {
                         None,
                     ));
                 };
-                schema_tools::set_index_description(&pool, &args.collection, index_name, &args.description).await
+                schema_tools::set_index_description(
+                    &pool,
+                    &args.collection,
+                    index_name,
+                    &args.description,
+                )
+                .await
             }
             other => {
                 return Err(McpError::invalid_params(
@@ -2034,7 +2051,10 @@ mod tool_count_tests {
             annotated,
             "router tool count drifted from #[tool] annotations in handler.rs"
         );
-        assert!(DrustMcpService::tool_count() > 0, "router must not be empty");
+        assert!(
+            DrustMcpService::tool_count() > 0,
+            "router must not be empty"
+        );
     }
 }
 
@@ -2049,9 +2069,13 @@ mod description_tests {
     /// `tests/*.rs` file cannot reach it.
     fn desc_of(name: &str) -> String {
         let tools: Vec<Tool> = DrustMcpService::tool_router().list_all();
-        let t = tools.into_iter().find(|t| t.name == name)
+        let t = tools
+            .into_iter()
+            .find(|t| t.name == name)
             .unwrap_or_else(|| panic!("tool {name:?} not in router"));
-        t.description.unwrap_or_else(|| panic!("tool {name:?} has no description")).to_string()
+        t.description
+            .unwrap_or_else(|| panic!("tool {name:?} has no description"))
+            .to_string()
     }
 
     #[test]
@@ -2067,9 +2091,18 @@ mod description_tests {
         let d = desc_of("list_records");
         assert!(d.contains("USE WHEN"), "list_records missing USE WHEN line");
         assert!(d.contains("NOT WHEN"), "list_records missing NOT WHEN line");
-        assert!(d.contains("query"), "list_records must name sibling `query`");
-        assert!(d.contains("search_collection"), "list_records must name sibling `search_collection`");
-        assert!(d.contains("total"), "list_records must mention it returns `total`");
+        assert!(
+            d.contains("query"),
+            "list_records must name sibling `query`"
+        );
+        assert!(
+            d.contains("search_collection"),
+            "list_records must name sibling `search_collection`"
+        );
+        assert!(
+            d.contains("total"),
+            "list_records must mention it returns `total`"
+        );
     }
 
     #[test]
@@ -2077,16 +2110,31 @@ mod description_tests {
         let d = desc_of("query");
         assert!(d.contains("USE WHEN"), "query missing USE WHEN line");
         assert!(d.contains("NOT WHEN"), "query missing NOT WHEN line");
-        assert!(d.contains("owner_field"), "query must warn it does NOT enforce owner_field");
-        assert!(d.contains("list_records"), "query must point at sibling `list_records`");
+        assert!(
+            d.contains("owner_field"),
+            "query must warn it does NOT enforce owner_field"
+        );
+        assert!(
+            d.contains("list_records"),
+            "query must point at sibling `list_records`"
+        );
     }
 
     #[test]
     fn search_collection_description_disambiguates_siblings() {
         let d = desc_of("search_collection");
-        assert!(d.contains("USE WHEN"), "search_collection missing USE WHEN line");
-        assert!(d.contains("NOT WHEN"), "search_collection missing NOT WHEN line");
-        assert!(d.contains("list_records"), "search_collection must point at sibling `list_records`");
+        assert!(
+            d.contains("USE WHEN"),
+            "search_collection missing USE WHEN line"
+        );
+        assert!(
+            d.contains("NOT WHEN"),
+            "search_collection missing NOT WHEN line"
+        );
+        assert!(
+            d.contains("list_records"),
+            "search_collection must point at sibling `list_records`"
+        );
     }
 
     #[test]
@@ -2103,19 +2151,44 @@ mod description_tests {
     #[test]
     fn create_collection_description_has_fieldspec_example() {
         let d = desc_of("create_collection");
-        assert!(d.contains("EXAMPLE"), "create_collection missing EXAMPLE block");
-        assert!(d.contains("\"nullable\": false"), "example must show a required field");
-        assert!(d.contains("{\"sql\": \"datetime('now')\"}"), "example must show the allowlisted SQL default form");
-        assert!(d.contains("\"foreign_key\""), "example must show a foreign_key field");
-        assert!(d.contains("\"vector\""), "example must show a vector field type");
+        assert!(
+            d.contains("EXAMPLE"),
+            "create_collection missing EXAMPLE block"
+        );
+        assert!(
+            d.contains("\"nullable\": false"),
+            "example must show a required field"
+        );
+        assert!(
+            d.contains("{\"sql\": \"datetime('now')\"}"),
+            "example must show the allowlisted SQL default form"
+        );
+        assert!(
+            d.contains("\"foreign_key\""),
+            "example must show a foreign_key field"
+        );
+        assert!(
+            d.contains("\"vector\""),
+            "example must show a vector field type"
+        );
         assert!(d.contains("\"dim\""), "example must show the vector dim");
     }
 
     #[test]
     fn search_collection_description_has_body_example() {
         let d = desc_of("search_collection");
-        assert!(d.contains("EXAMPLE"), "search_collection missing EXAMPLE block");
-        for key in ["\"field\"", "\"vector\"", "\"k\"", "\"metric\"", "\"where\"", "\"select\""] {
+        assert!(
+            d.contains("EXAMPLE"),
+            "search_collection missing EXAMPLE block"
+        );
+        for key in [
+            "\"field\"",
+            "\"vector\"",
+            "\"k\"",
+            "\"metric\"",
+            "\"where\"",
+            "\"select\"",
+        ] {
             assert!(d.contains(key), "search example must show {key}");
         }
     }
@@ -2123,14 +2196,21 @@ mod description_tests {
     #[test]
     fn no_description_names_a_removed_tool() {
         let removed = [
-            "sample_rows", "count_rows", "clear_owner_field",
-            "set_field_description", "set_index_description",
+            "sample_rows",
+            "count_rows",
+            "clear_owner_field",
+            "set_field_description",
+            "set_index_description",
         ];
         let tools = DrustMcpService::tool_router().list_all();
         for t in &tools {
             let d = t.description.as_deref().unwrap_or("");
             for r in removed {
-                assert!(!d.contains(r), "tool {:?} description names removed tool {r:?}", t.name);
+                assert!(
+                    !d.contains(r),
+                    "tool {:?} description names removed tool {r:?}",
+                    t.name
+                );
             }
         }
     }
@@ -2140,9 +2220,14 @@ mod description_tests {
         // Prose must not drift into implying /list takes raw SQL: it stays
         // structured-only so owner_field is enforceable by construction.
         let d = desc_of("list_records");
-        assert!(d.contains("owner_field"), "list_records must keep the owner_field-enforcement framing");
-        assert!(d.contains("rejects raw SQL") || d.contains("FilterAst") || d.contains("raw SQL"),
-            "list_records must state it is structured-only / rejects raw SQL");
+        assert!(
+            d.contains("owner_field"),
+            "list_records must keep the owner_field-enforcement framing"
+        );
+        assert!(
+            d.contains("rejects raw SQL") || d.contains("FilterAst") || d.contains("raw SQL"),
+            "list_records must state it is structured-only / rejects raw SQL"
+        );
     }
 }
 
@@ -2224,32 +2309,72 @@ mod instructions_tests {
         let s = build_instructions("test-tenant-abc", "https://example.test");
 
         // (a) Leads with the two bootstrap calls.
-        assert!(s.contains("get_schema_overview"), "must name get_schema_overview as a bootstrap call");
+        assert!(
+            s.contains("get_schema_overview"),
+            "must name get_schema_overview as a bootstrap call"
+        );
         assert!(s.contains("whoami"), "must name whoami as a bootstrap call");
-        let go = s.find("get_schema_overview").expect("get_schema_overview present");
-        let groups = s.find("CAPABILITY GROUPS").expect("CAPABILITY GROUPS present");
-        assert!(go < groups, "bootstrap calls must appear before the capability-group body");
+        let go = s
+            .find("get_schema_overview")
+            .expect("get_schema_overview present");
+        let groups = s
+            .find("CAPABILITY GROUPS")
+            .expect("CAPABILITY GROUPS present");
+        assert!(
+            go < groups,
+            "bootstrap calls must appear before the capability-group body"
+        );
 
         // (b) The CHOOSING A READ TOOL disambiguation block exists and names all three.
-        assert!(s.contains("CHOOSING A READ TOOL"), "missing CHOOSING A READ TOOL disambiguation block");
-        assert!(s.contains("list_records"), "read block must name list_records");
-        assert!(s.contains("search_collection"), "read block must name search_collection");
-        assert!(s.contains("does not enforce") || s.contains("does NOT enforce"),
-            "read block must warn that query does not enforce owner_field");
+        assert!(
+            s.contains("CHOOSING A READ TOOL"),
+            "missing CHOOSING A READ TOOL disambiguation block"
+        );
+        assert!(
+            s.contains("list_records"),
+            "read block must name list_records"
+        );
+        assert!(
+            s.contains("search_collection"),
+            "read block must name search_collection"
+        );
+        assert!(
+            s.contains("does not enforce") || s.contains("does NOT enforce"),
+            "read block must warn that query does not enforce owner_field"
+        );
 
         // (c) Recovery affordances are stated by name (Lever 5).
         assert!(s.contains("dry_run"), "missing dry_run recovery affordance");
-        assert!(s.contains("suggested_fix"), "missing suggested_fix recovery affordance");
-        assert!(s.contains("recent_writes"), "missing recent_writes recovery affordance");
+        assert!(
+            s.contains("suggested_fix"),
+            "missing suggested_fix recovery affordance"
+        );
+        assert!(
+            s.contains("recent_writes"),
+            "missing recent_writes recovery affordance"
+        );
 
         // (d) Post-Lever-4 tool set: merged names present, removed names absent.
-        assert!(s.contains("set_description"), "must advertise merged set_description");
-        assert!(s.contains("set_owner_field"), "must advertise set_owner_field");
+        assert!(
+            s.contains("set_description"),
+            "must advertise merged set_description"
+        );
+        assert!(
+            s.contains("set_owner_field"),
+            "must advertise set_owner_field"
+        );
         for removed in &[
-            "sample_rows", "count_rows", "set_collection_description",
-            "set_field_description", "set_index_description", "clear_owner_field",
+            "sample_rows",
+            "count_rows",
+            "set_collection_description",
+            "set_field_description",
+            "set_index_description",
+            "clear_owner_field",
         ] {
-            assert!(!s.contains(removed), "instructions still reference removed/merged tool: {removed}");
+            assert!(
+                !s.contains(removed),
+                "instructions still reference removed/merged tool: {removed}"
+            );
         }
     }
 }

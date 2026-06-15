@@ -168,16 +168,28 @@ async fn overview_rpc_surfaces_params_anon_callable_and_user_id_autobound() {
 
     let v = get_schema_overview(&s).await.unwrap();
     let rpcs = v["rpcs"].as_array().expect("rpcs array");
-    let my_posts = rpcs.iter().find(|r| r["name"] == "my_posts").expect("my_posts rpc present");
-    let recent = rpcs.iter().find(|r| r["name"] == "recent").expect("recent rpc present");
+    let my_posts = rpcs
+        .iter()
+        .find(|r| r["name"] == "my_posts")
+        .expect("my_posts rpc present");
+    let recent = rpcs
+        .iter()
+        .find(|r| r["name"] == "recent")
+        .expect("recent rpc present");
 
     assert_eq!(my_posts["params"][0]["name"], "user_id");
     assert_eq!(recent["params"][0]["name"], "limit");
     assert_eq!(my_posts["anon_callable"], true);
     assert_eq!(recent["anon_callable"], false);
     // NEW: derived user_id_autobound — true only when a `user_id` param is declared.
-    assert_eq!(my_posts["user_id_autobound"], true, "rpc declaring a user_id param must be flagged auto-bound");
-    assert_eq!(recent["user_id_autobound"], false, "rpc with no user_id param must not be flagged auto-bound");
+    assert_eq!(
+        my_posts["user_id_autobound"], true,
+        "rpc declaring a user_id param must be flagged auto-bound"
+    );
+    assert_eq!(
+        recent["user_id_autobound"], false,
+        "rpc with no user_id param must not be flagged auto-bound"
+    );
 }
 
 #[tokio::test]
@@ -203,18 +215,42 @@ async fn overview_collections_always_surface_access_state() {
 
     let v = get_schema_overview(&s).await.unwrap();
     let cols = v["collections"].as_array().expect("collections array");
-    let posts = cols.iter().find(|c| c["name"] == "posts").expect("posts present");
-    let docs = cols.iter().find(|c| c["name"] == "docs").expect("docs present");
+    let posts = cols
+        .iter()
+        .find(|c| c["name"] == "posts")
+        .expect("posts present");
+    let docs = cols
+        .iter()
+        .find(|c| c["name"] == "docs")
+        .expect("docs present");
 
     assert!(posts["anon_caps"].is_array(), "anon_caps always present");
-    assert!(posts["realtime_enabled"].is_boolean(), "realtime_enabled always present");
+    assert!(
+        posts["realtime_enabled"].is_boolean(),
+        "realtime_enabled always present"
+    );
     // NEW: non-owner-scoped collection emits explicit null (not an absent key).
-    assert!(posts.get("owner_field").map(|v| v.is_null()).unwrap_or(false),
-        "posts.owner_field must be present and null, got {:?}", posts.get("owner_field"));
-    assert!(posts.get("read_scope").map(|v| v.is_null()).unwrap_or(false),
-        "posts.read_scope must be present and null, got {:?}", posts.get("read_scope"));
-    assert!(posts["vector_fields"].is_array(),
-        "vector_fields always present as array, got {:?}", posts.get("vector_fields"));
+    assert!(
+        posts
+            .get("owner_field")
+            .map(|v| v.is_null())
+            .unwrap_or(false),
+        "posts.owner_field must be present and null, got {:?}",
+        posts.get("owner_field")
+    );
+    assert!(
+        posts
+            .get("read_scope")
+            .map(|v| v.is_null())
+            .unwrap_or(false),
+        "posts.read_scope must be present and null, got {:?}",
+        posts.get("read_scope")
+    );
+    assert!(
+        posts["vector_fields"].is_array(),
+        "vector_fields always present as array, got {:?}",
+        posts.get("vector_fields")
+    );
     assert_eq!(docs["owner_field"], "author");
     assert_eq!(docs["read_scope"], "own");
 }
@@ -259,10 +295,19 @@ async fn overview_flags_vector_fields_with_dim() {
     .unwrap();
 
     let v = get_schema_overview(&s).await.unwrap();
-    let posts = v["collections"].as_array().unwrap().iter()
-        .find(|c| c["name"] == "posts").expect("posts present");
-    let vf = posts["vector_fields"].as_array().expect("vector_fields array");
-    let emb = vf.iter().find(|f| f["name"] == "embedding").expect("embedding vector field present");
+    let posts = v["collections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "posts")
+        .expect("posts present");
+    let vf = posts["vector_fields"]
+        .as_array()
+        .expect("vector_fields array");
+    let emb = vf
+        .iter()
+        .find(|f| f["name"] == "embedding")
+        .expect("embedding vector field present");
     assert_eq!(emb["dim"], 8, "vector field must be flagged with its dim");
 }
 
@@ -274,9 +319,18 @@ async fn overview_never_leaks_tokens_or_secrets() {
     let v = get_schema_overview(&s).await.unwrap();
     let mut keys = Vec::new();
     all_keys(&v, &mut keys);
-    for forbidden in ["plaintext", "token", "token_hash", "secret", "password", "password_hash"] {
-        assert!(!keys.iter().any(|k| k.contains(forbidden)),
-            "get_schema_overview must not expose `{forbidden}`-shaped keys; got keys: {keys:?}");
+    for forbidden in [
+        "plaintext",
+        "token",
+        "token_hash",
+        "secret",
+        "password",
+        "password_hash",
+    ] {
+        assert!(
+            !keys.iter().any(|k| k.contains(forbidden)),
+            "get_schema_overview must not expose `{forbidden}`-shaped keys; got keys: {keys:?}"
+        );
     }
     assert!(keys.iter().any(|k| k == "collections"));
     assert!(keys.iter().any(|k| k == "rpcs"));

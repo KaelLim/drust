@@ -70,8 +70,14 @@ async fn insert_returning_id(
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED, "insert into {coll} failed");
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "insert into {coll} failed"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     v["id"].as_i64().expect("create body has numeric id")
 }
@@ -90,7 +96,9 @@ async fn list_records(app: &axum::Router, tid: &str, tok: &str, coll: &str) -> V
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "list {coll} non-OK");
-    let bytes = axum::body::to_bytes(resp.into_body(), 65_536).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     v["records"].as_array().cloned().unwrap_or_default()
 }
@@ -108,8 +116,7 @@ async fn query_status(app: &axum::Router, tid: &str, tok: &str, sql: &str) -> u1
 
 #[tokio::test]
 async fn owner_field_unchanged_when_no_policy() {
-    let (app, tid, svc, anon, dir) =
-        spin_up_dual_role_self_register("t-rls-bc-owner").await;
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("t-rls-bc-owner").await;
 
     // `notes(body TEXT, owner_id TEXT REFERENCES _system_users(id))`. No
     // explicit policy is ever set — only owner_field — so this exercises the
@@ -156,7 +163,11 @@ async fn owner_field_unchanged_when_no_policy() {
 
     // User B: foreign-row GET / UPDATE → 404 (own-scope filter, no leak).
     assert_eq!(
-        status(&app, req("GET", &tid, &format!("/records/notes/{id}"), None, &b)).await,
+        status(
+            &app,
+            req("GET", &tid, &format!("/records/notes/{id}"), None, &b)
+        )
+        .await,
         404,
         "user B must not see A's row",
     );
@@ -179,7 +190,11 @@ async fn owner_field_unchanged_when_no_policy() {
     // Anon read of an own-scoped collection is a loud 403 (pre-existing
     // cap-gate), NOT a silent empty filter.
     assert_eq!(
-        status(&app, req("GET", &tid, &format!("/records/notes/{id}"), None, &anon)).await,
+        status(
+            &app,
+            req("GET", &tid, &format!("/records/notes/{id}"), None, &anon)
+        )
+        .await,
         403,
         "anon GET-one on own-scoped must be 403",
     );
@@ -195,8 +210,7 @@ async fn owner_field_unchanged_when_no_policy() {
 
 #[tokio::test]
 async fn anon_cannot_bypass_via_query() {
-    let (app, tid, svc, anon, dir) =
-        spin_up_dual_role_self_register("t-rls-bc-query").await;
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("t-rls-bc-query").await;
 
     // `posts(status TEXT)` with the default `[select]` anon cap. Created via
     // the pool; the running app loads its schema fresh on first touch.

@@ -138,7 +138,8 @@ pub async fn list_records(
     };
 
     let (list_sql, count_sql, binds) =
-        list_builder::build_structured_list_sql(&schema, &req, None, None).map_err(map_list_error)?;
+        list_builder::build_structured_list_sql(&schema, &req, None, None)
+            .map_err(map_list_error)?;
 
     let vector_names: std::collections::HashSet<String> = schema
         .vector_fields

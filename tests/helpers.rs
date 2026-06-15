@@ -39,8 +39,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(meta, tenants.clone());
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -94,11 +93,8 @@ pub async fn spin_up_tenant_with_fn_runner(
     // shape as `drust::functions::test_stack_parts` minus the noop runner.
     let fn_cfg = drust::functions::FnConfig::test_default();
     let (tx, rx) = tokio::sync::mpsc::channel(64);
-    let functions = drust::functions::dispatcher::FunctionDispatcher::new(
-        tenants.clone(),
-        tx,
-        fn_cfg.clone(),
-    );
+    let functions =
+        drust::functions::dispatcher::FunctionDispatcher::new(tenants.clone(), tx, fn_cfg.clone());
     let functions_exec = drust::functions::executor::Executor::new(
         runner,
         tenants.clone(),
@@ -216,8 +212,7 @@ pub async fn spin_up_tenant_with_fn_seed(
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(meta, tenants.clone());
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
 
     // Seed one function row `f1`, then refresh the binding cache.
     let pool = tenants.get_or_open(tenant).unwrap();
@@ -513,15 +508,16 @@ pub async fn create_collection_via_pool(
         collection.replace('"', "\"\""),
         cols.join(", ")
     );
-    pool.with_writer(move |c| c.execute_batch(&sql)).await.unwrap();
+    pool.with_writer(move |c| c.execute_batch(&sql))
+        .await
+        .unwrap();
 }
 
 /// Fixed multipart boundary used by `multipart_file_body`; the
 /// `content-type` header on the request must carry this exact boundary.
 pub const MULTIPART_BOUNDARY: &str = "drustfnboundary99";
 /// Matching `content-type` header value for `multipart_file_body` requests.
-pub const MULTIPART_CONTENT_TYPE: &str =
-    "multipart/form-data; boundary=drustfnboundary99";
+pub const MULTIPART_CONTENT_TYPE: &str = "multipart/form-data; boundary=drustfnboundary99";
 
 /// Build a minimal multipart/form-data body carrying one file part.
 /// Mirrors the canonical boundary builder from `tests/admin_files_upgrade.rs`.
@@ -594,8 +590,7 @@ pub async fn spin_up_tenant_with_role_cached(
     let meta = Arc::new(Mutex::new(conn));
     let state = TenantAuthState::test_default(meta, tenants.clone());
     let cache = state.auth_cache.clone();
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
@@ -644,8 +639,7 @@ pub async fn spin_up_tenant_with_threshold(
     let meta = Arc::new(Mutex::new(conn));
     let mut state = TenantAuthState::test_default(meta, tenants.clone());
     state.index_large_table_rows = index_large_table_rows;
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),

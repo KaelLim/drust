@@ -368,8 +368,7 @@ pub async fn collection_rows_page(
     // `serde_json::to_string` would let a stored `</script>` literal break
     // out of the JS island (drust/CLAUDE.md script-island invariant).
     let owner_field = schema.owner_field.clone();
-    let (policies_json, owner_field_json) =
-        policy_json_payloads(&schema.policies, &owner_field);
+    let (policies_json, owner_field_json) = policy_json_payloads(&schema.policies, &owner_field);
     Html(
         RowsPage {
             tenant_id,

@@ -96,8 +96,7 @@ async fn delete_policy(app: &axum::Router, tid: &str, tok: &str, op: &str) -> St
 
 #[tokio::test]
 async fn put_get_delete_policies_service_only() {
-    let (app, tid, svc_tok, anon_tok, dir) =
-        spin_up_dual_role_self_register("t-rlscfg1").await;
+    let (app, tid, svc_tok, anon_tok, dir) = spin_up_dual_role_self_register("t-rlscfg1").await;
     seed_posts(&dir, &tid).await;
 
     let policy = json!({"select": {"using": {"status": "published"}}});
@@ -128,8 +127,7 @@ async fn put_get_delete_policies_service_only() {
 
 #[tokio::test]
 async fn put_policy_rejects_unknown_field() {
-    let (app, tid, svc_tok, _anon_tok, dir) =
-        spin_up_dual_role_self_register("t-rlscfg2").await;
+    let (app, tid, svc_tok, _anon_tok, dir) = spin_up_dual_role_self_register("t-rlscfg2").await;
     seed_posts(&dir, &tid).await;
 
     assert_eq!(

@@ -26,7 +26,10 @@ fn with_filter() {
 fn with_policy_clause_and_composed() {
     // The `?`-bound select-policy fragment is AND-ed into the WHERE; its
     // placeholders are left intact for params_from_iter at execute time.
-    let clause = ("\"status\" = ?".to_string(), vec![rusqlite::types::Value::Text("published".into())]);
+    let clause = (
+        "\"status\" = ?".to_string(),
+        vec![rusqlite::types::Value::Text("published".into())],
+    );
     let sql = build_list_sql("posts", &ListParams::default(), Some(&clause));
     assert_eq!(
         sql,

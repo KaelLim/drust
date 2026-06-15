@@ -806,7 +806,12 @@ pub fn read_owner_field(
 /// `None`. A NULL or malformed column → `None` for that op (forgiving parse,
 /// matching `read_field_descriptions`).
 pub fn read_policies(conn: &Connection, coll: &str) -> rusqlite::Result<CollectionPolicies> {
-    let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> = conn
+    let row: Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = conn
         .query_row(
             "SELECT select_policy_json, insert_policy_json, update_policy_json, delete_policy_json \
              FROM _system_collection_meta WHERE collection_name = ?1",
@@ -815,7 +820,8 @@ pub fn read_policies(conn: &Connection, coll: &str) -> rusqlite::Result<Collecti
         )
         .ok();
     let parse = |o: Option<String>| -> Option<Policy> {
-        o.as_deref().and_then(|j| serde_json::from_str::<Policy>(j).ok())
+        o.as_deref()
+            .and_then(|j| serde_json::from_str::<Policy>(j).ok())
     };
     let (s, i, u, d) = row.unwrap_or((None, None, None, None));
     Ok(CollectionPolicies {

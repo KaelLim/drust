@@ -203,8 +203,7 @@ async fn errored_list_does_not_leave_authorizer_attached_for_next_system_list() 
     //    SQLITE_MAX_VARIABLE_NUMBER is 32766; a 40_000-element IN list exceeds
     //    it. compile() builds `("title" IN (?, ?, …))` with no length guard,
     //    so the error surfaces at prepare(), AFTER the authorizer is attached.
-    let huge: Vec<serde_json::Value> =
-        (0..40_000).map(|n| serde_json::Value::from(n)).collect();
+    let huge: Vec<serde_json::Value> = (0..40_000).map(|n| serde_json::Value::from(n)).collect();
     let resp = post_list(
         &app,
         &cookie,

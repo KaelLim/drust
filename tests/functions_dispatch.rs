@@ -16,7 +16,11 @@ impl FunctionRunner for CountRunner {
     async fn run(&self, _t: &str, _p: &std::path::Path, ev: &str) -> RunOutcome {
         assert!(ev.contains("record.created"), "payload shape");
         self.0.fetch_add(1, Ordering::SeqCst);
-        RunOutcome { status: RunStatus::Ok, result: "{}".into(), log_text: String::new() }
+        RunOutcome {
+            status: RunStatus::Ok,
+            result: "{}".into(),
+            log_text: String::new(),
+        }
     }
 }
 
@@ -90,6 +94,10 @@ impl FunctionRunner for CountRunner2 {
     async fn run(&self, _t: &str, _p: &std::path::Path, ev: &str) -> RunOutcome {
         assert!(ev.contains(r#""trigger":"file.uploaded""#));
         self.0.fetch_add(1, Ordering::SeqCst);
-        RunOutcome { status: RunStatus::Ok, result: "{}".into(), log_text: String::new() }
+        RunOutcome {
+            status: RunStatus::Ok,
+            result: "{}".into(),
+            log_text: String::new(),
+        }
     }
 }

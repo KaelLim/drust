@@ -12,9 +12,9 @@ mod overview;
 mod webhooks_page;
 
 pub use crud::{
-    cmdk_tenants_json, create_tenant_form, create_tenant_json, get_publish_policy,
-    list_page_axum, patch_publish_policy, soft_delete_tenant, soft_delete_tenant_form,
-    toggle_self_register, PublishPolicyPatch,
+    PublishPolicyPatch, cmdk_tenants_json, create_tenant_form, create_tenant_json,
+    get_publish_policy, list_page_axum, patch_publish_policy, soft_delete_tenant,
+    soft_delete_tenant_form, toggle_self_register,
 };
 pub use files_page::tenant_files_admin_page;
 pub use oauth_page::{
@@ -104,8 +104,7 @@ impl TenantsState {
         let audit_meta_read = std::sync::Arc::new(tokio::sync::Mutex::new(
             crate::safety::audit_db::open_audit_db_memory().expect("in-memory audit DB for tests"),
         ));
-        let (functions, functions_exec, _cfg) =
-            crate::functions::test_stack_parts(tenants.clone());
+        let (functions, functions_exec, _cfg) = crate::functions::test_stack_parts(tenants.clone());
         Self {
             session: AdminSessionState { meta: meta.clone() },
             data_dir,

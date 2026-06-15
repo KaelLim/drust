@@ -21,9 +21,10 @@ async fn build_login_router(rl_capacity: u32) -> Router {
         2,
     ));
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
-        drust::mcp::server::McpRegistry::new(Arc::new(
-            drust::storage::pool::TenantRegistry::new(dir.path().to_path_buf(), 2),
-        )),
+        drust::mcp::server::McpRegistry::new(Arc::new(drust::storage::pool::TenantRegistry::new(
+            dir.path().to_path_buf(),
+            2,
+        ))),
     )));
     let bus = drust::tenant::events::EventBus::new();
     let bus_rooms = drust::tenant::rooms::RoomBus::new();

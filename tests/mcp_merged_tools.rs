@@ -1,9 +1,14 @@
 mod helpers;
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
-fn mcp_req_with_session(tid: &str, token: &str, sid: &str, body: serde_json::Value) -> Request<Body> {
+fn mcp_req_with_session(
+    tid: &str,
+    token: &str,
+    sid: &str,
+    body: serde_json::Value,
+) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(format!("/t/{tid}/mcp"))
@@ -17,13 +22,19 @@ fn mcp_req_with_session(tid: &str, token: &str, sid: &str, body: serde_json::Val
 }
 
 async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::Value> {
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let text = String::from_utf8_lossy(&bytes);
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.strip_prefix("data:").unwrap_or(line).trim();
-        if line.is_empty() { continue; }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) { out.push(v); }
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            out.push(v);
+        }
     }
     out
 }
@@ -41,21 +52,55 @@ async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
         }).to_string())).unwrap();
     let r = app.clone().oneshot(init).await.unwrap();
     assert_eq!(r.status(), StatusCode::OK, "initialize failed");
-    let sid = r.headers().get("mcp-session-id").unwrap().to_str().unwrap().to_string();
+    let sid = r
+        .headers()
+        .get("mcp-session-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let _ = parse_mcp_response(r).await;
-    let ack = mcp_req_with_session(tid, token, &sid, serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+    let ack = mcp_req_with_session(
+        tid,
+        token,
+        &sid,
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    );
     let _ = app.clone().oneshot(ack).await.unwrap();
     sid
 }
 
-async fn mcp_call_tool(app: &axum::Router, tid: &str, token: &str, sid: &str, name: &str, args: serde_json::Value) -> String {
-    let call = mcp_req_with_session(tid, token, sid, serde_json::json!({
-        "jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}
-    }));
+async fn mcp_call_tool(
+    app: &axum::Router,
+    tid: &str,
+    token: &str,
+    sid: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> String {
+    let call = mcp_req_with_session(
+        tid,
+        token,
+        sid,
+        serde_json::json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}
+        }),
+    );
     let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(resp.status().is_success(), "tools/call {name} status {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "tools/call {name} status {}",
+        resp.status()
+    );
     let msgs = parse_mcp_response(resp).await;
-    msgs.iter().find_map(|m| m["result"]["content"].as_array().and_then(|a| a.first()).and_then(|c| c["text"].as_str()).map(|s| s.to_string()))
+    msgs.iter()
+        .find_map(|m| {
+            m["result"]["content"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|c| c["text"].as_str())
+                .map(|s| s.to_string())
+        })
         .unwrap_or_else(|| serde_json::to_string(&msgs).unwrap())
 }
 
@@ -67,14 +112,25 @@ async fn set_description_dispatches_by_target() {
         "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')));\n         CREATE INDEX idx_posts_title ON posts(title);")).await.unwrap();
     let sid = mcp_init(&app, &tid, &svc).await;
 
-    let c = mcp_call_tool(&app, &tid, &svc, &sid, "set_description", serde_json::json!({"target":"collection","collection":"posts","description":"Blog posts"})).await;
+    let c = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "set_description",
+        serde_json::json!({"target":"collection","collection":"posts","description":"Blog posts"}),
+    )
+    .await;
     assert!(c.contains("Blog posts"), "collection desc: {c}");
     let f = mcp_call_tool(&app, &tid, &svc, &sid, "set_description", serde_json::json!({"target":"field","collection":"posts","field":"title","description":"Post title"})).await;
     assert!(f.contains("Post title"), "field desc: {f}");
     let i = mcp_call_tool(&app, &tid, &svc, &sid, "set_description", serde_json::json!({"target":"index","collection":"posts","index_name":"idx_posts_title","description":"title lookup"})).await;
     assert!(i.contains("title lookup"), "index desc: {i}");
     let nf = mcp_call_tool(&app, &tid, &svc, &sid, "set_description", serde_json::json!({"target":"field","collection":"posts","field":"ghost","description":"x"})).await;
-    assert!(nf.contains("FIELD_NOT_FOUND"), "missing-field still errors: {nf}");
+    assert!(
+        nf.contains("FIELD_NOT_FOUND"),
+        "missing-field still errors: {nf}"
+    );
 }
 
 // §Isolation #2 — the merged set_description path must still refuse _system_* tables.
@@ -82,11 +138,15 @@ async fn set_description_dispatches_by_target() {
 // it for the merged dispatch entry.)
 #[tokio::test]
 async fn set_description_on_system_table_is_protected() {
-    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-setdesc-prot").await;
+    let (app, tid, svc, _anon, _dir) =
+        helpers::spin_up_dual_role_self_register("t-setdesc-prot").await;
     let sid = mcp_init(&app, &tid, &svc).await;
     let r = mcp_call_tool(&app, &tid, &svc, &sid, "set_description",
         serde_json::json!({"target":"collection","collection":"_system_files","description":"nope"})).await;
-    assert!(r.contains("PROTECTED_COLLECTION"), "_system_* must stay protected on set_description: {r}");
+    assert!(
+        r.contains("PROTECTED_COLLECTION"),
+        "_system_* must stay protected on set_description: {r}"
+    );
 }
 
 #[tokio::test]
@@ -97,16 +157,46 @@ async fn set_owner_field_null_clears() {
         "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT REFERENCES _system_users(id), title TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')));")).await.unwrap();
     let sid = mcp_init(&app, &tid, &svc).await;
 
-    let set = mcp_call_tool(&app, &tid, &svc, &sid, "set_owner_field", serde_json::json!({"collection":"posts","field":"user_id","read_scope":"own"})).await;
-    assert!(set.contains("owner_field") && set.contains("user_id"), "set: {set}");
+    let set = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "set_owner_field",
+        serde_json::json!({"collection":"posts","field":"user_id","read_scope":"own"}),
+    )
+    .await;
+    assert!(
+        set.contains("owner_field") && set.contains("user_id"),
+        "set: {set}"
+    );
 
-    let cleared = mcp_call_tool(&app, &tid, &svc, &sid, "set_owner_field", serde_json::json!({"collection":"posts","field":serde_json::Value::Null})).await;
+    let cleared = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "set_owner_field",
+        serde_json::json!({"collection":"posts","field":serde_json::Value::Null}),
+    )
+    .await;
     assert!(cleared.contains("cleared"), "null clears: {cleared}");
 
     // Verify persisted state: owner_field back to NULL.
-    let of: Option<String> = pool.with_reader(|c| c.query_row(
-        "SELECT owner_field FROM _system_collection_meta WHERE collection_name='posts'", [], |r| r.get(0))).await.unwrap();
-    assert!(of.is_none(), "owner_field should be NULL after clear, got {of:?}");
+    let of: Option<String> = pool
+        .with_reader(|c| {
+            c.query_row(
+                "SELECT owner_field FROM _system_collection_meta WHERE collection_name='posts'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert!(
+        of.is_none(),
+        "owner_field should be NULL after clear, got {of:?}"
+    );
 }
 
 #[tokio::test]
@@ -118,18 +208,46 @@ async fn sample_and_count_removed_list_records_covers() {
     let sid = mcp_init(&app, &tid, &svc).await;
 
     // tools/list must NOT contain the removed names.
-    let list = mcp_req_with_session(&tid, &svc, &sid, serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}));
+    let list = mcp_req_with_session(
+        &tid,
+        &svc,
+        &sid,
+        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+    );
     let resp = app.clone().oneshot(list).await.unwrap();
     let msgs = parse_mcp_response(resp).await;
-    let names: Vec<String> = msgs.iter().find_map(|m| m["result"]["tools"].as_array().cloned()).unwrap()
-        .iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
-    assert!(!names.iter().any(|n| n == "sample_rows"), "sample_rows must be gone: {names:?}");
-    assert!(!names.iter().any(|n| n == "count_rows"), "count_rows must be gone: {names:?}");
+    let names: Vec<String> = msgs
+        .iter()
+        .find_map(|m| m["result"]["tools"].as_array().cloned())
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "sample_rows"),
+        "sample_rows must be gone: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "count_rows"),
+        "count_rows must be gone: {names:?}"
+    );
 
     // list_records subsumes both: it returns total + perPage.
-    let lr = mcp_call_tool(&app, &tid, &svc, &sid, "list_records", serde_json::json!({"collection":"posts","per_page":2})).await;
+    let lr = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "list_records",
+        serde_json::json!({"collection":"posts","per_page":2}),
+    )
+    .await;
     let v: serde_json::Value = serde_json::from_str(&lr).unwrap();
     assert_eq!(v["total"], 3, "total covers count_rows: {lr}");
     assert_eq!(v["perPage"], 2, "perPage present: {lr}");
-    assert_eq!(v["records"].as_array().unwrap().len(), 2, "per_page sample covers sample_rows: {lr}");
+    assert_eq!(
+        v["records"].as_array().unwrap().len(),
+        2,
+        "per_page sample covers sample_rows: {lr}"
+    );
 }

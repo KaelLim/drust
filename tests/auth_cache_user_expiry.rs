@@ -57,8 +57,7 @@ async fn expired_user_entry_rejected_from_cache_without_db_read() {
 
     let mut state = TenantAuthState::test_default(meta, tenants.clone());
     state.auth_cache = cache.clone();
-    let (functions, functions_exec, fn_cfg) =
-        drust::functions::test_stack_parts(tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),

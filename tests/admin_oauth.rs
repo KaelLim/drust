@@ -31,7 +31,10 @@ fn build_state(
     log_dir: std::path::PathBuf,
     registry: ProviderRegistry,
 ) -> MgmtState {
-    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2));
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
     let bus = drust::tenant::events::EventBus::new();
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
@@ -584,8 +587,7 @@ async fn oauth_allowlist_matches_mixed_case_admin_email() {
         provider_user_id: "424243".into(),
         picture: "https://example.test/avatar.png".into(),
     };
-    let (app, _dir, _log) =
-        spin_up_admin_with_github_fake_email(&fake, "Mixed@Case.com").await;
+    let (app, _dir, _log) = spin_up_admin_with_github_fake_email(&fake, "Mixed@Case.com").await;
 
     let start_resp = app
         .clone()

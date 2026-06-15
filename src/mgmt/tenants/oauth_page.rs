@@ -1,13 +1,13 @@
 //! OAuth-providers admin page (group E). Relocated from `tenants.rs` by Finding #4.
 
-use super::common;
 use super::TenantsState;
+use super::common;
 use crate::mgmt::i18n::{Locale, LocaleHint, Translator};
 use askama::Template;
+use axum::Form;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::Form;
 
 // ─── v1.12: per-tenant OAuth providers admin UI ──────────────────────────────
 

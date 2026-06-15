@@ -92,7 +92,10 @@ async fn post_json(app: &Router, uri: &str, body: serde_json::Value) -> axum::ht
         .unwrap()
 }
 
-async fn read_stored(data_dir: &std::path::Path, tenant_id: &str) -> drust::query::policy::CollectionPolicies {
+async fn read_stored(
+    data_dir: &std::path::Path,
+    tenant_id: &str,
+) -> drust::query::policy::CollectionPolicies {
     let pool = drust::storage::pool::TenantRegistry::new(data_dir.to_path_buf(), 2);
     let pool = pool.get_or_open(tenant_id).unwrap();
     pool.with_reader(|c| drust::storage::schema::read_policies(c, "posts"))

@@ -161,9 +161,7 @@ fn compile_node(
         )),
         FilterAst::Leaf(obj) => {
             if obj.len() != 1 {
-                return Err(PolicyError::Parse(
-                    "leaf must have exactly one key".into(),
-                ));
+                return Err(PolicyError::Parse("leaf must have exactly one key".into()));
             }
             let (key, body) = obj.iter().next().unwrap();
             // Special leaf: {"$authenticated": bool}.
@@ -324,7 +322,12 @@ fn resolve_eval_operand(operand: &Json, ctx: &PolicyCtx) -> Value {
     json_to_value(operand)
 }
 
-fn eval_leaf(field: &str, body: &Json, row: &serde_json::Map<String, Json>, ctx: &PolicyCtx) -> bool {
+fn eval_leaf(
+    field: &str,
+    body: &Json,
+    row: &serde_json::Map<String, Json>,
+    ctx: &PolicyCtx,
+) -> bool {
     let lhs = row.get(field).map(json_to_value).unwrap_or(Value::Null);
     let (op, operand): (&str, &Json) = if let Json::Object(o) = body {
         if o.contains_key("$auth") || o.contains_key("$data") {
@@ -366,9 +369,15 @@ fn eval_leaf(field: &str, body: &Json, row: &serde_json::Map<String, Json>, ctx:
         "eq" => ord == Some(std::cmp::Ordering::Equal),
         "ne" => ord.is_some() && ord != Some(std::cmp::Ordering::Equal),
         "gt" => ord == Some(std::cmp::Ordering::Greater),
-        "gte" => matches!(ord, Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)),
+        "gte" => matches!(
+            ord,
+            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+        ),
         "lt" => ord == Some(std::cmp::Ordering::Less),
-        "lte" => matches!(ord, Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)),
+        "lte" => matches!(
+            ord,
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        ),
         "like" => like_match(&lhs, &rhs),
         _ => false,
     }
@@ -483,7 +492,10 @@ fn check_operand_class(
 /// Walk every leaf of `ast` and run `check_operand_class` on its literal
 /// operand(s). Dynamic refs, `is_null`/`is_not_null` (no operand), and unknown
 /// fields are skipped here (field existence is enforced by `compile_policy_using`).
-fn check_ast_operand_classes(schema: &CollectionSchema, ast: &FilterAst) -> Result<(), PolicyError> {
+fn check_ast_operand_classes(
+    schema: &CollectionSchema,
+    ast: &FilterAst,
+) -> Result<(), PolicyError> {
     match ast {
         FilterAst::And { and } => and
             .iter()
@@ -501,11 +513,7 @@ fn check_ast_operand_classes(schema: &CollectionSchema, ast: &FilterAst) -> Resu
             }
             // eq shorthand: {field: <scalar-or-dynamic-ref>}
             let op_obj = match body {
-                Json::Object(o)
-                    if !o.contains_key("$auth") && !o.contains_key("$data") =>
-                {
-                    o
-                }
+                Json::Object(o) if !o.contains_key("$auth") && !o.contains_key("$data") => o,
                 _ => return check_operand_class(schema, key, body),
             };
             let Some((op, operand)) = op_obj.iter().next() else {
@@ -785,7 +793,8 @@ mod tests {
     fn eval_auth_ref_and_authenticated() {
         let row: serde_json::Map<String, Json> =
             serde_json::from_str(r#"{"author":"u-1"}"#).unwrap();
-        let owner: FilterAst = serde_json::from_str(r#"{"author":{"$eq":{"$auth":"id"}}}"#).unwrap();
+        let owner: FilterAst =
+            serde_json::from_str(r#"{"author":{"$eq":{"$auth":"id"}}}"#).unwrap();
         assert!(eval_policy(
             &owner,
             &row,
@@ -909,7 +918,8 @@ mod tests {
         let s = schema_typed(&[("n", "INTEGER"), ("status", "TEXT"), ("author", "TEXT")]);
         let p: Policy = serde_json::from_str(r#"{"using":{"n":{"$gt":5}}}"#).unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p).is_ok());
-        let p2: Policy = serde_json::from_str(r#"{"using":{"status":{"$eq":"published"}}}"#).unwrap();
+        let p2: Policy =
+            serde_json::from_str(r#"{"using":{"status":{"$eq":"published"}}}"#).unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p2).is_ok());
         // boolean literal against an INTEGER column is numeric/numeric → ok.
         let p3: Policy = serde_json::from_str(r#"{"using":{"n":{"$eq":true}}}"#).unwrap();
