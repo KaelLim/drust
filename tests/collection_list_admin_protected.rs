@@ -163,3 +163,81 @@ async fn password_hash_is_masked() {
         "password_hash must be masked with 4 bullet characters"
     );
 }
+
+/// Regression: a `_list` whose query errors INSIDE the read closure (after the
+/// read-only authorizer is attached) must still detach the authorizer before
+/// returning, so the pooled reader connection is clean for the next request.
+///
+/// We force the inner error deterministically with an oversized `IN (...)`
+/// list: it passes `filter_triples_to_ast` + `compile` (neither bounds the
+/// array length) and the sort/field validation, then fails at `c.prepare(...)`
+/// inside the closure with SQLite's "too many SQL variables" — i.e. the `?`
+/// early-return between `attach_readonly_authorizer` and `detach_authorizer`.
+///
+/// Before the fix the authorizer stayed installed on the (deterministically
+/// reused, serial oneshot) reader connection, so the FOLLOWING `_list` on a
+/// `_system_*` collection — which by design neither attaches nor detaches —
+/// inherited the restrictive authorizer and over-denied (`Read` on a
+/// `_system_*` table → Deny → SQL error → 400). After the fix the detach is
+/// unconditional, so the subsequent `_system_users` list succeeds (200).
+#[tokio::test]
+async fn errored_list_does_not_leave_authorizer_attached_for_next_system_list() {
+    let (app, dir) = app_with_tenant().await;
+
+    // Seed a tiny user-defined collection to error against (non-protected).
+    {
+        let writer = drust::storage::tenant_db::open_write(dir.path(), TENANT).unwrap();
+        writer
+            .execute_batch(
+                "CREATE TABLE notes (
+                    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL
+                );
+                INSERT INTO notes (title) VALUES ('alpha'), ('beta');",
+            )
+            .unwrap();
+    }
+    let cookie = login(&app).await;
+
+    // 1) Force an in-closure prepare failure. SQLite's default
+    //    SQLITE_MAX_VARIABLE_NUMBER is 32766; a 40_000-element IN list exceeds
+    //    it. compile() builds `("title" IN (?, ?, …))` with no length guard,
+    //    so the error surfaces at prepare(), AFTER the authorizer is attached.
+    let huge: Vec<serde_json::Value> =
+        (0..40_000).map(|n| serde_json::Value::from(n)).collect();
+    let resp = post_list(
+        &app,
+        &cookie,
+        "notes",
+        serde_json::json!({
+            "filters": [{"field": "title", "op": "in", "value": huge}],
+            "page": 1,
+            "per_page": 10
+        }),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "oversized IN list must fail inside the read closure; body: {:?}",
+        body_json(resp).await
+    );
+
+    // 2) A subsequent _list on a _system_* collection must still succeed —
+    //    proving the authorizer was detached on the errored path. Pre-fix this
+    //    over-denies (400) because the leftover read-only authorizer denies the
+    //    _system_* read.
+    let resp2 = post_list(
+        &app,
+        &cookie,
+        "_system_users",
+        serde_json::json!({"filters": [], "page": 1, "per_page": 10}),
+    )
+    .await;
+    assert_eq!(
+        resp2.status(),
+        StatusCode::OK,
+        "subsequent _system_* list must succeed (authorizer was detached on error); body: {:?}",
+        body_json(resp2).await
+    );
+}
