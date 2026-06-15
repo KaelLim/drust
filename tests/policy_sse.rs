@@ -49,6 +49,34 @@ async fn seed_realtime_posts(dir: &tempfile::TempDir, tenant: &str) {
     .unwrap();
 }
 
+/// `owned(user_id TEXT)` with anon select cap + realtime enabled +
+/// owner_field='user_id' / read_scope='own'. Used to prove an anon
+/// subscriber is denied at the gate on an owner-scoped collection.
+async fn seed_realtime_owner_scoped(dir: &tempfile::TempDir, tenant: &str) {
+    let pool = grab_pool(tenant, dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE owned (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO _system_collection_meta
+                  (collection_name, anon_caps_json)
+                  VALUES ('owned', '[\"select\"]')
+                  ON CONFLICT(collection_name) DO UPDATE SET
+                    anon_caps_json = '[\"select\"]';",
+        )?;
+        drust::storage::schema::write_realtime_enabled(c, "owned", true)?;
+        drust::storage::schema::set_owner_field(c, "owned", Some("user_id"), Some("own"))?;
+        Ok::<_, rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+    pool.schema_cache.invalidate("owned");
+}
+
 /// Write a select-policy USING directly (pre-Task-17) + invalidate cache.
 async fn set_select_using(dir: &tempfile::TempDir, tenant: &str, coll: &str, policy_json: Value) {
     let pool = grab_pool(tenant, dir).await;
@@ -146,5 +174,44 @@ async fn anon_sse_only_gets_policy_matching_events() {
     assert!(
         next.is_err(),
         "no second event should arrive — draft event must have been filtered out, got {next:?}"
+    );
+}
+
+/// H2 — anon must NOT be able to subscribe to an owner-scoped collection
+/// (owner_field set + read_scope=own). It has no user_id to filter
+/// Created/Updated events by, so the only safe answer is to deny at the
+/// gate — mirroring the REST read deny (`require_dml_cap`, records.rs:79-88).
+/// Before the fix, the subscribe succeeds (200 + stream) and anon receives
+/// every owner's row events.
+#[tokio::test]
+async fn anon_sse_denied_on_owner_scoped_collection() {
+    let (app, tid, _svc, anon, dir) = spin_up_dual_role_self_register("policy-sse-owner").await;
+    seed_realtime_owner_scoped(&dir, &tid).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/t/{tid}/records/owned/subscribe"))
+                .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+                .header(header::ACCEPT, "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "anon subscribe on an owner-scoped collection must be 403, not opened"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error_code"], "ANON_FORBIDDEN_OWNER_SCOPED",
+        "deny must use the same code as the REST read path; got {json:?}"
     );
 }
