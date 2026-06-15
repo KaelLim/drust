@@ -56,14 +56,6 @@ pub struct ScanResult {
     pub archive_errors: Vec<String>, // file names of skipped corrupt archives
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct FilterSpec {
-    pub tenant: Option<String>,
-    pub op: Option<String>,
-    pub status: Option<&'static str>, // "ok" | "error"
-    pub before_ts: Option<String>,
-}
-
 #[derive(Debug, Default)]
 pub struct Overview {
     pub total: u64,
@@ -83,8 +75,8 @@ pub struct Overview {
 #[derive(Debug, Clone)]
 pub struct TopTenant {
     pub tenant: String,
-    /// Resolved display name. Empty when produced by `aggregate` alone;
-    /// filled by `build_body_ctx` after a `tenants` meta lookup.
+    /// Resolved display name. Empty when produced by `aggregate_via_sql`
+    /// alone; filled by `build_body_ctx` after a `tenants` meta lookup.
     pub tenant_name: String,
     pub count: u64,
     pub error_pct: f64,
@@ -392,42 +384,6 @@ pub fn parse_jsonl_line(line: &str) -> Option<AuditEntry> {
     serde_json::from_str(trimmed).ok()
 }
 
-/// Compute summary stats over `entries`. `window` is used for RPS denom.
-///
-/// v1.24 — pre-v1.24 shape restored. The audit UI now sources Overview
-/// via `aggregate_via_sql` directly from the SQL store, but this pure
-/// function is retained for the backfill path and existing tests.
-pub fn aggregate(entries: &[AuditEntry], window: Window) -> Overview {
-    let total = entries.len() as u64;
-    if total == 0 {
-        return Overview::default();
-    }
-    let error_count = entries.iter().filter(|e| e.status == "error").count() as u64;
-    let error_pct = (error_count as f64) / (total as f64) * 100.0;
-
-    let mut durations: Vec<u64> = entries.iter().map(|e| e.duration_ms).collect();
-    durations.sort_unstable();
-    let p50_ms = percentile(&durations, 50);
-    let p99_ms = percentile(&durations, 99);
-
-    let rps_avg = (total as f64) / (window.seconds() as f64);
-
-    let top_tenants = compute_top_tenants(entries);
-    let top_slow_ops = compute_top_slow_ops(entries);
-
-    Overview {
-        total,
-        error_count,
-        error_pct,
-        p50_ms,
-        p99_ms,
-        rps_avg,
-        top_tenants,
-        top_slow_ops,
-        dropped_total: crate::safety::audit_db::dropped_total(),
-    }
-}
-
 fn percentile(sorted: &[u64], p: u8) -> u64 {
     if sorted.is_empty() {
         return 0;
@@ -437,75 +393,6 @@ fn percentile(sorted: &[u64], p: u8) -> u64 {
     let rank = ((p as f64) / 100.0 * (n as f64)).ceil() as usize;
     let idx = rank.saturating_sub(1).min(n - 1);
     sorted[idx]
-}
-
-fn compute_top_tenants(entries: &[AuditEntry]) -> Vec<TopTenant> {
-    use std::collections::HashMap;
-    let mut counts: HashMap<&str, (u64, u64)> = HashMap::new(); // (total, errors)
-    for e in entries {
-        let slot = counts.entry(e.tenant.as_str()).or_insert((0, 0));
-        slot.0 += 1;
-        if e.status == "error" {
-            slot.1 += 1;
-        }
-    }
-    let mut out: Vec<TopTenant> = counts
-        .into_iter()
-        .map(|(name, (total, errs))| TopTenant {
-            tenant: name.to_string(),
-            tenant_name: String::new(),
-            count: total,
-            error_pct: if total == 0 {
-                0.0
-            } else {
-                (errs as f64) / (total as f64) * 100.0
-            },
-        })
-        .collect();
-    // Stable order: by count desc, then by tenant name asc for tie-break.
-    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tenant.cmp(&b.tenant)));
-    out.truncate(5);
-    out
-}
-
-fn compute_top_slow_ops(entries: &[AuditEntry]) -> Vec<AuditEntry> {
-    let mut sorted: Vec<AuditEntry> = entries.to_vec();
-    sorted.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
-    sorted.truncate(5);
-    sorted
-}
-
-/// Apply filter spec. Result preserves input order (caller scan_window
-/// already returns newest-first).
-pub fn filter(entries: &[AuditEntry], spec: &FilterSpec) -> Vec<AuditEntry> {
-    entries
-        .iter()
-        .filter(|e| {
-            if let Some(t) = &spec.tenant {
-                if &e.tenant != t {
-                    return false;
-                }
-            }
-            if let Some(o) = &spec.op {
-                if &e.op != o {
-                    return false;
-                }
-            }
-            if let Some(s) = spec.status {
-                if e.status != s {
-                    return false;
-                }
-            }
-            if let Some(cursor) = &spec.before_ts {
-                // strict less-than: cursor itself excluded
-                if e.ts.as_str() >= cursor.as_str() {
-                    return false;
-                }
-            }
-            true
-        })
-        .cloned()
-        .collect()
 }
 
 use crate::mgmt::i18n::{LocaleHint, Translator};
@@ -1480,183 +1367,6 @@ mod tests {
         assert!(res.entries.is_empty());
         assert_eq!(res.archive_errors.len(), 1);
         assert!(res.archive_errors[0].contains("audit-"));
-    }
-
-    #[test]
-    fn aggregate_empty_input() {
-        let ov = aggregate(&[], Window::H24);
-        assert_eq!(ov.total, 0);
-        assert_eq!(ov.error_count, 0);
-        assert_eq!(ov.error_pct, 0.0);
-        assert_eq!(ov.p50_ms, 0);
-        assert_eq!(ov.p99_ms, 0);
-        assert_eq!(ov.rps_avg, 0.0);
-        assert!(ov.top_tenants.is_empty());
-        assert!(ov.top_slow_ops.is_empty());
-    }
-
-    #[test]
-    fn aggregate_totals_and_errors() {
-        let entries = vec![
-            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", 10),
-            mk_entry("2026-05-05T01:00:01.000Z", "acme", "GET", "error", 12),
-            mk_entry("2026-05-05T01:00:02.000Z", "beta", "POST", "ok", 5),
-        ];
-        let ov = aggregate(&entries, Window::H1);
-        assert_eq!(ov.total, 3);
-        assert_eq!(ov.error_count, 1);
-        // 33.333...%
-        assert!((ov.error_pct - 33.333).abs() < 0.01, "got {}", ov.error_pct);
-    }
-
-    #[test]
-    fn aggregate_p50_p99_known_dataset() {
-        // 100 entries, durations 1..=100 ms. p50 should be 50, p99 should be 99.
-        let entries: Vec<AuditEntry> = (1..=100)
-            .map(|i| mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", i))
-            .collect();
-        let ov = aggregate(&entries, Window::H1);
-        assert_eq!(ov.p50_ms, 50);
-        assert_eq!(ov.p99_ms, 99);
-    }
-
-    #[test]
-    fn aggregate_top_tenants_ordered_by_count_capped_at_5() {
-        let mut entries = Vec::new();
-        for (tenant, n) in [
-            ("a", 10),
-            ("b", 8),
-            ("c", 6),
-            ("d", 4),
-            ("e", 2),
-            ("f", 1),
-            ("g", 1),
-        ] {
-            for _ in 0..n {
-                entries.push(mk_entry("2026-05-05T01:00:00.000Z", tenant, "GET", "ok", 1));
-            }
-        }
-        let ov = aggregate(&entries, Window::H1);
-        let names: Vec<&str> = ov.top_tenants.iter().map(|t| t.tenant.as_str()).collect();
-        assert_eq!(names, vec!["a", "b", "c", "d", "e"]); // top 5, in count-desc order
-        assert_eq!(ov.top_tenants.len(), 5);
-    }
-
-    #[test]
-    fn aggregate_top_tenants_error_pct() {
-        let entries = vec![
-            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", 1),
-            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "error", 1),
-            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "error", 1),
-            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "error", 1),
-        ];
-        let ov = aggregate(&entries, Window::H1);
-        assert_eq!(ov.top_tenants.len(), 1);
-        assert_eq!(ov.top_tenants[0].tenant, "acme");
-        assert_eq!(ov.top_tenants[0].count, 4);
-        assert!((ov.top_tenants[0].error_pct - 75.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn aggregate_top_slow_ops_capped_at_5_desc() {
-        let entries: Vec<AuditEntry> = [10, 50, 200, 30, 5, 1000, 7, 800]
-            .iter()
-            .enumerate()
-            .map(|(i, ms)| {
-                mk_entry(
-                    &format!("2026-05-05T01:00:{:02}.000Z", i),
-                    "acme",
-                    "GET",
-                    "ok",
-                    *ms,
-                )
-            })
-            .collect();
-        let ov = aggregate(&entries, Window::H1);
-        assert_eq!(ov.top_slow_ops.len(), 5);
-        let durations: Vec<u64> = ov.top_slow_ops.iter().map(|e| e.duration_ms).collect();
-        assert_eq!(durations, vec![1000, 800, 200, 50, 30]);
-    }
-
-    fn fixture() -> Vec<AuditEntry> {
-        // Sorted newest-first (matches what scan_window returns).
-        vec![
-            mk_entry("2026-05-05T01:00:03.000Z", "beta", "DELETE", "error", 4),
-            mk_entry("2026-05-05T01:00:02.000Z", "beta", "GET", "ok", 3),
-            mk_entry("2026-05-05T01:00:01.000Z", "acme", "POST", "error", 2),
-            mk_entry("2026-05-05T01:00:00.000Z", "acme", "GET", "ok", 1),
-        ]
-    }
-
-    #[test]
-    fn filter_by_tenant() {
-        let f = FilterSpec {
-            tenant: Some("acme".into()),
-            ..Default::default()
-        };
-        let r = filter(&fixture(), &f);
-        assert_eq!(r.len(), 2);
-        assert!(r.iter().all(|e| e.tenant == "acme"));
-    }
-
-    #[test]
-    fn filter_by_op() {
-        let f = FilterSpec {
-            op: Some("GET".into()),
-            ..Default::default()
-        };
-        let r = filter(&fixture(), &f);
-        assert_eq!(r.len(), 2);
-        assert!(r.iter().all(|e| e.op == "GET"));
-    }
-
-    #[test]
-    fn filter_by_status_error() {
-        let f = FilterSpec {
-            status: Some("error"),
-            ..Default::default()
-        };
-        let r = filter(&fixture(), &f);
-        assert_eq!(r.len(), 2);
-        assert!(r.iter().all(|e| e.status == "error"));
-    }
-
-    #[test]
-    fn filter_by_status_ok() {
-        let f = FilterSpec {
-            status: Some("ok"),
-            ..Default::default()
-        };
-        let r = filter(&fixture(), &f);
-        assert_eq!(r.len(), 2);
-        assert!(r.iter().all(|e| e.status == "ok"));
-    }
-
-    #[test]
-    fn filter_combined_and() {
-        let f = FilterSpec {
-            tenant: Some("acme".into()),
-            status: Some("error"),
-            ..Default::default()
-        };
-        let r = filter(&fixture(), &f);
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0].op, "POST");
-    }
-
-    #[test]
-    fn filter_before_ts_excludes_cursor_entry() {
-        // before_ts is exclusive: entries with ts < cursor pass; ts == cursor excluded.
-        let f = FilterSpec {
-            before_ts: Some("2026-05-05T01:00:02.000Z".into()),
-            ..Default::default()
-        };
-        let r = filter(&fixture(), &f);
-        let timestamps: Vec<&str> = r.iter().map(|e| e.ts.as_str()).collect();
-        assert_eq!(
-            timestamps,
-            vec!["2026-05-05T01:00:01.000Z", "2026-05-05T01:00:00.000Z"]
-        );
     }
 
     #[test]
