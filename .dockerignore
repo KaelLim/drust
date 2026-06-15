@@ -1,0 +1,33 @@
+# Keep the build context small + the image clean.
+# target/ alone is multiple GB — never ship it into the build context.
+target/
+**/*.rs.bk
+
+# VCS + local state
+.git/
+.gitignore
+
+# Secrets + local env (the image is configured via runtime env, never baked)
+.env
+.env.*
+!.env.example
+
+# Host-specific runtime data that must never land in an image
+/data/
+/logs/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+backups/
+_trash/
+
+# Docs / editor / OS cruft not needed to compile
+docs/superpowers/
+.idea/
+.vscode/
+.DS_Store
+
+# Don't recurse Docker artifacts into the context
+Dockerfile
+.dockerignore
+docker-compose.yml
