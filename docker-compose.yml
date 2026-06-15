@@ -1,0 +1,62 @@
+# drust — single-command self-host.
+#
+#   docker compose up -d            # drust only (SQLite BaaS, no object storage)
+#   docker compose --profile storage up -d   # drust + MinIO (S3 file storage)
+#
+# First boot creates the admin from DRUST_INIT_ADMIN_*. Change them, then open
+# http://localhost:47826/admin/login. drust serves plain HTTP — put a TLS-
+# terminating reverse proxy (Caddy, nginx, Traefik) in front for production.
+
+services:
+  drust:
+    build: .
+    # Or pull a prebuilt image instead of building:
+    # image: ghcr.io/kaellim/drust:latest
+    restart: unless-stopped
+    ports:
+      - "47826:47826"
+    volumes:
+      - drust-data:/data      # meta.sqlite + meta_logs.sqlite + tenants/ + backups/
+      - drust-logs:/logs
+    environment:
+      # --- first-boot admin bootstrap (change these) ---
+      DRUST_INIT_ADMIN_USERNAME: admin
+      DRUST_INIT_ADMIN_PASSWORD: change-me-on-first-boot
+      # --- public URL (required for OAuth redirect/callback links) ---
+      # DRUST_PUBLIC_URL: https://drust.example.com
+      # --- CORS allow-list for browser SPAs (exact origins or one '*' segment) ---
+      # DRUST_CORS_ORIGINS: https://app.example.com,http://localhost:*
+      # --- optional S3 object storage (uncomment with the `storage` profile) ---
+      # GARAGE_S3_ENDPOINT:   http://minio:9000
+      # GARAGE_S3_ACCESS_KEY: drustkey
+      # GARAGE_S3_SECRET_KEY: drustsecret
+      # NOTE: per-tenant bucket AUTO-provisioning needs Garage's admin API
+      # (GARAGE_ADMIN_ENDPOINT + GARAGE_ADMIN_TOKEN). With MinIO/R2/S3, the
+      # data path still works but you pre-create the buckets yourself.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:47826/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  # Optional S3-compatible object store for file features. Enable with:
+  #   docker compose --profile storage up -d
+  minio:
+    image: minio/minio:latest
+    profiles: ["storage"]
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    environment:
+      MINIO_ROOT_USER: drustkey
+      MINIO_ROOT_PASSWORD: drustsecret
+    volumes:
+      - minio-data:/data
+
+volumes:
+  drust-data:
+  drust-logs:
+  minio-data:
