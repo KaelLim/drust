@@ -382,39 +382,47 @@ async fn admin_list_inner(
                 if !is_protected {
                     crate::query::authorizer::attach_readonly_authorizer(c);
                 }
-                let mut stmt = c.prepare(&list_sql_for_closure)?;
-                let col_names: Vec<String> =
-                    stmt.column_names().iter().map(|s| s.to_string()).collect();
-                let mut rows_iter =
-                    stmt.query(rusqlite::params_from_iter(binds_for_list.iter()))?;
-                let mut out: Vec<Vec<serde_json::Value>> = Vec::new();
-                while let Some(r) = rows_iter.next()? {
-                    let mut row_vals = Vec::with_capacity(col_names.len());
-                    for i in 0..col_names.len() {
-                        let v: rusqlite::types::Value = r.get(i)?;
-                        row_vals.push(match v {
-                            rusqlite::types::Value::Null => serde_json::Value::Null,
-                            rusqlite::types::Value::Integer(n) => {
-                                serde_json::Value::Number(n.into())
-                            }
-                            rusqlite::types::Value::Real(f) => serde_json::Number::from_f64(f)
-                                .map(serde_json::Value::Number)
-                                .unwrap_or(serde_json::Value::Null),
-                            rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
-                            rusqlite::types::Value::Blob(bytes) => {
-                                let col_name = &col_names[i];
-                                let display =
-                                    format_blob_cell(col_name, &bytes, &vector_dim_by_col);
-                                serde_json::Value::String(display)
-                            }
-                        });
+                // Run the query into a local Result so EVERY `?` early-return
+                // below still hits the unconditional detach. Leaving the
+                // read-only authorizer installed on this pooled reader would
+                // over-deny the next request's _system_* read (it self-heals
+                // on the next detaching path, but intermittently fails).
+                let r = (|| -> rusqlite::Result<(Vec<String>, Vec<Vec<serde_json::Value>>)> {
+                    let mut stmt = c.prepare(&list_sql_for_closure)?;
+                    let col_names: Vec<String> =
+                        stmt.column_names().iter().map(|s| s.to_string()).collect();
+                    let mut rows_iter =
+                        stmt.query(rusqlite::params_from_iter(binds_for_list.iter()))?;
+                    let mut out: Vec<Vec<serde_json::Value>> = Vec::new();
+                    while let Some(r) = rows_iter.next()? {
+                        let mut row_vals = Vec::with_capacity(col_names.len());
+                        for i in 0..col_names.len() {
+                            let v: rusqlite::types::Value = r.get(i)?;
+                            row_vals.push(match v {
+                                rusqlite::types::Value::Null => serde_json::Value::Null,
+                                rusqlite::types::Value::Integer(n) => {
+                                    serde_json::Value::Number(n.into())
+                                }
+                                rusqlite::types::Value::Real(f) => serde_json::Number::from_f64(f)
+                                    .map(serde_json::Value::Number)
+                                    .unwrap_or(serde_json::Value::Null),
+                                rusqlite::types::Value::Text(s) => serde_json::Value::String(s),
+                                rusqlite::types::Value::Blob(bytes) => {
+                                    let col_name = &col_names[i];
+                                    let display =
+                                        format_blob_cell(col_name, &bytes, &vector_dim_by_col);
+                                    serde_json::Value::String(display)
+                                }
+                            });
+                        }
+                        out.push(row_vals);
                     }
-                    out.push(row_vals);
-                }
+                    Ok((col_names, out))
+                })();
                 if !is_protected {
                     crate::query::authorizer::detach_authorizer(c);
                 }
-                Ok((col_names, out))
+                r
             },
         )
         .await;
@@ -453,15 +461,18 @@ async fn admin_list_inner(
             if !is_protected {
                 crate::query::authorizer::attach_readonly_authorizer(c);
             }
-            let n = c.query_row(
+            // Same unconditional-detach shape as the list closure: capture the
+            // count into a local so the `?` on query_row can't skip the detach
+            // and leak the read-only authorizer onto the pooled reader.
+            let r = c.query_row(
                 &count_sql_for_closure,
                 rusqlite::params_from_iter(binds_for_count.iter()),
                 |r| r.get::<_, i64>(0),
-            )?;
+            );
             if !is_protected {
                 crate::query::authorizer::detach_authorizer(c);
             }
-            Ok(n)
+            r
         })
         .await;
     let total: i64 = match total_result {
