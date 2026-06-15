@@ -13,7 +13,11 @@
 # Run:    see docker-compose.yml, or the "Run with Docker" section in README.md.
 
 # ---- builder ----------------------------------------------------------------
-FROM rust:1.93-slim-bookworm AS builder
+# rust:1 (latest stable) — the pinned Cargo.lock resolves libsqlite3-sys 0.38,
+# which needs a newer compiler than 1.93 (uses the now-stable `cfg_select`).
+# The lock is committed for reproducibility; the builder just needs to be >= the
+# real MSRV, and latest-stable always is.
+FROM rust:1-slim-bookworm AS builder
 
 # build-essential = cc + headers for rusqlite's bundled SQLite C compile.
 RUN apt-get update \
