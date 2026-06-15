@@ -1,3 +1,24 @@
+## v1.38.3 — 2026-06-15
+
+### Audit follow-up: correctness + security fixes
+
+Closes the substantive correctness/security items from the 2026-06-15 audit (after
+the v1.38.2 HIGH fixes). (M1) Per-tenant OAuth `start`/`callback` now validate the
+tenant exists in meta before opening its pool — mirroring the login/register
+disk-fill guard — and `start` is rate-limited, so an unauthenticated caller can no
+longer spray arbitrary tenant ids to create junk tenant databases. (2) A policy
+whose literal operand's type mismatches the target column's storage class is now
+rejected at config time (`POLICY_INVALID`), completing the eval/compile lockstep
+the v1.38.2 `$nin`/NULL fix began. (3) The admin `_list` endpoint now detaches the
+read-only authorizer on an errored early-return, so a failed list no longer leaves
+a restrictive authorizer on the pooled reader and intermittently over-denies a
+later `_system_*` list. (4) The admin OAuth allowlist match is now `COLLATE NOCASE`,
+so a mixed-case bootstrap admin email is no longer locked out of OAuth login. (5)
+Edge-function `put-file` now derives `cache_control` from the object's visibility
+(private → `private, no-store`) like Mode A/B, instead of hardcoding a public value.
+No cross-tenant, owner-clause, or RLS-enforcement change. Deferred to a later pass:
+the DRY/perf cleanups (incl. SSE Arc fan-out) and the `handler.rs` god-object split.
+
 ## v1.38.2 — 2026-06-15
 
 ### Security: close three intra-tenant RLS/realtime fail-open read bypasses
