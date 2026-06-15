@@ -99,16 +99,10 @@ pub(crate) fn decode_id_token(jwt: &str, client_id: &str) -> Result<VerifiedUser
     // are mandatory under the same spec section.
     const VALID_ISS: &[&str] = &["https://accounts.google.com", "accounts.google.com"];
     if !VALID_ISS.contains(&claims.iss.as_str()) {
-        return Err(OauthError::ProviderResponse(format!(
-            "id_token iss mismatch: {:?}",
-            claims.iss
-        )));
+        return Err(OauthError::ProviderResponse("id_token iss mismatch".into()));
     }
     if claims.aud != client_id {
-        return Err(OauthError::ProviderResponse(format!(
-            "id_token aud mismatch: {:?}",
-            claims.aud
-        )));
+        return Err(OauthError::ProviderResponse("id_token aud mismatch".into()));
     }
     let now = chrono::Utc::now().timestamp();
     // `<=` (not `<`): a token whose `exp` equals the current second
@@ -287,6 +281,20 @@ mod tests {
         assert!(
             msg.contains("aud"),
             "expected aud mismatch error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_id_token_aud_error_does_not_echo_claim_value() {
+        let mut payload = valid_payload();
+        payload["aud"] = serde_json::json!("attacker-secret-client-id");
+        let id_token = make_token(&payload);
+        let err = decode_id_token(&id_token, TEST_CLIENT_ID).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("aud"), "still names the field: {msg}");
+        assert!(
+            !msg.contains("attacker-secret-client-id"),
+            "must not echo the untrusted claim value: {msg}"
         );
     }
 
