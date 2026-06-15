@@ -114,3 +114,35 @@ fn evaluators_agree_on_corpus() {
         }
     }
 }
+
+/// H3/H3b regression: the two evaluators diverged on `in`/`nin` against a NULL
+/// field (SQLite excludes a NULL lhs from both IN and NOT IN, but `eval_leaf`'s
+/// `!hit` wrongly matched a NULL row on `$nin`) and on ASCII `LIKE` case (SQL
+/// LIKE is case-insensitive; the in-memory regex was case-sensitive). Each pair
+/// must agree exactly between `eval_policy` and the compiled `?`-bound SQL.
+#[test]
+fn evaluators_agree_on_in_nin_null_and_like_case() {
+    let s = schema(&[("name", "TEXT")]);
+    let anon = PolicyCtx {
+        auth_id: None,
+        data: None,
+    };
+    // (ast, row): each must produce identical eval vs SQL verdicts.
+    let cases = [
+        // (a) $nin against a NULL field — SQL excludes (NULL NOT IN → not-true).
+        (r#"{"name":{"$nin":["a","b"]}}"#, r#"{"name":null}"#),
+        // (b) $nin against a non-matching, non-null field — SQL keeps the row.
+        (r#"{"name":{"$nin":["a"]}}"#, r#"{"name":"c"}"#),
+        // (c) $in against a NULL field — SQL excludes (NULL IN → not-true).
+        (r#"{"name":{"$in":["a"]}}"#, r#"{"name":null}"#),
+        // (d) LIKE with case-varying text — SQLite LIKE is ASCII case-insensitive.
+        (r#"{"name":{"$like":"ABC%"}}"#, r#"{"name":"abcdef"}"#),
+    ];
+    for (a, r) in cases {
+        let ast: FilterAst = serde_json::from_str(a).unwrap();
+        let row: serde_json::Map<String, serde_json::Value> = serde_json::from_str(r).unwrap();
+        let mem = eval_policy(&ast, &row, &anon);
+        let sql = sql_says_match(&s, &ast, &anon, r);
+        assert_eq!(mem, sql, "DISAGREE ast={a} row={r}");
+    }
+}
