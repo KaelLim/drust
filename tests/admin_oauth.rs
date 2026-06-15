@@ -112,6 +112,39 @@ pub async fn spin_up_admin_with_google_fake(
     (state.with_data_dir(data_dir), dir, log_dir)
 }
 
+/// Variant of `spin_up_admin_with_github_fake` that seeds the admin row with a
+/// caller-supplied email. Used by the COLLATE NOCASE test: seed a mixed-case
+/// `admins.email` and drive a callback whose provider email is lowercased, so
+/// the step-6 allowlist match must be case-insensitive to pass. Uses GitHub
+/// (auth_method `oauth_github`) to stay isolated from the `oauth_google`
+/// success row that `oauth_audit_logged_on_success` asserts on in the shared
+/// global test audit DB.
+pub async fn spin_up_admin_with_github_fake_email(
+    fake: &Arc<FakeProvider>,
+    admin_email: &str,
+) -> (axum::Router, TempDir, std::path::PathBuf) {
+    ensure_test_audit_writer();
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let log_dir = data_dir.join("audit");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let conn = bootstrap_meta_with_email(&data_dir, admin_email);
+
+    let github = GitHubAdapter::new(
+        "test-client-id".to_string(),
+        "test-client-secret".to_string(),
+        format!("{}/login/oauth/authorize", fake.base_url),
+        format!("{}/login/oauth/access_token", fake.base_url),
+        fake.base_url.clone(),
+    );
+    let mut providers: HashMap<&'static str, Arc<dyn OauthProvider>> = HashMap::new();
+    providers.insert("github", Arc::new(github));
+    let registry = ProviderRegistry::from_providers(providers);
+
+    let state = build_state(conn, data_dir.clone(), log_dir.clone(), registry);
+    (state.with_data_dir(data_dir), dir, log_dir)
+}
+
 /// Variant of `spin_up_admin_with_google_fake` whose admin row has NO email
 /// column populated. With DB-driven allowlist (v1.29.0+), `kael@example.com`
 /// is not found in `admins.email` so step 6 returns `oauth_not_allowed` —
@@ -534,6 +567,75 @@ async fn oauth_audit_logged_on_success() {
     assert_eq!(row["oauth_email"], "kael@example.com");
     assert_eq!(row["admin_id"].as_i64().unwrap(), 1);
     assert_eq!(row["status"], "ok");
+}
+
+// ---------- Fix 4: admin allowlist is case-insensitive (COLLATE NOCASE) ----------
+
+#[tokio::test]
+async fn oauth_allowlist_matches_mixed_case_admin_email() {
+    // Admin row seeded with a MIXED-case email; the OAuth provider returns the
+    // lowercased form (providers lowercase emails). The step-6 allowlist match
+    // must be case-insensitive, otherwise the bootstrap admin is locked out
+    // with `oauth_not_allowed`.
+    let fake = spawn_fake_github().await;
+    *fake.script.lock().await = FakeScript {
+        email: "mixed@case.com".into(),
+        email_verified: true,
+        provider_user_id: "424243".into(),
+        picture: "https://example.test/avatar.png".into(),
+    };
+    let (app, _dir, _log) =
+        spin_up_admin_with_github_fake_email(&fake, "Mixed@Case.com").await;
+
+    let start_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/oauth/github/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state = extract_set_cookie(&start_resp, "drust_oauth_state").expect("state cookie set");
+    let pkce = extract_set_cookie(&start_resp, "drust_oauth_pkce").expect("pkce cookie set");
+
+    let cookie_hdr = format!("drust_oauth_state={state}; drust_oauth_pkce={pkce}");
+    let url = format!("/admin/oauth/github/callback?code=C&state={state}");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&url)
+                .header(header::COOKIE, cookie_hdr)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // A successful callback (step 6 allowlist + step 7 find-admin both pass
+    // case-insensitively) 302-redirects to the admin app with a session
+    // cookie — never the `oauth_error=oauth_not_allowed` login redirect.
+    // Pre-fix the case-sensitive query missed `Mixed@Case.com`, so this was
+    // `/drust/login?oauth_error=oauth_not_allowed`. Asserting on the redirect
+    // (not the shared global audit DB) keeps this test isolated from the
+    // sibling `oauth_audit_logged_on_success` row.
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let loc = resp
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        !loc.contains("oauth_error"),
+        "mixed-case admin should not be rejected; got redirect: {loc}"
+    );
+    assert_eq!(loc, "/drust/admin/tenants", "expected success redirect");
+    assert!(
+        extract_set_cookie(&resp, "drust_session").is_some(),
+        "successful OAuth login must set a session cookie"
+    );
 }
 
 #[tokio::test]
