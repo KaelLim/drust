@@ -1,15 +1,18 @@
 ## v1.38.4 — 2026-06-15
 
-### Hotfix: MCP tool schema rejected by strict clients
+### Hotfix: bare serde_json::Value MCP tool args rejected by strict clients
 
-`invoke_function`'s `event` and `broadcast`'s `payload` args were typed as bare
-`serde_json::Value`, which schemars 1.x renders as the boolean `true` schema.
-Strict MCP clients (e.g. Claude Code's Zod validation) reject a boolean property
-schema — the per-tenant `tools/list` failed with `Invalid input` at
-`properties.event`, so the client fetched **no** tools. Both fields now render an
-object schema via `#[schemars(with = ...)]` (matching the working `data` fields);
-the runtime type stays `Value`, so any JSON is still accepted. Added a regression
-test asserting these properties render object schemas, not booleans.
+`invoke_function`'s `event`, `broadcast`'s `payload`, and `search_collection`'s
+`vector` were typed as bare `serde_json::Value`, which schemars 1.x renders as an
+untyped "AnyValue" property schema. Strict MCP clients (Claude Code's Zod
+validation) reject it — the per-tenant `tools/list` failed with `Invalid input`
+at `properties.event` and the client fetched **no** tools at all. Each now
+overrides its schema via `#[schemars(with = ...)]` to an explicit type (object
+for event/payload, array of numbers for vector); the runtime type stays `Value`,
+so any JSON is still accepted. A tree sweep confirms these are the only three
+bare-Value tool args (`Option<Value>` fields render an accepted
+`{description, default}` schema, no override needed). + a regression test
+asserting all three render explicitly-typed schemas.
 
 ## v1.38.3 — 2026-06-15
 

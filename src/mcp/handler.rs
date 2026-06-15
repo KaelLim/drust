@@ -2244,26 +2244,41 @@ mod description_tests {
 mod instructions_tests {
     use super::build_instructions;
 
-    // Regression: serde_json::Value args (invoke_function.event, broadcast.payload)
-    // must render an OBJECT schema, not schemars 1.x's boolean `true`, which
-    // strict MCP clients (Zod) reject — "tools fetch failed: Invalid input at
-    // properties.event". (2026-06 prod incident.)
+    // Regression: a bare `serde_json::Value` MCP tool arg derives a schema that
+    // strict MCP clients (Zod) reject — the per-tenant tools/list fails with
+    // "Invalid input at properties.<x>" and the client fetches NO tools. Every
+    // such arg must override its schema to an explicit type via
+    // #[schemars(with = ...)]. (2026-06 prod incident. A tree sweep confirms the
+    // only three bare-Value tool args are these; Option<Value> renders an
+    // accepted `{description, default}` schema and needs no override.)
     #[test]
-    fn json_value_tool_args_render_object_schema_not_bool() {
-        for (prop, schema) in [
+    fn bare_json_value_tool_args_render_typed_schema() {
+        let cases = [
             (
                 "event",
+                "object",
                 serde_json::to_value(schemars::schema_for!(super::InvokeFunctionArgs)).unwrap(),
             ),
             (
                 "payload",
+                "object",
                 serde_json::to_value(schemars::schema_for!(super::BroadcastArgs)).unwrap(),
             ),
-        ] {
-            let p = &schema["properties"][prop];
-            assert!(
-                p.is_object() && p["type"] == "object",
-                "{prop} must render an object schema (not boolean true), got: {p}"
+            (
+                "vector",
+                "array",
+                serde_json::to_value(schemars::schema_for!(
+                    crate::mcp::tools::vector::SearchInput
+                ))
+                .unwrap(),
+            ),
+        ];
+        for (prop, want, schema) in cases {
+            assert_eq!(
+                schema["properties"][prop]["type"], want,
+                "{prop} must render type={want} (bare serde_json::Value derives a \
+                 schema strict clients reject), got: {}",
+                schema["properties"][prop]
             );
         }
     }

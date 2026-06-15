@@ -18,6 +18,10 @@ pub struct SearchInput {
     pub field: String,
     /// Query vector as a JSON array of numbers. Length must equal the
     /// declared `dim` of the vector field.
+    // Bare `serde_json::Value` derives a schema strict MCP clients (Zod) reject;
+    // render an array-of-numbers schema. Runtime stays `Value` (any JSON), the
+    // impl validates length/element types.
+    #[schemars(with = "Vec<f64>")]
     pub vector: serde_json::Value,
     /// Number of nearest rows to return. 1..=1000.
     pub k: u32,
