@@ -76,7 +76,7 @@ docker compose --profile storage up -d
 
 ```bash
 curl -s http://localhost:47826/health        # → ok
-open http://localhost:47826/admin/login      # 用 docker-compose.yml 裡的 DRUST_INIT_ADMIN_* 登入
+open http://localhost/drust/login            # 後台 UI（經內附 Caddy）；用 DRUST_INIT_ADMIN_* 登入
 ```
 
 > [!CAUTION]

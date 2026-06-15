@@ -4,10 +4,25 @@
 #   docker compose --profile storage up -d   # drust + MinIO (S3 file storage)
 #
 # First boot creates the admin from DRUST_INIT_ADMIN_*. Change them, then open
-# http://localhost:47826/admin/login. drust serves plain HTTP — put a TLS-
-# terminating reverse proxy (Caddy, nginx, Traefik) in front for production.
+# http://localhost/drust/login  (the bundled Caddy proxy fronts drust at
+# /drust/*). drust + Caddy speak plain HTTP — terminate TLS at your edge proxy
+# in production.
 
 services:
+  # Reverse proxy. drust is built to live behind a proxy mounted at /drust/*
+  # (it hardcodes that prefix in its browser-facing URLs — forms, redirects,
+  # cookie paths), so the admin UI is only usable THROUGH here, at
+  # http://localhost/drust/login — not on drust's port directly.
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/compose.Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - drust
+
   drust:
     build: .
     # Or pull a prebuilt image instead of building:
