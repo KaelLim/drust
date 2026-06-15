@@ -1,3 +1,24 @@
+## v1.38.2 — 2026-06-15
+
+### Security: close three intra-tenant RLS/realtime fail-open read bypasses
+
+A holistic audit found no cross-tenant breach but three HIGH intra-tenant
+authorization gaps on the SELECT/realtime read surface, all fixed here. (1) The
+legacy `GET /records/<coll>` list applied the owner clause but not the explicit
+select-policy USING, so a collection with a select policy and no owner_field
+returned every row to a bare anon/user GET; it now AND-composes the `?`-bound
+policy USING (mirroring `POST /list`) and refuses raw `?filter`/`?sort` on a
+policy-protected collection. (2) Anon SSE subscribe gated on realtime + anon
+select cap but not owner_field, so anon could receive every user's row events on
+an owner-scoped collection; it now 403s `ANON_FORBIDDEN_OWNER_SCOPED` like the
+REST read paths. (3) `eval_policy` and `compile_policy_using` diverged on `in`/
+`nin` against a NULL field (and ASCII `LIKE` case), so a NULL-field row hidden
+from reads could leak over the anon SSE filter; the two evaluators are realigned
+and the consistency corpus now exercises `$nin`/NULL and case-varying `LIKE`.
+Also: added the missing `ANON_DENIED` suggested_fix, dropped the never-emitted
+`MODE_MISMATCH` catalog entry, and removed ~110 LOC of dead in-memory aggregate
+code in the audit module. No cross-tenant, owner-clause, or writer-path change.
+
 ## v1.38.1 — 2026-06-13
 
 ### MCP comprehension: advertise RLS policies in the server prologue
