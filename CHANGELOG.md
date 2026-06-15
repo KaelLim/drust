@@ -1,3 +1,16 @@
+## v1.38.4 — 2026-06-15
+
+### Hotfix: MCP tool schema rejected by strict clients
+
+`invoke_function`'s `event` and `broadcast`'s `payload` args were typed as bare
+`serde_json::Value`, which schemars 1.x renders as the boolean `true` schema.
+Strict MCP clients (e.g. Claude Code's Zod validation) reject a boolean property
+schema — the per-tenant `tools/list` failed with `Invalid input` at
+`properties.event`, so the client fetched **no** tools. Both fields now render an
+object schema via `#[schemars(with = ...)]` (matching the working `data` fields);
+the runtime type stays `Value`, so any JSON is still accepted. Added a regression
+test asserting these properties render object schemas, not booleans.
+
 ## v1.38.3 — 2026-06-15
 
 ### Audit follow-up: correctness + security fixes
