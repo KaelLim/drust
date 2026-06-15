@@ -33,7 +33,13 @@ jobs:
         run: cargo test --lib
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked --version ^0.20
+        # Must be >= 0.22 (→ rustsec 0.33 → cvss ^2.2). The advisory DB is
+        # fetched fresh each run and now ships CVSS 4.0 vectors (e.g.
+        # RUSTSEC-2026-0124). The cvss crate only parses v4.0 from 2.1.0 on;
+        # older cargo-audit (0.20/0.21) rejects the ENTIRE DB with
+        # "unsupported CVSS version: 4.0" — even for advisories that don't
+        # touch our deps. Do not downgrade this pin.
+        run: cargo install cargo-audit --locked --version ^0.22
 
       - name: cargo audit
         run: cargo audit
