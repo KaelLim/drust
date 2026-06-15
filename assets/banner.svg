@@ -68,7 +68,7 @@
   <!-- wordmark: static "drust" + typed cycling suffix -->
   <text x="372" y="140" font-family="'JetBrains Mono','SFMono-Regular',Consolas,'DejaVu Sans Mono',monospace" font-size="80" font-weight="800" textLength="238" lengthAdjust="spacing" letter-spacing="-1" fill="url(#word)">drust</text>
 
-  <g font-family="'JetBrains Mono','SFMono-Regular',Consolas,'DejaVu Sans Mono',monospace" font-size="80" font-weight="800" fill="#b8c2cd">
+  <g font-family="'JetBrains Mono','SFMono-Regular',Consolas,'DejaVu Sans Mono',monospace" font-size="80" font-weight="800" fill="#b8c2cd" xml:space="preserve">
     <text x="610" y="140" textLength="322" lengthAdjust="spacing" clip-path="url(#clipMe)"> for me</text>
     <text x="610" y="140" textLength="368" lengthAdjust="spacing" clip-path="url(#clipYou)"> for you</text>
     <text x="610" y="140" textLength="322" lengthAdjust="spacing" clip-path="url(#clipAi)"> for AI</text>

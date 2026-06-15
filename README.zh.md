@@ -50,6 +50,7 @@
 
 | | **drust** | PocketBase | Supabase | Firebase |
 |---|:---:|:---:|:---:|:---:|
+| **授權 / 開源** | AGPL-3.0 | MIT | Apache-2.0 | 專有 |
 | 自架、單一 binary | ✅ | ✅ | ⚠️ 重型堆疊 | ❌ 僅雲端 |
 | Per-tenant DB 隔離 | ✅ 一租戶一 SQLite | ❌ 單一 DB | ❌ 單一 Postgres | ⚠️ |
 | **給 AI agent 的原生 MCP 端點** | ✅ | ❌ | ❌ | ❌ |

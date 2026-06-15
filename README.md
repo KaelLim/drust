@@ -50,6 +50,7 @@ Spinning up a Postgres or Supabase per project is overkill for the hundreds of s
 
 | | **drust** | PocketBase | Supabase | Firebase |
 |---|:---:|:---:|:---:|:---:|
+| **License / open source** | AGPL-3.0 | MIT | Apache-2.0 | proprietary |
 | Self-hosted, single binary | ✅ | ✅ | ⚠️ heavy stack | ❌ cloud only |
 | Per-tenant DB isolation | ✅ one SQLite/tenant | ❌ one DB | ❌ one Postgres | ⚠️ |
 | **Native MCP endpoint for AI agents** | ✅ | ❌ | ❌ | ❌ |
