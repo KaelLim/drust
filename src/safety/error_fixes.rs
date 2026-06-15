@@ -12,6 +12,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Anonymous role lacks the required DML capability on this collection. Either authenticate with a user/service token, or have the tenant owner widen anon_caps.",
     ),
     (
+        "ANON_DENIED",
+        "Anonymous role is not permitted here. For a read-mode stored RPC, set anon_callable=true or call with a user/service token.",
+    ),
+    (
         "ANON_QUERY_DENIED_ON_POLICY",
         "Use POST /collections/<c>/list (FilterAst) or /search; /query (raw SELECT) is unavailable to anon once the tenant uses row-level policies, because drust cannot rewrite raw SQL to enforce them.",
     ),
@@ -74,10 +78,6 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
     (
         "MCP_USER_DENIED",
         "End-user tokens (`drust_user_*`) cannot use MCP. Use REST `/records` / `/list` / `/search` endpoints, or a stored RPC.",
-    ),
-    (
-        "MODE_MISMATCH",
-        "RPC's stored mode disagrees with its current SQL body. Re-create the RPC with the correct mode, or update the body to match the declared mode.",
     ),
     (
         "OAUTH_ONLY_NO_PASSWORD",
@@ -350,6 +350,22 @@ mod tests {
         assert!(fix.contains("$auth"), "got: {fix}");
         assert!(fix.contains("$data"), "got: {fix}");
         assert!(fix.contains("$authenticated"), "got: {fix}");
+    }
+
+    #[test]
+    fn catalog_hygiene_anon_denied_present_mode_mismatch_absent() {
+        // ANON_DENIED is emitted as a primary wire code by the read-mode
+        // stored-RPC role denial (src/rpc/handler.rs) and must have a fix.
+        assert!(
+            lookup("ANON_DENIED").is_some(),
+            "ANON_DENIED must have a suggested_fix"
+        );
+        // MODE_MISMATCH is never emitted as a wire code (the runtime path
+        // emits INVALID_SQL_FOR_MODE); the dead entry must be gone.
+        assert!(
+            lookup("MODE_MISMATCH").is_none(),
+            "MODE_MISMATCH is dead and must not be in the catalog"
+        );
     }
 
     #[test]
