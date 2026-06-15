@@ -346,6 +346,13 @@ fn eval_leaf(field: &str, body: &Json, row: &serde_json::Map<String, Json>, ctx:
                 Some(a) => a,
                 None => return false,
             };
+            // Mirror SQLite: a NULL lhs is excluded by both IN and NOT IN
+            // (NULL IN/NOT IN (...) is not-true), so eval must agree with the
+            // compiled `col NOT IN (?)`. Without this, `!hit` wrongly returns
+            // true for a NULL row on $nin (fail-open on the anon SSE filter).
+            if matches!(lhs, Value::Null) {
+                return false;
+            }
             let hit = arr.iter().any(|v| {
                 value_cmp(&lhs, &resolve_eval_operand(v, ctx)) == Some(std::cmp::Ordering::Equal)
             });
@@ -382,14 +389,14 @@ fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
-/// Minimal SQL LIKE: `%` = any run, `_` = one char, case-sensitive (SQLite
-/// default for non-ASCII; ASCII LIKE is case-insensitive but v1 policies use
-/// `%`-prefix/suffix patterns where this rarely bites — documented limitation).
+/// Minimal SQL LIKE: `%` = any run, `_` = one char. ASCII case-insensitive
+/// (the `(?si)` regex flags), matching SQLite's default `LIKE` so the two
+/// evaluators stay in lockstep.
 fn like_match(lhs: &Value, rhs: &Value) -> bool {
     let (Value::Text(s), Value::Text(pat)) = (lhs, rhs) else {
         return false;
     };
-    let re = pat.chars().fold(String::from("(?s)^"), |mut acc, c| {
+    let re = pat.chars().fold(String::from("(?si)^"), |mut acc, c| {
         match c {
             '%' => acc.push_str(".*"),
             '_' => acc.push('.'),
