@@ -18,6 +18,7 @@
 )]
 
 pub mod auth;
+pub mod base_path;
 pub mod bin_helpers;
 pub mod codegen;
 pub mod config;

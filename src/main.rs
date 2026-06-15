@@ -30,6 +30,12 @@ async fn main() -> anyhow::Result<()> {
     drust::mgmt::i18n::init_bundles();
 
     let cfg = Config::from_env()?;
+    // DRUST_BASE_PATH: configurable external URL prefix. Unset → "/drust"
+    // (base_path() default, prod unchanged); set to "" → root (Docker/drust.com);
+    // set to "/x" → that prefix. Must run before any router/cookie/redirect build.
+    if let Ok(v) = std::env::var("DRUST_BASE_PATH") {
+        drust::base_path::set(&v);
+    }
     std::fs::create_dir_all(&cfg.data_dir)?;
     std::fs::create_dir_all(&cfg.log_dir)?;
 
