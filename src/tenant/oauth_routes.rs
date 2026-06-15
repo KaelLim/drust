@@ -303,29 +303,59 @@ fn redirect_with_fragment_success(
         .unwrap()
 }
 
-/// Look up `_system_users.id` by case-insensitive email match, or auto-create
-/// a row when `allow_self_register` is true. Returns `Ok(None)` to signal the
-/// caller should render `oauth_not_allowed` (existing row absent, self-register
-/// disabled). OAuth-only users carry the sentinel password hash so the password
-/// login path short-circuits before reaching argon2. `name` and `picture` land
-/// in the `profile` JSON column under `"name"` / `"picture"` keys (spec §3.3).
+/// Result of resolving an OAuth identity to a `_system_users` row.
+pub(crate) struct ResolvedUser {
+    pub id: String,
+    /// True when an existing UNVERIFIED PASSWORD account was claimed by this
+    /// OAuth login (password wiped, verified set, sessions revoked) — the
+    /// caller must invalidate the auth cache for `id`.
+    pub claimed: bool,
+}
+
+/// Look up `_system_users.id` by case-insensitive email, claiming an unverified
+/// password account (OAuth-authoritative, spec A1), or auto-creating a row when
+/// `allow_self_register` is true. Returns `Ok(None)` to signal the caller should
+/// render `oauth_not_allowed`. OAuth-only users carry the sentinel password hash
+/// so the password login path short-circuits before reaching argon2. `name` and
+/// `picture` land in the `profile` JSON column (spec §3.3).
 fn find_or_create_user(
     conn: &rusqlite::Connection,
     email: &str,
     name: Option<&str>,
     picture: Option<&str>,
     allow_self_register: bool,
-) -> rusqlite::Result<Option<String>> {
+) -> rusqlite::Result<Option<ResolvedUser>> {
     use rusqlite::OptionalExtension;
-    let existing: Option<String> = conn
+    let existing: Option<(String, String, i64)> = conn
         .query_row(
-            "SELECT id FROM _system_users WHERE email = ?1 COLLATE NOCASE",
+            "SELECT id, password_hash, verified FROM _system_users \
+             WHERE email = ?1 COLLATE NOCASE",
             [email],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    if let Some(id) = existing {
-        return Ok(Some(id));
+    if let Some((id, password_hash, verified)) = existing {
+        // OAuth has proven email ownership (step-6 email_verified gate). If the
+        // matched row is an UNVERIFIED PASSWORD account, the proven owner claims
+        // it: wipe the password (evict a pre-seeded squatter), mark verified,
+        // and revoke all sessions (evict live attacker sessions). Sentinel rows
+        // and admin-verified rows link unchanged.
+        let is_password = !crate::auth::oauth_sentinel::is_oauth_only(&password_hash);
+        if is_password && verified == 0 {
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "UPDATE _system_users SET password_hash = ?1, verified = 1, updated_at = ?2 \
+                 WHERE id = ?3",
+                rusqlite::params![
+                    crate::auth::oauth_sentinel::OAUTH_ONLY_SENTINEL,
+                    now,
+                    id
+                ],
+            )?;
+            crate::auth::user_session::revoke_all_sessions(conn, &id)?;
+            return Ok(Some(ResolvedUser { id, claimed: true }));
+        }
+        return Ok(Some(ResolvedUser { id, claimed: false }));
     }
     if !allow_self_register {
         return Ok(None);
@@ -351,7 +381,10 @@ fn find_or_create_user(
             now,
         ],
     )?;
-    Ok(Some(new_id))
+    Ok(Some(ResolvedUser {
+        id: new_id,
+        claimed: false,
+    }))
 }
 
 async fn allow_self_register_for_tenant(
@@ -546,7 +579,7 @@ pub(crate) async fn oauth_callback(
     let name_for_lookup = user.name.clone();
     let picture_for_lookup = user.picture.clone();
     let ip_for_session = ip_str.clone();
-    let res: rusqlite::Result<Option<(String, String)>> = pool
+    let res: rusqlite::Result<Option<(String, String, bool)>> = pool
         .with_writer(move |c| {
             match find_or_create_user(
                 c,
@@ -556,20 +589,28 @@ pub(crate) async fn oauth_callback(
                 allow_self_register,
             )? {
                 None => Ok(None),
-                Some(uid) => {
+                Some(resolved) => {
                     let token = crate::auth::user_session::create_session(
                         c,
-                        &uid,
+                        &resolved.id,
                         Some(ip_for_session.as_str()),
                         30,
                     )?;
-                    Ok(Some((uid, token)))
+                    Ok(Some((resolved.id, token, resolved.claimed)))
                 }
             }
         })
         .await;
     let (user_id, token) = match res {
-        Ok(Some(pair)) => pair,
+        Ok(Some((uid, token, claimed))) => {
+            // A1: a claim revoked prior sessions for this user — invalidate the
+            // process-local auth cache so a cached attacker session self-rejects
+            // immediately (mirrors the delete_user cascade hook, v1.35).
+            if claimed {
+                state.auth_cache.clear_user(&uid);
+            }
+            (uid, token)
+        }
         Ok(None) => {
             audit_oauth_failure(
                 &state,
@@ -648,5 +689,83 @@ mod tests {
     fn secure_from_headers_missing_defaults_false() {
         let h = axum::http::HeaderMap::new();
         assert!(!secure_from_headers(&h));
+    }
+
+    fn users_db() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE _system_users (id TEXT PRIMARY KEY, email TEXT, password_hash TEXT, \
+             verified INTEGER, profile TEXT, created_at TEXT, updated_at TEXT);",
+        )
+        .unwrap();
+        c.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)
+            .unwrap();
+        c
+    }
+
+    #[test]
+    fn oauth_claims_unverified_password_account() {
+        let c = users_db();
+        // Attacker pre-seeded a password account for the victim email (verified=0).
+        c.execute(
+            "INSERT INTO _system_users (id,email,password_hash,verified,created_at,updated_at) \
+             VALUES ('u-att','victim@x.com','$argon2-attacker$',0,'2026','2026')",
+            [],
+        )
+        .unwrap();
+        crate::auth::user_session::create_session(&c, "u-att", None, 30).unwrap();
+
+        let r = find_or_create_user(&c, "victim@x.com", Some("V"), None, false)
+            .unwrap()
+            .expect("match");
+        assert_eq!(r.id, "u-att");
+        assert!(r.claimed, "unverified password account must be claimed");
+
+        let (ph, verified): (String, i64) = c
+            .query_row(
+                "SELECT password_hash, verified FROM _system_users WHERE id='u-att'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            crate::auth::oauth_sentinel::is_oauth_only(&ph),
+            "password wiped to oauth-only sentinel"
+        );
+        assert_eq!(verified, 1);
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM _system_sessions WHERE user_id='u-att'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "prior sessions revoked on claim");
+    }
+
+    #[test]
+    fn oauth_links_sentinel_account_without_claim() {
+        let c = users_db();
+        c.execute(
+            "INSERT INTO _system_users (id,email,password_hash,verified,created_at,updated_at) \
+             VALUES ('u-o','u@x.com',?1,1,'2026','2026')",
+            [crate::auth::oauth_sentinel::OAUTH_ONLY_SENTINEL],
+        )
+        .unwrap();
+        let r = find_or_create_user(&c, "u@x.com", None, None, false)
+            .unwrap()
+            .expect("match");
+        assert_eq!(r.id, "u-o");
+        assert!(!r.claimed, "oauth-only row links as-is, no claim");
+    }
+
+    #[test]
+    fn oauth_no_match_no_self_register_returns_none() {
+        let c = users_db();
+        assert!(
+            find_or_create_user(&c, "nobody@x.com", None, None, false)
+                .unwrap()
+                .is_none()
+        );
     }
 }
