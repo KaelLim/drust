@@ -223,6 +223,12 @@ pub struct SetFunctionActiveArgs {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct InvokeFunctionArgs {
     pub name: String,
+    /// JSON event payload passed to the function.
+    // `serde_json::Value` derives the boolean `true` schema in schemars 1.x,
+    // which stricter MCP clients (Zod) reject as an invalid property schema.
+    // Render it as an object schema (like the working `data` fields) — the
+    // field stays `Value` at runtime, so any JSON is still accepted.
+    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
     pub event: serde_json::Value,
 }
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -403,6 +409,9 @@ pub struct BroadcastArgs {
     pub room: String,
     /// Any JSON value. Bound to the per-tenant `payload_max_bytes`
     /// (default 64 KiB) measured against the serialised payload.
+    // See InvokeFunctionArgs::event — render an object schema so strict MCP
+    // clients accept the property (bare `Value` derives a boolean `true` schema).
+    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
     pub payload: Value,
 }
 
@@ -2234,6 +2243,30 @@ mod description_tests {
 #[cfg(test)]
 mod instructions_tests {
     use super::build_instructions;
+
+    // Regression: serde_json::Value args (invoke_function.event, broadcast.payload)
+    // must render an OBJECT schema, not schemars 1.x's boolean `true`, which
+    // strict MCP clients (Zod) reject — "tools fetch failed: Invalid input at
+    // properties.event". (2026-06 prod incident.)
+    #[test]
+    fn json_value_tool_args_render_object_schema_not_bool() {
+        for (prop, schema) in [
+            (
+                "event",
+                serde_json::to_value(schemars::schema_for!(super::InvokeFunctionArgs)).unwrap(),
+            ),
+            (
+                "payload",
+                serde_json::to_value(schemars::schema_for!(super::BroadcastArgs)).unwrap(),
+            ),
+        ] {
+            let p = &schema["properties"][prop];
+            assert!(
+                p.is_object() && p["type"] == "object",
+                "{prop} must render an object schema (not boolean true), got: {p}"
+            );
+        }
+    }
 
     #[test]
     fn instructions_register_rls_policy_tools() {
