@@ -23,15 +23,29 @@ pub(crate) struct CallbackQuery {
 /// Redirect back to the validated frontend with `#error=<code>`. Caller
 /// MUST have validated `frontend_redirect_uri` against the allowlist
 /// before invoking — private helper.
-fn redirect_with_fragment_error(frontend: &str, code: &str, tid: &str) -> Response {
-    let loc = format!("{frontend}#error={code}");
-    Response::builder()
+/// Build a 302 to `loc` that also clears the two OAuth cookies. Falls back to
+/// a 500 (instead of panicking) if `loc` can't form a valid `Location` header
+/// — e.g. a pre-patch allowlisted `frontend` carrying a control byte that the
+/// hardened `validate_redirect_uri` now rejects at write time.
+fn build_fragment_redirect(loc: &str, tid: &str) -> Response {
+    match Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, loc)
         .header(header::SET_COOKIE, clear_cookie(STATE_COOKIE, tid))
         .header(header::SET_COOKIE, clear_cookie(PKCE_COOKIE, tid))
         .body(axum::body::Body::empty())
-        .unwrap()
+    {
+        Ok(resp) => resp,
+        Err(_) => plain_text_clear_cookies(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "oauth_redirect_error",
+            tid,
+        ),
+    }
+}
+
+fn redirect_with_fragment_error(frontend: &str, code: &str, tid: &str) -> Response {
+    build_fragment_redirect(&format!("{frontend}#error={code}"), tid)
 }
 
 fn parse_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
@@ -294,13 +308,7 @@ fn redirect_with_fragment_success(
 ) -> Response {
     let loc =
         format!("{frontend}#access_token={token}&token_type=Bearer&expires_in={expires_in_secs}");
-    Response::builder()
-        .status(StatusCode::FOUND)
-        .header(header::LOCATION, loc)
-        .header(header::SET_COOKIE, clear_cookie(STATE_COOKIE, tid))
-        .header(header::SET_COOKIE, clear_cookie(PKCE_COOKIE, tid))
-        .body(axum::body::Body::empty())
-        .unwrap()
+    build_fragment_redirect(&loc, tid)
 }
 
 /// Result of resolving an OAuth identity to a `_system_users` row.
@@ -579,8 +587,13 @@ pub(crate) async fn oauth_callback(
     let name_for_lookup = user.name.clone();
     let picture_for_lookup = user.picture.clone();
     let ip_for_session = ip_str.clone();
+    // with_writer_tx (not with_writer): the claim path is now a 3-statement
+    // sequence (password-wipe UPDATE + session-revoke DELETE + new-session
+    // INSERT). Wrap it in one transaction so a failure on the final INSERT
+    // rolls back the wipe+revoke instead of leaving a password-less, session-
+    // less half-state. clear_user stays AFTER the await (post-commit).
     let res: rusqlite::Result<Option<(String, String, bool)>> = pool
-        .with_writer(move |c| {
+        .with_writer_tx(move |c| {
             match find_or_create_user(
                 c,
                 &email_for_lookup,
@@ -767,5 +780,14 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn fragment_redirect_with_control_char_frontend_yields_500_not_panic() {
+        // A pre-patch allowlisted frontend carrying a control byte can't form a
+        // valid Location header — must degrade to a graceful 500, not panic.
+        let resp =
+            redirect_with_fragment_error("https://app/cb\u{0001}", "oauth_provider_error", "t1");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
