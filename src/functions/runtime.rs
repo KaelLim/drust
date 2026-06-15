@@ -151,6 +151,18 @@ fn vis_from_str(visibility: &str) -> crate::storage::files::Visibility {
     }
 }
 
+/// Cache-control for a guest `put-file`, derived from the object's
+/// visibility exactly like Mode A/B (`storage::files::default_cache_control`)
+/// rather than hardcoding a public value — a private object must carry a
+/// private, non-cacheable directive on both the `_system_files` row and the
+/// Garage object.
+fn put_file_cache_control(visibility: &str) -> &'static str {
+    crate::storage::files::default_cache_control(
+        vis_from_str(visibility),
+        crate::storage::files::Disposition::Inline,
+    )
+}
+
 /// The `host` import interface. bindgen generates true async trait methods
 /// (`imports: { default: async }`), so the tool layer is awaited directly —
 /// no block_on / runtime Handle needed (plan adaptation note: preferred form).
@@ -291,17 +303,21 @@ impl host::Host for StoreData {
         }
         let pool = inner.pool.clone();
         let size = bytes.len() as i64;
+        // Cache-control derived from visibility (mirror Mode A/B) — a private
+        // object must not advertise a publicly-cacheable directive.
+        let cc = put_file_cache_control(&visibility);
         // SQLite-first (Mode A ordering): row, then object, compensate on failure.
         let key_w = key.clone();
         let ct_w = content_type.clone();
         let vis_w = visibility.clone();
+        let cc_w = cc.to_string();
         pool.with_writer(move |c| {
             c.execute(
                 "INSERT INTO _system_files
                  (key, original_name, content_type, size_bytes, content_disposition,
                   visibility, cache_control, meta_json, uploader)
-                 VALUES (?1, ?2, ?3, ?4, 'inline', ?5, 'public, max-age=3600', NULL, 'function')",
-                rusqlite::params![key_w, key_w, ct_w, size, vis_w],
+                 VALUES (?1, ?2, ?3, ?4, 'inline', ?5, ?6, NULL, 'function')",
+                rusqlite::params![key_w, key_w, ct_w, size, vis_w, cc_w],
             )
             .map(|_| ())
         })
@@ -318,7 +334,7 @@ impl host::Host for StoreData {
                 Some(&content_type),
                 "inline",
                 &key,
-                Some("public, max-age=3600"),
+                Some(cc),
                 None,
             )
             .await
@@ -552,5 +568,121 @@ mod tests {
     #[test]
     fn validate_rejects_garbage() {
         assert!(validate_component(b"not wasm at all").is_err());
+    }
+
+    // Drive the *production* put-file host call (StoreData::put_file) with an
+    // in-memory Garage and read back the cache_control the `_system_files`
+    // INSERT actually wrote. This exercises the line the Fix-5 change touches
+    // (the INSERT's bound `cc`), so hardcoding a public literal back into the
+    // INSERT — i.e. reverting the fix — makes this assertion fail. (The earlier
+    // helper-only test was tautological: it re-derived the same expression it
+    // asserted, and stayed green when the bug was reintroduced.)
+    async fn build_store_with_garage(
+        tenant_id: &str,
+    ) -> (StoreData, crate::storage::pool::SharedTenantPool, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let tenants = Arc::new(crate::storage::pool::TenantRegistry::new(
+            tmp.path().to_path_buf(),
+            2,
+        ));
+        // get_or_open bootstraps the tenant schema, including `_system_files`.
+        let pool = tenants.get_or_open(tenant_id).unwrap();
+        let garage = Arc::new(crate::storage::garage::GarageClient::from_store(
+            Arc::new(object_store::memory::InMemory::new()),
+            "unused",
+        ));
+        let rooms_cfg = crate::tenant::rooms::RoomsConfig::test_defaults();
+        let bucket = rooms_cfg.bucket();
+        let seed = HostStateSeed {
+            tenants: tenants.clone(),
+            bus: crate::tenant::events::EventBus::new(),
+            webhooks: crate::tenant::WebhookDispatcher::new(tenants.clone(), None),
+            garage: Some(garage),
+            public_base_url: String::new(),
+            url_sign_secret: Arc::new([0u8; 32]),
+            meta: None,
+            max_upload_bytes: 52_428_800,
+            index_large_table_rows: 1_000_000,
+            audit_meta_read: Arc::new(tokio::sync::Mutex::new(
+                crate::safety::audit_db::open_audit_db_memory().unwrap(),
+            )),
+            bus_rooms: crate::tenant::rooms::RoomBus::new(),
+            bucket,
+            rooms_cfg,
+            disk_min_free_pct: 20,
+        };
+        let mcp = seed.build_mcp(tenant_id).unwrap();
+        let store = StoreData {
+            wasi: wasmtime_wasi::WasiCtxBuilder::new().build(),
+            table: wasmtime::component::ResourceTable::new(),
+            limits: MemLimiter { cap: 64 * 1024 * 1024, oom_hit: false },
+            host: HostState {
+                mcp,
+                file_read_max: 4 * 1024 * 1024,
+                disk_min_free_pct: 20,
+                log_buf: String::new(),
+            },
+        };
+        (store, pool, tmp)
+    }
+
+    async fn put_file_then_read_cc(visibility: &str) -> String {
+        let (mut store, pool, _tmp) = build_store_with_garage("t-cc").await;
+        let key = format!("fn-{visibility}.bin");
+        host::Host::put_file(
+            &mut store,
+            key.clone(),
+            b"hello".to_vec(),
+            "application/octet-stream".into(),
+            visibility.into(),
+        )
+        .await
+        .expect("put_file host call");
+        pool.with_reader(move |c| {
+            c.query_row(
+                "SELECT cache_control FROM _system_files WHERE key = ?1",
+                rusqlite::params![key],
+                |r| r.get::<_, String>(0),
+            )
+        })
+        .await
+        .expect("read back cache_control")
+    }
+
+    // Fix 5: a guest put-file must derive cache_control from the object's
+    // visibility (mirror Mode A/B `default_cache_control`), not hardcode a
+    // public value — otherwise a private function-written object carries a
+    // publicly-cacheable directive on both the `_system_files` row and the
+    // Garage object. Asserted against the row the production INSERT wrote.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn put_file_private_row_carries_private_cache_control() {
+        let cc = put_file_then_read_cc("private").await;
+        assert_ne!(
+            cc, "public, max-age=3600",
+            "private put-file row must not carry the hardcoded public cache_control"
+        );
+        assert_eq!(
+            cc,
+            crate::storage::files::default_cache_control(
+                crate::storage::files::Visibility::Private,
+                crate::storage::files::Disposition::Inline,
+            ),
+            "private _system_files row must carry the Mode A/B private default ('private, no-store')"
+        );
+    }
+
+    // Public put-file stays publicly cacheable — guards against an over-broad
+    // fix that flips everything to private.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn put_file_public_row_carries_public_cache_control() {
+        let cc = put_file_then_read_cc("public").await;
+        assert_eq!(
+            cc,
+            crate::storage::files::default_cache_control(
+                crate::storage::files::Visibility::Public,
+                crate::storage::files::Disposition::Inline,
+            ),
+            "public _system_files row must carry the Mode A/B public default"
+        );
     }
 }
