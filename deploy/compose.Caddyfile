@@ -1,0 +1,16 @@
+# Standalone Caddy config for docker-compose. drust is designed to live behind a
+# reverse proxy that mounts it under /drust/* (it hardcodes that prefix in its
+# browser-facing URLs — form actions, redirects, cookie paths, OAuth callbacks),
+# so the admin UI must be reached THROUGH this proxy, not on drust's port directly.
+# Mirrors the production deploy/Caddyfile snippet.
+:80 {
+	handle_path /drust/* {
+		reverse_proxy drust:47826 {
+			header_up Host "127.0.0.1:47826"   # rmcp DNS-rebinding guard (MCP needs a loopback Host)
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# Convenience: bare root → the admin login (the route is /login, not /admin/login).
+	redir / /drust/login
+}
