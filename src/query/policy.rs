@@ -376,6 +376,12 @@ fn eval_leaf(field: &str, body: &Json, row: &serde_json::Map<String, Json>, ctx:
 
 /// Three-way compare of two SQL `Value`s. `None` when either is NULL or types
 /// are not comparable (matches SQL: NULL comparisons are never true).
+///
+/// Cross-storage-class operand/column pairs (e.g. a TEXT literal vs an INTEGER
+/// column) — where this in-memory `None` would diverge from SQLite's
+/// storage-class ordering in the compiled SQL — are rejected up front by
+/// `validate_policy`, so a stored policy can never reach this with mismatched
+/// classes. See `check_operand_class` (Fix 2, evaluator lockstep).
 fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     use Value::*;
     match (a, b) {
@@ -417,11 +423,117 @@ fn regex_lite_escape(c: char) -> String {
     }
 }
 
+/// Coarse SQLite storage class of a literal JSON operand: `Some("text")` or
+/// `Some("num")`. `None` for operands we never value-compare across a class
+/// boundary (JSON null, arrays, objects/`$auth`/`$data` dynamic refs).
+fn literal_class(operand: &Json) -> Option<&'static str> {
+    match operand {
+        Json::String(_) => Some("text"),
+        // bool is stored as INTEGER (json_to_value → Value::Integer), so it
+        // is numeric for class purposes.
+        Json::Number(_) | Json::Bool(_) => Some("num"),
+        _ => None,
+    }
+}
+
+/// Coarse SQLite storage class of a column's declared `sql_type`: `Some("text")`
+/// for TEXT-affinity columns, `Some("num")` for INTEGER/REAL. `None` for BLOB or
+/// anything we don't classify (system columns id/created_at/updated_at) — those
+/// are not type-checked.
+fn column_class(sql_type: &str) -> Option<&'static str> {
+    let t = sql_type.to_ascii_uppercase();
+    if t.contains("INT") || t.contains("REAL") || t.contains("FLOA") || t.contains("DOUB") {
+        Some("num")
+    } else if t.contains("CHAR") || t.contains("TEXT") || t.contains("CLOB") {
+        Some("text")
+    } else {
+        None
+    }
+}
+
+/// Reject a literal operand whose storage class disagrees with the target
+/// column's — the one case where `value_cmp` (in-memory) and the compiled SQL
+/// would order the pair differently, breaking evaluator lockstep. Only fires
+/// for LITERAL operands against a DECLARED column with a known class; `$auth` /
+/// `$data` (dynamic) and NULL operands are passed through unchecked.
+fn check_operand_class(
+    schema: &CollectionSchema,
+    field: &str,
+    operand: &Json,
+) -> Result<(), PolicyError> {
+    let (Some(lit), Some(col)) = (
+        literal_class(operand),
+        schema
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .and_then(|f| column_class(&f.sql_type)),
+    ) else {
+        return Ok(());
+    };
+    if lit != col {
+        return Err(PolicyError::Parse(format!(
+            "field {field:?}: operand storage class ({lit}) does not match column type ({col}) \
+             — cross-class comparisons diverge between the eval and SQL policy evaluators"
+        )));
+    }
+    Ok(())
+}
+
+/// Walk every leaf of `ast` and run `check_operand_class` on its literal
+/// operand(s). Dynamic refs, `is_null`/`is_not_null` (no operand), and unknown
+/// fields are skipped here (field existence is enforced by `compile_policy_using`).
+fn check_ast_operand_classes(schema: &CollectionSchema, ast: &FilterAst) -> Result<(), PolicyError> {
+    match ast {
+        FilterAst::And { and } => and
+            .iter()
+            .try_for_each(|n| check_ast_operand_classes(schema, n)),
+        FilterAst::Or { or } => or
+            .iter()
+            .try_for_each(|n| check_ast_operand_classes(schema, n)),
+        FilterAst::Not { not } => check_ast_operand_classes(schema, not),
+        FilterAst::Leaf(obj) => {
+            let Some((key, body)) = obj.iter().next() else {
+                return Ok(());
+            };
+            if key == "$authenticated" {
+                return Ok(());
+            }
+            // eq shorthand: {field: <scalar-or-dynamic-ref>}
+            let op_obj = match body {
+                Json::Object(o)
+                    if !o.contains_key("$auth") && !o.contains_key("$data") =>
+                {
+                    o
+                }
+                _ => return check_operand_class(schema, key, body),
+            };
+            let Some((op, operand)) = op_obj.iter().next() else {
+                return Ok(());
+            };
+            let bare = op.trim_start_matches('$');
+            match bare {
+                "is_null" | "is_not_null" => Ok(()),
+                "in" | "nin" => operand
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .try_for_each(|v| check_operand_class(schema, key, v))
+                    })
+                    .unwrap_or(Ok(())),
+                _ => check_operand_class(schema, key, operand),
+            }
+        }
+    }
+}
+
 /// Validate a policy at write time: every field reference must resolve against
 /// the schema and the grammar must be well-formed. We validate by compiling
 /// each clause against a probe context (so `$auth`/`$data`/`$authenticated`
 /// operands are accepted) and discarding the SQL — only the field/grammar
-/// checks (`UnknownField`, `VectorField`, `TooDeep`, `Parse`) are wanted.
+/// checks (`UnknownField`, `VectorField`, `TooDeep`, `Parse`) are wanted. In
+/// addition we reject literal operands whose storage class mismatches the
+/// target column (Fix 2 — keeps the two policy evaluators in lockstep).
 pub fn validate_policy(
     schema: &CollectionSchema,
     op: DmlVerb,
@@ -440,9 +552,11 @@ pub fn validate_policy(
     };
     if let Some(u) = &policy.using {
         compile_policy_using(schema, u, &ctx)?;
+        check_ast_operand_classes(schema, u)?;
     }
     if let Some(c) = &policy.check {
         compile_policy_using(schema, c, &ctx)?;
+        check_ast_operand_classes(schema, c)?;
         // $data is only meaningful in CHECK; in USING a $data ref on a delete
         // is nonsensical but harmless. v1 does not separately reject it.
         let _ = op;
@@ -744,6 +858,71 @@ mod tests {
         )
         .unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p).is_ok());
+    }
+
+    // Build a schema where each field has an explicit storage class, so the
+    // cross-storage-class validate check (Fix 2) can be exercised.
+    fn schema_typed(fields: &[(&str, &str)]) -> CollectionSchema {
+        let mut s = schema(&[]);
+        s.fields = fields
+            .iter()
+            .map(|(n, ty)| Field {
+                name: n.to_string(),
+                sql_type: ty.to_string(),
+                nullable: true,
+                pk: false,
+                default_value: None,
+                foreign_key: None,
+                description: None,
+            })
+            .collect();
+        s
+    }
+
+    #[test]
+    fn validate_rejects_cross_storage_class_literal() {
+        // INTEGER column `n` vs a string literal — the in-memory `value_cmp`
+        // and the compiled SQL order these differently, so the policy must be
+        // refused at config time (eval/compile lockstep).
+        let s = schema_typed(&[("n", "INTEGER")]);
+        let p: Policy = serde_json::from_str(r#"{"using":{"n":{"$gt":"abc"}}}"#).unwrap();
+        let err = validate_policy(&s, DmlVerb::Select, &p).unwrap_err();
+        assert!(
+            matches!(err, PolicyError::Parse(ref m) if m.contains("n")),
+            "expected a Parse error naming field `n`, got {err:?}"
+        );
+
+        // Mirror case: a TEXT column compared with a numeric literal.
+        let s2 = schema_typed(&[("status", "TEXT")]);
+        let p2: Policy = serde_json::from_str(r#"{"using":{"status":{"$gt":5}}}"#).unwrap();
+        assert!(validate_policy(&s2, DmlVerb::Select, &p2).is_err());
+
+        // Array operands (`$in`) are element-checked too.
+        let p3: Policy = serde_json::from_str(r#"{"using":{"n":{"$in":[1,"two",3]}}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p3).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_same_storage_class_literal() {
+        // Same-class comparisons, $auth/$data dynamic operands, NULL literals,
+        // and is_null/is_not_null (no operand) must all still validate.
+        let s = schema_typed(&[("n", "INTEGER"), ("status", "TEXT"), ("author", "TEXT")]);
+        let p: Policy = serde_json::from_str(r#"{"using":{"n":{"$gt":5}}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p).is_ok());
+        let p2: Policy = serde_json::from_str(r#"{"using":{"status":{"$eq":"published"}}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p2).is_ok());
+        // boolean literal against an INTEGER column is numeric/numeric → ok.
+        let p3: Policy = serde_json::from_str(r#"{"using":{"n":{"$eq":true}}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p3).is_ok());
+        // dynamic operand against an INTEGER column: cannot be type-checked, allowed.
+        let p4: Policy = serde_json::from_str(r#"{"using":{"n":{"$eq":{"$auth":"id"}}}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p4).is_ok());
+        // NULL literal is cross-class compatible (never value-compared).
+        let p5: Policy = serde_json::from_str(r#"{"using":{"n":{"$ne":null}}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p5).is_ok());
+        // is_null / is_not_null carry no operand.
+        let p6: Policy = serde_json::from_str(r#"{"using":{"n":{"$is_null":true}}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p6).is_ok());
     }
 
     #[test]
