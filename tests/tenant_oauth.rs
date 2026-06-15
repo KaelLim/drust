@@ -1776,3 +1776,112 @@ async fn oauth_callback_rejects_state_minted_under_wrong_secret() {
         "HMAC verify under wrong secret must 400 oauth_state_mismatch, got: {body_str}"
     );
 }
+
+// ---------- M1: per-tenant OAuth start/callback gate on tenant existence ----------
+//
+// Both /start and /callback called `state.registry.get_or_open(&tid)` with
+// `tid` raw from the path. `get_or_open` → `open_write` does
+// `std::fs::create_dir_all(tenants/<tid>/)` + `SQLITE_OPEN_CREATE`, so an
+// unauthenticated caller could spray arbitrary tenant ids to materialize junk
+// tenant DB directories (disk-fill DoS). The CORE of M1 is the filesystem
+// assertion below: an unknown tenant id must create NO `tenants/<id>/` dir.
+
+#[tokio::test]
+async fn oauth_start_unknown_tenant_creates_no_dir() {
+    let fake = spawn_fake_google().await;
+    // `dir` is the data_dir tempdir; the bootstrapped tenant is "blog".
+    let (app, dir, _tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let unknown = format!("ghost-{}", uuid::Uuid::new_v4());
+    let frontend = "https://app.example.com/auth/callback";
+    let start_uri = format!(
+        "/t/{unknown}/oauth/google/start?redirect_uri={uri}",
+        uri = urlencoding::encode(frontend)
+    );
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "unknown-tenant /start must 404"
+    );
+
+    // CORE M1 assertion (the disk-fill close): no tenant dir was created.
+    let tenant_dir = dir.path().join("tenants").join(&unknown);
+    assert!(
+        !tenant_dir.exists(),
+        "unknown-tenant /start must NOT create {}",
+        tenant_dir.display()
+    );
+}
+
+#[tokio::test]
+async fn oauth_callback_unknown_tenant_creates_no_dir() {
+    let fake = spawn_fake_google().await;
+    let (app, dir, _tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let unknown = format!("ghost-{}", uuid::Uuid::new_v4());
+    let cb_uri = format!("/t/{unknown}/oauth/google/callback?code=C&state=ANY");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&cb_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "unknown-tenant /callback must 404"
+    );
+
+    // CORE M1 assertion (the disk-fill close): no tenant dir was created.
+    let tenant_dir = dir.path().join("tenants").join(&unknown);
+    assert!(
+        !tenant_dir.exists(),
+        "unknown-tenant /callback must NOT create {}",
+        tenant_dir.display()
+    );
+}
+
+#[tokio::test]
+async fn oauth_start_valid_tenant_passes_gate() {
+    // A VALID, existing tenant must proceed PAST the existence gate — it
+    // reaches the normal /start flow (302 + state cookie), not a 404. This
+    // guards against the gate over-rejecting real tenants.
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, _service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let frontend = "https://app.example.com/auth/callback";
+    let start_uri = format!(
+        "/t/{tid}/oauth/google/start?redirect_uri={uri}",
+        uri = urlencoding::encode(frontend)
+    );
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&start_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FOUND,
+        "valid tenant /start must pass the gate and 302 to the provider"
+    );
+    assert!(
+        extract_set_cookie(&resp, "drust_t_oauth_state").is_some(),
+        "valid tenant /start must still set the state cookie"
+    );
+}

@@ -154,6 +154,29 @@ pub(crate) async fn oauth_start(
         None => return plain_text(StatusCode::BAD_REQUEST, "missing provider"),
     };
 
+    // Rate-limit before any DB hit (shares the OAuth-flow budget with
+    // /callback, 5/60s/IP). Defense-in-depth on top of the existence gate.
+    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
+    if !state.oauth_callback_rl.check(ip) {
+        return plain_text(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+
+    // Validate tenant exists in meta BEFORE get_or_open — prevents disk-fill
+    // from arbitrary tenant IDs creating junk tenant DBs (mirrors login_handler).
+    let tenant_exists = {
+        let conn = state.meta.lock().await;
+        conn.query_row(
+            "SELECT 1 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tid],
+            |_| Ok(()),
+        )
+        .is_ok()
+    };
+    if !tenant_exists {
+        return plain_text(StatusCode::NOT_FOUND, "tenant not found");
+    }
+
     // Look up provider config from the tenant DB.
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
@@ -368,6 +391,23 @@ pub(crate) async fn oauth_callback(
         return plain_text(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
     }
     let ip_str = ip.to_string();
+
+    // Validate tenant exists in meta BEFORE get_or_open — prevents disk-fill
+    // from arbitrary tenant IDs creating junk tenant DBs (mirrors login_handler
+    // and oauth_start). The rate-limit above is defense-in-depth; this gate is
+    // what structurally closes the disk-fill vector.
+    let tenant_exists = {
+        let conn = state.meta.lock().await;
+        conn.query_row(
+            "SELECT 1 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tid],
+            |_| Ok(()),
+        )
+        .is_ok()
+    };
+    if !tenant_exists {
+        return plain_text_clear_cookies(StatusCode::NOT_FOUND, "tenant not found", &tid);
+    }
 
     // Step 1: provider exists.
     let pool = match state.registry.get_or_open(&tid) {
