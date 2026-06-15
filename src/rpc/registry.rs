@@ -10,7 +10,9 @@ use serde::Serialize;
 /// `Write` (v1.30+) → pool.with_writer + writable authorizer + SAVEPOINT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum RpcMode {
+    #[default]
     Read,
     Write,
 }
@@ -27,12 +29,6 @@ impl RpcMode {
             "write" => RpcMode::Write,
             _ => RpcMode::Read,
         }
-    }
-}
-
-impl Default for RpcMode {
-    fn default() -> Self {
-        RpcMode::Read
     }
 }
 

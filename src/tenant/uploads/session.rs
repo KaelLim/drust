@@ -46,10 +46,10 @@ pub fn parse_upload_metadata(raw: &str) -> HashMap<String, String> {
         }
         match parts.next() {
             Some(b64) => {
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
-                    if let Ok(s) = String::from_utf8(bytes) {
-                        out.insert(key.to_string(), s);
-                    }
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64.trim())
+                    && let Ok(s) = String::from_utf8(bytes)
+                {
+                    out.insert(key.to_string(), s);
                 }
             }
             None => {

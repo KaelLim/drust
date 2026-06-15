@@ -173,5 +173,5 @@ async fn rest_explain_returns_plan() {
         .await
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(v["plan"].as_array().unwrap().len() >= 1);
+    assert!(!v["plan"].as_array().unwrap().is_empty());
 }

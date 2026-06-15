@@ -296,7 +296,7 @@ mod tests {
             }
         }
         assert!(
-            ok_count >= 3 && ok_count <= 8,
+            (3..=8).contains(&ok_count),
             "refilled {ok_count} tokens after 50ms"
         );
     }

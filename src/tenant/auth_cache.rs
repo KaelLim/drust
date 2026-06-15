@@ -123,11 +123,11 @@ impl AuthCache {
     /// past-TTL: increment the miss counter, drop any stale entry, return
     /// `None`. The TTL check is the per-entry `inserted.elapsed() < safety_ttl`.
     pub fn get(&self, hash: &str) -> Option<CachedAuth> {
-        if let Some(e) = self.map.get(hash) {
-            if e.inserted.elapsed() < self.safety_ttl {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                return Some(e.auth.clone());
-            }
+        if let Some(e) = self.map.get(hash)
+            && e.inserted.elapsed() < self.safety_ttl
+        {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            return Some(e.auth.clone());
         }
         // Absent or stale.
         self.misses.fetch_add(1, Ordering::Relaxed);

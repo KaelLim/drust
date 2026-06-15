@@ -127,12 +127,12 @@ pub async fn post_list(
     // in sync with the bearer_auth_layer extension setup. If a future
     // refactor splits them, this debug_assert surfaces during tests.
     debug_assert!(
-        match (&ctx, t.role) {
+        matches!(
+            (&ctx, t.role),
             (AuthCtx::Anon, TokenRole::Anon)
-            | (AuthCtx::Service { .. }, TokenRole::Service)
-            | (AuthCtx::User { .. }, TokenRole::User) => true,
-            _ => false,
-        },
+                | (AuthCtx::Service { .. }, TokenRole::Service)
+                | (AuthCtx::User { .. }, TokenRole::User)
+        ),
         "AuthCtx/TokenRole mismatch (ctx={:?} role={:?})",
         ctx,
         t.role,

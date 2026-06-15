@@ -22,12 +22,10 @@ pub async fn ws_query_token_adapter(mut req: Request<Body>, next: Next) -> Respo
     let token = req.uri().query().and_then(extract_token_param);
 
     if let Some(tok) = token {
-        if !already_has_header {
-            if let Ok(v) = HeaderValue::from_str(&format!("Bearer {tok}")) {
-                req.headers_mut().insert(header::AUTHORIZATION, v);
-            }
-            // HeaderValue::from_str fails on CR/LF/NUL → drop silently.
+        if !already_has_header && let Ok(v) = HeaderValue::from_str(&format!("Bearer {tok}")) {
+            req.headers_mut().insert(header::AUTHORIZATION, v);
         }
+        // HeaderValue::from_str fails on CR/LF/NUL → drop silently.
         // Strip token= from URI regardless of header precedence so
         // downstream tracing / access logs don't capture it.
         if let Some(new_uri) = strip_query_param(req.uri(), "token") {

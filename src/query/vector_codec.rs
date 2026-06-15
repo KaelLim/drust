@@ -61,7 +61,7 @@ pub fn pack(field: &str, dim: u32, v: &Value) -> Result<Vec<u8>, VectorCodecErro
 /// Decode a packed-f32 BLOB back into a JSON array of f32 numbers.
 /// Round-trips lossily through f32 — callers see the truncated values.
 pub fn unpack(field: &str, blob: &[u8]) -> Result<Value, VectorCodecError> {
-    if blob.len() % 4 != 0 {
+    if !blob.len().is_multiple_of(4) {
         return Err(VectorCodecError::BadBlobLen {
             field: field.to_string(),
             got: blob.len(),

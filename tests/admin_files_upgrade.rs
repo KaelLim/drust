@@ -218,7 +218,6 @@ fn disk_view_low_disk_threshold() {
 /// Smoke-test that the handler returns 503 when garage is None.
 #[tokio::test]
 async fn upload_submit_returns_503_when_garage_none() {
-    use drust::auth::middleware::AdminSessionState;
     use drust::mgmt::public_files::{PublicFilesState, upload_submit};
     use drust::storage::meta::{bootstrap_admin, open_meta};
     use std::sync::Arc;

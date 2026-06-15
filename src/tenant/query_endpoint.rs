@@ -31,7 +31,7 @@ pub async fn query_handler(
     if matches!(ctx, AuthCtx::Anon) {
         let pool = t.pool.clone();
         let protected = pool
-            .with_reader(|c| crate::storage::schema::tenant_has_protected_collection(c))
+            .with_reader(crate::storage::schema::tenant_has_protected_collection)
             .await
             .unwrap_or(true);
         if protected {
@@ -111,7 +111,7 @@ pub async fn explain_handler(
     if matches!(ctx, AuthCtx::Anon) {
         let pool = t.pool.clone();
         let protected = pool
-            .with_reader(|c| crate::storage::schema::tenant_has_protected_collection(c))
+            .with_reader(crate::storage::schema::tenant_has_protected_collection)
             .await
             .unwrap_or(true);
         if protected {

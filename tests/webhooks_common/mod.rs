@@ -1,6 +1,7 @@
 //! Local fake HTTP server for webhook tests. One per test (call
 //! `FakeHook::start()`); records every request, supports scripted
 //! per-call responses for retry behaviour tests.
+#![allow(dead_code)] // shared fixture: not every test binary reads every field
 
 use axum::Router;
 use axum::body::Body;

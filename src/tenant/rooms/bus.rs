@@ -45,10 +45,10 @@ impl RoomBus {
     /// Returns the receiver count at send time (== `delivered_to`).
     /// 0 receivers ⇒ noop. Send errors are mapped to 0 (channel closed).
     pub fn publish(&self, tenant: &str, room: &str, msg: RoomMessage) -> usize {
-        if let Some(outer) = self.channels.get(tenant) {
-            if let Some(tx) = outer.value().get(room) {
-                return tx.value().send(msg).unwrap_or(0);
-            }
+        if let Some(outer) = self.channels.get(tenant)
+            && let Some(tx) = outer.value().get(room)
+        {
+            return tx.value().send(msg).unwrap_or(0);
         }
         0
     }

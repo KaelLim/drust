@@ -58,32 +58,32 @@ pub async fn resolve_theme(
     admin_id: Option<i64>,
 ) -> Theme {
     // (1) cookie wins
-    if let Some(c) = jar.get("drust_theme") {
-        if let Some(t) = Theme::from_tag(c.value()) {
-            return t;
-        }
+    if let Some(c) = jar.get("drust_theme")
+        && let Some(t) = Theme::from_tag(c.value())
+    {
+        return t;
     }
     // (2) DB lookup if logged in AND this layer is allowed to do it.
     // The outer layer (allow_db_fallback=false) skips this branch because
     // AdminId has not been populated by admin_session_layer yet.
-    if state.allow_db_fallback {
-        if let Some(id) = admin_id {
-            let conn = state.meta.lock().await;
-            let row: Option<String> = conn
-                .query_row(
-                    "SELECT theme FROM admins WHERE id = ?1",
-                    rusqlite::params![id],
-                    |r| r.get::<_, Option<String>>(0),
-                )
-                .ok()
-                .flatten();
-            drop(conn);
-            if let Some(s) = row {
-                if let Some(t) = Theme::from_tag(&s) {
-                    return t;
-                }
-                tracing::warn!(value = %s, "admins.theme contains unknown code — falling back to System");
+    if state.allow_db_fallback
+        && let Some(id) = admin_id
+    {
+        let conn = state.meta.lock().await;
+        let row: Option<String> = conn
+            .query_row(
+                "SELECT theme FROM admins WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten();
+        drop(conn);
+        if let Some(s) = row {
+            if let Some(t) = Theme::from_tag(&s) {
+                return t;
             }
+            tracing::warn!(value = %s, "admins.theme contains unknown code — falling back to System");
         }
     }
     // (3) default

@@ -627,8 +627,8 @@ async fn mcp_create_index_tool_works() {
         &svc.inner().pool,
         "posts",
         &["author_id".to_string()],
-        Some(false).unwrap_or(false),
-        Some(false).unwrap_or(false),
+        false,
+        false,
     )
     .await;
     assert!(

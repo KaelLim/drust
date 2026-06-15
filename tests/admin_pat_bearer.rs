@@ -193,7 +193,7 @@ async fn pat_bearer_audit_row_carries_actor_admin_id() {
         .find(|l| {
             l["op"]
                 .as_str()
-                .map_or(false, |op| op.contains("collections"))
+                .is_some_and(|op| op.contains("collections"))
         })
         .expect("no audit entry for collections route");
 

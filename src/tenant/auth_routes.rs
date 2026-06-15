@@ -130,7 +130,7 @@ pub async fn register_handler(
             )
         })
         .await;
-    let op = format!("POST /auth/register");
+    let op = "POST /auth/register".to_string();
     match inserted {
         Ok(_) => {
             let mut entry =
@@ -245,7 +245,7 @@ pub async fn login_handler(
         Ok(Some(pair)) => pair,
         _ => (String::new(), crate::auth::user::dummy_hash().to_owned()),
     };
-    let op = format!("POST /auth/login");
+    let op = "POST /auth/login".to_string();
     // v1.12: OAuth-only account — short-circuit BEFORE argon2 verify on the
     // real (sentinel) hash, but still spend one argon2 verify on DUMMY_HASH
     // so latency matches the wrong-password / unknown-email paths above.

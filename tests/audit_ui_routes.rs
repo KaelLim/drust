@@ -188,8 +188,8 @@ async fn login_session_cookie(app: &axum::Router) -> String {
         .to_str()
         .unwrap();
     // Extract `drust_session=...` up to the first `;`.
-    let cookie = sc.split(';').next().unwrap().to_string();
-    cookie
+
+    sc.split(';').next().unwrap().to_string()
 }
 
 async fn body_string(resp: axum::http::Response<Body>) -> String {

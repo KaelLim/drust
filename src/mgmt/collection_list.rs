@@ -82,7 +82,7 @@ fn format_blob_cell(
     // dim disagrees with the on-disk byte length is almost certainly a
     // foreign BLOB that snuck in through `query` / `insert_record` —
     // fall back to the neutral hint so the list view doesn't lie.
-    if bytes.len() % 4 != 0 || bytes.len() as u32 / 4 != declared_dim {
+    if !bytes.len().is_multiple_of(4) || bytes.len() as u32 / 4 != declared_dim {
         return format!("[blob bytes={}]", bytes.len());
     }
     let take = (declared_dim as usize).min(3);
@@ -396,6 +396,8 @@ async fn admin_list_inner(
                     let mut out: Vec<Vec<serde_json::Value>> = Vec::new();
                     while let Some(r) = rows_iter.next()? {
                         let mut row_vals = Vec::with_capacity(col_names.len());
+                        // index also drives r.get(i), so a bare iterator won't do
+                        #[allow(clippy::needless_range_loop)]
                         for i in 0..col_names.len() {
                             let v: rusqlite::types::Value = r.get(i)?;
                             row_vals.push(match v {

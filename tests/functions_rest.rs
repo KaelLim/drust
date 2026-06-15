@@ -123,7 +123,7 @@ async fn list_get_patch_delete_logs_roundtrip() {
         .await
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(v["logs"].as_array().unwrap().len() >= 1);
+    assert!(!v["logs"].as_array().unwrap().is_empty());
 
     // delete
     let resp = router

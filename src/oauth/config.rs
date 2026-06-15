@@ -114,6 +114,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial] // mutates process-global DRUST_OAUTH_* env vars
     fn empty_env_registers_no_providers() {
         set_env(&[]);
         let r = ProviderRegistry::from_env();
@@ -121,6 +122,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial] // mutates process-global DRUST_OAUTH_* env vars
     fn google_full_pair_registers_google() {
         set_env(&[
             ("DRUST_OAUTH_GOOGLE_CLIENT_ID", "gid"),
@@ -133,6 +135,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial] // mutates process-global DRUST_OAUTH_* env vars
     fn partial_google_pair_skipped() {
         set_env(&[("DRUST_OAUTH_GOOGLE_CLIENT_ID", "gid")]);
         let r = ProviderRegistry::from_env();

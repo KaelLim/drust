@@ -101,15 +101,15 @@ pub async fn update_webhook(
     events: Option<Vec<String>>,
     url: Option<String>,
 ) -> anyhow::Result<serde_json::Value> {
-    if let Some(ref u) = url {
-        if let Err((code, msg)) = check_url(u) {
-            return Err(anyhow::anyhow!("{code}: {msg}"));
-        }
+    if let Some(ref u) = url
+        && let Err((code, msg)) = check_url(u)
+    {
+        return Err(anyhow::anyhow!("{code}: {msg}"));
     }
-    if let Some(ref evs) = events {
-        if let Err((code, msg)) = check_events(evs) {
-            return Err(anyhow::anyhow!("{code}: {msg}"));
-        }
+    if let Some(ref evs) = events
+        && let Err((code, msg)) = check_events(evs)
+    {
+        return Err(anyhow::anyhow!("{code}: {msg}"));
     }
     let new_active = active.map(|b| if b { 1i64 } else { 0i64 });
     let new_events_json = events

@@ -27,10 +27,10 @@ pub async fn locale_layer(
 
 pub fn resolve_locale(jar: &CookieJar, headers: &HeaderMap) -> Locale {
     // (1) cookie wins
-    if let Some(c) = jar.get("drust_locale") {
-        if let Some(l) = Locale::from_tag(c.value()) {
-            return l;
-        }
+    if let Some(c) = jar.get("drust_locale")
+        && let Some(l) = Locale::from_tag(c.value())
+    {
+        return l;
     }
     // (2) Accept-Language header — process each tag in order, ignore q-weights
     if let Some(al) = headers.get("accept-language").and_then(|v| v.to_str().ok()) {

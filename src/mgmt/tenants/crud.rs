@@ -92,13 +92,10 @@ pub async fn list_page_axum(
         .map(|(id, name, created_at, db_bytes, files_bytes, stats_at)| {
             // Track the freshest sample timestamp across the batch for the
             // footer; sampler updates each row at slightly different instants.
-            if let Some(ref s) = stats_at {
-                if latest_sample
-                    .as_deref()
-                    .map_or(true, |cur| s.as_str() > cur)
-                {
-                    latest_sample = Some(s.clone());
-                }
+            if let Some(ref s) = stats_at
+                && latest_sample.as_deref().is_none_or(|cur| s.as_str() > cur)
+            {
+                latest_sample = Some(s.clone());
             }
             let initial = name
                 .chars()
@@ -470,23 +467,23 @@ pub async fn patch_publish_policy(
     axum::Json(body): axum::Json<PublishPolicyPatch>,
 ) -> Response {
     let conn = state.session.meta.lock().await;
-    if let Some(v) = body.allow_user_publish {
-        if let Err(e) = conn.execute(
+    if let Some(v) = body.allow_user_publish
+        && let Err(e) = conn.execute(
             "UPDATE tenants SET allow_user_publish = ?1 \
              WHERE id = ?2 AND deleted_at IS NULL",
             rusqlite::params![v as i64, tid],
-        ) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
+        )
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    if let Some(v) = body.allow_anon_publish {
-        if let Err(e) = conn.execute(
+    if let Some(v) = body.allow_anon_publish
+        && let Err(e) = conn.execute(
             "UPDATE tenants SET allow_anon_publish = ?1 \
              WHERE id = ?2 AND deleted_at IS NULL",
             rusqlite::params![v as i64, tid],
-        ) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
+        )
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
     match conn.query_row(
         "SELECT COALESCE(allow_user_publish, 0), COALESCE(allow_anon_publish, 0) \

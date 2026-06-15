@@ -287,10 +287,10 @@ pub fn extract_set_cookie(resp: &Response<Body>, name: &str) -> Option<String> {
     for v in resp.headers().get_all(header::SET_COOKIE).iter() {
         let raw = v.to_str().ok()?;
         let first = raw.split(';').next().unwrap_or("");
-        if let Some((k, val)) = first.split_once('=') {
-            if k.trim() == name {
-                return Some(val.trim().to_string());
-            }
+        if let Some((k, val)) = first.split_once('=')
+            && k.trim() == name
+        {
+            return Some(val.trim().to_string());
         }
     }
     None
@@ -386,13 +386,12 @@ fn try_find_audit_row_db(auth_method: &str) -> Option<serde_json::Value> {
         }
         // Merge fields from the `extra` JSON blob (auth_kind, admin_id,
         // auth_user_id, etc.) — direct columns win over extra.
-        if let Some(extra_str) = extra_json {
-            if let Ok(serde_json::Value::Object(extra_map)) =
+        if let Some(extra_str) = extra_json
+            && let Ok(serde_json::Value::Object(extra_map)) =
                 serde_json::from_str::<serde_json::Value>(&extra_str)
-            {
-                for (k, v) in extra_map {
-                    map.entry(k).or_insert(v);
-                }
+        {
+            for (k, v) in extra_map {
+                map.entry(k).or_insert(v);
             }
         }
         Ok(serde_json::Value::Object(map))
@@ -466,13 +465,12 @@ fn try_find_audit_op_db(expected_op: &str) -> Option<serde_json::Value> {
                 serde_json::Value::Number(id.into()),
             );
         }
-        if let Some(extra_str) = extra_json {
-            if let Ok(serde_json::Value::Object(extra_map)) =
+        if let Some(extra_str) = extra_json
+            && let Ok(serde_json::Value::Object(extra_map)) =
                 serde_json::from_str::<serde_json::Value>(&extra_str)
-            {
-                for (k, v) in extra_map {
-                    map.entry(k).or_insert(v);
-                }
+        {
+            for (k, v) in extra_map {
+                map.entry(k).or_insert(v);
             }
         }
         Ok(serde_json::Value::Object(map))

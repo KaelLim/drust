@@ -185,13 +185,11 @@ pub async fn search_handler(
         tenant.role,
         schema.owner_field.as_deref(),
         schema.read_scope.as_deref(),
-    ) {
-        if scope == "own" {
-            if let AuthCtx::User { user_id, .. } = &ctx {
-                owner_clause = format!(" AND \"{}\" = ?", of.replace('"', "\"\""));
-                where_binds.push(Value::Text(user_id.clone()));
-            }
-        }
+    ) && scope == "own"
+        && let AuthCtx::User { user_id, .. } = &ctx
+    {
+        owner_clause = format!(" AND \"{}\" = ?", of.replace('"', "\"\""));
+        where_binds.push(Value::Text(user_id.clone()));
     }
 
     // Explicit-policy USING (AND-ed alongside the owner clause). Service →

@@ -23,7 +23,7 @@ fn promotes_member_to_owner() {
     // We pass the directory containing meta.sqlite.
     let out = Command::new(exe)
         .env("DRUST_DATA_DIR", tmp.path())
-        .args(&["--email", "k@x", "--role", "owner"])
+        .args(["--email", "k@x", "--role", "owner"])
         .output()
         .unwrap();
     assert!(

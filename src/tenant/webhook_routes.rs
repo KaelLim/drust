@@ -346,15 +346,15 @@ pub async fn patch_handler(
         Ok(i) => i,
         Err(r) => return r,
     };
-    if let Some(ref u) = body.url {
-        if let Err(r) = validate_url(u) {
-            return r;
-        }
+    if let Some(ref u) = body.url
+        && let Err(r) = validate_url(u)
+    {
+        return r;
     }
-    if let Some(ref evs) = body.events {
-        if let Err(r) = validate_events(evs) {
-            return r;
-        }
+    if let Some(ref evs) = body.events
+        && let Err(r) = validate_events(evs)
+    {
+        return r;
     }
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,

@@ -196,7 +196,7 @@ impl GarageClient {
             let meta = item.context("garage list entry failed")?;
             out.push(ObjectSummary {
                 key: meta.location.to_string(),
-                size: meta.size as u64,
+                size: meta.size,
                 last_modified: meta.last_modified,
             });
         }

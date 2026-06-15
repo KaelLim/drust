@@ -155,10 +155,10 @@ pub async fn set_publish_policy(
     // v1.35 hook 11 (MCP face) — the UPDATEs above committed; drop the
     // tenant's cached entries so the next request refills with the new
     // policy. Skipped when neither flag was supplied (no auth state changed).
-    if allow_user.is_some() || allow_anon.is_some() {
-        if let Some(cache) = auth_cache {
-            cache.clear_tenant(&tid);
-        }
+    if (allow_user.is_some() || allow_anon.is_some())
+        && let Some(cache) = auth_cache
+    {
+        cache.clear_tenant(&tid);
     }
     Ok(json!({
         "allow_user_publish": u != 0,

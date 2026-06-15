@@ -98,7 +98,7 @@ pub async fn set_policy(
             if msg.contains("COLLECTION_NOT_FOUND") {
                 anyhow::anyhow!(
                     "unknown collection: {}",
-                    msg.splitn(2, ": ").nth(1).unwrap_or(&msg)
+                    msg.split_once(": ").map(|x| x.1).unwrap_or(&msg)
                 )
             } else {
                 anyhow::anyhow!("{e}")
