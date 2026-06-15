@@ -138,6 +138,14 @@ fn evaluators_agree_on_in_nin_null_and_like_case() {
         (r#"{"name":{"$in":["a"]}}"#, r#"{"name":null}"#),
         // (d) LIKE with case-varying text — SQLite LIKE is ASCII case-insensitive.
         (r#"{"name":{"$like":"ABC%"}}"#, r#"{"name":"abcdef"}"#),
+        // (e) $nin with a literal NULL operand — SQL `c NOT IN (NULL)` → NULL
+        //     (not-true) → excluded; eval must agree (was fail-open true).
+        (r#"{"name":{"$nin":[null]}}"#, r#"{"name":"c"}"#),
+        // (f) $nin with a {"$auth":"id"} operand that resolves to NULL for the
+        //     anon ctx — same SQL exclusion; eval must agree.
+        (r#"{"name":{"$nin":[{"$auth":"id"}]}}"#, r#"{"name":"c"}"#),
+        // (g) $in with a literal NULL operand — both exclude (sanity, no regression).
+        (r#"{"name":{"$in":[null]}}"#, r#"{"name":"c"}"#),
     ];
     for (a, r) in cases {
         let ast: FilterAst = serde_json::from_str(a).unwrap();

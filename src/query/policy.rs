@@ -349,17 +349,27 @@ fn eval_leaf(
                 Some(a) => a,
                 None => return false,
             };
-            // Mirror SQLite: a NULL lhs is excluded by both IN and NOT IN
-            // (NULL IN/NOT IN (...) is not-true), so eval must agree with the
-            // compiled `col NOT IN (?)`. Without this, `!hit` wrongly returns
-            // true for a NULL row on $nin (fail-open on the anon SSE filter).
+            // Mirror SQLite three-valued logic so eval agrees with the compiled
+            // `col [NOT] IN (?, …)`:
+            //   * a NULL lhs is excluded by both IN and NOT IN (NULL [NOT] IN is
+            //     not-true) — H3 column-side guard.
+            //   * a NULL OPERAND poisons NOT IN: `col NOT IN (…, NULL)` can never
+            //     be true (FALSE when matched, NULL otherwise), so $nin must
+            //     exclude. For IN, a NULL operand simply never matches.
             if matches!(lhs, Value::Null) {
                 return false;
             }
-            let hit = arr.iter().any(|v| {
-                value_cmp(&lhs, &resolve_eval_operand(v, ctx)) == Some(std::cmp::Ordering::Equal)
-            });
-            return if op.contains("nin") { !hit } else { hit };
+            let resolved: Vec<Value> =
+                arr.iter().map(|v| resolve_eval_operand(v, ctx)).collect();
+            let hit = resolved
+                .iter()
+                .any(|v| value_cmp(&lhs, v) == Some(std::cmp::Ordering::Equal));
+            return if op.contains("nin") {
+                let has_null_operand = resolved.iter().any(|v| matches!(v, Value::Null));
+                !hit && !has_null_operand
+            } else {
+                hit
+            };
         }
         _ => {}
     }
