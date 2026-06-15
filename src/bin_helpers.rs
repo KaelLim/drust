@@ -35,10 +35,10 @@ pub fn set_admin_password_with_email(
     new_password: &str,
     email: Option<&str>,
 ) -> anyhow::Result<()> {
-    if let Some(e) = email {
-        if !validate_email(e) {
-            anyhow::bail!("invalid email: {e:?}");
-        }
+    if let Some(e) = email
+        && !validate_email(e)
+    {
+        anyhow::bail!("invalid email: {e:?}");
     }
     let conn = open_meta(meta)?;
     let hash = hash_password(new_password)?;

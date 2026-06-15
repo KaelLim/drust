@@ -302,7 +302,8 @@ fn search_op(coll: &CollectionIr, row_name: &str) -> Value {
     let vec_fields: Vec<String> = coll
         .fields
         .iter()
-        .filter_map(|f| matches!(f.ty, FieldType::Vector { .. }).then(|| f.name.clone()))
+        .filter(|&f| matches!(f.ty, FieldType::Vector { .. }))
+        .map(|f| f.name.clone())
         .collect();
     json!({
         "summary": format!("Vector similarity search over {row_name}"),

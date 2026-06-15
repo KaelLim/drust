@@ -60,7 +60,7 @@ pub async fn list_users(
     offset: Option<i64>,
 ) -> anyhow::Result<serde_json::Value> {
     let pat = format!("%{}%", q.as_deref().unwrap_or(""));
-    let limit = limit.unwrap_or(50).max(1).min(500);
+    let limit = limit.unwrap_or(50).clamp(1, 500);
     let offset = offset.unwrap_or(0).max(0);
     let pat2 = pat.clone();
     let pat3 = pat.clone();

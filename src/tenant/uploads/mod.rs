@@ -169,28 +169,28 @@ pub async fn create(
     let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(ttl)).to_rfc3339();
 
     // Disk guard on the spool filesystem (data_root).
-    if let Ok(stats) = crate::storage::disk::disk_stats(&state.data_root) {
-        if (stats.free_pct as u8) < state.disk_min_free_pct {
-            return json_error(
-                StatusCode::INSUFFICIENT_STORAGE,
-                "DISK_FULL",
-                "insufficient free disk for upload",
-            );
-        }
+    if let Ok(stats) = crate::storage::disk::disk_stats(&state.data_root)
+        && (stats.free_pct as u8) < state.disk_min_free_pct
+    {
+        return json_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "DISK_FULL",
+            "insufficient free disk for upload",
+        );
     }
 
     // Create the empty spool file (and its dir) before the DB row, so a
     // crash leaves at most an orphan file (janitor-swept), never a row
     // without a spool.
     let spool = spool_path(&state, &tenant, &token);
-    if let Some(parent) = spool.parent() {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "SPOOL_ERROR",
-                &e.to_string(),
-            );
-        }
+    if let Some(parent) = spool.parent()
+        && let Err(e) = tokio::fs::create_dir_all(parent).await
+    {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "SPOOL_ERROR",
+            &e.to_string(),
+        );
     }
     if let Err(e) = tokio::fs::File::create(&spool).await {
         return json_error(
@@ -332,10 +332,10 @@ pub async fn patch(
     }
 
     // Disk guard on the spool filesystem (data_root).
-    if let Ok(stats) = crate::storage::disk::disk_stats(&state.data_root) {
-        if (stats.free_pct as u8) < state.disk_min_free_pct {
-            return (StatusCode::INSUFFICIENT_STORAGE, tus_headers()).into_response();
-        }
+    if let Ok(stats) = crate::storage::disk::disk_stats(&state.data_root)
+        && (stats.free_pct as u8) < state.disk_min_free_pct
+    {
+        return (StatusCode::INSUFFICIENT_STORAGE, tus_headers()).into_response();
     }
 
     // Append.

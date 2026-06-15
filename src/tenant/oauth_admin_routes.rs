@@ -58,7 +58,7 @@ pub async fn list_oauth_providers_handler(
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
-    let rows = match pool.with_reader(move |c| oauth_config::list(c)).await {
+    let rows = match pool.with_reader(oauth_config::list).await {
         Ok(v) => v,
         Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     };

@@ -14,7 +14,7 @@ use serde_json::json;
 
 pub async fn list_oauth_providers(pool: &SharedTenantPool) -> anyhow::Result<serde_json::Value> {
     let rows = pool
-        .with_reader(move |c| oauth_config::list(c))
+        .with_reader(oauth_config::list)
         .await
         .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
     let providers: Vec<serde_json::Value> = rows

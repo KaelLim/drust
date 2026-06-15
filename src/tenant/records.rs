@@ -440,7 +440,7 @@ pub async fn list_handler(
         let total = pool
             .with_reader(move |c| -> rusqlite::Result<i64> {
                 attach_readonly_authorizer(c);
-                let r = (|| -> rusqlite::Result<i64> {
+                let r = {
                     let refs: Vec<&dyn rusqlite::ToSql> = binds_count
                         .iter()
                         .map(|v| v as &dyn rusqlite::ToSql)
@@ -448,7 +448,7 @@ pub async fn list_handler(
                     c.query_row(&count_sql_owned, rusqlite::params_from_iter(refs), |r| {
                         r.get(0)
                     })
-                })();
+                };
                 detach_authorizer(c);
                 r
             })

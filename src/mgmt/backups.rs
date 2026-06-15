@@ -240,9 +240,8 @@ fn extract_meta_and_sizes(
 fn parse_tenant_db_path(p: &str) -> Option<String> {
     let stripped = p.trim_start_matches("./");
     let rest = stripped.strip_prefix("tenants/")?;
-    let mut parts = rest.splitn(2, '/');
-    let tid = parts.next()?;
-    let tail = parts.next()?;
+    let (tid, tail) = rest.split_once('/')?;
+
     if tail == "data.sqlite" && !tid.is_empty() {
         Some(tid.to_string())
     } else {

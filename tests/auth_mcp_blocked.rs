@@ -47,7 +47,7 @@ async fn mcp_rejects_user_token() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/t/t-mcp1/mcp"))
+                .uri("/t/t-mcp1/mcp".to_string())
                 .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(

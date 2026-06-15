@@ -147,13 +147,12 @@ async fn read_audit_rows_for_tenant(tenant: &str) -> Vec<serde_json::Value> {
                     map.insert("error_code".into(), serde_json::Value::String(c));
                 }
                 // Flatten extra so callers can read row["index_name"] etc.
-                if let Some(extra_str) = extra_json {
-                    if let Ok(serde_json::Value::Object(extra_map)) =
+                if let Some(extra_str) = extra_json
+                    && let Ok(serde_json::Value::Object(extra_map)) =
                         serde_json::from_str::<serde_json::Value>(&extra_str)
-                    {
-                        for (k, v) in extra_map {
-                            map.entry(k).or_insert(v);
-                        }
+                {
+                    for (k, v) in extra_map {
+                        map.entry(k).or_insert(v);
                     }
                 }
                 Ok(serde_json::Value::Object(map))

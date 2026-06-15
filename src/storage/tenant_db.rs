@@ -220,6 +220,9 @@ pub fn open_read(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection
 /// the upstream crate — it is designed to be invoked **by** SQLite
 /// through the auto-extension callback, which passes the real
 /// `(db, errmsg, api)` triple at registration time.
+// transmute casts the sqlite_vec init fn ptr to sqlite3_auto_extension's
+// generic entry-point type; the target is inferred from the call site.
+#[allow(clippy::missing_transmute_annotations)]
 pub fn ensure_sqlite_vec_loaded() {
     use std::sync::OnceLock;
     static INIT: OnceLock<()> = OnceLock::new();

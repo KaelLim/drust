@@ -46,83 +46,6 @@ fn default_true() -> bool {
     true
 }
 
-#[cfg(test)]
-mod field_spec_vector_tests {
-    use super::*;
-
-    #[test]
-    fn vector_field_requires_dim() {
-        let f = FieldSpec {
-            name: "embedding".into(),
-            sql_type: "vector".into(),
-            nullable: true,
-            unique: false,
-            default_value: None,
-            foreign_key: None,
-            dim: None,
-            description: None,
-        };
-        let err = column_expr(&f).unwrap_err();
-        assert!(
-            err.to_string().contains("dim"),
-            "expected error mentioning dim; got: {err}"
-        );
-    }
-
-    #[test]
-    fn vector_field_with_dim_lowers_to_blob() {
-        let f = FieldSpec {
-            name: "embedding".into(),
-            sql_type: "vector".into(),
-            nullable: false,
-            unique: false,
-            default_value: None,
-            foreign_key: None,
-            dim: Some(384),
-            description: None,
-        };
-        let expr = column_expr(&f).unwrap();
-        assert_eq!(expr, "\"embedding\" BLOB NOT NULL");
-    }
-
-    #[test]
-    fn vector_dim_out_of_range_rejected() {
-        for bad_dim in [0u32, 4097, 100_000] {
-            let f = FieldSpec {
-                name: "v".into(),
-                sql_type: "vector".into(),
-                nullable: true,
-                unique: false,
-                default_value: None,
-                foreign_key: None,
-                dim: Some(bad_dim),
-                description: None,
-            };
-            let err = column_expr(&f).unwrap_err();
-            assert!(
-                err.to_string().contains("dim"),
-                "dim={bad_dim} should be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn non_vector_field_ignores_dim() {
-        let f = FieldSpec {
-            name: "title".into(),
-            sql_type: "text".into(),
-            nullable: true,
-            unique: false,
-            default_value: None,
-            foreign_key: None,
-            dim: Some(42),
-            description: None,
-        };
-        let expr = column_expr(&f).unwrap();
-        assert_eq!(expr, "\"title\" TEXT");
-    }
-}
-
 /// Allowlist of SQL expressions that may appear as a field default.
 ///
 /// Entries are matched with exact string equality after trimming. We do
@@ -812,4 +735,81 @@ pub async fn set_index_description(
         "index_name": index_name,
         "description": value_for_post,
     }))
+}
+
+#[cfg(test)]
+mod field_spec_vector_tests {
+    use super::*;
+
+    #[test]
+    fn vector_field_requires_dim() {
+        let f = FieldSpec {
+            name: "embedding".into(),
+            sql_type: "vector".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: None,
+            description: None,
+        };
+        let err = column_expr(&f).unwrap_err();
+        assert!(
+            err.to_string().contains("dim"),
+            "expected error mentioning dim; got: {err}"
+        );
+    }
+
+    #[test]
+    fn vector_field_with_dim_lowers_to_blob() {
+        let f = FieldSpec {
+            name: "embedding".into(),
+            sql_type: "vector".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: Some(384),
+            description: None,
+        };
+        let expr = column_expr(&f).unwrap();
+        assert_eq!(expr, "\"embedding\" BLOB NOT NULL");
+    }
+
+    #[test]
+    fn vector_dim_out_of_range_rejected() {
+        for bad_dim in [0u32, 4097, 100_000] {
+            let f = FieldSpec {
+                name: "v".into(),
+                sql_type: "vector".into(),
+                nullable: true,
+                unique: false,
+                default_value: None,
+                foreign_key: None,
+                dim: Some(bad_dim),
+                description: None,
+            };
+            let err = column_expr(&f).unwrap_err();
+            assert!(
+                err.to_string().contains("dim"),
+                "dim={bad_dim} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn non_vector_field_ignores_dim() {
+        let f = FieldSpec {
+            name: "title".into(),
+            sql_type: "text".into(),
+            nullable: true,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: Some(42),
+            description: None,
+        };
+        let expr = column_expr(&f).unwrap();
+        assert_eq!(expr, "\"title\" TEXT");
+    }
 }

@@ -38,10 +38,10 @@ impl EventBus {
     }
 
     pub fn publish(&self, tenant: &str, collection: &str, ev: Event) {
-        if let Some(outer) = self.channels.get(tenant) {
-            if let Some(tx) = outer.value().get(collection) {
-                let _ = tx.value().send(ev);
-            }
+        if let Some(outer) = self.channels.get(tenant)
+            && let Some(tx) = outer.value().get(collection)
+        {
+            let _ = tx.value().send(ev);
         }
     }
 

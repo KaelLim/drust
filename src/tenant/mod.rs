@@ -105,7 +105,7 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
     }
     let patterns: Vec<String> = origins
         .iter()
-        .filter(|s| !s.is_empty() && !s.matches('*').nth(1).is_some()) // <= 1 wildcard
+        .filter(|s| !s.is_empty() && s.matches('*').nth(1).is_none()) // <= 1 wildcard
         .cloned()
         .collect();
     if patterns.is_empty() {
@@ -168,166 +168,6 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
             ])
             .max_age(Duration::from_secs(600)),
     )
-}
-
-#[cfg(test)]
-mod cors_tests {
-    use super::origin_matches;
-
-    #[test]
-    fn exact_match() {
-        assert!(origin_matches(
-            "https://app.tzuchi.org",
-            "https://app.tzuchi.org"
-        ));
-        assert!(!origin_matches(
-            "https://app.tzuchi.org",
-            "https://app.tzuchi.org.tw"
-        ));
-    }
-
-    #[test]
-    fn subdomain_wildcard() {
-        let p = "https://*.tzuchi.org";
-        assert!(origin_matches(p, "https://app.tzuchi.org"));
-        assert!(origin_matches(p, "https://academic-events.tzuchi.org"));
-        assert!(origin_matches(p, "https://a.b.tzuchi.org"));
-        // Bare domain must NOT match — wildcard requires content.
-        assert!(!origin_matches(p, "https://tzuchi.org"));
-        // Suffix-injection attempt (different TLD).
-        assert!(!origin_matches(p, "https://tzuchi.org.attacker.com"));
-        // Hyphen-confusion (no leading dot).
-        assert!(!origin_matches(p, "https://anything-tzuchi.org"));
-        // Different scheme.
-        assert!(!origin_matches(p, "http://app.tzuchi.org"));
-    }
-
-    #[test]
-    fn localhost_port_wildcard() {
-        let p = "http://localhost:*";
-        assert!(origin_matches(p, "http://localhost:5173"));
-        assert!(origin_matches(p, "http://localhost:8080"));
-        // Empty after `:` rejected (wildcard requires content).
-        assert!(!origin_matches(p, "http://localhost:"));
-    }
-
-    /// v1.29.7 C3 — Cross-origin browser SPAs must be able to read the
-    /// new RFC 8594 deprecation headers (`Deprecation`, `Sunset`, `Link`).
-    /// Without `Access-Control-Expose-Headers`, the browser hides them
-    /// from `response.headers.get(...)` even though the bytes arrive.
-    #[tokio::test]
-    async fn cors_exposes_deprecation_headers() {
-        // build_cors_layer is private; the test invokes it directly. We
-        // can't introspect CorsLayer internals, so instead we mount the
-        // layer on a stub axum Router and assert the actual response
-        // carries `Access-Control-Expose-Headers` listing all three.
-        use axum::body::Body;
-        use axum::http::{Method, Request, StatusCode, header};
-        use axum::{Router, routing::get};
-        use tower::ServiceExt;
-
-        let origins = vec!["https://app.tzuchi.org".to_string()];
-        let cors = super::build_cors_layer(&origins).expect("cors layer");
-        let app: Router = Router::new()
-            .route("/echo", get(|| async { "ok" }))
-            .layer(cors);
-
-        // Real GET (not preflight). Access-Control-Expose-Headers is set
-        // on the actual response, not just preflight.
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/echo")
-                    .header(header::ORIGIN, "https://app.tzuchi.org")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let exposed = resp
-            .headers()
-            .get("access-control-expose-headers")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        for hdr in ["deprecation", "sunset", "link"] {
-            assert!(
-                exposed.to_ascii_lowercase().contains(hdr),
-                "Access-Control-Expose-Headers must list `{hdr}` (got: `{exposed}`)"
-            );
-        }
-    }
-
-    /// v1.33.2 — the CORS layer short-circuits OPTIONS preflight before it can
-    /// reach `uploads::options`, so the tus capability headers must be re-added
-    /// by `inject_tus_capabilities` mounted OUTSIDE cors. A live HTTP probe found
-    /// the original handler dead; this pins the full layer stack so it can't
-    /// regress. Mirrors `build_tenant_router`'s `merged.layer(cors).layer(tus)`.
-    #[tokio::test]
-    async fn tus_capabilities_survive_cors_preflight() {
-        use axum::body::Body;
-        use axum::http::{Method, Request, header};
-        use axum::{Router, routing::post};
-        use tower::ServiceExt;
-
-        let cors =
-            super::build_cors_layer(&["https://app.tzuchi.org".to_string()]).expect("cors layer");
-        let app: Router = Router::new()
-            .route("/t/x/uploads", post(|| async { "ok" }))
-            .route("/t/x/collections", post(|| async { "ok" }))
-            .layer(cors)
-            .layer(axum::middleware::from_fn_with_state(
-                2_147_483_648usize,
-                super::inject_tus_capabilities,
-            ));
-
-        // Browser preflight to the creation endpoint → CORS answers, then the
-        // tus layer re-attaches capabilities.
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::OPTIONS)
-                    .uri("/t/x/uploads")
-                    .header(header::ORIGIN, "https://app.tzuchi.org")
-                    .header("access-control-request-method", "POST")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let h = resp.headers();
-        assert_eq!(h.get("tus-version").unwrap(), "1.0.0");
-        assert_eq!(h.get("tus-resumable").unwrap(), "1.0.0");
-        assert!(
-            h.get("tus-extension")
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .contains("creation"),
-            "tus-extension must advertise creation"
-        );
-        assert_eq!(h.get("tus-max-size").unwrap(), "2147483648");
-
-        // Scoping: a non-/uploads OPTIONS must NOT carry tus headers.
-        let resp2 = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::OPTIONS)
-                    .uri("/t/x/collections")
-                    .header(header::ORIGIN, "https://app.tzuchi.org")
-                    .header("access-control-request-method", "POST")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(
-            resp2.headers().get("tus-version").is_none(),
-            "tus headers must be scoped to /uploads only"
-        );
-    }
 }
 
 /// v1.33.2 — re-attach tus capability headers (`Tus-Version` / `Tus-Extension`
@@ -795,5 +635,165 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         ))
     } else {
         merged
+    }
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::origin_matches;
+
+    #[test]
+    fn exact_match() {
+        assert!(origin_matches(
+            "https://app.tzuchi.org",
+            "https://app.tzuchi.org"
+        ));
+        assert!(!origin_matches(
+            "https://app.tzuchi.org",
+            "https://app.tzuchi.org.tw"
+        ));
+    }
+
+    #[test]
+    fn subdomain_wildcard() {
+        let p = "https://*.tzuchi.org";
+        assert!(origin_matches(p, "https://app.tzuchi.org"));
+        assert!(origin_matches(p, "https://academic-events.tzuchi.org"));
+        assert!(origin_matches(p, "https://a.b.tzuchi.org"));
+        // Bare domain must NOT match — wildcard requires content.
+        assert!(!origin_matches(p, "https://tzuchi.org"));
+        // Suffix-injection attempt (different TLD).
+        assert!(!origin_matches(p, "https://tzuchi.org.attacker.com"));
+        // Hyphen-confusion (no leading dot).
+        assert!(!origin_matches(p, "https://anything-tzuchi.org"));
+        // Different scheme.
+        assert!(!origin_matches(p, "http://app.tzuchi.org"));
+    }
+
+    #[test]
+    fn localhost_port_wildcard() {
+        let p = "http://localhost:*";
+        assert!(origin_matches(p, "http://localhost:5173"));
+        assert!(origin_matches(p, "http://localhost:8080"));
+        // Empty after `:` rejected (wildcard requires content).
+        assert!(!origin_matches(p, "http://localhost:"));
+    }
+
+    /// v1.29.7 C3 — Cross-origin browser SPAs must be able to read the
+    /// new RFC 8594 deprecation headers (`Deprecation`, `Sunset`, `Link`).
+    /// Without `Access-Control-Expose-Headers`, the browser hides them
+    /// from `response.headers.get(...)` even though the bytes arrive.
+    #[tokio::test]
+    async fn cors_exposes_deprecation_headers() {
+        // build_cors_layer is private; the test invokes it directly. We
+        // can't introspect CorsLayer internals, so instead we mount the
+        // layer on a stub axum Router and assert the actual response
+        // carries `Access-Control-Expose-Headers` listing all three.
+        use axum::body::Body;
+        use axum::http::{Method, Request, StatusCode, header};
+        use axum::{Router, routing::get};
+        use tower::ServiceExt;
+
+        let origins = vec!["https://app.tzuchi.org".to_string()];
+        let cors = super::build_cors_layer(&origins).expect("cors layer");
+        let app: Router = Router::new()
+            .route("/echo", get(|| async { "ok" }))
+            .layer(cors);
+
+        // Real GET (not preflight). Access-Control-Expose-Headers is set
+        // on the actual response, not just preflight.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/echo")
+                    .header(header::ORIGIN, "https://app.tzuchi.org")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let exposed = resp
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        for hdr in ["deprecation", "sunset", "link"] {
+            assert!(
+                exposed.to_ascii_lowercase().contains(hdr),
+                "Access-Control-Expose-Headers must list `{hdr}` (got: `{exposed}`)"
+            );
+        }
+    }
+
+    /// v1.33.2 — the CORS layer short-circuits OPTIONS preflight before it can
+    /// reach `uploads::options`, so the tus capability headers must be re-added
+    /// by `inject_tus_capabilities` mounted OUTSIDE cors. A live HTTP probe found
+    /// the original handler dead; this pins the full layer stack so it can't
+    /// regress. Mirrors `build_tenant_router`'s `merged.layer(cors).layer(tus)`.
+    #[tokio::test]
+    async fn tus_capabilities_survive_cors_preflight() {
+        use axum::body::Body;
+        use axum::http::{Method, Request, header};
+        use axum::{Router, routing::post};
+        use tower::ServiceExt;
+
+        let cors =
+            super::build_cors_layer(&["https://app.tzuchi.org".to_string()]).expect("cors layer");
+        let app: Router = Router::new()
+            .route("/t/x/uploads", post(|| async { "ok" }))
+            .route("/t/x/collections", post(|| async { "ok" }))
+            .layer(cors)
+            .layer(axum::middleware::from_fn_with_state(
+                2_147_483_648usize,
+                super::inject_tus_capabilities,
+            ));
+
+        // Browser preflight to the creation endpoint → CORS answers, then the
+        // tus layer re-attaches capabilities.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/t/x/uploads")
+                    .header(header::ORIGIN, "https://app.tzuchi.org")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let h = resp.headers();
+        assert_eq!(h.get("tus-version").unwrap(), "1.0.0");
+        assert_eq!(h.get("tus-resumable").unwrap(), "1.0.0");
+        assert!(
+            h.get("tus-extension")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("creation"),
+            "tus-extension must advertise creation"
+        );
+        assert_eq!(h.get("tus-max-size").unwrap(), "2147483648");
+
+        // Scoping: a non-/uploads OPTIONS must NOT carry tus headers.
+        let resp2 = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/t/x/collections")
+                    .header(header::ORIGIN, "https://app.tzuchi.org")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp2.headers().get("tus-version").is_none(),
+            "tus headers must be scoped to /uploads only"
+        );
     }
 }

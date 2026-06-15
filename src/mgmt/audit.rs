@@ -645,7 +645,7 @@ pub async fn build_body_ctx(
     let window_choices = ["1h", "24h", "7d"]
         .iter()
         .map(|w| WindowChoice {
-            label: *w,
+            label: w,
             href: url_with(&base, tab, w, false, &[]),
             active: *w == window_str,
         })

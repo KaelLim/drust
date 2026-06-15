@@ -97,13 +97,11 @@ pub async fn handler(State(state): State<MgmtState>) -> impl IntoResponse {
         let conn = state.meta.lock().await;
         if let Ok(mut stmt) =
             conn.prepare("SELECT id, COALESCE(db_bytes, 0) FROM tenants WHERE deleted_at IS NULL")
-        {
-            if let Ok(rows) =
+            && let Ok(rows) =
                 stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-            {
-                for row in rows.flatten() {
-                    m.tenant_db_bytes.with_label_values(&[&row.0]).set(row.1);
-                }
+        {
+            for row in rows.flatten() {
+                m.tenant_db_bytes.with_label_values(&[&row.0]).set(row.1);
             }
         }
     }

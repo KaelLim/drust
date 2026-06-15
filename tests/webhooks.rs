@@ -652,10 +652,10 @@ async fn mcp_create_webhook_returns_secret_then_list_redacts() {
     )
     .await;
     let v: serde_json::Value =
-        serde_json::from_str(&txt).expect(&format!("expected JSON object, got: {txt}"));
+        serde_json::from_str(&txt).unwrap_or_else(|_| panic!("expected JSON object, got: {txt}"));
     let secret = v["secret"]
         .as_str()
-        .expect(&format!("secret must be a string, got: {txt}"));
+        .unwrap_or_else(|| panic!("secret must be a string, got: {txt}"));
     assert_eq!(
         secret.len(),
         64,
@@ -682,7 +682,7 @@ async fn mcp_create_webhook_returns_secret_then_list_redacts() {
     )
     .await;
     let v: serde_json::Value =
-        serde_json::from_str(&txt).expect(&format!("expected JSON, got: {txt}"));
+        serde_json::from_str(&txt).unwrap_or_else(|_| panic!("expected JSON, got: {txt}"));
     let items = v["webhooks"].as_array().expect("webhooks array");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["secret"].as_str(), Some("●●●●"));

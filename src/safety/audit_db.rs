@@ -135,10 +135,10 @@ fn take_string_key(
     // Peek the value: only remove if it's a String. Leave non-String
     // values in the map so they end up in the `extra` blob and the
     // caller can debug.
-    if let Some(serde_json::Value::String(_)) = map.get(key) {
-        if let Some(serde_json::Value::String(s)) = map.remove(key) {
-            return Some(s);
-        }
+    if let Some(serde_json::Value::String(_)) = map.get(key)
+        && let Some(serde_json::Value::String(s)) = map.remove(key)
+    {
+        return Some(s);
     }
     None
 }
@@ -188,7 +188,7 @@ impl AuditWriter {
                 // during sustained backpressure. F3 rationale: a real
                 // spike can hit 1000/s and produce one identical WARN
                 // per drop, masking real errors in the journal.
-                if n == 1 || n % 10_000 == 0 {
+                if n == 1 || n.is_multiple_of(10_000) {
                     tracing::warn!(
                         total_dropped = n,
                         "audit: channel full, entry dropped (rate-limited log)"

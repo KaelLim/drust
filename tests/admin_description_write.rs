@@ -119,7 +119,7 @@ async fn admin_set_collection_description_happy_path() {
         .to_str()
         .unwrap();
     assert!(
-        loc.contains(&format!("/collections/posts?tab=schema")),
+        loc.contains(&"/collections/posts?tab=schema".to_string()),
         "got: {loc}"
     );
 }

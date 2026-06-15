@@ -242,6 +242,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unnecessary_literal_unwrap)] // test deliberately uses literal Option values
     fn bearer_missing_flag_independent_of_bearer_string() {
         // When the helper returns None, bearer_missing must be true AND
         // bearer must be empty — template branches on the flag.

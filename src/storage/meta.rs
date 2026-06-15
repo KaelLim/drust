@@ -260,7 +260,6 @@ pub fn bootstrap_admin(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
 
     #[test]
     fn bootstrap_then_migrate_results_in_one_active_pat() {

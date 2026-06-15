@@ -86,10 +86,10 @@ pub async fn put_policies(
                 (DmlVerb::Update, &body.update),
                 (DmlVerb::Delete, &body.delete),
             ] {
-                if let Some(policy) = p {
-                    if let Err(e) = validate_policy(&schema, op, policy) {
-                        return Ok(Err(("POLICY_INVALID", e.to_string())));
-                    }
+                if let Some(policy) = p
+                    && let Err(e) = validate_policy(&schema, op, policy)
+                {
+                    return Ok(Err(("POLICY_INVALID", e.to_string())));
                 }
                 crate::storage::schema::write_policy(c, &coll_c, op, p.as_ref())?;
             }

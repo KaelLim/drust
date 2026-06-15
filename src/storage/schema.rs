@@ -480,7 +480,7 @@ pub fn write_collection_description(
     description: Option<&str>,
 ) -> rusqlite::Result<()> {
     debug_assert!(
-        description.map_or(true, |d| check_description(d).is_ok()),
+        description.is_none_or(|d| check_description(d).is_ok()),
         "write_collection_description called with unvalidated description; \
          callers must run check_description first"
     );
@@ -507,7 +507,7 @@ pub fn write_field_description(
     description: Option<&str>,
 ) -> rusqlite::Result<()> {
     debug_assert!(
-        description.map_or(true, |d| check_description(d).is_ok()),
+        description.is_none_or(|d| check_description(d).is_ok()),
         "write_field_description called with unvalidated description; \
          callers must run check_description first"
     );
@@ -542,7 +542,7 @@ pub fn write_index_description(
     description: Option<&str>,
 ) -> rusqlite::Result<()> {
     debug_assert!(
-        description.map_or(true, |d| check_description(d).is_ok()),
+        description.is_none_or(|d| check_description(d).is_ok()),
         "write_index_description called with unvalidated description; \
          callers must run check_description first"
     );
@@ -847,10 +847,7 @@ pub fn write_policy(
         DmlVerb::Update => "update_policy_json",
         DmlVerb::Delete => "delete_policy_json",
     };
-    let json: Option<String> = match policy {
-        Some(p) => Some(serde_json::to_string(p).expect("Policy serialises")),
-        None => None,
-    };
+    let json: Option<String> = policy.map(|p| serde_json::to_string(p).expect("Policy serialises"));
     // Column name is from a fixed match (not user input) → safe to format.
     let sql = format!(
         "INSERT INTO _system_collection_meta (collection_name, anon_caps_json, {col}, updated_at) \

@@ -82,7 +82,7 @@ async fn recv_json(ws: &mut WsClient) -> serde_json::Value {
 }
 
 async fn send_op(ws: &mut WsClient, v: serde_json::Value) {
-    ws.send(TM::Text(v.to_string().into())).await.unwrap();
+    ws.send(TM::Text(v.to_string())).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
