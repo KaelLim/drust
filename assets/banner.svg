@@ -17,17 +17,17 @@
     </linearGradient>
 
     <!-- type-reveal clips: each rect's width sweeps 0 -> textLength -> 0 in its slot of the 13.5s loop -->
-    <clipPath id="clipMe"><rect x="610" y="70" width="0" height="92">
+    <clipPath id="clipMe"><rect x="658" y="70" width="0" height="92">
       <animate attributeName="width" dur="13.5s" repeatCount="indefinite"
-        keyTimes="0;0.096;0.274;0.333;1" values="0;322;322;0;0"/>
+        keyTimes="0;0.096;0.274;0.333;1" values="0;276;276;0;0"/>
     </rect></clipPath>
-    <clipPath id="clipYou"><rect x="610" y="70" width="0" height="92">
+    <clipPath id="clipYou"><rect x="658" y="70" width="0" height="92">
       <animate attributeName="width" dur="13.5s" repeatCount="indefinite"
-        keyTimes="0;0.333;0.430;0.607;0.667;1" values="0;0;368;368;0;0"/>
+        keyTimes="0;0.333;0.430;0.607;0.667;1" values="0;0;322;322;0;0"/>
     </rect></clipPath>
-    <clipPath id="clipAi"><rect x="610" y="70" width="0" height="92">
+    <clipPath id="clipAi"><rect x="658" y="70" width="0" height="92">
       <animate attributeName="width" dur="13.5s" repeatCount="indefinite"
-        keyTimes="0;0.667;0.763;0.940;1" values="0;0;322;322;0"/>
+        keyTimes="0;0.667;0.763;0.940;1" values="0;0;276;276;0"/>
     </rect></clipPath>
   </defs>
 
@@ -68,10 +68,10 @@
   <!-- wordmark: static "drust" + typed cycling suffix -->
   <text x="372" y="140" font-family="'JetBrains Mono','SFMono-Regular',Consolas,'DejaVu Sans Mono',monospace" font-size="80" font-weight="800" textLength="238" lengthAdjust="spacing" letter-spacing="-1" fill="url(#word)">drust</text>
 
-  <g font-family="'JetBrains Mono','SFMono-Regular',Consolas,'DejaVu Sans Mono',monospace" font-size="80" font-weight="800" fill="#b8c2cd" xml:space="preserve">
-    <text x="610" y="140" textLength="322" lengthAdjust="spacing" clip-path="url(#clipMe)"> for me</text>
-    <text x="610" y="140" textLength="368" lengthAdjust="spacing" clip-path="url(#clipYou)"> for you</text>
-    <text x="610" y="140" textLength="322" lengthAdjust="spacing" clip-path="url(#clipAi)"> for AI</text>
+  <g font-family="'JetBrains Mono','SFMono-Regular',Consolas,'DejaVu Sans Mono',monospace" font-size="80" font-weight="800" fill="#b8c2cd">
+    <text x="658" y="140" textLength="276" lengthAdjust="spacing" clip-path="url(#clipMe)">for me</text>
+    <text x="658" y="140" textLength="322" lengthAdjust="spacing" clip-path="url(#clipYou)">for you</text>
+    <text x="658" y="140" textLength="276" lengthAdjust="spacing" clip-path="url(#clipAi)">for AI</text>
   </g>
 
   <!-- rust-orange CLI cursor: tracks the typing edge + blinks.
@@ -79,7 +79,7 @@
   <rect x="610" y="78" width="15" height="66" rx="2" fill="#e06a3b">
     <animate attributeName="x" dur="13.5s" repeatCount="indefinite"
       keyTimes="0;0.096;0.274;0.333;0.430;0.607;0.667;0.763;0.940;1"
-      values="610;932;932;610;978;978;610;932;932;610"/>
+      values="610;934;934;610;980;980;610;934;934;610"/>
     <animate attributeName="opacity" dur="1.06s" repeatCount="indefinite"
       keyTimes="0;0.4;0.45;0.95;1" values="1;1;0;0;1"/>
   </rect>
