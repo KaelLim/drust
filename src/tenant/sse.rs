@@ -75,6 +75,23 @@ pub async fn subscribe_handler(
         )
         .into_response();
     }
+    // 6. Anon on an owner-scoped collection has no user_id to filter Created/
+    //    Updated events by, so it must not subscribe at all — mirrors the REST
+    //    read deny (require_dml_cap, records.rs:79-88). Without this, anon
+    //    receives every owner's row events even though every REST read path
+    //    403s this exact shape (audit H2).
+    if matches!(ctx, AuthCtx::Anon)
+        && schema.owner_field.is_some()
+        && schema.read_scope.as_deref() == Some("own")
+    {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "ANON_FORBIDDEN_OWNER_SCOPED",
+            "anon cannot subscribe to an owner-scoped collection (read_scope=own); \
+             it has no user_id to filter events by",
+        )
+        .into_response();
+    }
 
     // Pass — open the stream.
     //
