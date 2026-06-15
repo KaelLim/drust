@@ -191,6 +191,8 @@ pub(crate) fn mask_sensitive_columns(
 ) -> (Vec<String>, Vec<Vec<String>>) {
     let mask_cols: &[&str] = match coll {
         "_system_users" => &["password_hash"],
+        "_system_oauth_providers" => &["client_secret"],
+        "_system_webhooks" => &["secret"],
         _ => &[],
     };
     if mask_cols.is_empty() {
@@ -1143,5 +1145,38 @@ mod editor_payload_tests {
         assert_eq!(none_json, "null");
         let (_, some_json) = policy_json_payloads(&empty, &Some("user_id".to_string()));
         assert_eq!(some_json, "\"user_id\"");
+    }
+
+    const MASK: &str = "\u{25cf}\u{25cf}\u{25cf}\u{25cf}";
+
+    #[test]
+    fn mask_oauth_client_secret() {
+        let (_cols, rows) = super::mask_sensitive_columns(
+            "_system_oauth_providers",
+            vec!["provider".into(), "client_secret".into()],
+            vec![vec!["google".into(), "supersecret".into()]],
+        );
+        assert_eq!(rows[0][1], MASK);
+        assert_eq!(rows[0][0], "google");
+    }
+
+    #[test]
+    fn mask_webhook_secret() {
+        let (_cols, rows) = super::mask_sensitive_columns(
+            "_system_webhooks",
+            vec!["url".into(), "secret".into()],
+            vec![vec!["https://x".into(), "deadbeef".into()]],
+        );
+        assert_eq!(rows[0][1], MASK);
+    }
+
+    #[test]
+    fn mask_still_masks_password_hash() {
+        let (_cols, rows) = super::mask_sensitive_columns(
+            "_system_users",
+            vec!["email".into(), "password_hash".into()],
+            vec![vec!["a@b".into(), "$argon2$".into()]],
+        );
+        assert_eq!(rows[0][1], MASK);
     }
 }
