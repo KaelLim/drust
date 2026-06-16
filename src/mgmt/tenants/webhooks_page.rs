@@ -375,7 +375,7 @@ pub async fn tenant_webhook_create_form(
             // resubmit the form; carry the secret in a short-lived
             // HttpOnly cookie (not the URL — query-params would leak via
             // Referer + access logs).
-            let location = format!("/drust/admin/tenants/{tenant_id}/_webhooks");
+            let location = crate::base_path::base(&format!("/admin/tenants/{tenant_id}/_webhooks"));
             let mut resp = Response::builder()
                 .status(StatusCode::SEE_OTHER)
                 .header(axum::http::header::LOCATION, &location)
@@ -433,5 +433,8 @@ pub async fn tenant_webhook_delete_form(
             })
             .await;
     }
-    Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_webhooks")).into_response()
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/_webhooks"
+    )))
+    .into_response()
 }

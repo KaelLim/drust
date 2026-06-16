@@ -1926,6 +1926,7 @@ impl DrustMcpService {
 // round-trip, every client sees it once. Structured by capability group
 // + recipes so the LLM can map intent → tool without exhausting tools/list.
 fn build_instructions(tenant_id: &str, base: &str) -> String {
+    let bp = crate::base_path::base_path();
     format!(
         r#"drust multi-tenant SQLite BaaS — tenant '{tenant_id}'.
 
@@ -1971,7 +1972,7 @@ CAPABILITY GROUPS
 3. STORAGE (per-tenant Garage buckets — public + private)
    Manage: list_files, delete_file, get_file_url, set_file_visibility  (get_file_url: pass download=true for attachment disposition)
    Upload (small): single request — MCP has no upload tool by design. Use REST:
-     POST {base}/drust/t/{tenant_id}/files
+     POST {base}{bp}/t/{tenant_id}/files
      Header: Authorization: Bearer $DRUST_TOKEN
      Body:   multipart/form-data
        file          (required — bytes)
@@ -1981,10 +1982,10 @@ CAPABILITY GROUPS
        meta          (optional — JSON object)
    Upload (large / resumable): when the file exceeds limits.max_upload_bytes
    (see whoami) or you need resume-on-disconnect, use the tus 1.0 protocol:
-     POST {base}/drust/t/{tenant_id}/uploads    (create session; 201 + Location)
+     POST {base}{bp}/t/{tenant_id}/uploads    (create session; 201 + Location)
        Header: Upload-Length, Upload-Metadata (tus); Authorization: Bearer $DRUST_TOKEN
      then PATCH each chunk per tus 1.0; HEAD to resume from the server offset.
-     Send OPTIONS {base}/drust/t/{tenant_id}/uploads to discover Tus-Max-Size
+     Send OPTIONS {base}{bp}/t/{tenant_id}/uploads to discover Tus-Max-Size
      and the per-chunk limit. Service token only (same as small upload).
 
 4. IDENTITY + INTEGRATIONS
@@ -2002,7 +2003,7 @@ CAPABILITY GROUPS
    Run:     invoke_function (async — returns enqueue ack; read outcome via get_function_logs, trigger=manual)
    Logs:    get_function_logs
    Upload:  NO MCP upload tool by design. POST the .wasm via REST:
-     POST {base}/drust/t/{tenant_id}/functions   (multipart: name, wasm, triggers, description; service bearer)
+     POST {base}{bp}/t/{tenant_id}/functions   (multipart: name, wasm, triggers, description; service bearer)
 
 RECIPES
   "Look around"           → get_schema_overview

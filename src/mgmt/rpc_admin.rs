@@ -121,9 +121,11 @@ pub async fn rpc_index(
 
     let pager_url = |p: u32| -> String {
         if per_page == RPC_DEFAULT_PER_PAGE {
-            format!("/drust/admin/tenants/{tenant_id}/_rpc?page={p}")
+            crate::base_path::base(&format!("/admin/tenants/{tenant_id}/_rpc?page={p}"))
         } else {
-            format!("/drust/admin/tenants/{tenant_id}/_rpc?page={p}&per_page={per_page}")
+            crate::base_path::base(&format!(
+                "/admin/tenants/{tenant_id}/_rpc?page={p}&per_page={per_page}"
+            ))
         }
     };
     let prev_url = (page > 1).then(|| pager_url(page - 1));
@@ -522,7 +524,10 @@ pub async fn rpc_save(
         );
     }
 
-    Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_rpc")).into_response()
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/_rpc"
+    )))
+    .into_response()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1200,5 +1205,9 @@ pub async fn rpc_delete(
         return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
     }
 
-    Redirect::to(&format!("/drust/admin/tenants/{}/_rpc", tenant_id)).into_response()
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{}/_rpc",
+        tenant_id
+    )))
+    .into_response()
 }

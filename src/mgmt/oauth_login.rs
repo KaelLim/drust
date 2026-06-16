@@ -18,7 +18,10 @@ pub(crate) fn secure_from_headers(h: &HeaderMap) -> bool {
 fn redirect_login_error(err: &str) -> Response {
     Response::builder()
         .status(StatusCode::FOUND)
-        .header(header::LOCATION, format!("/drust/login?oauth_error={err}"))
+        .header(
+            header::LOCATION,
+            crate::base_path::base(&format!("/login?oauth_error={err}")),
+        )
         .body(axum::body::Body::empty())
         .unwrap()
 }
@@ -37,7 +40,11 @@ pub async fn oauth_start(
 
     let state = oauth_state::issue_state();
     let (verifier, challenge) = oauth_state::issue_pkce();
-    let redirect_uri = format!("{}/drust/admin/oauth/{}/callback", s.public_url, provider);
+    let redirect_uri = format!(
+        "{}{}",
+        s.public_url,
+        crate::base_path::base(&format!("/admin/oauth/{}/callback", provider))
+    );
     let auth_url = p.authorize_url(&state, &challenge, &redirect_uri);
 
     let secure = secure_from_headers(&headers);
@@ -97,7 +104,11 @@ pub async fn oauth_callback(
         return redirect_login_error("oauth_state_mismatch");
     }
     // 4. exchange
-    let redirect_uri = format!("{}/drust/admin/oauth/{}/callback", s.public_url, provider);
+    let redirect_uri = format!(
+        "{}{}",
+        s.public_url,
+        crate::base_path::base(&format!("/admin/oauth/{}/callback", provider))
+    );
     let user = match p.exchange(&q.code, &verifier, &redirect_uri).await {
         Ok(u) => u,
         Err(e) => {
@@ -190,7 +201,7 @@ pub async fn oauth_callback(
 
     let mut builder = Response::builder()
         .status(StatusCode::FOUND)
-        .header(header::LOCATION, "/drust/admin/tenants")
+        .header(header::LOCATION, crate::base_path::base("/admin/tenants"))
         .header(header::SET_COOKIE, session_cookie)
         .header(
             header::SET_COOKIE,

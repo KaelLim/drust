@@ -64,9 +64,17 @@ pub fn build_public_url(
     match (owner, visibility) {
         (Owner::Admin, Visibility::Public) => format!("{base}/public/{key}"),
         (Owner::Tenant(id), Visibility::Public) => format!("{base}/public/{id}/{key}"),
-        (Owner::Admin, Visibility::Private) => format!("{base}/drust/admin/files/{key}/bytes"),
+        (Owner::Admin, Visibility::Private) => {
+            format!(
+                "{base}{}",
+                crate::base_path::base(&format!("/admin/files/{key}/bytes"))
+            )
+        }
         (Owner::Tenant(id), Visibility::Private) => {
-            format!("{base}/drust/t/{id}/files/{key}/bytes")
+            format!(
+                "{base}{}",
+                crate::base_path::base(&format!("/t/{id}/files/{key}/bytes"))
+            )
         }
     }
 }

@@ -88,8 +88,10 @@ pub async fn admin_session_layer(
         None => {
             let mut r = Response::new(axum::body::Body::empty());
             *r.status_mut() = StatusCode::SEE_OTHER;
-            r.headers_mut()
-                .insert(header::LOCATION, "/drust/login".parse().unwrap());
+            r.headers_mut().insert(
+                header::LOCATION,
+                crate::base_path::base("/login").parse().unwrap(),
+            );
             r
         }
     }
@@ -109,8 +111,9 @@ fn extract_cookie<B>(req: &Request<B>, name: &str) -> Option<String> {
 }
 
 pub fn build_session_cookie(token: &str, ttl_secs: u64) -> String {
+    let cpath = crate::base_path::cookie_path("");
     let base = format!(
-        "{}={}; Path=/drust; HttpOnly; SameSite=Lax; Max-Age={}",
+        "{}={}; Path={cpath}; HttpOnly; SameSite=Lax; Max-Age={}",
         SESSION_COOKIE, token, ttl_secs
     );
     if std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_ok() {
@@ -121,8 +124,9 @@ pub fn build_session_cookie(token: &str, ttl_secs: u64) -> String {
 }
 
 pub fn clear_session_cookie() -> String {
+    let cpath = crate::base_path::cookie_path("");
     let base = format!(
-        "{}=; Path=/drust; HttpOnly; SameSite=Lax; Max-Age=0",
+        "{}=; Path={cpath}; HttpOnly; SameSite=Lax; Max-Age=0",
         SESSION_COOKIE
     );
     if std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_ok() {

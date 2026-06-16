@@ -219,7 +219,10 @@ pub async fn toggle(
     }
     state.functions.bindings.invalidate(&tenant_id);
     audit_admin(&tenant_id, "function.update", &name);
-    Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_functions")).into_response()
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/_functions"
+    )))
+    .into_response()
 }
 
 /// `POST /admin/tenants/{id}/_functions/{name}/delete` — delete + artifact GC
@@ -248,7 +251,10 @@ pub async fn delete(
         Ok(false) => {} // already gone — idempotent, still redirect to the list
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
-    Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_functions")).into_response()
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/_functions"
+    )))
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]

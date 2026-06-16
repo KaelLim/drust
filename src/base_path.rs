@@ -80,7 +80,10 @@ mod tests {
     fn cookie_path_both_modes() {
         assert_eq!(cookie_path_with("/drust", ""), "/drust");
         assert_eq!(cookie_path_with("", ""), "/");
-        assert_eq!(cookie_path_with("/drust", "/t/x/oauth/"), "/drust/t/x/oauth/");
+        assert_eq!(
+            cookie_path_with("/drust", "/t/x/oauth/"),
+            "/drust/t/x/oauth/"
+        );
         assert_eq!(cookie_path_with("", "/t/x/oauth/"), "/t/x/oauth/");
     }
 

@@ -86,8 +86,9 @@ impl Theme {
 /// dev workflow on plain-HTTP `127.0.0.1:47826` accepts cookie writes.
 /// MUST NOT be set in production.
 pub fn build_theme_cookie(theme: Theme) -> String {
+    let cpath = crate::base_path::cookie_path("");
     let base = format!(
-        "drust_theme={code}; Path=/drust; Max-Age=31536000; SameSite=Lax",
+        "drust_theme={code}; Path={cpath}; Max-Age=31536000; SameSite=Lax",
         code = theme.code(),
     );
     if std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_ok() {

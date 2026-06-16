@@ -201,9 +201,9 @@ pub async fn tenant_oauth_provider_upsert(
         .map_err(|e| e.to_string());
 
     match res {
-        Ok(()) => Redirect::to(&format!(
-            "/drust/admin/tenants/{tenant_id}/_oauth_providers"
-        ))
+        Ok(()) => Redirect::to(&crate::base_path::base(&format!(
+            "/admin/tenants/{tenant_id}/_oauth_providers"
+        )))
         .into_response(),
         Err(msg) => {
             render_oauth_providers_page(&state, tenant_id, Some(msg), locale, theme, admin).await
@@ -230,8 +230,8 @@ pub async fn tenant_oauth_provider_delete(
             .with_writer(move |c| crate::tenant::oauth_config::delete(c, &provider2))
             .await;
     }
-    Redirect::to(&format!(
-        "/drust/admin/tenants/{tenant_id}/_oauth_providers"
-    ))
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/_oauth_providers"
+    )))
     .into_response()
 }

@@ -78,8 +78,8 @@ pub fn build_url(
     token: &str,
 ) -> String {
     let path = match owner {
-        Owner::Admin => format!("/drust/s/admin/{key}"),
-        Owner::Tenant(id) => format!("/drust/s/t/{id}/{key}"),
+        Owner::Admin => crate::base_path::base(&format!("/s/admin/{key}")),
+        Owner::Tenant(id) => crate::base_path::base(&format!("/s/t/{id}/{key}")),
     };
     let d = if download { "1" } else { "0" };
     format!(

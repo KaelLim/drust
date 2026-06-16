@@ -225,9 +225,11 @@ pub async fn list_page(
             String::new()
         };
         if per_page == DEFAULT_PER_PAGE {
-            format!("/drust/admin/files?page={p}{vis_part}")
+            crate::base_path::base(&format!("/admin/files?page={p}{vis_part}"))
         } else {
-            format!("/drust/admin/files?page={p}&per_page={per_page}{vis_part}")
+            crate::base_path::base(&format!(
+                "/admin/files?page={p}&per_page={per_page}{vis_part}"
+            ))
         }
     };
     let prev_url = (page_num > 1).then(|| pager_url(page_num - 1));
@@ -563,7 +565,7 @@ pub async fn upload_submit(
         return (StatusCode::BAD_GATEWAY, format!("garage put: {e:#}")).into_response();
     }
 
-    Redirect::to("/drust/admin/files").into_response()
+    Redirect::to(&crate::base_path::base("/admin/files")).into_response()
 }
 
 pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path<i64>) -> Response {
@@ -582,7 +584,7 @@ pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path
     };
     let Some(key) = key else {
         // Already gone — idempotent.
-        return Redirect::to("/drust/admin/files").into_response();
+        return Redirect::to(&crate::base_path::base("/admin/files")).into_response();
     };
 
     if let Err(e) = garage.delete_object(&key).await {
@@ -597,7 +599,7 @@ pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path
             return internal(format!("db delete: {e}"));
         }
     }
-    Redirect::to("/drust/admin/files").into_response()
+    Redirect::to(&crate::base_path::base("/admin/files")).into_response()
 }
 
 pub async fn reconcile_page(
@@ -806,7 +808,7 @@ pub async fn reconcile_apply(
             tracing::warn!(bucket_name = %bucket_name, error = %e, "reconcile: orphan bucket retry failed");
         }
     }
-    Redirect::to("/drust/admin/files").into_response()
+    Redirect::to(&crate::base_path::base("/admin/files")).into_response()
 }
 
 async fn load_files(

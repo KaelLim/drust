@@ -78,16 +78,16 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
     let service = read_token("service");
     drop(conn);
 
-    let rest_base = format!("/drust/t/{tenant_id}/");
-    let mcp_path = format!("/drust/t/{tenant_id}/mcp");
-    let files_upload = format!("/drust/t/{tenant_id}/files");
-    let files_upload_resumable = format!("/drust/t/{tenant_id}/uploads");
-    let rpc_pattern = format!("/drust/t/{tenant_id}/rpc/<name>");
+    let rest_base = crate::base_path::base(&format!("/t/{tenant_id}/"));
+    let mcp_path = crate::base_path::base(&format!("/t/{tenant_id}/mcp"));
+    let files_upload = crate::base_path::base(&format!("/t/{tenant_id}/files"));
+    let files_upload_resumable = crate::base_path::base(&format!("/t/{tenant_id}/uploads"));
+    let rpc_pattern = crate::base_path::base(&format!("/t/{tenant_id}/rpc/<name>"));
     // v1.31 — broadcast room surfaces. realtime_ws expects WS upgrade; pass
     // the service or anon token via `?token=<...>` (browsers can't set
     // Authorization on WebSocket). rooms_publish_rest is service-only.
-    let realtime_ws = format!("/drust/t/{tenant_id}/realtime?token=<bearer>");
-    let rooms_publish_rest = format!("/drust/t/{tenant_id}/rooms/<room>");
+    let realtime_ws = crate::base_path::base(&format!("/t/{tenant_id}/realtime?token=<bearer>"));
+    let rooms_publish_rest = crate::base_path::base(&format!("/t/{tenant_id}/rooms/<room>"));
     let rooms_cfg = &inner.rooms_cfg;
 
     Ok(json!({

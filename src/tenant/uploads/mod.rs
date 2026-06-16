@@ -224,7 +224,7 @@ pub async fn create(
     // Browser-facing path: Caddy strips /drust, so re-prepend it here.
     h.insert(
         axum::http::header::LOCATION,
-        format!("/drust/t/{tenant}/uploads/{token}")
+        crate::base_path::base(&format!("/t/{tenant}/uploads/{token}"))
             .parse()
             .unwrap(),
     );
