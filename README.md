@@ -76,7 +76,7 @@ docker compose --profile storage up -d
 
 ```bash
 curl -s http://localhost:47826/health        # → ok
-open http://localhost/drust/login            # admin UI via the bundled Caddy; log in with DRUST_INIT_ADMIN_*
+open http://localhost/login                  # admin UI via the bundled Caddy (root mode); log in with DRUST_INIT_ADMIN_*
 ```
 
 > [!CAUTION]
