@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-06-13
+updated: 2026-06-16
 version: 1.38.0
 ---
 
@@ -126,7 +126,7 @@ Tenant files live in two **host-wide** buckets — `public` (website-enabled, se
 > [!CAUTION]
 > **drust's systemd unit deliberately OMITS `MemoryDenyWriteExecute`** (v1.36+). wasmtime's Cranelift JIT must `mmap(PROT_EXEC)` to run guest wasm; re-adding W^X makes EVERY edge-function upload/invoke fail the compile gate with `WASM_COMPILE_FAILED: unable to make memory executable` (EPERM) — and the unsandboxed `cargo test` suite stays green, so ONLY a live smoke against the running service catches it. The guest sandbox is enforced inside wasmtime (epoch deadline + `ResourceLimiter` + empty `WasiCtx` + WIT import-absence), not by process-wide W^X — a conscious posture trade-off. Rationale is inline in `deploy/drust.service`; the top-level `tool/CLAUDE.md` "never skip the sandbox directives" WARNING does **not** apply to this one line. If W^X must return, move functions to an AOT/out-of-process model — do not just re-add the directive.
 
-Six further invariants are enforced in code; they don't need callouts but must not be loosened without re-reasoning:
+Seven further invariants are enforced in code; they don't need callouts but must not be loosened without re-reasoning:
 
 - **User tokens (`drust_user_*`) cannot use `/query`, `/query/explain`, or `/mcp`.** drust does not rewrite user-supplied SQL, so `owner_field` cannot be enforced on those surfaces. Reject with `403 QUERY_USER_DENIED` / `MCP_USER_DENIED`. For per-user reads of owner-scoped data, expose a stored RPC with `:user_id` (auto-bound from `AuthCtx`), or use `/search` (v1.10+) / `/list` (v1.21+) where drust builds the SQL.
 - **`/search` and `/list` accept user tokens; `/query` does not.** All three take structured input from users, but `/query` accepts raw SELECT (un-rewritable) while `/search` and `/list` take only `FilterAst` (`src/query/vector_filter.rs`) compiled with `?` binds, so `owner_field` is always enforceable. Any new endpoint accepting user input that lands in SQL must explicitly pick a camp.
@@ -134,6 +134,7 @@ Six further invariants are enforced in code; they don't need callouts but must n
 - **Mode B keeps every HTTP request small by design (chunks ≤ `DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES`, default 64 MiB) so it stays under the 200 MB Caddy/.221 ingress limit.** Never raise a body-limit to accommodate large uploads — the tus chunking protocol exists precisely so each individual request stays small.
 - **The executor's host state is built with `functions: None` (`HostStateSeed::build_mcp`)** — restoring a dispatcher there reintroduces unbounded recursion; any new `DrustMcp` construction site must decide this field consciously.
 - **Explicit RLS policies AND-compose with the unchanged owner clause; `compute_owner_filter`, the cap-gate, and the insert-stamp / update-strip transforms are never modified** (v1.38+). Policy USING is `?`-compiled (`src/query/policy.rs::compile_policy_using`) and AND-ed into the same `WHERE` the owner clause already builds; policy CHECK runs `eval_policy` on the read-back row INSIDE the `with_writer_tx` closure (sentinel `POLICY_CHECK_FAILED` → rollback → `403`). Policy input must stay structured (`FilterAst`, never raw user SQL) so enforcement is by construction — same camp rule as `/search` and `/list`. The two evaluators must stay in lockstep: any grammar change updates both `compile_policy_using` and `eval_policy` and the `tests/policy_expression.rs` corpus.
+- **All browser-facing URL prefixes route through `crate::base_path`.** `DRUST_BASE_PATH` (default `/drust`; the Docker image ships `""` for root) sets the external mount that Caddy/the proxy strips before axum — routes live at root, and every OUTBOUND string must re-add the prefix: `.rs` uses `crate::base_path::base()` (URLs) / `cookie_path()` (Set-Cookie `Path`); templates use `{{ crate::base_path::base_path() }}`. Never hardcode `/drust` in a redirect `Location`, cookie `Path`, OAuth `redirect_uri`, or admin `href`/`action`/`fetch` — default mode is byte-identical (so the suite won't catch a regression), but root mode (`""`) would break. The `#[cfg(test)]` assertions pinning `/drust` are the default-mode oracle; `tests/base_path_root.rs` proves empty mode.
 
 ## Directory map
 

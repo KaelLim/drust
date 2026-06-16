@@ -59,9 +59,15 @@ COPY --from=builder /out/ /usr/local/bin/
 USER drust
 WORKDIR /data
 
+# DRUST_BASE_PATH="" → serve at the ROOT path: drust's browser-facing URLs
+# (redirects, cookie Paths, OAuth redirect_uri, admin links) carry no "/drust"
+# prefix, so the image works standalone or behind a root-mounted proxy. Set
+# DRUST_BASE_PATH=/drust if you front it with a proxy that mounts drust under
+# that subpath (e.g. Caddy `handle_path /drust/*`, as in deploy/Caddyfile).
 ENV DRUST_BIND=0.0.0.0:47826 \
     DRUST_DATA_DIR=/data \
-    DRUST_LOG_DIR=/logs
+    DRUST_LOG_DIR=/logs \
+    DRUST_BASE_PATH=""
 
 VOLUME ["/data", "/logs"]
 EXPOSE 47826
