@@ -561,11 +561,11 @@ pub async fn restore_tenant(
             crate::safety::audit_db::try_send(&entry);
 
             // PRG: redirect back to inspect page with success flash via query string.
-            Redirect::to(&format!(
-                "/drust/admin/backups/{filename}/inspect?restored={tid}&dest={dest}",
+            Redirect::to(&crate::base_path::base(&format!(
+                "/admin/backups/{filename}/inspect?restored={tid}&dest={dest}",
                 tid = form.tenant_id,
                 dest = urlencoding::encode(&dest_dir.display().to_string()),
-            ))
+            )))
             .into_response()
         }
         Ok(Err(e)) => {

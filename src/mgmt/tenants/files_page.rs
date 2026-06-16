@@ -119,9 +119,11 @@ pub async fn tenant_files_admin_page(
 
     let pager_url = |p: u32| -> String {
         if per_page == TENANT_FILES_DEFAULT_PER_PAGE {
-            format!("/drust/admin/tenants/{tenant_id}/files?page={p}")
+            crate::base_path::base(&format!("/admin/tenants/{tenant_id}/files?page={p}"))
         } else {
-            format!("/drust/admin/tenants/{tenant_id}/files?page={p}&per_page={per_page}")
+            crate::base_path::base(&format!(
+                "/admin/tenants/{tenant_id}/files?page={p}&per_page={per_page}"
+            ))
         }
     };
 

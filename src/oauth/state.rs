@@ -47,7 +47,7 @@ pub fn verify_state(cookie: &str, query: &str) -> bool {
 /// be derived from the request's `X-Forwarded-Proto` header.
 pub fn state_cookie(state: &str, secure: bool) -> Cookie<'static> {
     Cookie::build((STATE_COOKIE, state.to_string()))
-        .path("/drust/admin")
+        .path(crate::base_path::cookie_path("/admin"))
         .http_only(true)
         .same_site(SameSite::Lax)
         .secure(secure)
@@ -57,7 +57,7 @@ pub fn state_cookie(state: &str, secure: bool) -> Cookie<'static> {
 
 pub fn clear_state_cookie() -> Cookie<'static> {
     Cookie::build((STATE_COOKIE, String::new()))
-        .path("/drust/admin")
+        .path(crate::base_path::cookie_path("/admin"))
         .max_age(cookie::time::Duration::ZERO)
         .build()
 }
@@ -73,7 +73,7 @@ pub fn issue_pkce() -> (String, String) {
 
 pub fn pkce_cookie(verifier: &str, secure: bool) -> Cookie<'static> {
     Cookie::build((PKCE_COOKIE, verifier.to_string()))
-        .path("/drust/admin")
+        .path(crate::base_path::cookie_path("/admin"))
         .http_only(true)
         .same_site(SameSite::Lax)
         .secure(secure)
@@ -83,7 +83,7 @@ pub fn pkce_cookie(verifier: &str, secure: bool) -> Cookie<'static> {
 
 pub fn clear_pkce_cookie() -> Cookie<'static> {
     Cookie::build((PKCE_COOKIE, String::new()))
-        .path("/drust/admin")
+        .path(crate::base_path::cookie_path("/admin"))
         .max_age(cookie::time::Duration::ZERO)
         .build()
 }

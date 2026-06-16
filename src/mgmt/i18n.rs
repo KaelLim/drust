@@ -66,8 +66,9 @@ impl Locale {
 /// cookie. Same attributes as `drust_theme`. See
 /// `crate::mgmt::theme::build_theme_cookie` for rationale.
 pub fn build_locale_cookie(locale: Locale) -> String {
+    let cpath = crate::base_path::cookie_path("");
     let base = format!(
-        "drust_locale={code}; Path=/drust; Max-Age=31536000; SameSite=Lax",
+        "drust_locale={code}; Path={cpath}; Max-Age=31536000; SameSite=Lax",
         code = locale.code(),
     );
     if std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_ok() {

@@ -249,7 +249,7 @@ async fn settings_locale_save(
         }
     }
     let cookie = crate::mgmt::i18n::build_locale_cookie(locale);
-    let mut resp = Redirect::to("/drust/admin/settings").into_response();
+    let mut resp = Redirect::to(&crate::base_path::base("/admin/settings")).into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
     resp
@@ -291,7 +291,7 @@ async fn settings_theme_save(
         }
     }
     let cookie = crate::mgmt::theme::build_theme_cookie(theme);
-    let mut resp = Redirect::to("/drust/admin/settings").into_response();
+    let mut resp = Redirect::to(&crate::base_path::base("/admin/settings")).into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
     resp
@@ -339,7 +339,7 @@ async fn settings_combined_save(
     }
     let locale_cookie = crate::mgmt::i18n::build_locale_cookie(locale);
     let theme_cookie = crate::mgmt::theme::build_theme_cookie(theme);
-    let mut resp = Redirect::to("/drust/admin/settings").into_response();
+    let mut resp = Redirect::to(&crate::base_path::base("/admin/settings")).into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, locale_cookie.parse().unwrap());
     resp.headers_mut()
@@ -457,7 +457,7 @@ async fn login_submit(
     entry.auth_method = Some("password".to_string());
     crate::safety::audit::write_entry(&state.log_dir, &entry).await;
     let cookie = build_session_cookie(&token, state.session_ttl_days * 86_400);
-    let mut resp = Redirect::to("/drust/admin/tenants").into_response();
+    let mut resp = Redirect::to(&crate::base_path::base("/admin/tenants")).into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
     // v1.28.1: expire any pre-v1.28.1 cookies that login wrote with `Path=/`.
@@ -509,14 +509,14 @@ async fn logout_submit(State(state): State<MgmtState>, headers: axum::http::Head
         let mut conn = state.meta.lock().await;
         let _ = revoke_session(&mut conn, &tok);
     }
-    let mut resp = Redirect::to("/drust/login").into_response();
+    let mut resp = Redirect::to(&crate::base_path::base("/login")).into_response();
     resp.headers_mut()
         .insert(header::SET_COOKIE, clear_session_cookie().parse().unwrap());
     resp
 }
 
 async fn root_redirect() -> Redirect {
-    Redirect::to("/drust/admin/tenants")
+    Redirect::to(&crate::base_path::base("/admin/tenants"))
 }
 
 fn unauthorized(

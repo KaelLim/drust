@@ -78,9 +78,9 @@ pub(crate) const COOKIE_TTL_SECS: i64 = 300;
 /// `project_drust_caddy_prefix_paths`.
 pub(crate) fn cookie_attrs(tid: &str, secure: bool) -> String {
     let scheme_attrs = if secure { "Secure; " } else { "" };
+    let cpath = crate::base_path::cookie_path(&format!("/t/{tid}/oauth/"));
     format!(
-        "Path=/drust/t/{tid}/oauth/; HttpOnly; {scheme_attrs}SameSite=Lax; Max-Age={ttl}",
-        tid = tid,
+        "Path={cpath}; HttpOnly; {scheme_attrs}SameSite=Lax; Max-Age={ttl}",
         scheme_attrs = scheme_attrs,
         ttl = COOKIE_TTL_SECS,
     )
@@ -91,7 +91,8 @@ pub(crate) fn set_cookie(name: &str, value: &str, tid: &str, secure: bool) -> St
 }
 
 pub(crate) fn clear_cookie(name: &str, tid: &str) -> String {
-    format!("{name}=; Path=/drust/t/{tid}/oauth/; Max-Age=0; HttpOnly; SameSite=Lax")
+    let cpath = crate::base_path::cookie_path(&format!("/t/{tid}/oauth/"));
+    format!("{name}=; Path={cpath}; Max-Age=0; HttpOnly; SameSite=Lax")
 }
 
 pub(crate) fn secure_from_headers(h: &axum::http::HeaderMap) -> bool {
@@ -233,7 +234,8 @@ pub(crate) async fn oauth_start(
         );
     }
     let drust_callback = format!(
-        "{pu}/drust/t/{tid}/oauth/{provider_name}/callback",
+        "{pu}{}",
+        crate::base_path::base(&format!("/t/{tid}/oauth/{provider_name}/callback")),
         pu = state.public_url
     );
 
@@ -515,7 +517,8 @@ pub(crate) async fn oauth_callback(
         );
     }
     let drust_callback = format!(
-        "{pu}/drust/t/{tid}/oauth/{provider_name}/callback",
+        "{pu}{}",
+        crate::base_path::base(&format!("/t/{tid}/oauth/{provider_name}/callback")),
         pu = state.public_url
     );
     let adapter = match build_adapter(&state, &cfg) {

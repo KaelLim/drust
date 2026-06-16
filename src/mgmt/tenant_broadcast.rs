@@ -75,7 +75,7 @@ impl BroadcastInspectorPage {
     /// cross-tenant invariant — `tenant_id` is the only interpolated
     /// segment. The `/drust` prefix is load-bearing (see module doc).
     fn build_ws_path(tenant_id: &str) -> String {
-        format!("/drust/t/{}/realtime", tenant_id)
+        crate::base_path::base(&format!("/t/{}/realtime", tenant_id))
     }
 }
 

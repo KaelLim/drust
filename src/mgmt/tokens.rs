@@ -173,7 +173,11 @@ pub async fn reroll_token_form(
     if !resp.status().is_success() {
         return resp;
     }
-    Redirect::to(&format!("/drust/admin/tenants/{}/_api_keys", tenant_id)).into_response()
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{}/_api_keys",
+        tenant_id
+    )))
+    .into_response()
 }
 
 pub(crate) fn read_slot(
@@ -211,7 +215,11 @@ pub(crate) fn read_slot(
 /// Before v1.14 this redirected to `_api_keys`, which is still reachable
 /// via the sidebar.
 pub async fn detail_redirect(Path(tenant_id): Path<String>) -> Response {
-    Redirect::to(&format!("/drust/admin/tenants/{}/_overview", tenant_id)).into_response()
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{}/_overview",
+        tenant_id
+    )))
+    .into_response()
 }
 
 /// `GET /admin/tenants/{id}/_api_keys` — virtual collection that renders the

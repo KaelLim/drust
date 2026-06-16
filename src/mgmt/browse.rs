@@ -155,10 +155,10 @@ pub async fn collections_page(
     };
 
     if let Some(first) = collections.first() {
-        let to = format!(
-            "/drust/admin/tenants/{}/collections/{}",
+        let to = crate::base_path::base(&format!(
+            "/admin/tenants/{}/collections/{}",
             tenant_id, first.name
-        );
+        ));
         return Redirect::to(&to).into_response();
     }
 
@@ -277,7 +277,9 @@ pub async fn collection_rows_page(
             _ => None,
         };
         if let Some(v) = view {
-            let to = format!("/drust/admin/tenants/{tenant_id}/collections/{coll_name}?view={v}");
+            let to = crate::base_path::base(&format!(
+                "/admin/tenants/{tenant_id}/collections/{coll_name}?view={v}"
+            ));
             return Redirect::to(&to).into_response();
         }
     }
@@ -471,9 +473,9 @@ pub async fn update_anon_caps(
     // immediately, not after the next DDL or process restart.
     pool.schema_cache.invalidate(&coll_name);
 
-    Redirect::to(&format!(
-        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
-    ))
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
+    )))
     .into_response()
 }
 
@@ -525,9 +527,9 @@ pub async fn update_realtime(
     if !enabled {
         state.bus.evict_collection(&tenant_id, &coll_name);
     }
-    Redirect::to(&format!(
-        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=realtime"
-    ))
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=realtime"
+    )))
     .into_response()
 }
 
@@ -804,9 +806,9 @@ pub async fn admin_update_collection_description(
     let validated = match check_description(&form.description) {
         Ok(v) => v,
         Err((code, _)) => {
-            return Redirect::to(&format!(
-                "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema&desc_error={code}"
-            ))
+            return Redirect::to(&crate::base_path::base(&format!(
+                "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema&desc_error={code}"
+            )))
             .into_response();
         }
     };
@@ -846,9 +848,9 @@ pub async fn admin_update_collection_description(
 
     pool.schema_cache.invalidate(&coll_name);
 
-    Redirect::to(&format!(
-        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
-    ))
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
+    )))
     .into_response()
 }
 
@@ -878,9 +880,9 @@ pub async fn admin_update_field_description(
     let validated = match check_description(&form.description) {
         Ok(v) => v,
         Err((code, _)) => {
-            return Redirect::to(&format!(
-                "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema&desc_error={code}"
-            ))
+            return Redirect::to(&crate::base_path::base(&format!(
+                "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema&desc_error={code}"
+            )))
             .into_response();
         }
     };
@@ -927,9 +929,9 @@ pub async fn admin_update_field_description(
 
     pool.schema_cache.invalidate(&coll_name);
 
-    Redirect::to(&format!(
-        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
-    ))
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
+    )))
     .into_response()
 }
 
@@ -959,9 +961,9 @@ pub async fn admin_update_index_description(
     let validated = match check_description(&form.description) {
         Ok(v) => v,
         Err((code, _)) => {
-            return Redirect::to(&format!(
-                "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=indexes&desc_error={code}"
-            ))
+            return Redirect::to(&crate::base_path::base(&format!(
+                "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=indexes&desc_error={code}"
+            )))
             .into_response();
         }
     };
@@ -1008,9 +1010,9 @@ pub async fn admin_update_index_description(
 
     pool.schema_cache.invalidate(&coll_name);
 
-    Redirect::to(&format!(
-        "/drust/admin/tenants/{tenant_id}/collections/{coll_name}?tab=indexes"
-    ))
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=indexes"
+    )))
     .into_response()
 }
 

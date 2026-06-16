@@ -99,7 +99,10 @@ pub async fn redirect_legacy_files_page(
     axum::extract::Path(tenant_id): axum::extract::Path<String>,
 ) -> axum::response::Response {
     use axum::response::{IntoResponse, Redirect};
-    Redirect::permanent(&format!("/drust/admin/tenants/{tenant_id}/_files")).into_response()
+    Redirect::permanent(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/_files"
+    )))
+    .into_response()
 }
 
 /// GET /drust/t/<tenant>/files/<key>/bytes
@@ -702,8 +705,10 @@ pub async fn set_visibility_admin(
     match crate::storage::visibility::change_visibility(&garage, &pool, &tenant_id, &key, target)
         .await
     {
-        Ok(_) => axum::response::Redirect::to(&format!("/drust/admin/tenants/{tenant_id}/_files"))
-            .into_response(),
+        Ok(_) => axum::response::Redirect::to(&crate::base_path::base(&format!(
+            "/admin/tenants/{tenant_id}/_files"
+        )))
+        .into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("visibility change: {e:#}")).into_response(),
     }
 }

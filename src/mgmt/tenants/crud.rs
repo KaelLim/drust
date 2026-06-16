@@ -314,7 +314,7 @@ pub async fn create_tenant_form(
         Ok(_) => {
             // v1.15.0 immediate sample so the new row renders with stats next load.
             crate::mgmt::stats::sample_one(&state.session.meta, &state.tenants, &id).await;
-            Redirect::to("/drust/admin/tenants").into_response()
+            Redirect::to(&crate::base_path::base("/admin/tenants")).into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
@@ -401,7 +401,7 @@ pub async fn soft_delete_tenant_form(
     Path(id): Path<String>,
 ) -> Response {
     let _ = soft_delete_tenant(State(state), Path(id)).await;
-    Redirect::to("/drust/admin/tenants").into_response()
+    Redirect::to(&crate::base_path::base("/admin/tenants")).into_response()
 }
 
 // ─── T28: allow_self_register toggle ─────────────────────────────────────────

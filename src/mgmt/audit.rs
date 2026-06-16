@@ -489,8 +489,8 @@ struct AuditHostPage {
 
 fn base_link(scope: &AuditScope) -> String {
     match scope {
-        AuditScope::Host => "/drust/admin/audit".to_string(),
-        AuditScope::Tenant(id) => format!("/drust/admin/tenants/{id}/_logs"),
+        AuditScope::Host => crate::base_path::base("/admin/audit"),
+        AuditScope::Tenant(id) => crate::base_path::base(&format!("/admin/tenants/{id}/_logs")),
     }
 }
 
