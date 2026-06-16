@@ -13,7 +13,11 @@ fn empty_base_drops_the_prefix() {
     // First base_path mutation in this process: empty prefix = root mount.
     drust::base_path::set("");
 
-    assert_eq!(drust::base_path::base_path(), "", "raw prefix must be empty");
+    assert_eq!(
+        drust::base_path::base_path(),
+        "",
+        "raw prefix must be empty"
+    );
 
     // URL builder: prefix vanishes, the remainder is returned verbatim.
     assert_eq!(drust::base_path::base("/login"), "/login");
@@ -24,5 +28,8 @@ fn empty_base_drops_the_prefix() {
     // Path attribute must be non-empty), non-empty subs pass through.
     assert_eq!(drust::base_path::cookie_path(""), "/");
     assert_eq!(drust::base_path::cookie_path("/admin"), "/admin");
-    assert_eq!(drust::base_path::cookie_path("/t/abc/oauth/"), "/t/abc/oauth/");
+    assert_eq!(
+        drust::base_path::cookie_path("/t/abc/oauth/"),
+        "/t/abc/oauth/"
+    );
 }
