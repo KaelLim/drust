@@ -16,7 +16,7 @@
             </p>
           </div>
           <div style="display:flex;gap:8px;">
-            <a class="btn ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/edit">{{ t.s("tenant_rpc_test.actions.edit") }}</a>
+            <a class="btn ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/edit">{{ t.s("tenant_rpc_test.actions.edit") }}</a>
           </div>
         </div>
 
@@ -25,7 +25,7 @@
           <pre class="code">{{ sql }}</pre>
         </div>
 
-        <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/test/run" class="card">
+        <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/test/run" class="card">
           <div class="card-head">
             <span>{{ t.s("tenant_rpc_test.params.heading") }} <span class="count">· {{ params.len() }} declared</span></span>
             <button class="btn btn-primary btn-sm" type="submit">{{ t.s("tenant_rpc_test.actions.run") }}</button>

@@ -14,7 +14,7 @@
         </div>
       </div>
 
-      <form method="post" action="/drust/admin/files/reconcile">
+      <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/reconcile">
         <div class="card">
           <div class="card-head"><span>{{ t.s("files_reconcile.orphan_objects.title") }}</span><span class="card-head-actions">{{ t.s("files_reconcile.orphan_objects.subtitle") }}</span></div>
           <div class="records-scroll">
@@ -47,7 +47,7 @@
 
         <div style="margin-top:24px;display:flex;gap:12px;">
           <button type="submit" class="btn btn-primary">{{ t.s("files_reconcile.action.apply_selected") }}</button>
-          <a href="/drust/admin/files" class="btn btn-ghost">{{ t.s("common.action.cancel") }}</a>
+          <a href="{{ crate::base_path::base_path() }}/admin/files" class="btn btn-ghost">{{ t.s("common.action.cancel") }}</a>
         </div>
       </form>
 
@@ -56,7 +56,7 @@
         {% if pending_revokes.is_empty() %}
         <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
         {% else %}
-        <form method="post" action="/drust/admin/files/reconcile">
+        <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/reconcile">
           <div class="records-scroll">
             <table class="data"><thead><tr><th style="width:40px;">✓</th><th>{{ t.s("backup_inspect.table.col_tenant") }}</th><th>{{ t.s("files_reconcile.col.detected") }}</th><th>{{ t.s("files_reconcile.col.last_error") }}</th></tr></thead><tbody>
               {% for r in pending_revokes %}
@@ -74,7 +74,7 @@
         {% if orphan_buckets.is_empty() %}
         <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
         {% else %}
-        <form method="post" action="/drust/admin/files/reconcile">
+        <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/reconcile">
           <div class="records-scroll">
             <table class="data"><thead><tr><th style="width:40px;">✓</th><th>{{ t.s("files_reconcile.col.bucket") }}</th><th>{{ t.s("files_reconcile.col.detected") }}</th><th>{{ t.s("files_reconcile.col.reason") }}</th></tr></thead><tbody>
               {% for b in orphan_buckets %}

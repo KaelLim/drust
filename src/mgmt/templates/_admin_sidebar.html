@@ -30,37 +30,37 @@
 
   <nav class="nav">
     <div class="nav-section"><span>{{ t.s("admin_sidebar.section.organization") }}</span></div>
-    <a class="nav-item" data-section="tenants" href="/drust/admin/tenants">
+    <a class="nav-item" data-section="tenants" href="{{ crate::base_path::base_path() }}/admin/tenants">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/></svg></span>
       {{ t.s("admin_sidebar.nav.tenants") }}
     </a>
-    <a class="nav-item" data-section="audit" href="/drust/admin/audit">
+    <a class="nav-item" data-section="audit" href="{{ crate::base_path::base_path() }}/admin/audit">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h6"/></svg></span>
       {{ t.s("admin_sidebar.nav.audit_log") }}
     </a>
-    <a class="nav-item" data-section="backups" href="/drust/admin/backups">
+    <a class="nav-item" data-section="backups" href="{{ crate::base_path::base_path() }}/admin/backups">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
       {{ t.s("admin_sidebar.nav.backups") }}
     </a>
-    <a class="nav-item" data-section="files" href="/drust/admin/files">
+    <a class="nav-item" data-section="files" href="{{ crate::base_path::base_path() }}/admin/files">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 7l2-2h5l2 2h9v12H3z"/></svg></span>
       {{ t.s("admin_sidebar.nav.host_files") }}
     </a>
-    <a class="nav-item" data-section="team" href="/drust/admin/team">
+    <a class="nav-item" data-section="team" href="{{ crate::base_path::base_path() }}/admin/team">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="18" cy="8" r="2.5"/><path d="M21 20c0-2.8-1.3-5-3-5.8"/></svg></span>
       {{ t.s("admin_sidebar.nav.team") }}
     </a>
 
     <div class="nav-section"><span>{{ t.s("admin_sidebar.section.resources") }}</span></div>
-    <a class="nav-item" data-section="docs" href="/drust/admin/_docs/changelog">
+    <a class="nav-item" data-section="docs" href="{{ crate::base_path::base_path() }}/admin/_docs/changelog">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 4h12l4 4v12H4z"/><path d="M16 4v4h4"/></svg></span>
       {{ t.s("admin_sidebar.nav.changelog") }}
     </a>
-    <a class="nav-item" data-section="design" href="/drust/admin/_design">
+    <a class="nav-item" data-section="design" href="{{ crate::base_path::base_path() }}/admin/_design">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="19" r="1.5"/><circle cx="5" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></span>
       {{ t.s("admin_sidebar.nav.design_system") }}
     </a>
-    <a class="nav-item" data-section="settings" href="/drust/admin/settings">
+    <a class="nav-item" data-section="settings" href="{{ crate::base_path::base_path() }}/admin/settings">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.21.51.65.91 1.18 1.05H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
       {{ t.s("admin_sidebar.nav.settings") }}
     </a>

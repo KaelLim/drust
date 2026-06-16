@@ -95,7 +95,7 @@
           </div>
           <div style="display:flex;gap:6px;">
             <form method="post"
-                  action="/drust/admin/tenants/{{ tenant_id }}/_webhooks/{{ r.id }}/delete"
+                  action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_webhooks/{{ r.id }}/delete"
                   onsubmit="return confirm('{{ t.fmt3("tenant_webhooks_admin.delete.confirm", "id", r.id, "collection", r.collection, "url", r.url) }}');"
                   style="margin:0;">
               <button type="submit" class="btn sm danger">{{ t.s("files.row.delete_btn") }}</button>
@@ -113,7 +113,7 @@
             </div>
           </div>
           <div class="card-body">
-            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_webhooks"
+            <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_webhooks"
                   style="display:grid;grid-template-columns:1fr;gap:18px;">
               <div class="field">
                 <label>{{ t.s("tenant_webhooks_admin.form.collection_label") }}</label>

@@ -26,7 +26,7 @@
     <button class="btn sm icon" type="button" onclick="copyKey('key-{{ role }}', this)" title="{{ t.s("tenant_api_keys.btn.copy_key_title") }}" aria-label="copy key">
       <svg aria-hidden="true"><use href="#i-copy"/></svg>
     </button>
-    <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="{{ t.fmt1("tenant_api_keys.confirm.reroll_text", "role", role) }}" class="reroll-form" style="margin:0;display:inline;">
+    <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="{{ t.fmt1("tenant_api_keys.confirm.reroll_text", "role", role) }}" class="reroll-form" style="margin:0;display:inline;">
       <button class="btn sm icon danger" type="submit" title="{{ t.s("tenant_api_keys.btn.reroll_title") }}" aria-label="reroll key">
         <svg aria-hidden="true"><use href="#i-refresh"/></svg>
       </button>
@@ -34,7 +34,7 @@
   </div>
     {% else %}
   <code class="key-val muted">{{ t.s("tenant_api_keys.state.key_not_stored") }}</code>
-  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="{{ t.fmt1("tenant_api_keys.confirm.reroll_text", "role", role) }}" class="reroll-form" style="margin:0;">
+  <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="{{ t.fmt1("tenant_api_keys.confirm.reroll_text", "role", role) }}" class="reroll-form" style="margin:0;">
     <button class="btn sm icon danger" type="submit" title="{{ t.s("tenant_api_keys.btn.reroll_title") }}" aria-label="reroll key">
       <svg aria-hidden="true"><use href="#i-refresh"/></svg>
     </button>
@@ -42,7 +42,7 @@
     {% endif %}
   {% else %}
   <code class="key-val muted">{{ t.fmt1("tenant_api_keys.state.no_key_yet", "role", role) }}</code>
-  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" style="margin:0;">
+  <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" style="margin:0;">
     <button class="btn sm icon" type="submit" title="{{ t.s("tenant_api_keys.btn.generate_title") }}" aria-label="generate key">
       <svg aria-hidden="true"><use href="#i-refresh"/></svg>
     </button>
@@ -85,7 +85,7 @@
             <div class="key-name">{{ t.s("tenant_api_keys.mcp.name") }} <span class="pill lilac"><span class="dot"></span>{{ t.fmt1("tenant_api_keys.mcp.tools_pill", "n", mcp_tool_count) }}</span></div>
             <div class="key-desc">{{ t.s("tenant_api_keys.mcp.desc") }}</div>
           </div>
-          <code class="key-val" id="mcp-url" data-tenant="{{ tenant_id }}">/drust/t/{{ tenant_id }}/mcp</code>
+          <code class="key-val" id="mcp-url" data-tenant="{{ tenant_id }}">{{ crate::base_path::base_path() }}/t/{{ tenant_id }}/mcp</code>
           <span id="key-mcp-pat" hidden
                 {% match pat_plaintext %}
                   {% when Some with (pt) %}data-plain="{{ pt }}"
@@ -246,7 +246,7 @@
       });
       return;
     }
-    var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
+    var url = window.location.origin + '{{ crate::base_path::base_path() }}/t/' + tenantId + '/mcp';
     // v1.32.13 — switched from `mcp add-json '<JSON>'` to `mcp add --transport http <url> --header "..."`.
     // The JSON form needs POSIX single-quotes which cmd.exe / PowerShell mis-parse; the flag form
     // contains no nested quoting and works identically on bash / zsh / cmd / PowerShell / WSL.
@@ -283,7 +283,7 @@
       });
       return;
     }
-    var url = window.location.origin + '/drust/t/' + tenantId + '/mcp';
+    var url = window.location.origin + '{{ crate::base_path::base_path() }}/t/' + tenantId + '/mcp';
     renderMcpClients(tenantId, url, token);
     setMcpOs(detectMcpOs());
     document.getElementById('mcp-setup-overlay').hidden = false;
@@ -436,7 +436,7 @@
       cb.checked = newVal;
       tile.classList.toggle('on', newVal);
       _setSelfRegPill(newVal);
-      fetch('/drust/admin/tenants/{{ tenant_id }}/allow-self-register', {
+      fetch('{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/allow-self-register', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({enabled: newVal})
@@ -473,7 +473,7 @@
         tile.classList.toggle('on', newVal);
         var body = {};
         body[flag] = newVal;
-        fetch('/drust/admin/tenants/{{ tenant_id }}/publish-policy', {
+        fetch('{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/publish-policy', {
           method:'PATCH',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify(body)

@@ -47,7 +47,7 @@
         </div>
       </div>
 
-      <form method="post" action="/drust/admin/tenants/new" id="new-tenant-form" style="display:none;">
+      <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/new" id="new-tenant-form" style="display:none;">
         <input type="text" name="name" id="new-tenant-name" required>
       </form>
 
@@ -87,7 +87,7 @@
             {% for t in tenants %}
             <tr class="tenant-row" data-name="{{ t.name }}" data-id="{{ t.id }}">
               <td>
-                <a class="ten-cell" href="/drust/admin/tenants/{{ t.id }}" style="text-decoration:none;color:inherit;">
+                <a class="ten-cell" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ t.id }}" style="text-decoration:none;color:inherit;">
                   <span class="ten-avatar av-{{ loop.index0 % 6 + 1 }}">{{ t.initial }}</span>
                   <span class="ten-meta">
                     <span class="ten-name">{{ t.name }}</span>
@@ -97,13 +97,13 @@
               </td>
               <td class="muted-cell">{{ t.created_at }}</td>
               <td class="num">{{ t.db_display }}</td>
-              <td class="num"><a href="/drust/admin/tenants/{{ t.id }}/files" style="color:inherit;">{{ t.files_display }}</a></td>
+              <td class="num"><a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ t.id }}/files" style="color:inherit;">{{ t.files_display }}</a></td>
               <td class="num"><b>{{ t.total_display }}</b></td>
               <td class="actions">
                 <button type="button" class="btn sm ghost" data-copy-id="{{ t.id }}" title="copy full id">
                   <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span class="label">copy id</span>
                 </button>
-                <form method="post" action="/drust/admin/tenants/{{ t.id }}/delete" class="tenant-delete-form" style="display:inline;" data-name="{{ t.name }}">
+                <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ t.id }}/delete" class="tenant-delete-form" style="display:inline;" data-name="{{ t.name }}">
                   <button class="btn sm danger" type="submit">
                     <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>Delete
                   </button>

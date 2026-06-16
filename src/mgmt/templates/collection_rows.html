@@ -217,7 +217,7 @@
     btn.addEventListener('click', function() {
       if (!confirm('{{ t.s("collection_rows.indexes.confirm_drop") }} ' + btn.dataset.idxName + '?')) return;
       fetch(
-        '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_indexes/' + btn.dataset.idxName,
+        '{{ crate::base_path::base_path() }}/admin/tenants/' + tenantId + '/collections/' + collName + '/_indexes/' + btn.dataset.idxName,
         { method: 'DELETE' }
       ).then(function(r) {
         if (r.ok) { location.reload(); }
@@ -301,7 +301,7 @@
       out.textContent = '';
       out.hidden = true;
       fetch(
-        '/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_indexes',
+        '{{ crate::base_path::base_path() }}/admin/tenants/' + tenantId + '/collections/' + collName + '/_indexes',
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -356,7 +356,7 @@
           <h2 id="coll-settings-title" style="position:absolute;left:-9999px;">{{ t.s("collection_page.settings.title") }}</h2>
           <section>
             <h3>{{ t.s("collection_page.settings.section.anon") }}</h3>
-            <form id="anon-form" method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/anon-caps">
+            <form id="anon-form" method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/anon-caps">
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
                 {% for verb in anon_cap_choices %}
                 <label class="check"><input type="checkbox" name="caps" value="{{ verb.0 }}"{% if verb.1 %} checked{% endif %}> {{ verb.0 }}</label>
@@ -367,7 +367,7 @@
           </section>
           <section>
             <h3>{{ t.s("collection_page.settings.section.realtime") }}</h3>
-            <form id="realtime-form" method="post" action="/drust/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
+            <form id="realtime-form" method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
               <label class="check">
                 <input type="checkbox" name="enabled" value="1"{% if realtime_enabled %} checked{% endif %}>
                 <span>SSE broadcast</span>
@@ -382,7 +382,7 @@
                 </div>
 <pre class="code">curl -N \
   -H "Authorization: Bearer drust_service_…" \
-  <span class="rt-origin">https://&lt;your-drust-host&gt;</span>/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</pre>
+  <span class="rt-origin">https://&lt;your-drust-host&gt;</span>{{ crate::base_path::base_path() }}/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe</pre>
 
                 <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
                   <span class="pill lilac"><span class="dot"></span>Node.js</span>
@@ -391,7 +391,7 @@
 <pre class="code">import EventSource from 'eventsource'; // npm i eventsource
 
 const es = new EventSource(
-  '<span class="rt-origin">https://&lt;your-drust-host&gt;</span>/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
+  '<span class="rt-origin">https://&lt;your-drust-host&gt;</span>{{ crate::base_path::base_path() }}/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
   { headers: { Authorization: 'Bearer drust_service_…' } }
 );
 
@@ -406,7 +406,7 @@ es.addEventListener('deleted', e =&gt; console.log('-', JSON.parse(e.data).id));
 <pre class="code">// Anon tokens in URLs are unsafe — keep the bearer server-side and proxy the
 // stream from your BFF. Direct fetch shown here for completeness.
 const resp = await fetch(
-  '/drust/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
+  '{{ crate::base_path::base_path() }}/t/{{ tenant_id }}/records/{{ coll_name }}/subscribe',
   { headers: { Authorization: 'Bearer drust_anon_…' } }
 );
 const reader = resp.body.getReader();
@@ -513,7 +513,7 @@ for (;;) {
 
   async function fetchList(){
     const body = { filters: state.filters, sort: state.sort, page: state.page, per_page: state.per_page };
-    const r = await fetch('/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/_list', {
+    const r = await fetch('{{ crate::base_path::base_path() }}/admin/tenants/' + tenantId + '/collections/' + collName + '/_list', {
       method: 'POST',
       headers: {'content-type': 'application/json'},
       body: JSON.stringify(body),
@@ -868,7 +868,7 @@ for (;;) {
     const sql = document.getElementById('explain-sql').value;
     const out = document.getElementById('explain-output');
     out.textContent = 'Running...'; out.hidden = false;
-    const r = await fetch(`/drust/admin/tenants/${tenantId}/collections/${collName}/_explain`, {
+    const r = await fetch(`{{ crate::base_path::base_path() }}/admin/tenants/${tenantId}/collections/${collName}/_explain`, {
       method: 'POST', headers: {'content-type':'application/json'},
       body: JSON.stringify({ sql }),
     });
@@ -1072,7 +1072,7 @@ for (;;) {
       const msg = document.getElementById('policy-save-msg');
       msg.style.color = 'var(--muted)'; msg.textContent = '…';
       try {
-        const r = await fetch('/drust/admin/tenants/' + tenantId + '/collections/' + collName + '/policies', {
+        const r = await fetch('{{ crate::base_path::base_path() }}/admin/tenants/' + tenantId + '/collections/' + collName + '/policies', {
           method: 'POST', headers: {'content-type':'application/json'},
           body: JSON.stringify(buildBody()),
         });
@@ -1102,10 +1102,10 @@ function editDesc(kind, tenant, coll, extra) {
              : kind === 'field'      ? 'desc-body-field-' + extra
              :                         'desc-body-index-' + extra;
   var url = kind === 'collection'
-          ? '/drust/admin/tenants/' + tenant + '/collections/' + coll + '/description'
+          ? '{{ crate::base_path::base_path() }}/admin/tenants/' + tenant + '/collections/' + coll + '/description'
           : kind === 'field'
-          ? '/drust/admin/tenants/' + tenant + '/collections/' + coll + '/fields/' + extra + '/description'
-          : '/drust/admin/tenants/' + tenant + '/collections/' + coll + '/indexes/' + extra + '/description';
+          ? '{{ crate::base_path::base_path() }}/admin/tenants/' + tenant + '/collections/' + coll + '/fields/' + extra + '/description'
+          : '{{ crate::base_path::base_path() }}/admin/tenants/' + tenant + '/collections/' + coll + '/indexes/' + extra + '/description';
   var body = document.getElementById(bodyId);
   if (!body) return;
   var p = body.querySelector('p');

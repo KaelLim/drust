@@ -19,7 +19,7 @@
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
           <div class="b-body">
             <div class="b-title">{{ t.s("tenant_oauth_providers.callback_banner.title") }}</div>
-            <p><code>/drust/t/<b style="color:var(--accent);">{{ tenant_id }}</b>/oauth/&lt;provider&gt;/callback</code> — copy this into your provider console exactly.</p>
+            <p><code>{{ crate::base_path::base_path() }}/t/<b style="color:var(--accent);">{{ tenant_id }}</b>/oauth/&lt;provider&gt;/callback</code> — copy this into your provider console exactly.</p>
           </div>
         </div>
 
@@ -62,7 +62,7 @@
               <div class="lbl">{{ t.s("tenant_oauth_providers.field.client_secret") }}</div>
               <div class="val" style="color:var(--muted-2);">●●●●●●●●●●●●●●●●●●●●  (rotate by submitting form below)</div>
               <div class="lbl">{{ t.s("tenant_oauth_providers.field.callback") }}</div>
-              <div class="val">/drust/t/{{ tenant_id }}/oauth/{{ p.provider }}/callback</div>
+              <div class="val">{{ crate::base_path::base_path() }}/t/{{ tenant_id }}/oauth/{{ p.provider }}/callback</div>
               <div class="lbl">{{ t.s("tenant_oauth_providers.field.allow_redirects") }}</div>
               <div class="val">
                 {% for u in p.allowed_redirect_uris %}{{ u }}{% if !loop.last %} · {% endif %}{% endfor %}
@@ -71,7 +71,7 @@
           </div>
           <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
             <form method="post"
-                  action="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers/{{ p.provider }}/delete"
+                  action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_oauth_providers/{{ p.provider }}/delete"
                   onsubmit="return confirm('{{ t.fmt1("tenant_oauth_providers.delete.confirm", "provider", p.provider) }}');"
                   style="margin:0;">
               <button type="submit" class="btn sm danger">{{ t.s("tenant_oauth_providers.delete.button") }}</button>
@@ -89,7 +89,7 @@
             </div>
           </div>
           <div class="card-body">
-            <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_oauth_providers"
+            <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_oauth_providers"
                   style="display:grid;grid-template-columns:1fr;gap:18px;">
               <div class="field">
                 <label>{{ t.s("tenant_oauth_providers.form.provider_label") }}</label>

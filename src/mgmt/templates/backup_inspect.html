@@ -13,8 +13,8 @@
           <p class="view-sub"><b>{{ snapshot_size_human }}</b> · {{ snapshot_ts }} {{ t.s("backup_inspect.head.sub_suffix") }}</p>
         </div>
         <div style="display:flex;gap:8px;">
-          <a class="btn sm ghost" href="/drust/admin/backups">{{ t.s("backup_inspect.head.back_all") }}</a>
-          <a class="btn sm" href="/drust/admin/backups/{{ filename }}/download" download="{{ filename }}">{{ t.s("backup_inspect.head.download") }}</a>
+          <a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/backups">{{ t.s("backup_inspect.head.back_all") }}</a>
+          <a class="btn sm" href="{{ crate::base_path::base_path() }}/admin/backups/{{ filename }}/download" download="{{ filename }}">{{ t.s("backup_inspect.head.download") }}</a>
         </div>
       </div>
 
@@ -81,7 +81,7 @@
               <td class="num">{% if tn.db_present %}{{ tn.db_size_human }}{% else %}<span class="muted-cell">—</span>{% endif %}</td>
               <td class="actions">
                 {% if tn.db_present %}
-                <form method="post" action="/drust/admin/backups/{{ filename }}/restore" class="restore-form" data-tenant-name="{{ tn.name }}" data-tenant-id="{{ tn.id }}" style="display:inline;">
+                <form method="post" action="{{ crate::base_path::base_path() }}/admin/backups/{{ filename }}/restore" class="restore-form" data-tenant-name="{{ tn.name }}" data-tenant-id="{{ tn.id }}" style="display:inline;">
                   <input type="hidden" name="tenant_id" value="{{ tn.id }}">
                   <button class="btn sm" type="submit">{{ t.s("backup_inspect.table.action_restore") }}</button>
                 </form>
