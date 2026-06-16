@@ -56,7 +56,7 @@ pub struct MgmtState {
     /// `DRUST_INDEX_LARGE_TABLE_ROWS` (default 1 000 000).
     pub index_large_table_rows: u64,
     /// External base URL used to build OAuth redirect URIs (e.g.
-    /// `https://tool.tzuchi-org.tw`). Sourced from `DRUST_PUBLIC_URL`.
+    /// `https://drust.example.com`). Sourced from `DRUST_PUBLIC_URL`.
     /// Empty when unset, which disables OAuth login.
     pub public_url: String,
     /// Registered OAuth providers (Google / GitHub) keyed by short name.

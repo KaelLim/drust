@@ -9,7 +9,7 @@ use serde::Serialize;
 #[derive(Serialize, Debug)]
 pub struct CodegenIr {
     pub tenant_id: String,
-    /// Public base URL, e.g. "https://tool.tzuchi-org.tw/drust".
+    /// Public base URL, e.g. "https://drust.example.com/drust".
     /// Used in OpenAPI servers list and TS client function URLs.
     pub base_url: String,
     pub include_descriptions: bool,

@@ -32,7 +32,7 @@ params with `400 LEGACY_PARAM_REMOVED`.
 ### Before — GET with raw `?filter` / `?sort`
 
 ```bash
-curl "https://drust.tzuchi-org.tw/t/blog/records/posts?\
+curl "https://drust.example.com/t/blog/records/posts?\
 filter=published=1%20AND%20author_id=%27u-abc%27&\
 sort=-created_at&\
 page=2&per_page=20" \
@@ -42,7 +42,7 @@ page=2&per_page=20" \
 ### After — POST `/list` with structured `FilterAst`
 
 ```bash
-curl -X POST "https://drust.tzuchi-org.tw/t/blog/collections/posts/list" \
+curl -X POST "https://drust.example.com/t/blog/collections/posts/list" \
   -H "Authorization: Bearer drust_anon_..." \
   -H "Content-Type: application/json" \
   -d '{

@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn initials_fall_back_to_email_local_part() {
-        let r = AdminProfileExt::compute_initials(None, Some("kael1996@tzuchi-org.tw"));
+        let r = AdminProfileExt::compute_initials(None, Some("kael1996@example.com"));
         assert_eq!(r, "K");
     }
 
