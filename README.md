@@ -66,6 +66,19 @@ Spinning up a Postgres or Supabase per project is overkill for the hundreds of s
 
 drust serves plain HTTP — front it with a TLS-terminating reverse proxy (Caddy, nginx, Traefik) in production.
 
+**Run the prebuilt image** — multi-arch (amd64 / arm64), no clone, no build:
+
+```bash
+docker run -d --name drust -p 47826:47826 -v drust-data:/data \
+  -e DRUST_INIT_ADMIN_USERNAME=admin -e DRUST_INIT_ADMIN_PASSWORD=changeme \
+  ghcr.io/kaellim/drust
+
+curl -s http://localhost:47826/health   # → ok
+open http://localhost:47826/login       # admin UI (root mode); log in with the DRUST_INIT_ADMIN_* above
+```
+
+**Or build from the repo** — adds the bundled Caddy and optional S3 storage:
+
 ```bash
 git clone https://github.com/KaelLim/drust.git && cd drust
 
