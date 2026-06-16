@@ -13,7 +13,7 @@ vector search, and WebAssembly edge functions. One file per tenant. No database 
 [![MCP](https://img.shields.io/badge/MCP-native-7c3aed)](https://modelcontextprotocol.io)
 [![SQLite](https://img.shields.io/badge/SQLite-embedded-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](#-quickstart)
-[![Version](https://img.shields.io/badge/version-v1.38.3-success)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.39.0-success)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 [**Quickstart**](#-quickstart) · [**What you can build**](#-what-you-can-build) · [**Why drust**](#-why-drust) · [**Docs**](docs/architecture.md) · [繁體中文](README.zh.md)

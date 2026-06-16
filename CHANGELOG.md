@@ -1,3 +1,36 @@
+## v1.39.0 — 2026-06-16
+
+### Configurable base path, OAuth/isolation hardening, Docker + GHCR distribution
+
+**DRUST_BASE_PATH (feature).** The external URL mount is now configurable
+(`src/base_path.rs`): the default `/drust` keeps the existing reverse-proxy
+deployment byte-identical, and `""` serves at the root so the container image
+runs standalone. Routes live at root (Caddy `handle_path` strips the prefix);
+every browser-facing string — redirect `Location`, `Set-Cookie` `Path`, OAuth
+`redirect_uri`, admin `href`/`action`/`fetch`, and JSON-returned paths — re-adds
+it via `base()`/`cookie_path()` (`.rs`) or `{{ crate::base_path::base_path() }}`
+(templates). `tests/base_path_root.rs` proves the empty-prefix mode; the existing
+`/drust` assertions remain the default-mode oracle.
+
+**OAuth account-claim + isolation hardening.** An OAuth login that matches an
+existing unverified password account now atomically *claims* it inside a single
+`with_writer_tx` rather than silently authenticating as it (closes a
+pre-account-hijacking window). `iss`/`aud` mismatch errors no longer echo
+untrusted `id_token` claim values, loopback detection accepts IPv6, and callback
+failures redirect gracefully. Includes the `$nin`-against-NULL policy lockstep
+fix (eval vs compile) from the audit series.
+
+**Docker image + GHCR publishing.** The container image ships `DRUST_BASE_PATH=""`
+(root mode) with a root-mounted bundled-Caddy compose file. A new
+`release-image.yml` workflow builds a multi-arch (amd64/arm64) image on native
+runners and publishes it to `ghcr.io/kaellim/drust` on every `v*` tag, attesting
+build provenance on the final manifest. README/README.zh gain a `docker run`
+prebuilt-image quickstart.
+
+**Repo de-branding.** Organization-specific host/email references were replaced
+with neutral `example.com` / `example.org` placeholders across source, docs, and
+tests; no behavior change.
+
 ## v1.38.4 — 2026-06-15
 
 ### Hotfix: bare serde_json::Value MCP tool args rejected by strict clients
