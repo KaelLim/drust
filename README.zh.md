@@ -66,6 +66,19 @@
 
 drust 只服務 plain HTTP —— 正式環境請在前面擺一個負責 TLS 終止的反向代理（Caddy、nginx、Traefik）。
 
+**直接跑預編 image** —— 多架構（amd64 / arm64），免 clone、免建置：
+
+```bash
+docker run -d --name drust -p 47826:47826 -v drust-data:/data \
+  -e DRUST_INIT_ADMIN_USERNAME=admin -e DRUST_INIT_ADMIN_PASSWORD=changeme \
+  ghcr.io/kaellim/drust
+
+curl -s http://localhost:47826/health   # → ok
+open http://localhost:47826/login       # 後台 UI（root 模式）；用上面的 DRUST_INIT_ADMIN_* 登入
+```
+
+**或從 repo 建置** —— 多帶內附 Caddy 與選用的 S3 儲存：
+
 ```bash
 git clone https://github.com/KaelLim/drust.git && cd drust
 
@@ -76,7 +89,7 @@ docker compose --profile storage up -d
 
 ```bash
 curl -s http://localhost:47826/health        # → ok
-open http://localhost/drust/login            # 後台 UI（經內附 Caddy）；用 DRUST_INIT_ADMIN_* 登入
+open http://localhost/login                  # 後台 UI（經內附 Caddy，root 模式）；用 DRUST_INIT_ADMIN_* 登入
 ```
 
 > [!CAUTION]
