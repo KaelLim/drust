@@ -81,7 +81,7 @@ fn origin_matches(pattern: &str, origin: &str) -> bool {
                 return false;
             }
             // Length strictly greater so `*` consumes at least one char —
-            // `*.tzuchi.org` must NOT match the bare `tzuchi.org`, only its
+            // `*.example.org` must NOT match the bare `example.org`, only its
             // subdomains.
             origin.len() > prefix.len() + suffix.len()
                 && origin.starts_with(prefix)
@@ -645,29 +645,29 @@ mod cors_tests {
     #[test]
     fn exact_match() {
         assert!(origin_matches(
-            "https://app.tzuchi.org",
-            "https://app.tzuchi.org"
+            "https://app.example.org",
+            "https://app.example.org"
         ));
         assert!(!origin_matches(
-            "https://app.tzuchi.org",
-            "https://app.tzuchi.org.tw"
+            "https://app.example.org",
+            "https://app.example.org.tw"
         ));
     }
 
     #[test]
     fn subdomain_wildcard() {
-        let p = "https://*.tzuchi.org";
-        assert!(origin_matches(p, "https://app.tzuchi.org"));
-        assert!(origin_matches(p, "https://academic-events.tzuchi.org"));
-        assert!(origin_matches(p, "https://a.b.tzuchi.org"));
+        let p = "https://*.example.org";
+        assert!(origin_matches(p, "https://app.example.org"));
+        assert!(origin_matches(p, "https://academic-events.example.org"));
+        assert!(origin_matches(p, "https://a.b.example.org"));
         // Bare domain must NOT match — wildcard requires content.
-        assert!(!origin_matches(p, "https://tzuchi.org"));
+        assert!(!origin_matches(p, "https://example.org"));
         // Suffix-injection attempt (different TLD).
-        assert!(!origin_matches(p, "https://tzuchi.org.attacker.com"));
+        assert!(!origin_matches(p, "https://example.org.attacker.com"));
         // Hyphen-confusion (no leading dot).
-        assert!(!origin_matches(p, "https://anything-tzuchi.org"));
+        assert!(!origin_matches(p, "https://anything-example.org"));
         // Different scheme.
-        assert!(!origin_matches(p, "http://app.tzuchi.org"));
+        assert!(!origin_matches(p, "http://app.example.org"));
     }
 
     #[test]
@@ -694,7 +694,7 @@ mod cors_tests {
         use axum::{Router, routing::get};
         use tower::ServiceExt;
 
-        let origins = vec!["https://app.tzuchi.org".to_string()];
+        let origins = vec!["https://app.example.org".to_string()];
         let cors = super::build_cors_layer(&origins).expect("cors layer");
         let app: Router = Router::new()
             .route("/echo", get(|| async { "ok" }))
@@ -707,7 +707,7 @@ mod cors_tests {
                 Request::builder()
                     .method(Method::GET)
                     .uri("/echo")
-                    .header(header::ORIGIN, "https://app.tzuchi.org")
+                    .header(header::ORIGIN, "https://app.example.org")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -740,7 +740,7 @@ mod cors_tests {
         use tower::ServiceExt;
 
         let cors =
-            super::build_cors_layer(&["https://app.tzuchi.org".to_string()]).expect("cors layer");
+            super::build_cors_layer(&["https://app.example.org".to_string()]).expect("cors layer");
         let app: Router = Router::new()
             .route("/t/x/uploads", post(|| async { "ok" }))
             .route("/t/x/collections", post(|| async { "ok" }))
@@ -758,7 +758,7 @@ mod cors_tests {
                 Request::builder()
                     .method(Method::OPTIONS)
                     .uri("/t/x/uploads")
-                    .header(header::ORIGIN, "https://app.tzuchi.org")
+                    .header(header::ORIGIN, "https://app.example.org")
                     .header("access-control-request-method", "POST")
                     .body(Body::empty())
                     .unwrap(),
@@ -784,7 +784,7 @@ mod cors_tests {
                 Request::builder()
                     .method(Method::OPTIONS)
                     .uri("/t/x/collections")
-                    .header(header::ORIGIN, "https://app.tzuchi.org")
+                    .header(header::ORIGIN, "https://app.example.org")
                     .header("access-control-request-method", "POST")
                     .body(Body::empty())
                     .unwrap(),

@@ -2294,7 +2294,7 @@ one-click UX instead of a browser-OAuth dance.
 ## [1.5.1] - 2026-04-29
 
 ### Added
-- CORS support on tenant routes. New `DRUST_CORS_ORIGINS` (comma-separated allow-list, empty = layer disabled). Applied OUTSIDE `bearer_auth_layer` so OPTIONS preflight is intercepted before auth. Subdomain wildcards (single `*`) supported — `https://*.tzuchi.org`, `http://localhost:*`; multi-`*` rejected at parse.
+- CORS support on tenant routes. New `DRUST_CORS_ORIGINS` (comma-separated allow-list, empty = layer disabled). Applied OUTSIDE `bearer_auth_layer` so OPTIONS preflight is intercepted before auth. Subdomain wildcards (single `*`) supported — `https://*.example.org`, `http://localhost:*`; multi-`*` rejected at parse.
 - Tenants index search box (client-side filter on name + id-prefix; `/` to focus, `Esc` to clear).
 
 ### Changed
