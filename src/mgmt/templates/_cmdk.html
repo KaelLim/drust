@@ -36,12 +36,12 @@
 
   function fetchTenants() {
     if (tenantCache) return Promise.resolve(tenantCache);
-    return fetch('/drust/admin/api/cmdk/tenants', { credentials:'same-origin' })
+    return fetch('{{ crate::base_path::base_path() }}/admin/api/cmdk/tenants', { credentials:'same-origin' })
       .then(function(r) { return r.ok ? r.json() : []; })
       .then(function(arr) {
         tenantCache = arr.map(function(t) {
           return { kind:'tenant', name:t.name, id:t.id, av:av(t.name),
-                   href:'/drust/admin/tenants/' + t.id + '/_overview' };
+                   href:'{{ crate::base_path::base_path() }}/admin/tenants/' + t.id + '/_overview' };
         });
         return tenantCache;
       })

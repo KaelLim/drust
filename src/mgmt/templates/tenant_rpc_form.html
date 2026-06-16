@@ -11,7 +11,7 @@
             <h1 class="view-title">{% if editing %}{{ existing_name }}{% else %}{{ t.s("tenant_rpc_form.title.new") }}{% endif %}</h1>
             <p class="view-sub">{% if editing %}Edit a stored SELECT function. Service-only authoring; persisted in <code>_system_rpc</code>.{% else %}Create a stored SELECT function callable by REST + MCP. Service-only authoring; optional anon access via the <code>allow_anon_callers</code> flag.{% endif %}</p>
           </div>
-          <a class="btn ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("tenant_rpc_form.actions.back") }}</a>
+          <a class="btn ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("tenant_rpc_form.actions.back") }}</a>
         </div>
         {% if let Some(err) = error %}
         <div class="banner danger" style="margin-bottom:14px;"{% if let Some(code) = error_code %} data-error-code="{{ code }}"{% endif %}>
@@ -22,7 +22,7 @@
           </div>
         </div>
         {% endif %}
-        <form method="post" action="{% if editing %}/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/save{% else %}/drust/admin/tenants/{{ tenant_id }}/_rpc/new{% endif %}" class="card" style="padding:18px;display:grid;gap:14px;">
+        <form method="post" action="{% if editing %}{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/save{% else %}{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/new{% endif %}" class="card" style="padding:18px;display:grid;gap:14px;">
           {% if !editing %}
           <div class="field">
             <label>{{ t.s("tenant_rpc_form.field.name") }}</label>
@@ -56,7 +56,7 @@
           </div>
           <div style="display:flex;gap:8px;">
             <button class="btn btn-primary" type="submit">{% if editing %}<svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>{{ t.s("common.action.save") }}{% else %}<svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>create{% endif %}</button>
-            <a class="btn btn-ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("common.action.cancel") }}</a>
+            <a class="btn btn-ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("common.action.cancel") }}</a>
           </div>
         </form>
       </div>

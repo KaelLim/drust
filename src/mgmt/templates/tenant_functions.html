@@ -75,10 +75,10 @@
                   {% endif %}
                 </td>
                 <td style="text-align:right;white-space:nowrap;">
-                  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/toggle" style="display:inline;margin:0;">
+                  <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/toggle" style="display:inline;margin:0;">
                     <button type="submit" class="btn sm">{% if f.active %}{{ t.s("tenant_functions.btn_disable") }}{% else %}{{ t.s("tenant_functions.btn_enable") }}{% endif %}</button>
                   </form>
-                  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/delete"
+                  <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/delete"
                         onsubmit="return confirm('{{ t.s("tenant_functions.delete_confirm") }} {{ f.name }}');"
                         style="display:inline;margin:0;">
                     <button type="submit" class="btn sm danger">{{ t.s("tenant_functions.btn_delete") }}</button>
@@ -103,7 +103,7 @@
                     {% endfor %}
                     {% endif %}
                   </details>
-                  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/invoke"
+                  <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/invoke"
                         style="margin:10px 0 0;display:grid;gap:8px;">
                     <label style="font:600 12px/1 var(--mono);color:var(--muted);">{{ t.s("tenant_functions.invoke_label") }}</label>
                     <textarea name="event" rows="3" spellcheck="false"
@@ -127,7 +127,7 @@
             </div>
           </div>
           <div class="card-body">
-            <pre style="background:var(--bg-2);padding:12px 14px;border-radius:8px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.6 var(--mono);color:var(--text);white-space:pre-wrap;word-break:break-all;">curl -X POST {{ public_base_url }}/drust/t/{{ tenant_id }}/functions \
+            <pre style="background:var(--bg-2);padding:12px 14px;border-radius:8px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.6 var(--mono);color:var(--text);white-space:pre-wrap;word-break:break-all;">curl -X POST {{ public_base_url }}{{ crate::base_path::base_path() }}/t/{{ tenant_id }}/functions \
   -H "Authorization: Bearer &lt;SERVICE_TOKEN&gt;" \
   -F name=my_function \
   -F triggers='[{"collection":"posts","events":["created"]}]' \

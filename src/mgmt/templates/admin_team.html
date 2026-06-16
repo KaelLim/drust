@@ -104,7 +104,7 @@
       if (!email) return;
       email = email.trim();
       if (!email) return;
-      var res = await fetch('/drust/admin/team', {
+      var res = await fetch('{{ crate::base_path::base_path() }}/admin/team', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body:    JSON.stringify({ email: email, role: 'member' })
@@ -115,14 +115,14 @@
   }
 
   function patchRole(id, newRole) {
-    return fetch('/drust/admin/team/' + id + '/role', {
+    return fetch('{{ crate::base_path::base_path() }}/admin/team/' + id + '/role', {
       method:  'PATCH',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body:    JSON.stringify({ role: newRole })
     });
   }
   function deleteAdmin(id) {
-    return fetch('/drust/admin/team/' + id, {
+    return fetch('{{ crate::base_path::base_path() }}/admin/team/' + id, {
       method:  'DELETE',
       headers: { 'Accept': 'application/json' }
     });

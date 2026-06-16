@@ -68,7 +68,7 @@
     <tbody>
       {% for tn in ov.top_tenants %}
       <tr>
-        <td>{% if tn.tenant == "-" %}<span class="muted">{{ t.s("audit_body.label.admin") }}</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ tn.tenant }}/_logs" title="{{ tn.tenant }}">{{ tn.tenant_name }}</a>{% endif %}</td>
+        <td>{% if tn.tenant == "-" %}<span class="muted">{{ t.s("audit_body.label.admin") }}</span>{% else %}<a class="cell-link" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tn.tenant }}/_logs" title="{{ tn.tenant }}">{{ tn.tenant_name }}</a>{% endif %}</td>
         <td class="num">{{ tn.count }}</td>
         <td class="num">{% if tn.error_pct > 0.0 %}<span class="pill danger">{{ "{:.1}"|format(tn.error_pct) }}%</span>{% else %}<span class="pill mint">{{ "{:.1}"|format(tn.error_pct) }}%</span>{% endif %}</td>
       </tr>
@@ -98,7 +98,7 @@
       {% for e in top_slow_ops_view %}
       <tr>
         <td class="muted-cell">{{ e.ts_display }}</td>
-        {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">{{ t.s("audit_body.label.admin") }}</span>{% else %}<a class="cell-link" href="/drust/admin/tenants/{{ e.tenant }}/_logs" title="{{ e.tenant }}">{{ e.tenant_name }}</a>{% endif %}</td>{% endif %}
+        {% if is_host_scope %}<td>{% if e.tenant == "-" %}<span class="muted">{{ t.s("audit_body.label.admin") }}</span>{% else %}<a class="cell-link" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ e.tenant }}/_logs" title="{{ e.tenant }}">{{ e.tenant_name }}</a>{% endif %}</td>{% endif %}
         <td class="mono-cell" style="font-size:12px;">{{ e.op }}</td>
         <td class="num"><b>{{ e.duration_ms }}</b></td>
       </tr>
@@ -172,7 +172,7 @@
             {% if e.tenant == "-" %}
               <span class="pill lilac">{{ t.s("audit_body.label.admin") }}</span>
             {% else %}
-              <a class="pill info" href="/drust/admin/tenants/{{ e.tenant }}/_logs"
+              <a class="pill info" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ e.tenant }}/_logs"
                  title="{{ e.tenant }}"
                  onclick="event.stopPropagation()">{{ e.tenant_name }}</a>
             {% endif %}

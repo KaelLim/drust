@@ -46,7 +46,7 @@
       <div class="card">
         <div class="card-head"><span>{{ t.s("tenant_files_admin.upload.card_title") }}</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin → tenant-{{ tenant_id }}-*</span></div>
         <div class="card-body">
-          <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/files/upload" enctype="multipart/form-data" id="upload-form">
+          <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/files/upload" enctype="multipart/form-data" id="upload-form">
             <div class="dropzone" id="dropzone">
               <div class="dropzone-inner">
                 <div class="dropzone-prompt">
@@ -150,7 +150,7 @@
                   {% else %}
                   <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">{{ t.s("tenant_files_admin.row.sign_url") }}</button>
                   {% endif %}
-                  <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/files/{{ f.key }}/visibility" style="display:inline">
+                  <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/files/{{ f.key }}/visibility" style="display:inline">
                     {% if f.visibility == "public" %}
                     <input type="hidden" name="visibility" value="private">
                     <button type="submit" class="btn btn-sm btn-ghost">{{ t.s("tenant_files_admin.row.make_private") }}</button>
@@ -286,7 +286,7 @@
         return;
       }
       var tid = '{{ tenant_id }}';
-      var resp = await fetch('/drust/admin/tenants/' + encodeURIComponent(tid) + '/files/' + encodeURIComponent(key) + '/sign', {
+      var resp = await fetch('{{ crate::base_path::base_path() }}/admin/tenants/' + encodeURIComponent(tid) + '/files/' + encodeURIComponent(key) + '/sign', {
         method: 'POST', headers: {'content-type': 'application/json'},
         body: JSON.stringify({expires_in: expires_in}),
       });
@@ -309,7 +309,7 @@
       if (!ok) return;
       if (window.chonkReact) window.chonkReact('working', 1200);
       var tid = '{{ tenant_id }}';
-      var resp = await fetch('/drust/admin/tenants/' + encodeURIComponent(tid) + '/files/' + encodeURIComponent(key), {
+      var resp = await fetch('{{ crate::base_path::base_path() }}/admin/tenants/' + encodeURIComponent(tid) + '/files/' + encodeURIComponent(key), {
         method: 'DELETE',
       });
       if (!resp.ok && resp.status !== 204) {

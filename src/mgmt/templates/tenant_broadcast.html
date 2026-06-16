@@ -22,7 +22,7 @@
     <div class="b-body">
       <div class="b-title">{{ t.s("broadcast_inspector.bearer_missing.title") }}</div>
       <p>{{ t.s("broadcast_inspector.bearer_missing.body") }}</p>
-      <a class="btn ghost btn-sm" href="/drust/admin/tenants/{{ tenant_id }}/_api_keys">
+      <a class="btn ghost btn-sm" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_api_keys">
         {{ t.s("broadcast_inspector.bearer_missing.cta") }}
       </a>
     </div>

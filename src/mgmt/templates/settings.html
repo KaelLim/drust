@@ -15,7 +15,7 @@
         </div>
       </div>
 
-      <form id="settings-form" method="post" action="/drust/admin/settings">
+      <form id="settings-form" method="post" action="{{ crate::base_path::base_path() }}/admin/settings">
         <div class="card">
           <div class="card-head"><span>{{ t.s("settings.preferences.card_title") }}</span></div>
           <div class="card-body" style="padding:0">
@@ -188,7 +188,7 @@
                         onclick="copyPat('key-mcp-pat', this)">
                   {{ t.s("settings.tokens.btn_copy") }}
                 </button>
-                <form method="post" action="/drust/admin/settings/token/reroll"
+                <form method="post" action="{{ crate::base_path::base_path() }}/admin/settings/token/reroll"
                       class="pat-reroll-form"
                       data-confirm-title="{{ t.s("settings.tokens.confirm.reroll_title") }}"
                       data-confirm-text="{{ t.s("settings.tokens.confirm.reroll_text") }}"

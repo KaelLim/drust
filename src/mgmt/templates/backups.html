@@ -65,10 +65,10 @@
         </div>
         <div class="bk-size">{{ b.size_human }}</div>
         <div class="bk-actions">
-          <a class="btn sm ghost" href="/drust/admin/backups/{{ b.filename }}/inspect" title="{{ t.s("backups.row.inspect_title") }}">
+          <a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/backups/{{ b.filename }}/inspect" title="{{ t.s("backups.row.inspect_title") }}">
             <svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>{{ t.s("backups.row.inspect_label") }}
           </a>
-          <a class="btn sm" href="/drust/admin/backups/{{ b.filename }}/download" download="{{ b.filename }}" title="{{ t.s("backups.row.download_title") }}">
+          <a class="btn sm" href="{{ crate::base_path::base_path() }}/admin/backups/{{ b.filename }}/download" download="{{ b.filename }}" title="{{ t.s("backups.row.download_title") }}">
             <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>{{ t.s("backups.row.download_label") }}
           </a>
         </div>

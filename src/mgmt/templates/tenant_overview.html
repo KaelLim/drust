@@ -71,7 +71,7 @@
             </div>
           </div>
           {% if broadcast_room_count > 0 %}
-          <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/realtime/evict-all"
+          <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/realtime/evict-all"
                 onsubmit="return confirm('{{ t.s("tenant_overview.broadcast.evict_confirm") }}')"
                 style="margin:0;">
             <button type="submit" class="btn ghost" style="font-size:12px;">
@@ -99,7 +99,7 @@
               </div>
               {% endfor %}
             </div>
-            <div class="b-actions"><a class="btn sm" href="/drust/admin/tenants/{{ tenant_id }}/_webhooks">{{ t.s("tenant_overview.webhook_failures.manage_button") }}</a></div>
+            <div class="b-actions"><a class="btn sm" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_webhooks">{{ t.s("tenant_overview.webhook_failures.manage_button") }}</a></div>
           </div>
         </div>
         {% endif %}
@@ -112,12 +112,12 @@
                 <div class="card-title">{{ t.s("collection_sidebar.section.collections") }}</div>
                 <div class="card-sub">{{ collection_count }} tables · click to open the editor</div>
               </div>
-              <div class="card-head-actions"><a href="/drust/admin/tenants/{{ tenant_id }}/collections">{{ t.s("common.card.view_all") }}</a></div>
+              <div class="card-head-actions"><a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections">{{ t.s("common.card.view_all") }}</a></div>
             </div>
             {% if collections.len() > 0 %}
             <div style="padding:0;">
               {% for c in collections %}
-              <a class="nav-collection" href="/drust/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}"
+              <a class="nav-collection" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}"
                  style="border-bottom:1px solid var(--border-strong);padding:11px 18px;border-radius:0;">
                 <span class="dot"></span>
                 <span>{{ c.name }}</span>
@@ -142,7 +142,7 @@
                 <div class="card-title">{{ t.s("tenant_overview.activity_card.title") }}</div>
                 <div class="card-sub">{{ t.s("tenant_overview.activity_card.subtitle") }}</div>
               </div>
-              <div class="card-head-actions"><a href="/drust/admin/tenants/{{ tenant_id }}/_logs">{{ t.s("common.card.view_all") }}</a></div>
+              <div class="card-head-actions"><a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_logs">{{ t.s("common.card.view_all") }}</a></div>
             </div>
             {% if recent_audit.len() > 0 %}
             <div class="card-body" style="padding:6px 18px;">

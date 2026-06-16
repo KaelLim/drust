@@ -12,7 +12,7 @@
             <h1 class="view-title">{{ t.s("tenant_rpc.head.title") }}</h1>
             <p class="view-sub">{{ t.s("tenant_rpc.head.sub") }}</p>
           </div>
-          <a class="btn primary" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/new">
+          <a class="btn primary" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/new">
             <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             {{ t.s("tenant_rpc.actions.new") }}
           </a>
@@ -74,9 +74,9 @@
               </div>
               <pre class="sql-block" style="margin-top:10px;font-size:11.5px;">{{ r.sql }}</pre>
               <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
-                <a class="btn sm" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/edit">{{ t.s("common.button.edit") }}</a>
-                <a class="btn sm ghost" href="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/test">{{ t.s("tenant_rpc.row_actions.test") }}</a>
-                <form method="post" action="/drust/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/delete" class="rpc-delete-form" data-rpc-name="{{ r.name }}" style="display:inline;margin-left:auto;">
+                <a class="btn sm" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/edit">{{ t.s("common.button.edit") }}</a>
+                <a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/test">{{ t.s("tenant_rpc.row_actions.test") }}</a>
+                <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/delete" class="rpc-delete-form" data-rpc-name="{{ r.name }}" style="display:inline;margin-left:auto;">
                   <button type="submit" class="btn sm danger">{{ t.s("files.row.delete_btn") }}</button>
                 </form>
               </div>

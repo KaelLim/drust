@@ -47,7 +47,7 @@
       <div class="card">
         <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin-only</span></div>
         <div class="card-body">
-          <form method="post" action="/drust/admin/files/upload" enctype="multipart/form-data" id="upload-form">
+          <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/upload" enctype="multipart/form-data" id="upload-form">
             <div class="dropzone" id="dropzone">
               <div class="dropzone-inner">
                 <div class="dropzone-prompt">
@@ -97,7 +97,7 @@
         <div class="card-head">
           <span>Files</span>
           <span class="card-head-actions">
-            <a href="/drust/admin/files/reconcile" class="btn btn-sm btn-ghost"
+            <a href="{{ crate::base_path::base_path() }}/admin/files/reconcile" class="btn btn-sm btn-ghost"
                title="Compare Garage bucket contents with drust's metadata — find orphan objects (in Garage, not tracked) and dangling rows (tracked but missing). Usually empty; run after network glitches or manual S3 edits.">
               <svg class="icon" aria-hidden="true" style="width:0.9em;height:0.9em;vertical-align:-2px;margin-right:4px;"><use href="#i-refresh"/></svg>
               sync audit ⋯
@@ -118,7 +118,7 @@
               <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
             </div>
             <h3>{% if counts.total == 0 %}No files yet{% else %}Nothing on this page{% endif %}</h3>
-            <p>{% if counts.total == 0 %}Upload the first one with the form above.{% else %}Try page 1 or <a href="/drust/admin/files">reset</a>.{% endif %}</p>
+            <p>{% if counts.total == 0 %}Upload the first one with the form above.{% else %}Try page 1 or <a href="{{ crate::base_path::base_path() }}/admin/files">reset</a>.{% endif %}</p>
           </div>
           {% else %}
           <table class="data pub-files">
@@ -156,7 +156,7 @@
                   {% else %}
                   <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">Sign URL</button>
                   {% endif %}
-                  <form method="post" action="/drust/admin/files/{{ f.id }}/delete" class="delete-form" style="display:inline;" data-name="{{ f.original_name }}">
+                  <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/{{ f.id }}/delete" class="delete-form" style="display:inline;" data-name="{{ f.original_name }}">
                     <button type="submit" class="btn btn-sm btn-ghost" style="color:var(--danger);">delete</button>
                   </form>
                 </td>
@@ -357,7 +357,7 @@
         drustUI.alert({title: 'Invalid TTL', body: 'Must be an integer between 1 and 604800.', danger: true});
         return;
       }
-      var resp = await fetch('/drust/admin/files/' + encodeURIComponent(key) + '/sign', {
+      var resp = await fetch('{{ crate::base_path::base_path() }}/admin/files/' + encodeURIComponent(key) + '/sign', {
         method: 'POST',
         headers: {'content-type': 'application/json'},
         body: JSON.stringify({expires_in: expires_in}),
