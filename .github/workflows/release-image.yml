@@ -1,0 +1,193 @@
+name: Release image
+
+# Publish the production container image to the GitHub Container Registry
+# (ghcr.io/kaellim/drust) on every semver tag push — pushing v1.2.3 produces the
+# tags 1.2.3, 1.2, 1, and latest.
+#
+# Multi-arch (linux/amd64 + linux/arm64) is built on NATIVE GitHub-hosted
+# runners, never QEMU: the Dockerfile runs an LTO release compile that is
+# punishingly slow under arm64 emulation, and native arm64 runners are free for
+# public repos. Each arch builds on its own machine and pushes an untagged image
+# addressed by digest; a final job stitches the two digests into one tagged
+# multi-arch manifest and attests its build provenance.
+#
+# ONE-TIME MANUAL STEP: the first publish creates a PRIVATE package. After the
+# first successful run, open the package page -> Package settings -> Danger Zone
+# -> Change visibility -> Public. GITHUB_TOKEN cannot do this; it is one click.
+
+on:
+  push:
+    tags: ['v*']
+
+# Never run two publishes for the same tag at once, and never cancel a release
+# mid-build — a half-pushed manifest is worse than a slow one.
+concurrency:
+  group: release-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+# Deny-all baseline: each job re-grants exactly what it needs, so a job added
+# later can't silently inherit a broader repo-default GITHUB_TOKEN scope.
+permissions: {}
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ghcr.io requires a lowercase image path, but the repo owner (KaelLim) is
+      # mixed-case. metadata-action lowercases its OWN outputs, but the by-digest
+      # `outputs: name=` below and the merge job need a ref we build ourselves,
+      # so normalize it once here and reuse it everywhere via $IMAGE.
+      - name: Prepare
+        run: |
+          echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          platform="${{ matrix.platform }}"
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          # Untagged, single-arch, addressed by digest. The merge job assembles
+          # the tagged multi-arch manifest from each arch's digest.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true
+          # Provenance is attested on the final manifest in the merge job;
+          # disabling inline provenance here keeps stray unknown/unknown entries
+          # off the GHCR package page.
+          provenance: false
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge manifest and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Prepare
+        run: echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # `latest` is controlled explicitly: flavor latest=false turns off the
+          # auto-managed latest, and the raw rule re-adds it ONLY for a non-
+          # prerelease tag (v1.2.3 → latest; v1.2.3-rc1 → no latest). This avoids
+          # depending on the subtle "a custom tags: list disables auto-latest"
+          # behavior and makes the header comment's promise true by construction.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+          flavor: |
+            latest=false
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          digests=(*)
+          [ "${#digests[@]}" -gt 0 ] || { echo "no digest artifacts downloaded" >&2; exit 1; }
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            "${digests[@]/#/${IMAGE}@sha256:}"
+
+      - name: Inspect index digest
+        id: digest
+        run: |
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${{ steps.meta.outputs.version }}" --format '{{json .Manifest}}' | jq -r '.digest')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Job summary
+        run: |
+          {
+            echo "### Published \`${IMAGE}\`"
+            echo
+            echo "Tags:"
+            jq -r '.tags[] | "- `" + . + "`"' <<< "$DOCKER_METADATA_OUTPUT_JSON"
+            echo
+            echo "Index digest: \`${{ steps.digest.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
