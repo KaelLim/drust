@@ -375,6 +375,15 @@ pub struct ProviderOnlyArgs {
     pub provider: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetRedirectUrisArgs {
+    /// `"google"` or `"github"` — must already be configured.
+    pub provider: String,
+    /// Full replacement list of allowed redirect URIs. Each must be
+    /// https:// or a localhost/127.0.0.1 URL. Non-empty.
+    pub allowed_redirect_uris: Vec<String>,
+}
+
 // --- v1.13: Webhook subscription admin parameter types ---------------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1676,6 +1685,34 @@ impl DrustMcpService {
         }
     }
 
+    #[tool(description = "Replace ONLY the allowed_redirect_uris list for an \
+        already-configured OAuth provider. Does NOT touch client_id / \
+        client_secret (use set_oauth_provider to change credentials). \
+        `provider` must be an existing 'google' or 'github' config. \
+        `allowed_redirect_uris` is the full replacement list; each must be \
+        https:// or a localhost/127.0.0.1 URL. \
+        Returns {ok: true, provider, redirect_uris_count}. \
+        Errors: NOT_FOUND (provider not configured), EMPTY_REDIRECT_URIS, \
+        INVALID_REDIRECT_URI.")]
+    async fn set_redirect_uris(
+        &self,
+        Parameters(SetRedirectUrisArgs {
+            provider,
+            allowed_redirect_uris,
+        }): Parameters<SetRedirectUrisArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match oauth_tools::set_redirect_uris(
+            &self.state.inner().pool,
+            provider,
+            allowed_redirect_uris,
+        )
+        .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
     // ── v1.13: Webhook subscription tools (service-only) ───────────────────
 
     #[tool(
@@ -2094,6 +2131,19 @@ mod description_tests {
             let d = desc_of(name);
             assert!(!d.is_empty(), "{name} description empty");
         }
+    }
+
+    #[test]
+    fn router_exposes_set_redirect_uris() {
+        let d = desc_of("set_redirect_uris");
+        assert!(
+            d.contains("redirect"),
+            "description should mention redirect"
+        );
+        assert!(
+            d.to_lowercase().contains("not touch"),
+            "description must state it leaves credentials alone"
+        );
     }
 
     #[test]

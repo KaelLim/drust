@@ -77,6 +77,41 @@ pub async fn set_oauth_provider(
     Ok(json!({ "ok": true, "provider": provider }))
 }
 
+// ─── set redirect uris (update-only) ─────────────────────────────────────────
+
+pub async fn set_redirect_uris(
+    pool: &SharedTenantPool,
+    provider: String,
+    allowed_redirect_uris: Vec<String>,
+) -> anyhow::Result<serde_json::Value> {
+    if allowed_redirect_uris.is_empty() {
+        return Err(anyhow::anyhow!(
+            "EMPTY_REDIRECT_URIS: allowed_redirect_uris must be a non-empty array"
+        ));
+    }
+    for u in &allowed_redirect_uris {
+        if let Err(e) = oauth_config::validate_redirect_uri(u) {
+            return Err(anyhow::anyhow!("{}: {}", e.error_code(), e));
+        }
+    }
+    let provider2 = provider.clone();
+    let count = allowed_redirect_uris.len();
+    let uris = allowed_redirect_uris;
+    let changed = pool
+        .with_writer(move |c| {
+            oauth_config::update_redirect_uris(c, &provider2, &uris).map_err(|e| match e {
+                OauthConfigError::Db(re) => re,
+                other => rusqlite::Error::InvalidParameterName(other.to_string()),
+            })
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    if !changed {
+        return Err(anyhow::anyhow!("NOT_FOUND: provider not configured"));
+    }
+    Ok(json!({ "ok": true, "provider": provider, "redirect_uris_count": count }))
+}
+
 // ─── delete ──────────────────────────────────────────────────────────────────
 
 pub async fn delete_oauth_provider(
