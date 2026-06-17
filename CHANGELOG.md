@@ -1,3 +1,9 @@
+## v1.40.0 — 2026-06-17
+
+### redirect-URIs-only edit for per-tenant OAuth providers
+
+Adds a path to edit a configured OAuth provider's `allowed_redirect_uris` without re-supplying `client_id` / `client_secret`, fixing the rough edge that the only writer was a full upsert (and the secret is masked on read, so every redirect tweak forced re-fetching the secret from the provider console). New `oauth_config::update_redirect_uris` updates only that column, so credentials are structurally untouchable. Surfaced on all three faces: MCP `set_redirect_uris` (tool #56), REST `PUT /t/<id>/admin/oauth-providers/<provider>/redirect-uris`, and an inline per-provider edit form (no secret field) on the admin `🔐 _oauth_providers` page. Service-key-only; exact-match unchanged (no wildcards); each write emits an audit row; updating a non-configured provider returns NOT_FOUND.
+
 ## v1.39.0 — 2026-06-16
 
 ### Configurable base path, OAuth/isolation hardening, Docker + GHCR distribution
