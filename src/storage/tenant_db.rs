@@ -83,6 +83,13 @@ CREATE INDEX IF NOT EXISTS idx_system_files_visibility
 CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
   collection_name          TEXT PRIMARY KEY,
   anon_caps_json           TEXT NOT NULL DEFAULT '["select"]',
+  -- v1.41: per-collection DML capability allowlist for the User role
+  -- (drust_user_* login/OAuth tokens), parallel to anon_caps_json.
+  -- NULLABLE with NO default on purpose: a NULL (the value inserted when
+  -- an upsert helper omits this column) reads back as default_user_caps()
+  -- = ["select"], so omission can never lock the User role out of select.
+  -- The migrate_tenant_db backfill copies each existing row's anon_caps.
+  user_caps_json           TEXT,
   updated_at               TEXT NOT NULL DEFAULT (datetime('now')),
   owner_field              TEXT,
   read_scope               TEXT,
@@ -321,5 +328,58 @@ mod schema_tests {
             )
             .unwrap_or(false);
         assert!(exists, "_system_upload_sessions missing on fresh tenant");
+    }
+}
+
+#[cfg(test)]
+mod user_caps_column_tests {
+    use rusqlite::Connection;
+
+    #[test]
+    fn fresh_db_has_nullable_user_caps_json_column() {
+        // Apply the production fresh-DB schema directly.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::SCHEMA_SQL).unwrap();
+
+        // Column must exist on _system_collection_meta.
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(\"_system_collection_meta\")")
+            .unwrap();
+        // PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk
+        let row = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(1)?,         // name
+                    r.get::<_, String>(2)?,         // type
+                    r.get::<_, i64>(3)?,            // notnull
+                    r.get::<_, Option<String>>(4)?, // dflt_value
+                ))
+            })
+            .unwrap()
+            .map(|x| x.unwrap())
+            .find(|(name, _, _, _)| name == "user_caps_json");
+
+        let (name, ty, notnull, dflt) =
+            row.expect("user_caps_json column missing from fresh _system_collection_meta");
+        assert_eq!(name, "user_caps_json");
+        assert_eq!(ty, "TEXT");
+        assert_eq!(notnull, 0, "user_caps_json must be NULLABLE");
+        assert_eq!(dflt, None, "user_caps_json must have no default");
+
+        // Inserting a row that omits user_caps_json must leave it NULL
+        // (the property the migration/read-fallback relies on).
+        conn.execute(
+            "INSERT INTO \"_system_collection_meta\" (collection_name) VALUES ('c')",
+            [],
+        )
+        .unwrap();
+        let v: Option<String> = conn
+            .query_row(
+                "SELECT user_caps_json FROM \"_system_collection_meta\" WHERE collection_name='c'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, None, "omitting user_caps_json on INSERT must yield NULL");
     }
 }
