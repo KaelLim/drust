@@ -145,3 +145,22 @@ async fn admin_update_user_caps_empty_locks_user_role() {
     let schema = describe_collection(&rconn, "posts").unwrap().unwrap();
     assert!(schema.user_caps.is_empty(), "empty form locks the user role");
 }
+
+#[test]
+fn zh_tw_has_user_section_key() {
+    // build.rs does not check en-present-but-zh-missing keys (build.rs:67-112);
+    // this is the only guard that the zh-TW translation actually shipped.
+    let zh = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/zh-TW.toml"))
+        .expect("read zh-TW.toml");
+    let table = zh
+        .split("[collection_page.settings.section]")
+        .nth(1)
+        .expect("zh-TW.toml must contain [collection_page.settings.section] table");
+    // Stop at the next table header so we only inspect this table's body.
+    let body = table.split("\n[").next().unwrap();
+    assert!(
+        body.lines().any(|l| l.trim_start().starts_with("user ")
+            || l.trim_start().starts_with("user=")),
+        "zh-TW.toml [collection_page.settings.section] must define `user`, got:\n{body}"
+    );
+}

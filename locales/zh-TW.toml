@@ -1193,6 +1193,7 @@ anon = "匿名存取"
 developer = "開發者"
 policies = "資料列權限政策"
 realtime = "即時推播"
+user = "登入使用者存取"
 
 [collection_page.policies]
 intro = "每個操作的資料列權限規則。各規則會與匿名能力閘門 AND 組合；若有設定 owner 欄位，也會與 owner 規則 AND 組合。運算元可為：欄位名稱、你輸入的字面值、目前使用者的 id，或「任何已登入使用者」。"

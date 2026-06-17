@@ -366,6 +366,17 @@
             </form>
           </section>
           <section>
+            <h3>{{ t.s("collection_page.settings.section.user") }}</h3>
+            <form id="user-form" method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/user-caps">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                {% for verb in user_cap_choices %}
+                <label class="check"><input type="checkbox" name="caps" value="{{ verb.0 }}"{% if verb.1 %} checked{% endif %}> {{ verb.0 }}</label>
+                {% endfor %}
+              </div>
+              <div style="margin-top:8px;"><button class="btn btn-sm btn-primary" type="submit">{{ t.s("collection_rows.anon.apply_btn") }}</button></div>
+            </form>
+          </section>
+          <section>
             <h3>{{ t.s("collection_page.settings.section.realtime") }}</h3>
             <form id="realtime-form" method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
               <label class="check">
