@@ -1168,6 +1168,7 @@ anon = "Anonymous access"
 developer = "Developer"
 policies = "Row-level policies"
 realtime = "Realtime broadcast"
+user = "Logged-in user access"
 
 [collection_page.policies]
 intro = "Per-operation row-level rules. Each op AND-composes with the anon cap gate and, when set, the owner rule. Operands: a field name, the literal you type, the current user's id, or \"any authenticated user\"."
