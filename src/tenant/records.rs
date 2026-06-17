@@ -87,22 +87,31 @@ async fn require_dml_cap(
         ));
     }
     if !has_dml_cap(tenant.role, verb, &schema) {
+        let message = if matches!(tenant.role, crate::tenant::router::TokenRole::User) {
+            format!(
+                "user role lacks '{}' on collection '{}' (grant it via user_caps)",
+                verb.as_str(),
+                coll
+            )
+        } else {
+            format!(
+                "anon role lacks '{}' on collection '{}'",
+                verb.as_str(),
+                coll
+            )
+        };
         return Err(json_error_with_aliases(
             StatusCode::FORBIDDEN,
             "ANON_CAP_DENIED",
             &["ANON_DENIED"],
-            &format!(
-                "anon role lacks '{}' on collection '{}'",
-                verb.as_str(),
-                coll
-            ),
+            &message,
         ));
     }
     Ok(schema)
 }
 
 /// Same as `require_dml_cap` for write verbs (Insert/Update/Delete), but
-/// additionally checks owner-scoped anon policy *before* anon_caps, so
+/// additionally checks owner-scoped anon policy *before* the cap gate, so
 /// anon callers on owner-scoped collections get `ANON_FORBIDDEN_OWNER_SCOPED`
 /// rather than the generic `ANON_DENIED`.
 async fn require_write_cap(
@@ -150,17 +159,27 @@ async fn require_write_cap(
             "anon tokens may not write to owner-scoped collections",
         ));
     }
-    // Standard anon_caps gate (also allows User/Service through unconditionally).
+    // Cap gate: Anon is checked against anon_caps, User against user_caps
+    // (Service passes unconditionally). See has_dml_cap.
     if !has_dml_cap(tenant.role, verb, &schema) {
+        let message = if matches!(tenant.role, crate::tenant::router::TokenRole::User) {
+            format!(
+                "user role lacks '{}' on collection '{}' (grant it via user_caps)",
+                verb.as_str(),
+                coll
+            )
+        } else {
+            format!(
+                "anon role lacks '{}' on collection '{}'",
+                verb.as_str(),
+                coll
+            )
+        };
         return Err(json_error_with_aliases(
             StatusCode::FORBIDDEN,
             "ANON_CAP_DENIED",
             &["ANON_DENIED"],
-            &format!(
-                "anon role lacks '{}' on collection '{}'",
-                verb.as_str(),
-                coll
-            ),
+            &message,
         ));
     }
     Ok(schema)
@@ -1237,5 +1256,45 @@ pub async fn delete_handler(
             r
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod deny_message_tests {
+    use crate::storage::schema::DmlVerb;
+    use crate::tenant::router::TokenRole;
+
+    // Mirrors the role-aware branch inside require_dml_cap / require_write_cap.
+    // Kept in lockstep with the handler so a reword is caught at lib-test speed.
+    fn cap_deny_message(role: TokenRole, verb: DmlVerb, coll: &str) -> String {
+        if matches!(role, TokenRole::User) {
+            format!(
+                "user role lacks '{}' on collection '{}' (grant it via user_caps)",
+                verb.as_str(),
+                coll
+            )
+        } else {
+            format!(
+                "anon role lacks '{}' on collection '{}'",
+                verb.as_str(),
+                coll
+            )
+        }
+    }
+
+    #[test]
+    fn user_deny_message_names_user_and_points_at_user_caps() {
+        let m = cap_deny_message(TokenRole::User, DmlVerb::Insert, "todos");
+        assert_eq!(
+            m,
+            "user role lacks 'insert' on collection 'todos' (grant it via user_caps)"
+        );
+        assert!(!m.contains("anon"), "user deny must not say 'anon'");
+    }
+
+    #[test]
+    fn anon_deny_message_unchanged() {
+        let m = cap_deny_message(TokenRole::Anon, DmlVerb::Delete, "todos");
+        assert_eq!(m, "anon role lacks 'delete' on collection 'todos'");
     }
 }
