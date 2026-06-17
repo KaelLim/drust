@@ -135,6 +135,16 @@ pub struct SetAnonCapsArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetUserCapsArgs {
+    pub collection: String,
+    /// Subset of `["select", "insert", "update", "delete"]` governing the
+    /// logged-in User role (`drust_user_*` tokens), independent of
+    /// `anon_caps`. Empty array locks the collection from the User role
+    /// (service is unrestricted by design and not affected).
+    pub caps: Vec<crate::storage::schema::DmlVerb>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetRealtimeArgs {
     pub collection: String,
     pub enabled: bool,
@@ -821,6 +831,21 @@ impl DrustMcpService {
         Parameters(SetAnonCapsArgs { collection, caps }): Parameters<SetAnonCapsArgs>,
     ) -> Result<CallToolResult, McpError> {
         match schema_tools::set_anon_caps(&self.state, &collection, &caps).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "Replace the logged-in User-role DML capability set \
+        for one collection. `caps` is a subset of \
+        [\"select\",\"insert\",\"update\",\"delete\"], independent of anon_caps; \
+        empty locks the User role out entirely. Service tokens are \
+        unrestricted and not affected. Refuses `_system_*` collections.")]
+    async fn set_user_caps(
+        &self,
+        Parameters(SetUserCapsArgs { collection, caps }): Parameters<SetUserCapsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match schema_tools::set_user_caps(&self.state, &collection, &caps).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }

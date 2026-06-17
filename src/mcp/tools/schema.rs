@@ -2,8 +2,8 @@ use crate::mcp::server::DrustMcp;
 use crate::storage::schema::{
     DmlVerb, check_description, collection_exists, default_anon_caps, delete_collection_meta,
     describe_collection, find_fk_referrers, is_protected_collection, read_collection_description,
-    write_anon_caps, write_collection_description, write_field_description,
-    write_index_description,
+    write_anon_caps, write_collection_description, write_field_description, write_index_description,
+    write_user_caps,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -554,6 +554,59 @@ pub async fn set_anon_caps(
         "ok": true,
         "collection": collection,
         "anon_caps": caps_set.iter().map(|v| v.as_str()).collect::<Vec<_>>(),
+    }))
+}
+
+/// Replace the User-role DML capability set for one collection.
+///
+/// `caps` is a subset of `{select, insert, update, delete}` governing
+/// `drust_user_*` (login/OAuth) tokens, independent of `anon_caps`.
+/// Empty caps lock the collection from the User role (service is
+/// unaffected — service is unrestricted by design). Refuses `_system_*`
+/// collections to match the existing protection on `drop_collection`.
+pub async fn set_user_caps(
+    s: &DrustMcp,
+    collection: &str,
+    caps: &[DmlVerb],
+) -> anyhow::Result<serde_json::Value> {
+    identifier(collection)?;
+    if is_protected_collection(collection) {
+        anyhow::bail!(
+            "refusing to set user_caps on system collection {collection:?} (protected by _system_ prefix)"
+        );
+    }
+    let pool = s.inner().pool.clone();
+
+    let caps_set: BTreeSet<DmlVerb> = caps.iter().copied().collect();
+    let meta_name = collection.to_string();
+    let caps_for_writer = caps_set.clone();
+    // v1.20 TOCTOU fix (mirrored from set_anon_caps): fold existence check
+    // inside the writer closure so a concurrent drop_collection between check
+    // and write cannot leave an orphan _system_collection_meta row.
+    pool.with_writer(move |c| {
+        if !collection_exists(c, &meta_name)? {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some(format!("COLLECTION_NOT_FOUND: {meta_name}")),
+            ));
+        }
+        write_user_caps(c, &meta_name, &caps_for_writer)
+    })
+    .await
+    .map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("COLLECTION_NOT_FOUND") {
+            anyhow::anyhow!("{msg}")
+        } else {
+            anyhow::anyhow!("{e}")
+        }
+    })?;
+    pool.schema_cache.invalidate(collection);
+
+    Ok(json!({
+        "ok": true,
+        "collection": collection,
+        "user_caps": caps_set.iter().map(|v| v.as_str()).collect::<Vec<_>>(),
     }))
 }
 
