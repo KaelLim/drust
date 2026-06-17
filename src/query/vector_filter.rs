@@ -218,6 +218,7 @@ mod tests {
             indices: vec![],
             row_count: 0,
             anon_caps: BTreeSet::new(),
+            user_caps: BTreeSet::new(),
             owner_field: None,
             read_scope: None,
             vector_fields: vector

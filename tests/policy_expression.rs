@@ -27,6 +27,7 @@ fn schema(fields: &[(&str, &str)]) -> CollectionSchema {
         indices: vec![],
         row_count: 0,
         anon_caps: BTreeSet::new(),
+        user_caps: BTreeSet::new(),
         owner_field: None,
         read_scope: None,
         vector_fields: vec![],
