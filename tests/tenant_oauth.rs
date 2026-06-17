@@ -1578,13 +1578,18 @@ async fn admin_put_redirect_uris_400_on_bad_or_empty() {
     let fake = spawn_fake_google().await;
     let (app, _dir, tid, service, _log) = spin_up_tenant_with_google_fake(&fake).await;
 
+    // Validation runs BEFORE the provider-existence check, so these 400s fire
+    // regardless of provider. Target `github` (not the seeded `google`) so the
+    // status=error audit rows land under a DIFFERENT op string than the
+    // `google` success/audit tests — otherwise the shared status-blind
+    // `poll_for_audit_op` (id DESC LIMIT 1) race flakes them.
     let bad = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("PUT")
                 .uri(format!(
-                    "/t/{tid}/admin/oauth-providers/google/redirect-uris"
+                    "/t/{tid}/admin/oauth-providers/github/redirect-uris"
                 ))
                 .header(header::AUTHORIZATION, format!("Bearer {service}"))
                 .header("content-type", "application/json")
@@ -1606,7 +1611,7 @@ async fn admin_put_redirect_uris_400_on_bad_or_empty() {
             Request::builder()
                 .method("PUT")
                 .uri(format!(
-                    "/t/{tid}/admin/oauth-providers/google/redirect-uris"
+                    "/t/{tid}/admin/oauth-providers/github/redirect-uris"
                 ))
                 .header(header::AUTHORIZATION, format!("Bearer {service}"))
                 .header("content-type", "application/json")
