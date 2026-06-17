@@ -62,6 +62,15 @@ pub async fn post_list(
     };
 
     // ── Auth matrix per spec §2.2 ────────────────────────────────────
+    // LOCKSTEP: the two User cap checks below consult `user_caps` (NOT
+    // `anon_caps`), mirroring the User arm of
+    // `crate::storage::schema::has_dml_cap` (the keystone gate that
+    // `/records` GET-list + write and `/search` route through). This
+    // handler hand-rolls the matrix and does NOT call `has_dml_cap`, so
+    // any change to the User-role cap source MUST be made in BOTH places.
+    // The read_scope="all" branch deliberately keeps its own select-cap
+    // requirement despite owner_field (it does NOT use has_dml_cap's
+    // owner short-circuit) — see spec §5.3.
     let owner_pair: Option<(String, String)> = match (
         &ctx,
         schema.owner_field.as_deref(),
@@ -96,27 +105,33 @@ pub async fn post_list(
 
         // User on owner-scoped + read_scope=all → no row filter but caller
         // is owner-scope-aware. Treat as non-owner-scoped for caps (no
-        // escalation): fall through to anon_caps check.
+        // escalation): fall through to user_caps check.
         (AuthCtx::User { .. }, Some(_), Some(_)) => {
             // read_scope = "all" — owner-scope is informational; the user
-            // sees everyone's rows. Still gate via anon_caps to keep parity
-            // with /search.
-            if !schema.anon_caps.contains(&DmlVerb::Select) {
+            // sees everyone's rows. Still gate via user_caps to keep parity
+            // with /search. (This branch keeps its own cap check despite
+            // owner_field; it does NOT use has_dml_cap's owner short-circuit
+            // — see the LOCKSTEP note above and spec §5.3.)
+            if !schema.user_caps.contains(&DmlVerb::Select) {
                 return json_error(
                     StatusCode::FORBIDDEN,
                     "ANON_CAP_DENIED",
-                    &format!("user role inherits anon caps; 'select' not allowed on '{coll}'"),
+                    &format!(
+                        "user role lacks 'select' on collection '{coll}' (grant it via user_caps)"
+                    ),
                 );
             }
             None
         }
-        // User on non-owner-scoped → fall through to anon_caps (no escalation).
+        // User on non-owner-scoped → gate via user_caps (no escalation).
         (AuthCtx::User { .. }, _, _) => {
-            if !schema.anon_caps.contains(&DmlVerb::Select) {
+            if !schema.user_caps.contains(&DmlVerb::Select) {
                 return json_error(
                     StatusCode::FORBIDDEN,
                     "ANON_CAP_DENIED",
-                    &format!("user role inherits anon caps; 'select' not allowed on '{coll}'"),
+                    &format!(
+                        "user role lacks 'select' on collection '{coll}' (grant it via user_caps)"
+                    ),
                 );
             }
             None
