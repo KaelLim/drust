@@ -512,9 +512,11 @@ async fn user_cannot_transfer_ownership_via_patch_user_id() {
 }
 
 #[tokio::test]
-async fn user_falls_through_to_anon_caps_on_non_owner_scoped() {
-    // Non-owner-scoped collection with anon_caps locked to [] —
-    // user tokens must NOT inherit broader access than anon allows.
+async fn user_governed_by_user_caps_on_non_owner_scoped() {
+    // v1.41: the User role is governed by its OWN user_caps on a
+    // non-owner-scoped collection — it no longer inherits anon_caps. Here
+    // user_caps='[]' locks the user out of SELECT (independent of anon_caps,
+    // which is also '[]' but irrelevant to the User gate now).
     let (app, tid, _svc, _anon, _dir) =
         helpers::spin_up_dual_role_self_register("t-rec-userfall").await;
     let pool = helpers::grab_pool(&tid, &_dir).await;
@@ -527,14 +529,14 @@ async fn user_falls_through_to_anon_caps_on_non_owner_scoped() {
                 updated_at TEXT DEFAULT (datetime('now'))
             );
             INSERT INTO _system_collection_meta
-                (collection_name, anon_caps_json, updated_at)
-                VALUES ('notes', '[]', datetime('now'));",
+                (collection_name, anon_caps_json, user_caps_json, updated_at)
+                VALUES ('notes', '[]', '[]', datetime('now'));",
         )
     })
     .await
     .unwrap();
     let token = helpers::register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
-    // User token tries to SELECT a collection where anon_caps=[] — should be denied.
+    // User token tries to SELECT a collection where user_caps=[] — denied.
     let r = app
         .oneshot(req("GET", &tid, "/records/notes", None, &token))
         .await
@@ -542,14 +544,15 @@ async fn user_falls_through_to_anon_caps_on_non_owner_scoped() {
     assert_eq!(
         r.status(),
         StatusCode::FORBIDDEN,
-        "user must inherit anon_caps on non-owner-scoped collection"
+        "user must be governed by user_caps (=[]) on non-owner-scoped collection"
     );
 }
 
 #[tokio::test]
 async fn user_can_read_but_not_write_when_anon_caps_is_select_only() {
-    // Non-owner-scoped collection with default anon_caps=[select].
-    // User token: SELECT succeeds (inherits anon's select cap), INSERT denied.
+    // Non-owner-scoped collection with no meta row → default user_caps=[select]
+    // (v1.41). User token: SELECT succeeds via user_caps[select], INSERT denied
+    // (user_caps lacks insert) — independent of anon_caps.
     let (app, tid, _svc, _anon, _dir) =
         helpers::spin_up_dual_role_self_register("t-rec-userselect").await;
     let pool = helpers::grab_pool(&tid, &_dir).await;
@@ -575,7 +578,7 @@ async fn user_can_read_but_not_write_when_anon_caps_is_select_only() {
         .unwrap();
     assert!(
         r.status().is_success(),
-        "user GET should pass via anon's select cap: {}",
+        "user GET should pass via user_caps[select]: {}",
         r.status()
     );
     // POST denied (insert not in caps)
