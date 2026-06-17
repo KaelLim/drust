@@ -29,13 +29,7 @@ use tower::ServiceExt;
 
 // ── tiny request/response helpers (mirror tests/owner_field_records.rs) ──
 
-fn req(
-    method: &str,
-    tid: &str,
-    path: &str,
-    body: Option<Value>,
-    token: &str,
-) -> Request<Body> {
+fn req(method: &str, tid: &str, path: &str, body: Option<Value>, token: &str) -> Request<Body> {
     let mut b = Request::builder()
         .method(method)
         .uri(format!("/t/{tid}{path}"))
@@ -94,8 +88,17 @@ async fn seed_notes(dir: &tempfile::TempDir, tenant: &str, user_caps: &[DmlVerb]
 async fn user_full_caps_can_create_update_delete() {
     let tid = "uc-crud";
     let (app, _svc, dir) = spin_up_tenant_self_register(tid).await;
-    seed_notes(&dir, tid, &[DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete])
-        .await;
+    seed_notes(
+        &dir,
+        tid,
+        &[
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ],
+    )
+    .await;
     let user = register_and_login_via_app(&app, tid, "u@x.com", "longpassword").await;
 
     // POST → 201
@@ -110,7 +113,11 @@ async fn user_full_caps_can_create_update_delete() {
         ))
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::CREATED, "user insert should pass with user_caps");
+    assert_eq!(
+        r.status(),
+        StatusCode::CREATED,
+        "user insert should pass with user_caps"
+    );
     let pid = read_json(r).await["id"].as_i64().unwrap();
 
     // PATCH → 200
@@ -125,14 +132,28 @@ async fn user_full_caps_can_create_update_delete() {
         ))
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::OK, "user update should pass with user_caps");
+    assert_eq!(
+        r.status(),
+        StatusCode::OK,
+        "user update should pass with user_caps"
+    );
 
     // DELETE → 204
     let r = app
-        .oneshot(req("DELETE", tid, &format!("/records/notes/{pid}"), None, &user))
+        .oneshot(req(
+            "DELETE",
+            tid,
+            &format!("/records/notes/{pid}"),
+            None,
+            &user,
+        ))
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::NO_CONTENT, "user delete should pass with user_caps");
+    assert_eq!(
+        r.status(),
+        StatusCode::NO_CONTENT,
+        "user delete should pass with user_caps"
+    );
 }
 
 // ── (1)+(2) deny when verb absent, and the MESSAGE names the user role ──
@@ -179,14 +200,31 @@ async fn widening_user_caps_does_not_open_anon_writes() {
     let tid = "uc-anon-indep";
     let (app, _tid, _svc, anon, dir) = spin_up_dual_role_self_register(tid).await;
     // user_caps wide open; anon_caps left at default ([select]).
-    seed_notes(&dir, tid, &[DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete])
-        .await;
+    seed_notes(
+        &dir,
+        tid,
+        &[
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ],
+    )
+    .await;
 
     // Seed one row via service-equivalent? Simpler: anon insert/update/delete
     // must all be 403 regardless of the widened user_caps.
     for (method, path, body) in [
-        (Method::POST, "/records/notes".to_string(), Some(json!({"data": {"body": "a"}}))),
-        (Method::PATCH, "/records/notes/1".to_string(), Some(json!({"data": {"body": "b"}}))),
+        (
+            Method::POST,
+            "/records/notes".to_string(),
+            Some(json!({"data": {"body": "a"}})),
+        ),
+        (
+            Method::PATCH,
+            "/records/notes/1".to_string(),
+            Some(json!({"data": {"body": "b"}})),
+        ),
         (Method::DELETE, "/records/notes/1".to_string(), None),
     ] {
         let r = app
@@ -257,7 +295,11 @@ async fn owner_scoped_user_has_full_crud_regardless_of_user_caps() {
         ))
         .await
         .unwrap();
-    assert!(r.status().is_success(), "owner insert should pass: {}", r.status());
+    assert!(
+        r.status().is_success(),
+        "owner insert should pass: {}",
+        r.status()
+    );
     let pid = read_json(r).await["id"].as_i64().unwrap();
 
     // UPDATE own row — passes.
@@ -276,10 +318,20 @@ async fn owner_scoped_user_has_full_crud_regardless_of_user_caps() {
 
     // DELETE own row — passes.
     let r = app
-        .oneshot(req("DELETE", tid, &format!("/records/posts/{pid}"), None, &user))
+        .oneshot(req(
+            "DELETE",
+            tid,
+            &format!("/records/posts/{pid}"),
+            None,
+            &user,
+        ))
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::NO_CONTENT, "owner delete should pass");
+    assert_eq!(
+        r.status(),
+        StatusCode::NO_CONTENT,
+        "owner delete should pass"
+    );
 }
 
 #[tokio::test]
@@ -310,36 +362,53 @@ async fn user_with_full_caps_still_denied_on_query_mcp_sse() {
     let tid = "uc-mustdeny";
     let (app, _svc, dir) = spin_up_tenant_self_register(tid).await;
     // Full user_caps must NOT open any of these surfaces.
-    seed_notes(&dir, tid, &[DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete])
-        .await;
+    seed_notes(
+        &dir,
+        tid,
+        &[
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ],
+    )
+    .await;
     let user = register_and_login_via_app(&app, tid, "u@x.com", "longpassword").await;
 
     // /query → QUERY_USER_DENIED
     let r = app
         .clone()
-        .oneshot(req("POST", tid, "/query", Some(json!({"sql": "SELECT 1"})), &user))
+        .oneshot(req(
+            "POST",
+            tid,
+            "/query",
+            Some(json!({"sql": "SELECT 1"})),
+            &user,
+        ))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     assert!(
-        String::from_utf8_lossy(
-            &axum::body::to_bytes(r.into_body(), 65_536).await.unwrap()
-        )
-        .contains("QUERY_USER_DENIED")
+        String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), 65_536).await.unwrap())
+            .contains("QUERY_USER_DENIED")
     );
 
     // /query/explain → QUERY_USER_DENIED
     let r = app
         .clone()
-        .oneshot(req("POST", tid, "/query/explain", Some(json!({"sql": "SELECT 1"})), &user))
+        .oneshot(req(
+            "POST",
+            tid,
+            "/query/explain",
+            Some(json!({"sql": "SELECT 1"})),
+            &user,
+        ))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     assert!(
-        String::from_utf8_lossy(
-            &axum::body::to_bytes(r.into_body(), 65_536).await.unwrap()
-        )
-        .contains("QUERY_USER_DENIED")
+        String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), 65_536).await.unwrap())
+            .contains("QUERY_USER_DENIED")
     );
 
     // /mcp → MCP_USER_DENIED
@@ -351,17 +420,17 @@ async fn user_with_full_caps_still_denied_on_query_mcp_sse() {
                 .uri(format!("/t/{tid}/mcp"))
                 .header(header::AUTHORIZATION, format!("Bearer {user}"))
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"jsonrpc":"2.0","method":"tools/list","id":1}"#))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","method":"tools/list","id":1}"#,
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     assert!(
-        String::from_utf8_lossy(
-            &axum::body::to_bytes(r.into_body(), 65_536).await.unwrap()
-        )
-        .contains("MCP_USER_DENIED")
+        String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), 65_536).await.unwrap())
+            .contains("MCP_USER_DENIED")
     );
 
     // SSE subscribe → SSE_USER_DENIED

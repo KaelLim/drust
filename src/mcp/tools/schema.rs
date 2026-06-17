@@ -2,8 +2,8 @@ use crate::mcp::server::DrustMcp;
 use crate::storage::schema::{
     DmlVerb, check_description, collection_exists, default_anon_caps, delete_collection_meta,
     describe_collection, find_fk_referrers, is_protected_collection, read_collection_description,
-    write_anon_caps, write_collection_description, write_field_description, write_index_description,
-    write_user_caps,
+    write_anon_caps, write_collection_description, write_field_description,
+    write_index_description, write_user_caps,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;

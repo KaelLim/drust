@@ -1070,7 +1070,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(user_caps, r#"["select","insert"]"#);
-        assert_eq!(user_caps, anon_caps, "user_caps_json must equal anon_caps_json after backfill");
+        assert_eq!(
+            user_caps, anon_caps,
+            "user_caps_json must equal anon_caps_json after backfill"
+        );
     }
 
     #[test]
@@ -1101,7 +1104,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(user_caps, None, "NULL anon_caps_json must backfill to NULL user_caps_json");
+        assert_eq!(
+            user_caps, None,
+            "NULL anon_caps_json must backfill to NULL user_caps_json"
+        );
     }
 
     #[test]

@@ -9,8 +9,8 @@ use axum::http::{Request, StatusCode, header};
 use axum::routing::post;
 use drust::mgmt::browse::update_user_caps;
 use drust::mgmt::tenants::TenantsState;
-use drust::storage::schema::{DmlVerb, describe_collection};
 use drust::storage::meta::open_meta;
+use drust::storage::schema::{DmlVerb, describe_collection};
 use drust::storage::tenant_db::open_read;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -100,7 +100,11 @@ async fn admin_update_user_caps_round_trip() {
         "caps=select&caps=insert",
     )
     .await;
-    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "expected 303 redirect");
+    assert_eq!(
+        resp.status(),
+        StatusCode::SEE_OTHER,
+        "expected 303 redirect"
+    );
     let loc = resp
         .headers()
         .get(header::LOCATION)
@@ -118,7 +122,10 @@ async fn admin_update_user_caps_round_trip() {
     let mut want: BTreeSet<DmlVerb> = BTreeSet::new();
     want.insert(DmlVerb::Select);
     want.insert(DmlVerb::Insert);
-    assert_eq!(schema.user_caps, want, "user_caps should reflect the POSTed checkboxes");
+    assert_eq!(
+        schema.user_caps, want,
+        "user_caps should reflect the POSTed checkboxes"
+    );
 
     // The split must hold: anon_caps untouched (still just select).
     let mut anon_want: BTreeSet<DmlVerb> = BTreeSet::new();
@@ -143,7 +150,10 @@ async fn admin_update_user_caps_empty_locks_user_role() {
 
     let rconn = open_read(&data_dir, tid).unwrap();
     let schema = describe_collection(&rconn, "posts").unwrap().unwrap();
-    assert!(schema.user_caps.is_empty(), "empty form locks the user role");
+    assert!(
+        schema.user_caps.is_empty(),
+        "empty form locks the user role"
+    );
 }
 
 #[test]
@@ -159,8 +169,8 @@ fn zh_tw_has_user_section_key() {
     // Stop at the next table header so we only inspect this table's body.
     let body = table.split("\n[").next().unwrap();
     assert!(
-        body.lines().any(|l| l.trim_start().starts_with("user ")
-            || l.trim_start().starts_with("user=")),
+        body.lines()
+            .any(|l| l.trim_start().starts_with("user ") || l.trim_start().starts_with("user=")),
         "zh-TW.toml [collection_page.settings.section] must define `user`, got:\n{body}"
     );
 }

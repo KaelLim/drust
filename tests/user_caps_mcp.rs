@@ -31,7 +31,9 @@ async fn set_user_caps_round_trip_and_describe_reflects_it() {
     use drust::mcp::tools::exploration::describe_collection as describe_mcp;
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;
-    create_collection(&s, "posts", &[title_field()]).await.unwrap();
+    create_collection(&s, "posts", &[title_field()])
+        .await
+        .unwrap();
 
     // Default: select-only (default_user_caps == {select}).
     let d0 = describe_mcp(&s, "posts").await.unwrap();
