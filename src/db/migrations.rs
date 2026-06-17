@@ -149,6 +149,20 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     add_column_if_missing(&tx, "_system_collection_meta", "insert_policy_json", "TEXT")?;
     add_column_if_missing(&tx, "_system_collection_meta", "update_policy_json", "TEXT")?;
     add_column_if_missing(&tx, "_system_collection_meta", "delete_policy_json", "TEXT")?;
+    // v1.41 — per-collection user_caps (User role DML allowlist), parallel
+    // to anon_caps. NULLABLE with NO default: a NULL reads back as
+    // default_user_caps() = {select}, so an upsert helper that omits this
+    // column never locks the User role out of select. The IS NULL backfill
+    // faithfully inherits each row's existing anon_caps (today's User
+    // behavior was "inherit anon_caps") and is idempotent across reboots —
+    // once a row is non-NULL (backfill or a later admin set_user_caps) it is
+    // never re-touched.
+    add_column_if_missing(&tx, "_system_collection_meta", "user_caps_json", "TEXT")?;
+    tx.execute(
+        "UPDATE _system_collection_meta SET user_caps_json = anon_caps_json \
+         WHERE user_caps_json IS NULL",
+        [],
+    )?;
     // v1.29.5 — _system_rpc.callable_by (H3-1 phase 1). Idempotent
     // backfill from anon_callable: 1 → ["anon","user"], 0 → [].
     // Guarded by table existence — _system_rpc only exists on tenants
@@ -1024,6 +1038,70 @@ mod tests {
             .unwrap();
         assert_eq!(pub_cb, r#"["anon","user"]"#);
         assert_eq!(svc_cb, "[]");
+    }
+
+    #[test]
+    fn v141_user_caps_json_added_and_backfilled_from_anon() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-uc-caps");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            // Pre-v1.41 meta shape: anon_caps_json present, no user_caps_json.
+            // Seed a row with a NON-default anon_caps_json so the backfill is
+            // observable (not just the {select} default).
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT);
+                 INSERT INTO _system_collection_meta (collection_name, anon_caps_json) VALUES ('posts', '[\"select\",\"insert\"]');",
+            )
+            .unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-uc-caps").unwrap();
+        migrate_tenant_db(dir.path(), "t-uc-caps").unwrap(); // idempotent — second run no-op
+
+        let c = Connection::open(&p).unwrap();
+        // Faithful inherit: user_caps_json == anon_caps_json after backfill.
+        let (user_caps, anon_caps): (String, String) = c
+            .query_row(
+                "SELECT user_caps_json, anon_caps_json FROM _system_collection_meta WHERE collection_name='posts'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(user_caps, r#"["select","insert"]"#);
+        assert_eq!(user_caps, anon_caps, "user_caps_json must equal anon_caps_json after backfill");
+    }
+
+    #[test]
+    fn v141_user_caps_json_left_null_when_anon_caps_is_null() {
+        // A meta row whose anon_caps_json is NULL: the backfill copies NULL,
+        // leaving user_caps_json NULL — which read_user_caps falls back to
+        // default_user_caps() = {select}. Proves no spurious value is written.
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-uc-null");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT);
+                 INSERT INTO _system_collection_meta (collection_name, anon_caps_json) VALUES ('nullcaps', NULL);",
+            )
+            .unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-uc-null").unwrap();
+        migrate_tenant_db(dir.path(), "t-uc-null").unwrap();
+
+        let c = Connection::open(&p).unwrap();
+        let user_caps: Option<String> = c
+            .query_row(
+                "SELECT user_caps_json FROM _system_collection_meta WHERE collection_name='nullcaps'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(user_caps, None, "NULL anon_caps_json must backfill to NULL user_caps_json");
     }
 
     #[test]
