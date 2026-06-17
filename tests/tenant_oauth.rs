@@ -1483,6 +1483,180 @@ async fn admin_put_oauth_validation_emits_granular_codes() {
     assert_eq!(v["error_code"], "INVALID_CLIENT_SECRET", "got {v}");
 }
 
+async fn list_oauth(app: &Router, tid: &str, service: &str) -> serde_json::Value {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/t/{tid}/admin/oauth-providers"))
+                .header(header::AUTHORIZATION, format!("Bearer {service}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn admin_put_redirect_uris_updates_list_and_keeps_client_id() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let before = list_oauth(&app, &tid, &service).await;
+    let cid_before = before["providers"][0]["client_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let body = serde_json::json!({
+        "allowed_redirect_uris": [
+            "https://app.example.com/auth/callback",
+            "http://localhost:3000/dashboard/login.html"
+        ],
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/t/{tid}/admin/oauth-providers/google/redirect-uris"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {service}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let after = list_oauth(&app, &tid, &service).await;
+    assert_eq!(
+        after["providers"][0]["allowed_redirect_uris"],
+        serde_json::json!([
+            "https://app.example.com/auth/callback",
+            "http://localhost:3000/dashboard/login.html"
+        ])
+    );
+    // client_id untouched; secret never leaves the writer (still masked).
+    assert_eq!(after["providers"][0]["client_id"], cid_before);
+    assert_eq!(after["providers"][0]["client_secret"], "●●●●");
+}
+
+#[tokio::test]
+async fn admin_put_redirect_uris_404_when_provider_absent() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+    // Tenant has google but NOT github.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/t/{tid}/admin/oauth-providers/github/redirect-uris"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {service}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "allowed_redirect_uris": ["https://app.example.com/cb"] })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_put_redirect_uris_400_on_bad_or_empty() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, service, _log) = spin_up_tenant_with_google_fake(&fake).await;
+
+    let bad = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/t/{tid}/admin/oauth-providers/google/redirect-uris"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {service}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "allowed_redirect_uris": ["http://attacker.com/cb"] })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(bad.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error_code"], "INVALID_REDIRECT_URI");
+
+    let empty = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/t/{tid}/admin/oauth-providers/google/redirect-uris"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {service}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "allowed_redirect_uris": [] }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(empty.into_body(), 4096).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error_code"], "EMPTY_REDIRECT_URIS");
+}
+
+#[tokio::test]
+async fn admin_put_redirect_uris_writes_audit_extra() {
+    let fake = spawn_fake_google().await;
+    let (app, _dir, tid, service, log_dir) = spin_up_tenant_with_google_fake(&fake).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/t/{tid}/admin/oauth-providers/google/redirect-uris"
+                ))
+                .header(header::AUTHORIZATION, format!("Bearer {service}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "allowed_redirect_uris":
+                        ["https://app.example.com/a", "https://app.example.com/b"] })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let row = poll_for_audit_op(
+        &log_dir,
+        "PUT /admin/oauth-providers/google/redirect-uris",
+        500,
+    )
+    .await;
+    assert_eq!(row["status"], "ok");
+    assert_eq!(row["provider"], "google");
+    assert_eq!(row["redirect_uris_count"], 2);
+}
+
 // ---------- T2: auth_kind enrichment on tenant OAuth callback ----------
 
 #[tokio::test]

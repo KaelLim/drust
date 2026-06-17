@@ -431,6 +431,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             put(oauth_admin_routes::put_oauth_provider_handler)
                 .delete(oauth_admin_routes::delete_oauth_provider_handler),
         )
+        .route(
+            "/t/{tenant}/admin/oauth-providers/{provider}/redirect-uris",
+            put(oauth_admin_routes::put_oauth_redirect_uris_handler),
+        )
         // ── Admin webhook subscriptions (service-only) ────────────────────
         .route(
             "/t/{tenant}/admin/webhooks",
