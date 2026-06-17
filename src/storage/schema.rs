@@ -63,6 +63,19 @@ pub fn default_anon_caps() -> BTreeSet<DmlVerb> {
     s
 }
 
+/// Default capability set for the **User** role — logged-in users may
+/// SELECT only by default. Identical to `default_anon_caps()`: today a
+/// User inherits `anon_caps` (default `{select}`), so defaulting
+/// `user_caps` to `{select}` preserves the current effective behaviour.
+/// Write verbs must be explicitly granted; never on by default. Used when
+/// a row is missing from `_system_collection_meta` OR its `user_caps_json`
+/// column is NULL (legacy / un-configured collections).
+pub fn default_user_caps() -> BTreeSet<DmlVerb> {
+    let mut s = BTreeSet::new();
+    s.insert(DmlVerb::Select);
+    s
+}
+
 /// Parse a JSON array of lowercase verb strings into a `BTreeSet`.
 ///
 /// **Behaviour:** decode is all-or-nothing — any unknown verb (e.g.
@@ -311,6 +324,14 @@ pub struct CollectionSchema {
     /// `[Select]` for backwards compatibility with collections that
     /// pre-date the capability feature.
     pub anon_caps: BTreeSet<DmlVerb>,
+    /// Per-collection DML allowlist for the **User** role
+    /// (`drust_user_*` login/OAuth tokens), parallel to `anon_caps` and
+    /// stored in a separate `user_caps_json` column. Lets logged-in
+    /// users be granted write access independently of anon and without
+    /// requiring `owner_field`. Default is `[Select]` (read-by-default,
+    /// write opt-in). Governs `/records/*`, `/list`, `/search` only —
+    /// never `/query`, `/mcp`, or SSE (User stays hard-denied there).
+    pub user_caps: BTreeSet<DmlVerb>,
     /// Column used for row-level ownership. None = non-owner-scoped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_field: Option<String>,
@@ -385,6 +406,25 @@ fn read_anon_caps(conn: &Connection, coll: &str) -> rusqlite::Result<BTreeSet<Dm
     Ok(row
         .map(|j| parse_anon_caps_json(&j))
         .unwrap_or_else(default_anon_caps))
+}
+
+/// Read the user_caps for a single collection from
+/// `_system_collection_meta`. A missing row OR a NULL `user_caps_json`
+/// column both yield `default_user_caps()` (= `{select}`): `query_row`
+/// returns `None` (the `.ok()`) on a missing row, and `r.get::<_, String>(0)`
+/// errors on a NULL column (so `.ok()` is `None` there too) — both fall
+/// through to the default. Faithful inheritance of legacy behaviour.
+fn read_user_caps(conn: &Connection, coll: &str) -> rusqlite::Result<BTreeSet<DmlVerb>> {
+    let row: Option<String> = conn
+        .query_row(
+            "SELECT user_caps_json FROM _system_collection_meta WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    Ok(row
+        .map(|j| parse_anon_caps_json(&j))
+        .unwrap_or_else(default_user_caps))
 }
 
 /// Read the realtime flag for a single collection. Missing rows yield
@@ -655,6 +695,7 @@ pub fn describe_collection(
 
     let rc = row_count(conn, name)?;
     let anon_caps = read_anon_caps(conn, name)?;
+    let user_caps = read_user_caps(conn, name)?;
     let (owner_field, read_scope) = read_owner_field(conn, name)?;
     let vector_fields = read_vector_fields(conn, name)?;
     let realtime_enabled = read_realtime_enabled(conn, name)?;
@@ -666,6 +707,7 @@ pub fn describe_collection(
         indices,
         row_count: rc,
         anon_caps,
+        user_caps,
         owner_field,
         read_scope,
         vector_fields,
@@ -728,6 +770,27 @@ pub fn write_anon_caps(
               VALUES (?1, ?2, datetime('now'))
          ON CONFLICT(collection_name) DO UPDATE SET
               anon_caps_json = excluded.anon_caps_json,
+              updated_at     = excluded.updated_at",
+        rusqlite::params![coll, json],
+    )?;
+    Ok(())
+}
+
+/// Insert / replace the user_caps row for a collection. Caller must
+/// hold the writer mutex. Used by the admin UI's user-caps editor and
+/// the `set_user_caps` MCP tool. Mirrors `write_anon_caps` exactly,
+/// upserting `user_caps_json` instead of `anon_caps_json`.
+pub fn write_user_caps(
+    conn: &Connection,
+    coll: &str,
+    caps: &BTreeSet<DmlVerb>,
+) -> rusqlite::Result<()> {
+    let json = anon_caps_to_json(caps);
+    conn.execute(
+        "INSERT INTO _system_collection_meta (collection_name, user_caps_json, updated_at)
+              VALUES (?1, ?2, datetime('now'))
+         ON CONFLICT(collection_name) DO UPDATE SET
+              user_caps_json = excluded.user_caps_json,
               updated_at     = excluded.updated_at",
         rusqlite::params![coll, json],
     )?;
@@ -941,7 +1004,8 @@ mod meta_io_tests {
         conn.execute_batch(
             "CREATE TABLE _system_collection_meta (
                 collection_name    TEXT PRIMARY KEY,
-                anon_caps_json     TEXT NOT NULL,
+                anon_caps_json     TEXT NOT NULL DEFAULT '[\"select\"]',
+                user_caps_json     TEXT,
                 updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
                 owner_field        TEXT,
                 read_scope         TEXT,
@@ -1227,6 +1291,76 @@ mod meta_io_tests {
             "malformed JSON must yield empty map (defensive)"
         );
     }
+
+    #[test]
+    fn default_user_caps_is_select_only() {
+        let d = default_user_caps();
+        assert_eq!(d.len(), 1);
+        assert!(d.contains(&DmlVerb::Select));
+    }
+
+    #[test]
+    fn user_caps_write_then_read_roundtrips() {
+        let (_t, conn) = fresh();
+        let caps: BTreeSet<DmlVerb> = [
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ]
+        .into_iter()
+        .collect();
+        write_user_caps(&conn, "posts", &caps).unwrap();
+        let got = read_user_caps(&conn, "posts").unwrap();
+        assert_eq!(got, caps);
+    }
+
+    #[test]
+    fn user_caps_null_column_reads_default() {
+        // Row exists (created via write_anon_caps) but user_caps_json was
+        // never written → NULL → falls back to default_user_caps() = {select}.
+        let (_t, conn) = fresh();
+        let only_select: BTreeSet<DmlVerb> = [DmlVerb::Select].into_iter().collect();
+        write_anon_caps(&conn, "posts", &only_select).unwrap();
+        assert_eq!(read_user_caps(&conn, "posts").unwrap(), default_user_caps());
+        // Missing row also defaults.
+        assert_eq!(read_user_caps(&conn, "absent").unwrap(), default_user_caps());
+    }
+
+    #[test]
+    fn describe_collection_populates_user_caps_from_column() {
+        let (_t, conn) = fresh();
+        // describe_collection reads field/index-description, vector, and
+        // description columns; the minimal fresh() fixture omits them, mirroring
+        // how the other meta_io_tests ALTER-add only the columns they need.
+        conn.execute_batch(
+            "ALTER TABLE _system_collection_meta ADD COLUMN vector_fields_json TEXT NOT NULL DEFAULT '[]';
+             ALTER TABLE _system_collection_meta ADD COLUMN description TEXT;
+             ALTER TABLE _system_collection_meta ADD COLUMN field_descriptions_json TEXT NOT NULL DEFAULT '{}';
+             ALTER TABLE _system_collection_meta ADD COLUMN index_descriptions_json TEXT NOT NULL DEFAULT '{}';",
+        )
+        .unwrap();
+        // describe_collection needs a real table to introspect.
+        conn.execute_batch("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT);")
+            .unwrap();
+        // No user_caps written yet → NULL → default {select}.
+        let s = describe_collection(&conn, "posts").unwrap().unwrap();
+        assert_eq!(s.user_caps, default_user_caps());
+        // Grant full CRUD and re-describe.
+        let crud: BTreeSet<DmlVerb> = [
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ]
+        .into_iter()
+        .collect();
+        write_user_caps(&conn, "posts", &crud).unwrap();
+        let s2 = describe_collection(&conn, "posts").unwrap().unwrap();
+        assert_eq!(s2.user_caps, crud);
+        // anon_caps is independent and untouched (default {select}).
+        assert_eq!(s2.anon_caps, default_anon_caps());
+    }
 }
 
 /// Returns true if the caller's role is permitted to perform `verb` on
@@ -1269,6 +1403,7 @@ mod cap_gate_tests {
             indices: vec![],
             row_count: 0,
             anon_caps: caps.iter().copied().collect(),
+            user_caps: caps.iter().copied().collect(),
             owner_field: None,
             read_scope: None,
             vector_fields: vec![],
