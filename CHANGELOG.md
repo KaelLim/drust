@@ -1,3 +1,39 @@
+## v1.41.0 — 2026-06-17
+
+### per-collection `user_caps` — the User role gets its own grants
+
+Logged-in users (`drust_user_*` login/OAuth tokens) now have a per-collection
+**`user_caps`** capability set (subset of `{select, insert, update, delete}`),
+exactly parallel to `anon_caps` and stored beside it on
+`_system_collection_meta`. Previously the User role had no caps of its own and
+*inherited* `anon_caps` on non-owner-scoped collections, so the only ways to let
+logged-in users write were to widen `anon_caps` (also opening anonymous tokens)
+or set `owner_field` (forcing per-user row scoping). `user_caps` decouples the
+two: grant write verbs to the User role without touching anon and without
+requiring `owner_field`.
+
+- **Default `[select]`** (identical to `anon_caps`), so every existing
+  collection keeps its current effective behavior — read by default, write
+  opt-in. A nullable `user_caps_json TEXT` column is added and back-filled from
+  each row's `anon_caps_json` on boot (`IS NULL`-guarded, idempotent), so the
+  upgrade is a faithful inherit with no behavior change until an admin grants
+  write.
+- **Anon is structurally untouched** — distinct column, distinct
+  `has_dml_cap` branch; widening `user_caps` can never open a verb to anonymous
+  tokens (`tests/user_caps.rs` locks this with an executable regression).
+- **`owner_field` short-circuit unchanged** — owner-scoped collections behave
+  exactly as before; `user_caps` only becomes the deciding gate on
+  non-owner-scoped collections.
+- **Caps remain a pure gate** — RLS policy USING/CHECK and the owner
+  stamp/strip still run *after* and independent of the cap set; a widened
+  `user_caps` cannot bypass a configured policy or owner rule.
+- **Must-stay-denied** — User tokens are still hard-denied on `/query`,
+  `/query/explain`, `/mcp`, and SSE subscribe regardless of `user_caps`.
+- **Config surfaces mirror `anon_caps`**: a second checkbox section in the
+  collection-editor `[⚙]` settings popover and a new MCP `set_user_caps` tool
+  (service-only; tool count 56 → 57). No data-plane REST route (anon_caps has
+  none).
+
 ## v1.40.0 — 2026-06-17
 
 ### redirect-URIs-only edit for per-tenant OAuth providers
