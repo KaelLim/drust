@@ -866,6 +866,10 @@ title = "Callback URL is fixed per tenant"
 button = "disable"
 confirm = "Delete the {provider} OAuth config? End users will no longer be able to sign in via {provider} on this tenant."
 
+[tenant_oauth_providers.edit_redirects]
+label = "Redirect URIs"
+save = "save redirect URIs"
+
 [tenant_oauth_providers.empty]
 body = "Add one below to enable end-user sign-in."
 title = "No OAuth providers configured"

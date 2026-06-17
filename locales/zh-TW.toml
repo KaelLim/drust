@@ -884,6 +884,10 @@ title = "Callback URL 為各租戶固定值"
 button = "停用"
 confirm = "刪除 {provider} 的 OAuth 設定？此租戶的終端使用者將無法再透過 {provider} 登入。"
 
+[tenant_oauth_providers.edit_redirects]
+label = "Redirect URIs"
+save = "儲存 redirect URIs"
+
 [tenant_oauth_providers.empty]
 body = "請於下方新增以啟用終端使用者登入。"
 title = "尚未設定任何 OAuth provider"
