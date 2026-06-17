@@ -867,6 +867,10 @@ impl MgmtState {
                 post(super::browse::update_anon_caps),
             )
             .route(
+                "/admin/tenants/{id}/collections/{coll}/user-caps",
+                post(super::browse::update_user_caps),
+            )
+            .route(
                 "/admin/tenants/{id}/collections/{coll}/realtime",
                 post(super::browse::update_realtime),
             )
