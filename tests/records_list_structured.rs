@@ -266,7 +266,9 @@ async fn user_on_owner_scoped_sees_only_own_rows() {
 }
 
 #[tokio::test]
-async fn user_on_non_owner_scoped_falls_through_to_anon_cap() {
+async fn user_on_non_owner_scoped_governed_by_user_caps() {
+    // v1.41: plain (non-owner-scoped) `posts` with no explicit user_caps →
+    // default user_caps=[select] lets the User /list (no longer "inherits anon").
     let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("user-non-owner").await;
     seed_plain_posts(&dir, &tid).await;
     let user_a = register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
