@@ -41,6 +41,10 @@ struct RowsPage {
     /// Pairs of `(verb, currently_enabled)` for the four DML verbs in
     /// canonical order. Drives the checkbox row in the Anon tab editor.
     anon_cap_choices: Vec<(&'static str, bool)>,
+    /// v1.41 — Pairs of `(verb, currently_enabled)` for the four DML verbs
+    /// in canonical order. Drives the checkbox row in the Logged-in-user
+    /// section of the settings popover. Mirror of `anon_cap_choices`.
+    user_cap_choices: Vec<(&'static str, bool)>,
     /// v1.16 — whether SSE broadcast is enabled for this collection. Drives
     /// the Realtime tab's single toggle.
     realtime_enabled: bool,
@@ -361,6 +365,24 @@ pub async fn collection_rows_page(
         })
         .collect();
 
+    // v1.41 — same shape, but sourced from `schema.user_caps` so the
+    // Logged-in-user section reflects the User-role grants independently
+    // of anon.
+    let current_user_caps = schema.user_caps.clone();
+    let user_cap_choices: Vec<(&'static str, bool)> = ["select", "insert", "update", "delete"]
+        .iter()
+        .map(|v| {
+            let verb = match *v {
+                "select" => crate::storage::schema::DmlVerb::Select,
+                "insert" => crate::storage::schema::DmlVerb::Insert,
+                "update" => crate::storage::schema::DmlVerb::Update,
+                "delete" => crate::storage::schema::DmlVerb::Delete,
+                _ => unreachable!(),
+            };
+            (*v, current_user_caps.contains(&verb))
+        })
+        .collect();
+
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     let (fields_json, tenant_id_json, coll_name_json) =
         editor_json_payloads(&schema.fields, &tenant_id, &coll_name);
@@ -384,6 +406,7 @@ pub async fn collection_rows_page(
             fields_with_badges,
             indices: schema.indices,
             anon_cap_choices,
+            user_cap_choices,
             realtime_enabled,
             collection_description: schema.description,
             policies_json,
@@ -463,6 +486,81 @@ pub async fn update_anon_caps(
     let caps_for_writer = caps.clone();
     if let Err(e) = pool
         .with_writer(move |c| write_anon_caps(c, &coll_for_writer, &caps_for_writer))
+        .await
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    // Invalidate the per-tenant schema cache for this collection so the
+    // next REST/MCP request through the tenant router sees the new gate
+    // immediately, not after the next DDL or process restart.
+    pool.schema_cache.invalidate(&coll_name);
+
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
+    )))
+    .into_response()
+}
+
+/// v1.41 — Form payload for the user_caps editor in the settings popover.
+/// Empty `caps` means "lock the collection for logged-in users" (the User
+/// role gets nothing). Twin of `AnonCapsForm`.
+#[derive(serde::Deserialize)]
+pub struct UserCapsForm {
+    #[serde(default)]
+    pub caps: Vec<String>,
+}
+
+/// POST `/admin/tenants/{tenant}/collections/{coll}/user-caps`.
+///
+/// Writes the new User-role capability set to `_system_collection_meta`
+/// (`user_caps_json`) and invalidates the in-process schema cache for the
+/// collection so the next REST/MCP request re-reads from SQLite. Unknown
+/// verb strings in the form are silently dropped — the UI only ever submits
+/// the four canonical names. Twin of `update_anon_caps`; same not-TOCTOU-safe
+/// upsert quirk (matches anon_caps exactly).
+pub async fn update_user_caps(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name)): Path<(String, String)>,
+    // Use axum_extra::Form (serde_html_form) — the stdlib serde_urlencoded
+    // backing axum::Form cannot deserialize repeated keys
+    // (`caps=select&caps=insert`) into Vec<String>, so the HTML checkbox
+    // form would 422 on every submit.
+    axum_extra::extract::Form(form): axum_extra::extract::Form<UserCapsForm>,
+) -> Response {
+    use crate::storage::schema::{DmlVerb, write_user_caps};
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    let mut caps = std::collections::BTreeSet::new();
+    for v in form.caps {
+        match v.as_str() {
+            "select" => {
+                caps.insert(DmlVerb::Select);
+            }
+            "insert" => {
+                caps.insert(DmlVerb::Insert);
+            }
+            "update" => {
+                caps.insert(DmlVerb::Update);
+            }
+            "delete" => {
+                caps.insert(DmlVerb::Delete);
+            }
+            _ => {}
+        }
+    }
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let coll_for_writer = coll_name.clone();
+    let caps_for_writer = caps.clone();
+    if let Err(e) = pool
+        .with_writer(move |c| write_user_caps(c, &coll_for_writer, &caps_for_writer))
         .await
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
