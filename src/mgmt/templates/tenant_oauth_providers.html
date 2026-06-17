@@ -71,6 +71,14 @@
           </div>
           <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end;">
             <form method="post"
+                  action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_oauth_providers/{{ p.provider }}/redirect-uris"
+                  style="margin:0;display:grid;gap:6px;justify-items:end;">
+              <label class="lbl" style="justify-self:start;">{{ t.s("tenant_oauth_providers.edit_redirects.label") }}</label>
+              <textarea class="textarea" name="allowed_redirect_uris" rows="3" required
+                        spellcheck="false" style="min-width:300px;">{{ p.allowed_redirect_uris_text }}</textarea>
+              <button type="submit" class="btn sm">{{ t.s("tenant_oauth_providers.edit_redirects.save") }}</button>
+            </form>
+            <form method="post"
                   action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_oauth_providers/{{ p.provider }}/delete"
                   onsubmit="return confirm('{{ t.fmt1("tenant_oauth_providers.delete.confirm", "provider", p.provider) }}');"
                   style="margin:0;">

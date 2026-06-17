@@ -19,6 +19,7 @@ pub use crud::{
 pub use files_page::tenant_files_admin_page;
 pub use oauth_page::{
     tenant_oauth_provider_delete, tenant_oauth_provider_upsert, tenant_oauth_providers_page,
+    tenant_oauth_redirect_uris_update,
 };
 pub use overview::tenant_overview_page;
 pub use webhooks_page::{

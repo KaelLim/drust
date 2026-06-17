@@ -679,7 +679,8 @@ impl MgmtState {
             TenantsState, cmdk_tenants_json, create_tenant_form, create_tenant_json,
             get_publish_policy, list_page_axum, patch_publish_policy, soft_delete_tenant,
             soft_delete_tenant_form, tenant_files_admin_page, tenant_oauth_provider_delete,
-            tenant_oauth_provider_upsert, tenant_oauth_providers_page, tenant_overview_page,
+            tenant_oauth_provider_upsert, tenant_oauth_providers_page,
+            tenant_oauth_redirect_uris_update, tenant_overview_page,
             tenant_webhook_create_form, tenant_webhook_delete_form, tenant_webhooks_page,
             toggle_self_register,
         };
@@ -928,6 +929,10 @@ impl MgmtState {
             .route(
                 "/admin/tenants/{id}/_oauth_providers/{provider}/delete",
                 post(tenant_oauth_provider_delete),
+            )
+            .route(
+                "/admin/tenants/{id}/_oauth_providers/{provider}/redirect-uris",
+                post(tenant_oauth_redirect_uris_update),
             )
             // v1.13 outbound webhooks admin UI — virtual sidebar entry
             // `🔔 _webhooks`. GET renders the page; POST inserts a new
