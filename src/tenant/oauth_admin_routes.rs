@@ -85,6 +85,11 @@ pub struct UpsertBody {
     pub allowed_redirect_uris: Vec<String>,
 }
 
+#[derive(Deserialize)]
+pub struct RedirectUrisBody {
+    pub allowed_redirect_uris: Vec<String>,
+}
+
 fn oauth_err_status(e: &OauthConfigError) -> StatusCode {
     match e {
         OauthConfigError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -159,6 +164,72 @@ pub async fn put_oauth_provider_handler(
                 })));
             resp
         }
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
+    }
+}
+
+pub async fn put_oauth_redirect_uris_handler(
+    State(state): State<TenantAuthState>,
+    ServiceTid(tid): ServiceTid,
+    Path(params): Path<HashMap<String, String>>,
+    Json(body): Json<RedirectUrisBody>,
+) -> Response {
+    let provider = match get_provider(&params) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    // Validate up front for a granular 400 without touching the writer.
+    if body.allowed_redirect_uris.is_empty() {
+        let e = OauthConfigError::EmptyRedirectUris;
+        return (
+            oauth_err_status(&e),
+            Json(json!({ "error_code": e.error_code(), "message": e.to_string() })),
+        )
+            .into_response();
+    }
+    for u in &body.allowed_redirect_uris {
+        if let Err(e) = oauth_config::validate_redirect_uri(u) {
+            return (
+                oauth_err_status(&e),
+                Json(json!({ "error_code": e.error_code(), "message": e.to_string() })),
+            )
+                .into_response();
+        }
+    }
+    let pool = match state.registry.get_or_open(&tid) {
+        Ok(p) => p,
+        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    };
+    let provider2 = provider.clone();
+    let uris = body.allowed_redirect_uris;
+    let uris_count = uris.len();
+    let res = pool
+        .with_writer(move |c| {
+            oauth_config::update_redirect_uris(c, &provider2, &uris).map_err(|e| match e {
+                OauthConfigError::Db(re) => re,
+                other => rusqlite::Error::InvalidParameterName(other.to_string()),
+            })
+        })
+        .await;
+    match res {
+        Ok(true) => {
+            let mut resp = (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "provider": &provider })),
+            )
+                .into_response();
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(json!({
+                    "provider": provider,
+                    "redirect_uris_count": uris_count,
+                })));
+            resp
+        }
+        Ok(false) => json_error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "provider not configured",
+        ),
         Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }
