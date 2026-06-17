@@ -213,6 +213,33 @@ pub fn delete(conn: &Connection, provider: &str) -> Result<bool, rusqlite::Error
     Ok(n > 0)
 }
 
+/// Update ONLY the redirect-URI allowlist for an already-configured
+/// provider. Validates each URI (same allowlist as the start handler) and
+/// rejects an empty list. The `UPDATE` names only `allowed_redirect_uris`
+/// (+ `updated_at`), so client_id / client_secret cannot be touched.
+/// Returns `Ok(false)` when the provider row does not exist — the caller
+/// maps that to NOT_FOUND; never creates a credential-less provider.
+pub fn update_redirect_uris(
+    conn: &Connection,
+    provider: &str,
+    redirect_uris: &[String],
+) -> Result<bool, OauthConfigError> {
+    if redirect_uris.is_empty() {
+        return Err(OauthConfigError::EmptyRedirectUris);
+    }
+    for u in redirect_uris {
+        validate_redirect_uri(u)?;
+    }
+    let uris_joined = redirect_uris.join(",");
+    let n = conn.execute(
+        "UPDATE _system_oauth_providers \
+           SET allowed_redirect_uris = ?1, updated_at = datetime('now') \
+         WHERE provider = ?2",
+        params![uris_joined, provider],
+    )?;
+    Ok(n > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +301,72 @@ mod tests {
         assert!(validate_redirect_uri("http://[::1]/cb").is_ok());
         assert!(validate_redirect_uri("http://[::1]:8080/cb").is_ok());
         assert!(validate_redirect_uri("http://[::1]evil.com/cb").is_err());
+    }
+
+    #[test]
+    fn update_redirect_uris_changes_only_uris() {
+        let c = db_with_table();
+        upsert(
+            &c,
+            "google",
+            "cid",
+            "csecret",
+            &["https://a.example.com/cb".to_string()],
+        )
+        .unwrap();
+
+        let changed = update_redirect_uris(
+            &c,
+            "google",
+            &[
+                "https://b.example.com/cb".to_string(),
+                "http://localhost:3000/x".to_string(),
+            ],
+        )
+        .unwrap();
+        assert!(changed);
+
+        let cfg = get(&c, "google").unwrap().unwrap();
+        assert_eq!(
+            cfg.allowed_redirect_uris,
+            vec![
+                "https://b.example.com/cb".to_string(),
+                "http://localhost:3000/x".to_string()
+            ]
+        );
+        // The whole point: credentials are byte-identical.
+        assert_eq!(cfg.client_id, "cid");
+        assert_eq!(cfg.client_secret, "csecret");
+    }
+
+    #[test]
+    fn update_redirect_uris_rejects_empty_and_bad() {
+        let c = db_with_table();
+        upsert(
+            &c,
+            "google",
+            "cid",
+            "csecret",
+            &["https://a.example.com/cb".to_string()],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            update_redirect_uris(&c, "google", &[]),
+            Err(OauthConfigError::EmptyRedirectUris)
+        ));
+        assert!(matches!(
+            update_redirect_uris(&c, "google", &["http://attacker.com/cb".to_string()]),
+            Err(OauthConfigError::InvalidRedirectUri(_))
+        ));
+    }
+
+    #[test]
+    fn update_redirect_uris_missing_provider_returns_false() {
+        let c = db_with_table();
+        let changed =
+            update_redirect_uris(&c, "github", &["https://a.example.com/cb".to_string()]).unwrap();
+        assert!(!changed);
     }
 
     #[test]
