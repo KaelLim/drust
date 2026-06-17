@@ -1324,7 +1324,10 @@ mod meta_io_tests {
         write_anon_caps(&conn, "posts", &only_select).unwrap();
         assert_eq!(read_user_caps(&conn, "posts").unwrap(), default_user_caps());
         // Missing row also defaults.
-        assert_eq!(read_user_caps(&conn, "absent").unwrap(), default_user_caps());
+        assert_eq!(
+            read_user_caps(&conn, "absent").unwrap(),
+            default_user_caps()
+        );
     }
 
     #[test]
@@ -1520,7 +1523,12 @@ mod cap_gate_tests {
     fn user_does_not_read_anon_caps() {
         // anon_caps wide-open, user_caps locked: User must be denied.
         let s = schema_with_split(
-            &[DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete],
+            &[
+                DmlVerb::Select,
+                DmlVerb::Insert,
+                DmlVerb::Update,
+                DmlVerb::Delete,
+            ],
             &[DmlVerb::Select],
             None,
         );
@@ -1556,7 +1564,12 @@ mod cap_gate_tests {
         // user_caps wide-open must NOT leak to Anon (Anon reads anon_caps only).
         let s = schema_with_split(
             &[DmlVerb::Select],
-            &[DmlVerb::Select, DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete],
+            &[
+                DmlVerb::Select,
+                DmlVerb::Insert,
+                DmlVerb::Update,
+                DmlVerb::Delete,
+            ],
             None,
         );
         assert!(has_dml_cap(TokenRole::Anon, DmlVerb::Select, &s));

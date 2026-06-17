@@ -18,9 +18,7 @@ mod helpers;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use helpers::{
-    grab_pool, register_and_login_via_app, spin_up_dual_role_self_register,
-};
+use helpers::{grab_pool, register_and_login_via_app, spin_up_dual_role_self_register};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -213,8 +211,7 @@ async fn user_list_non_owner_denied_when_user_caps_lacks_select() {
     // anon_caps=[select] (broad), user_caps=[] (no select for User).
     // The User must be DENIED on /list — proving /list reads user_caps,
     // not anon_caps (the old code would have ALLOWED via anon_caps[select]).
-    let (app, tid, svc, _anon, dir) =
-        spin_up_dual_role_self_register("ucaps-list-deny").await;
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("ucaps-list-deny").await;
     seed_plain_posts_caps(&dir, &tid, "[\"select\"]", "[]").await;
     insert_post(&app, &tid, &svc, "row-1", 1).await;
     let user_a = register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
@@ -235,8 +232,7 @@ async fn user_list_non_owner_allowed_when_user_caps_has_select() {
     // user_caps=[select] grants the User read even though anon_caps=[].
     // Proves user_caps is the deciding gate (anon_caps=[] would have
     // denied under the old anon-inherit code).
-    let (app, tid, svc, _anon, dir) =
-        spin_up_dual_role_self_register("ucaps-list-allow").await;
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("ucaps-list-allow").await;
     seed_plain_posts_caps(&dir, &tid, "[]", "[\"select\"]").await;
     insert_post(&app, &tid, &svc, "row-1", 1).await;
     let user_a = register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
@@ -256,8 +252,7 @@ async fn user_list_owner_all_denied_by_user_caps_not_anon_caps() {
     // own select-cap requirement (it does NOT use has_dml_cap's owner
     // short-circuit) — so the User must be DENIED, gated by user_caps,
     // and the swap means anon_caps no longer rescues them.
-    let (app, tid, _svc, _anon, dir) =
-        spin_up_dual_role_self_register("ucaps-all-deny").await;
+    let (app, tid, _svc, _anon, dir) = spin_up_dual_role_self_register("ucaps-all-deny").await;
     seed_owner_all_posts_caps(&dir, &tid, "[\"select\"]", "[]").await;
     let user_a = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
     let (status, v) = post_list(&app, &tid, &user_a, "posts", json!({})).await;
@@ -275,8 +270,7 @@ async fn user_list_owner_all_allowed_when_user_caps_has_select() {
     // Same owner+all shape, but user_caps=[select] and anon_caps=[].
     // The User is ALLOWED (gated by user_caps), and with read_scope="all"
     // sees every row (no per-user filter).
-    let (app, tid, svc, _anon, dir) =
-        spin_up_dual_role_self_register("ucaps-all-allow").await;
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("ucaps-all-allow").await;
     seed_owner_all_posts_caps(&dir, &tid, "[]", "[\"select\"]").await;
     // Register the user first, then service-insert a row owned by that user.
     // Production requires service tokens to supply owner_field on owner-scoped
@@ -301,8 +295,7 @@ async fn user_list_and_records_getlist_parity_deny() {
     // ANON_CAP_DENIED. (/records routes through has_dml_cap's User arm —
     // Group 1's swap; /list through its own matrix — Group 4's swap. The
     // parity test kills any lockstep divergence between the two sites.)
-    let (app, tid, svc, _anon, dir) =
-        spin_up_dual_role_self_register("ucaps-parity-deny").await;
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("ucaps-parity-deny").await;
     seed_plain_posts_caps(&dir, &tid, "[\"select\"]", "[]").await;
     insert_post(&app, &tid, &svc, "row-1", 1).await;
     let user_a = register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
@@ -319,8 +312,7 @@ async fn user_list_and_records_getlist_parity_deny() {
 #[tokio::test]
 async fn user_list_and_records_getlist_parity_allow() {
     // user_caps=[select] → BOTH /list and /records GET-list allow the User.
-    let (app, tid, svc, _anon, dir) =
-        spin_up_dual_role_self_register("ucaps-parity-allow").await;
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("ucaps-parity-allow").await;
     seed_plain_posts_caps(&dir, &tid, "[]", "[\"select\"]").await;
     insert_post(&app, &tid, &svc, "row-1", 1).await;
     let user_a = register_and_login_via_app(&app, &tid, "u@x.com", "longpassword").await;
