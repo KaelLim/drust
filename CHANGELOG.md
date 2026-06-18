@@ -1,3 +1,31 @@
+## v1.41.1 — 2026-06-18
+
+### fixes — admin toggle switches + Docker disk panel
+
+Two bug fixes surfaced by the GHCR/Docker deployment. No schema change, no new
+config, no behavior change for the existing systemd host.
+
+- **Cap-switch toggles stuck until refresh** (`_api_keys` self-register +
+  publish-policy tiles). Each `.cap-tile` is a `<label>` wrapping a
+  `display:none` checkbox; the click handlers manually flipped `checked` but
+  never called `preventDefault()`, so the browser's native label→control
+  activation toggled it a second time and desynced the switch from its state —
+  after one flip the toggle stuck until a page reload. Both handlers now cancel
+  the native toggle with `e.preventDefault()`.
+- **`_setSelfRegPill` printed English on a localized page.** The pill rewrite
+  hardcoded `'enabled'`/`'disabled'` instead of the bundle strings, so flipping
+  self-register on a zh-TW page showed "enabled" rather than "已啟用". It now
+  emits `t.s("common.pill.enabled")` / `t.s("common.state.disabled")`.
+- **Disk panel showed `?` under Docker.** `build_disk_view` and the Mode-A /
+  edge-function upload guards `statvfs`'d a hardcoded `/var/lib/garage` — a path
+  that only exists on the original co-located-Garage host and is absent inside
+  the container, so the panel rendered `?` and the guards silently skipped. They
+  now route through a process-global `disk_check_root()` set at startup from
+  `Config.data_dir` (host `/var/lib/drust`, Docker `/data`), so the panel reports
+  the filesystem the service actually writes to. The root falls back to
+  `/var/lib/garage` when uninitialised, so the entire existing test suite is
+  byte-identical — zero regression.
+
 ## v1.41.0 — 2026-06-17
 
 ### per-collection `user_caps` — the User role gets its own grants

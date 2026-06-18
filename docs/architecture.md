@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-06-17
+updated: 2026-06-18
 generated_by: docs/gen-architecture.py
 ---
 
@@ -33,7 +33,7 @@ generated_by: docs/gen-architecture.py
 | [`query/`](#srcquery) | 8 | 48 | 8 | 28 |
 | [`rpc/`](#srcrpc) | 6 | 31 | 15 | 7 |
 | [`safety/`](#srcsafety) | 8 | 38 | 1 | 11 |
-| [`storage/`](#srcstorage) | 14 | 97 | 14 | 75 |
+| [`storage/`](#srcstorage) | 14 | 99 | 14 | 75 |
 | [`tenant/`](#srctenant) | 33 | 202 | 103 | 54 |
 
 ## Group dependency graph
@@ -270,7 +270,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 ### `src/storage/`
 
 - [`blast_radius.rs`](../src/storage/blast_radius.rs) — v1.26 — Pure read helpers that compute the side effects of a · 8 pub
-- [`disk.rs`](../src/storage/disk.rs) — Filesystem statistics helper used by upload handlers to enforce the · 2 pub
+- [`disk.rs`](../src/storage/disk.rs) — Filesystem statistics helper used by upload handlers to enforce the · 4 pub
 - [`files.rs`](../src/storage/files.rs) — Shared file-storage helpers used by both admin and tenant upload flows. · 10 pub
 - [`garage.rs`](../src/storage/garage.rs) — Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the · 5 pub
 - [`janitor.rs`](../src/storage/janitor.rs) — 1 pub
