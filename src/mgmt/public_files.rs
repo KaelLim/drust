@@ -164,11 +164,12 @@ struct ReconcilePage {
     mascot_json_dark: String,
 }
 
-/// Build a `DiskView` for the Garage data volume. If `/var/lib/garage` is
-/// unavailable, returns neutral placeholder values (free_pct = 100 so no
-/// warning banner appears).
+/// Build a `DiskView` for the service's data filesystem (the disk-check root,
+/// set from `Config.data_dir` at startup — host `/var/lib/drust`, Docker
+/// `/data`). If that path is unavailable, returns neutral placeholder values
+/// (free_pct = 100 so no warning banner appears).
 pub fn build_disk_view() -> DiskView {
-    match crate::storage::disk::disk_stats(std::path::Path::new("/var/lib/garage")) {
+    match crate::storage::disk::disk_stats(crate::storage::disk::disk_check_root()) {
         Ok(stats) => {
             let gb = |b: u64| format!("{:.1}", b as f64 / 1_073_741_824.0);
             DiskView {
@@ -243,7 +244,7 @@ pub async fn list_page(
         })
         .collect();
 
-    // Build disk view. If /var/lib/garage is unavailable, show neutral placeholders.
+    // Build disk view. If the disk-check root is unavailable, show neutral placeholders.
     let disk = build_disk_view();
 
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
@@ -418,8 +419,8 @@ pub async fn upload_submit(
     };
 
     // Step 1: disk check BEFORE reading the body.
-    // Best-effort: if /var/lib/garage doesn't exist or isn't readable, skip.
-    match crate::storage::disk::disk_stats(std::path::Path::new("/var/lib/garage")) {
+    // Best-effort: if the disk-check root doesn't exist or isn't readable, skip.
+    match crate::storage::disk::disk_stats(crate::storage::disk::disk_check_root()) {
         Ok(stats) => {
             if (stats.free_pct as u8) < state.disk_min_free_pct {
                 return (
@@ -433,7 +434,7 @@ pub async fn upload_submit(
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "disk_stats for /var/lib/garage failed — skipping disk check");
+            tracing::warn!(error = %e, "disk_stats for the disk-check root failed — skipping disk check");
         }
     }
 

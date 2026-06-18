@@ -38,6 +38,10 @@ async fn main() -> anyhow::Result<()> {
     }
     std::fs::create_dir_all(&cfg.data_dir)?;
     std::fs::create_dir_all(&cfg.log_dir)?;
+    // Point the disk guards + admin disk panel at the real data filesystem
+    // (host /var/lib/drust, Docker /data) instead of the hardcoded
+    // /var/lib/garage, which is absent inside the container.
+    drust::storage::disk::init_disk_check_root(cfg.data_dir.clone());
 
     let mut meta = open_meta(&cfg.data_dir.join("meta.sqlite"))?;
     if let Some((u, p)) = &cfg.init_admin {

@@ -291,7 +291,7 @@ impl host::Host for StoreData {
             ));
         }
         // Best-effort like Mode A: skip (with a warn) if the path is absent.
-        match crate::storage::disk::disk_stats(std::path::Path::new("/var/lib/garage")) {
+        match crate::storage::disk::disk_stats(crate::storage::disk::disk_check_root()) {
             Ok(stats) if (stats.free_pct as u8) < self.host.disk_min_free_pct => {
                 return Err(format!(
                     "DISK_FULL: {:.1}% free, minimum {}% required",
@@ -300,7 +300,7 @@ impl host::Host for StoreData {
             }
             Ok(_) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "disk_stats for /var/lib/garage failed — skipping disk check");
+                tracing::warn!(error = %e, "disk_stats for the disk-check root failed — skipping disk check");
             }
         }
         let pool = inner.pool.clone();
