@@ -421,7 +421,7 @@
     var pill = document.getElementById('self-reg-pill');
     if (!pill) return;
     pill.className = 'pill ' + (enabled ? 'mint' : 'muted');
-    pill.innerHTML = '<span class="dot"></span>' + (enabled ? 'enabled' : 'disabled');
+    pill.innerHTML = '<span class="dot"></span>' + (enabled ? '{{ t.s("common.pill.enabled") }}' : '{{ t.s("common.state.disabled") }}');
   }
   (function () {
     var form = document.getElementById('self-reg-form');
@@ -431,6 +431,10 @@
     if (!tile || !cb) return;
     tile.addEventListener('click', function (e) {
       if (e.target.tagName === 'INPUT') return;
+      // preventDefault cancels the native <label>->checkbox toggle so the
+      // manual flip below is the sole state mutation (no double-toggle desync
+      // that left the switch stuck until a page refresh).
+      e.preventDefault();
       var newVal = !cb.checked;
       // Optimistic update — flip UI immediately, roll back on failure.
       cb.checked = newVal;
@@ -468,6 +472,10 @@
       if (!cb || !flag) return;
       tile.addEventListener('click', function (e) {
         if (e.target.tagName === 'INPUT') return;
+        // preventDefault cancels the native <label>->checkbox toggle so the
+        // manual flip below is the sole state mutation (no double-toggle desync
+        // that left the switch stuck until a page refresh).
+        e.preventDefault();
         var newVal = !cb.checked;
         cb.checked = newVal;
         tile.classList.toggle('on', newVal);
