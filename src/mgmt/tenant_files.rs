@@ -275,7 +275,7 @@ pub async fn upload(
     };
 
     // Disk check — best-effort; skip if path absent (mirrors Task 15).
-    match crate::storage::disk::disk_stats(std::path::Path::new("/var/lib/garage")) {
+    match crate::storage::disk::disk_stats(crate::storage::disk::disk_check_root()) {
         Ok(stats) => {
             if (stats.free_pct as u8) < state.disk_min_free_pct {
                 return (
@@ -289,7 +289,7 @@ pub async fn upload(
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "disk_stats for /var/lib/garage failed — skipping disk check");
+            tracing::warn!(error = %e, "disk_stats for the disk-check root failed — skipping disk check");
         }
     }
 

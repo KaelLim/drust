@@ -1,7 +1,33 @@
 //! Filesystem statistics helper used by upload handlers to enforce the
 //! low-disk guard (`DRUST_DISK_MIN_FREE_PCT`). Wraps POSIX `statvfs`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Process-wide root whose filesystem the upload guards + admin disk panel
+/// report on. Set once at startup from `Config.data_dir` so the check follows
+/// the deployment — host `/var/lib/drust`, Docker `/data` — instead of a
+/// hardcoded path that only existed on the original co-located-Garage host
+/// (`/var/lib/garage`, absent inside the container → "?" panel + skipped
+/// guards). `statvfs` reports the filesystem *containing* this path, so the
+/// numbers track wherever the service actually writes its data.
+static DISK_CHECK_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Install the disk-check root. First call wins (`OnceLock::set`), matching the
+/// single startup call in `main`; later calls are no-ops.
+pub fn init_disk_check_root(root: PathBuf) {
+    let _ = DISK_CHECK_ROOT.set(root);
+}
+
+/// The path whose filesystem `statvfs` reports on. Falls back to the historical
+/// `/var/lib/garage` when `init_disk_check_root` was never called (e.g. unit
+/// tests that don't boot the full server) — preserving pre-fix behavior there.
+pub fn disk_check_root() -> &'static Path {
+    DISK_CHECK_ROOT
+        .get()
+        .map(PathBuf::as_path)
+        .unwrap_or_else(|| Path::new("/var/lib/garage"))
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct DiskStats {
