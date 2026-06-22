@@ -317,3 +317,63 @@ async fn anon_sse_denied_on_owner_scoped_collection() {
         "deny must use the same code as the REST read path; got {json:?}"
     );
 }
+
+/// owner-scoped `owned` collection with **read_scope="all"** + realtime.
+async fn seed_realtime_owner_scoped_all(dir: &tempfile::TempDir, tenant: &str) {
+    let pool = grab_pool(tenant, dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE owned (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO _system_collection_meta
+                  (collection_name, anon_caps_json)
+                  VALUES ('owned', '[\"select\"]')
+                  ON CONFLICT(collection_name) DO UPDATE SET
+                    anon_caps_json = '[\"select\"]';",
+        )?;
+        drust::storage::schema::write_realtime_enabled(c, "owned", true)?;
+        drust::storage::schema::set_owner_field(c, "owned", Some("user_id"), Some("all"))?;
+        Ok::<_, rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+    pool.schema_cache.invalidate("owned");
+}
+
+/// BUG-1 — the SSE anon-owner guard (sse.rs) was also `read_scope=="own"`-narrow,
+/// so anon could subscribe to an owner-scoped read_scope="all" collection and
+/// receive every owner's Created/Updated events (no policy → no per-event
+/// filter). Deny anon on any owner_field, like the REST read paths.
+#[tokio::test]
+async fn anon_sse_denied_on_owner_scoped_collection_scope_all() {
+    let (app, tid, _svc, anon, dir) =
+        spin_up_dual_role_self_register("policy-sse-owner-all").await;
+    seed_realtime_owner_scoped_all(&dir, &tid).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/t/{tid}/records/owned/subscribe"))
+                .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+                .header(header::ACCEPT, "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "anon subscribe on owner-scoped read_scope=all must be 403 (BUG-1)"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error_code"], "ANON_FORBIDDEN_OWNER_SCOPED");
+}

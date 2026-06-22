@@ -86,14 +86,14 @@ pub async fn search_handler(
         }
     };
 
-    if matches!(tenant.role, TokenRole::Anon)
-        && schema.owner_field.is_some()
-        && schema.read_scope.as_deref() == Some("own")
-    {
+    // BUG-1 (audit 2026-06-22) — deny anon on ANY owner_field collection,
+    // regardless of read_scope (the `read_scope=="own"` narrowing leaked
+    // owner-scoped read_scope="all" to anon). Mirrors the REST list paths.
+    if matches!(tenant.role, TokenRole::Anon) && schema.owner_field.is_some() {
         return json_error(
             StatusCode::FORBIDDEN,
             "ANON_FORBIDDEN_OWNER_SCOPED",
-            "anon cannot search owner-scoped collection with read_scope=own",
+            "anon cannot search an owner-scoped collection",
         );
     }
     if !crate::storage::schema::has_dml_cap(tenant.role, DmlVerb::Select, &schema) {
