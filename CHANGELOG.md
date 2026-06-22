@@ -1,3 +1,44 @@
+## v1.41.2 — 2026-06-22
+
+### security — four fixes from an independent second-AI (codex) audit
+
+A read-only security audit by codex (driven over codegraph), cross-verified
+against the code, surfaced four intra-tenant authorization/lockstep gaps. No
+schema change, no new config. Two are real privilege/oracle bypasses (F1, F2);
+two are hardening (F3, F4). Each fix ships with a regression test.
+
+- **F1 (High) — legacy `?filter=`/`?sort=` raw-SQL cap bypass.** `GET
+  /records/<c>?filter=…` interpolated the filter verbatim into `build_list_sql`,
+  and the read-only SQL authorizer allows reads of any non-`_system_` sibling
+  collection. An anon/user caller with `select` on one collection could smuggle
+  a subquery (`EXISTS(SELECT 1 FROM "other" …)` / `UNION`) to read sibling
+  collections their role has no caps on — bypassing the per-collection cap
+  boundary. The owner-scoped and policy guards only covered some shapes; a plain
+  collection slipped past both. Raw `?filter=/?sort=` is now `403
+  RAW_FILTER_DENIED` for anon/user on every collection (service keeps it; the
+  param is deprecated, Sunset 2027-01-01) — use the structured `POST /list`.
+- **F2 (Medium) — DELETE `?dry_run=true` blast-radius oracle.** The dry_run
+  preview returned FK topology + child-row counts before any cap / owner /
+  policy check, so anon/user could probe rows they cannot delete (and may not
+  read). Authorization now runs before the dry_run branch, plus an owner +
+  policy-USING target pre-flight inside it (non-target → 404, like a real delete
+  miss). `_system_` now 404s via `require_write_cap`.
+- **F3 (Low) — anon SSE leaked policy-hidden deletes.** The per-event select
+  policy filter only ran on Created/Updated; `Deleted{id}` always passed,
+  leaking deletion id/timing for rows a select policy hides. Deleted events are
+  now dropped for an anon subscriber whenever a select policy is active.
+- **F4 (Low) — RLS evaluator lockstep on empty `$nin`/`$in`.** `eval_policy`'s
+  NULL-lhs guard fired before the empty-set check, so empty `$nin` on a NULL
+  field disagreed with the compiled SQL (`NOT IN ()` is true for all rows),
+  fail-open once wrapped in `not`. eval now decides the empty set first, matching
+  the compiler. (The v1.38.2 H3 fix covered only non-empty arrays.) Policy config
+  is service-only, so this is correctness/lockstep, not a direct attacker vector.
+
+F5 (webhook loopback dev carve-out — trusted-actor + documented), F6 (refuted:
+`object_store::path::Path` normalizes `..`), and F7 (tenant-id slug vs strict
+UUID — admin-only, no traversal/collision) were assessed and intentionally left
+unchanged.
+
 ## v1.41.1 — 2026-06-18
 
 ### fixes — admin toggle switches + Docker disk panel
