@@ -25,13 +25,13 @@ generated_by: docs/gen-architecture.py
 | [`auth/`](#srcauth) | 10 | 50 | 2 | 35 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
-| [`db/`](#srcdb) | 2 | 11 | 0 | 0 |
+| [`db/`](#srcdb) | 2 | 11 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 7 | 53 | 20 | 14 |
 | [`mcp/`](#srcmcp) | 19 | 135 | 56 | 27 |
 | [`mgmt/`](#srcmgmt) | 34 | 249 | 96 | 43 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 8 | 48 | 8 | 28 |
-| [`rpc/`](#srcrpc) | 6 | 34 | 16 | 8 |
+| [`rpc/`](#srcrpc) | 6 | 36 | 16 | 9 |
 | [`safety/`](#srcsafety) | 8 | 38 | 1 | 11 |
 | [`storage/`](#srcstorage) | 14 | 99 | 14 | 75 |
 | [`tenant/`](#srctenant) | 33 | 203 | 103 | 54 |
@@ -48,6 +48,7 @@ graph LR
   codegen --> auth
   codegen --> storage
   codegen --> tenant
+  db --> rpc
   functions --> mcp
   functions --> storage
   functions --> tenant
@@ -249,7 +250,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`handler.rs`](../src/rpc/handler.rs) — REST handler for `POST /t/{tenant}/rpc/{name}`. · 2 pub
 - [`mod.rs`](../src/rpc/mod.rs) — RPC subsystem: stored Supabase-style named SQL functions. · 5 pub
 - [`params.rs`](../src/rpc/params.rs) — RPC parameter schema and request validation. · 6 pub
-- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 5 pub
+- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 7 pub
 - [`registry.rs`](../src/rpc/registry.rs) — Persistence wrapper around the `_system_rpc` table. · 9 pub
 
 <a id="srcsafety"></a>

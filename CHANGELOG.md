@@ -45,7 +45,15 @@ No schema change, no new MCP tool. Each fix ships with a regression test.
   pass untouched. (The update-path and write-mode coverage were added after a
   pre-release adversarial review caught the create-read-only guard as
   incomplete — drust's recurring "fixed one enforcement site, missed the
-  parallel one" pattern.)
+  parallel one" pattern.) A second review pass added the remaining two
+  enforcement layers (defense-in-depth ≥ 2): a **config-time guard**
+  (`guard_owner_scope_change_against_anon_rpcs`) refuses to make a collection
+  owner-scoped via `set_owner_field` (MCP + REST) while an existing anon-callable
+  RPC reads/writes it without `:user_id` — closing the reachable
+  "becomes-owner-scoped-later" gap the create-time guard never re-checks — and a
+  **one-time startup migration** (`scan_unsafe_anon_rpcs`) neutralizes any
+  pre-guard legacy row fail-closed (`anon_callable=0`, logged) so an in-place
+  upgrade cannot leave the leak open. The runtime `call_rpc` path is unchanged.
 - **DEPLOY-1 (Medium) — webhook loopback SSRF carve-out now opt-in.** The
   `http://localhost` (`127.0.0.1`/`::1`) dev carve-out in the webhook SSRF
   defense shipped unconditionally in production at both the register-time

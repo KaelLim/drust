@@ -205,6 +205,36 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         // the application-layer registry::create signature taking RpcMode, so
         // invalid strings can't be inserted via our code path.
         add_column_if_missing(&tx, "_system_rpc", "mode", "TEXT NOT NULL DEFAULT 'read'")?;
+
+        // v1.41.3 legacy one-time safety net: an anon-callable RPC that reads or
+        // writes an owner-scoped collection without binding :user_id predates the
+        // create/update + owner-scope-change guards and still leaks at call time
+        // (the runtime call_rpc path does not re-check owner-scope). Neutralize it
+        // fail-closed (anon_callable=0, callable_by='[]') so the leak is closed on
+        // upgrade; an admin can re-enable after declaring :user_id. Best-effort —
+        // a scan error (e.g. malformed legacy params_json) must never break the
+        // startup migration, so it is logged and skipped, not propagated.
+        match crate::rpc::prepare::scan_unsafe_anon_rpcs(&tx) {
+            Ok(names) if !names.is_empty() => {
+                for name in &names {
+                    tx.execute(
+                        "UPDATE _system_rpc SET anon_callable = 0, callable_by = '[]' \
+                         WHERE name = ?1",
+                        rusqlite::params![name],
+                    )?;
+                }
+                tracing::warn!(
+                    tenant = %tid,
+                    rpcs = ?names,
+                    "v1.41.3: neutralized legacy anon-callable RPC(s) exposing an owner-scoped \
+                     collection without :user_id (set anon_callable=0; re-enable after adding :user_id)"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(tenant = %tid, error = %e, "v1.41.3 unsafe-anon-rpc scan skipped");
+            }
+        }
     }
     tx.commit()
 }
@@ -756,6 +786,66 @@ mod tests {
             .unwrap();
         assert!(cols.contains(&"owner_field".to_string()));
         assert!(cols.contains(&"read_scope".to_string()));
+    }
+
+    #[test]
+    fn migrate_tenant_db_neutralizes_legacy_unsafe_anon_rpc() {
+        use crate::rpc::registry::{self, RpcMode};
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let conn = crate::storage::tenant_db::open_write(dir.path(), "t-leak").unwrap();
+            conn.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER);")
+                .unwrap();
+            crate::storage::schema::set_owner_field(&conn, "orders", Some("user_id"), Some("own"))
+                .unwrap();
+            // Legacy UNSAFE: anon-callable, reads owner-scoped `orders`, no :user_id.
+            registry::create(
+                &conn,
+                "leak",
+                "SELECT id, qty FROM orders",
+                "[]",
+                None,
+                true,
+                RpcMode::Read,
+            )
+            .unwrap();
+            // SAFE: anon-callable but binds :user_id → must be left untouched.
+            registry::create(
+                &conn,
+                "mine",
+                "SELECT id, qty FROM orders WHERE user_id = :user_id",
+                r#"[{"name":"user_id","type":"text","required":true}]"#,
+                None,
+                true,
+                RpcMode::Read,
+            )
+            .unwrap();
+        } // drop the writer before migrate opens its own connection
+
+        migrate_tenant_db(dir.path(), "t-leak").unwrap();
+
+        let conn = crate::storage::tenant_db::open_write(dir.path(), "t-leak").unwrap();
+        let anon = |name: &str| -> i64 {
+            conn.query_row(
+                "SELECT anon_callable FROM _system_rpc WHERE name = ?1",
+                rusqlite::params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            anon("leak"),
+            0,
+            "legacy unsafe anon RPC must be neutralized"
+        );
+        assert_eq!(
+            anon("mine"),
+            1,
+            "safe :user_id-bound anon RPC must be left as-is"
+        );
+        // Idempotent: re-running keeps `leak` neutralized and does not error.
+        migrate_tenant_db(dir.path(), "t-leak").unwrap();
+        assert_eq!(anon("leak"), 0);
     }
 
     #[test]

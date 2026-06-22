@@ -135,14 +135,38 @@ pub fn guard_anon_owner_scoped_rpc(
     if params.iter().any(|p| p.name == "user_id") {
         return Ok(());
     }
-    let is_write = mode == RpcMode::Write;
+    let referenced = referenced_user_tables(conn, sql, mode)?;
+    for table in &referenced {
+        let (owner_field, _scope) = crate::storage::schema::read_owner_field(conn, table)
+            .map_err(|e| PrepareError::Rejected(format!("owner_field probe failed: {e}")))?;
+        if owner_field.is_some() {
+            return Err(PrepareError::Rejected(format!(
+                "{RPC_ANON_OWNER_SCOPED}: an anon-callable RPC over owner-scoped \
+                 collection '{table}' must bind :user_id, else it exposes every user's rows; \
+                 declare a :user_id param or set anon_callable=false"
+            )));
+        }
+    }
+    Ok(())
+}
 
+/// Discover every user-table a stored-RPC body touches: tables it Reads (both
+/// modes) plus, in write mode, tables it Inserts/Updates/Deletes. `sqlite_*` and
+/// protected (`_system_*`) tables are excluded — they are never owner-scoped and
+/// are already denied by `validate_rpc_sql`. Shared by the create/update guard
+/// and the owner-scope-change guard so both reason about the same table set. In
+/// read mode an unexpected write action is denied outright (validate should
+/// already have rejected it).
+fn referenced_user_tables(
+    conn: &Connection,
+    sql: &str,
+    mode: RpcMode,
+) -> Result<HashSet<String>, PrepareError> {
+    let is_write = mode == RpcMode::Write;
     let stmts = match crate::rpc::exec_write::split_statements(sql) {
         Ok(s) => s,
         Err(e) => return Err(PrepareError::Rejected(e.message)),
     };
-
-    // Collect every user-table the body touches under a capturing authorizer.
     let tables: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     detach_authorizer(conn);
     for stmt in &stmts {
@@ -190,21 +214,71 @@ pub fn guard_anon_owner_scoped_rpc(
         detach_authorizer(conn);
         prep.map_err(|e| PrepareError::Rejected(format!("{e}")))?;
     }
+    // Snapshot by value (no fail-open Arc::try_unwrap path).
+    let snapshot = tables.lock().unwrap().clone();
+    Ok(snapshot)
+}
 
-    // Snapshot the captured set by value (no fail-open Arc::try_unwrap path).
-    let referenced: Vec<String> = tables.lock().unwrap().iter().cloned().collect();
-    for table in &referenced {
-        let (owner_field, _scope) = crate::storage::schema::read_owner_field(conn, table)
-            .map_err(|e| PrepareError::Rejected(format!("owner_field probe failed: {e}")))?;
-        if owner_field.is_some() {
+/// Config-time defense-in-depth (v1.41.3): refuse to make `collection`
+/// owner-scoped while an existing `anon_callable` RPC reads or writes it without
+/// binding `:user_id`. The create/update guard never re-runs when a collection's
+/// owner-scope is toggled AFTER an RPC exists, so without this an admin calling
+/// `set_owner_field` on a collection an anon RPC already reads would silently
+/// turn that RPC into a cross-user leak (the reachable "becomes-owner-scoped-later"
+/// gap surfaced in adversarial review). Symmetric with
+/// [`guard_anon_owner_scoped_rpc`]; runs BEFORE the owner_field write (that path
+/// is autocommit, so a rejection must precede the write, not roll it back) and
+/// reuses [`referenced_user_tables`] so it sees exactly the tables the runtime
+/// would. The owner-scope config path is service-only + rare, so the per-RPC
+/// probe is off the hot path.
+pub fn guard_owner_scope_change_against_anon_rpcs(
+    conn: &Connection,
+    collection: &str,
+) -> Result<(), PrepareError> {
+    let rpcs = crate::rpc::registry::list(conn)
+        .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
+    for rpc in rpcs {
+        if !rpc.anon_callable || rpc.params.iter().any(|p| p.name == "user_id") {
+            continue;
+        }
+        let tables = referenced_user_tables(conn, &rpc.sql, rpc.mode)?;
+        if tables.contains(collection) {
             return Err(PrepareError::Rejected(format!(
-                "{RPC_ANON_OWNER_SCOPED}: an anon-callable RPC over owner-scoped \
-                 collection '{table}' must bind :user_id, else it exposes every user's rows; \
-                 declare a :user_id param or set anon_callable=false"
+                "{RPC_ANON_OWNER_SCOPED}: cannot make collection '{collection}' owner-scoped while \
+                 anon-callable RPC '{}' reads it without binding :user_id; add a :user_id param or \
+                 set anon_callable=false on that RPC first",
+                rpc.name
             )));
         }
     }
     Ok(())
+}
+
+/// Legacy one-time scan (v1.41.3): names of `anon_callable` RPCs that ALREADY
+/// read or write an owner-scoped collection without binding `:user_id` against
+/// the CURRENT owner-scope state. Such a row predates the create/update +
+/// owner-scope-change guards (e.g. created before v1.41.3, or owner-scope set in
+/// a window before the guards existed) and still leaks at call time, because the
+/// runtime `call_rpc` path does NOT re-check owner-scope. The startup migration
+/// uses this to neutralize them fail-closed. Read-only; the caller performs the
+/// remediation. Reuses [`guard_anon_owner_scoped_rpc`] so "unsafe" means exactly
+/// what the create/update guard means.
+pub fn scan_unsafe_anon_rpcs(conn: &Connection) -> Result<Vec<String>, PrepareError> {
+    let rpcs = crate::rpc::registry::list(conn)
+        .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
+    let mut unsafe_names = Vec::new();
+    for rpc in rpcs {
+        if !rpc.anon_callable || rpc.params.iter().any(|p| p.name == "user_id") {
+            continue;
+        }
+        if let Err(PrepareError::Rejected(msg)) =
+            guard_anon_owner_scoped_rpc(conn, &rpc.sql, &rpc.params, true, rpc.mode)
+            && msg.contains(RPC_ANON_OWNER_SCOPED)
+        {
+            unsafe_names.push(rpc.name);
+        }
+    }
+    Ok(unsafe_names)
 }
 
 /// Update-path counterpart of [`guard_anon_owner_scoped_rpc`].
