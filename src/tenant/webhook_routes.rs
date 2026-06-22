@@ -79,7 +79,8 @@ pub fn check_url(raw: &str) -> Result<(), (&'static str, &'static str)> {
     if scheme != "https" {
         return Err((
             "INVALID_URL",
-            "url must be https://, or http:// with loopback host",
+            "url must be https://, or http:// with loopback host \
+             (loopback requires a debug build or DRUST_WEBHOOK_ALLOW_LOOPBACK)",
         ));
     }
     // v1.19.2 SSRF defense: resolve the host to all IPs and reject if any
