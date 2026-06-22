@@ -349,6 +349,15 @@ fn eval_leaf(
                 Some(a) => a,
                 None => return false,
             };
+            // F4 (audit 2026-06-22) — an EMPTY set is decided independently of
+            // the lhs, mirroring the compiler (`X IN ()` → 1=0 false, `X NOT IN
+            // ()` → 1=1 true for ALL x, including NULL). This MUST run before the
+            // NULL-lhs guard below, which the compiler applies only to a
+            // NON-empty set; otherwise empty `$nin` on a NULL row diverges
+            // (eval false vs SQL true). `op` is "in"|"nin" (with/without `$`).
+            if arr.is_empty() {
+                return op.contains("nin");
+            }
             // Mirror SQLite three-valued logic so eval agrees with the compiled
             // `col [NOT] IN (?, …)`:
             //   * a NULL lhs is excluded by both IN and NOT IN (NULL [NOT] IN is

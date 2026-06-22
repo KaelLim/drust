@@ -147,6 +147,20 @@ fn evaluators_agree_on_in_nin_null_and_like_case() {
         (r#"{"name":{"$nin":[{"$auth":"id"}]}}"#, r#"{"name":"c"}"#),
         // (g) $in with a literal NULL operand — both exclude (sanity, no regression).
         (r#"{"name":{"$in":[null]}}"#, r#"{"name":"c"}"#),
+        // (h) F4 — empty $nin against a NULL field. SQL compiles to `1=1`
+        //     (`NOT IN ()` is true for ALL x incl. NULL); eval must agree (was
+        //     false because the NULL-lhs guard fired before the empty check).
+        (r#"{"name":{"$nin":[]}}"#, r#"{"name":null}"#),
+        // (i) empty $nin against a non-null field — both keep (sanity).
+        (r#"{"name":{"$nin":[]}}"#, r#"{"name":"c"}"#),
+        // (j) empty $in against a NULL field — SQL `1=0` excludes; eval agrees.
+        (r#"{"name":{"$in":[]}}"#, r#"{"name":null}"#),
+        // (k) empty $in against a non-null field — both exclude (sanity).
+        (r#"{"name":{"$in":[]}}"#, r#"{"name":"c"}"#),
+        // (l) F4 — empty $nin wrapped in `not` against a NULL field: the
+        //     weaponizable form. SQL `NOT (1=1)` excludes; eval must agree
+        //     (was fail-open true: `!false` from the unfixed empty-$nin eval).
+        (r#"{"not":{"name":{"$nin":[]}}}"#, r#"{"name":null}"#),
     ];
     for (a, r) in cases {
         let ast: FilterAst = serde_json::from_str(a).unwrap();
