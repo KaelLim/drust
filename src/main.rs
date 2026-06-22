@@ -15,6 +15,17 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tower_http::set_header::SetResponseHeaderLayer;
 
+/// DEPLOY-4: gate the `x-drust-version` response header on env.
+///
+/// Pure + total so the decision is unit-testable in debug without
+/// touching the process environment. The header is OPT-OUT: it is
+/// emitted by default (env unset) and only suppressed when the
+/// operator sets `DRUST_HIDE_VERSION` (to any value, incl. empty),
+/// because deploy/live-smoke verification curls `x-drust-version`.
+fn version_header_enabled(env_set: bool) -> bool {
+    !env_set
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -489,11 +500,18 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .merge(mgmt_router)
-        .merge(tenant_router)
-        .layer(SetResponseHeaderLayer::if_not_present(
+        .merge(tenant_router);
+    // DEPLOY-4: emit `x-drust-version` by default; suppress it only when
+    // the operator opts out via DRUST_HIDE_VERSION (fingerprint reduction).
+    // Both arms are `Router` — axum's `Router::layer` is type-preserving.
+    let app = if version_header_enabled(std::env::var("DRUST_HIDE_VERSION").is_ok()) {
+        app.layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("x-drust-version"),
             HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
-        ));
+        ))
+    } else {
+        app
+    };
 
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     tracing::info!(addr = %cfg.bind, "drust listening");
@@ -525,4 +543,30 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let term = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => (), _ = term => () }
+}
+
+#[cfg(test)]
+mod deploy4_version_header_tests {
+    use super::version_header_enabled;
+
+    // DEPLOY-4: the `x-drust-version` header is OPT-OUT. Default (env
+    // unset → env_set==false) must keep emitting it; setting
+    // DRUST_HIDE_VERSION (env_set==true) suppresses it.
+    #[test]
+    fn version_header_present_by_default_when_env_unset() {
+        // env unset => is_ok() == false => header enabled (present)
+        assert!(
+            version_header_enabled(false),
+            "default (DRUST_HIDE_VERSION unset) MUST keep emitting x-drust-version"
+        );
+    }
+
+    #[test]
+    fn version_header_hidden_when_env_set() {
+        // env set => is_ok() == true => header disabled (hidden)
+        assert!(
+            !version_header_enabled(true),
+            "DRUST_HIDE_VERSION set MUST suppress the x-drust-version header"
+        );
+    }
 }
