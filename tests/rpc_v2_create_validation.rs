@@ -117,7 +117,10 @@ fn write_with_valid_mutation_accepts() {
 // The create-time guard must refuse it; the safe shapes must still create.
 
 use drust::rpc::params::{ParamSpec, ParamType};
-use drust::rpc::prepare::{RPC_ANON_OWNER_SCOPED, guard_anon_owner_scoped_rpc};
+use drust::rpc::prepare::{
+    RPC_ANON_OWNER_SCOPED, guard_anon_owner_scoped_rpc, guard_anon_owner_scoped_rpc_update,
+};
+use drust::rpc::registry;
 use drust::storage::schema::set_owner_field;
 
 /// Seed `orders` as owner-scoped (owner_field set on its meta row).
@@ -191,4 +194,145 @@ fn anon_callable_read_over_non_owner_collection_accepts() {
         RpcMode::Read,
     )
     .expect("anon read RPC over a non-owner collection must create");
+}
+
+// ── v1.41.3 (review): WRITE-mode anon-callable RPC over owner-scoped ──
+//
+// An anon-callable WRITE RPC over an owner-scoped collection lets anon MUTATE
+// every user's rows (the write executor injects no owner filter) — strictly
+// worse than the read leak. The guard must fire in write mode too.
+
+#[test]
+fn anon_callable_write_over_owner_scoped_without_user_id_rejected() {
+    let (_d, conn) = seed_owner_scoped("anon_write_owner_no_uid");
+    let err = guard_anon_owner_scoped_rpc(
+        &conn,
+        "UPDATE orders SET qty = :q WHERE id = :id",
+        &[],
+        true,
+        RpcMode::Write,
+    )
+    .unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED),
+        "write-mode guard must reject, got: {msg}"
+    );
+}
+
+#[test]
+fn anon_callable_write_over_owner_scoped_with_user_id_accepts() {
+    let (_d, conn) = seed_owner_scoped("anon_write_owner_uid");
+    // Declares :user_id → sanctioned escape hatch → still creates.
+    guard_anon_owner_scoped_rpc(
+        &conn,
+        "UPDATE orders SET qty = :q WHERE user_id = :user_id",
+        &user_id_param(),
+        true,
+        RpcMode::Write,
+    )
+    .expect(":user_id-bound anon write RPC over owner-scoped must create");
+}
+
+#[test]
+fn anon_callable_write_over_non_owner_collection_accepts() {
+    // `orders` left non-owner-scoped → a write RPC over it does not leak.
+    let (_d, conn) = seed("anon_write_non_owner");
+    guard_anon_owner_scoped_rpc(
+        &conn,
+        "UPDATE orders SET qty = :q WHERE id = :id",
+        &[],
+        true,
+        RpcMode::Write,
+    )
+    .expect("anon write RPC over a non-owner collection must create");
+}
+
+// ── v1.41.3 (review): UPDATE path must re-check effective values ──
+//
+// `update_rpc` is partial; a flag-flip (anon_callable=true, sql=None) or an
+// sql-swap (sql=<owner-scoped>, anon_callable=None) must be re-checked against
+// the STORED row, else an update reopens the leak the create-time guard closes.
+
+#[test]
+fn update_flip_anon_callable_on_owner_scoped_rejected() {
+    let (_d, conn) = seed_owner_scoped("upd_flip");
+    // Seed a service-only (anon_callable=false) read RPC over the owner-scoped
+    // collection — legal to create because it is service-only.
+    registry::create(
+        &conn,
+        "r",
+        "SELECT id, qty FROM orders",
+        "[]",
+        None,
+        false,
+        RpcMode::Read,
+    )
+    .unwrap();
+    // Flip anon_callable=true via update, sql/params omitted → must be rejected
+    // against the stored owner-scoped SQL.
+    let err = guard_anon_owner_scoped_rpc_update(&conn, "r", None, None, Some(true)).unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED),
+        "flag-flip update must reject, got: {msg}"
+    );
+}
+
+#[test]
+fn update_swap_sql_to_owner_scoped_rejected() {
+    let (_d, conn) = seed_owner_scoped("upd_swap");
+    // Seed an anon-callable RPC that reads NO owner table (legal at create).
+    registry::create(&conn, "r", "SELECT 1", "[]", None, true, RpcMode::Read).unwrap();
+    // Swap in owner-scoped SQL via update, anon_callable omitted (stays true) →
+    // must be rejected against the effective (new) SQL.
+    let err = guard_anon_owner_scoped_rpc_update(
+        &conn,
+        "r",
+        Some("SELECT id, qty FROM orders"),
+        None,
+        None,
+    )
+    .unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED),
+        "sql-swap update must reject, got: {msg}"
+    );
+}
+
+#[test]
+fn update_benign_changes_pass() {
+    let (_d, conn) = seed_owner_scoped("upd_benign");
+    registry::create(
+        &conn,
+        "r",
+        "SELECT id, qty FROM orders",
+        "[]",
+        None,
+        false,
+        RpcMode::Read,
+    )
+    .unwrap();
+    // No anon flip, no sql change → stays service-only → ok.
+    guard_anon_owner_scoped_rpc_update(&conn, "r", None, None, None)
+        .expect("no-op update must pass");
+    // Flip anon=true BUT also declare :user_id + filter on it → sanctioned → ok.
+    let uid = user_id_param();
+    guard_anon_owner_scoped_rpc_update(
+        &conn,
+        "r",
+        Some("SELECT id, qty FROM orders WHERE user_id = :user_id"),
+        Some(&uid),
+        Some(true),
+    )
+    .expect("anon + :user_id update must pass");
+}
+
+#[test]
+fn update_missing_rpc_is_noop() {
+    let (_d, conn) = seed_owner_scoped("upd_missing");
+    // No stored row named "ghost" → guard is a no-op (the update itself 404s).
+    guard_anon_owner_scoped_rpc_update(&conn, "ghost", None, None, Some(true))
+        .expect("missing stored RPC must be a guard no-op");
 }

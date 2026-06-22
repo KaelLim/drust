@@ -35,9 +35,17 @@ No schema change, no new MCP tool. Each fix ships with a regression test.
   rows to an anonymous caller (no owner row-filter is injected at call time,
   unlike `/list` and `/search`). A create-time guard
   (`guard_anon_owner_scoped_rpc`, sentinel `RPC_ANON_OWNER_SCOPED`) now refuses
-  this shape on both create paths (MCP `create_rpc` + admin form). The escape
-  hatch is a declared `:user_id` param; service-only RPCs and non-owner-scoped
-  collections pass untouched.
+  this shape on every mutation entry point — both create paths (MCP `create_rpc`
+  + admin form) **and the MCP `update_rpc` path** (`guard_anon_owner_scoped_rpc_update`
+  re-checks the effective post-update values against the stored row, so a
+  flag-flip or sql-swap update cannot reopen the leak) — and in **both read and
+  write modes** (an anon-callable write RPC over an owner-scoped collection is
+  strictly worse: it lets anon mutate every user's rows). The escape hatch is a
+  declared `:user_id` param; service-only RPCs and non-owner-scoped collections
+  pass untouched. (The update-path and write-mode coverage were added after a
+  pre-release adversarial review caught the create-read-only guard as
+  incomplete — drust's recurring "fixed one enforcement site, missed the
+  parallel one" pattern.)
 - **DEPLOY-1 (Medium) — webhook loopback SSRF carve-out now opt-in.** The
   `http://localhost` (`127.0.0.1`/`::1`) dev carve-out in the webhook SSRF
   defense shipped unconditionally in production at both the register-time
@@ -62,6 +70,9 @@ No schema change, no new MCP tool. Each fix ships with a regression test.
   version header was emitted unconditionally, fingerprinting the exact build to
   unauthenticated callers. Default (env unset) still emits it byte-for-byte (the
   deploy/live-smoke check curls it); `DRUST_HIDE_VERSION` suppresses the layer.
+  The same flag now also blanks the version rendered in the unauthenticated
+  `/login` page footer (the most important fingerprint surface — caught in the
+  same adversarial review as the only remaining unauthenticated leak).
 - **GAP-1 (test only) — `$data` operand added to the RLS lockstep corpus.** The
   consistency corpus proving `compile_policy_using` and `eval_policy` agree never
   exercised `{"$data":"<field>"}`. Added: both evaluators resolve `$data` from
