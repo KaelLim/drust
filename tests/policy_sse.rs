@@ -183,6 +183,102 @@ async fn anon_sse_only_gets_policy_matching_events() {
     );
 }
 
+/// F3 (audit 2026-06-22) — when a select policy is active for an anon
+/// subscriber, `Deleted` events (id-only, no record to evaluate the policy
+/// against) must NOT be delivered. Passing them leaks the id + timing of
+/// deletions for rows the policy hides. We over-suppress (a deleted row can't
+/// be re-read to test the policy) — the stream stays live for policy-matching
+/// `Created` events. Before the fix the bare `{"id":…}` Deleted event passes.
+#[tokio::test]
+async fn anon_sse_drops_deleted_events_under_policy() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("policy-sse-del").await;
+    seed_realtime_posts(&dir, &tid).await;
+    // Pre-existing draft row (id=1), hidden from anon by the select policy.
+    // Insert it DIRECTLY (not via the app) so the app's schema cache is not
+    // warmed for `posts` before the policy is written — the app's cache is a
+    // separate instance from grab_pool's and the policy must be on disk before
+    // the first app load (see file header), else `select_using` is None at
+    // subscribe time.
+    grab_pool(&tid, &dir)
+        .await
+        .with_writer(|c| c.execute_batch("INSERT INTO posts (status) VALUES ('draft');"))
+        .await
+        .unwrap();
+    set_select_using(
+        &dir,
+        &tid,
+        "posts",
+        json!({"using": {"status": "published"}}),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/t/{tid}/records/posts/subscribe"))
+                .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+                .header(header::ACCEPT, "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = resp.into_body();
+    let bytes_stream = tokio_stream::wrappers::ReceiverStream::new({
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let mut body_stream = body.into_data_stream();
+        tokio::spawn(async move {
+            while let Some(chunk) = body_stream.next().await {
+                if let Ok(b) = chunk {
+                    let _ = tx.send(Ok::<_, std::io::Error>(b)).await;
+                }
+            }
+        });
+        rx
+    });
+    let mut events = bytes_stream.eventsource();
+
+    let app2 = app.clone();
+    let tid2 = tid.clone();
+    let svc2 = svc.clone();
+    let actor = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Delete the policy-hidden draft → Event::Deleted{id:1} (must be dropped).
+        let r = app2
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/t/{tid2}/records/posts/1"))
+                    .header(header::AUTHORIZATION, format!("Bearer {svc2}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        // Then a published insert → Created (must arrive, proving the stream
+        // is live and only the Deleted event was suppressed).
+        insert_post(&app2, &tid2, &svc2, "published").await;
+    });
+
+    let ev = tokio::time::timeout(Duration::from_secs(2), events.next())
+        .await
+        .expect("timeout waiting for first event")
+        .expect("stream closed")
+        .expect("sse parse error");
+    actor.await.unwrap();
+    let data: Value = serde_json::from_str(&ev.data).unwrap();
+    assert_eq!(
+        data["record"]["status"], "published",
+        "first delivered event must be the published Created; the Deleted event \
+         for the policy-hidden row must have been dropped, got {data:?}"
+    );
+}
+
 /// H2 — anon must NOT be able to subscribe to an owner-scoped collection
 /// (owner_field set + read_scope=own). It has no user_id to filter
 /// Created/Updated events by, so the only safe answer is to deny at the

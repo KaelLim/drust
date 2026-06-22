@@ -97,7 +97,9 @@ pub async fn subscribe_handler(
     //
     // Anon subscribers are filtered per-event by the select-policy USING
     // (auth_id = None). Service bypasses; users are denied above. Deleted
-    // events (id-only, no record) always pass — documented v1 limitation.
+    // events (id-only, no record) are DROPPED when a policy is active (audit
+    // F3) — they can't be policy-evaluated and would leak deletion id/timing
+    // for hidden rows; with no policy they pass through as before.
     let select_using: Option<crate::query::vector_filter::FilterAst> =
         if matches!(ctx, AuthCtx::Anon) {
             schema
@@ -123,6 +125,13 @@ pub async fn subscribe_handler(
                     },
                 )
             }
+            // F3 (audit 2026-06-22) — a Deleted event carries only the id, so
+            // the select policy cannot be evaluated against the (now-gone) row.
+            // When a policy is active for this anon subscriber, drop Deleted
+            // events entirely rather than leak the id/timing of deletions for
+            // policy-hidden rows. `select_using = None` (service, or anon on a
+            // no-policy collection) keeps the prior pass-through behavior.
+            (Some(_), Event::Deleted { .. }) => false,
             _ => true,
         })
         .map(to_sse_event);
