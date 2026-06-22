@@ -1259,19 +1259,18 @@ pub async fn delete_handler(
             .await;
         match is_target {
             Ok(true) => {
-                let br =
-                    match crate::storage::blast_radius::delete_blast_radius(&t.pool, &coll, id)
-                        .await
-                    {
-                        Ok(br) => br,
-                        Err(e) => {
-                            return json_error(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "INTERNAL_ERROR",
-                                &e.to_string(),
-                            );
-                        }
-                    };
+                let br = match crate::storage::blast_radius::delete_blast_radius(&t.pool, &coll, id)
+                    .await
+                {
+                    Ok(br) => br,
+                    Err(e) => {
+                        return json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "INTERNAL_ERROR",
+                            &e.to_string(),
+                        );
+                    }
+                };
                 return Json(serde_json::to_value(br).expect("serialise")).into_response();
             }
             Ok(false) => return (StatusCode::NOT_FOUND, "no such record").into_response(),
