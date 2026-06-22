@@ -31,10 +31,10 @@ generated_by: docs/gen-architecture.py
 | [`mgmt/`](#srcmgmt) | 34 | 249 | 96 | 43 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 8 | 48 | 8 | 28 |
-| [`rpc/`](#srcrpc) | 6 | 31 | 15 | 7 |
+| [`rpc/`](#srcrpc) | 6 | 33 | 16 | 8 |
 | [`safety/`](#srcsafety) | 8 | 38 | 1 | 11 |
 | [`storage/`](#srcstorage) | 14 | 99 | 14 | 75 |
-| [`tenant/`](#srctenant) | 33 | 202 | 103 | 54 |
+| [`tenant/`](#srctenant) | 33 | 203 | 103 | 54 |
 
 ## Group dependency graph
 
@@ -249,7 +249,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`handler.rs`](../src/rpc/handler.rs) — REST handler for `POST /t/{tenant}/rpc/{name}`. · 2 pub
 - [`mod.rs`](../src/rpc/mod.rs) — RPC subsystem: stored Supabase-style named SQL functions. · 5 pub
 - [`params.rs`](../src/rpc/params.rs) — RPC parameter schema and request validation. · 6 pub
-- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 2 pub
+- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 4 pub
 - [`registry.rs`](../src/rpc/registry.rs) — Persistence wrapper around the `_system_rpc` table. · 9 pub
 
 <a id="srcsafety"></a>
@@ -319,6 +319,6 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`uploads/session.rs`](../src/tenant/uploads/session.rs) — _system_upload_sessions row CRUD + tus metadata/derivation helpers + · 12 pub
 - [`vector_search.rs`](../src/tenant/vector_search.rs) — POST /t/{tenant}/collections/{coll}/search · 2 pub
 - [`webhook_dispatcher.rs`](../src/tenant/webhook_dispatcher.rs) — WebhookDispatcher — record-CRUD event → subscribed URLs. · 12 pub
-- [`webhook_resolver.rs`](../src/tenant/webhook_resolver.rs) — Per-dispatch DNS resolver. See spec · 4 pub
+- [`webhook_resolver.rs`](../src/tenant/webhook_resolver.rs) — Per-dispatch DNS resolver. See spec · 5 pub
 - [`webhook_routes.rs`](../src/tenant/webhook_routes.rs) — Service-only admin endpoints for managing this tenant's outbound webhook · 11 pub
 

@@ -5,8 +5,8 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-06-16
-version: 1.38.0
+updated: 2026-06-22
+version: 1.41.3
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -20,6 +20,7 @@ cd /home/kaelsohappy1/tool/drust
 cargo build --release
 sudo systemctl restart drust
 curl -s http://127.0.0.1:47826/health   # → ok
+curl -sI http://127.0.0.1:47826/health | grep -i x-drust-version   # deploy check; set DRUST_HIDE_VERSION=1 to omit the header (DEPLOY-4)
 ```
 
 ## Tests
@@ -39,7 +40,7 @@ The `tests/` directory holds 100+ integration test files covering MCP, REST, aut
 
 ### Data plane
 
-- **`meta.sqlite`** (management): admins, sessions, tenants, hashed bearer tokens. Admin password rotation: `src/bin/set_admin_password.rs` reads stdin, hashes via argon2id; `--email` populates `admins.email` for OAuth login.
+- **`meta.sqlite`** (management): admins, sessions, tenants, bearer tokens (hashed **plus** a plaintext copy since v1.1c, so `whoami` / the admin UI can echo the key — see the backup CAUTION). Admin password rotation: `src/bin/set_admin_password.rs` reads stdin, hashes via argon2id; `--email` populates `admins.email` for OAuth login.
 - **`tenants/<id>/data.sqlite`** (one per tenant). Reads go through `SQLITE_OPEN_READONLY` connections with `sqlite3_set_authorizer` whitelist in `src/query/authorizer.rs`; cross-tenant `ATTACH` denied. Writes go through structured REST/MCP tools against a per-tenant serialized writer mutex (`pool.with_writer`); schema enforcement at tool layer. `FieldSpec` supports allowlisted SQL defaults (`{"sql": "datetime('now')"}`) and foreign keys (`foreign_key: "<target>"` → `ON DELETE RESTRICT`). Admin REST writes (`src/mgmt/{browse,rpc_admin,tenant_files}.rs`) also route through `pool.with_writer` — same concurrency model as data-plane writes.
 - **`meta_logs.sqlite`** (v1.24+): audit rows via `AuditWriter` (`OnceLock` in `src/safety/audit_db.rs`). Writer task drains a `mpsc::channel(1000)`, batches INSERTs every 100ms or 100 rows. Channel-full drops + counter + sampled `tracing::warn!`. Reader side uses SQL aggregates (`src/mgmt/audit.rs::aggregate_via_sql`). Retention runs in-process: daily 90-day DELETE + monthly VACUUM anchored to 03:00 UTC via `sleep_until`. JSONL dual-write retired in v1.25.2.
 
@@ -56,7 +57,7 @@ Stored in per-tenant `_system_collection_meta` (one row per collection). Surface
 
 ### Tools & endpoints
 
-- **Stored RPCs** (v1.6+, `_system_rpc`): named SELECT functions via REST `POST /drust/t/<id>/rpc/<name>` + MCP `call_rpc`. SQL validated at create time under the read-only authorizer. Per-RPC `anon_callable` flag gates the anon REST path (MCP is service-only unconditionally). User tokens accepted when `anon_callable=true` and auto-bind `:user_id` if declared. Test playground at `/admin/tenants/{id}/_rpc/{name}/test`.
+- **Stored RPCs** (v1.6+, `_system_rpc`): named SELECT functions via REST `POST /drust/t/<id>/rpc/<name>` + MCP `call_rpc`. SQL validated at create time under the read-only authorizer. Per-RPC `anon_callable` flag gates the anon REST path (MCP is service-only unconditionally). User tokens accepted when `anon_callable=true` and auto-bind `:user_id` if declared. Create-time guard `RPC_ANON_OWNER_SCOPED` (v1.41.3, `src/rpc/prepare.rs::guard_anon_owner_scoped_rpc`) refuses an `anon_callable=true` read RPC over an owner-scoped collection unless it declares `:user_id` — drust does not rewrite stored-RPC SQL, so the body would otherwise return every user's rows to an anon caller. Test playground at `/admin/tenants/{id}/_rpc/{name}/test`.
 - **Per-collection indexes** (v1.8+): MCP `create_index`/`drop_index`, REST `POST/DELETE /t/<id>/collections/<coll>/indexes`. Composite + unique supported, auto-named `idx_<coll>_<f1>_...`. `DRUST_INDEX_LARGE_TABLE_ROWS` guard (default 1M, 409 LARGE_TABLE unless `force: true`). `POST /t/<id>/query/explain` exposes EXPLAIN QUERY PLAN.
 - **Structured `/records/*` list** (v1.21+): `POST /t/<id>/collections/<c>/list` + MCP `list_records`. Body `{filter, sort, page, per_page, select}` with `filter` as `vector_filter::FilterAst`; SQL built in `src/query/list_builder.rs` with `?` placeholders so `owner_field` enforcement is by construction. Service-only `/list/explain`.
 - **Vector similarity search** (v1.10+): `POST /t/<id>/collections/<c>/search` body `{field, vector, k, metric, where, select}`. drust builds SQL; `owner_field` auto-applied. MCP `search_collection` mirrors 1:1. v1 is brute-force scan; ~10⁵ rows is the practical ceiling.
@@ -79,11 +80,14 @@ Stored in per-tenant `_system_collection_meta` (one row per collection). Surface
 ### Background work
 
 - **Stats sampler** (v1.15+, `src/mgmt/stats.rs::run_stats_sampler`): `tokio::spawn` refresh of `meta.sqlite.tenants.{db_bytes, files_bytes, stats_updated_at}` at `DRUST_STATS_SAMPLE_INTERVAL_SECS` (default 300s; 0 disables). `/admin/tenants` reads only meta — TTFB drops from ~1–2s to <50ms at N=15 tenants. Fresh tenants get one immediate `sample_one()` after create so the row renders with real numbers on next load.
-- **Outbound webhooks** (v1.13+, `_system_webhooks`): CRUD events publish to matching subscriptions via `WebhookDispatcher` — `tokio::spawn` per delivery, HMAC-SHA256-signed POST, 4 attempts (+0/+1/+5/+30s, 10s each). 4xx terminal, 5xx/network retryable. No outbox; events lost on mid-POST crash (accepted). Three config surfaces (admin sidebar `🔔 _webhooks`, service-only REST, MCP). Secret 32-byte hex returned plaintext exactly once; PATCH cannot rotate (rotate = delete + create). **DNS-rebind close** (v1.21+, `src/tenant/webhook_resolver.rs`): `PinnedPublicResolver` filters RFC1918 / loopback / link-local at every dispatch attempt; `check_url` register-time gate retained (defense in depth — drop either and pre-patch rows re-open the hole). Dev `http://localhost` bypass.
+- **Outbound webhooks** (v1.13+, `_system_webhooks`): CRUD events publish to matching subscriptions via `WebhookDispatcher` — `tokio::spawn` per delivery, HMAC-SHA256-signed POST, 4 attempts (+0/+1/+5/+30s, 10s each). 4xx terminal, 5xx/network retryable. No outbox; events lost on mid-POST crash (accepted). Three config surfaces (admin sidebar `🔔 _webhooks`, service-only REST, MCP). Secret 32-byte hex returned plaintext exactly once; PATCH cannot rotate (rotate = delete + create). **DNS-rebind close** (v1.21+, `src/tenant/webhook_resolver.rs`): `PinnedPublicResolver` filters RFC1918 / loopback / link-local at every dispatch attempt; `check_url` register-time gate retained (defense in depth — drop either and pre-patch rows re-open the hole). Loopback/dev targets are opt-in (`DRUST_WEBHOOK_ALLOW_LOOPBACK` or a debug build) via `webhook_resolver::webhook_loopback_allowed` — a release build rejects `http://localhost` at both the `check_url` gate and every dispatch attempt (v1.41.3 DEPLOY-1; tightens the v1.41.2 F5 dev carve-out).
 - **SSE broadcast** per `(tenant, collection)` from record CRUD. Gated by composed `realtime_enabled AND anon_caps[select]` — see invariants.
 - **WS rooms broadcast** (v1.31+, `src/tenant/rooms/`): multiplex `GET /t/<id>/realtime` (one conn → N rooms via `op:subscribe`/`op:publish` frames) + REST `POST /t/<id>/rooms/<room>` + MCP `broadcast` tool. Subscribe is open to anon / user / service. Publish was service-only until **v1.32.5**, which introduced two opt-in tenant flags `allow_user_publish` / `allow_anon_publish` (default off) read by `bearer_auth_layer` and gated through the shared `check_publish_allowed` helper (`src/tenant/rooms/policy.rs`). MCP `broadcast` stays service-only by MCP dispatch regardless of these flags — defense in depth ≥ 2. Admin surface: `PATCH /admin/tenants/<id>/publish-policy`, two checkboxes on `_api_keys`, and MCP `set_publish_policy`. Deny codes: REST `PUBLISH_USER_DENIED` / `PUBLISH_ANON_DENIED` (legacy `WRITE_DENIED` retained in `error_aliases`); WS `WS_PUBLISH_USER_DENIED` / `WS_PUBLISH_ANON_DENIED`.
 - **Soft-delete** moves `tenants/<id>/` into `_trash/<id>-<ts>/`; `drust-janitor.timer` deletes after 7d.
 - **Daily backup** (`drust-backup.timer`): `VACUUM INTO` snapshots both `meta.sqlite` and `meta_logs.sqlite` → `backups/drust-YYYY-MM-DD-HHMMSS.tar.zst` (30d retention). Admin UI at `/admin/backups`: list + per-snapshot inspect (extract meta.sqlite, list tenants + sizes) + restore-to-`_trash` (admin manually `mv`s back after review). Filename whitelisted, tenant_id strictly uuid-v4-shaped; both paths 400 on traversal. Lives in `src/mgmt/backups.rs`.
+
+> [!CAUTION]
+> **Backup snapshots contain live plaintext credentials.** The `VACUUM INTO meta.sqlite` copy carries the `tokens.plaintext` (per-tenant anon + service keys, v1.1c) and `_admin_tokens.plaintext` (admin PATs, v1.29) columns verbatim — drust stores the raw key beside its hash so `whoami` / the admin UI can echo it. A `backups/*.tar.zst` therefore grants full data-plane access to every tenant (and admin-PAT cross-tenant access) until those tokens are rerolled. Treat the backup directory as a secret store: same filesystem perms as `.env`, never copy it off-host unencrypted, and reroll tokens after any suspected backup leak. (Risk accepted, not code-fixed in v1.41.3 — DEPLOY-3.)
 
 ### Admin UI
 

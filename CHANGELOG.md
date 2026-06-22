@@ -1,3 +1,82 @@
+## v1.41.3 — 2026-06-22
+
+### security — authorized pentest + code-review batch (Docker v1.41.1)
+
+An authorized owner-conducted penetration test against the Docker v1.41.1
+instance, plus a code-review sweep that traced each finding's root cause to
+every enforcement site, surfaced two real anon read leaks (BUG-1, RPC guard), a
+fail-open authorization probe (BUG-2), an SSRF carve-out shipped in production
+(DEPLOY-1), a config-time policy divergence, and a version-fingerprinting header.
+No schema change, no new MCP tool. Each fix ships with a regression test.
+
+- **BUG-1 (High) — anon read leak on owner-scoped collections with
+  `read_scope="all"`.** The legacy `GET /records` list, `/search`, and SSE
+  `subscribe` anon-owner guards each denied only when `read_scope=="own"`. An
+  owner-scoped collection configured `read_scope="all"` (a valid config)
+  therefore leaked **every user's** rows/events to an anonymous caller — anon
+  passed the guard, passed the default `[select]` cap, and no owner row-filter
+  is ever applied to the Anon role. `POST /list` already denied anon on any
+  `owner_field`; the three legacy surfaces disagreed, violating the invariant
+  "anon → 403 on owner-scoped collections". All three now deny anon on **any**
+  `owner_field` regardless of `read_scope`. User/Service paths unchanged. The
+  pentest flagged the list surface; code review found the same root cause at
+  `/search` and SSE.
+- **BUG-2 (High) — fail-open protected-collection probe.**
+  `tenant_has_protected_collection` swallowed all DB errors via `.unwrap_or(0)`,
+  so a real DB failure on a policy/owner-protected tenant returned `Ok(false)`
+  and **allowed** anon `/query` + `/query/explain` (intra-tenant policy bypass);
+  the callers' `.unwrap_or(true)` fail-closed branches were dead code. The probe
+  now distinguishes the legitimate absent meta table on a brand-new tenant
+  (`no such table` → `Ok(false)`) from every other error (→ `Err`, callers fail
+  closed).
+- **RPC guard (Medium) — anon-callable read RPC over an owner-scoped
+  collection.** drust does not rewrite stored-RPC SQL, so an `anon_callable=true`
+  read RPC whose body SELECTs an owner-scoped collection returns every user's
+  rows to an anonymous caller (no owner row-filter is injected at call time,
+  unlike `/list` and `/search`). A create-time guard
+  (`guard_anon_owner_scoped_rpc`, sentinel `RPC_ANON_OWNER_SCOPED`) now refuses
+  this shape on both create paths (MCP `create_rpc` + admin form). The escape
+  hatch is a declared `:user_id` param; service-only RPCs and non-owner-scoped
+  collections pass untouched.
+- **DEPLOY-1 (Medium) — webhook loopback SSRF carve-out now opt-in.** The
+  `http://localhost` (`127.0.0.1`/`::1`) dev carve-out in the webhook SSRF
+  defense shipped unconditionally in production at both the register-time
+  `check_url` gate and the dispatch-time `is_loopback_dev` bypass, letting a
+  tenant SSRF host-loopback internal services that `PinnedPublicResolver`
+  otherwise blocks. Both carve-outs are now AND-gated through a pure
+  `webhook_loopback_allowed(cfg!(debug_assertions), DRUST_WEBHOOK_ALLOW_LOOPBACK)`
+  helper — a prod release build with the env unset blocks loopback at both sites
+  (defense in depth ≥ 2). The `INVALID_URL` rejection message now names the
+  opt-out. (This tightens the v1.41.2 F5 dev carve-out that was "intentionally
+  left unchanged".)
+- **Policy `$data`-in-USING rejected at config time (Medium).**
+  `validate_policy` compiled both USING and CHECK against a probe ctx with
+  `data: Some(...)`, so a `$data` ref in a USING clause passed validation. `$data`
+  is CHECK-only (post-image row); at read time a USING `$data` ref was fail-closed
+  but **divergent** — REST `compile_policy_using` (`data: None`) returned `500
+  POLICY_COMPILE_ERROR` while SSE `eval_policy` resolved `$data` to NULL and
+  silently dropped every event. validate now probes USING with `data: None` (the
+  real read context, surfacing `PolicyError::DataUnavailable`) and CHECK with
+  `data: Some`, keeping the two evaluators in lockstep by construction.
+- **DEPLOY-4 (Low) — `x-drust-version` opt-out via `DRUST_HIDE_VERSION`.** The
+  version header was emitted unconditionally, fingerprinting the exact build to
+  unauthenticated callers. Default (env unset) still emits it byte-for-byte (the
+  deploy/live-smoke check curls it); `DRUST_HIDE_VERSION` suppresses the layer.
+- **GAP-1 (test only) — `$data` operand added to the RLS lockstep corpus.** The
+  consistency corpus proving `compile_policy_using` and `eval_policy` agree never
+  exercised `{"$data":"<field>"}`. Added: both evaluators resolve `$data` from
+  `PolicyCtx.data` identically, plus the CHECK-only fail-closed contract. No
+  source change — would RED on a future `$data` lockstep divergence.
+
+> [!CAUTION]
+> **DEPLOY-3 (documented, not code-fixed) — backups contain live plaintext
+> credentials.** The daily `VACUUM INTO meta.sqlite` snapshot carries the
+> `tokens.plaintext` (per-tenant keys, v1.1c) and `_admin_tokens.plaintext`
+> (admin PATs, v1.29) columns verbatim, so a `backups/*.tar.zst` grants full
+> data-plane (and admin-PAT cross-tenant) access until tokens are rerolled. Risk
+> accepted for now; treat the backup directory as a secret store. See the backup
+> CAUTION in `CLAUDE.md`.
+
 ## v1.41.2 — 2026-06-22
 
 ### security — four fixes from an independent second-AI (codex) audit
