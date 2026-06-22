@@ -59,6 +59,15 @@ pub async fn set_owner_field(
                 Some(code.to_string()),
             ));
         }
+        // v1.41.3 defense-in-depth: refuse to make this collection owner-scoped
+        // while an existing anon-callable RPC reads it without :user_id — the
+        // create/update guard never re-runs on this config change, so the toggle
+        // would otherwise silently turn that RPC into a cross-user leak. Runs
+        // before the write (this path is autocommit), so a rejection leaves the
+        // owner-scope config unchanged.
+        crate::rpc::prepare::guard_owner_scope_change_against_anon_rpcs(c, &coll_for_set).map_err(
+            |e| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string())),
+        )?;
         crate::storage::schema::set_owner_field(
             c,
             &coll_for_set,

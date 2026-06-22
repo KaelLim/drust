@@ -61,6 +61,17 @@ pub async fn set_owner_field_handler(
     let scope_for_set = body.read_scope.clone();
     let res = pool
         .with_writer(move |c| {
+            // v1.41.3 defense-in-depth: refuse to make this collection
+            // owner-scoped while an existing anon-callable RPC reads it without
+            // :user_id (the create/update guard never re-runs on this config
+            // change). Runs before the write — this path is autocommit.
+            crate::rpc::prepare::guard_owner_scope_change_against_anon_rpcs(c, &coll_for_set)
+                .map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(1),
+                        Some(e.to_string()),
+                    )
+                })?;
             crate::storage::schema::set_owner_field(
                 c,
                 &coll_for_set,
@@ -69,7 +80,11 @@ pub async fn set_owner_field_handler(
             )
         })
         .await;
-    if res.is_err() {
+    if let Err(e) = res {
+        let msg = e.to_string();
+        if msg.contains(crate::rpc::prepare::RPC_ANON_OWNER_SCOPED) {
+            return json_error(StatusCode::CONFLICT, "RPC_ANON_OWNER_SCOPED", &msg);
+        }
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", "");
     }
     pool.schema_cache.invalidate(&collection);

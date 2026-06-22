@@ -336,3 +336,138 @@ fn update_missing_rpc_is_noop() {
     guard_anon_owner_scoped_rpc_update(&conn, "ghost", None, None, Some(true))
         .expect("missing stored RPC must be a guard no-op");
 }
+
+// ── v1.41.3 (review): config-time owner-scope-change guard ──
+//
+// Making a collection owner-scoped while an anon-callable RPC already reads it
+// without :user_id would silently turn that RPC into a cross-user leak (the
+// create/update guard never re-runs on the config change). The owner-scope
+// config path (set_owner_field, MCP + REST) must refuse it BEFORE the write.
+
+use drust::rpc::prepare::{guard_owner_scope_change_against_anon_rpcs, scan_unsafe_anon_rpcs};
+
+const USER_ID_PARAMS_JSON: &str = r#"[{"name":"user_id","type":"text","required":true}]"#;
+
+#[test]
+fn owner_scope_change_blocked_by_existing_anon_rpc() {
+    // `orders` is NOT yet owner-scoped; an anon RPC reads it without :user_id.
+    let (_d, conn) = seed("osc_blocked");
+    registry::create(
+        &conn,
+        "list_orders",
+        "SELECT id, qty FROM orders",
+        "[]",
+        None,
+        true,
+        RpcMode::Read,
+    )
+    .unwrap();
+    // Attempting to make `orders` owner-scoped must be refused, naming the RPC.
+    let err = guard_owner_scope_change_against_anon_rpcs(&conn, "orders").unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED) && msg.contains("list_orders"),
+        "expected refusal naming list_orders, got: {msg}"
+    );
+}
+
+#[test]
+fn owner_scope_change_allowed_when_anon_rpc_binds_user_id() {
+    let (_d, conn) = seed("osc_uid");
+    registry::create(
+        &conn,
+        "my_orders",
+        "SELECT id, qty FROM orders WHERE user_id = :user_id",
+        USER_ID_PARAMS_JSON,
+        None,
+        true,
+        RpcMode::Read,
+    )
+    .unwrap();
+    guard_owner_scope_change_against_anon_rpcs(&conn, "orders")
+        .expect(":user_id-bound anon RPC must not block the owner-scope change");
+}
+
+#[test]
+fn owner_scope_change_allowed_for_service_only_or_unrelated_rpc() {
+    let (_d, conn) = seed("osc_svc");
+    // Service-only RPC reading `orders` → no anon leak → allowed.
+    registry::create(
+        &conn,
+        "svc_orders",
+        "SELECT id, qty FROM orders",
+        "[]",
+        None,
+        false,
+        RpcMode::Read,
+    )
+    .unwrap();
+    // Anon RPC reading a DIFFERENT table → does not block `orders` owner-scope.
+    conn.execute_batch("CREATE TABLE logs (id INTEGER PRIMARY KEY, msg TEXT);")
+        .unwrap();
+    registry::create(
+        &conn,
+        "list_logs",
+        "SELECT id, msg FROM logs",
+        "[]",
+        None,
+        true,
+        RpcMode::Read,
+    )
+    .unwrap();
+    guard_owner_scope_change_against_anon_rpcs(&conn, "orders")
+        .expect("service-only + unrelated anon RPC must not block the change");
+}
+
+// ── v1.41.3 (review): legacy one-time unsafe-RPC scan ──
+//
+// A pre-guard anon-callable RPC over an already-owner-scoped collection without
+// :user_id leaks at call time. The startup migration neutralizes such rows; the
+// scan reports them.
+
+#[test]
+fn scan_flags_legacy_unsafe_anon_rpc() {
+    // `orders` IS owner-scoped; a legacy anon RPC reads it without :user_id.
+    let (_d, conn) = seed_owner_scoped("scan_unsafe");
+    registry::create(
+        &conn,
+        "leak",
+        "SELECT id, qty FROM orders",
+        "[]",
+        None,
+        true,
+        RpcMode::Read,
+    )
+    .unwrap();
+    let names = scan_unsafe_anon_rpcs(&conn).unwrap();
+    assert_eq!(names, vec!["leak".to_string()]);
+}
+
+#[test]
+fn scan_ignores_safe_rpcs() {
+    let (_d, conn) = seed_owner_scoped("scan_safe");
+    // Service-only over owner-scoped → safe.
+    registry::create(
+        &conn,
+        "svc",
+        "SELECT id, qty FROM orders",
+        "[]",
+        None,
+        false,
+        RpcMode::Read,
+    )
+    .unwrap();
+    // Anon over owner-scoped WITH :user_id → safe.
+    registry::create(
+        &conn,
+        "mine",
+        "SELECT id, qty FROM orders WHERE user_id = :user_id",
+        USER_ID_PARAMS_JSON,
+        None,
+        true,
+        RpcMode::Read,
+    )
+    .unwrap();
+    let names = scan_unsafe_anon_rpcs(&conn).unwrap();
+    assert!(names.is_empty(), "expected no unsafe RPCs, got: {names:?}");
+}
