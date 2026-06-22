@@ -1191,26 +1191,12 @@ pub async fn delete_handler(
     webhooks: Arc<WebhookDispatcher>,
     functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
 ) -> Response {
-    if q.dry_run.unwrap_or(false) {
-        if is_protected_collection(&coll) {
-            return json_error(
-                StatusCode::FORBIDDEN,
-                "PROTECTED_COLLECTION",
-                "cannot delete from _system_ collections",
-            );
-        }
-        let br = match crate::storage::blast_radius::delete_blast_radius(&t.pool, &coll, id).await {
-            Ok(br) => br,
-            Err(e) => {
-                return json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "INTERNAL_ERROR",
-                    &e.to_string(),
-                );
-            }
-        };
-        return Json(serde_json::to_value(br).expect("serialise")).into_response();
-    }
+    // F2 (audit 2026-06-22) — authorize BEFORE branching on dry_run. A dry_run
+    // preview must require the SAME cap + owner + policy authorization as a
+    // real delete; otherwise it is an unauthenticated blast-radius oracle
+    // (FK topology + child-row counts) for rows the caller cannot delete.
+    // require_write_cap 404s _system_/missing collections and 403s missing
+    // caps / anon-on-owner-scoped.
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Delete).await {
         Ok(s) => s,
         Err(r) => return r,
@@ -1231,6 +1217,74 @@ pub async fn delete_handler(
                 );
             }
         };
+
+    if q.dry_run.unwrap_or(false) {
+        // The row must be a deletable TARGET for this caller (owner clause +
+        // policy USING) before any blast radius is revealed — mirrors the
+        // real-delete pre-flight below. Not a target → 404, exactly like a real
+        // delete miss. (cap + _system_ + anon-owner already enforced above.)
+        let coll_pf = coll.clone();
+        let owner_pf = owner_filter.clone();
+        let using_pf = using_sql.clone();
+        let is_target = t
+            .pool
+            .with_reader(move |c| -> rusqlite::Result<bool> {
+                use rusqlite::OptionalExtension;
+                attach_readonly_authorizer(c);
+                let mut sql = format!(
+                    "SELECT 1 FROM \"{}\" WHERE id = ?1",
+                    coll_pf.replace('"', "\"\"")
+                );
+                let mut pp: Vec<Value> = vec![Value::Integer(id)];
+                if let Some((field, user_id)) = &owner_pf {
+                    sql.push_str(&format!(
+                        " AND \"{}\" = '{}'",
+                        field.replace('"', "\"\""),
+                        user_id.replace('\'', "''")
+                    ));
+                }
+                if let Some((frag, pbinds)) = &using_pf {
+                    sql.push_str(&format!(" AND ({frag})"));
+                    pp.extend(pbinds.iter().cloned());
+                }
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    pp.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                let found = c
+                    .query_row(&sql, &refs[..], |_| Ok(()))
+                    .optional()?
+                    .is_some();
+                detach_authorizer(c);
+                Ok(found)
+            })
+            .await;
+        match is_target {
+            Ok(true) => {
+                let br =
+                    match crate::storage::blast_radius::delete_blast_radius(&t.pool, &coll, id)
+                        .await
+                    {
+                        Ok(br) => br,
+                        Err(e) => {
+                            return json_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "INTERNAL_ERROR",
+                                &e.to_string(),
+                            );
+                        }
+                    };
+                return Json(serde_json::to_value(br).expect("serialise")).into_response();
+            }
+            Ok(false) => return (StatusCode::NOT_FOUND, "no such record").into_response(),
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    &e.to_string(),
+                );
+            }
+        }
+    }
+
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();

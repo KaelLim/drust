@@ -91,6 +91,96 @@ async fn rest_delete_dry_run_does_not_delete() {
     assert_eq!(count, 1, "dry_run must not delete the row");
 }
 
+/// F2 (audit 2026-06-22) — DELETE `?dry_run=true` must require the SAME
+/// delete cap as a real delete. An anon token with only `select` must be
+/// denied; otherwise dry_run is an unauthenticated blast-radius oracle
+/// (FK topology + child-row counts) for rows the caller cannot delete.
+#[tokio::test]
+async fn anon_delete_dry_run_without_cap_is_denied() {
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use tower::ServiceExt;
+
+    let (app, tid, _svc, anon, dir) =
+        test_helpers::spin_up_dual_role_self_register("acme-f2cap").await;
+    let pool = test_helpers::grab_pool("acme-f2cap", &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL);
+             CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER REFERENCES posts(id) ON DELETE RESTRICT);
+             INSERT INTO posts (id, title) VALUES (1, 'hello');
+             INSERT INTO comments (id, post_id) VALUES (1, 1);
+             INSERT INTO _system_collection_meta (collection_name, anon_caps_json)
+                  VALUES ('posts', '[\"select\"]') ON CONFLICT(collection_name) DO NOTHING;",
+        )
+    })
+    .await
+    .unwrap();
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/t/{tid}/records/posts/1?dry_run=true"))
+        .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "anon dry_run delete without delete cap must be denied (no blast-radius oracle)"
+    );
+}
+
+/// F2 — even with delete cap, a dry_run on an owner-scoped row the caller does
+/// NOT own must return 404 (same as a real delete miss), not a blast-radius
+/// preview, so dry_run cannot leak FK topology for foreign rows.
+#[tokio::test]
+async fn user_delete_dry_run_foreign_owner_row_is_404() {
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use tower::ServiceExt;
+
+    let (app, tid, _svc, _anon, dir) =
+        test_helpers::spin_up_dual_role_self_register("acme-f2own").await;
+    let pool = test_helpers::grab_pool("acme-f2own", &dir).await;
+    // Owner-scoped `posts`; row id=1 is owned by a DIFFERENT user.
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE posts (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 title TEXT,
+                 owner_id TEXT NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO posts (id, title, owner_id) VALUES (1, 'not-yours', 'u-someone-else');
+             INSERT INTO _system_collection_meta
+                  (collection_name, anon_caps_json, user_caps_json, owner_field, read_scope)
+                  VALUES ('posts', '[\"select\"]', '[\"delete\"]', 'owner_id', 'own')
+                  ON CONFLICT(collection_name) DO UPDATE SET
+                    owner_field = 'owner_id', read_scope = 'own', user_caps_json = '[\"delete\"]';",
+        )
+    })
+    .await
+    .unwrap();
+    let user_tok =
+        test_helpers::register_and_login_via_app(&app, &tid, "a@example.com", "pw_long_enough")
+            .await;
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/t/{tid}/records/posts/1?dry_run=true"))
+        .header(header::AUTHORIZATION, format!("Bearer {user_tok}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "dry_run on a foreign owner-scoped row must 404, not preview blast radius"
+    );
+}
+
 #[tokio::test]
 async fn drop_collection_dry_run_does_not_drop() {
     let (pool, _dir) = helpers::make_tenant_with_posts();
