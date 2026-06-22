@@ -1264,6 +1264,7 @@ impl DrustMcpService {
         let sql = p.sql.clone();
         let description = p.description.clone();
         let anon_callable = p.anon_callable;
+        let params_for_guard = p.params.clone();
         let params_json: Option<String> = match &p.params {
             Some(v) => Some(
                 serde_json::to_string(v)
@@ -1284,6 +1285,19 @@ impl DrustMcpService {
                         )
                     })?;
             }
+            // v1.41.3: re-run the owner-scoped guard on the EFFECTIVE post-update
+            // values (a partial update — flag-flip or sql-swap — must be checked
+            // against the stored row, else it reopens the create-path leak).
+            crate::rpc::prepare::guard_anon_owner_scoped_rpc_update(
+                c,
+                &name,
+                sql.as_deref(),
+                params_for_guard.as_deref(),
+                anon_callable,
+            )
+            .map_err(|e| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            })?;
             crate::rpc::registry::update(
                 c,
                 &name,

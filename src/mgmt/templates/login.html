@@ -88,7 +88,7 @@
       <div class="brand-mark"><canvas class="pix" data-chonk="awake" data-size="22"></canvas></div>
       <div>
         <div class="brand-name">drust</div>
-        <div class="brand-meta">{{ t.s("login.brand.tagline") }} · v{{ version }}</div>
+        <div class="brand-meta">{{ t.s("login.brand.tagline") }}{% if show_version %} · v{{ version }}{% endif %}</div>
       </div>
     </div>
     <h1 class="login-title">{{ t.s("login.heading.welcome") }}</h1>

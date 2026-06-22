@@ -97,6 +97,9 @@ pub struct MgmtState {
 struct LoginPage {
     error: Option<String>,
     version: &'static str,
+    /// v1.41.3 (DEPLOY-4 follow-up): false when `DRUST_HIDE_VERSION` is set, so
+    /// the unauthenticated /login page stops fingerprinting the build version.
+    show_version: bool,
     oauth_providers: Vec<String>,
     oauth_error: Option<String>,
     t: Translator,
@@ -370,6 +373,7 @@ async fn login_page(
         LoginPage {
             error: None,
             version: env!("CARGO_PKG_VERSION"),
+            show_version: std::env::var("DRUST_HIDE_VERSION").is_err(),
             oauth_providers: state
                 .oauth_registry
                 .enabled_names()
@@ -529,6 +533,7 @@ fn unauthorized(
     let body = LoginPage {
         error: Some(msg.to_string()),
         version: env!("CARGO_PKG_VERSION"),
+        show_version: std::env::var("DRUST_HIDE_VERSION").is_err(),
         oauth_providers: state
             .oauth_registry
             .enabled_names()

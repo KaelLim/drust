@@ -96,27 +96,30 @@ pub fn validate_rpc_sql(conn: &Connection, sql: &str, mode: RpcMode) -> Result<(
 /// the specific footgun rather than a generic prepare failure.
 pub const RPC_ANON_OWNER_SCOPED: &str = "RPC_ANON_OWNER_SCOPED";
 
-/// v1.41.3 — create-time guard against an anon-callable READ RPC whose body
-/// SELECTs an owner-scoped collection without binding `:user_id`.
+/// v1.41.3 — create-time guard against an anon-callable RPC whose body touches
+/// an owner-scoped collection without binding `:user_id`.
 ///
 /// Unlike `/list` and `/search`, drust does NOT rewrite stored-RPC SQL, so no
-/// owner row-filter is injected at call time. An anon-callable read RPC that
-/// reads an owner-scoped collection therefore returns EVERY user's rows to an
-/// anonymous caller — a cross-user leak that looks like a correct query. We
-/// refuse it at create time.
+/// owner row-filter is injected at call time. An anon-callable RPC that reads an
+/// owner-scoped collection therefore returns EVERY user's rows to an anonymous
+/// caller; an anon-callable WRITE RPC lets anon mutate every user's rows, which
+/// is strictly worse. Either is a cross-user leak that looks like a correct
+/// query. We refuse both at create time.
 ///
-/// Fires only for `mode == Read && anon_callable`. The escape hatch is a
-/// declared `:user_id` param — the author is then expected to filter
+/// Fires for `anon_callable` in BOTH modes. The escape hatch is a declared
+/// `:user_id` param — the author is then expected to filter
 /// `WHERE <owner> = :user_id` (auto-bound from `AuthCtx`), matching the
 /// existing `anon_callable` + `:user_id` auto-bind contract. Service-only RPCs
 /// (`anon_callable == false`) and bodies over non-owner-scoped collections pass
 /// untouched.
 ///
-/// Table discovery reuses the read-only authorizer surface: a capturing
-/// authorizer records every `Read` table the prepared statement touches, then
-/// each table's `owner_field` is probed. `sqlite_*` / protected (`_system_*`)
-/// tables are skipped — they are never owner-scoped and are already denied by
-/// the `validate_rpc_sql` pass that runs before this guard.
+/// Table discovery reuses the authorizer surface: a capturing authorizer
+/// records every table the prepared statement Reads (both modes) and, in write
+/// mode, every table it Inserts/Updates/Deletes; then each table's `owner_field`
+/// is probed. `sqlite_*` / protected (`_system_*`) tables are skipped — they are
+/// never owner-scoped and are already denied by the `validate_rpc_sql` pass that
+/// runs before this guard. In read mode an unexpected write action is denied
+/// outright (validate should already have rejected it).
 pub fn guard_anon_owner_scoped_rpc(
     conn: &Connection,
     sql: &str,
@@ -124,34 +127,50 @@ pub fn guard_anon_owner_scoped_rpc(
     anon_callable: bool,
     mode: RpcMode,
 ) -> Result<(), PrepareError> {
-    // Service-only RPCs and write RPCs cannot leak owner-scoped reads to anon.
-    if mode != RpcMode::Read || !anon_callable {
+    // Service-only RPCs cannot leak owner-scoped rows to anon (either direction).
+    if !anon_callable {
         return Ok(());
     }
     // A declared :user_id param is the sanctioned owner-filter escape hatch.
     if params.iter().any(|p| p.name == "user_id") {
         return Ok(());
     }
+    let is_write = mode == RpcMode::Write;
 
     let stmts = match crate::rpc::exec_write::split_statements(sql) {
         Ok(s) => s,
         Err(e) => return Err(PrepareError::Rejected(e.message)),
     };
 
-    // Collect every user-table the body reads under a capturing authorizer.
+    // Collect every user-table the body touches under a capturing authorizer.
     let tables: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     detach_authorizer(conn);
     for stmt in &stmts {
         let sink = Arc::clone(&tables);
         conn.authorizer(Some(move |ctx: AuthContext<'_>| -> Authorization {
+            let capture = |table_name: &str| {
+                if !table_name.starts_with("sqlite_")
+                    && !crate::storage::schema::is_protected_collection(table_name)
+                {
+                    sink.lock().unwrap().insert(table_name.to_string());
+                }
+            };
             match ctx.action {
                 AuthAction::Read { table_name, .. } => {
-                    if !table_name.starts_with("sqlite_")
-                        && !crate::storage::schema::is_protected_collection(table_name)
-                    {
-                        sink.lock().unwrap().insert(table_name.to_string());
-                    }
+                    capture(table_name);
                     Authorization::Allow
+                }
+                AuthAction::Insert { table_name, .. }
+                | AuthAction::Update { table_name, .. }
+                | AuthAction::Delete { table_name, .. } => {
+                    if is_write {
+                        capture(table_name);
+                        Authorization::Allow
+                    } else {
+                        // A write inside a read RPC: validate_rpc_sql should have
+                        // rejected it already — fail closed here too.
+                        Authorization::Deny
+                    }
                 }
                 AuthAction::Select | AuthAction::Function { .. } | AuthAction::Recursive => {
                     Authorization::Allow
@@ -179,13 +198,42 @@ pub fn guard_anon_owner_scoped_rpc(
             .map_err(|e| PrepareError::Rejected(format!("owner_field probe failed: {e}")))?;
         if owner_field.is_some() {
             return Err(PrepareError::Rejected(format!(
-                "{RPC_ANON_OWNER_SCOPED}: an anon-callable read RPC over owner-scoped \
-                 collection '{table}' must bind :user_id, else it returns every user's rows; \
+                "{RPC_ANON_OWNER_SCOPED}: an anon-callable RPC over owner-scoped \
+                 collection '{table}' must bind :user_id, else it exposes every user's rows; \
                  declare a :user_id param or set anon_callable=false"
             )));
         }
     }
     Ok(())
+}
+
+/// Update-path counterpart of [`guard_anon_owner_scoped_rpc`].
+///
+/// RPC updates are partial — any of `sql` / `params` / `anon_callable` may be
+/// omitted. A flag-flip (`anon_callable=Some(true)`, `sql=None`) or an sql-swap
+/// (`sql=Some(<owner-scoped>)`, `anon_callable=None`) must be re-checked against
+/// the STORED row's other fields, otherwise an update reopens exactly the leak
+/// the create-time guard closes (the MCP `update_rpc` path bypassed the guard
+/// entirely before v1.41.3 — found in adversarial review). Loads the stored RPC,
+/// merges the supplied deltas over it, and runs the guard on the effective
+/// values (inheriting the stored `mode`). A missing stored row is a no-op — the
+/// update itself will 404.
+pub fn guard_anon_owner_scoped_rpc_update(
+    conn: &Connection,
+    name: &str,
+    new_sql: Option<&str>,
+    new_params: Option<&[ParamSpec]>,
+    new_anon_callable: Option<bool>,
+) -> Result<(), PrepareError> {
+    let stored = match crate::rpc::registry::lookup(conn, name) {
+        Ok(Some(s)) => s,
+        Ok(None) => return Ok(()),
+        Err(e) => return Err(PrepareError::Rejected(format!("rpc lookup failed: {e}"))),
+    };
+    let eff_sql = new_sql.unwrap_or(&stored.sql);
+    let eff_params = new_params.unwrap_or(stored.params.as_slice());
+    let eff_anon = new_anon_callable.unwrap_or(stored.anon_callable);
+    guard_anon_owner_scoped_rpc(conn, eff_sql, eff_params, eff_anon, stored.mode)
 }
 
 #[cfg(test)]
