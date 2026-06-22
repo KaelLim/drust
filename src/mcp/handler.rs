@@ -1204,6 +1204,7 @@ impl DrustMcpService {
         let sql = p.sql.clone();
         let description = p.description.clone();
         let anon_callable = p.anon_callable.unwrap_or(false);
+        let params_for_guard = p.params.clone();
 
         pool.with_writer(move |c| {
             // C5: mode = Read until create_rpc accepts a `mode` param
@@ -1215,6 +1216,19 @@ impl DrustMcpService {
                         Some(e.to_string()),
                     )
                 })?;
+            // v1.41.3: refuse an anon-callable read RPC that reads an
+            // owner-scoped collection without binding :user_id — drust does not
+            // rewrite stored-RPC SQL, so it would return every user's rows.
+            crate::rpc::prepare::guard_anon_owner_scoped_rpc(
+                c,
+                &sql,
+                &params_for_guard,
+                anon_callable,
+                crate::rpc::registry::RpcMode::Read,
+            )
+            .map_err(|e| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            })?;
             crate::rpc::registry::create(
                 c,
                 &name,

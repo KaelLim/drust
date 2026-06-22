@@ -403,13 +403,23 @@ pub async fn rpc_save(
     // rendered banner so e2e scrapers see the canonical code even
     // though the human-readable message is the SQLite text.
     let sql_for_validate = form.sql.clone();
+    // v1.41.3: also run the anon-owner-scoped guard (cross-user leak footgun).
+    // A malformed params_json → empty Vec → fail closed (no spurious :user_id).
+    let params_for_guard =
+        crate::rpc::params::parse_params_json(&form.params_json).unwrap_or_default();
+    let anon_callable_for_guard = form.anon_callable.is_some();
     let validate_res: rusqlite::Result<Result<(), crate::rpc::prepare::PrepareError>> = pool
         .with_reader(move |c| {
-            Ok(crate::rpc::prepare::validate_rpc_sql(
-                c,
-                &sql_for_validate,
-                form_mode,
-            ))
+            let r = crate::rpc::prepare::validate_rpc_sql(c, &sql_for_validate, form_mode);
+            Ok(r.and_then(|()| {
+                crate::rpc::prepare::guard_anon_owner_scoped_rpc(
+                    c,
+                    &sql_for_validate,
+                    &params_for_guard,
+                    anon_callable_for_guard,
+                    form_mode,
+                )
+            }))
         })
         .await;
     match validate_res {
