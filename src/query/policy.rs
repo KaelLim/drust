@@ -565,27 +565,39 @@ pub fn validate_policy(
     op: DmlVerb,
     policy: &Policy,
 ) -> Result<(), PolicyError> {
-    // A probe ctx: authenticated, with a data map containing every field so
-    // $data refs validate. The compiled SQL is thrown away — we only want the
-    // field/grammar checks to fire.
-    let mut data = serde_json::Map::new();
-    for f in &schema.fields {
-        data.insert(f.name.clone(), Json::Null);
-    }
-    let ctx = PolicyCtx {
+    // Two probe ctxs that differ ONLY in `data`:
+    //   * USING is compiled with `data: None` — the REAL read/target-pre-flight
+    //     context (`PolicyCtx::from_auth`). Every legitimate USING operand
+    //     ($auth / $authenticated / literal) ignores `ctx.data`, so this accepts
+    //     them all; only a `{"$data":<field>}` ref dereferences `ctx.data` and so
+    //     errors with `DataUnavailable`. $data is CHECK-ONLY (post-image row); a
+    //     USING $data ref is fail-closed at read time but DIVERGES across
+    //     surfaces (REST 500 POLICY_COMPILE_ERROR vs SSE silent empty stream),
+    //     so we reject it at config time. Validating USING through the exact same
+    //     `data: None` path the read uses keeps the two evaluators in lockstep
+    //     BY CONSTRUCTION (audit 2026-06-22, Fix: reject $data in USING).
+    //   * CHECK is compiled with `data: Some(map)` so its $data refs validate.
+    // The compiled SQL is thrown away — we only want the field/grammar checks.
+    let _ = op;
+    let using_ctx = PolicyCtx {
         auth_id: Some("u-probe".into()),
-        data: Some(data),
+        data: None,
     };
     if let Some(u) = &policy.using {
-        compile_policy_using(schema, u, &ctx)?;
+        compile_policy_using(schema, u, &using_ctx)?;
         check_ast_operand_classes(schema, u)?;
     }
     if let Some(c) = &policy.check {
-        compile_policy_using(schema, c, &ctx)?;
+        let mut data = serde_json::Map::new();
+        for f in &schema.fields {
+            data.insert(f.name.clone(), Json::Null);
+        }
+        let check_ctx = PolicyCtx {
+            auth_id: Some("u-probe".into()),
+            data: Some(data),
+        };
+        compile_policy_using(schema, c, &check_ctx)?;
         check_ast_operand_classes(schema, c)?;
-        // $data is only meaningful in CHECK; in USING a $data ref on a delete
-        // is nonsensical but harmless. v1 does not separately reject it.
-        let _ = op;
     }
     Ok(())
 }
@@ -952,6 +964,70 @@ mod tests {
         // is_null / is_not_null carry no operand.
         let p6: Policy = serde_json::from_str(r#"{"using":{"n":{"$is_null":true}}}"#).unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p6).is_ok());
+    }
+
+    // Audit 2026-06-22: `$data` is CHECK-ONLY (post-image row). A `$data` ref in
+    // a USING clause is fail-closed at READ time but DIVERGES across surfaces
+    // (REST 500 POLICY_COMPILE_ERROR vs SSE silent empty stream), and own-records
+    // reads silently return nothing — so it must be rejected at config time and
+    // can never be stored. `validate_policy` compiles USING under `data: None`
+    // (the real read context), so a $data operand surfaces `DataUnavailable`.
+    #[test]
+    fn validate_rejects_data_operand_in_using() {
+        let s = schema(&["author", "status"]);
+        // SELECT policy whose USING references {"$data":"author"} — must be refused.
+        let p: Policy =
+            serde_json::from_str(r#"{"using":{"author":{"$eq":{"$data":"author"}}}}"#).unwrap();
+        let err = validate_policy(&s, DmlVerb::Select, &p).unwrap_err();
+        assert!(
+            matches!(err, PolicyError::DataUnavailable(ref f) if f == "author"),
+            "expected DataUnavailable(\"author\"), got {err:?}"
+        );
+        // Same rejection for UPDATE and DELETE USING (all read/pre-flight surfaces).
+        assert!(matches!(
+            validate_policy(&s, DmlVerb::Update, &p),
+            Err(PolicyError::DataUnavailable(_))
+        ));
+        assert!(matches!(
+            validate_policy(&s, DmlVerb::Delete, &p),
+            Err(PolicyError::DataUnavailable(_))
+        ));
+        // $data eq-shorthand object body in USING is also rejected.
+        let p_short: Policy =
+            serde_json::from_str(r#"{"using":{"author":{"$data":"author"}}}"#).unwrap();
+        assert!(matches!(
+            validate_policy(&s, DmlVerb::Select, &p_short),
+            Err(PolicyError::DataUnavailable(_))
+        ));
+    }
+
+    // GREEN-staying: $data is legitimate in CHECK, and $auth / $authenticated /
+    // plain-literal operands in USING must keep validating. Guards against the
+    // fix over-rejecting (a regression in the data:None / data:Some split).
+    #[test]
+    fn validate_accepts_data_in_check_and_dynamic_in_using() {
+        let s = schema(&["author", "status"]);
+        // $data in CHECK validates (CHECK is compiled with data: Some).
+        let p_check: Policy =
+            serde_json::from_str(r#"{"check":{"author":{"$eq":{"$data":"author"}}}}"#).unwrap();
+        assert!(
+            validate_policy(&s, DmlVerb::Insert, &p_check).is_ok(),
+            "$data in CHECK must still validate"
+        );
+        // Combined USING($auth) + CHECK($data) policy still validates.
+        let p_both: Policy = serde_json::from_str(
+            r#"{"using":{"author":{"$eq":{"$auth":"id"}}},"check":{"author":{"$eq":{"$data":"author"}}}}"#,
+        )
+        .unwrap();
+        assert!(validate_policy(&s, DmlVerb::Update, &p_both).is_ok());
+        // USING with $auth / $authenticated / literal — none touch ctx.data.
+        let p_auth: Policy =
+            serde_json::from_str(r#"{"using":{"author":{"$eq":{"$auth":"id"}}}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p_auth).is_ok());
+        let p_authed: Policy = serde_json::from_str(r#"{"using":{"$authenticated":true}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p_authed).is_ok());
+        let p_lit: Policy = serde_json::from_str(r#"{"using":{"status":"published"}}"#).unwrap();
+        assert!(validate_policy(&s, DmlVerb::Select, &p_lit).is_ok());
     }
 
     #[test]
