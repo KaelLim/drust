@@ -458,6 +458,64 @@ async fn anon_blocked_from_owner_scoped_read_when_scope_own() {
 }
 
 #[tokio::test]
+async fn anon_blocked_from_owner_scoped_read_when_scope_all() {
+    // BUG-1 (audit 2026-06-22) — the legacy require_dml_cap anon guard only
+    // denied when read_scope=="own", so an owner-scoped collection with
+    // read_scope=="all" (a valid config) leaked EVERY user's rows to anon: anon
+    // passes the guard, passes the [select] cap, and no owner filter is applied
+    // to the Anon role. The documented invariant is "anon → 403 on owner-scoped
+    // collections" regardless of read_scope (POST /list already enforced it).
+    // The owner guard fires before any row read, so no seeded row is needed —
+    // pre-fix this returned 200 (access granted), the access-control bug; the
+    // list being empty or full is immaterial.
+    let (app, tid, _d, _svc, anon, _ta, _tb) = setup("all", "t-rec-anonread-all").await;
+    let r = app
+        .oneshot(req("GET", &tid, "/records/posts", None, &anon))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::FORBIDDEN,
+        "anon must be denied on owner-scoped read_scope=all (BUG-1)"
+    );
+    let bytes = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("ANON_FORBIDDEN_OWNER_SCOPED"),
+        "wrong error code: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+}
+
+#[tokio::test]
+async fn anon_blocked_from_owner_scoped_search_when_scope_all() {
+    // BUG-1 — same root cause on the /search surface (vector_search.rs anon
+    // guard was also `read_scope=="own"`-narrow). The owner guard fires before
+    // the vector-field lookup, so a minimal body is enough to reach it.
+    let (app, tid, _d, _svc, anon, _ta, _tb) = setup("all", "t-rec-anonsearch-all").await;
+    let r = app
+        .oneshot(req(
+            "POST",
+            &tid,
+            "/collections/posts/search",
+            Some(json!({"field": "v", "vector": [0.1, 0.2], "k": 1})),
+            &anon,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::FORBIDDEN,
+        "anon must be denied on owner-scoped /search read_scope=all (BUG-1)"
+    );
+    let bytes = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("ANON_FORBIDDEN_OWNER_SCOPED"),
+        "wrong error code: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+}
+
+#[tokio::test]
 async fn user_cannot_transfer_ownership_via_patch_user_id() {
     // PATCH with a {user_id: other-uid} payload must NOT change ownership.
     // The strip-owner-field guard removes it from the SET clause.

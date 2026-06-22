@@ -73,17 +73,19 @@ async fn require_dml_cap(
             ));
         }
     };
-    // Anon on owner-scoped collection with read_scope=own has no user_id to
-    // match against, so it can't see any rows — fail loudly rather than
-    // silently returning an empty list.
+    // BUG-1 (audit 2026-06-22) — deny anon on ANY owner_field collection,
+    // regardless of read_scope. The previous `read_scope=="own"` narrowing
+    // leaked owner-scoped read_scope="all" collections to anon: no owner filter
+    // is applied to the Anon role, so anon read every user's rows. This now
+    // matches POST /list (records_list.rs) and the documented invariant
+    // "anon → 403 on owner-scoped collections".
     if matches!(tenant.role, crate::tenant::router::TokenRole::Anon)
         && schema.owner_field.is_some()
-        && schema.read_scope.as_deref() == Some("own")
     {
         return Err(json_error(
             StatusCode::FORBIDDEN,
             "ANON_FORBIDDEN_OWNER_SCOPED",
-            "anon cannot read owner-scoped collection with read_scope=own",
+            "anon cannot read an owner-scoped collection — register a user",
         ));
     }
     if !has_dml_cap(tenant.role, verb, &schema) {
