@@ -1024,7 +1024,8 @@ mod tests {
         let p_auth: Policy =
             serde_json::from_str(r#"{"using":{"author":{"$eq":{"$auth":"id"}}}}"#).unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p_auth).is_ok());
-        let p_authed: Policy = serde_json::from_str(r#"{"using":{"$authenticated":true}}"#).unwrap();
+        let p_authed: Policy =
+            serde_json::from_str(r#"{"using":{"$authenticated":true}}"#).unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p_authed).is_ok());
         let p_lit: Policy = serde_json::from_str(r#"{"using":{"status":"published"}}"#).unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p_lit).is_ok());

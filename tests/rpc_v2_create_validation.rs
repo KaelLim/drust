@@ -169,14 +169,26 @@ fn anon_callable_read_over_owner_scoped_with_user_id_param_accepts() {
 fn service_only_read_over_owner_scoped_accepts() {
     let (_d, conn) = seed_owner_scoped("svc_only_owner");
     // anon_callable=false → service-only → no leak → must create fine.
-    guard_anon_owner_scoped_rpc(&conn, "SELECT id, qty FROM orders", &[], false, RpcMode::Read)
-        .expect("service-only read RPC over owner-scoped collection must create");
+    guard_anon_owner_scoped_rpc(
+        &conn,
+        "SELECT id, qty FROM orders",
+        &[],
+        false,
+        RpcMode::Read,
+    )
+    .expect("service-only read RPC over owner-scoped collection must create");
 }
 
 #[test]
 fn anon_callable_read_over_non_owner_collection_accepts() {
     // `orders` left non-owner-scoped (no set_owner_field call).
     let (_d, conn) = seed("anon_non_owner");
-    guard_anon_owner_scoped_rpc(&conn, "SELECT id, qty FROM orders", &[], true, RpcMode::Read)
-        .expect("anon read RPC over a non-owner collection must create");
+    guard_anon_owner_scoped_rpc(
+        &conn,
+        "SELECT id, qty FROM orders",
+        &[],
+        true,
+        RpcMode::Read,
+    )
+    .expect("anon read RPC over a non-owner collection must create");
 }

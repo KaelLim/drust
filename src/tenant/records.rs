@@ -79,8 +79,7 @@ async fn require_dml_cap(
     // is applied to the Anon role, so anon read every user's rows. This now
     // matches POST /list (records_list.rs) and the documented invariant
     // "anon → 403 on owner-scoped collections".
-    if matches!(tenant.role, crate::tenant::router::TokenRole::Anon)
-        && schema.owner_field.is_some()
+    if matches!(tenant.role, crate::tenant::router::TokenRole::Anon) && schema.owner_field.is_some()
     {
         return Err(json_error(
             StatusCode::FORBIDDEN,
