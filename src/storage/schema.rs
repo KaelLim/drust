@@ -925,21 +925,33 @@ pub fn write_policy(
 /// True if the tenant has adopted row-level rules on ANY collection
 /// (`owner_field` set or any explicit policy column populated). Used to
 /// gate anon `/query` / `/query/explain` / legacy `?filter` — surfaces drust
-/// cannot row-filter (raw un-rewritable SQL). Returns `Err` only on a real
-/// DB failure; an absent `_system_collection_meta` table or no rows → `false`.
-/// The caller fails closed (treats `Err` as protected).
+/// cannot row-filter (raw un-rewritable SQL).
+///
+/// Fail-closed contract: returns `Ok(false)` ONLY for the two genuinely
+/// unprotected shapes — no matching rows, or the `_system_collection_meta`
+/// table not yet created on a brand-new tenant (SQLite "no such table").
+/// EVERY other DB failure (e.g. a partial/legacy schema missing the
+/// `*_policy_json` columns → "no such column") returns `Err`, so the caller's
+/// `.unwrap_or(true)` engages and anon `/query` is DENIED. The discriminator is
+/// the error Display string containing "no such table" — variant-robust across
+/// rusqlite's `SqliteFailure` vs `SqlInputError` (both emit the raw SQLite
+/// message), so it does not depend on a specific error enum variant.
 pub fn tenant_has_protected_collection(conn: &Connection) -> rusqlite::Result<bool> {
-    let n: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM _system_collection_meta WHERE \
-                 owner_field IS NOT NULL \
-              OR select_policy_json IS NOT NULL OR insert_policy_json IS NOT NULL \
-              OR update_policy_json IS NOT NULL OR delete_policy_json IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    Ok(n > 0)
+    match conn.query_row(
+        "SELECT COUNT(*) FROM _system_collection_meta WHERE \
+             owner_field IS NOT NULL \
+          OR select_policy_json IS NOT NULL OR insert_policy_json IS NOT NULL \
+          OR update_policy_json IS NOT NULL OR delete_policy_json IS NOT NULL",
+        [],
+        |r| r.get::<_, i64>(0),
+    ) {
+        Ok(n) => Ok(n > 0),
+        // Lazy meta table not created yet on a brand-new tenant → genuinely
+        // unprotected. Any OTHER error is real → propagate so the caller fails
+        // closed (treats `Err` as protected).
+        Err(e) if e.to_string().contains("no such table") => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// Write the full set of vector fields for a collection. Caller holds
@@ -1112,6 +1124,46 @@ mod meta_io_tests {
         // Clearing the only policy makes it unprotected again.
         write_policy(&conn, "posts", DmlVerb::Select, None).unwrap();
         assert!(!tenant_has_protected_collection(&conn).unwrap());
+    }
+
+    #[test]
+    fn tenant_protected_errs_on_partial_schema_fail_closed() {
+        // A meta table that EXISTS but LACKS the *_policy_json columns
+        // (legacy / partial schema). The protection query references
+        // select_policy_json etc. → SQLite "no such column". This is a REAL
+        // error, NOT the absent-table case, so the fn must return Err so the
+        // caller's `.unwrap_or(true)` fails closed (anon /query denied).
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("partial.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _system_collection_meta (
+                 collection_name TEXT PRIMARY KEY,
+                 owner_field     TEXT
+             );",
+        )
+        .unwrap();
+        let result = tenant_has_protected_collection(&conn);
+        assert!(
+            result.is_err(),
+            "partial schema (missing *_policy_json columns) must be Err so caller fails closed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn tenant_protected_absent_table_is_unprotected_ok_false() {
+        // No _system_collection_meta table at all → brand-new tenant, lazy
+        // table not created yet → genuinely unprotected → Ok(false). This
+        // GUARD must hold both before and after the fix: it proves the fix
+        // did NOT turn the legitimate absent-table case into Err.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("empty.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        let result = tenant_has_protected_collection(&conn);
+        assert!(
+            matches!(result, Ok(false)),
+            "absent meta table must be Ok(false), got {result:?}"
+        );
     }
 
     #[test]
