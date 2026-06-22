@@ -108,3 +108,75 @@ fn write_with_valid_mutation_accepts() {
     validate_rpc_sql(&conn, "DELETE FROM orders WHERE id = :id", RpcMode::Write)
         .expect("valid write-mode DELETE must pass");
 }
+
+// ── v1.41.3: anon-callable read RPC over an owner-scoped collection ──
+//
+// An anon-callable READ RPC that SELECTs an owner-scoped collection without
+// binding :user_id would return EVERY user's rows to an anonymous caller
+// (drust does not rewrite stored-RPC SQL, so no owner row-filter is injected).
+// The create-time guard must refuse it; the safe shapes must still create.
+
+use drust::rpc::params::{ParamSpec, ParamType};
+use drust::rpc::prepare::{RPC_ANON_OWNER_SCOPED, guard_anon_owner_scoped_rpc};
+use drust::storage::schema::set_owner_field;
+
+/// Seed `orders` as owner-scoped (owner_field set on its meta row).
+fn seed_owner_scoped(name: &str) -> (TempDir, Connection) {
+    let (d, conn) = seed(name);
+    set_owner_field(&conn, "orders", Some("user_id"), Some("own")).unwrap();
+    (d, conn)
+}
+
+fn user_id_param() -> Vec<ParamSpec> {
+    vec![ParamSpec {
+        name: "user_id".into(),
+        ty: ParamType::Text,
+        required: true,
+        default: None,
+    }]
+}
+
+#[test]
+fn anon_callable_read_over_owner_scoped_without_user_id_rejected() {
+    let (_d, conn) = seed_owner_scoped("anon_owner_no_uid");
+    let sql = "SELECT id, qty FROM orders";
+    // Sanity: the body itself is a valid read.
+    validate_rpc_sql(&conn, sql, RpcMode::Read).expect("plain SELECT is valid read SQL");
+    // Guard must REJECT: anon_callable + owner-scoped + no :user_id.
+    let err = guard_anon_owner_scoped_rpc(&conn, sql, &[], true, RpcMode::Read).unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED),
+        "expected {RPC_ANON_OWNER_SCOPED} rejection, got: {msg}"
+    );
+}
+
+#[test]
+fn anon_callable_read_over_owner_scoped_with_user_id_param_accepts() {
+    let (_d, conn) = seed_owner_scoped("anon_owner_with_uid");
+    // Same RPC but it declares a :user_id param → still creates fine.
+    guard_anon_owner_scoped_rpc(
+        &conn,
+        "SELECT id, qty FROM orders WHERE user_id = :user_id",
+        &user_id_param(),
+        true,
+        RpcMode::Read,
+    )
+    .expect(":user_id-bound anon read RPC over owner-scoped collection must still create");
+}
+
+#[test]
+fn service_only_read_over_owner_scoped_accepts() {
+    let (_d, conn) = seed_owner_scoped("svc_only_owner");
+    // anon_callable=false → service-only → no leak → must create fine.
+    guard_anon_owner_scoped_rpc(&conn, "SELECT id, qty FROM orders", &[], false, RpcMode::Read)
+        .expect("service-only read RPC over owner-scoped collection must create");
+}
+
+#[test]
+fn anon_callable_read_over_non_owner_collection_accepts() {
+    // `orders` left non-owner-scoped (no set_owner_field call).
+    let (_d, conn) = seed("anon_non_owner");
+    guard_anon_owner_scoped_rpc(&conn, "SELECT id, qty FROM orders", &[], true, RpcMode::Read)
+        .expect("anon read RPC over a non-owner collection must create");
+}
