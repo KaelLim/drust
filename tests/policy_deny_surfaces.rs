@@ -229,21 +229,24 @@ async fn anon_explain_denied_when_tenant_has_policy() {
     );
 }
 
-/// Baseline: with NO policy/owner anywhere, anon legacy `?filter` works.
-/// (Separate tenant so the schema cache is never warmed with a policy — the
-/// test `grab_pool` uses a separate registry/cache and cannot invalidate the
-/// running app's cache, so the policy must be on disk before the first app
-/// load of that collection; mixing both phases on one collection is unsafe.)
+/// F1 (audit 2026-06-22) — raw legacy `?filter=` is denied for anon on EVERY
+/// collection, even a plain one with no policy/owner. The raw filter
+/// interpolates verbatim into build_list_sql and the read-only authorizer
+/// allows reading any non-`_system_` sibling collection, so a subquery
+/// (`EXISTS(SELECT 1 FROM "other" …)` / `UNION`) lets anon read sibling
+/// collections it has no caps on — bypassing the per-collection cap boundary.
+/// (Was `anon_legacy_filter_allowed_without_policy`, which codified the
+/// vulnerable behavior as correct.) Use POST /list (FilterAst) instead.
 #[tokio::test]
-async fn anon_legacy_filter_allowed_without_policy() {
+async fn anon_legacy_filter_denied_without_policy() {
     let tenant = "t-deny4a";
     let (app, _tid, _svc_tok, anon_tok, dir) = spin_up_dual_role_self_register(tenant).await;
     seed_status_posts(&dir, tenant).await;
 
     assert_eq!(
         list_legacy_status(&app, tenant, &anon_tok, "filter=status%3D%27x%27").await,
-        200,
-        "anon legacy ?filter should work when no policy/owner is set"
+        403,
+        "anon legacy ?filter must be denied even with no policy/owner (F1)"
     );
 }
 

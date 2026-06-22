@@ -381,6 +381,33 @@ pub async fn list_handler(
              use POST /collections/<c>/list (FilterAst)",
         );
     }
+    // F1 (audit 2026-06-22) — backstop for EVERY remaining untrusted-role
+    // raw-filter case. The legacy `?filter=`/`?sort=` params interpolate
+    // verbatim into build_list_sql (no `?` binds), and the read-only authorizer
+    // (authorizer.rs) ALLOWS reads of any non-`_system_` sibling collection. So
+    // an anon/user caller can smuggle a subquery (`EXISTS(SELECT 1 FROM "B" …)`
+    // / `UNION`) into the raw filter to read sibling collection `B` their role
+    // has no caps on — the per-collection cap boundary (anon_caps/user_caps) is
+    // an explicit authorization boundary, so this is a privilege bypass. The
+    // owner-scoped and policy guards above only cover SOME shapes; a plain
+    // collection (no owner_field, no policy) slips past both. Deny the raw
+    // param for BOTH untrusted roles on EVERY collection — it is deprecated
+    // (Sunset 2027-01-01). Service is trusted (bypasses caps, may read every
+    // table) and keeps the raw param; untrusted roles must use the structured
+    // POST /list (FilterAst, `?`-bound, cap/owner/policy-safe by construction).
+    if matches!(ctx, AuthCtx::Anon | AuthCtx::User { .. })
+        && (qs.filter.is_some() || qs.sort.is_some())
+    {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "RAW_FILTER_DENIED",
+            "raw ?filter=/?sort= is not allowed for anon or user tokens \
+             (a raw filter can read sibling collections via subqueries, \
+             bypassing per-collection caps). Use POST /collections/<c>/list \
+             with a structured Filter AST (drust builds the SQL with `?` \
+             binds), POST /collections/<c>/search, or a stored RPC.",
+        );
+    }
     // require_dml_cap already loaded the schema (via the cache); a
     // successful return proves the collection exists. The previous
     // standalone collection_exists reader hit + "existing collections"
