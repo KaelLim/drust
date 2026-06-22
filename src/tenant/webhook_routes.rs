@@ -67,7 +67,13 @@ pub fn check_url(raw: &str) -> Result<(), (&'static str, &'static str)> {
     // below (which would reject 127.0.0.1).
     // Note: reqwest::Url::host_str() returns "[::1]" (with brackets) for
     // IPv6 literals, so we accept both forms.
-    if scheme == "http" && matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]") {
+    if scheme == "http"
+        && matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
+        && crate::tenant::webhook_resolver::webhook_loopback_allowed(
+            cfg!(debug_assertions),
+            std::env::var("DRUST_WEBHOOK_ALLOW_LOOPBACK").is_ok(),
+        )
+    {
         return Ok(());
     }
     if scheme != "https" {

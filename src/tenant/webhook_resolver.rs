@@ -26,10 +26,13 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 /// any IP that should never receive a webhook from an internet-facing drust
 /// instance.
 ///
-/// `localhost`/`127.0.0.1`/`::1` are deliberately included — the existing
-/// `check_url` carve-out for `http://localhost` already runs BEFORE this
-/// check (see `webhook_routes::check_url`), so dev-mode webhooks pointing
-/// at the same host still work.
+/// `localhost`/`127.0.0.1`/`::1` are deliberately included. The `check_url`
+/// carve-out for `http://localhost` runs BEFORE this check (see
+/// `webhook_routes::check_url`) so dev-mode webhooks pointing at the same
+/// host still work — but only when `webhook_loopback_allowed` permits it
+/// (debug build, or `DRUST_WEBHOOK_ALLOW_LOOPBACK` set). In a prod release
+/// build with the env unset, that carve-out is skipped and this predicate is
+/// the one that rejects loopback (DEPLOY-1).
 pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -155,6 +158,21 @@ impl Resolve for ResolverHandle {
 // is ever stripped down.)
 use std::sync::Arc;
 
+/// Whether the `http://localhost` (and `127.0.0.1` / `::1`) dev carve-out
+/// in the webhook SSRF defense is permitted. The loopback bypass is a
+/// development convenience ONLY — in a production release build it would
+/// let a tenant register a webhook to the host loopback and SSRF internal
+/// services that `PinnedPublicResolver` / `is_private_ip` otherwise block.
+///
+/// Pure so the prod-blocking branch is unit-testable even though the test
+/// suite always runs in debug (`cfg!(debug_assertions) == true`): callers
+/// pass `is_debug = cfg!(debug_assertions)` and
+/// `env_set = std::env::var("DRUST_WEBHOOK_ALLOW_LOOPBACK").is_ok()`.
+/// Fail-closed: allowed ONLY when one of those opt-ins is present.
+pub(crate) fn webhook_loopback_allowed(is_debug: bool, env_set: bool) -> bool {
+    is_debug || env_set
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +204,19 @@ mod tests {
         assert!(!is_private_ip(ip("8.8.8.8")));
         assert!(!is_private_ip(ip("203.0.113.5")));
         assert!(!is_private_ip(ip("2001:4860:4860::8888")));
+    }
+
+    // DEPLOY-1 — full truth table for the loopback opt-in gate. Pure fn,
+    // so the prod-blocking case (false, false) => false is exercised even
+    // though the suite runs in debug. Written before the helper exists
+    // (RED: references an undefined fn => compile error), green after.
+    #[test]
+    fn webhook_loopback_allowed_truth_table() {
+        // (is_debug, env_set)
+        assert!(!webhook_loopback_allowed(false, false)); // prod, no opt-in => BLOCKED
+        assert!(webhook_loopback_allowed(true, false)); // debug build => allowed
+        assert!(webhook_loopback_allowed(false, true)); // prod + env opt-in => allowed
+        assert!(webhook_loopback_allowed(true, true)); // both => allowed
     }
 
     #[test]

@@ -470,7 +470,11 @@ async fn deliver_inner(
     let port = parsed.port_or_known_default().unwrap_or(443);
     // reqwest::Url returns `[::1]` (with brackets) for IPv6 literals — accept
     // both forms here, same as `check_url`.
-    let is_loopback_dev = matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]");
+    let is_loopback_dev = matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]")
+        && crate::tenant::webhook_resolver::webhook_loopback_allowed(
+            cfg!(debug_assertions),
+            std::env::var("DRUST_WEBHOOK_ALLOW_LOOPBACK").is_ok(),
+        );
 
     // Wrap-first standalone resolve: BEFORE any attempt, confirm the
     // host still maps to at least one public IP. A rebinding between
