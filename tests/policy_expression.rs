@@ -244,7 +244,10 @@ fn evaluators_agree_on_data_operand() {
             serde_json::from_str(table_row).unwrap();
         let mem = eval_policy(&ast, &row, &ctx);
         let sql = sql_says_match(&s, &ast, &ctx, table_row);
-        assert_eq!(mem, sql, "DISAGREE ast={a} table_row={table_row} data={data_json}");
+        assert_eq!(
+            mem, sql,
+            "DISAGREE ast={a} table_row={table_row} data={data_json}"
+        );
     }
 
     // $data combined with $auth in one AND: lhs author "u-1" == $auth "u-1"
@@ -256,8 +259,7 @@ fn evaluators_agree_on_data_operand() {
     )
     .unwrap();
     let table_row = r#"{"status":"published","author":"u-1","n":5}"#;
-    let row: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(table_row).unwrap();
+    let row: serde_json::Map<String, serde_json::Value> = serde_json::from_str(table_row).unwrap();
     for (data_json, _label) in [
         (r#"{"status":"published"}"#, "match"),
         (r#"{"status":"draft"}"#, "mismatch"),

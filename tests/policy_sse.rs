@@ -350,8 +350,7 @@ async fn seed_realtime_owner_scoped_all(dir: &tempfile::TempDir, tenant: &str) {
 /// filter). Deny anon on any owner_field, like the REST read paths.
 #[tokio::test]
 async fn anon_sse_denied_on_owner_scoped_collection_scope_all() {
-    let (app, tid, _svc, anon, dir) =
-        spin_up_dual_role_self_register("policy-sse-owner-all").await;
+    let (app, tid, _svc, anon, dir) = spin_up_dual_role_self_register("policy-sse-owner-all").await;
     seed_realtime_owner_scoped_all(&dir, &tid).await;
 
     let resp = app
