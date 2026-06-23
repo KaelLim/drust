@@ -6,7 +6,7 @@ port: 47826
 path: /drust
 status: production
 updated: 2026-06-23
-version: 1.41.4
+version: 1.41.5
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -40,7 +40,7 @@ The `tests/` directory holds 100+ integration test files covering MCP, REST, aut
 
 ### Data plane
 
-- **`meta.sqlite`** (management): admins, sessions, tenants, bearer tokens (hashed **plus** a plaintext copy since v1.1c, so `whoami` / the admin UI can echo the key — see the backup CAUTION). Admin password rotation: `src/bin/set_admin_password.rs` reads stdin, hashes via argon2id; `--email` populates `admins.email` for OAuth login.
+- **`meta.sqlite`** (management): admins, sessions, tenants, bearer tokens (hashed **plus** a plaintext copy since v1.1c, so `whoami` / the admin UI can echo the key — see the backup CAUTION). Admin password rotation: `src/bin/set_admin_password.rs` reads stdin, hashes via argon2id; `--email` populates `admins.email` for OAuth login. Per-tenant anon/service tokens (`tokens`) and admin PATs (`_admin_tokens`) are **stable across restarts** — nothing on the boot path rerolls them. (A regression existed until v1.41.5: the v1.29.3 "collapse legacy PATs" migration step revoked every active PAT unconditionally, and since `run_migrations` runs on every boot it rerolled every admin PAT on every restart — breaking any PAT-keyed integration with a 401 after each deploy. The legacy revoke is now qualified `AND plaintext IS NULL`. **Invariant: `run_migrations` runs on every boot, so every step MUST be idempotent — never unconditionally revoke/mint/delete a credential there.**)
 - **`tenants/<id>/data.sqlite`** (one per tenant). Reads go through `SQLITE_OPEN_READONLY` connections with `sqlite3_set_authorizer` whitelist in `src/query/authorizer.rs`; cross-tenant `ATTACH` denied. Writes go through structured REST/MCP tools against a per-tenant serialized writer mutex (`pool.with_writer`); schema enforcement at tool layer. `FieldSpec` supports allowlisted SQL defaults (`{"sql": "datetime('now')"}`) and foreign keys (`foreign_key: "<target>"` → `ON DELETE RESTRICT`). Admin REST writes (`src/mgmt/{browse,rpc_admin,tenant_files}.rs`) also route through `pool.with_writer` — same concurrency model as data-plane writes.
 - **`meta_logs.sqlite`** (v1.24+): audit rows via `AuditWriter` (`OnceLock` in `src/safety/audit_db.rs`). Writer task drains a `mpsc::channel(1000)`, batches INSERTs every 100ms or 100 rows. Channel-full drops + counter + sampled `tracing::warn!`. Reader side uses SQL aggregates (`src/mgmt/audit.rs::aggregate_via_sql`). Retention runs in-process: daily 90-day DELETE + monthly VACUUM anchored to 03:00 UTC via `sleep_until`. JSONL dual-write retired in v1.25.2.
 

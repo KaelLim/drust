@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "drust"
-version = "1.41.4"
+version = "1.41.5"
 dependencies = [
  "anyhow",
  "argon2",

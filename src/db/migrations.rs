@@ -313,11 +313,19 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     // 2. Add plaintext column (NULL for any pre-existing hash-only rows).
     add_column_if_missing(meta, "_admin_tokens", "plaintext", "TEXT")?;
 
-    // 3. Soft-revoke EVERY active legacy row (both kind='manual' from Task 8
-    //    and kind='auto_mcp' from v1.29.2 — neither has plaintext stored).
-    //    The backfill loop below produces fresh plaintext-bearing rows.
+    // 3. Soft-revoke active LEGACY rows (kind='manual' from Task 8 and
+    //    kind='auto_mcp' from v1.29.2 — neither stored plaintext). The backfill
+    //    loop below produces fresh plaintext-bearing rows.
+    //    audit (2026-06-23) — qualifying on `plaintext IS NULL` is load-bearing:
+    //    run_migrations runs on EVERY boot, so an unqualified `WHERE revoked_at
+    //    IS NULL` re-revoked the freshly-minted (plaintext-bearing) PATs on each
+    //    restart and the backfill below minted new ones — rerolling every
+    //    admin's PAT on every restart (breaking PAT-based integrations, e.g. an
+    //    MCP connection keyed on a PAT, and accumulating junk rows). Legacy rows
+    //    are exactly the plaintext-less ones; once migrated, this is a no-op.
     meta.execute_batch(
-        "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE revoked_at IS NULL;",
+        "UPDATE _admin_tokens SET revoked_at = datetime('now') \
+         WHERE revoked_at IS NULL AND plaintext IS NULL;",
     )?;
 
     // 4. Swap the partial unique index: drop the kind-based one, create one
@@ -1083,6 +1091,57 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn run_migrations_does_not_reroll_pat_on_every_boot() {
+        // audit (2026-06-23) — the v1.29.3 "collapse legacy PATs" step revoked
+        // EVERY active PAT unconditionally, and run_migrations runs on every
+        // boot, so each restart rerolled every admin's PAT (broke PAT-based
+        // integrations + accumulated junk rows; admin 1 had 68 in prod). Running
+        // migrations twice MUST keep the same active PAT.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        meta.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY);
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, \
+                 password_hash TEXT NOT NULL, email TEXT, \
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')));
+             INSERT INTO admins (username, password_hash) VALUES ('kael', 'h');",
+        )
+        .unwrap();
+
+        // First boot: the backfill mints one active, plaintext-bearing PAT.
+        run_migrations(&meta, dir.path()).unwrap();
+        let first: String = meta
+            .query_row(
+                "SELECT token_hash FROM _admin_tokens WHERE admin_id=1 AND revoked_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("exactly one active PAT after the first migrate");
+
+        // Second boot (simulated restart): must NOT reroll.
+        run_migrations(&meta, dir.path()).unwrap();
+        let active_count: i64 = meta
+            .query_row(
+                "SELECT COUNT(*) FROM _admin_tokens WHERE admin_id=1 AND revoked_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_count, 1, "still exactly one active PAT after a second boot");
+        let second: String = meta
+            .query_row(
+                "SELECT token_hash FROM _admin_tokens WHERE admin_id=1 AND revoked_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            first, second,
+            "the active PAT must survive a restart — no reroll on every boot"
+        );
     }
 
     #[test]
