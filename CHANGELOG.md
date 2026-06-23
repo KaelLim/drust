@@ -86,6 +86,11 @@ No schema change, no new MCP tool. Each fix ships with a regression test.
   exercised `{"$data":"<field>"}`. Added: both evaluators resolve `$data` from
   `PolicyCtx.data` identically, plus the CHECK-only fail-closed contract. No
   source change — would RED on a future `$data` lockstep divergence.
+- **Dependencies — `quinn-proto` 0.11.14 → 0.11.15** (RUSTSEC-2026-0185, HIGH:
+  remote memory exhaustion via unbounded out-of-order QUIC stream reassembly,
+  transitive through `reqwest → quinn`). Caught by a pre-push `cargo audit`;
+  lockfile-only patch bump, no API change. Relevant because drust's outbound
+  `reqwest` targets include tenant-controlled webhook URLs.
 
 > [!CAUTION]
 > **DEPLOY-3 (documented, not code-fixed) — backups contain live plaintext
