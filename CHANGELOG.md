@@ -1,3 +1,39 @@
+## v1.41.5 — 2026-06-23
+
+### fix — admin PATs no longer reroll on every restart
+
+The v1.29.3 "one PAT per admin" migration (`src/db/migrations.rs`, the
+`collapse legacy PATs` block) revoked **every active** `_admin_tokens` row with an
+unqualified `UPDATE … SET revoked_at = now WHERE revoked_at IS NULL`, then the
+backfill loop minted a fresh PAT per admin. That step was written as a one-time
+upgrade but had **no run-once guard**, and `run_migrations` runs on **every boot**
+(`main.rs`) — so **every restart rerolled every admin's PAT**: the previous (now
+plaintext-bearing) PATs were re-revoked and replaced. In production this churned
+admin 1's PAT 68 times and accumulated a revoked row per restart, and — the
+practical symptom — any integration keyed on an admin PAT (e.g. an MCP server
+configured with a `drust_pat_*` bearer) returned **401 after every deploy**,
+because the token it held had just been rotated out.
+
+Diagnosed from the live token timestamps: every admin's newest PAT `created_at`
+matched the deploy-restart instant to the second.
+
+**Fix** (`src/db/migrations.rs`): qualify the legacy revoke with `AND plaintext
+IS NULL`. Legacy rows (Task-8 `kind='manual'` and v1.29.2 `kind='auto_mcp'`) are
+exactly the plaintext-less ones, so the one-time upgrade still works; on every
+subsequent boot the active, plaintext-bearing PATs no longer match and the step
+is a no-op, so PATs survive restarts. Regression:
+`run_migrations_does_not_reroll_pat_on_every_boot` (run migrations twice → same
+active PAT). The existing `bootstrap_then_migrate_results_in_one_active_pat`
+(legacy/fresh path) stays green.
+
+> [!NOTE]
+> Per-tenant **service** and **anon** tokens were never affected (they live in
+> `tokens`, not `_admin_tokens`, and nothing on the boot path touches them — a
+> per-tenant MCP server keyed on the tenant **service token** has always survived
+> restarts). The recommended MCP bearer remains the tenant service token, not an
+> admin PAT. Accumulated revoked PAT rows are harmless (lookup filters
+> `revoked_at IS NULL`); the fix stops further accumulation.
+
 ## v1.41.4 — 2026-06-23
 
 ### security — ISO & code-review batch (dual-AI: codex + adversarial workflow)
