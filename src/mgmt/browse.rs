@@ -495,6 +495,11 @@ pub async fn update_anon_caps(
     // next REST/MCP request through the tenant router sees the new gate
     // immediately, not after the next DDL or process restart.
     pool.schema_cache.invalidate(&coll_name);
+    // audit3 F3 — revoking anon_caps must drop in-flight anon SSE subscribers
+    // (they captured the old caps at connect); evict like the realtime-disable
+    // path so they reconnect and re-gate. (The user_caps twin needs no evict —
+    // user tokens cannot subscribe to SSE.)
+    state.bus.evict_collection(&tenant_id, &coll_name);
 
     Redirect::to(&crate::base_path::base(&format!(
         "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=schema"
@@ -698,6 +703,18 @@ pub async fn admin_update_policies(
                     )));
                 }
             };
+            // (audit3 F2) Refuse to attach any policy while an anon-callable RPC
+            // references this collection — call_rpc applies no RLS policy.
+            let attaching = body.select.is_some()
+                || body.insert.is_some()
+                || body.update.is_some()
+                || body.delete.is_some();
+            if attaching
+                && let Err(e) =
+                    crate::rpc::prepare::guard_policy_change_against_anon_rpcs(c, &coll_c)
+            {
+                return Ok(Err(("RPC_ANON_OWNER_SCOPED", e.to_string())));
+            }
             for (op, p) in [
                 (DmlVerb::Select, &body.select),
                 (DmlVerb::Insert, &body.insert),
@@ -715,6 +732,9 @@ pub async fn admin_update_policies(
         })
         .await;
     cache.invalidate(&coll_name);
+    // audit3 F3 — drop in-flight anon SSE subscribers so they reconnect and
+    // re-gate against the new policy set (mirrors the realtime-disable evict).
+    state.bus.evict_collection(&tenant_id, &coll_name);
     match res {
         Ok(Ok(())) => axum::Json(serde_json::json!({"ok": true})).into_response(),
         Ok(Err((code @ "COLLECTION_NOT_FOUND", msg))) => {

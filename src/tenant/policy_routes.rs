@@ -14,6 +14,7 @@
 use crate::error::{json_error, json_error_with_aliases};
 use crate::query::policy::{Policy, validate_policy};
 use crate::storage::schema::{DmlVerb, is_protected_collection};
+use crate::tenant::events::EventBus;
 use crate::tenant::router::{TenantRef, TokenRole};
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -51,8 +52,9 @@ fn require_service(t: &TenantRef) -> Result<(), Response> {
 /// PUT `/t/<id>/collections/<c>/policies` — replace the policy set. Service-only.
 pub async fn put_policies(
     Extension(t): Extension<TenantRef>,
-    Path((_tenant, coll)): Path<(String, String)>,
+    Path((tenant, coll)): Path<(String, String)>,
     Json(body): Json<PutPoliciesBody>,
+    bus: EventBus,
 ) -> Response {
     if let Err(resp) = require_service(&t) {
         return resp;
@@ -80,6 +82,20 @@ pub async fn put_policies(
                     )));
                 }
             };
+            // (audit3 F2) If this PUT attaches any policy, refuse it while an
+            // anon-callable RPC references this collection — call_rpc applies no
+            // RLS policy to stored-RPC SQL, so the RPC would leak policy-hidden
+            // rows. Runs before any write_policy (autocommit path).
+            let attaching = body.select.is_some()
+                || body.insert.is_some()
+                || body.update.is_some()
+                || body.delete.is_some();
+            if attaching
+                && let Err(e) =
+                    crate::rpc::prepare::guard_policy_change_against_anon_rpcs(c, &coll_c)
+            {
+                return Ok(Err(("RPC_ANON_OWNER_SCOPED", e.to_string())));
+            }
             for (op, p) in [
                 (DmlVerb::Select, &body.select),
                 (DmlVerb::Insert, &body.insert),
@@ -97,13 +113,16 @@ pub async fn put_policies(
         })
         .await;
     cache.invalidate(&coll);
+    // audit3 F3 — drop in-flight anon SSE subscribers so they reconnect and
+    // re-gate against the new policy set (mirrors put_realtime's evict).
+    bus.evict_collection(&tenant, &coll);
     match res {
         Ok(Ok(())) => Json(json!({"ok": true})).into_response(),
         Ok(Err((code, msg))) => json_error(
-            if code == "COLLECTION_NOT_FOUND" {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::BAD_REQUEST
+            match code {
+                "COLLECTION_NOT_FOUND" => StatusCode::NOT_FOUND,
+                "RPC_ANON_OWNER_SCOPED" => StatusCode::CONFLICT,
+                _ => StatusCode::BAD_REQUEST,
             },
             code,
             &msg,
@@ -143,7 +162,8 @@ pub async fn get_policies(
 /// Service-only.
 pub async fn delete_policy(
     Extension(t): Extension<TenantRef>,
-    Path((_tenant, coll, op)): Path<(String, String, String)>,
+    Path((tenant, coll, op)): Path<(String, String, String)>,
+    bus: EventBus,
 ) -> Response {
     if let Err(resp) = require_service(&t) {
         return resp;
@@ -168,6 +188,9 @@ pub async fn delete_policy(
         .with_writer(move |c| crate::storage::schema::write_policy(c, &coll_c, verb, None))
         .await;
     cache.invalidate(&coll);
+    // audit3 F3 — evict in-flight anon SSE subscribers so they reconnect and
+    // re-gate against the cleared policy.
+    bus.evict_collection(&tenant, &coll);
     match res {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => json_error(

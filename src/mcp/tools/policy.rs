@@ -89,6 +89,15 @@ pub async fn set_policy(
                 // nothing was written yet, so there is nothing to roll back.
                 return Ok(Err(e.to_string()));
             }
+            // (audit3 F2) Refuse to attach a policy while an anon-callable RPC
+            // references this collection — call_rpc applies no RLS policy to
+            // stored-RPC SQL, so the RPC would leak the rows the policy hides.
+            if let Err(e) = crate::rpc::prepare::guard_policy_change_against_anon_rpcs(c, &coll) {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(e.to_string()),
+                ));
+            }
             write_policy(c, &coll, verb, Some(&policy))?;
             Ok(Ok(()))
         })
@@ -110,6 +119,11 @@ pub async fn set_policy(
         Err(validation_msg) => anyhow::bail!("POLICY_INVALID: {validation_msg}"),
     }
     pool.schema_cache.invalidate(collection);
+    // audit3 F3 — a tightened policy must drop in-flight anon SSE subscribers,
+    // which captured the old select-policy at connect time; evict so they
+    // reconnect and re-gate (mirrors set_realtime).
+    let tenant = s.inner().tenant_id.clone();
+    s.inner().bus.evict_collection(&tenant, collection);
     Ok(json!({
         "ok": true,
         "collection": collection,
@@ -153,6 +167,10 @@ pub async fn clear_policy(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     pool.schema_cache.invalidate(collection);
+    // audit3 F3 — evict in-flight anon SSE subscribers so they reconnect and
+    // re-gate against the cleared policy (mirrors set_realtime).
+    let tenant = s.inner().tenant_id.clone();
+    s.inner().bus.evict_collection(&tenant, collection);
     Ok(json!({
         "ok": true,
         "collection": collection,

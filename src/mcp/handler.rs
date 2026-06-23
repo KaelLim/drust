@@ -1587,11 +1587,14 @@ impl DrustMcpService {
             read_scope,
         }): Parameters<SetOwnerFieldArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let inner = self.state.inner();
         match owner_field_tools::set_owner_field(
-            &self.state.inner().pool,
+            &inner.pool,
             collection,
             field,
             read_scope,
+            &inner.bus,
+            &inner.tenant_id,
         )
         .await
         {

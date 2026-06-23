@@ -250,8 +250,15 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         )
         .route(
             "/t/{tenant}/collections/{coll}/owner-field",
-            axum::routing::post(owner_field::set_owner_field_handler)
-                .delete(owner_field::clear_owner_field_handler),
+            axum::routing::post({
+                // audit3 F3 — inject the bus so set_owner_field can evict
+                // in-flight anon SSE subscribers (owner-scoping restricts anon).
+                let b = bus.clone();
+                move |path, ctx, t, body| {
+                    owner_field::set_owner_field_handler(path, ctx, t, body, b.clone())
+                }
+            })
+            .delete(owner_field::clear_owner_field_handler),
         )
         .route(
             "/t/{tenant}/collections/{coll}/indexes",
@@ -284,11 +291,20 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         )
         .route(
             "/t/{tenant}/collections/{coll}/policies",
-            put(policy_routes::put_policies).get(policy_routes::get_policies),
+            put({
+                // audit3 F3 — inject the bus (no axum extractor for EventBus) so
+                // a policy write can evict in-flight anon SSE subscribers.
+                let b = bus.clone();
+                move |ext, path, body| policy_routes::put_policies(ext, path, body, b.clone())
+            })
+            .get(policy_routes::get_policies),
         )
         .route(
             "/t/{tenant}/collections/{coll}/policies/{op}",
-            delete(policy_routes::delete_policy),
+            delete({
+                let b = bus.clone();
+                move |ext, path| policy_routes::delete_policy(ext, path, b.clone())
+            }),
         )
         .route(
             "/t/{tenant}/collections/{coll}/description",

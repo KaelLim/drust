@@ -29,7 +29,13 @@ services:
     # image: ghcr.io/kaellim/drust:latest
     restart: unless-stopped
     ports:
-      - "47826:47826"
+      # audit3 F2-RL-001 — bind the app port to host loopback ONLY. Caddy reaches
+      # drust over the Docker network (service DNS), not this published port, so
+      # this is purely for host-side debugging. Exposing it on all interfaces let
+      # an attacker hit drust directly, bypassing Caddy's X-Forwarded-For
+      # normalization and defeating the per-IP login/register rate-limit via XFF
+      # rotation. Loopback-binding closes that direct-port reach.
+      - "127.0.0.1:47826:47826"
     volumes:
       - drust-data:/data      # meta.sqlite + meta_logs.sqlite + tenants/ + backups/
       - drust-logs:/logs
@@ -37,6 +43,12 @@ services:
       # --- first-boot admin bootstrap (change these) ---
       DRUST_INIT_ADMIN_USERNAME: admin
       DRUST_INIT_ADMIN_PASSWORD: change-me-on-first-boot
+      # audit3 INFO-1 — suppress the `x-drust-version` response header in the
+      # distributed image so an unauthenticated client cannot fingerprint the
+      # exact build for version-specific CVE targeting. (The in-app default
+      # leaves it ON for deploy/live-smoke version checks; this opts the public
+      # image out.) Set to empty/unset if you rely on the header.
+      DRUST_HIDE_VERSION: "1"
       # --- public URL (required for OAuth redirect/callback links) ---
       # DRUST_PUBLIC_URL: https://drust.example.com
       # --- CORS allow-list for browser SPAs (exact origins or one '*' segment) ---

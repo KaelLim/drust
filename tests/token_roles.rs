@@ -167,7 +167,9 @@ async fn anon_token_cannot_delete_record() {
 }
 
 #[tokio::test]
-async fn anon_token_can_post_query_select() {
+async fn anon_token_cannot_post_query_select() {
+    // audit3 D1 — /query is now service-only (raw, un-rewritable SQL cannot be
+    // gated by anon_caps / owner_field / policy). Anon → 403 unconditionally.
     let (app, anon, _svc, _d) = tenant_with_two_tokens("blog").await;
     let resp = app
         .oneshot(
@@ -181,7 +183,7 @@ async fn anon_token_can_post_query_select() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

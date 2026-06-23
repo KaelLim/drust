@@ -643,6 +643,13 @@ pub async fn remove_admin(
         Err(r) => return r,
     };
 
+    // audit3 F4 — the cascade DELETE on `admins` revoked this admin's PATs at
+    // the DB level (FK ON DELETE CASCADE), but a freshly-used PAT may still sit
+    // in the data-plane auth cache, served on a cache hit WITHOUT a meta lookup.
+    // Evict it now so a removed admin loses service-level data-plane access
+    // immediately, not after the 10s safety TTL. Mirrors hook 2 (admin_pat.rs).
+    s.auth_cache.clear_admin_pat(target_id);
+
     // Emit audit (async — safe; lock already released).
     let mut entry = AuditEntry::success("-", "-", "admin.team.remove", 0);
     entry.actor_admin_id = Some(caller_id);

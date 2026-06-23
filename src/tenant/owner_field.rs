@@ -26,6 +26,7 @@ pub async fn set_owner_field_handler(
     Extension(ctx): Extension<AuthCtx>,
     Extension(t): Extension<TenantRef>,
     Json(body): Json<SetOwnerFieldBody>,
+    bus: crate::tenant::events::EventBus,
 ) -> Response {
     if !matches!(ctx, AuthCtx::Service { .. }) {
         return json_error(
@@ -88,6 +89,11 @@ pub async fn set_owner_field_handler(
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", "");
     }
     pool.schema_cache.invalidate(&collection);
+    // audit3 F3 — making a collection owner-scoped RESTRICTS anon read (anon can
+    // no longer subscribe to an owner-scoped collection, sse.rs), so drop any
+    // in-flight anon SSE subscriber that connected before this change — same
+    // eviction the anon_caps/policy tighten paths do. Order: invalidate first.
+    bus.evict_collection(&t.tenant_id, &collection);
     (
         StatusCode::OK,
         Json(json!({
