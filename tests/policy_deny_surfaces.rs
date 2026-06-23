@@ -147,11 +147,13 @@ async fn anon_query_denied_when_tenant_has_policy() {
     let (app, _tid, svc_tok, anon_tok, dir) = spin_up_dual_role_self_register(tenant).await;
     seed_status_posts(&dir, tenant).await;
 
-    // No policy yet → anon /query works.
+    // audit3 D1 — /query is now service-only, so anon is denied even before any
+    // policy exists (previously anon /query worked until a policy/owner_field
+    // was adopted).
     assert_eq!(
         query_status(&app, tenant, &anon_tok, "SELECT * FROM posts").await,
-        200,
-        "anon /query should work before any policy"
+        403,
+        "anon /query is service-only (audit3 D1) — denied regardless of policy"
     );
 
     set_policy(
@@ -163,11 +165,11 @@ async fn anon_query_denied_when_tenant_has_policy() {
     )
     .await;
 
-    // Now anon /query is denied tenant-wide.
+    // Still denied with a policy present.
     assert_eq!(
         query_status(&app, tenant, &anon_tok, "SELECT * FROM posts").await,
         403,
-        "anon /query should be denied once the tenant has a policy"
+        "anon /query stays denied once the tenant has a policy"
     );
     // Service /query still works.
     assert_eq!(
@@ -183,15 +185,17 @@ async fn anon_query_denied_when_tenant_has_owner_field() {
     let (app, _tid, svc_tok, anon_tok, dir) = spin_up_dual_role_self_register(tenant).await;
     seed_status_posts(&dir, tenant).await;
 
+    // audit3 D1 — anon /query is service-only → denied before and after
+    // owner_field is set.
     assert_eq!(
         query_status(&app, tenant, &anon_tok, "SELECT * FROM posts").await,
-        200
+        403
     );
     set_owner(&dir, tenant, "posts", "owner").await;
     assert_eq!(
         query_status(&app, tenant, &anon_tok, "SELECT * FROM posts").await,
         403,
-        "owner_field alone must also gate anon /query"
+        "anon /query stays denied with owner_field too"
     );
     assert_eq!(
         query_status(&app, tenant, &svc_tok, "SELECT * FROM posts").await,
@@ -205,9 +209,11 @@ async fn anon_explain_denied_when_tenant_has_policy() {
     let (app, _tid, svc_tok, anon_tok, dir) = spin_up_dual_role_self_register(tenant).await;
     seed_status_posts(&dir, tenant).await;
 
+    // audit3 D1 — /query/explain is service-only → anon denied even before a
+    // policy exists.
     assert_eq!(
         explain_status(&app, tenant, &anon_tok, "SELECT * FROM posts").await,
-        200
+        403
     );
     set_policy(
         &dir,
@@ -220,7 +226,7 @@ async fn anon_explain_denied_when_tenant_has_policy() {
     assert_eq!(
         explain_status(&app, tenant, &anon_tok, "SELECT * FROM posts").await,
         403,
-        "anon /query/explain should be denied once the tenant has a policy"
+        "anon /query/explain stays denied with a policy"
     );
     assert_eq!(
         explain_status(&app, tenant, &svc_tok, "SELECT * FROM posts").await,

@@ -13,34 +13,40 @@ pub struct QueryBody {
     pub sql: String,
 }
 
+/// audit3 D1 — `/query` and `/query/explain` execute raw, un-rewritable SQL, so
+/// none of drust's row-access controls (owner_field, RLS policies, anon_caps)
+/// can be enforced on them. They are therefore SERVICE-ONLY: any non-Service
+/// caller is denied. User keeps its specific `QUERY_USER_DENIED` code; Anon —
+/// previously allowed unless the tenant had adopted a policy/owner_field — is
+/// now denied unconditionally (`QUERY_ANON_DENIED`, with the prior
+/// `ANON_QUERY_DENIED_ON_POLICY` retained as an alias). Returns the deny
+/// response for User/Anon, or `None` for Service.
+fn deny_non_service_query(ctx: &AuthCtx, path: &str) -> Option<Response> {
+    match ctx {
+        AuthCtx::Service { .. } => None,
+        AuthCtx::User { .. } => Some(json_error(
+            StatusCode::FORBIDDEN,
+            "QUERY_USER_DENIED",
+            &format!("user token cannot use {path}"),
+        )),
+        AuthCtx::Anon => Some(crate::error::json_error_with_aliases(
+            StatusCode::FORBIDDEN,
+            "QUERY_ANON_DENIED",
+            &["ANON_QUERY_DENIED_ON_POLICY"],
+            &format!(
+                "{path} is service-only — anon reads via POST /collections/<c>/list or /search"
+            ),
+        )),
+    }
+}
+
 pub async fn query_handler(
     Extension(ctx): Extension<AuthCtx>,
     Extension(t): Extension<TenantRef>,
     Json(body): Json<QueryBody>,
 ) -> Response {
-    if matches!(ctx, AuthCtx::User { .. }) {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "QUERY_USER_DENIED",
-            "user token cannot use /query",
-        );
-    }
-    // Anon cannot use /query on a tenant that has adopted ANY row-level rule
-    // (owner_field or an explicit policy) — drust does not rewrite raw SQL, so
-    // owner/policy clauses cannot be enforced here. Fail closed on a DB error.
-    if matches!(ctx, AuthCtx::Anon) {
-        let pool = t.pool.clone();
-        let protected = pool
-            .with_reader(crate::storage::schema::tenant_has_protected_collection)
-            .await
-            .unwrap_or(true);
-        if protected {
-            return json_error(
-                StatusCode::FORBIDDEN,
-                "ANON_QUERY_DENIED_ON_POLICY",
-                "anon cannot use /query on a tenant with row-level policies; use POST /collections/<c>/list or /search",
-            );
-        }
+    if let Some(resp) = deny_non_service_query(&ctx, "/query") {
+        return resp;
     }
     const ROW_CAP: usize = 10_000;
     const MAX_SQL: usize = 16_384;
@@ -99,28 +105,8 @@ pub async fn explain_handler(
     Extension(t): Extension<TenantRef>,
     Json(body): Json<ExplainBody>,
 ) -> Response {
-    if matches!(ctx, AuthCtx::User { .. }) {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "QUERY_USER_DENIED",
-            "user token cannot use /query/explain",
-        );
-    }
-    // Same anon deny as /query — EXPLAIN exposes the same un-rewritable SQL
-    // surface, so it must be gated identically. Fail closed on a DB error.
-    if matches!(ctx, AuthCtx::Anon) {
-        let pool = t.pool.clone();
-        let protected = pool
-            .with_reader(crate::storage::schema::tenant_has_protected_collection)
-            .await
-            .unwrap_or(true);
-        if protected {
-            return json_error(
-                StatusCode::FORBIDDEN,
-                "ANON_QUERY_DENIED_ON_POLICY",
-                "anon cannot use /query/explain on a tenant with row-level policies; use POST /collections/<c>/list or /search",
-            );
-        }
+    if let Some(resp) = deny_non_service_query(&ctx, "/query/explain") {
+        return resp;
     }
     match crate::mcp::tools::index::explain_select(&t.pool, &body.sql).await {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),

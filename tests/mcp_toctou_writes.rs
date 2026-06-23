@@ -105,11 +105,14 @@ async fn set_owner_field_collection_not_found_no_orphan() {
 
     // Even though there is no `user_id` column, the collection-not-found check
     // fires first — we never reach the FK validation step.
+    let inner = mcp.inner();
     let err = set_owner_field(
-        &mcp.inner().pool,
+        &inner.pool,
         "ghost".to_string(),
         Some("user_id".to_string()),
         "own".to_string(),
+        &inner.bus,
+        &inner.tenant_id,
     )
     .await
     .unwrap_err();

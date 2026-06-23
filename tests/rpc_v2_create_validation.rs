@@ -22,7 +22,10 @@ use tempfile::TempDir;
 fn seed(name: &str) -> (TempDir, Connection) {
     let d = TempDir::new().unwrap();
     let conn = open_write(d.path(), name).unwrap();
-    conn.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER);")
+    // `user_id` column present so owner-scoped / :user_id RPC bodies are
+    // preparable (audit3 F2 removed the early :user_id return, so the guard now
+    // prepares every anon-callable body to discover referenced tables).
+    conn.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER, user_id TEXT);")
         .unwrap();
     (d, conn)
 }
@@ -470,4 +473,138 @@ fn scan_ignores_safe_rpcs() {
     .unwrap();
     let names = scan_unsafe_anon_rpcs(&conn).unwrap();
     assert!(names.is_empty(), "expected no unsafe RPCs, got: {names:?}");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// audit3 (2026-06-23) F2 — RPC anon-guard was blind to RLS select policies.
+//
+// drust never rewrites stored-RPC SQL, so an anon_callable RPC over a
+// policy-protected collection (owner_field may be NULL) returns/mutates the very
+// rows the policy hides. The guard now also rejects policy-protected tables, and
+// — unlike owner_field — a :user_id param does NOT exempt the policy case.
+// ──────────────────────────────────────────────────────────────────────────────
+
+use drust::rpc::prepare::guard_policy_change_against_anon_rpcs;
+use drust::storage::schema::{DmlVerb, write_policy};
+
+/// Seed `orders` (non-owner-scoped) carrying a select RLS policy.
+fn seed_with_policy(name: &str) -> (TempDir, Connection) {
+    let (d, conn) = seed(name);
+    use drust::query::policy::Policy;
+    use drust::query::vector_filter::FilterAst;
+    let p = Policy {
+        using: Some(serde_json::from_str::<FilterAst>(r#"{"published":true}"#).unwrap()),
+        check: None,
+    };
+    write_policy(&conn, "orders", DmlVerb::Select, Some(&p)).unwrap();
+    (d, conn)
+}
+
+#[test]
+fn anon_callable_read_over_policy_collection_rejected() {
+    let (_d, conn) = seed_with_policy("anon_policy_no_uid");
+    let sql = "SELECT id, qty FROM orders";
+    validate_rpc_sql(&conn, sql, RpcMode::Read).expect("plain SELECT is valid read SQL");
+    let err = guard_anon_owner_scoped_rpc(&conn, sql, &[], true, RpcMode::Read).unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED),
+        "anon RPC over policy-protected collection must be rejected, got: {msg}"
+    );
+}
+
+#[test]
+fn anon_callable_read_over_policy_collection_with_user_id_still_rejected() {
+    // :user_id escapes owner_field but NOT a policy (a policy need not key on the
+    // caller) — must still reject.
+    let (_d, conn) = seed_with_policy("anon_policy_with_uid");
+    let err = guard_anon_owner_scoped_rpc(
+        &conn,
+        "SELECT id, qty FROM orders WHERE user_id = :user_id",
+        &user_id_param(),
+        true,
+        RpcMode::Read,
+    )
+    .unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED),
+        ":user_id must not exempt a policy-protected collection, got: {msg}"
+    );
+}
+
+#[test]
+fn service_only_read_over_policy_collection_accepts() {
+    let (_d, conn) = seed_with_policy("svc_policy");
+    guard_anon_owner_scoped_rpc(
+        &conn,
+        "SELECT id, qty FROM orders",
+        &[],
+        false,
+        RpcMode::Read,
+    )
+    .expect("service-only RPC over a policy-protected collection must create");
+}
+
+#[test]
+fn guard_policy_change_rejects_when_anon_rpc_references_collection() {
+    // An anon_callable RPC exists over a (currently policy-free, non-owner)
+    // collection; attaching a policy later must be refused.
+    let (_d, conn) = seed("policychange_blocked");
+    registry::create(
+        &conn,
+        "reader",
+        "SELECT id, qty FROM orders",
+        "[]",
+        None,
+        true,
+        RpcMode::Read,
+    )
+    .unwrap();
+    let err = guard_policy_change_against_anon_rpcs(&conn, "orders").unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED),
+        "attaching a policy while an anon RPC references the collection must reject, got: {msg}"
+    );
+}
+
+#[test]
+fn guard_policy_change_accepts_for_service_only_rpc() {
+    let (_d, conn) = seed("policychange_ok");
+    registry::create(
+        &conn,
+        "reader",
+        "SELECT id, qty FROM orders",
+        "[]",
+        None,
+        false, // service-only → no anon leak
+        RpcMode::Read,
+    )
+    .unwrap();
+    guard_policy_change_against_anon_rpcs(&conn, "orders")
+        .expect("a service-only RPC must not block attaching a policy");
+}
+
+#[test]
+fn scan_unsafe_flags_user_id_rpc_over_policy_collection() {
+    // Legacy: an anon_callable RPC WITH a :user_id param over a policy-protected
+    // collection is unsafe (policy not applied at call time). The startup scan
+    // must flag it even though :user_id used to skip the scan.
+    let (_d, conn) = seed_with_policy("scan_policy_uid");
+    registry::create(
+        &conn,
+        "mine",
+        "SELECT id, qty FROM orders WHERE user_id = :user_id",
+        USER_ID_PARAMS_JSON,
+        None,
+        true,
+        RpcMode::Read,
+    )
+    .unwrap();
+    let names = scan_unsafe_anon_rpcs(&conn).unwrap();
+    assert!(
+        names.contains(&"mine".to_string()),
+        "scan must flag a :user_id anon RPC over a policy-protected collection, got: {names:?}"
+    );
 }

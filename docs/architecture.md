@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-06-22
+updated: 2026-06-23
 generated_by: docs/gen-architecture.py
 ---
 
@@ -31,10 +31,10 @@ generated_by: docs/gen-architecture.py
 | [`mgmt/`](#srcmgmt) | 34 | 249 | 96 | 43 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 8 | 48 | 8 | 28 |
-| [`rpc/`](#srcrpc) | 6 | 36 | 16 | 9 |
+| [`rpc/`](#srcrpc) | 6 | 37 | 16 | 9 |
 | [`safety/`](#srcsafety) | 8 | 38 | 1 | 11 |
-| [`storage/`](#srcstorage) | 14 | 99 | 14 | 75 |
-| [`tenant/`](#srctenant) | 33 | 203 | 103 | 54 |
+| [`storage/`](#srcstorage) | 14 | 100 | 14 | 75 |
+| [`tenant/`](#srctenant) | 33 | 203 | 104 | 55 |
 
 ## Group dependency graph
 
@@ -250,7 +250,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`handler.rs`](../src/rpc/handler.rs) — REST handler for `POST /t/{tenant}/rpc/{name}`. · 2 pub
 - [`mod.rs`](../src/rpc/mod.rs) — RPC subsystem: stored Supabase-style named SQL functions. · 5 pub
 - [`params.rs`](../src/rpc/params.rs) — RPC parameter schema and request validation. · 6 pub
-- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 7 pub
+- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 8 pub
 - [`registry.rs`](../src/rpc/registry.rs) — Persistence wrapper around the `_system_rpc` table. · 9 pub
 
 <a id="srcsafety"></a>
@@ -279,7 +279,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`mod.rs`](../src/storage/mod.rs) — 13 pub
 - [`pool.rs`](../src/storage/pool.rs) — 3 pub
 - [`quota.rs`](../src/storage/quota.rs) — 3 pub
-- [`schema.rs`](../src/storage/schema.rs) — 35 pub
+- [`schema.rs`](../src/storage/schema.rs) — 36 pub
 - [`schema_cache.rs`](../src/storage/schema_cache.rs) — 1 pub
 - [`signed_url.rs`](../src/storage/signed_url.rs) — Drust-minted, drust-served signed URLs for private file downloads. · 4 pub
 - [`tenant_db.rs`](../src/storage/tenant_db.rs) — 7 pub

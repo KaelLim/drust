@@ -895,6 +895,19 @@ pub fn read_policies(conn: &Connection, coll: &str) -> rusqlite::Result<Collecti
     })
 }
 
+/// True if `coll` carries ANY RLS policy (any of the four `*_policy_json`
+/// columns non-null). Used by the anon-callable-RPC guard (audit3 F2): drust
+/// never rewrites stored-RPC SQL, so an anon-callable RPC over a
+/// policy-protected collection would return/mutate the very rows the policy
+/// hides. A missing meta row (or, via `read_policies`' forgiving parse, an
+/// absent `*_policy_json` column / malformed JSON) reads as no policy → `false`;
+/// the v1.38+ migration guarantees the columns exist, so this is reached only
+/// on a fully-migrated schema.
+pub fn collection_has_policy(conn: &Connection, coll: &str) -> rusqlite::Result<bool> {
+    let p = read_policies(conn, coll)?;
+    Ok(p.select.is_some() || p.insert.is_some() || p.update.is_some() || p.delete.is_some())
+}
+
 /// Upsert (or clear) one op's policy. `None` clears the column to NULL.
 /// Upserts the meta row if absent (default anon_caps), mirroring
 /// `set_owner_field`. Caller holds the writer mutex.
@@ -1419,13 +1432,15 @@ mod meta_io_tests {
 }
 
 /// Returns true if the caller's role is permitted to perform `verb` on
-/// the given collection. Service is unrestricted. User is unrestricted ONLY
-/// on owner-scoped collections (where the row-level filter limits visibility
-/// per row); on non-owner-scoped collections, User is governed by the
-/// collection's own `user_caps` (separate from `anon_caps` — a logged-in
-/// user no longer inherits anon's grants). Anon is always checked against
-/// `anon_caps`. Missing schema (cache miss + DB error) yields `false` —
-/// fail closed.
+/// the given collection. Service is unrestricted. For User on an owner-scoped
+/// collection the cap is open ONLY where a row filter is actually applied:
+/// all writes (the owner clause is always carried) and reads with
+/// `read_scope="own"`; a `read_scope="all"` READ is unfiltered and is gated by
+/// `user_caps[select]` (audit3 F1). On non-owner-scoped collections User is
+/// governed entirely by the collection's own `user_caps` (separate from
+/// `anon_caps` — a logged-in user no longer inherits anon's grants). Anon is
+/// always checked against `anon_caps`. Missing schema (cache miss + DB error)
+/// yields `false` — fail closed.
 ///
 /// LOCKSTEP: the `POST /list` matrix in `src/tenant/records_list.rs`
 /// hand-rolls this same role→cap decision and must stay in sync — its
@@ -1442,9 +1457,21 @@ pub fn has_dml_cap(
     match role {
         crate::tenant::router::TokenRole::Service => true,
         crate::tenant::router::TokenRole::User => {
-            // Owner-scoped: filter handles row access, cap is open.
+            // The owner-field short-circuit ("the row filter handles access, so
+            // the cap is open") is sound ONLY when a row filter is actually
+            // applied for this verb (audit3 F1):
+            //   • READS  — only read_scope="own" applies a per-row read filter.
+            //     read_scope="all" reads are UNFILTERED (the user sees every
+            //     row), so they must be gated by user_caps[select], in lockstep
+            //     with the POST /list matrix (records_list.rs) and /search.
+            //   • WRITES — INSERT stamps the owner and UPDATE/DELETE always
+            //     carry the owner clause regardless of read_scope (see
+            //     compute_owner_write_filter), so the filter is the access
+            //     control and the cap stays open for owner-scoped collections.
             // Non-owner-scoped: governed by user_caps (NOT anon_caps).
-            schema.owner_field.is_some() || schema.user_caps.contains(&verb)
+            let owner_filtered = schema.owner_field.is_some()
+                && (verb != DmlVerb::Select || schema.read_scope.as_deref() == Some("own"));
+            owner_filtered || schema.user_caps.contains(&verb)
         }
         crate::tenant::router::TokenRole::Anon => schema.anon_caps.contains(&verb),
     }
@@ -1478,6 +1505,7 @@ mod cap_gate_tests {
         anon: &[DmlVerb],
         user: &[DmlVerb],
         owner_field: Option<&str>,
+        read_scope: Option<&str>,
     ) -> CollectionSchema {
         CollectionSchema {
             name: "x".into(),
@@ -1487,7 +1515,7 @@ mod cap_gate_tests {
             anon_caps: anon.iter().copied().collect(),
             user_caps: user.iter().copied().collect(),
             owner_field: owner_field.map(|s| s.to_string()),
-            read_scope: None,
+            read_scope: read_scope.map(|s| s.to_string()),
             vector_fields: vec![],
             realtime_enabled: true,
             description: None,
@@ -1555,6 +1583,7 @@ mod cap_gate_tests {
             &[DmlVerb::Select],
             &[DmlVerb::Select, DmlVerb::Insert],
             None,
+            None,
         );
         assert!(has_dml_cap(TokenRole::User, DmlVerb::Select, &s));
         assert!(has_dml_cap(TokenRole::User, DmlVerb::Insert, &s));
@@ -1564,7 +1593,7 @@ mod cap_gate_tests {
 
     #[test]
     fn user_denied_when_verb_absent_from_user_caps() {
-        let s = schema_with_split(&[DmlVerb::Select], &[DmlVerb::Select], None);
+        let s = schema_with_split(&[DmlVerb::Select], &[DmlVerb::Select], None, None);
         assert!(has_dml_cap(TokenRole::User, DmlVerb::Select, &s));
         for verb in [DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
             assert!(!has_dml_cap(TokenRole::User, verb, &s));
@@ -1583,6 +1612,7 @@ mod cap_gate_tests {
             ],
             &[DmlVerb::Select],
             None,
+            None,
         );
         assert!(has_dml_cap(TokenRole::User, DmlVerb::Select, &s));
         for verb in [DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
@@ -1594,10 +1624,10 @@ mod cap_gate_tests {
     }
 
     #[test]
-    fn user_owner_field_short_circuit_opens_all() {
-        // owner_field set: cap is open for User regardless of user_caps
-        // (the row-level filter governs access). user_caps deliberately empty.
-        let s = schema_with_split(&[], &[], Some("owner"));
+    fn user_owner_field_short_circuit_opens_all_when_read_scope_own() {
+        // owner_field + read_scope="own": the per-row read filter governs access,
+        // so the cap is open for User on ALL verbs regardless of user_caps.
+        let s = schema_with_split(&[], &[], Some("owner"), Some("own"));
         for verb in [
             DmlVerb::Select,
             DmlVerb::Insert,
@@ -1606,9 +1636,30 @@ mod cap_gate_tests {
         ] {
             assert!(
                 has_dml_cap(TokenRole::User, verb, &s),
-                "owner_field short-circuit must open the cap for User"
+                "read_scope=own owner_field short-circuit must open the cap for User"
             );
         }
+    }
+
+    #[test]
+    fn user_owner_field_read_scope_all_gates_select_by_user_caps() {
+        // audit3 F1 — owner_field + read_scope="all": READS are unfiltered, so
+        // Select is gated by user_caps[select]; WRITES still carry the owner
+        // clause downstream, so the short-circuit stays open for them.
+        let s = schema_with_split(&[], &[], Some("owner"), Some("all"));
+        assert!(
+            !has_dml_cap(TokenRole::User, DmlVerb::Select, &s),
+            "read_scope=all + user_caps=[] must DENY Select (unfiltered read)"
+        );
+        for verb in [DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
+            assert!(
+                has_dml_cap(TokenRole::User, verb, &s),
+                "writes stay owner-scoped downstream → cap open regardless of read_scope"
+            );
+        }
+        // And granting user_caps[select] re-opens the read.
+        let s2 = schema_with_split(&[], &[DmlVerb::Select], Some("owner"), Some("all"));
+        assert!(has_dml_cap(TokenRole::User, DmlVerb::Select, &s2));
     }
 
     #[test]
@@ -1623,6 +1674,7 @@ mod cap_gate_tests {
                 DmlVerb::Delete,
             ],
             None,
+            None,
         );
         assert!(has_dml_cap(TokenRole::Anon, DmlVerb::Select, &s));
         for verb in [DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
@@ -1636,7 +1688,7 @@ mod cap_gate_tests {
     #[test]
     fn service_unchanged_with_user_caps() {
         // Service stays unrestricted even with both cap sets empty.
-        let s = schema_with_split(&[], &[], None);
+        let s = schema_with_split(&[], &[], None, None);
         for verb in [
             DmlVerb::Select,
             DmlVerb::Insert,

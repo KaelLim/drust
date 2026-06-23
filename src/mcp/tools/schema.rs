@@ -549,6 +549,13 @@ pub async fn set_anon_caps(
         }
     })?;
     pool.schema_cache.invalidate(collection);
+    // audit3 F3 — revoking anon_caps must also drop in-flight anon SSE
+    // subscribers: the subscribe handler captured the old caps + policy at
+    // connect time, and cache invalidation only affects the NEXT connect.
+    // Evict the broadcast channel so existing subscribers reconnect and re-gate
+    // against the fresh schema (mirrors set_realtime's disable path).
+    let tenant = s.inner().tenant_id.clone();
+    s.inner().bus.evict_collection(&tenant, collection);
 
     Ok(json!({
         "ok": true,

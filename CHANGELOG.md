@@ -1,3 +1,116 @@
+## v1.41.4 — 2026-06-23
+
+### security — ISO & code-review batch (dual-AI: codex + adversarial workflow)
+
+A second whole-system isolation/security review (external `codex` gpt-5.5 pass +
+a 10-dimension codegraph-backed adversarial workflow, each finding refuted by an
+independent skeptic) surfaced four real intra-tenant authorization gaps and one
+documented footgun the maintainer chose to close. The recurring shape: drust
+grew two newer row-access mechanisms — `user_caps` (v1.41) and RLS policies
+(v1.38) — but several enforcement sites written for the original `owner_field`
+mechanism were never extended to mirror them. Each fix ships with a regression
+test; the implemented fixes were then re-verified by a second adversarial
+workflow before release. No new MCP tool; no schema change.
+
+- **F1 (High) — `read_scope="all"` cap/owner lockstep break (intra-tenant).**
+  `has_dml_cap` returned `true` for any User verb whenever `owner_field.is_some()`
+  ("the row filter handles access"), but `compute_owner_filter` only emitted that
+  filter for `read_scope="own"`. So on an owner-scoped collection set
+  `read_scope="all"`: (a) `GET /records` + `POST /search` returned every row even
+  with `user_caps=[]` — diverging from `POST /list`, which already gated on
+  `user_caps[select]`; and (b) `PATCH`/`DELETE` (incl. the `dry_run` blast-radius
+  pre-flight) became ID-only, letting a user **modify or delete another user's
+  row**, violating the documented "UPDATE/DELETE foreign rows → 404" invariant.
+  Now: reads under `read_scope="all"` are gated by `user_caps[select]` (lockstep
+  with `/list`), and writes ALWAYS carry the owner clause regardless of
+  `read_scope` (new `compute_owner_write_filter`) so a user can only mutate their
+  own rows. `read_scope="own"`, service bypass, and anon-on-owner-scoped (403)
+  are unchanged. (codex F2; independently confirmed.)
+- **F2 (Medium) — RPC anon-guard was blind to RLS policies (intra-tenant).** The
+  v1.41.3 `guard_anon_owner_scoped_rpc` probed only `owner_field`; a collection
+  with `owner_field=NULL` but a `select_policy` (a valid v1.38 policy-only config)
+  passed the guard. Since drust never rewrites stored-RPC SQL, an `anon_callable`
+  RPC `SELECT * FROM articles` then returned the rows the policy hides to anon —
+  the structural twin of the owner_field RPC leak. The guard now also refuses any
+  RPC referencing a collection with ANY `*_policy_json` (a `:user_id` param does
+  NOT exempt the policy case — a policy need not key on the caller), mirroring
+  `/query` fail-closing on policy adoption. New symmetric config-time guard
+  `guard_policy_change_against_anon_rpcs` wired into all three policy-attach sites
+  (REST `put_policies`, MCP `set_policy`, admin `admin_update_policies`); the
+  startup `scan_unsafe_anon_rpcs` migration now also flags `:user_id` RPCs over
+  policy collections (its `:user_id` early-skip was removed). Runtime `call_rpc`
+  is intentionally not re-checked — config-time remains the boundary.
+  (adversarial-workflow completeness critic; confirmed.)
+- **F3 (Medium) — revoking `anon_caps`/tightening a policy did not drop in-flight
+  anon SSE subscribers (intra-tenant).** The `subscribe` handler captures
+  `anon_caps` + the select-policy ONCE at connect and never re-reads them. The
+  realtime-DISABLE path force-closes subscribers (`bus.evict_collection` after
+  `schema_cache.invalidate`), but the caps-revoke and policy-tighten paths called
+  only `schema_cache.invalidate` — which affects only the *next* connect. An
+  already-connected anon therefore kept receiving `Created`/`Updated`/`Deleted`
+  events for the full connection lifetime after losing read access, defeating the
+  "anon SSE requires realtime_enabled AND anon_caps[select]" invariant. Every
+  write path that reduces anon read access now evicts the broadcast channel so
+  subscribers reconnect and re-gate: MCP `set_anon_caps`/`set_policy`/`clear_policy`,
+  REST `put_policies`/`delete_policy`, admin `update_anon_caps`/`admin_update_policies`,
+  and `set_owner_field` (REST + MCP — owner-scoping a collection denies anon
+  subscribe, the parallel site the second adversarial workflow caught). `user_caps`
+  paths intentionally do not evict (user tokens cannot subscribe to SSE).
+  (adversarial workflow; the `set_owner_field` site found + closed in the
+  self-verification pass.)
+- **F4 (Medium) — `remove_admin` skipped the `clear_admin_pat` auth-cache hook.**
+  Deleting an admin cascade-revokes their PATs (`_admin_tokens` FK
+  `ON DELETE CASCADE`), but a freshly-used PAT served on a cache hit bypasses the
+  meta lookup, so a removed admin kept service-level data-plane access until the
+  10s safety TTL. `remove_admin` now calls `s.auth_cache.clear_admin_pat(target_id)`
+  after the commit, mirroring the self-reroll hook. (adversarial workflow;
+  confirmed.)
+- **D1 — `/query` + `/query/explain` are now service-only.** `anon_caps` never
+  governed the raw, un-rewritable `/query` surface, so a tenant with an anon token
+  plus a cap-restricted collection (`anon_caps=[]`, no owner_field/policy) leaked
+  that collection via raw SELECT (the documented mitigations were "revoke the anon
+  token" or "adopt a policy"). `/query` and `/query/explain` now deny every
+  non-Service caller: User keeps `QUERY_USER_DENIED`; Anon — previously allowed
+  until the tenant adopted a policy/owner_field — is denied unconditionally
+  (`QUERY_ANON_DENIED`, with `ANON_QUERY_DENIED_ON_POLICY` retained as an alias).
+  Anon/User read through the structured, `?`-bound `POST /collections/<c>/list`
+  or `/search`. (codex F1, rated a footgun; maintainer chose service-only.)
+
+### deploy hardening — from the owner's live gray-box pentest (v1.41.3 Docker)
+
+A live gray-box penetration test of the v1.41.3 Docker image (two independent
+offensive engines, 175 cross-tenant probes, **0 cross-tenant breach / 0 Critical /
+0 High** — isolation, the SQL authorizer, FilterAst `?`-binding, role gates, and
+SSRF defenses all held; BUG-1 confirmed closed) surfaced two deploy-side items,
+folded into this release as `docker-compose.yml` changes:
+
+- **F2-RL-001 (Medium) — login/register rate-limit bypassable via X-Forwarded-For
+  rotation on the direct app port.** `client_ip` trusts the XFF chain
+  (`TRUSTED_TRAILING_HOPS=1` → `parts[len-2]`) and `IpRateLimit` keeps only per-IP
+  buckets with no global counter, so on the all-interfaces-published `:47826` an
+  attacker rotating a forged `X-Forwarded-For` gets a fresh 5/min budget per
+  spoofed IP (through Caddy the XFF normalizes to one bucket — no bypass). Fixed
+  by binding the published port to host loopback (`127.0.0.1:47826:47826`); Caddy
+  reaches drust over the Docker network, so external direct reach is the only
+  thing removed. (In-app global-rate-limit defense-in-depth considered and
+  deferred — it sits behind the now-closed door and carries a lockout/DoS design
+  tradeoff.)
+- **INFO-1 (Low) — `x-drust-version` fingerprint.** The header is on by default
+  (the v1.41.3 `DRUST_HIDE_VERSION` gate only suppresses it on opt-in). The
+  distributed compose now ships `DRUST_HIDE_VERSION` enabled so the public image
+  does not leak the exact build; the in-app default stays ON for deploy/live-smoke
+  version checks.
+- **INFO-3 (Low) — cleartext `tokens.plaintext` / admin PATs in `meta.sqlite`** is
+  the already-documented, risk-accepted DEPLOY-3 (backups are a secret store); no
+  change. The whoami dual-token disclosure was refuted as by-design
+  self-disclosure (service-key-gated, same tenant).
+
+Audit report: [`docs/superpowers/specs/2026-06-23-drust-iso-security-audit.md`]
+(docs/superpowers/specs/2026-06-23-drust-iso-security-audit.md). Refuted /
+accepted-as-documented items (anon `/query` design, codegen anon schema
+structure, edge-function service privilege, exotic IPv6 SSRF forms, OAuth state
+secret) recorded there. `cargo audit` clean.
+
 ## v1.41.3 — 2026-06-22
 
 ### security — authorized pentest + code-review batch (Docker v1.41.1)

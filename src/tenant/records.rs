@@ -202,6 +202,26 @@ fn compute_owner_filter(ctx: &AuthCtx, schema: &CollectionSchema) -> Option<(Str
     }
 }
 
+/// Owner row-level filter for WRITES (UPDATE / DELETE). Unlike
+/// `compute_owner_filter` (reads — `read_scope="own"` only), this applies the
+/// owner clause for a User token on ANY owner-scoped collection REGARDLESS of
+/// `read_scope`: `read_scope` widens READ visibility, never write scope, so a
+/// user may only mutate or delete their OWN rows even when reads are unfiltered
+/// (audit3 F1 — upholds the documented "UPDATE/DELETE foreign rows → 404"
+/// invariant; without this a `read_scope="all"` owner-scoped collection let any
+/// user tamper with every other user's rows). Service and Anon bypass (Anon
+/// never reaches a write on an owner-scoped collection — it is refused earlier
+/// with `ANON_FORBIDDEN_OWNER_SCOPED`).
+fn compute_owner_write_filter(
+    ctx: &AuthCtx,
+    schema: &CollectionSchema,
+) -> Option<(String, String)> {
+    match (ctx, schema.owner_field.as_deref()) {
+        (AuthCtx::User { user_id, .. }, Some(field)) => Some((field.to_string(), user_id.clone())),
+        _ => None,
+    }
+}
+
 fn json_to_sql_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Null,
@@ -935,7 +955,9 @@ pub async fn update_handler(
         Ok(s) => s,
         Err(r) => return r,
     };
-    let owner_filter = compute_owner_filter(&ctx, &schema);
+    // WRITE owner clause: always owner-scoped for User regardless of read_scope
+    // (audit3 F1) — read_scope only widens reads, never write scope.
+    let owner_filter = compute_owner_write_filter(&ctx, &schema);
     // Explicit-policy USING (pre-flight target filter) + CHECK (post-image)
     // for UPDATE. Service bypasses both (`effective_policy_*` → None). The
     // USING fragment AND-composes ALONGSIDE the unchanged owner clause: a row
@@ -1202,7 +1224,10 @@ pub async fn delete_handler(
         Ok(s) => s,
         Err(r) => return r,
     };
-    let owner_filter = compute_owner_filter(&ctx, &schema);
+    // WRITE owner clause: always owner-scoped for User regardless of read_scope
+    // (audit3 F1) — covers both the dry_run target pre-flight and the real
+    // delete below, so neither leaks/touches another user's row.
+    let owner_filter = compute_owner_write_filter(&ctx, &schema);
     // Explicit-policy USING (pre-flight target filter) for DELETE. Service
     // bypasses (`policy_using_sql` → None). The USING fragment AND-composes
     // ALONGSIDE the unchanged owner clause: a row failing the explicit USING is

@@ -131,20 +131,39 @@ pub fn guard_anon_owner_scoped_rpc(
     if !anon_callable {
         return Ok(());
     }
-    // A declared :user_id param is the sanctioned owner-filter escape hatch.
-    if params.iter().any(|p| p.name == "user_id") {
-        return Ok(());
-    }
+    // A declared :user_id param is the sanctioned owner-filter escape hatch for
+    // the OWNER_FIELD case only — it does not exempt the policy case below
+    // (audit3 F2), so it is now checked per-table rather than as an early return.
     let referenced = referenced_user_tables(conn, sql, mode)?;
+    let has_user_id = params.iter().any(|p| p.name == "user_id");
     for table in &referenced {
-        let (owner_field, _scope) = crate::storage::schema::read_owner_field(conn, table)
-            .map_err(|e| PrepareError::Rejected(format!("owner_field probe failed: {e}")))?;
-        if owner_field.is_some() {
+        // (audit3 F2) Policy-protected collections: call_rpc runs the stored SQL
+        // verbatim, so NO RLS policy is applied. Unlike owner_field, a `:user_id`
+        // param is NOT a valid escape — an RLS policy need not key on the caller
+        // (e.g. `using: {published: true}`), so binding :user_id cannot stand in
+        // for it. Refuse unconditionally, mirroring `/query` fail-closing
+        // tenant-wide once any policy exists.
+        if crate::storage::schema::collection_has_policy(conn, table)
+            .map_err(|e| PrepareError::Rejected(format!("policy probe failed: {e}")))?
+        {
             return Err(PrepareError::Rejected(format!(
-                "{RPC_ANON_OWNER_SCOPED}: an anon-callable RPC over owner-scoped \
-                 collection '{table}' must bind :user_id, else it exposes every user's rows; \
-                 declare a :user_id param or set anon_callable=false"
+                "{RPC_ANON_OWNER_SCOPED}: an anon-callable RPC over policy-protected collection \
+                 '{table}' is refused — drust does not apply RLS policies to stored-RPC SQL, so it \
+                 would expose the rows the policy hides; set anon_callable=false on this RPC"
             )));
+        }
+        // Owner-scoped without :user_id: returns/mutates every user's rows. The
+        // declared :user_id param is the sanctioned owner-filter escape hatch.
+        if !has_user_id {
+            let (owner_field, _scope) = crate::storage::schema::read_owner_field(conn, table)
+                .map_err(|e| PrepareError::Rejected(format!("owner_field probe failed: {e}")))?;
+            if owner_field.is_some() {
+                return Err(PrepareError::Rejected(format!(
+                    "{RPC_ANON_OWNER_SCOPED}: an anon-callable RPC over owner-scoped \
+                     collection '{table}' must bind :user_id, else it exposes every user's rows; \
+                     declare a :user_id param or set anon_callable=false"
+                )));
+            }
         }
     }
     Ok(())
@@ -268,7 +287,10 @@ pub fn scan_unsafe_anon_rpcs(conn: &Connection) -> Result<Vec<String>, PrepareEr
         .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
     let mut unsafe_names = Vec::new();
     for rpc in rpcs {
-        if !rpc.anon_callable || rpc.params.iter().any(|p| p.name == "user_id") {
+        // Do NOT skip :user_id RPCs here: the guard itself exempts :user_id for
+        // the owner_field case but NOT for the policy case (audit3 F2), so a
+        // :user_id RPC over a policy-protected collection must still be caught.
+        if !rpc.anon_callable {
             continue;
         }
         if let Err(PrepareError::Rejected(msg)) =
@@ -279,6 +301,40 @@ pub fn scan_unsafe_anon_rpcs(conn: &Connection) -> Result<Vec<String>, PrepareEr
         }
     }
     Ok(unsafe_names)
+}
+
+/// Config-time defense (audit3 F2): refuse to ATTACH an RLS policy to
+/// `collection` while an existing `anon_callable` RPC references it. The
+/// create/update guard never re-runs when a policy is attached AFTER an RPC
+/// exists, and `call_rpc` applies no policy to stored-RPC SQL, so the RPC would
+/// silently begin leaking the rows the new policy is meant to hide. Symmetric
+/// with [`guard_owner_scope_change_against_anon_rpcs`], but — unlike owner_field
+/// — a `:user_id` param is NOT an escape (a policy need not key on the caller),
+/// so EVERY `anon_callable` RPC referencing the collection is refused. Runs
+/// BEFORE the `write_policy` (autocommit path, so a rejection must precede the
+/// write, not roll it back) and reuses [`referenced_user_tables`] so it sees
+/// exactly the tables the runtime would.
+pub fn guard_policy_change_against_anon_rpcs(
+    conn: &Connection,
+    collection: &str,
+) -> Result<(), PrepareError> {
+    let rpcs = crate::rpc::registry::list(conn)
+        .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
+    for rpc in rpcs {
+        if !rpc.anon_callable {
+            continue;
+        }
+        let tables = referenced_user_tables(conn, &rpc.sql, rpc.mode)?;
+        if tables.contains(collection) {
+            return Err(PrepareError::Rejected(format!(
+                "{RPC_ANON_OWNER_SCOPED}: cannot attach an RLS policy to collection '{collection}' \
+                 while anon-callable RPC '{}' references it — drust does not apply policies to \
+                 stored-RPC SQL; set anon_callable=false on that RPC first",
+                rpc.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Update-path counterpart of [`guard_anon_owner_scoped_rpc`].

@@ -14,6 +14,8 @@ pub async fn set_owner_field(
     collection: String,
     field: Option<String>,
     read_scope: String,
+    bus: &crate::tenant::events::EventBus,
+    tenant: &str,
 ) -> anyhow::Result<serde_json::Value> {
     // null / empty field => clear ownership (absorbs the old clear_owner_field tool).
     let field = field
@@ -78,6 +80,10 @@ pub async fn set_owner_field(
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
     pool.schema_cache.invalidate(&collection);
+    // audit3 F3 — owner-scoping RESTRICTS anon read (anon can no longer subscribe
+    // to an owner-scoped collection), so drop any in-flight anon SSE subscriber
+    // that connected before this change — mirrors set_anon_caps / set_policy.
+    bus.evict_collection(tenant, &collection);
     Ok(json!({"owner_field": field, "read_scope": read_scope}))
 }
 
