@@ -231,7 +231,7 @@ pub async fn post_list(
         .with_reader(move |c| -> rusqlite::Result<i64> {
             attach_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<i64> {
-                let mut stmt = c.prepare(&count_sql_owned)?;
+                let mut stmt = c.prepare_cached(&count_sql_owned)?;
                 let refs: Vec<&dyn rusqlite::ToSql> = binds_for_count
                     .iter()
                     .map(|v| v as &dyn rusqlite::ToSql)
@@ -404,7 +404,10 @@ fn run_bound_select(
     sql: &str,
     binds: &[Value],
 ) -> rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> {
-    let mut stmt = conn.prepare(sql)?;
+    // prepare_cached: the structured /list SQL is stable per (collection, shape)
+    // and re-issued on every page fetch, so the per-connection statement cache
+    // hits. No correctness change — same SQL, same `?` binds.
+    let mut stmt = conn.prepare_cached(sql)?;
     let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;

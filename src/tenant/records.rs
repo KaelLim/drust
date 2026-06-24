@@ -242,8 +242,8 @@ fn json_to_sql_value(v: &serde_json::Value) -> Value {
 
 /// Materialize one already-fetched row (column names `column_names`) into a
 /// JSON object, rendering any BLOB as `{"__blob_bytes": n}`. Shared by the
-/// `RETURNING *` create/update paths and the `SELECT *`-based
-/// `record_as_json`, so all three render byte-identical rows. Vector-column
+/// `RETURNING *` create/update paths and the `SELECT *`-based single-record
+/// `get_handler`, so all three render byte-identical rows. Vector-column
 /// stripping is the caller's responsibility (done via `retain` after).
 fn row_to_json(
     r: &rusqlite::Row<'_>,
@@ -268,14 +268,6 @@ fn row_to_json(
     Ok(serde_json::Value::Object(obj))
 }
 
-fn record_as_json(
-    stmt: &mut rusqlite::Statement,
-    column_names: &[String],
-    id: i64,
-) -> rusqlite::Result<serde_json::Value> {
-    stmt.query_row(rusqlite::params![id], |r| row_to_json(r, column_names))
-}
-
 /// Run a `?`-bound legacy list SELECT and materialise each row as a JSON
 /// object keyed by column name, default-hiding declared vector columns and
 /// honoring `row_cap`. Mirrors `records_list::run_bound_select` but applies
@@ -288,7 +280,10 @@ fn list_bound_rows(
     vector_names: &std::collections::HashSet<String>,
     row_cap: usize,
 ) -> rusqlite::Result<Vec<serde_json::Value>> {
-    let mut stmt = conn.prepare(sql)?;
+    // prepare_cached: the legacy list SELECT is stable per (collection, shape)
+    // and re-issued on every list call, so the per-connection statement cache
+    // hits. No correctness change — same SQL, same `?` binds.
+    let mut stmt = conn.prepare_cached(sql)?;
     let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;
@@ -653,21 +648,24 @@ pub async fn get_handler(
                     return Ok(None); // → 404, same as a missing row
                 }
             }
-            // Build the query; append owner filter as a literal when needed.
+            // Build the query; append the owner filter as a `?`-BIND (not an
+            // inlined literal) when needed, so the SQL string is stable per
+            // (owner-scoped? y/n) and `prepare_cached` actually hits. The
+            // user_id rides a `?2` bind — same enforcement, no interpolation.
             let mut sql = format!(
                 "SELECT * FROM \"{}\" WHERE id = ?1",
                 coll_clone.replace('"', "\"\"")
             );
+            let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(id)];
             if let Some((field, user_id)) = &owner_filter {
-                sql.push_str(&format!(
-                    " AND \"{}\" = '{}'",
-                    field.replace('"', "\"\""),
-                    user_id.replace('\'', "''")
-                ));
+                sql.push_str(&format!(" AND \"{}\" = ?2", field.replace('"', "\"\"")));
+                params.push(rusqlite::types::Value::Text(user_id.clone()));
             }
-            let mut stmt = c.prepare(&sql)?;
+            let mut stmt = c.prepare_cached(&sql)?;
             let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-            let rec = record_as_json(&mut stmt, &cols, id);
+            let refs: Vec<&dyn rusqlite::ToSql> =
+                params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+            let rec = stmt.query_row(rusqlite::params_from_iter(refs), |r| row_to_json(r, &cols));
             match rec {
                 Ok(mut v) => {
                     if let Some(obj) = v.as_object_mut() {
