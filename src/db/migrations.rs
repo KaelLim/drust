@@ -628,8 +628,14 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         // additive migration above already committed + closed its own conn).
         // Idempotent: tables already STRICT are skipped.
         if let Err(e) = strict_rebuild_tenant(tenants_root, &tid) {
-            tracing::error!(tenant = %tid, error = ?e, "STRICT rebuild pass failed");
-            report.tenants_failed.push((tid, e.to_string()));
+            // The additive migration already SUCCEEDED (tid is in tenants_ok and
+            // the tenant serves normally). A STRICT-rebuild failure is a
+            // best-effort maintenance miss retried next boot, NOT a
+            // serving-blocking migration failure — so it is logged but NOT added
+            // to tenants_failed, which gates the 503 path and must mean strictly
+            // "additive migration failed" (else a tenant would be double-counted
+            // in both tenants_ok and tenants_failed and wrongly flagged for 503).
+            tracing::error!(tenant = %tid, error = ?e, "STRICT rebuild pass failed (tenant still serves; retries next boot)");
         }
     }
     Ok(report)
