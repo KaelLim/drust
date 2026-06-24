@@ -98,6 +98,10 @@ CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
   description              TEXT,
   field_descriptions_json  TEXT NOT NULL DEFAULT '{}',
   index_descriptions_json  TEXT NOT NULL DEFAULT '{}',
+  -- v1.43: per-field structured CHECK constraints (min/max/enum/max_length),
+  -- keyed by field name. Mirrors the inline DDL CHECK so the write path can
+  -- pre-validate and codegen can reflect.
+  field_constraints_json   TEXT NOT NULL DEFAULT '{}',
   select_policy_json       TEXT,
   insert_policy_json       TEXT,
   update_policy_json       TEXT,
@@ -313,6 +317,10 @@ mod schema_tests {
         assert!(
             cols.contains(&"index_descriptions_json".to_string()),
             "fresh tenant missing index_descriptions_json; cols = {cols:?}"
+        );
+        assert!(
+            cols.contains(&"field_constraints_json".to_string()),
+            "fresh tenant missing field_constraints_json; cols = {cols:?}"
         );
     }
 

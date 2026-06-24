@@ -1178,6 +1178,7 @@ mod editor_payload_tests {
             default_value: None,
             foreign_key: None,
             description: Some("</script><img src=x onerror=alert(1)>".into()),
+            ..Default::default()
         }];
         let (fields_json, tid_json, coll_json) = editor_json_payloads(&fields, "t-1", "posts");
         // The hostile description really is serialized into the payload …
