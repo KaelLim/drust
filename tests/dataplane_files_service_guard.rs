@@ -153,6 +153,7 @@ fn mem_garage() -> Arc<GarageClient> {
 async fn files_stack(
     tenant: &str,
     cors_origins: Vec<String>,
+    anon_caps_json: &str,
 ) -> (Router, String, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
@@ -175,9 +176,15 @@ async fn files_stack(
     )
     .unwrap();
     drust::storage::tenant_db::open_write(&data, tenant).unwrap();
-    // Bearer-auth CTE reads the v1.32.5 allow_*_publish columns; migrate so it
-    // doesn't 404 every authed request.
+    // Bearer-auth CTE reads the v1.32.5 allow_*_publish + v1.42 file_*_caps_json
+    // columns; migrate so it doesn't 404 every authed request.
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    // v1.42 — set this tenant's anon file caps (default-closed callers pass "[]").
+    conn.execute(
+        "UPDATE tenants SET file_anon_caps_json = ?2 WHERE id = ?1",
+        rusqlite::params![tenant, anon_caps_json],
+    )
+    .unwrap();
 
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     // `_system_files` is not created by migrations; the `list` handler SELECTs
@@ -255,13 +262,30 @@ fn data_plane_routes(tenant: &str, key: &str, sess: &str) -> Vec<(&'static str, 
     ]
 }
 
+/// v1.42 — the data-plane file gate (`file_caps_layer`) denies non-service
+/// callers per-verb: CAPPED routes (upload/list/read/delete) return the typed
+/// FILE_<VERB>_DENIED; SERVICE-ONLY routes (sign, set-visibility, tus
+/// list/options) return WRITE_DENIED. All FILE_*_DENIED responses alias
+/// WRITE_DENIED for old clients. This recognises any of them as "denied".
+fn is_file_denial(code: &str) -> bool {
+    matches!(
+        code,
+        "WRITE_DENIED"
+            | "FILE_READ_DENIED"
+            | "FILE_LIST_DENIED"
+            | "FILE_UPLOAD_DENIED"
+            | "FILE_DELETE_DENIED"
+    )
+}
+
 /// The core security property, end-to-end through the production router:
-/// anon and no-token are DENIED on every data-plane routed method; a service
-/// token is NEVER blocked by the guard (handler status varies, but never
-/// 403/WRITE_DENIED). Fails until the guard is mounted in `src/tenant/mod.rs`.
+/// anon and no-token are DENIED on every data-plane routed method (with EMPTY
+/// caps — the default for a fresh tenant, so this also locks the default-closed
+/// posture); a service token is NEVER blocked (handler status varies, but never
+/// a 403 denial code).
 #[tokio::test]
 async fn dataplane_all_methods_deny_non_service_pass_service() {
-    let (app, svc, anon, _dir) = files_stack("blog", Vec::new()).await;
+    let (app, svc, anon, _dir) = files_stack("blog", Vec::new(), "[]").await;
     let key = "ffffffff-0000-0000-0000-0000000000aa.txt";
     let sess = "00000000-0000-0000-0000-000000000000";
     for (method, uri) in data_plane_routes("blog", key, sess) {
@@ -273,10 +297,10 @@ async fn dataplane_all_methods_deny_non_service_pass_service() {
             .unwrap();
         assert_eq!(r.status(), StatusCode::FORBIDDEN, "anon {method} {uri}");
         if method != "HEAD" {
-            assert_eq!(
-                body_error_code(r).await,
-                "WRITE_DENIED",
-                "anon body {method} {uri}"
+            let code = body_error_code(r).await;
+            assert!(
+                is_file_denial(&code),
+                "anon body {method} {uri}: expected a denial code, got {code:?}"
             );
         }
 
@@ -301,10 +325,10 @@ async fn dataplane_all_methods_deny_non_service_pass_service() {
             "service must pass guard {method} {uri}"
         );
         if method != "HEAD" {
-            assert_ne!(
-                body_error_code(r).await,
-                "WRITE_DENIED",
-                "service must not get WRITE_DENIED {method} {uri}"
+            let code = body_error_code(r).await;
+            assert!(
+                !is_file_denial(&code),
+                "service must not get a denial code {method} {uri}, got {code:?}"
             );
         }
     }
@@ -315,12 +339,48 @@ async fn dataplane_all_methods_deny_non_service_pass_service() {
 /// route that can succeed with no seeded object.
 #[tokio::test]
 async fn dataplane_service_get_list_200() {
-    let (app, svc, _anon, _dir) = files_stack("svc200", Vec::new()).await;
+    let (app, svc, _anon, _dir) = files_stack("svc200", Vec::new(), "[]").await;
     let r = app
         .oneshot(req("GET", "/t/svc200/files", Some(&svc)))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
+}
+
+/// v1.42 positive path: anon WITH `file_anon_caps=["list"]` reaches the list
+/// handler, but un-granted verbs stay denied per-verb, and make-public stays
+/// service-only even though anon holds a (different) cap. Proves the gate opens
+/// exactly the granted verb and nothing more.
+#[tokio::test]
+async fn anon_with_list_cap_lists_but_other_verbs_denied() {
+    let (app, _svc, anon, _dir) = files_stack("capopen", Vec::new(), r#"["list"]"#).await;
+    // list granted -> reaches the handler (empty _system_files => 200).
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/t/capopen/files", Some(&anon)))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::OK,
+        "anon with list cap must reach the list handler"
+    );
+    // upload NOT granted -> typed per-verb denial.
+    let r = app
+        .clone()
+        .oneshot(req("POST", "/t/capopen/files", Some(&anon)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body_error_code(r).await, "FILE_UPLOAD_DENIED");
+    // make-public (PATCH set-visibility) stays service-only regardless of caps.
+    let key = "ffffffff-0000-0000-0000-0000000000aa.txt";
+    let r = app
+        .oneshot(req("PATCH", &format!("/t/capopen/files/{key}"), Some(&anon)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body_error_code(r).await, "WRITE_DENIED");
 }
 
 // ─── Section 3: CORS OPTIONS preflight short-circuit (regression lock) ────────
@@ -332,7 +392,7 @@ async fn dataplane_service_get_list_200() {
 #[tokio::test]
 async fn cors_options_preflight_no_token_short_circuits() {
     let (app, _svc, _anon, _dir) =
-        files_stack("corsblog", vec!["https://app.example.com".to_string()]).await;
+        files_stack("corsblog", vec!["https://app.example.com".to_string()], "[]").await;
     let resp = app
         .oneshot(
             Request::builder()
