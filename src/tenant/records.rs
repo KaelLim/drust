@@ -280,10 +280,14 @@ fn list_bound_rows(
     vector_names: &std::collections::HashSet<String>,
     row_cap: usize,
 ) -> rusqlite::Result<Vec<serde_json::Value>> {
-    // prepare_cached: the legacy list SELECT is stable per (collection, shape)
-    // and re-issued on every list call, so the per-connection statement cache
-    // hits. No correctness change — same SQL, same `?` binds.
-    let mut stmt = conn.prepare_cached(sql)?;
+    // Plain `prepare`, NOT `prepare_cached`: the legacy list projects
+    // `SELECT *`, whose column set changes under `add_field`/`drop_field`.
+    // A cached statement's pre-step `column_names()` would go stale on the
+    // long-lived reader connection (DDL flushes the drust schema cache + SSE
+    // bus, never rusqlite's per-connection statement cache), silently dropping
+    // an added column or erroring on a removed one. Recompiling per call keeps
+    // the read in lockstep with the live schema.
+    let mut stmt = conn.prepare(sql)?;
     let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;
@@ -649,9 +653,18 @@ pub async fn get_handler(
                 }
             }
             // Build the query; append the owner filter as a `?`-BIND (not an
-            // inlined literal) when needed, so the SQL string is stable per
-            // (owner-scoped? y/n) and `prepare_cached` actually hits. The
-            // user_id rides a `?2` bind — same enforcement, no interpolation.
+            // inlined literal) when needed — the user_id rides a `?2` bind, so
+            // there is no interpolation of caller data and one statement shape
+            // serves every user.
+            //
+            // NOTE: plain `prepare`, NOT `prepare_cached`. The projection is
+            // `SELECT *`, whose column set changes under `add_field`/
+            // `drop_field`. A cached statement's pre-step `column_names()`
+            // would go stale on the long-lived reader connection — nothing
+            // flushes rusqlite's per-connection statement cache on DDL (only
+            // the drust schema cache + SSE bus are invalidated) — silently
+            // omitting an added column or 500ing on a dropped one. Recompiling
+            // per call keeps the read in lockstep with the live schema.
             let mut sql = format!(
                 "SELECT * FROM \"{}\" WHERE id = ?1",
                 coll_clone.replace('"', "\"\"")
@@ -661,7 +674,7 @@ pub async fn get_handler(
                 sql.push_str(&format!(" AND \"{}\" = ?2", field.replace('"', "\"\"")));
                 params.push(rusqlite::types::Value::Text(user_id.clone()));
             }
-            let mut stmt = c.prepare_cached(&sql)?;
+            let mut stmt = c.prepare(&sql)?;
             let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
