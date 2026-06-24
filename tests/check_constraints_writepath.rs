@@ -100,6 +100,43 @@ async fn update_rejects_with_typed_error() {
         .unwrap();
 }
 
+/// A numeric (integer/real/boolean) enum field rejects an out-of-enum JSON
+/// NUMBER with the typed `CHECK_CONSTRAINT_FAILED` — not the raw native CHECK
+/// string. Before the type-aware pre-check, the enum was only checked inside
+/// `if let Some(s) = v.as_str()`, so a JSON number slipped past the app
+/// pre-check and surfaced the SQLite "CHECK constraint failed" message on MCP.
+#[tokio::test]
+async fn numeric_enum_number_rejected_with_typed_error() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "ratings",
+        &[FieldSpec {
+            name: "rating".into(),
+            sql_type: "integer".into(),
+            nullable: true,
+            enum_values: Some(vec!["1".into(), "2".into()]),
+            ..Default::default()
+        }],
+    )
+    .await
+    .unwrap();
+
+    // JSON number 3 is out of the numeric enum {1,2}.
+    let err = insert_record(&s, "ratings", serde_json::json!({"rating": 3}))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("CHECK_CONSTRAINT_FAILED"),
+        "numeric enum violation must be typed, got: {err}"
+    );
+    // A valid numeric enum value passes.
+    insert_record(&s, "ratings", serde_json::json!({"rating": 2}))
+        .await
+        .unwrap();
+}
+
 #[test]
 fn check_constraint_failed_is_in_error_fix_catalog() {
     let fix = drust::safety::error_fixes::lookup("CHECK_CONSTRAINT_FAILED");
