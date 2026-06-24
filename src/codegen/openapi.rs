@@ -181,7 +181,27 @@ fn field_schema(f: &FieldIr) -> Value {
             s.insert("maxLength".into(), json!(len));
         }
         if let Some(vals) = &c.enum_values {
-            s.insert("enum".into(), json!(vals));
+            // Numeric column → numeric enum members (matches the numeric CHECK
+            // and the JSON-number payload); text column → string members.
+            let nums: Option<Vec<Value>> = if f.ty.is_numeric() {
+                vals.iter()
+                    .map(|v| {
+                        v.parse::<f64>().ok().map(|n| {
+                            if n.fract() == 0.0 && n.is_finite() {
+                                json!(n as i64)
+                            } else {
+                                json!(n)
+                            }
+                        })
+                    })
+                    .collect()
+            } else {
+                None
+            };
+            match nums {
+                Some(ns) => s.insert("enum".into(), Value::Array(ns)),
+                None => s.insert("enum".into(), json!(vals)),
+            };
         }
     }
     if f.nullable {

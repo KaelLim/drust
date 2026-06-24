@@ -96,6 +96,24 @@ pub fn synthetic_ir() -> CodegenIr {
                         }),
                     },
                     FieldIr {
+                        // Numeric enum: renders as a NUMERIC literal union /
+                        // numeric OpenAPI enum (not a string union), matching
+                        // the numeric CHECK + JSON-number payload.
+                        name: "tier".into(),
+                        ty: FieldType::Integer,
+                        nullable: true,
+                        default: None,
+                        fk: None,
+                        description: None,
+                        server_managed: false,
+                        constraints: Some(crate::mcp::tools::schema::FieldConstraints {
+                            min: None,
+                            max: None,
+                            enum_values: Some(vec!["1".into(), "2".into(), "3".into()]),
+                            max_length: None,
+                        }),
+                    },
+                    FieldIr {
                         name: "status".into(),
                         ty: FieldType::Text,
                         nullable: true,

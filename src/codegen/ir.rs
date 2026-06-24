@@ -59,6 +59,19 @@ pub enum FieldType {
     Vector { dim: u32 },
 }
 
+impl FieldType {
+    /// True for the storage classes whose enum CHECK `compile_check` renders as
+    /// a NUMERIC `IN (...)` (integer/real/boolean) — so codegen must render the
+    /// enum as numeric literals, not a string union, to match the real payload.
+    /// Mirrors `compile_check`'s `numeric = matches!(sql_type, integer|real|boolean)`.
+    pub fn is_numeric(&self) -> bool {
+        matches!(
+            self,
+            FieldType::Integer | FieldType::Real | FieldType::Boolean
+        )
+    }
+}
+
 #[derive(Serialize, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DefaultValue {
