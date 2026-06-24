@@ -143,6 +143,14 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         "index_descriptions_json",
         "TEXT NOT NULL DEFAULT '{}'",
     )?;
+    // v1.43 — structured CHECK constraints per field (min/max/enum/max_length),
+    // keyed by field name. NULL/absent = no constraints. Additive + idempotent.
+    add_column_if_missing(
+        &tx,
+        "_system_collection_meta",
+        "field_constraints_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
     // RLS v1 — per-op row-level security policies (nullable; NULL = no
     // explicit policy, governed by tier rules + owner_field).
     add_column_if_missing(&tx, "_system_collection_meta", "select_policy_json", "TEXT")?;

@@ -684,6 +684,7 @@ mod tests {
                     default_value: None,
                     foreign_key: None,
                     description: None,
+                    ..Default::default()
                 })
                 .collect(),
             indices: vec![],
@@ -914,6 +915,7 @@ mod tests {
                 default_value: None,
                 foreign_key: None,
                 description: None,
+                ..Default::default()
             })
             .collect();
         s

@@ -226,6 +226,7 @@ mod tests {
                     default_value: None,
                     foreign_key: None,
                     description: None,
+                    ..Default::default()
                 },
                 Field {
                     name: "score".into(),
@@ -235,6 +236,7 @@ mod tests {
                     default_value: None,
                     foreign_key: None,
                     description: None,
+                    ..Default::default()
                 },
                 Field {
                     name: "owner_id".into(),
@@ -244,6 +246,7 @@ mod tests {
                     default_value: None,
                     foreign_key: None,
                     description: None,
+                    ..Default::default()
                 },
             ],
             indices: vec![],

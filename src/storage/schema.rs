@@ -344,7 +344,7 @@ pub struct Collection {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Field {
     pub name: String,
     pub sql_type: String,
@@ -359,6 +359,11 @@ pub struct Field {
     /// `_system_collection_meta.field_descriptions_json[name]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Structured CHECK constraints (v1.43). Sourced from
+    /// `_system_collection_meta.field_constraints_json[name]`. `None` when
+    /// the field has no declared constraints (the common case).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<crate::mcp::tools::schema::FieldConstraints>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -673,6 +678,63 @@ pub fn write_index_description(
     Ok(())
 }
 
+/// v1.43 — read the per-field structured-constraints map from
+/// `_system_collection_meta.field_constraints_json`. Forgiving parse:
+/// any field whose value fails to decode as `FieldConstraints` is
+/// dropped rather than wiping the whole map (mirrors
+/// `read_field_descriptions`).
+pub fn read_field_constraints(
+    conn: &Connection,
+    coll: &str,
+) -> rusqlite::Result<std::collections::HashMap<String, crate::mcp::tools::schema::FieldConstraints>>
+{
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT field_constraints_json FROM _system_collection_meta
+                  WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| r.get(0),
+        )
+        .ok();
+    let parsed: std::collections::HashMap<String, serde_json::Value> = raw
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    Ok(parsed
+        .into_iter()
+        .filter_map(|(k, v)| serde_json::from_value(v).ok().map(|c| (k, c)))
+        .collect())
+}
+
+/// v1.43 — set / clear a per-field constraints record. Read-modify-write
+/// on the JSON blob (caller holds writer mutex). An empty record removes
+/// the key. Upserts the meta row if absent, defaulting
+/// `anon_caps_json = '["select"]'` (mirrors the description helpers).
+pub fn write_field_constraints(
+    conn: &Connection,
+    coll: &str,
+    field: &str,
+    constraints: &crate::mcp::tools::schema::FieldConstraints,
+) -> rusqlite::Result<()> {
+    let mut map = read_field_constraints(conn, coll)?;
+    if constraints.is_empty() {
+        map.remove(field);
+    } else {
+        map.insert(field.to_string(), constraints.clone());
+    }
+    let json = serde_json::to_string(&map).expect("FieldConstraints map serialises");
+    conn.execute(
+        "INSERT INTO _system_collection_meta \
+              (collection_name, anon_caps_json, field_constraints_json, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              field_constraints_json = excluded.field_constraints_json, \
+              updated_at             = excluded.updated_at",
+        rusqlite::params![coll, json],
+    )?;
+    Ok(())
+}
+
 pub fn describe_collection(
     conn: &Connection,
     name: &str,
@@ -701,6 +763,7 @@ pub fn describe_collection(
         .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
 
     let field_descs = read_field_descriptions(conn, name)?;
+    let field_constraints = read_field_constraints(conn, name)?;
     let mut fields = conn
         .prepare(&format!(
             "PRAGMA table_info(\"{}\")",
@@ -719,11 +782,13 @@ pub fn describe_collection(
                 default_value: r.get::<_, Option<String>>(4)?,
                 foreign_key: fk,
                 description: None,
+                constraints: None,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     for f in &mut fields {
         f.description = field_descs.get(&f.name).cloned();
+        f.constraints = field_constraints.get(&f.name).cloned();
     }
 
     let index_descs = read_index_descriptions(conn, name)?;
