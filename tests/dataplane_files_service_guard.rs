@@ -376,7 +376,11 @@ async fn anon_with_list_cap_lists_but_other_verbs_denied() {
     // make-public (PATCH set-visibility) stays service-only regardless of caps.
     let key = "ffffffff-0000-0000-0000-0000000000aa.txt";
     let r = app
-        .oneshot(req("PATCH", &format!("/t/capopen/files/{key}"), Some(&anon)))
+        .oneshot(req(
+            "PATCH",
+            &format!("/t/capopen/files/{key}"),
+            Some(&anon),
+        ))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
@@ -391,8 +395,12 @@ async fn anon_with_list_cap_lists_but_other_verbs_denied() {
 // guard), not a red-first test.
 #[tokio::test]
 async fn cors_options_preflight_no_token_short_circuits() {
-    let (app, _svc, _anon, _dir) =
-        files_stack("corsblog", vec!["https://app.example.com".to_string()], "[]").await;
+    let (app, _svc, _anon, _dir) = files_stack(
+        "corsblog",
+        vec!["https://app.example.com".to_string()],
+        "[]",
+    )
+    .await;
     let resp = app
         .oneshot(
             Request::builder()
