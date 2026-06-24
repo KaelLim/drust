@@ -239,6 +239,26 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     tx.commit()
 }
 
+/// Rewrite a clean single-statement `CREATE TABLE "x" (<body>);` into
+/// `CREATE TABLE "<tmp>" (<body>) STRICT;`, preserving the body VERBATIM
+/// (FK `ON DELETE`, `DEFAULT (...)`, COLLATE, CHECK — everything). Reusing the
+/// original `sqlite_master.sql` is faithful where `codegen/ir.rs` is lossy.
+/// Returns `None` if the SQL doesn't match the expected drust shape (a single
+/// CREATE TABLE) — caller skips + warns rather than risk corrupting a table.
+fn make_strict_ddl(original_sql: &str, tmp: &str) -> Option<String> {
+    let open = original_sql.find('(')?;
+    let close = original_sql.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let body = &original_sql[open + 1..close];
+    Some(format!(
+        "CREATE TABLE \"{}\" ({}) STRICT;",
+        tmp.replace('"', "\"\""),
+        body
+    ))
+}
+
 #[derive(Debug, Default)]
 pub struct MigrationReport {
     pub meta_done: bool,
@@ -1517,5 +1537,21 @@ mod tests {
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_system_upload_sessions'",
             [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn make_strict_ddl_preserves_body_and_appends_strict() {
+        let orig = r#"CREATE TABLE "posts" ("id" INTEGER PRIMARY KEY AUTOINCREMENT,"title" TEXT NOT NULL,"author" INTEGER REFERENCES "users"("id") ON DELETE RESTRICT,created_at TEXT NOT NULL DEFAULT (datetime('now')));"#;
+        let got = super::make_strict_ddl(orig, "posts__strict_tmp").unwrap();
+        assert!(got.starts_with(r#"CREATE TABLE "posts__strict_tmp" ("#));
+        assert!(got.trim_end().ends_with(") STRICT;"));
+        // Body (FK ON DELETE RESTRICT, the datetime default with nested parens) preserved verbatim.
+        assert!(got.contains(r#"REFERENCES "users"("id") ON DELETE RESTRICT"#));
+        assert!(got.contains("DEFAULT (datetime('now'))"));
+    }
+
+    #[test]
+    fn make_strict_ddl_rejects_unexpected_shape() {
+        assert!(super::make_strict_ddl("not a create table", "x").is_none());
     }
 }
