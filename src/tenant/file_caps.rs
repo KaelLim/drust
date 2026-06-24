@@ -93,9 +93,125 @@ pub fn file_cap_denied_response(
     ))
 }
 
+/// What gate a data-plane file route requires. `ServiceOnly` covers the
+/// operations that are NOT cap-grantable (presigned URLs, make-public/
+/// set-visibility, tus session listing + capability discovery) — anon/user are
+/// always refused there regardless of caps.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FileRouteGate {
+    Capped(FileVerb),
+    ServiceOnly,
+}
+
+/// Classify a files_router request to its required gate from `(method, path)`.
+/// Driven off route shape, not a fragile single-string match — covered by a
+/// unit matrix below. `{tenant}`/`{key}`/`{token}` are uuid/uuid.ext shaped and
+/// never equal the literal markers `files`/`uploads`.
+pub fn classify_file_route(method: &axum::http::Method, path: &str) -> FileRouteGate {
+    use FileVerb::*;
+    use axum::http::Method;
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+    // --- Mode A: .../files[/{key}[/bytes|/sign]] ---
+    if let Some(i) = segs.iter().position(|&s| s == "files") {
+        let tail = &segs[i + 1..];
+        return match (tail.len(), tail.last().copied(), method) {
+            (0, _, &Method::POST) => FileRouteGate::Capped(Upload), // upload
+            (0, _, &Method::GET) => FileRouteGate::Capped(List),    // list
+            (1, _, &Method::GET) => FileRouteGate::Capped(Read),    // get_one
+            (1, _, &Method::DELETE) => FileRouteGate::Capped(Delete), // delete_one
+            (1, _, &Method::PATCH) => FileRouteGate::ServiceOnly,   // set-visibility
+            (2, Some("bytes"), &Method::GET) => FileRouteGate::Capped(Read), // stream_bytes
+            (2, Some("sign"), &Method::POST) => FileRouteGate::ServiceOnly,  // sign_url
+            _ => FileRouteGate::ServiceOnly,
+        };
+    }
+
+    // --- Mode B (tus): .../uploads[/{token}] ---
+    if let Some(i) = segs.iter().position(|&s| s == "uploads") {
+        let tail = &segs[i + 1..];
+        return match (tail.len(), method) {
+            (0, &Method::POST) => FileRouteGate::Capped(Upload), // create
+            (0, _) => FileRouteGate::ServiceOnly,                // list_sessions (GET) / options (OPTIONS)
+            (1, &Method::PATCH) | (1, &Method::HEAD) => FileRouteGate::Capped(Upload), // append / probe
+            (1, &Method::DELETE) => FileRouteGate::Capped(Delete), // terminate
+            _ => FileRouteGate::ServiceOnly,
+        };
+    }
+
+    FileRouteGate::ServiceOnly // unknown shape — fail closed
+}
+
+/// Data-plane files_router gate (v1.42). Replaces `require_service_layer`:
+/// service passes through unrestricted; anon/user are gated per-verb against the
+/// tenant's `TenantFileCaps` (attached by `bearer_auth_layer`). Mounted INNER to
+/// `bearer_auth_layer`, so `TenantRef` is present — absence is fail-closed 403.
+pub async fn file_caps_layer(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use crate::tenant::router::{TenantRef, TokenRole};
+    let role = match req.extensions().get::<TenantRef>() {
+        Some(t) => t.role,
+        None => {
+            return crate::error::json_error(
+                axum::http::StatusCode::FORBIDDEN,
+                "WRITE_DENIED",
+                "service key or file capability required",
+            );
+        }
+    };
+    // Service is unrestricted by design.
+    if role == TokenRole::Service {
+        return next.run(req).await;
+    }
+    match classify_file_route(req.method(), req.uri().path()) {
+        FileRouteGate::ServiceOnly => crate::error::json_error_with_aliases(
+            axum::http::StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
+            "this file operation requires a service key",
+        ),
+        FileRouteGate::Capped(verb) => {
+            let caps = req
+                .extensions()
+                .get::<TenantFileCaps>()
+                .cloned()
+                .unwrap_or_default();
+            if let Some(resp) = file_cap_denied_response(check_file_cap(role, &caps, verb), verb) {
+                return resp;
+            }
+            next.run(req).await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_classification_matrix() {
+        use FileRouteGate::*;
+        use FileVerb::*;
+        use axum::http::Method;
+        let g = |m: Method, p: &str| classify_file_route(&m, p);
+        // Mode A
+        assert_eq!(g(Method::POST, "/t/x/files"), Capped(Upload));
+        assert_eq!(g(Method::GET, "/t/x/files"), Capped(List));
+        assert_eq!(g(Method::GET, "/t/x/files/abc.png"), Capped(Read));
+        assert_eq!(g(Method::DELETE, "/t/x/files/abc.png"), Capped(Delete));
+        assert_eq!(g(Method::PATCH, "/t/x/files/abc.png"), ServiceOnly); // set-visibility
+        assert_eq!(g(Method::GET, "/t/x/files/abc.png/bytes"), Capped(Read));
+        assert_eq!(g(Method::POST, "/t/x/files/abc.png/sign"), ServiceOnly);
+        // Mode B tus
+        assert_eq!(g(Method::POST, "/t/x/uploads"), Capped(Upload));
+        assert_eq!(g(Method::GET, "/t/x/uploads"), ServiceOnly); // list_sessions
+        assert_eq!(g(Method::OPTIONS, "/t/x/uploads"), ServiceOnly);
+        assert_eq!(g(Method::PATCH, "/t/x/uploads/tok"), Capped(Upload));
+        assert_eq!(g(Method::HEAD, "/t/x/uploads/tok"), Capped(Upload));
+        assert_eq!(g(Method::DELETE, "/t/x/uploads/tok"), Capped(Delete));
+    }
 
     #[test]
     fn gate_matrix() {
