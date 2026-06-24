@@ -50,6 +50,7 @@ async fn make_posts(s: &drust::mcp::server::DrustMcp) {
                 foreign_key: None,
                 dim: None,
                 description: None,
+                ..Default::default()
             },
             FieldSpec {
                 name: "score".into(),
@@ -60,6 +61,7 @@ async fn make_posts(s: &drust::mcp::server::DrustMcp) {
                 foreign_key: None,
                 dim: None,
                 description: None,
+                ..Default::default()
             },
         ],
     )

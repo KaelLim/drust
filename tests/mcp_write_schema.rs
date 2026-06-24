@@ -32,6 +32,7 @@ async fn create_insert_update_delete_roundtrip() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -64,6 +65,7 @@ async fn add_field_adds_column() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -80,6 +82,7 @@ async fn add_field_adds_column() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         },
     )
     .await
@@ -107,6 +110,7 @@ async fn sql_default_datetime_now_is_applied() {
                 foreign_key: None,
                 dim: None,
                 description: None,
+                ..Default::default()
             },
             FieldSpec {
                 name: "scheduled_at".into(),
@@ -117,6 +121,7 @@ async fn sql_default_datetime_now_is_applied() {
                 foreign_key: None,
                 dim: None,
                 description: None,
+                ..Default::default()
             },
         ],
     )
@@ -157,6 +162,7 @@ async fn sql_default_allowlist_covers_all_entries() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -177,6 +183,7 @@ async fn sql_default_allowlist_covers_all_entries() {
                 foreign_key: None,
                 dim: None,
                 description: None,
+                ..Default::default()
             },
         )
         .await
@@ -201,6 +208,7 @@ async fn foreign_key_field_is_reported_in_describe() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -218,6 +226,7 @@ async fn foreign_key_field_is_reported_in_describe() {
                 foreign_key: None,
                 dim: None,
                 description: None,
+                ..Default::default()
             },
             FieldSpec {
                 name: "author_id".into(),
@@ -228,6 +237,7 @@ async fn foreign_key_field_is_reported_in_describe() {
                 foreign_key: Some("authors".into()),
                 dim: None,
                 description: None,
+                ..Default::default()
             },
         ],
     )
@@ -259,6 +269,7 @@ async fn foreign_key_rejected_when_target_missing() {
             foreign_key: Some("nonexistent".into()),
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -285,6 +296,7 @@ async fn foreign_key_constraint_is_enforced_on_insert() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -301,6 +313,7 @@ async fn foreign_key_constraint_is_enforced_on_insert() {
             foreign_key: Some("authors".into()),
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -332,6 +345,7 @@ async fn foreign_key_restrict_blocks_parent_delete_while_children_exist() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -348,6 +362,7 @@ async fn foreign_key_restrict_blocks_parent_delete_while_children_exist() {
             foreign_key: Some("authors".into()),
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -385,6 +400,7 @@ async fn sql_default_rejects_non_allowlisted() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -412,6 +428,7 @@ async fn drop_field_removes_column() {
                 foreign_key: None,
                 dim: None,
                 description: None,
+                ..Default::default()
             },
             FieldSpec {
                 name: "draft".into(),
@@ -422,6 +439,7 @@ async fn drop_field_removes_column() {
                 foreign_key: None,
                 dim: None,
                 description: None,
+                ..Default::default()
             },
         ],
     )
@@ -465,6 +483,7 @@ async fn drop_field_rejects_system_columns() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -495,6 +514,7 @@ async fn drop_field_rejects_unknown() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -527,6 +547,7 @@ async fn drop_collection_removes_table_and_trigger() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -576,6 +597,7 @@ async fn drop_collection_rejects_when_fk_referrers_exist() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -592,6 +614,7 @@ async fn drop_collection_rejects_when_fk_referrers_exist() {
             foreign_key: Some("authors".into()),
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -653,6 +676,7 @@ async fn set_anon_caps_round_trip_and_describe_reflects_it() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -791,6 +815,7 @@ async fn delete_record_with_unknown_id_returns_record_not_found() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await

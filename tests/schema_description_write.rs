@@ -271,6 +271,7 @@ async fn create_collection_with_description_persists() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
         Some("Article collection for tests"),
     )
@@ -319,6 +320,7 @@ async fn create_collection_with_per_field_description_persists() {
                 foreign_key: None,
                 dim: None,
                 description: Some("Post title".into()),
+                ..Default::default()
             },
             drust::mcp::tools::schema::FieldSpec {
                 name: "body".into(),
@@ -329,6 +331,7 @@ async fn create_collection_with_per_field_description_persists() {
                 foreign_key: None,
                 dim: None,
                 description: Some("Markdown body".into()),
+                ..Default::default()
             },
         ],
         Some("Blog posts"),
@@ -587,6 +590,7 @@ async fn add_field_persists_field_description() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
         None,
     )
@@ -606,6 +610,7 @@ async fn add_field_persists_field_description() {
             foreign_key: None,
             dim: None,
             description: Some("Inventory quantity".into()),
+            ..Default::default()
         },
     )
     .await

@@ -193,6 +193,7 @@ async fn set_field_description_field_not_found_no_orphan_key() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
@@ -284,6 +285,7 @@ async fn set_index_description_index_not_found_no_orphan_key() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await

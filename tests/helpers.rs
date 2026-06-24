@@ -120,6 +120,7 @@ pub async fn spin_up_tenant_with_fn_runner(
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await

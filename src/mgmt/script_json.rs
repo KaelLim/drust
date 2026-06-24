@@ -75,6 +75,7 @@ mod tests {
             foreign_key: None,
             dim: None,
             description: Some("</script><img src=x onerror=alert(1)>".into()),
+            ..Default::default()
         }];
         let out = json_for_script(&fields);
         assert!(!out.contains("</script>"), "live closer leaked: {out}");

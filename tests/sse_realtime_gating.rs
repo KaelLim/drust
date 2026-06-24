@@ -31,6 +31,7 @@ async fn create_collection_defaults_realtime_enabled_to_zero() {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await
