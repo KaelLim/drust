@@ -100,6 +100,71 @@ pub fn anon_caps_to_json(caps: &BTreeSet<DmlVerb>) -> String {
     serde_json::to_string(&v).expect("BTreeSet<DmlVerb> serialises")
 }
 
+/// File-operation verbs used by the per-tenant file-storage capability
+/// allowlist (`tenants.file_anon_caps_json` / `file_user_caps_json`).
+/// Ordering is fixed (Read, List, Upload, Delete) so serialised output is
+/// deterministic. Distinct from `DmlVerb` — files are not collections, and
+/// the make-public (set-visibility) operation is deliberately NOT a verb here
+/// (it stays service-only).
+#[derive(
+    Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum FileVerb {
+    Read,
+    List,
+    Upload,
+    Delete,
+}
+
+impl FileVerb {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileVerb::Read => "read",
+            FileVerb::List => "list",
+            FileVerb::Upload => "upload",
+            FileVerb::Delete => "delete",
+        }
+    }
+}
+
+/// Parse a JSON array of lowercase file-verb strings into a `BTreeSet`.
+/// All-or-nothing: any unknown verb collapses the result to empty (fail
+/// closed — an unreadable cap set grants nothing). The column default
+/// (`'[]'`) therefore means empty = service-only, preserving pre-feature
+/// behaviour for every existing tenant.
+pub fn parse_file_caps_json(raw: &str) -> BTreeSet<FileVerb> {
+    serde_json::from_str::<Vec<FileVerb>>(raw)
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+/// Serialise a file-capability set as a sorted JSON array (deterministic).
+pub fn file_caps_to_json(caps: &BTreeSet<FileVerb>) -> String {
+    let v: Vec<&str> = caps.iter().map(|c| c.as_str()).collect();
+    serde_json::to_string(&v).expect("BTreeSet<FileVerb> serialises")
+}
+
+#[cfg(test)]
+mod file_caps_json_tests {
+    use super::{FileVerb, file_caps_to_json, parse_file_caps_json};
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn file_verb_json_roundtrip() {
+        let set: BTreeSet<FileVerb> = [FileVerb::Read, FileVerb::Upload].into_iter().collect();
+        assert_eq!(file_caps_to_json(&set), r#"["read","upload"]"#); // sorted by enum order
+        let back = parse_file_caps_json(r#"["read","upload"]"#);
+        assert!(back.contains(&FileVerb::Read) && back.contains(&FileVerb::Upload));
+        assert_eq!(back.len(), 2);
+        assert!(parse_file_caps_json("[]").is_empty());
+        assert!(parse_file_caps_json("garbage").is_empty());
+        assert!(parse_file_caps_json(r#"["read","bogus"]"#).is_empty()); // fail-closed
+        assert_eq!(file_caps_to_json(&BTreeSet::new()), "[]");
+    }
+}
+
 /// Maximum byte length for any description string. Applies uniformly to
 /// collection / field / index descriptions. RPC descriptions are not
 /// validated through this path (they flow through the existing
