@@ -12,57 +12,57 @@ vector search, and WebAssembly edge functions. One file per tenant. No database 
 [![Rust](https://img.shields.io/badge/Rust-1.93%2B-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![MCP](https://img.shields.io/badge/MCP-native-7c3aed)](https://modelcontextprotocol.io)
 [![SQLite](https://img.shields.io/badge/SQLite-embedded-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](#-quickstart)
-[![Version](https://img.shields.io/badge/version-v1.39.0-success)](CHANGELOG.md)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](#zap-quickstart)
+[![Version](https://img.shields.io/badge/version-v1.41.5-success)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-[**Quickstart**](#-quickstart) · [**What you can build**](#-what-you-can-build) · [**Why drust**](#-why-drust) · [**Docs**](docs/architecture.md) · [繁體中文](README.zh.md)
+[**Quickstart**](#zap-quickstart) · [**What you can build**](#rocket-what-you-can-build) · [**Why drust**](#bulb-why-drust) · [**Docs**](docs/architecture.md) · [繁體中文](README.zh.md)
 
 </div>
 
 ---
 
-## ✨ In one sentence
+## :sparkles: In one sentence
 
 Spinning up a Postgres or Supabase per project is overkill for the hundreds of small apps, internal tools, and AI-agent scratchpads a team accumulates. **drust** gives each project a self-contained `tenant.sqlite`, a typed API that never accepts raw SQL on the write path, row-level security, and a per-tenant MCP server an AI agent can drive with **zero glue code** — all from a single binary that idles at ~15 MB and serves ~13k req/s.
 
-## 🚀 What you can build
+## :rocket: What you can build
 
 | | |
 |---|---|
-| 🧱 **A SaaS / CRUD backend** | Define collections in the admin UI, get REST + typed TypeScript/Zod clients instantly. No DB server, no migration tooling. |
-| 🤖 **An AI-agent-native datastore** | Point any MCP client at `/t/<id>/mcp` — the agent inspects the schema, does CRUD, runs vector search, manages files through typed tools. Errors carry a `suggested_fix`; destructive ops support `dry_run`. |
-| 🏢 **A multi-tenant platform** | One process, many fully-isolated tenants. Cross-tenant access is denied **in-SQL** by the authorizer, not just in app code. |
-| 🔒 **Per-user secured data** | Declare an `owner_field`, or write PocketBase-style row-level policies — every read, write, and realtime event is filtered for you. |
-| ⚡ **Realtime apps** | Subscribe over SSE, or multiplex many rooms over one WebSocket and broadcast JSON. |
-| 🧠 **Semantic search** | Add a `vector` field, query cosine / L2 / L1 top-k over a structured filter. |
-| 🪝 **Event-driven automation** | Upload a small WebAssembly edge function that runs in-process on record changes or file uploads. |
+| :bricks: **A SaaS / CRUD backend** | Define collections in the admin UI, get REST + typed TypeScript/Zod clients instantly. No DB server, no migration tooling. |
+| :robot: **An AI-agent-native datastore** | Point any MCP client at `/t/<id>/mcp` — the agent inspects the schema, does CRUD, runs vector search, manages files through typed tools. Errors carry a `suggested_fix`; destructive ops support `dry_run`. |
+| :office: **A multi-tenant platform** | One process, many fully-isolated tenants. Cross-tenant access is denied **in-SQL** by the authorizer, not just in app code. |
+| :lock: **Per-user secured data** | Declare an `owner_field`, or write PocketBase-style row-level policies — every read, write, and realtime event is filtered for you. |
+| :zap: **Realtime apps** | Subscribe over SSE, or multiplex many rooms over one WebSocket and broadcast JSON. |
+| :brain: **Semantic search** | Add a `vector` field, query cosine / L2 / L1 top-k over a structured filter. |
+| :hook: **Event-driven automation** | Upload a small WebAssembly edge function that runs in-process on record changes or file uploads. |
 
-## 💡 Why drust
+## :bulb: Why drust
 
-- **🤖 AI-native, not bolted-on.** Every tenant ships a Streamable-HTTP MCP server whose `instructions` prologue is a structured *intent → tool* map, so an agent is productive on first connect — no prompt engineering, no custom tool wrappers.
-- **🧊 One binary, one file per tenant.** SQLite embedded, no database server to run or back up separately. Cross-tenant `ATTACH` is impossible — enforced by SQLite's authorizer on read-only connections.
-- **🔐 Security that composes.** `owner_field` + per-operation RLS policies (structured Filter AST → `?`-bound SQL) AND-compose on every read/write/realtime surface. The write path **never** accepts raw SQL.
-- **🪶 Fast and dense.** ~15 MB idle, ~13k req/s on a laptop, dozens of tenants on a 256 MB box. Built in Rust on [axum](https://github.com/tokio-rs/axum) + [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk).
-- **🔋 Batteries included.** Realtime (SSE + WS rooms), vector search, wasm edge functions, stored RPCs, per-tenant OAuth, outbound webhooks (SSRF-guarded), S3 file storage with resumable uploads, typed-client codegen (OpenAPI / TS / Zod), Prometheus metrics, daily backups, and a Supabase-style admin UI.
+- **:robot: AI-native, not bolted-on.** Every tenant ships a Streamable-HTTP MCP server whose `instructions` prologue is a structured *intent → tool* map, so an agent is productive on first connect — no prompt engineering, no custom tool wrappers.
+- **:ice_cube: One binary, one file per tenant.** SQLite embedded, no database server to run or back up separately. Cross-tenant `ATTACH` is impossible — enforced by SQLite's authorizer on read-only connections.
+- **:closed_lock_with_key: Security that composes.** `owner_field` + per-operation RLS policies (structured Filter AST → `?`-bound SQL) AND-compose on every read/write/realtime surface. The write path **never** accepts raw SQL.
+- **:feather: Fast and dense.** ~15 MB idle, ~13k req/s on a laptop, dozens of tenants on a 256 MB box. Built in Rust on [axum](https://github.com/tokio-rs/axum) + [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk).
+- **:battery: Batteries included.** Realtime (SSE + WS rooms), vector search, wasm edge functions, stored RPCs, per-tenant OAuth, outbound webhooks (SSRF-guarded), S3 file storage with resumable uploads, typed-client codegen (OpenAPI / TS / Zod), Prometheus metrics, daily backups, and a Supabase-style admin UI.
 
-## 📊 How it compares
+## :bar_chart: How it compares
 
 | | **drust** | PocketBase | Supabase | Firebase |
 |---|:---:|:---:|:---:|:---:|
 | **License / open source** | AGPL-3.0 | MIT | Apache-2.0 | proprietary |
-| Self-hosted, single binary | ✅ | ✅ | ⚠️ heavy stack | ❌ cloud only |
-| Per-tenant DB isolation | ✅ one SQLite/tenant | ❌ one DB | ❌ one Postgres | ⚠️ |
-| **Native MCP endpoint for AI agents** | ✅ | ❌ | ❌ | ❌ |
-| Row-level security | ✅ owner + policies | ✅ rules | ✅ Postgres RLS | ✅ rules |
-| Realtime | ✅ SSE + WS rooms | ✅ | ✅ | ✅ |
-| Edge functions | ✅ wasm, in-process | ⚠️ JS hooks | ✅ Deno, separate | ✅ separate |
-| Vector search | ✅ sqlite-vec | ❌ | ✅ pgvector | ⚠️ |
-| Typed-client codegen | ✅ OpenAPI/TS/Zod | ⚠️ | ✅ | ⚠️ |
+| Self-hosted, single binary | :white_check_mark: | :white_check_mark: | :warning: heavy stack | :x: cloud only |
+| Per-tenant DB isolation | :white_check_mark: one SQLite/tenant | :x: one DB | :x: one Postgres | :warning: |
+| **Native MCP endpoint for AI agents** | :white_check_mark: | :x: | :x: | :x: |
+| Row-level security | :white_check_mark: owner + policies | :white_check_mark: rules | :white_check_mark: Postgres RLS | :white_check_mark: rules |
+| Realtime | :white_check_mark: SSE + WS rooms | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Edge functions | :white_check_mark: wasm, in-process | :warning: JS hooks | :white_check_mark: Deno, separate | :white_check_mark: separate |
+| Vector search | :white_check_mark: sqlite-vec | :x: | :white_check_mark: pgvector | :warning: |
+| Typed-client codegen | :white_check_mark: OpenAPI/TS/Zod | :warning: | :white_check_mark: | :warning: |
 | Idle footprint | ~15 MB | small | large | n/a |
 | Language | Rust | Go | TS / Elixir | proprietary |
 
-## ⚡ Quickstart
+## :zap: Quickstart
 
 drust serves plain HTTP — front it with a TLS-terminating reverse proxy (Caddy, nginx, Traefik) in production.
 
@@ -109,7 +109,7 @@ For systemd deployment behind a reverse proxy, see [`CLAUDE.md`](CLAUDE.md) and 
 
 </details>
 
-## 🏗️ Architecture
+## :building_construction: Architecture
 
 ```mermaid
 flowchart LR
@@ -154,13 +154,13 @@ The S3 data path uses `object_store::aws::AmazonS3`, so any S3-compatible servic
 
 </details>
 
-## 📚 Learn more
+## :books: Learn more
 
 - [`CHANGELOG.md`](CHANGELOG.md) — full version history (keepachangelog, semver)
 - [`docs/architecture.md`](docs/architecture.md) — auto-generated per-file source index
 - [`CLAUDE.md`](CLAUDE.md) — deep internal guide (architecture, invariants, conventions)
 
-## 📄 License
+## :page_facing_up: License
 
 drust is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
 
