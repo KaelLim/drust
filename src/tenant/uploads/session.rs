@@ -16,6 +16,11 @@ pub struct NewSession {
     pub content_type: Option<String>,
     pub total_length: i64,
     pub expires_at: String,
+    /// v1.42 — the creating bearer's stable identity ("service" / "anon" /
+    /// `<user_id>`). Reuses the existing `uploader` column as the per-bearer
+    /// session binding key (no migration). HEAD/PATCH/DELETE require a
+    /// non-service caller's identity to match this; service bypasses.
+    pub uploader: String,
 }
 
 #[derive(Clone, Debug)]
@@ -28,6 +33,8 @@ pub struct Session {
     pub content_type: Option<String>,
     pub total_length: i64,
     pub expires_at: String,
+    /// v1.42 — creator identity; see `NewSession::uploader`.
+    pub uploader: String,
 }
 
 /// Parse a tus `Upload-Metadata` header: comma-separated `key b64value`
@@ -90,8 +97,8 @@ pub async fn insert_session(pool: &SharedTenantPool, s: NewSession) -> rusqlite:
         c.execute(
             "INSERT INTO _system_upload_sessions
                (upload_token, tenant_id, key, visibility, original_name,
-                content_type, total_length, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                content_type, total_length, expires_at, uploader)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 s.upload_token,
                 s.tenant_id,
@@ -101,6 +108,7 @@ pub async fn insert_session(pool: &SharedTenantPool, s: NewSession) -> rusqlite:
                 s.content_type,
                 s.total_length,
                 s.expires_at,
+                s.uploader,
             ],
         )
         .map(|_| ())
@@ -116,7 +124,7 @@ pub async fn get_session(
     pool.with_reader(move |c| {
         c.query_row(
             "SELECT upload_token, tenant_id, key, visibility, original_name,
-                    content_type, total_length, expires_at
+                    content_type, total_length, expires_at, uploader
              FROM _system_upload_sessions WHERE upload_token = ?1",
             rusqlite::params![token],
             |r| {
@@ -129,6 +137,7 @@ pub async fn get_session(
                     content_type: r.get(5)?,
                     total_length: r.get(6)?,
                     expires_at: r.get(7)?,
+                    uploader: r.get(8)?,
                 })
             },
         )
@@ -167,7 +176,7 @@ pub async fn list_sessions(pool: &SharedTenantPool) -> rusqlite::Result<Vec<Sess
     pool.with_reader(move |c| {
         let mut stmt = c.prepare(
             "SELECT upload_token, tenant_id, key, visibility, original_name,
-                    content_type, total_length, expires_at
+                    content_type, total_length, expires_at, uploader
              FROM _system_upload_sessions ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -180,6 +189,7 @@ pub async fn list_sessions(pool: &SharedTenantPool) -> rusqlite::Result<Vec<Sess
                 content_type: r.get(5)?,
                 total_length: r.get(6)?,
                 expires_at: r.get(7)?,
+                uploader: r.get(8)?,
             })
         })?;
         rows.collect()
@@ -235,7 +245,7 @@ pub async fn expired_tokens(
     pool.with_reader(move |c| {
         let mut stmt = c.prepare(
             "SELECT upload_token, tenant_id, key, visibility, original_name,
-                    content_type, total_length, expires_at
+                    content_type, total_length, expires_at, uploader
              FROM _system_upload_sessions WHERE expires_at < ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![now_rfc3339], |r| {
@@ -248,6 +258,7 @@ pub async fn expired_tokens(
                 content_type: r.get(5)?,
                 total_length: r.get(6)?,
                 expires_at: r.get(7)?,
+                uploader: r.get(8)?,
             })
         })?;
         rows.collect()
@@ -309,6 +320,7 @@ mod tests {
             content_type: Some("application/octet-stream".into()),
             total_length: 1234,
             expires_at: "2999-01-01T00:00:00Z".into(),
+            uploader: "service".into(),
         };
         insert_session(&pool, row.clone()).await.unwrap();
         let got = get_session(&pool, "tok-rt").await.unwrap().unwrap();
@@ -337,6 +349,7 @@ mod tests {
                 content_type: None,
                 total_length: 10,
                 expires_at: "2000-01-01T00:00:00+00:00".into(),
+                uploader: "service".into(),
             },
         )
         .await
@@ -353,6 +366,7 @@ mod tests {
                 content_type: None,
                 total_length: 10,
                 expires_at: "2999-01-01T00:00:00+00:00".into(),
+                uploader: "service".into(),
             },
         )
         .await

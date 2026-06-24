@@ -70,6 +70,26 @@ fn require_file_cap(
     }
 }
 
+/// v1.42 — the creating bearer's stable identity, persisted on the session row
+/// (the existing `uploader` column, reused as the binding key — no migration).
+/// Service callers bypass binding; anon share one identity; users are distinct.
+fn session_identity(ctx: &crate::auth::middleware::AuthCtx) -> String {
+    use crate::auth::middleware::AuthCtx;
+    match ctx {
+        AuthCtx::Service { .. } => "service".to_string(),
+        AuthCtx::Anon => "anon".to_string(),
+        AuthCtx::User { user_id, .. } => user_id.clone(),
+    }
+}
+
+/// v1.42 — a non-service caller may only resume/probe/abort its OWN session.
+/// Service may touch any session. A mismatch is reported as not-found (the tus
+/// 404, so existence isn't leaked), exactly like a wrong-tenant token.
+fn bearer_owns_session(ctx: &crate::auth::middleware::AuthCtx, sess: &session::Session) -> bool {
+    matches!(ctx, crate::auth::middleware::AuthCtx::Service { .. })
+        || session_identity(ctx) == sess.uploader
+}
+
 /// Spool path for a session: `<data_root>/tenants/<tid>/_uploads/<token>.part`.
 fn spool_path(state: &TenantFilesState, tid: &str, token: &str) -> PathBuf {
     crate::storage::tenant_db::tenant_dir(&state.data_root, tid)
@@ -103,6 +123,7 @@ pub async fn create(
     State(state): State<TenantFilesState>,
     axum::Extension(t): axum::Extension<TenantRef>,
     axum::Extension(fc): axum::Extension<crate::tenant::file_caps::TenantFileCaps>,
+    axum::Extension(ctx): axum::Extension<crate::auth::middleware::AuthCtx>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
 ) -> Response {
@@ -226,6 +247,7 @@ pub async fn create(
         content_type,
         total_length,
         expires_at: expires_at.clone(),
+        uploader: session_identity(&ctx),
     };
     if let Err(e) = insert_session(&t.pool, row).await {
         let _ = tokio::fs::remove_file(&spool).await; // compensate
@@ -254,6 +276,7 @@ pub async fn head(
     State(state): State<TenantFilesState>,
     axum::Extension(t): axum::Extension<TenantRef>,
     axum::Extension(fc): axum::Extension<crate::tenant::file_caps::TenantFileCaps>,
+    axum::Extension(ctx): axum::Extension<crate::auth::middleware::AuthCtx>,
     Path((tenant, token)): Path<(String, String)>,
 ) -> Response {
     if let Err(e) = require_file_cap(&t, &fc, crate::storage::schema::FileVerb::Upload) {
@@ -273,6 +296,9 @@ pub async fn head(
             );
         }
     };
+    if !bearer_owns_session(&ctx, &sess) {
+        return (StatusCode::NOT_FOUND, tus_headers()).into_response();
+    }
     let offset = spool_len(&state, &tenant, &token).await;
     let mut h = tus_headers();
     h.insert(hname("upload-offset"), offset.to_string().parse().unwrap());
@@ -300,6 +326,7 @@ pub async fn patch(
     State(state): State<TenantFilesState>,
     axum::Extension(t): axum::Extension<TenantRef>,
     axum::Extension(fc): axum::Extension<crate::tenant::file_caps::TenantFileCaps>,
+    axum::Extension(ctx): axum::Extension<crate::auth::middleware::AuthCtx>,
     Path((tenant, token)): Path<(String, String)>,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -322,6 +349,9 @@ pub async fn patch(
             );
         }
     };
+    if !bearer_owns_session(&ctx, &sess) {
+        return (StatusCode::NOT_FOUND, tus_headers()).into_response();
+    }
     let want_offset = headers
         .get("upload-offset")
         .and_then(|v| v.to_str().ok())
@@ -423,6 +453,7 @@ async fn finalize_and_respond(
         let cc = cache_control.clone();
         let vis = sess.visibility.clone();
         let total = sess.total_length;
+        let uploader = sess.uploader.clone();
         if let Err(e) = t
             .pool
             .with_writer(move |c| {
@@ -430,8 +461,8 @@ async fn finalize_and_respond(
                     "INSERT OR IGNORE INTO _system_files
                    (key, original_name, content_type, size_bytes, content_disposition,
                     visibility, cache_control, meta_json, uploader)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 'service')",
-                    rusqlite::params![key, on, ct, total, disp_mode, vis, cc],
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+                    rusqlite::params![key, on, ct, total, disp_mode, vis, cc, uploader],
                 )
                 .map(|_| ())
             })
@@ -527,6 +558,7 @@ pub async fn terminate(
     State(state): State<TenantFilesState>,
     axum::Extension(t): axum::Extension<TenantRef>,
     axum::Extension(fc): axum::Extension<crate::tenant::file_caps::TenantFileCaps>,
+    axum::Extension(ctx): axum::Extension<crate::auth::middleware::AuthCtx>,
     Path((tenant, token)): Path<(String, String)>,
 ) -> Response {
     if let Err(e) = require_file_cap(&t, &fc, crate::storage::schema::FileVerb::Delete) {
@@ -535,8 +567,8 @@ pub async fn terminate(
     if !session::is_valid_token(&token) {
         return (StatusCode::NOT_FOUND, tus_headers()).into_response();
     }
-    match session::get_session(&t.pool, &token).await {
-        Ok(Some(s)) if s.tenant_id == tenant => {}
+    let sess = match session::get_session(&t.pool, &token).await {
+        Ok(Some(s)) if s.tenant_id == tenant => s,
         Ok(_) => return (StatusCode::NOT_FOUND, tus_headers()).into_response(),
         Err(e) => {
             return json_error(
@@ -545,6 +577,9 @@ pub async fn terminate(
                 &e.to_string(),
             );
         }
+    };
+    if !bearer_owns_session(&ctx, &sess) {
+        return (StatusCode::NOT_FOUND, tus_headers()).into_response();
     }
     let _ = tokio::fs::remove_file(spool_path(&state, &tenant, &token)).await;
     let _ = session::delete_session(&t.pool, &token).await;
