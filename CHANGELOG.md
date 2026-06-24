@@ -1,3 +1,75 @@
+## v1.43.0 — 2026-06-24
+
+### feat — native SQLite adoption (STRICT, CHECK, RETURNING, prepare_cached, PRAGMA optimize)
+
+Lean harder on the bundled SQLite (3.53) so the BaaS gets typed columns, native
+value constraints, and one-round-trip writes — built end-to-end under workflow
+orchestration and adversarially reviewed by three independent engines.
+
+- **STRICT tables (WS1).** New tenant collections are created `STRICT` (typed
+  columns rejected at the engine, not just the tool layer). A boot-time migration
+  rebuilds **existing** pre-STRICT collections via per-table copy-then-swap
+  (`src/db/migrations.rs::strict_rebuild_tenant`): DDL is reconstructed verbatim
+  from `sqlite_master.sql` (preserving FK `ON DELETE`, CHECK, COLLATE, composite
+  PK, defaults), rows + indexes + the `updated_at` trigger + the `sqlite_sequence`
+  high-water are preserved, and each table runs in its own transaction with
+  DROP-after-copy ordering so a failure leaves the original intact. Idempotent
+  (gated on `pragma_table_list.strict`), so the per-boot `run_migrations` re-runs
+  as a no-op. A table holding STRICT-incompatible legacy data stays non-STRICT,
+  fail-safe.
+- **CHECK constraints (WS6).** `FieldSpec` gains structured `min` / `max` /
+  `enum` / `max_length`, compiled into ONE inline `CHECK(...)` clause built only
+  from drust-controlled, escaped literals (`compile_check`, never raw tenant SQL —
+  same camp as `SQL_DEFAULT_ALLOWLIST`). Persisted to
+  `_system_collection_meta.field_constraints_json`, mirrored by an app-layer
+  pre-check (typed `CHECK_CONSTRAINT_FAILED` before the native CHECK would raise a
+  raw string) and reflected by codegen (zod `.min/.max/z.enum`, OpenAPI
+  `minimum/maximum/maxLength/enum`, TS literal union + JSDoc). Config is
+  service-only via the existing `create_collection` / `add_field` — **no new MCP
+  tool** (tool count stays **58**).
+- **RETURNING read-back (WS2).** `INSERT … RETURNING *` / `UPDATE … RETURNING *`
+  collapse the post-write read-back into one round-trip on both the MCP and REST
+  write paths, with a shared row-materializer. Byte-identical to the old
+  `SELECT`-after-write: vector-hide, `BLOB→{__blob_bytes}`, owner stamp, the
+  post-image policy CHECK inside the write tx, and the zero-row→404 arm all
+  preserved.
+- **prepare_cached on hot reads + PRAGMA optimize (WS3/WS4).** The structured
+  `/list` (explicit schema-derived projection) and `COUNT(*)` reads use
+  `prepare_cached`; `get_by_id` and the legacy list move their owner clause to a
+  `?`-bind. `PRAGMA optimize` runs best-effort every N writes per pool on the
+  writer connection (`analysis_limit`-bounded), refreshing the query planner
+  without ever failing a write.
+
+### fix — review hardening (3-engine adversarial review: implementer workflow + fresh workflow + codex)
+
+Every finding below shipped with a regression test.
+
+- **`prepare_cached` on `SELECT *` served a stale column set after
+  `add_field`/`drop_field`** (HIGH). rusqlite keys its per-connection statement
+  cache by SQL text, which is stable across DDL, so a `SELECT *` read on a
+  long-lived pooled reader silently dropped a newly added column (or 500'd on a
+  dropped one) — DDL flushes only the drust schema cache + SSE bus, never the
+  reader's statement cache. Reverted the three `SELECT *` read sites
+  (`get_handler`, `list_bound_rows`, and the stored-RPC named-exec path) to plain
+  `prepare`; the explicit-projection `/list` self-heals and keeps caching.
+- **STRICT-rebuild `foreign_key_check` was whole-DB** (MEDIUM) — one pre-existing
+  orphan in any table blocked STRICT migration of every clean table; now scoped to
+  the rebuilt table.
+- **STRICT-rebuild temp table could collide** with a tenant collection literally
+  named `<x>__strict_tmp` (MEDIUM); now a `_system_`-prefixed name no tenant can
+  occupy.
+- **CHECK error path** (MEDIUM): numeric/boolean enums sent as JSON numbers
+  bypassed the app pre-check (now type-aware); `is_check_violation` mislabeled
+  UNIQUE/NOT-NULL/FK errors on columns named like `check_*` (now gated on the
+  extended code `SQLITE_CONSTRAINT_CHECK`); the MCP write path gained the same
+  `CHECK_CONSTRAINT_FAILED` backstop REST has.
+- **Codegen rendered numeric enums as a string union** (MEDIUM) → generated
+  clients rejected real numeric payloads; now numeric literals.
+- **Config-time validation** (`compile_check`): rejects `min > max`,
+  `max_length == 0`, fractional enum members on integer fields, NUL bytes in enum
+  values, and oversized enums — unsatisfiable or unsafe constraints fail at
+  create time.
+
 ## v1.42.0 — 2026-06-24
 
 ### feat — file-storage caps (anon + user)
