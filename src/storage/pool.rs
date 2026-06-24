@@ -3,7 +3,15 @@ use crate::storage::tenant_db::{open_read, open_write};
 use rusqlite::{Connection, Transaction};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, Semaphore};
+
+/// Run a bounded `PRAGMA optimize` on the long-lived writer connection once
+/// every N successful writes. The writer connection never returns to a pool,
+/// so there is no natural "connection close" moment to hook optimize onto;
+/// a per-pool write counter drives it instead. `analysis_limit = 400`
+/// (set in `apply_common_pragmas`) bounds each run's cost.
+const DRUST_OPTIMIZE_EVERY: u64 = 1000;
 
 pub struct TenantPool {
     data_root: PathBuf,
@@ -11,6 +19,12 @@ pub struct TenantPool {
     writer: Mutex<Connection>,
     readers: Vec<Mutex<Connection>>,
     reader_sema: Semaphore,
+    /// Monotonic count of successful writes through `with_writer` /
+    /// `with_writer_tx`. Drives the periodic `PRAGMA optimize`.
+    write_count: AtomicU64,
+    /// Test/debug-only observability: how many times `PRAGMA optimize` fired.
+    #[cfg(any(test, debug_assertions))]
+    optimize_runs: AtomicU64,
     /// Per-tenant in-process schema cache. Populated lazily by handlers
     /// that look up collection metadata; invalidated by DDL paths and
     /// the anon_caps admin endpoint.
@@ -30,8 +44,31 @@ impl TenantPool {
             writer: Mutex::new(writer),
             readers,
             reader_sema: Semaphore::new(read_pool_size),
+            write_count: AtomicU64::new(0),
+            #[cfg(any(test, debug_assertions))]
+            optimize_runs: AtomicU64::new(0),
             schema_cache: SchemaCache::new(),
         })
+    }
+
+    /// How many times `PRAGMA optimize` has fired on this pool's writer.
+    /// Test/observability hook (test+debug builds only).
+    #[cfg(any(test, debug_assertions))]
+    pub fn optimize_runs(&self) -> u64 {
+        self.optimize_runs.load(Ordering::Relaxed)
+    }
+
+    /// Bump the write counter and, every `DRUST_OPTIMIZE_EVERY` writes, run a
+    /// bounded `PRAGMA optimize` on the (already-locked) writer connection.
+    /// Best-effort: optimize errors are swallowed — a failed maintenance run
+    /// must never fail the write that triggered it.
+    fn note_write_and_maybe_optimize(&self, conn: &Connection) {
+        let n = self.write_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % DRUST_OPTIMIZE_EVERY == 0 {
+            let _ = conn.execute_batch("PRAGMA optimize;");
+            #[cfg(any(test, debug_assertions))]
+            self.optimize_runs.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn data_root(&self) -> &std::path::Path {
@@ -48,7 +85,11 @@ impl TenantPool {
         T: Send,
     {
         let mut g = self.writer.lock().await;
-        f(&mut g)
+        let v = f(&mut g)?;
+        // Successful write: bump counter, maybe run bounded PRAGMA optimize
+        // on the still-locked connection.
+        self.note_write_and_maybe_optimize(&g);
+        Ok(v)
     }
 
     /// Like `with_writer`, but the closure receives a `&Transaction`. The
@@ -71,6 +112,10 @@ impl TenantPool {
         match f(&tx) {
             Ok(v) => {
                 tx.commit()?;
+                // Commit returned and `tx` is consumed, so the connection is
+                // no longer borrowed — run the bounded PRAGMA optimize on it
+                // while the writer mutex is still held.
+                self.note_write_and_maybe_optimize(&g);
                 Ok(v)
             }
             Err(e) => {
