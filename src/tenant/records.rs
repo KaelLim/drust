@@ -240,31 +240,40 @@ fn json_to_sql_value(v: &serde_json::Value) -> Value {
     }
 }
 
+/// Materialize one already-fetched row (column names `column_names`) into a
+/// JSON object, rendering any BLOB as `{"__blob_bytes": n}`. Shared by the
+/// `RETURNING *` create/update paths and the `SELECT *`-based
+/// `record_as_json`, so all three render byte-identical rows. Vector-column
+/// stripping is the caller's responsibility (done via `retain` after).
+fn row_to_json(
+    r: &rusqlite::Row<'_>,
+    column_names: &[String],
+) -> rusqlite::Result<serde_json::Value> {
+    let mut obj = serde_json::Map::new();
+    for (i, n) in column_names.iter().enumerate() {
+        let v = r.get_ref(i)?;
+        let jv = match v {
+            rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+            rusqlite::types::ValueRef::Integer(i) => serde_json::json!(i),
+            rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
+            rusqlite::types::ValueRef::Text(t) => {
+                serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+            }
+            rusqlite::types::ValueRef::Blob(b) => {
+                serde_json::json!({ "__blob_bytes": b.len() })
+            }
+        };
+        obj.insert(n.clone(), jv);
+    }
+    Ok(serde_json::Value::Object(obj))
+}
+
 fn record_as_json(
     stmt: &mut rusqlite::Statement,
     column_names: &[String],
     id: i64,
 ) -> rusqlite::Result<serde_json::Value> {
-    let row = stmt.query_row(rusqlite::params![id], |r| {
-        let mut obj = serde_json::Map::new();
-        for (i, n) in column_names.iter().enumerate() {
-            let v = r.get_ref(i)?;
-            let jv = match v {
-                rusqlite::types::ValueRef::Null => serde_json::Value::Null,
-                rusqlite::types::ValueRef::Integer(i) => serde_json::json!(i),
-                rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
-                rusqlite::types::ValueRef::Text(t) => {
-                    serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
-                }
-                rusqlite::types::ValueRef::Blob(b) => {
-                    serde_json::json!({ "__blob_bytes": b.len() })
-                }
-            };
-            obj.insert(n.clone(), jv);
-        }
-        Ok(serde_json::Value::Object(obj))
-    })?;
-    Ok(row)
+    stmt.query_row(rusqlite::params![id], |r| row_to_json(r, column_names))
 }
 
 /// Run a `?`-bound legacy list SELECT and materialise each row as a JSON
@@ -846,14 +855,18 @@ pub async fn create_handler(
             }
             let cols: Vec<&str> = data.keys().map(|k| k.as_str()).collect();
             let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+            // `RETURNING *` collapses the post-insert read-back: SQLite hands
+            // back the persisted row in one round-trip, so there is no second
+            // SELECT. The vector `retain` strip + policy CHECK below run on
+            // the RETURNING-derived row exactly as before.
             let sql = if cols.is_empty() {
                 format!(
-                    "INSERT INTO \"{}\" DEFAULT VALUES",
+                    "INSERT INTO \"{}\" DEFAULT VALUES RETURNING *",
                     coll_clone.replace('"', "\"\"")
                 )
             } else {
                 format!(
-                    "INSERT INTO \"{}\" ({}) VALUES ({})",
+                    "INSERT INTO \"{}\" ({}) VALUES ({}) RETURNING *",
                     coll_clone.replace('"', "\"\""),
                     cols.iter()
                         .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
@@ -873,19 +886,20 @@ pub async fn create_handler(
                 .collect();
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            tx.execute(&sql, &refs[..])?;
-            let id = tx.last_insert_rowid();
-            // Read back the row excluding vector columns so the response
-            // is small and the BLOB never leaks as {"__blob_bytes": n}.
-            let mut stmt = tx.prepare(&format!(
-                "SELECT * FROM \"{}\" WHERE id = ?1",
-                coll_clone.replace('"', "\"\"")
-            ))?;
+            let mut stmt = tx.prepare(&sql)?;
             let cols_out: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-            let mut rec = record_as_json(&mut stmt, &cols_out, id)?;
+            let mut rec = stmt.query_row(&refs[..], |r| row_to_json(r, &cols_out))?;
+            // Read back excludes vector columns so the response is small and the
+            // BLOB never leaks as {"__blob_bytes": n}.
             if let Some(obj) = rec.as_object_mut() {
                 obj.retain(|k, _| !vector_names.contains(k));
             }
+            // Pull id from the RETURNING row; fall back to last_insert_rowid for
+            // the (theoretical) collection without an `id` column.
+            let id = rec
+                .get("id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(|| tx.last_insert_rowid());
             // Explicit-policy CHECK on the persisted row. A failing predicate
             // returns the sentinel error, rolling back this INSERT.
             if let Some(check) = &check_ast {
@@ -1115,8 +1129,14 @@ pub async fn update_handler(
             } else {
                 String::new()
             };
+            // `RETURNING *` collapses the post-update read-back: a zero-row
+            // UPDATE (no such id, or filtered out by the owner clause) returns
+            // no row, which `.optional()` maps to `None` → `QueryReturnedNoRows`,
+            // reproducing the old `n == 0 → 404` arm. The USING pre-flight above
+            // is a PRE-image gate and stays a separate statement. The vector
+            // `retain` strip + policy CHECK below run on the RETURNING row.
             let sql = format!(
-                "UPDATE \"{}\" SET {}, updated_at = datetime('now') WHERE id = ?{}{}",
+                "UPDATE \"{}\" SET {}, updated_at = datetime('now') WHERE id = ?{}{} RETURNING *",
                 coll_clone.replace('"', "\"\""),
                 set_exprs.join(","),
                 id_param_idx,
@@ -1133,16 +1153,16 @@ pub async fn update_handler(
             params.push(Value::Integer(id));
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            let n = tx.execute(&sql, &refs[..])?;
-            if n == 0 {
-                return Err(rusqlite::Error::QueryReturnedNoRows);
-            }
-            let mut stmt = tx.prepare(&format!(
-                "SELECT * FROM \"{}\" WHERE id = ?1",
-                coll_clone.replace('"', "\"\"")
-            ))?;
+            use rusqlite::OptionalExtension;
+            let mut stmt = tx.prepare(&sql)?;
             let cols_out: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-            let mut rec = record_as_json(&mut stmt, &cols_out, id)?;
+            let mut rec = match stmt
+                .query_row(&refs[..], |r| row_to_json(r, &cols_out))
+                .optional()?
+            {
+                Some(rec) => rec,
+                None => return Err(rusqlite::Error::QueryReturnedNoRows),
+            };
             if let Some(obj) = rec.as_object_mut() {
                 obj.retain(|k, _| !vector_names.contains(k));
             }
