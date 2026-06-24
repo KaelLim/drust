@@ -38,10 +38,7 @@ fn map_check_violation(e: rusqlite::Error) -> rusqlite::Error {
 ///
 /// Note: `length("col")` in SQL and `s.chars().count()` here BOTH count
 /// Unicode code points (verified: `length('😀😀') = 2`), so the `max_length`
-/// pre-check and the native CHECK agree on every input. The native inline
-/// CHECK remains the authority (it also catches admin REST / stored-RPC /
-/// edge-function writes that bypass this pre-check); this is the friendly
-/// fast-path for MCP/REST structured writes.
+/// pre-check and the native CHECK agree on every input.
 ///
 /// Enum and min/max are TYPE-AWARE so the pre-check agrees with
 /// `compile_check`: on an integer/real/boolean field the enum compiles to a

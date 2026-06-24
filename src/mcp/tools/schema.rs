@@ -107,6 +107,40 @@ fn render_num(n: f64) -> String {
 /// numeric column compiles to a numeric `IN (...)`; on a text column the
 /// values are single-quote-escaped.
 pub(crate) fn compile_check(f: &FieldSpec) -> anyhow::Result<Option<String>> {
+    // Config-time sanity (defense in depth): reject constraints that are
+    // unsatisfiable or that would corrupt the generated DDL, so a collection
+    // can never be created with a CHECK that no value can ever pass.
+    if let (Some(min), Some(max)) = (f.min, f.max) {
+        if min > max {
+            anyhow::bail!(
+                "field {:?}: min ({min}) > max ({max}) — no value can satisfy the CHECK",
+                f.name
+            );
+        }
+    }
+    if f.max_length == Some(0) {
+        anyhow::bail!("field {:?}: max_length must be >= 1", f.name);
+    }
+    if let Some(vals) = &f.enum_values {
+        if vals.len() > 256 {
+            anyhow::bail!(
+                "field {:?}: enum has {} values (max 256)",
+                f.name,
+                vals.len()
+            );
+        }
+        for v in vals {
+            // A NUL truncates the C string SQLite tokenizes, yielding a cryptic
+            // error and a half-built CHECK — reject it up front (mirrors the
+            // description path). Bound the size so an enum can't bloat the DDL.
+            if v.contains('\0') {
+                anyhow::bail!("field {:?}: enum value contains a NUL byte", f.name);
+            }
+            if v.len() > 256 {
+                anyhow::bail!("field {:?}: enum value exceeds 256 bytes", f.name);
+            }
+        }
+    }
     let mut parts: Vec<String> = Vec::new();
     let col = f.name.replace('"', "\"\"");
     if let Some(min) = f.min {
@@ -943,6 +977,53 @@ pub async fn set_index_description(
 #[cfg(test)]
 mod field_spec_vector_tests {
     use super::*;
+
+    #[test]
+    fn compile_check_rejects_unsatisfiable_and_unsafe() {
+        // min > max — unsatisfiable
+        assert!(
+            super::compile_check(&FieldSpec {
+                name: "a".into(),
+                sql_type: "integer".into(),
+                min: Some(5.0),
+                max: Some(1.0),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        // max_length 0 — unsatisfiable for any non-empty string
+        assert!(
+            super::compile_check(&FieldSpec {
+                name: "a".into(),
+                sql_type: "text".into(),
+                max_length: Some(0),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        // NUL in an enum value — would truncate the DDL
+        assert!(
+            super::compile_check(&FieldSpec {
+                name: "a".into(),
+                sql_type: "text".into(),
+                enum_values: Some(vec!["x\0y".into()]),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        // a valid bounded field still compiles
+        assert!(
+            super::compile_check(&FieldSpec {
+                name: "a".into(),
+                sql_type: "integer".into(),
+                min: Some(1.0),
+                max: Some(5.0),
+                ..Default::default()
+            })
+            .unwrap()
+            .is_some()
+        );
+    }
 
     #[test]
     fn compile_check_builds_safe_clauses() {
