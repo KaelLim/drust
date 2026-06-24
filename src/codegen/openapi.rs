@@ -167,6 +167,23 @@ fn field_schema(f: &FieldIr) -> Value {
             s.insert("maxItems".into(), json!(dim));
         }
     }
+    // v1.43 — reflect structured CHECK constraints. `enum` lists the
+    // allowed string values; `minimum`/`maximum` bound numeric ranges;
+    // `maxLength` caps string length.
+    if let Some(c) = &f.constraints {
+        if let Some(min) = c.min {
+            s.insert("minimum".into(), json!(min));
+        }
+        if let Some(max) = c.max {
+            s.insert("maximum".into(), json!(max));
+        }
+        if let Some(len) = c.max_length {
+            s.insert("maxLength".into(), json!(len));
+        }
+        if let Some(vals) = &c.enum_values {
+            s.insert("enum".into(), json!(vals));
+        }
+    }
     if f.nullable {
         // OpenAPI 3.1: type can be a list including "null".
         if let Some(t) = s.get("type").cloned() {

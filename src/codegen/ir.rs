@@ -41,6 +41,10 @@ pub struct FieldIr {
     /// True for the implicit id / created_at / updated_at columns
     /// drust manages — renderers skip them in Insert/Update shapes.
     pub server_managed: bool,
+    /// v1.43 — structured CHECK constraints (min/max/enum/max_length),
+    /// reflected by each renderer (zod `.min/.max/z.enum`, OpenAPI
+    /// `minimum/maximum/maxLength/enum`, TS union + JSDoc).
+    pub constraints: Option<crate::mcp::tools::schema::FieldConstraints>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -233,6 +237,9 @@ fn collect_fields(c: &rusqlite::Connection, coll: &str) -> rusqlite::Result<Vec<
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
 
+    // _system_collection_meta.field_constraints_json (v1.43)
+    let constraints_map = crate::storage::schema::read_field_constraints(c, coll)?;
+
     let mut out: Vec<FieldIr> = Vec::with_capacity(raw_rows.len());
     for (name, ty_str, notnull, dflt, _pk) in raw_rows {
         let server_managed = matches!(name.as_str(), "id" | "created_at" | "updated_at");
@@ -246,6 +253,7 @@ fn collect_fields(c: &rusqlite::Connection, coll: &str) -> rusqlite::Result<Vec<
             fk: fk_map.get(&name).cloned(),
             description: fdesc_map.get(&name).cloned(),
             server_managed,
+            constraints: constraints_map.get(&name).cloned(),
         });
     }
     Ok(out)

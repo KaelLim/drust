@@ -36,6 +36,7 @@ pub fn synthetic_ir() -> CodegenIr {
                         fk: None,
                         description: None,
                         server_managed: true,
+                        constraints: None,
                     },
                     FieldIr {
                         name: "title".into(),
@@ -45,6 +46,7 @@ pub fn synthetic_ir() -> CodegenIr {
                         fk: None,
                         description: None,
                         server_managed: false,
+                        constraints: None,
                     },
                     FieldIr {
                         name: "body".into(),
@@ -54,6 +56,7 @@ pub fn synthetic_ir() -> CodegenIr {
                         fk: None,
                         description: Some("Markdown body".into()),
                         server_managed: false,
+                        constraints: None,
                     },
                     FieldIr {
                         name: "author_id".into(),
@@ -63,6 +66,7 @@ pub fn synthetic_ir() -> CodegenIr {
                         fk: Some("users".into()),
                         description: None,
                         server_managed: false,
+                        constraints: None,
                     },
                     FieldIr {
                         name: "embedding".into(),
@@ -72,6 +76,54 @@ pub fn synthetic_ir() -> CodegenIr {
                         fk: None,
                         description: None,
                         server_managed: false,
+                        constraints: None,
+                    },
+                    // v1.43 — fields carrying structured CHECK constraints so
+                    // the golden fixtures exercise the renderer reflections.
+                    FieldIr {
+                        name: "rating".into(),
+                        ty: FieldType::Integer,
+                        nullable: true,
+                        default: None,
+                        fk: None,
+                        description: None,
+                        server_managed: false,
+                        constraints: Some(crate::mcp::tools::schema::FieldConstraints {
+                            min: Some(1.0),
+                            max: Some(5.0),
+                            enum_values: None,
+                            max_length: None,
+                        }),
+                    },
+                    FieldIr {
+                        name: "status".into(),
+                        ty: FieldType::Text,
+                        nullable: true,
+                        default: None,
+                        fk: None,
+                        description: None,
+                        server_managed: false,
+                        constraints: Some(crate::mcp::tools::schema::FieldConstraints {
+                            min: None,
+                            max: None,
+                            enum_values: Some(vec!["draft".into(), "published".into()]),
+                            max_length: None,
+                        }),
+                    },
+                    FieldIr {
+                        name: "slug".into(),
+                        ty: FieldType::Text,
+                        nullable: true,
+                        default: None,
+                        fk: None,
+                        description: None,
+                        server_managed: false,
+                        constraints: Some(crate::mcp::tools::schema::FieldConstraints {
+                            min: None,
+                            max: None,
+                            enum_values: None,
+                            max_length: Some(64),
+                        }),
                     },
                 ],
                 indexes: vec![],
@@ -91,6 +143,7 @@ pub fn synthetic_ir() -> CodegenIr {
                         fk: None,
                         description: None,
                         server_managed: true,
+                        constraints: None,
                     },
                     FieldIr {
                         name: "email".into(),
@@ -100,6 +153,7 @@ pub fn synthetic_ir() -> CodegenIr {
                         fk: None,
                         description: None,
                         server_managed: false,
+                        constraints: None,
                     },
                 ],
                 indexes: vec![],

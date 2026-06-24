@@ -81,7 +81,35 @@ fn render_collection(out: &mut String, coll: &CollectionIr) {
 }
 
 fn render_field(out: &mut String, f: &FieldIr, force_optional: bool) {
-    let mut s = field_to_zod(&f.ty);
+    // v1.43 — an enum constraint overrides the base constructor with
+    // `z.enum([...])`; numeric/length bounds chain onto the base. All
+    // constraint chaining happens BEFORE `.nullable()/.optional()` (zod
+    // rejects `.nullable().min(n)`).
+    let mut s = match f.constraints.as_ref().and_then(|c| c.enum_values.as_ref()) {
+        Some(vals) => {
+            let items = vals
+                .iter()
+                .map(|v| format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\"")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("z.enum([{items}])")
+        }
+        None => {
+            let mut base = field_to_zod(&f.ty);
+            if let Some(c) = &f.constraints {
+                if let Some(min) = c.min {
+                    base.push_str(&format!(".min({})", render_zod_num(min)));
+                }
+                if let Some(max) = c.max {
+                    base.push_str(&format!(".max({})", render_zod_num(max)));
+                }
+                if let Some(len) = c.max_length {
+                    base.push_str(&format!(".max({len})"));
+                }
+            }
+            base
+        }
+    };
     if f.nullable {
         s.push_str(".nullable()");
     }
@@ -89,6 +117,16 @@ fn render_field(out: &mut String, f: &FieldIr, force_optional: bool) {
         s.push_str(".optional()");
     }
     let _ = writeln!(out, "  {}: {},", f.name, s);
+}
+
+/// Render a numeric bound without a trailing `.0` for integral values
+/// (matches the SQL CHECK rendering).
+fn render_zod_num(n: f64) -> String {
+    if n.fract() == 0.0 && n.is_finite() {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
 }
 
 fn field_to_zod(t: &FieldType) -> String {
@@ -140,6 +178,7 @@ mod tests {
                     fk: None,
                     description: None,
                     server_managed: false,
+                    constraints: None,
                 }],
                 indexes: vec![],
                 owner_field: None,
