@@ -34,6 +34,10 @@ fn caps() -> axum::Extension<drust::tenant::file_caps::TenantFileCaps> {
     axum::Extension(Default::default())
 }
 
+fn actx() -> axum::Extension<drust::auth::middleware::AuthCtx> {
+    axum::Extension(drust::auth::middleware::AuthCtx::Service { admin_id: None })
+}
+
 #[tokio::test]
 async fn options_advertises_tus_capabilities() {
     let (_d, state, tref) = setup("t-opt");
@@ -83,6 +87,7 @@ async fn create_returns_201_with_prefixed_location() {
         State(state),
         axum::Extension(tref),
         caps(),
+        actx(),
         Path("t-cr".to_string()),
         headers,
     )
@@ -107,6 +112,7 @@ async fn create_rejects_oversize_length() {
         State(state),
         axum::Extension(tref),
         caps(),
+        actx(),
         Path("t-big".to_string()),
         headers,
     )
@@ -125,6 +131,7 @@ async fn create_rejects_anon() {
         State(state),
         axum::Extension(tref),
         caps(),
+        actx(),
         Path("t-anon".to_string()),
         headers,
     )
@@ -149,6 +156,7 @@ async fn create_session(
         State(state.clone()),
         axum::Extension(tref.clone()),
         caps(),
+        actx(),
         Path(tid.to_string()),
         headers,
     )
@@ -174,6 +182,7 @@ async fn head_then_patch_advances_offset() {
         State(state.clone()),
         axum::Extension(tref.clone()),
         caps(),
+        actx(),
         Path(("t-patch".into(), tok.clone())),
     )
     .await
@@ -189,6 +198,7 @@ async fn head_then_patch_advances_offset() {
         State(state.clone()),
         axum::Extension(tref.clone()),
         caps(),
+        actx(),
         Path(("t-patch".into(), tok.clone())),
         h,
         axum::body::Bytes::from_static(b"hel"),
@@ -205,6 +215,7 @@ async fn head_then_patch_advances_offset() {
         State(state.clone()),
         axum::Extension(tref.clone()),
         caps(),
+        actx(),
         Path(("t-patch".into(), tok.clone())),
         h,
         axum::body::Bytes::from_static(b"X"),
@@ -224,6 +235,7 @@ async fn patch_overrun_rejected() {
         State(state.clone()),
         axum::Extension(tref.clone()),
         caps(),
+        actx(),
         Path(("t-over".into(), tok)),
         h,
         axum::body::Bytes::from_static(b"toolong"),
@@ -267,6 +279,7 @@ async fn full_upload_finalizes_into_system_files() {
         State(state.clone()),
         axum::Extension(tref.clone()),
         caps(),
+        actx(),
         Path((tid.into(), tok.clone())),
         h,
         axum::body::Bytes::from_static(b"hello"),
@@ -301,6 +314,7 @@ async fn delete_terminates_session() {
         State(state.clone()),
         axum::Extension(tref.clone()),
         caps(),
+        actx(),
         Path(("t-del".into(), tok.clone())),
     )
     .await
@@ -311,6 +325,7 @@ async fn delete_terminates_session() {
         State(state.clone()),
         axum::Extension(tref.clone()),
         caps(),
+        actx(),
         Path(("t-del".into(), tok)),
     )
     .await
@@ -328,6 +343,7 @@ async fn cross_tenant_token_is_404() {
         State(state_b),
         axum::Extension(tref_b),
         caps(),
+        actx(),
         Path(("t-b".into(), tok)),
     )
     .await
@@ -367,6 +383,7 @@ async fn create_rejects_over_session_cap() {
             State(state.clone()),
             axum::Extension(tref.clone()),
             caps(),
+            actx(),
             Path("t-cap".to_string()),
             h,
         )
@@ -381,10 +398,91 @@ async fn create_rejects_over_session_cap() {
         State(state.clone()),
         axum::Extension(tref.clone()),
         caps(),
+        actx(),
         Path("t-cap".to_string()),
         h,
     )
     .await
     .into_response();
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// v1.42 per-bearer session binding: a session created by user "alice" cannot be
+/// probed/resumed/aborted by a different user ("bob") — even same tenant, even
+/// with the upload cap. The creator (alice) still reaches her own session.
+#[tokio::test]
+async fn tus_session_bound_to_creating_bearer() {
+    use drust::auth::middleware::AuthCtx;
+    use drust::storage::schema::FileVerb;
+    use drust::tenant::file_caps::TenantFileCaps;
+
+    let (_d, state, mut tref) = setup("t-bind");
+    tref.role = TokenRole::User;
+    let mut c = TenantFileCaps::default();
+    c.user.insert(FileVerb::Upload); // grant upload so the cap gate passes for User
+    let fc = axum::Extension(c);
+    let alice =
+        || axum::Extension(AuthCtx::User { user_id: "alice".into(), token_hash: "ha".into() });
+    let bob = || axum::Extension(AuthCtx::User { user_id: "bob".into(), token_hash: "hb".into() });
+
+    // alice creates a session.
+    let mut headers = HeaderMap::new();
+    headers.insert("upload-length", "5".parse().unwrap());
+    headers.insert(
+        "upload-metadata",
+        format!("filename {}", b64("f.bin")).parse().unwrap(),
+    );
+    let resp = uploads::create(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        fc.clone(),
+        alice(),
+        Path("t-bind".to_string()),
+        headers,
+    )
+    .await
+    .into_response();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let tok = resp
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+
+    // bob (different user) must NOT see/resume alice's session → 404.
+    let resp = uploads::head(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        fc.clone(),
+        bob(),
+        Path(("t-bind".into(), tok.clone())),
+    )
+    .await
+    .into_response();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "bob must not see alice's in-flight session"
+    );
+
+    // alice CAN HEAD her own session → 200.
+    let resp = uploads::head(
+        State(state.clone()),
+        axum::Extension(tref.clone()),
+        fc.clone(),
+        alice(),
+        Path(("t-bind".into(), tok.clone())),
+    )
+    .await
+    .into_response();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "alice must reach her own session"
+    );
 }

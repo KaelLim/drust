@@ -27,12 +27,13 @@ keeps today's exact service-only behaviour until it opts in.
   vector; the existing disk-guard (507) + per-tenant quota still apply; uploads
   default `private`. Deny codes `FILE_{READ,LIST,UPLOAD,DELETE}_DENIED` (alias
   `WRITE_DENIED`).
-- **Deferred to a fast-follow** (documented, not gaps): the admin `_files` caps
-  editor (MCP is the config surface this release; admin UI needs i18n keys across
-  all bundles); and tus per-bearer session *binding* (sessions are already
-  protected by an unguessable UUID token + service-only `list_sessions`, so
-  cross-session interference requires token theft — the per-verb cap + tenant
-  key-prefix isolation hold).
+- **tus sessions are per-bearer bound:** the `_system_upload_sessions.uploader`
+  column (reused, no migration) records the creator's identity (service / anon /
+  `<user_id>`); `HEAD`/`PATCH`/`DELETE` require a non-service caller's identity to
+  match (404 on mismatch, no existence leak). Service manages any session.
+- **Deferred to a fast-follow** (documented, not a gap): the admin `_files` caps
+  editor — MCP `set_file_caps` is the config surface this release; the admin UI
+  needs i18n keys across all locale bundles.
 
 Spec: `docs/superpowers/specs/2026-06-24-drust-file-storage-caps-design.md`.
 
