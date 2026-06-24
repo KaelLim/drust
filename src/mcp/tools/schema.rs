@@ -129,6 +129,7 @@ pub(crate) fn compile_check(f: &FieldSpec) -> anyhow::Result<Option<String>> {
                 vals.len()
             );
         }
+        let int_storage = matches!(f.sql_type.as_str(), "integer" | "boolean");
         for v in vals {
             // A NUL truncates the C string SQLite tokenizes, yielding a cryptic
             // error and a half-built CHECK — reject it up front (mirrors the
@@ -138,6 +139,21 @@ pub(crate) fn compile_check(f: &FieldSpec) -> anyhow::Result<Option<String>> {
             }
             if v.len() > 256 {
                 anyhow::bail!("field {:?}: enum value exceeds 256 bytes", f.name);
+            }
+            // A fractional member on an integer/boolean column compiles to an
+            // unsatisfiable CHECK — STRICT INTEGER can never hold e.g. 1.5, so
+            // `IN (1.5)` accepts nothing. Reject at config time (also keeps
+            // codegen's numeric enum honest).
+            if int_storage {
+                if let Ok(n) = v.parse::<f64>() {
+                    if n.fract() != 0.0 {
+                        anyhow::bail!(
+                            "field {:?}: enum value {v:?} is not an integer ({} column)",
+                            f.name,
+                            f.sql_type
+                        );
+                    }
+                }
             }
         }
     }
@@ -1010,6 +1026,27 @@ mod field_spec_vector_tests {
                 ..Default::default()
             })
             .is_err()
+        );
+        // fractional enum member on an integer column — unsatisfiable CHECK
+        assert!(
+            super::compile_check(&FieldSpec {
+                name: "a".into(),
+                sql_type: "integer".into(),
+                enum_values: Some(vec!["1".into(), "2.5".into()]),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        // fractional enum on a REAL column is fine
+        assert!(
+            super::compile_check(&FieldSpec {
+                name: "a".into(),
+                sql_type: "real".into(),
+                enum_values: Some(vec!["1.5".into(), "2.5".into()]),
+                ..Default::default()
+            })
+            .unwrap()
+            .is_some()
         );
         // a valid bounded field still compiles
         assert!(
