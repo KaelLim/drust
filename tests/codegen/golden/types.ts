@@ -18,6 +18,7 @@ export interface Posts {
   embedding: number[] | null;
   /** @min 1 @max 5 */
   rating: number | null;
+  tier: 1 | 2 | 3 | null;
   status: "draft" | "published" | null;
   /** @maxLength 64 */
   slug: string | null;
@@ -32,6 +33,7 @@ export interface PostsInsert {
   embedding: number[] | null;
   /** @min 1 @max 5 */
   rating: number | null;
+  tier: 1 | 2 | 3 | null;
   status: "draft" | "published" | null;
   /** @maxLength 64 */
   slug: string | null;
@@ -46,6 +48,7 @@ export interface PostsUpdate {
   embedding?: number[] | null;
   /** @min 1 @max 5 */
   rating?: number | null;
+  tier?: 1 | 2 | 3 | null;
   status?: "draft" | "published" | null;
   /** @maxLength 64 */
   slug?: string | null;

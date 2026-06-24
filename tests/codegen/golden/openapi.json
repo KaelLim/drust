@@ -121,6 +121,17 @@
             "minimum": 1.0,
             "maximum": 5.0
           },
+          "tier": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "enum": [
+              1,
+              2,
+              3
+            ]
+          },
           "status": {
             "type": [
               "string",
@@ -181,6 +192,17 @@
             "minimum": 1.0,
             "maximum": 5.0
           },
+          "tier": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "enum": [
+              1,
+              2,
+              3
+            ]
+          },
           "status": {
             "type": [
               "string",
@@ -239,6 +261,17 @@
             ],
             "minimum": 1.0,
             "maximum": 5.0
+          },
+          "tier": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "enum": [
+              1,
+              2,
+              3
+            ]
           },
           "status": {
             "type": [

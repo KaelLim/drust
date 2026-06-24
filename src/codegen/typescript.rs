@@ -87,14 +87,29 @@ fn render_field_line(out: &mut String, f: &FieldIr, force_optional: bool, _skip_
     if !leading_doc.is_empty() {
         out.push_str(&leading_doc);
     }
-    // v1.43 — an enum constraint renders as a string-literal union and
-    // overrides the base TS type.
+    // v1.43 — an enum constraint renders as a literal union and overrides the
+    // base TS type. Numeric columns render NUMBER literals (the enum CHECK is
+    // numeric and the API uses JSON numbers); text columns render string literals.
     let ts_ty = match f.constraints.as_ref().and_then(|c| c.enum_values.as_ref()) {
-        Some(vals) => vals
-            .iter()
-            .map(|v| format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\"")))
-            .collect::<Vec<_>>()
-            .join(" | "),
+        Some(vals) => {
+            let nums: Option<Vec<f64>> = if f.ty.is_numeric() {
+                vals.iter().map(|v| v.parse::<f64>().ok()).collect()
+            } else {
+                None
+            };
+            match nums {
+                Some(ns) => ns
+                    .iter()
+                    .map(|n| ts_num(*n))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+                None => vals
+                    .iter()
+                    .map(|v| format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\"")))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            }
+        }
         None => field_to_ts(&f.ty),
     };
     let null_suffix = if f.nullable { " | null" } else { "" };

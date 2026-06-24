@@ -17,6 +17,7 @@ export const PostsSchema = z.object({
   author_id: z.number().int(),
   embedding: z.array(z.number()).length(1536).nullable(),
   rating: z.number().int().min(1).max(5).nullable(),
+  tier: z.union([z.literal(1), z.literal(2), z.literal(3)]).nullable(),
   status: z.enum(["draft", "published"]).nullable(),
   slug: z.string().max(64).nullable(),
 });
@@ -28,6 +29,7 @@ export const PostsInsertSchema = z.object({
   author_id: z.number().int(),
   embedding: z.array(z.number()).length(1536).nullable(),
   rating: z.number().int().min(1).max(5).nullable(),
+  tier: z.union([z.literal(1), z.literal(2), z.literal(3)]).nullable(),
   status: z.enum(["draft", "published"]).nullable(),
   slug: z.string().max(64).nullable(),
 });
@@ -39,6 +41,7 @@ export const PostsUpdateSchema = z.object({
   author_id: z.number().int().optional(),
   embedding: z.array(z.number()).length(1536).nullable().optional(),
   rating: z.number().int().min(1).max(5).nullable().optional(),
+  tier: z.union([z.literal(1), z.literal(2), z.literal(3)]).nullable().optional(),
   status: z.enum(["draft", "published"]).nullable().optional(),
   slug: z.string().max(64).nullable().optional(),
 });

@@ -87,12 +87,36 @@ fn render_field(out: &mut String, f: &FieldIr, force_optional: bool) {
     // rejects `.nullable().min(n)`).
     let mut s = match f.constraints.as_ref().and_then(|c| c.enum_values.as_ref()) {
         Some(vals) => {
-            let items = vals
-                .iter()
-                .map(|v| format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\"")))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("z.enum([{items}])")
+            // On a numeric column the enum CHECK is numeric `IN (...)` and the
+            // API stores/returns JSON numbers — render a numeric literal union
+            // so the validator matches the real payload (not a string union).
+            let nums: Option<Vec<f64>> = if f.ty.is_numeric() {
+                vals.iter().map(|v| v.parse::<f64>().ok()).collect()
+            } else {
+                None
+            };
+            match nums {
+                Some(ns) => {
+                    let lits: Vec<String> = ns
+                        .iter()
+                        .map(|n| format!("z.literal({})", render_zod_num(*n)))
+                        .collect();
+                    // zod's z.union needs >= 2 members; a single literal stands alone.
+                    if lits.len() == 1 {
+                        lits.into_iter().next().unwrap()
+                    } else {
+                        format!("z.union([{}])", lits.join(", "))
+                    }
+                }
+                None => {
+                    let items = vals
+                        .iter()
+                        .map(|v| format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\"")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("z.enum([{items}])")
+                }
+            }
         }
         None => {
             let mut base = field_to_zod(&f.ty);
