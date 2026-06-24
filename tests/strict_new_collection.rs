@@ -30,6 +30,7 @@ fn field(name: &str, ty: &str, nullable: bool) -> FieldSpec {
         foreign_key: None,
         dim: None,
         description: None,
+        ..Default::default()
     }
 }
 
