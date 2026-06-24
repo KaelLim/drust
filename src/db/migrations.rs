@@ -259,6 +259,124 @@ fn make_strict_ddl(original_sql: &str, tmp: &str) -> Option<String> {
     ))
 }
 
+/// Boot-only: rebuild every NON-strict user collection in one tenant's
+/// data.sqlite as STRICT, preserving rows/FKs/indexes/triggers/sqlite_sequence.
+/// Idempotent — tables already STRICT are skipped (so re-running on every boot
+/// is a no-op). Per-table atomic (copy-then-swap); a failing table rolls back
+/// and is logged, others continue. MUST run before any pool opens (it uses a
+/// dedicated bare `Connection` with `foreign_keys=OFF`, bypassing the per-tenant
+/// writer mutex — only safe at boot, before any pool exists).
+pub fn strict_rebuild_tenant(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> {
+    let path = tenants_dir.join("tenants").join(tid).join("data.sqlite");
+    if !path.exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(&path)?;
+    // Must be OUTSIDE any transaction; bare connection defaults foreign_keys=OFF
+    // but set it explicitly so DROP of an FK-referenced table is permitted.
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+
+    // User collections only: exclude sqlite_* and _system_* (same predicate as
+    // codegen/ir.rs build_collections). FTS shadows are _system_fts_* → excluded.
+    let tables: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT name FROM sqlite_master \
+             WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '\\_system\\_%' ESCAPE '\\'",
+        )?;
+        stmt.query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+
+    for name in tables {
+        // Idempotency gate: skip tables already STRICT.
+        let is_strict: i64 = conn
+            .query_row(
+                "SELECT strict FROM pragma_table_list WHERE name=?1",
+                [&name],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if is_strict == 1 {
+            continue;
+        }
+        if let Err(e) = rebuild_one_table_strict(&conn, &name) {
+            tracing::error!(tenant = %tid, table = %name, error = ?e, "STRICT rebuild of table failed; left original intact");
+            // continue with other tables — per-table tx already rolled back.
+        }
+    }
+    Ok(())
+}
+
+/// Per-table rebuild inside one transaction. On any error the tx rolls back
+/// (DROP-after-copy ordering means the original always survives a failure).
+fn rebuild_one_table_strict(conn: &Connection, name: &str) -> rusqlite::Result<()> {
+    let original_sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    let tmp = format!("{name}__strict_tmp");
+    let new_ddl = match make_strict_ddl(&original_sql, &tmp) {
+        Some(s) => s,
+        None => {
+            tracing::warn!(table = %name, "unexpected CREATE TABLE shape; skipping STRICT rebuild");
+            return Ok(());
+        }
+    };
+
+    // Capture aux DDL (user indexes + the updated_at trigger) and the
+    // AUTOINCREMENT high-water BEFORE the swap (DROP TABLE drops them).
+    let aux: Vec<String> = {
+        let mut s = conn.prepare(
+            "SELECT sql FROM sqlite_master WHERE tbl_name=?1 \
+             AND type IN ('index','trigger') AND sql IS NOT NULL",
+        )?;
+        s.query_map([name], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let orig_seq: Option<i64> = conn
+        .query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name=?1",
+            [name],
+            |r| r.get(0),
+        )
+        .ok();
+
+    let q = |s: &str| s.replace('"', "\"\"");
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(&new_ddl)?;
+    tx.execute_batch(&format!(
+        "INSERT INTO \"{tmp}\" SELECT * FROM \"{name}\"; DROP TABLE \"{name}\"; \
+         ALTER TABLE \"{tmp}\" RENAME TO \"{name}\";",
+        tmp = q(&tmp),
+        name = q(name)
+    ))?;
+    for ddl in &aux {
+        // index/trigger DDL references the (restored) original name.
+        tx.execute_batch(ddl)?;
+    }
+    if let Some(seq) = orig_seq {
+        // Force the high-water back (copied rows may set a lower seq than the
+        // pre-deletion max). Delete-then-insert is the simplest correct form.
+        tx.execute("DELETE FROM sqlite_sequence WHERE name=?1", [name])?;
+        tx.execute(
+            "INSERT INTO sqlite_sequence(name, seq) VALUES (?1, ?2)",
+            rusqlite::params![name, seq],
+        )?;
+    }
+    // FK integrity gate before commit.
+    {
+        let mut chk = tx.prepare("PRAGMA foreign_key_check")?;
+        if chk.query_map([], |_| Ok(()))?.next().is_some() {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                Some(format!("foreign_key_check failed rebuilding {name}")),
+            ));
+        }
+    }
+    tx.commit()
+}
+
 #[derive(Debug, Default)]
 pub struct MigrationReport {
     pub meta_done: bool,
@@ -470,11 +588,22 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
 
     for tid in ids {
         match migrate_tenant_db(tenants_root, &tid) {
-            Ok(_) => report.tenants_ok.push(tid),
+            Ok(_) => report.tenants_ok.push(tid.clone()),
             Err(e) => {
                 tracing::error!(tenant = %tid, error = ?e, "tenant migration failed");
                 report.tenants_failed.push((tid, e.to_string()));
+                // Don't attempt the STRICT rebuild on a tenant whose additive
+                // migration failed — the schema may be in an unexpected state.
+                continue;
             }
+        }
+        // v1.43 — boot-time STRICT rebuild of pre-STRICT tenant collections.
+        // Runs AFTER migrate_tenant_db, on a dedicated bare connection (the
+        // additive migration above already committed + closed its own conn).
+        // Idempotent: tables already STRICT are skipped.
+        if let Err(e) = strict_rebuild_tenant(tenants_root, &tid) {
+            tracing::error!(tenant = %tid, error = ?e, "STRICT rebuild pass failed");
+            report.tenants_failed.push((tid, e.to_string()));
         }
     }
     Ok(report)
