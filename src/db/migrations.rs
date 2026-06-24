@@ -372,9 +372,17 @@ fn rebuild_one_table_strict(conn: &Connection, name: &str) -> rusqlite::Result<(
             rusqlite::params![name, seq],
         )?;
     }
-    // FK integrity gate before commit.
+    // FK integrity gate before commit — SCOPED to the table being rebuilt.
+    // A bare `PRAGMA foreign_key_check` scans the WHOLE database, so a single
+    // pre-existing orphan in ANY other table (e.g. legacy data predating FK
+    // enforcement, a restored backup) would fail THIS table's rebuild and,
+    // applied to every table, silently nullify STRICT migration for the entire
+    // tenant — including FK-free clean tables. `foreign_key_check("<name>")`
+    // isolates the check to this table so only a genuinely-dirty table is held
+    // back; clean tables still migrate.
     {
-        let mut chk = tx.prepare("PRAGMA foreign_key_check")?;
+        let pragma = format!("PRAGMA foreign_key_check(\"{}\")", q(name));
+        let mut chk = tx.prepare(&pragma)?;
         if chk.query_map([], |_| Ok(()))?.next().is_some() {
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
