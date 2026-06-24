@@ -181,6 +181,75 @@ pub async fn set_publish_policy(
     }))
 }
 
+// ─── set_file_caps (v1.42) ───────────────────────────────────────────────────
+
+/// Update one or both of `tenants.{file_anon_caps_json, file_user_caps_json}`.
+/// Each argument is the FULL desired cap set (replace, not merge); `None` leaves
+/// that role's caps untouched. Caps are a subset of {read,list,upload,delete};
+/// empty = service-only for that role (the default for every tenant). make-public
+/// (set-visibility) stays service-only and is NOT a cap verb. Returns both
+/// effective sets after the update.
+///
+/// v1.35 hook 12 (MCP face) — file caps gate request handling on the hot path
+/// (like publish policy), so a change must drop the tenant's cached auth entries
+/// or stale caps would serve for up to the safety TTL.
+pub async fn set_file_caps(
+    meta: &std::sync::Arc<Mutex<Connection>>,
+    tenant_id: &str,
+    anon: Option<Vec<crate::storage::schema::FileVerb>>,
+    user: Option<Vec<crate::storage::schema::FileVerb>>,
+    auth_cache: Option<&crate::tenant::auth_cache::AuthCache>,
+) -> anyhow::Result<serde_json::Value> {
+    use crate::storage::schema::file_caps_to_json;
+    let tid = tenant_id.to_string();
+    let conn = meta.lock().await;
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tid],
+            |r| r.get(0),
+        )
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    if exists == 0 {
+        anyhow::bail!("NOT_FOUND: tenant not found");
+    }
+    if let Some(v) = &anon {
+        let json = file_caps_to_json(&v.iter().copied().collect());
+        conn.execute(
+            "UPDATE tenants SET file_anon_caps_json = ?1 WHERE id = ?2",
+            rusqlite::params![json, tid],
+        )
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    }
+    if let Some(v) = &user {
+        let json = file_caps_to_json(&v.iter().copied().collect());
+        conn.execute(
+            "UPDATE tenants SET file_user_caps_json = ?1 WHERE id = ?2",
+            rusqlite::params![json, tid],
+        )
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    }
+    let (anon_json, user_json): (String, String) = conn
+        .query_row(
+            "SELECT COALESCE(file_anon_caps_json, '[]'), COALESCE(file_user_caps_json, '[]') \
+             FROM tenants WHERE id = ?1",
+            rusqlite::params![tid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
+    // v1.35 hook 12 — UPDATEs committed; drop cached entries so the next request
+    // refills with the new caps. Skipped when neither arg supplied (no change).
+    if (anon.is_some() || user.is_some())
+        && let Some(cache) = auth_cache
+    {
+        cache.clear_tenant(&tid);
+    }
+    Ok(json!({
+        "file_anon_caps": serde_json::from_str::<serde_json::Value>(&anon_json).unwrap_or_else(|_| json!([])),
+        "file_user_caps": serde_json::from_str::<serde_json::Value>(&user_json).unwrap_or_else(|_| json!([])),
+    }))
+}
+
 // ─── validation helper (same logic as owner_field.rs) ────────────────────────
 
 fn validate_owner_column(

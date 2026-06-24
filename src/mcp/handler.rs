@@ -367,6 +367,18 @@ pub struct SetPublishPolicyArgs {
     pub allow_anon_publish: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetFileCapsArgs {
+    /// Full desired ANON file-cap set (REPLACE, not merge) — a subset of
+    /// ["read","list","upload","delete"]. Omit to leave anon caps unchanged.
+    /// Empty `[]` = service-only for anon (the default). make-public stays
+    /// service-only and is not a cap.
+    pub anon: Option<Vec<crate::storage::schema::FileVerb>>,
+    /// Full desired USER (drust_user_*) file-cap set (REPLACE). Omit to leave
+    /// unchanged. Empty `[]` = service-only for users.
+    pub user: Option<Vec<crate::storage::schema::FileVerb>>,
+}
+
 // --- v1.12: Per-tenant OAuth-provider admin parameter types ----------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1663,6 +1675,46 @@ impl DrustMcpService {
             &tenant_id,
             allow_user_publish,
             allow_anon_publish,
+            inner.auth_cache.as_deref(),
+        )
+        .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.42 — Set this tenant's opt-in file-storage \
+        capabilities for non-service bearers. Two cap sets (both default empty = \
+        service-only): `anon` gates the public anon bearer, `user` gates \
+        logged-in end-users (drust_user_*); each is a subset of \
+        [read, list, upload, delete] over the tenant's shared file pool (NOT \
+        per-owner). Each arg REPLACES that role's set; omit to leave it \
+        unchanged. make-public (set-visibility) stays service-only and is not a \
+        cap. upload/delete are per-IP rate-limited. Returns \
+        {file_anon_caps, file_user_caps}. NOT_FOUND if the tenant is missing.")]
+    async fn set_file_caps(
+        &self,
+        Parameters(SetFileCapsArgs { anon, user }): Parameters<SetFileCapsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let meta = match self.state.meta() {
+            Some(m) => m.clone(),
+            None => {
+                return Err(McpError::internal_error(
+                    "meta connection not available in this context".to_string(),
+                    None,
+                ));
+            }
+        };
+        let tenant_id = self.state.tenant_id().to_string();
+        // v1.35 hook 12 (MCP face) — pass the cache so a caps change drops the
+        // tenant's cached auth entries synchronously.
+        let inner = self.state.inner();
+        match owner_field_tools::set_file_caps(
+            &meta,
+            &tenant_id,
+            anon,
+            user,
             inner.auth_cache.as_deref(),
         )
         .await

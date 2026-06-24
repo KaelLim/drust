@@ -54,6 +54,22 @@ fn require_service(t: &TenantRef) -> Result<(), Response> {
     Ok(())
 }
 
+/// v1.42 — per-verb cap gate for the data-plane-only tus handlers. This is
+/// defense-in-depth layer 2; `file_caps::file_caps_layer` on the files_router is
+/// layer 1 (same verb decision). Service is unrestricted. create/patch/head
+/// require `upload`; terminate requires `delete`.
+fn require_file_cap(
+    t: &TenantRef,
+    fc: &crate::tenant::file_caps::TenantFileCaps,
+    verb: crate::storage::schema::FileVerb,
+) -> Result<(), Response> {
+    use crate::tenant::file_caps::{check_file_cap, file_cap_denied_response};
+    match file_cap_denied_response(check_file_cap(t.role, fc, verb), verb) {
+        Some(resp) => Err(resp),
+        None => Ok(()),
+    }
+}
+
 /// Spool path for a session: `<data_root>/tenants/<tid>/_uploads/<token>.part`.
 fn spool_path(state: &TenantFilesState, tid: &str, token: &str) -> PathBuf {
     crate::storage::tenant_db::tenant_dir(&state.data_root, tid)
@@ -86,11 +102,12 @@ pub async fn options(
 pub async fn create(
     State(state): State<TenantFilesState>,
     axum::Extension(t): axum::Extension<TenantRef>,
+    axum::Extension(fc): axum::Extension<crate::tenant::file_caps::TenantFileCaps>,
     Path(tenant): Path<String>,
     headers: HeaderMap,
 ) -> Response {
     use session::{NewSession, count_in_flight, derive_key, insert_session, parse_upload_metadata};
-    if let Err(e) = require_service(&t) {
+    if let Err(e) = require_file_cap(&t, &fc, crate::storage::schema::FileVerb::Upload) {
         return e;
     }
     // No garage check here: creation only writes a session row + empty spool
@@ -236,9 +253,10 @@ pub async fn create(
 pub async fn head(
     State(state): State<TenantFilesState>,
     axum::Extension(t): axum::Extension<TenantRef>,
+    axum::Extension(fc): axum::Extension<crate::tenant::file_caps::TenantFileCaps>,
     Path((tenant, token)): Path<(String, String)>,
 ) -> Response {
-    if let Err(e) = require_service(&t) {
+    if let Err(e) = require_file_cap(&t, &fc, crate::storage::schema::FileVerb::Upload) {
         return e;
     }
     if !session::is_valid_token(&token) {
@@ -281,12 +299,13 @@ async fn spool_len(state: &TenantFilesState, tid: &str, token: &str) -> i64 {
 pub async fn patch(
     State(state): State<TenantFilesState>,
     axum::Extension(t): axum::Extension<TenantRef>,
+    axum::Extension(fc): axum::Extension<crate::tenant::file_caps::TenantFileCaps>,
     Path((tenant, token)): Path<(String, String)>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     use tokio::io::AsyncWriteExt;
-    if let Err(e) = require_service(&t) {
+    if let Err(e) = require_file_cap(&t, &fc, crate::storage::schema::FileVerb::Upload) {
         return e;
     }
     if !session::is_valid_token(&token) {
@@ -507,9 +526,10 @@ pub async fn list_sessions(
 pub async fn terminate(
     State(state): State<TenantFilesState>,
     axum::Extension(t): axum::Extension<TenantRef>,
+    axum::Extension(fc): axum::Extension<crate::tenant::file_caps::TenantFileCaps>,
     Path((tenant, token)): Path<(String, String)>,
 ) -> Response {
-    if let Err(e) = require_service(&t) {
+    if let Err(e) = require_file_cap(&t, &fc, crate::storage::schema::FileVerb::Delete) {
         return e;
     }
     if !session::is_valid_token(&token) {
