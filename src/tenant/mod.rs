@@ -524,7 +524,11 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             // file caps (default empty = service-only, preserving v1.34.1
             // behaviour). Replaces the v1.34.1 blanket require_service_layer.
             // The tus handlers keep an inline cap-aware check as defense-in-depth.
-            .layer(axum::middleware::from_fn(file_caps::file_caps_layer))
+            // Stateful: carries the auth_state for the per-IP upload/delete limiters.
+            .layer(axum::middleware::from_fn_with_state(
+                auth_state.clone(),
+                file_caps::file_caps_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 auth_state.clone(),
                 router::bearer_auth_layer,

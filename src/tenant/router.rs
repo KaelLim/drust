@@ -31,6 +31,12 @@ pub struct TenantAuthState {
     /// Defends the provider-exchange path (one DB write + one outbound HTTP) from
     /// brute-force replay of attacker-supplied `code` + `state` pairs.
     pub oauth_callback_rl: Arc<IpRateLimit>,
+    /// v1.42 — per-IP rate limiters for NON-service file upload / delete (Mode A
+    /// + Mode B), consulted in `file_caps::file_caps_layer` after the cap check.
+    /// Service bypasses. Bound the public anon-key DoS vector that file caps open.
+    /// Default: 30 per 60 s each.
+    pub file_upload_rl: Arc<IpRateLimit>,
+    pub file_delete_rl: Arc<IpRateLimit>,
     /// Public-facing base URL drust serves on, e.g. `https://drust.example.com`.
     /// Read once at TenantStack construction (from `DRUST_PUBLIC_URL`) and
     /// pinned here so OAuth handlers don't have to re-read env per request
@@ -88,6 +94,8 @@ impl TenantAuthState {
             register_rl: Arc::new(IpRateLimit::new(3, Duration::from_secs(60), 4096)),
             login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
             oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+            file_upload_rl: Arc::new(IpRateLimit::new(30, Duration::from_secs(60), 4096)),
+            file_delete_rl: Arc::new(IpRateLimit::new(30, Duration::from_secs(60), 4096)),
             public_url: String::new(),
             oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
             // Tests use a fixed secret: differences between TenantAuthState

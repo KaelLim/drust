@@ -147,6 +147,7 @@ pub fn classify_file_route(method: &axum::http::Method, path: &str) -> FileRoute
 /// tenant's `TenantFileCaps` (attached by `bearer_auth_layer`). Mounted INNER to
 /// `bearer_auth_layer`, so `TenantRef` is present — absence is fail-closed 403.
 pub async fn file_caps_layer(
+    axum::extract::State(auth): axum::extract::State<crate::tenant::router::TenantAuthState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -180,6 +181,28 @@ pub async fn file_caps_layer(
                 .unwrap_or_default();
             if let Some(resp) = file_cap_denied_response(check_file_cap(role, &caps, verb), verb) {
                 return resp;
+            }
+            // v1.42 — per-IP rate-limit upload/delete for non-service callers
+            // (cap already satisfied). Bounds the public anon-key DoS vector;
+            // service never reaches here (returned above). IP via XFF, loopback
+            // fallback (prod is always behind the nginx->Caddy chain).
+            let limiter = match verb {
+                FileVerb::Upload => Some(&auth.file_upload_rl),
+                FileVerb::Delete => Some(&auth.file_delete_rl),
+                _ => None,
+            };
+            if let Some(rl) = limiter {
+                let ip = crate::safety::ip::client_ip(
+                    req.headers(),
+                    std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+                );
+                if !rl.check(ip) {
+                    return crate::error::json_error(
+                        axum::http::StatusCode::TOO_MANY_REQUESTS,
+                        "RATE_LIMITED_IP",
+                        "file upload/delete rate limit exceeded; retry shortly",
+                    );
+                }
             }
             next.run(req).await
         }
