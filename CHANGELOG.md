@@ -1,3 +1,41 @@
+## v1.42.0 — 2026-06-24
+
+### feat — file-storage caps (anon + user)
+
+File storage was service-key-only. A tenant can now grant `anon` and `user`
+bearers an opt-in subset of `{read, list, upload, delete}` over its file pool — a
+Supabase-style **cap-gated shared bucket** (access decided by caps, NOT per-file
+ownership). Service stays unrestricted; **make-public (set-visibility) stays
+service-only**. Default is **all-off** (empty `[]`), so every existing tenant
+keeps today's exact service-only behaviour until it opts in.
+
+- **Model:** `FileVerb{read,list,upload,delete}` (mirrors `DmlVerb`). Caps live as
+  JSON on the `tenants` row (`file_anon_caps_json` / `file_user_caps_json`,
+  default `'[]'`), loaded in `SQL_BEARER_AUTH_CTE` (cols 8,9) onto a
+  `TenantFileCaps` request extension, cached in `CachedAuth` (both paths).
+- **Enforcement:** a new `file_caps::file_caps_layer` replaces the blanket
+  `require_service_layer` on the data-plane files_router and gates each route
+  per-verb (service bypasses; anon/user checked against their cap set). The
+  route→verb classification is a pure, unit-tested fn. Mode-A handlers are
+  untouched (they are also mounted under `/admin`, which has no `TenantRef`); the
+  tus (Mode-B) handlers add an inline cap check as defense-in-depth layer 2.
+- **Config (service-only):** MCP `set_file_caps` (hook 12 — clears the auth cache
+  on change, like publish-policy). **MCP tool count → 58.** No data-plane REST
+  route (mirrors `anon_caps`/`user_caps`).
+- **Guardrails (platform integrity, always on):** per-IP rate-limit on
+  non-service `upload`+`delete` (30/60s, XFF-keyed) bounds the public anon-key DoS
+  vector; the existing disk-guard (507) + per-tenant quota still apply; uploads
+  default `private`. Deny codes `FILE_{READ,LIST,UPLOAD,DELETE}_DENIED` (alias
+  `WRITE_DENIED`).
+- **Deferred to a fast-follow** (documented, not gaps): the admin `_files` caps
+  editor (MCP is the config surface this release; admin UI needs i18n keys across
+  all bundles); and tus per-bearer session *binding* (sessions are already
+  protected by an unguessable UUID token + service-only `list_sessions`, so
+  cross-session interference requires token theft — the per-verb cap + tenant
+  key-prefix isolation hold).
+
+Spec: `docs/superpowers/specs/2026-06-24-drust-file-storage-caps-design.md`.
+
 ## v1.41.5 — 2026-06-23
 
 ### fix — admin PATs no longer reroll on every restart

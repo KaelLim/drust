@@ -30,6 +30,10 @@ fn b64(s: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(s)
 }
 
+fn caps() -> axum::Extension<drust::tenant::file_caps::TenantFileCaps> {
+    axum::Extension(Default::default())
+}
+
 #[tokio::test]
 async fn options_advertises_tus_capabilities() {
     let (_d, state, tref) = setup("t-opt");
@@ -78,6 +82,7 @@ async fn create_returns_201_with_prefixed_location() {
     let resp = uploads::create(
         State(state),
         axum::Extension(tref),
+        caps(),
         Path("t-cr".to_string()),
         headers,
     )
@@ -101,6 +106,7 @@ async fn create_rejects_oversize_length() {
     let resp = uploads::create(
         State(state),
         axum::Extension(tref),
+        caps(),
         Path("t-big".to_string()),
         headers,
     )
@@ -118,6 +124,7 @@ async fn create_rejects_anon() {
     let resp = uploads::create(
         State(state),
         axum::Extension(tref),
+        caps(),
         Path("t-anon".to_string()),
         headers,
     )
@@ -141,6 +148,7 @@ async fn create_session(
     let resp = uploads::create(
         State(state.clone()),
         axum::Extension(tref.clone()),
+        caps(),
         Path(tid.to_string()),
         headers,
     )
@@ -165,6 +173,7 @@ async fn head_then_patch_advances_offset() {
     let resp = uploads::head(
         State(state.clone()),
         axum::Extension(tref.clone()),
+        caps(),
         Path(("t-patch".into(), tok.clone())),
     )
     .await
@@ -179,6 +188,7 @@ async fn head_then_patch_advances_offset() {
     let resp = uploads::patch(
         State(state.clone()),
         axum::Extension(tref.clone()),
+        caps(),
         Path(("t-patch".into(), tok.clone())),
         h,
         axum::body::Bytes::from_static(b"hel"),
@@ -194,6 +204,7 @@ async fn head_then_patch_advances_offset() {
     let resp = uploads::patch(
         State(state.clone()),
         axum::Extension(tref.clone()),
+        caps(),
         Path(("t-patch".into(), tok.clone())),
         h,
         axum::body::Bytes::from_static(b"X"),
@@ -212,6 +223,7 @@ async fn patch_overrun_rejected() {
     let resp = uploads::patch(
         State(state.clone()),
         axum::Extension(tref.clone()),
+        caps(),
         Path(("t-over".into(), tok)),
         h,
         axum::body::Bytes::from_static(b"toolong"),
@@ -254,6 +266,7 @@ async fn full_upload_finalizes_into_system_files() {
     let resp = uploads::patch(
         State(state.clone()),
         axum::Extension(tref.clone()),
+        caps(),
         Path((tid.into(), tok.clone())),
         h,
         axum::body::Bytes::from_static(b"hello"),
@@ -287,6 +300,7 @@ async fn delete_terminates_session() {
     let resp = uploads::terminate(
         State(state.clone()),
         axum::Extension(tref.clone()),
+        caps(),
         Path(("t-del".into(), tok.clone())),
     )
     .await
@@ -296,6 +310,7 @@ async fn delete_terminates_session() {
     let resp = uploads::head(
         State(state.clone()),
         axum::Extension(tref.clone()),
+        caps(),
         Path(("t-del".into(), tok)),
     )
     .await
@@ -312,6 +327,7 @@ async fn cross_tenant_token_is_404() {
     let resp = uploads::head(
         State(state_b),
         axum::Extension(tref_b),
+        caps(),
         Path(("t-b".into(), tok)),
     )
     .await
@@ -350,6 +366,7 @@ async fn create_rejects_over_session_cap() {
         let resp = uploads::create(
             State(state.clone()),
             axum::Extension(tref.clone()),
+            caps(),
             Path("t-cap".to_string()),
             h,
         )
@@ -363,6 +380,7 @@ async fn create_rejects_over_session_cap() {
     let resp = uploads::create(
         State(state.clone()),
         axum::Extension(tref.clone()),
+        caps(),
         Path("t-cap".to_string()),
         h,
     )
