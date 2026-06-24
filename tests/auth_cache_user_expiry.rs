@@ -52,6 +52,7 @@ async fn expired_user_entry_rejected_from_cache_without_db_read() {
             expires_at: chrono::Utc::now() - chrono::Duration::hours(1),
             publish_user_allowed: false,
             publish_anon_allowed: false,
+            file_caps: Default::default(),
         },
     );
 

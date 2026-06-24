@@ -20,6 +20,7 @@ async fn revoke_all_sessions_clears_user_entries() {
                 expires_at: chrono::Utc::now() + chrono::Duration::days(1),
                 publish_user_allowed: false,
                 publish_anon_allowed: false,
+                file_caps: Default::default(),
             },
         );
     }
@@ -32,6 +33,7 @@ async fn revoke_all_sessions_clears_user_entries() {
             expires_at: chrono::Utc::now() + chrono::Duration::days(1),
             publish_user_allowed: false,
             publish_anon_allowed: false,
+            file_caps: Default::default(),
         },
     );
 

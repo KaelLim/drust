@@ -217,6 +217,7 @@ pub async fn bearer_auth_layer(
                     publish_user_allowed,
                     publish_anon_allowed,
                     email_snapshot,
+                    file_caps,
                 } => {
                     // Cross-tenant guard: the cached entry is bound to one
                     // tenant; a request for a different tenant in the path
@@ -269,6 +270,7 @@ pub async fn bearer_auth_layer(
                             role: role_for_ref,
                         });
                         req.extensions_mut().insert(publish_policy);
+                        req.extensions_mut().insert(file_caps);
                         return next.run(req).await;
                     }
                 }
@@ -278,6 +280,7 @@ pub async fn bearer_auth_layer(
                     expires_at,
                     publish_user_allowed,
                     publish_anon_allowed,
+                    file_caps,
                 } => {
                     if cached_tid != tenant_id {
                         // Cross-tenant: do not serve from cache; fall through.
@@ -316,6 +319,7 @@ pub async fn bearer_auth_layer(
                             role: TokenRole::User,
                         });
                         req.extensions_mut().insert(publish_policy);
+                        req.extensions_mut().insert(file_caps);
                         return next.run(req).await;
                     } else {
                         // Expired per the cached source of truth: reject WITHOUT
@@ -361,6 +365,9 @@ pub async fn bearer_auth_layer(
         // v1.32.5 — appended `allow_user_publish` / `allow_anon_publish`
         // (cols 6,7) so REST + WS publish gates can read the per-tenant
         // policy without a second meta.lock(). NULL when tenant missing.
+        // v1.42 — appended `file_anon_caps_json` / `file_user_caps_json`
+        // (cols 8,9) so the file handlers can gate per-verb without a second
+        // meta.lock(). NULL (tenant missing) → treated as '[]' = no caps.
         const SQL_BEARER_AUTH_CTE: &str = "\
 WITH bearer_match AS ( \
     SELECT 'admin_pat' AS kind, p.id AS token_id, p.admin_id, \
@@ -382,7 +389,9 @@ SELECT \
     (SELECT bound_tenant FROM bearer_match LIMIT 1), \
     (SELECT email FROM admins WHERE id = (SELECT admin_id FROM bearer_match LIMIT 1)), \
     (SELECT COALESCE(allow_user_publish, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
-    (SELECT COALESCE(allow_anon_publish, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL)";
+    (SELECT COALESCE(allow_anon_publish, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
+    (SELECT COALESCE(file_anon_caps_json, '[]') FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
+    (SELECT COALESCE(file_user_caps_json, '[]') FROM tenants WHERE id = ?1 AND deleted_at IS NULL)";
 
         let pat_hash = bearer
             .starts_with(crate::auth::admin_token::TOKEN_PREFIX)
@@ -397,6 +406,8 @@ SELECT \
             Option<String>, // pat_email
             i64,            // allow_user_publish (v1.32.5)
             i64,            // allow_anon_publish (v1.32.5)
+            String,         // file_anon_caps_json (v1.42) — '[]' when tenant missing
+            String,         // file_user_caps_json (v1.42)
         )> = {
             let conn = state.meta.lock().await;
             conn.query_row(
@@ -415,6 +426,8 @@ SELECT \
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, Option<i64>>(6)?.unwrap_or(0),
                     r.get::<_, Option<i64>>(7)?.unwrap_or(0),
+                    r.get::<_, Option<String>>(8)?.unwrap_or_else(|| "[]".into()),
+                    r.get::<_, Option<String>>(9)?.unwrap_or_else(|| "[]".into()),
                 )),
             )
             .ok()
@@ -428,11 +441,17 @@ SELECT \
             pat_email_snapshot,
             allow_user_publish,
             allow_anon_publish,
+            file_anon_caps_json,
+            file_user_caps_json,
         ) = meta_row.unwrap_or_default();
         let publish_policy = crate::tenant::rooms::policy::TenantPublishPolicy {
             allow_user: allow_user_publish != 0,
             allow_anon: allow_anon_publish != 0,
         };
+        // v1.42 — parse once here; cloned into each request-extension insert
+        // and each CachedAuth fill below (mirrors `publish_policy`).
+        let file_caps =
+            crate::tenant::file_caps::TenantFileCaps::from_json(&file_anon_caps_json, &file_user_caps_json);
         if !tenant_ok {
             return json_error(
                 StatusCode::NOT_FOUND,
@@ -512,9 +531,11 @@ SELECT \
                     expires_at: chrono::Utc::now() + chrono::Duration::days(30),
                     publish_user_allowed: publish_policy.allow_user,
                     publish_anon_allowed: publish_policy.allow_anon,
+                    file_caps: file_caps.clone(),
                 },
             );
             req.extensions_mut().insert(publish_policy);
+            req.extensions_mut().insert(file_caps.clone());
             return next.run(req).await;
         }
         // Apply the kind resolved by the CTE.
@@ -561,6 +582,7 @@ SELECT \
                     role: TokenRole::Service,
                 });
                 req.extensions_mut().insert(publish_policy);
+                req.extensions_mut().insert(file_caps.clone());
                 state.auth_cache.insert(
                     hash.clone(),
                     crate::tenant::auth_cache::CachedAuth::Bearer {
@@ -574,6 +596,7 @@ SELECT \
                         // `Option<String>`) so the original still flows to the
                         // audit branch this request.
                         email_snapshot: resolved_email_snapshot.clone(),
+                        file_caps: file_caps.clone(),
                     },
                 );
             }
@@ -612,6 +635,7 @@ SELECT \
                     role,
                 });
                 req.extensions_mut().insert(publish_policy);
+                req.extensions_mut().insert(file_caps.clone());
                 let cached_role = match role {
                     TokenRole::Anon => crate::tenant::auth_cache::CachedRole::Anon,
                     TokenRole::Service => crate::tenant::auth_cache::CachedRole::Service,
@@ -628,6 +652,7 @@ SELECT \
                         // the audit `actor_email_snapshot` empty on a hit, exactly
                         // as the DB path leaves it for these roles.
                         email_snapshot: None,
+                        file_caps: file_caps.clone(),
                     },
                 );
             }
