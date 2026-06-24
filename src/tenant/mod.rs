@@ -517,13 +517,14 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     .delete(crate::tenant::uploads::terminate)
                     .layer(axum::extract::DefaultBodyLimit::max(chunk_max)),
             )
-            // v1.34.1 (#1 fix) — INNER to bearer_auth: applied BEFORE the bearer
-            // layer in source, so axum runs it AFTER bearer on the request path
-            // (when TenantRef is in extensions). Every data-plane files route
-            // (Mode-A files + Mode-B tus uploads) is service-key-only; anon/user
-            // -> 403 WRITE_DENIED. set_visibility + the uploads/* handlers keep
-            // their inline require_service as defense-in-depth (layer 2).
-            .layer(axum::middleware::from_fn(router::require_service_layer))
+            // v1.42 — file-caps gate, INNER to bearer_auth (applied BEFORE the
+            // bearer layer in source, so axum runs it AFTER bearer on the request
+            // path when TenantRef + TenantFileCaps are in extensions). Service is
+            // unrestricted; anon/user are gated per-verb against the tenant's
+            // file caps (default empty = service-only, preserving v1.34.1
+            // behaviour). Replaces the v1.34.1 blanket require_service_layer.
+            // The tus handlers keep an inline cap-aware check as defense-in-depth.
+            .layer(axum::middleware::from_fn(file_caps::file_caps_layer))
             .layer(axum::middleware::from_fn_with_state(
                 auth_state.clone(),
                 router::bearer_auth_layer,
