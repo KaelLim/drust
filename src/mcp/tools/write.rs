@@ -1,6 +1,7 @@
 use crate::mcp::server::DrustMcp;
 use crate::storage::schema::{VectorField, describe_collection, is_protected_collection};
 use crate::tenant::events::Event;
+use rusqlite::OptionalExtension;
 use rusqlite::types::Value;
 use serde_json::json;
 use std::collections::HashSet;
@@ -93,41 +94,36 @@ fn json_to_sql_value(v: &serde_json::Value) -> Value {
     }
 }
 
-fn read_record(
-    c: &rusqlite::Connection,
-    coll: &str,
-    id: i64,
+/// Materialize one already-fetched `rusqlite::Row` (column names `col_names`)
+/// into a JSON object, hiding declared vector columns entirely and rendering
+/// any BLOB as `{"__blob_bytes": n}`. Shared by the `RETURNING *` insert/update
+/// paths and the legacy `read_record` SELECT so they stay byte-identical.
+fn materialize_row(
+    r: &rusqlite::Row<'_>,
+    col_names: &[String],
     vector_names: &HashSet<String>,
 ) -> rusqlite::Result<serde_json::Value> {
-    let sql = format!(
-        "SELECT * FROM \"{}\" WHERE id = ?1",
-        coll.replace('"', "\"\"")
-    );
-    let mut stmt = c.prepare(&sql)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-    stmt.query_row(rusqlite::params![id], |r| {
-        let mut obj = serde_json::Map::new();
-        for (i, n) in col_names.iter().enumerate() {
-            // Vector columns are hidden by default — same shape as the REST
-            // records.rs path. Keep them out of the response entirely;
-            // retrieval is via search_collection.
-            if vector_names.contains(n) {
-                continue;
-            }
-            let v = r.get_ref(i)?;
-            let jv = match v {
-                rusqlite::types::ValueRef::Null => serde_json::Value::Null,
-                rusqlite::types::ValueRef::Integer(i) => serde_json::json!(i),
-                rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
-                rusqlite::types::ValueRef::Text(t) => {
-                    serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
-                }
-                rusqlite::types::ValueRef::Blob(b) => json!({ "__blob_bytes": b.len() }),
-            };
-            obj.insert(n.clone(), jv);
+    let mut obj = serde_json::Map::new();
+    for (i, n) in col_names.iter().enumerate() {
+        // Vector columns are hidden by default — same shape as the REST
+        // records.rs path. Keep them out of the response entirely;
+        // retrieval is via search_collection.
+        if vector_names.contains(n) {
+            continue;
         }
-        Ok(serde_json::Value::Object(obj))
-    })
+        let v = r.get_ref(i)?;
+        let jv = match v {
+            rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+            rusqlite::types::ValueRef::Integer(i) => serde_json::json!(i),
+            rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
+            rusqlite::types::ValueRef::Text(t) => {
+                serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+            }
+            rusqlite::types::ValueRef::Blob(b) => json!({ "__blob_bytes": b.len() }),
+        };
+        obj.insert(n.clone(), jv);
+    }
+    Ok(serde_json::Value::Object(obj))
 }
 
 /// Encode every vector field present in `data_map` to a packed-f32
@@ -225,14 +221,16 @@ pub async fn insert_record(
             check_constraints(&schema, &data_map)?;
             let cols: Vec<&str> = data_map.keys().map(|k| k.as_str()).collect();
             let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+            // `RETURNING *` collapses the post-insert read-back: SQLite returns
+            // the persisted row in one round-trip, so there is no second SELECT.
             let sql = if cols.is_empty() {
                 format!(
-                    "INSERT INTO \"{}\" DEFAULT VALUES",
+                    "INSERT INTO \"{}\" DEFAULT VALUES RETURNING *",
                     coll.replace('"', "\"\"")
                 )
             } else {
                 format!(
-                    "INSERT INTO \"{}\" ({}) VALUES ({})",
+                    "INSERT INTO \"{}\" ({}) VALUES ({}) RETURNING *",
                     coll.replace('"', "\"\""),
                     cols.iter()
                         .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
@@ -252,9 +250,17 @@ pub async fn insert_record(
                 .collect();
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            tx.execute(&sql, &refs[..])?;
-            let id = tx.last_insert_rowid();
-            let rec = read_record(tx, &coll, id, &vector_names)?;
+            let mut stmt = tx.prepare(&sql)?;
+            let col_names: Vec<String> =
+                stmt.column_names().iter().map(|s| s.to_string()).collect();
+            let rec =
+                stmt.query_row(&refs[..], |r| materialize_row(r, &col_names, &vector_names))?;
+            // Pull id from the RETURNING row; fall back to last_insert_rowid for
+            // the (theoretical) collection without an `id` column.
+            let id = rec
+                .get("id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_else(|| tx.last_insert_rowid());
             Ok((id, rec))
         })
         .await?;
@@ -331,8 +337,11 @@ pub async fn update_record(
                 .enumerate()
                 .map(|(i, k)| format!("\"{}\" = ?{}", k.replace('"', "\"\""), i + 1))
                 .collect();
+            // `RETURNING *` collapses the post-update read-back: a zero-row
+            // UPDATE returns no row, which `.optional()` maps to `None` →
+            // `QueryReturnedNoRows`, reproducing the old `n == 0` arm exactly.
             let sql = format!(
-                "UPDATE \"{}\" SET {}, updated_at = datetime('now') WHERE id = ?{}",
+                "UPDATE \"{}\" SET {}, updated_at = datetime('now') WHERE id = ?{} RETURNING *",
                 coll.replace('"', "\"\""),
                 set_exprs.join(","),
                 data_map.len() + 1
@@ -347,11 +356,16 @@ pub async fn update_record(
             params.push(Value::Integer(id));
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            let n = tx.execute(&sql, &refs[..])?;
-            if n == 0 {
-                return Err(rusqlite::Error::QueryReturnedNoRows);
+            let mut stmt = tx.prepare(&sql)?;
+            let col_names: Vec<String> =
+                stmt.column_names().iter().map(|s| s.to_string()).collect();
+            match stmt
+                .query_row(&refs[..], |r| materialize_row(r, &col_names, &vector_names))
+                .optional()?
+            {
+                Some(rec) => Ok(rec),
+                None => Err(rusqlite::Error::QueryReturnedNoRows),
             }
-            read_record(tx, &coll, id, &vector_names)
         })
         .await?;
     // Build response first; dispatch only after payload exists.
