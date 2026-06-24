@@ -18,6 +18,7 @@ async fn delete_user_clears_cached_entry() {
             expires_at: chrono::Utc::now() + chrono::Duration::days(1),
             publish_user_allowed: false,
             publish_anon_allowed: false,
+            file_caps: Default::default(),
         },
     );
 

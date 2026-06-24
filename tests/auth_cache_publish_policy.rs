@@ -17,6 +17,7 @@ async fn publish_policy_change_clears_tenant_entries() {
             publish_user_allowed: false, // stale: about to flip to true
             publish_anon_allowed: false,
             email_snapshot: None,
+            file_caps: Default::default(),
         },
     );
 

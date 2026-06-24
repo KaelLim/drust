@@ -51,6 +51,10 @@ pub enum CachedAuth {
         publish_user_allowed: bool,
         publish_anon_allowed: bool,
         email_snapshot: Option<String>,
+        /// v1.42 — per-tenant file caps captured at fill time. A hit MUST
+        /// reconstruct the SAME `TenantFileCaps` the CTE path produces, never
+        /// a default — a stale-empty hit would wrongly DENY a permitted op.
+        file_caps: crate::tenant::file_caps::TenantFileCaps,
     },
     /// `drust_user_*` session bearer. `expires_at` is the cached source of
     /// truth → self-check, no `_system_sessions` read on a hit. The
@@ -64,6 +68,8 @@ pub enum CachedAuth {
         expires_at: chrono::DateTime<chrono::Utc>,
         publish_user_allowed: bool,
         publish_anon_allowed: bool,
+        /// v1.42 — see `Bearer::file_caps`.
+        file_caps: crate::tenant::file_caps::TenantFileCaps,
     },
 }
 
@@ -226,6 +232,7 @@ mod tests {
                 publish_user_allowed: true,
                 publish_anon_allowed: false,
                 email_snapshot: Some("admin@x".to_string()),
+                file_caps: Default::default(),
             },
         );
         assert_eq!(c.len(), 1);
@@ -255,6 +262,7 @@ mod tests {
                 publish_user_allowed: false,
                 publish_anon_allowed: false,
                 email_snapshot: None,
+                file_caps: Default::default(),
             },
         );
         // Fresh: hit.

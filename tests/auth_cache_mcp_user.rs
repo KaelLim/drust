@@ -21,6 +21,7 @@ fn user_entry(tenant: &str, uid: &str) -> CachedAuth {
         expires_at: chrono::Utc::now() + chrono::Duration::days(1),
         publish_user_allowed: false,
         publish_anon_allowed: false,
+        file_caps: Default::default(),
     }
 }
 
