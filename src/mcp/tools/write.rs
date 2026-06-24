@@ -13,6 +13,68 @@ fn invalid_input(msg: String) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(msg))
 }
 
+/// v1.43 — validate provided values against each field's structured
+/// constraints (min/max/enum/max_length) and return a typed
+/// `CHECK_CONSTRAINT_FAILED: <detail>` on the first violation, so callers
+/// get a friendly message instead of a raw SQLite CHECK string. The native
+/// inline CHECK remains the authority (it also catches admin REST / stored
+/// RPC / edge-function writes that bypass this pre-check); this is the
+/// friendly fast-path for MCP/REST structured writes.
+///
+/// Note: `length("col")` in SQL counts UTF-16 code units while
+/// `s.chars().count()` here counts Unicode scalar values; for `max_length`
+/// the native CHECK is authoritative and this pre-check is a close
+/// approximation — both reject the same over-long inputs in the common case.
+fn check_constraints(
+    schema: &crate::storage::schema::CollectionSchema,
+    data: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), rusqlite::Error> {
+    for f in &schema.fields {
+        let Some(c) = &f.constraints else { continue };
+        let Some(v) = data.get(&f.name) else { continue };
+        if v.is_null() {
+            continue;
+        }
+        if let Some(n) = v.as_f64() {
+            if let Some(min) = c.min {
+                if n < min {
+                    return Err(invalid_input(format!(
+                        "CHECK_CONSTRAINT_FAILED: {} must be >= {min}",
+                        f.name
+                    )));
+                }
+            }
+            if let Some(max) = c.max {
+                if n > max {
+                    return Err(invalid_input(format!(
+                        "CHECK_CONSTRAINT_FAILED: {} must be <= {max}",
+                        f.name
+                    )));
+                }
+            }
+        }
+        if let Some(s) = v.as_str() {
+            if let Some(len) = c.max_length {
+                if s.chars().count() as u32 > len {
+                    return Err(invalid_input(format!(
+                        "CHECK_CONSTRAINT_FAILED: {} exceeds max_length {len}",
+                        f.name
+                    )));
+                }
+            }
+            if let Some(en) = &c.enum_values {
+                if !en.iter().any(|e| e == s) {
+                    return Err(invalid_input(format!(
+                        "CHECK_CONSTRAINT_FAILED: {} not in enum",
+                        f.name
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn json_to_sql_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Null,
@@ -158,6 +220,9 @@ pub async fn insert_record(
                     )));
                 }
             }
+            // v1.43 — structured CHECK pre-validation (typed 4xx before the
+            // native CHECK would raise a raw SQLite string).
+            check_constraints(&schema, &data_map)?;
             let cols: Vec<&str> = data_map.keys().map(|k| k.as_str()).collect();
             let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
             let sql = if cols.is_empty() {
@@ -258,6 +323,9 @@ pub async fn update_record(
                     )));
                 }
             }
+            // v1.43 — structured CHECK pre-validation (typed 4xx before the
+            // native CHECK would raise a raw SQLite string).
+            check_constraints(&schema, &data_map)?;
             let set_exprs: Vec<String> = data_map
                 .keys()
                 .enumerate()
