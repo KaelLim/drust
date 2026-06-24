@@ -88,10 +88,9 @@ async fn mcp_set_file_caps_noop_clears_nothing() {
     let cache = Arc::new(AuthCache::new(Duration::from_secs(10), 200_000));
     cache.insert("svc".to_string(), bearer_entry("t-fc"));
 
-    let _ =
-        drust::mcp::tools::owner_field::set_file_caps(&meta, "t-fc", None, None, Some(&*cache))
-            .await
-            .unwrap();
+    let _ = drust::mcp::tools::owner_field::set_file_caps(&meta, "t-fc", None, None, Some(&*cache))
+        .await
+        .unwrap();
     assert!(
         cache.get("svc").is_some(),
         "a no-op caps call (both args None) must not evict cached entries"

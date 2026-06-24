@@ -1146,7 +1146,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(active_count, 1, "still exactly one active PAT after a second boot");
+        assert_eq!(
+            active_count, 1,
+            "still exactly one active PAT after a second boot"
+        );
         let second: String = meta
             .query_row(
                 "SELECT token_hash FROM _admin_tokens WHERE admin_id=1 AND revoked_at IS NULL",

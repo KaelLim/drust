@@ -421,9 +421,18 @@ async fn tus_session_bound_to_creating_bearer() {
     let mut c = TenantFileCaps::default();
     c.user.insert(FileVerb::Upload); // grant upload so the cap gate passes for User
     let fc = axum::Extension(c);
-    let alice =
-        || axum::Extension(AuthCtx::User { user_id: "alice".into(), token_hash: "ha".into() });
-    let bob = || axum::Extension(AuthCtx::User { user_id: "bob".into(), token_hash: "hb".into() });
+    let alice = || {
+        axum::Extension(AuthCtx::User {
+            user_id: "alice".into(),
+            token_hash: "ha".into(),
+        })
+    };
+    let bob = || {
+        axum::Extension(AuthCtx::User {
+            user_id: "bob".into(),
+            token_hash: "hb".into(),
+        })
+    };
 
     // alice creates a session.
     let mut headers = HeaderMap::new();

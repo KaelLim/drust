@@ -122,7 +122,7 @@ pub fn classify_file_route(method: &axum::http::Method, path: &str) -> FileRoute
             (1, _, &Method::DELETE) => FileRouteGate::Capped(Delete), // delete_one
             (1, _, &Method::PATCH) => FileRouteGate::ServiceOnly,   // set-visibility
             (2, Some("bytes"), &Method::GET) => FileRouteGate::Capped(Read), // stream_bytes
-            (2, Some("sign"), &Method::POST) => FileRouteGate::ServiceOnly,  // sign_url
+            (2, Some("sign"), &Method::POST) => FileRouteGate::ServiceOnly, // sign_url
             _ => FileRouteGate::ServiceOnly,
         };
     }
@@ -132,9 +132,9 @@ pub fn classify_file_route(method: &axum::http::Method, path: &str) -> FileRoute
         let tail = &segs[i + 1..];
         return match (tail.len(), method) {
             (0, &Method::POST) => FileRouteGate::Capped(Upload), // create
-            (0, _) => FileRouteGate::ServiceOnly,                // list_sessions (GET) / options (OPTIONS)
+            (0, _) => FileRouteGate::ServiceOnly, // list_sessions (GET) / options (OPTIONS)
             (1, &Method::PATCH) | (1, &Method::HEAD) => FileRouteGate::Capped(Upload), // append / probe
-            (1, &Method::DELETE) => FileRouteGate::Capped(Delete), // terminate
+            (1, &Method::DELETE) => FileRouteGate::Capped(Delete),                     // terminate
             _ => FileRouteGate::ServiceOnly,
         };
     }
