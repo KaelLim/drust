@@ -48,6 +48,7 @@ fn apply_common_pragmas(conn: &Connection) -> rusqlite::Result<()> {
         PRAGMA temp_store = MEMORY;
         PRAGMA busy_timeout = 5000;
         PRAGMA foreign_keys = ON;
+        PRAGMA analysis_limit = 400;
         ",
     )
 }
