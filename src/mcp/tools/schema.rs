@@ -224,7 +224,7 @@ pub async fn create_collection_with_desc(
     col_exprs.push("updated_at TEXT NOT NULL DEFAULT (datetime('now'))".into());
     let table = name.to_string();
     let sql = format!(
-        "CREATE TABLE \"{}\" ({});",
+        "CREATE TABLE \"{}\" ({}) STRICT;",
         table.replace('"', "\"\""),
         col_exprs.join(","),
     );
