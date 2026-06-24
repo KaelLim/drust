@@ -79,13 +79,56 @@ fn render_field_line(out: &mut String, f: &FieldIr, force_optional: bool, _skip_
     } else if let Some(d) = &f.description {
         let _ = writeln!(leading_doc, "  /** {} */", escape_jsdoc(d));
     }
+    // v1.43 — numeric/length constraints surface as a JSDoc note (enum is
+    // expressed structurally as a literal union below, so it needs no note).
+    if let Some(note) = constraint_doc(f) {
+        let _ = writeln!(leading_doc, "  /** {} */", escape_jsdoc(&note));
+    }
     if !leading_doc.is_empty() {
         out.push_str(&leading_doc);
     }
-    let ts_ty = field_to_ts(&f.ty);
+    // v1.43 — an enum constraint renders as a string-literal union and
+    // overrides the base TS type.
+    let ts_ty = match f.constraints.as_ref().and_then(|c| c.enum_values.as_ref()) {
+        Some(vals) => vals
+            .iter()
+            .map(|v| format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        None => field_to_ts(&f.ty),
+    };
     let null_suffix = if f.nullable { " | null" } else { "" };
     let opt_marker = if force_optional { "?" } else { "" };
     let _ = writeln!(out, "  {}{}: {}{};", f.name, opt_marker, ts_ty, null_suffix);
+}
+
+/// Build a `@min`/`@max`/`@maxLength` JSDoc note for the numeric/length
+/// constraints, or `None` when the field has none of them.
+fn constraint_doc(f: &FieldIr) -> Option<String> {
+    let c = f.constraints.as_ref()?;
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(min) = c.min {
+        parts.push(format!("@min {}", ts_num(min)));
+    }
+    if let Some(max) = c.max {
+        parts.push(format!("@max {}", ts_num(max)));
+    }
+    if let Some(len) = c.max_length {
+        parts.push(format!("@maxLength {len}"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+fn ts_num(n: f64) -> String {
+    if n.fract() == 0.0 && n.is_finite() {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
 }
 
 fn field_to_ts(t: &FieldType) -> String {
@@ -141,6 +184,7 @@ mod tests {
                         fk: None,
                         description: None,
                         server_managed: true,
+                        constraints: None,
                     },
                     FieldIr {
                         name: "title".into(),
@@ -150,6 +194,7 @@ mod tests {
                         fk: None,
                         description: None,
                         server_managed: false,
+                        constraints: None,
                     },
                 ],
                 indexes: vec![],

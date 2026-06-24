@@ -16,6 +16,11 @@ export interface Posts {
   /** FK → users */
   author_id: number;
   embedding: number[] | null;
+  /** @min 1 @max 5 */
+  rating: number | null;
+  status: "draft" | "published" | null;
+  /** @maxLength 64 */
+  slug: string | null;
 }
 
 export interface PostsInsert {
@@ -25,6 +30,11 @@ export interface PostsInsert {
   /** FK → users */
   author_id: number;
   embedding: number[] | null;
+  /** @min 1 @max 5 */
+  rating: number | null;
+  status: "draft" | "published" | null;
+  /** @maxLength 64 */
+  slug: string | null;
 }
 
 export interface PostsUpdate {
@@ -34,6 +44,11 @@ export interface PostsUpdate {
   /** FK → users */
   author_id?: number;
   embedding?: number[] | null;
+  /** @min 1 @max 5 */
+  rating?: number | null;
+  status?: "draft" | "published" | null;
+  /** @maxLength 64 */
+  slug?: string | null;
 }
 
 export interface Users {

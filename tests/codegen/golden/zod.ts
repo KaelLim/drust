@@ -16,6 +16,9 @@ export const PostsSchema = z.object({
   body: z.string().nullable(),
   author_id: z.number().int(),
   embedding: z.array(z.number()).length(1536).nullable(),
+  rating: z.number().int().min(1).max(5).nullable(),
+  status: z.enum(["draft", "published"]).nullable(),
+  slug: z.string().max(64).nullable(),
 });
 export type Posts = z.infer<typeof PostsSchema>;
 
@@ -24,6 +27,9 @@ export const PostsInsertSchema = z.object({
   body: z.string().nullable(),
   author_id: z.number().int(),
   embedding: z.array(z.number()).length(1536).nullable(),
+  rating: z.number().int().min(1).max(5).nullable(),
+  status: z.enum(["draft", "published"]).nullable(),
+  slug: z.string().max(64).nullable(),
 });
 export type PostsInsert = z.infer<typeof PostsInsertSchema>;
 
@@ -32,6 +38,9 @@ export const PostsUpdateSchema = z.object({
   body: z.string().nullable().optional(),
   author_id: z.number().int().optional(),
   embedding: z.array(z.number()).length(1536).nullable().optional(),
+  rating: z.number().int().min(1).max(5).nullable().optional(),
+  status: z.enum(["draft", "published"]).nullable().optional(),
+  slug: z.string().max(64).nullable().optional(),
 });
 export type PostsUpdate = z.infer<typeof PostsUpdateSchema>;
 
