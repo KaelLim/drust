@@ -917,6 +917,11 @@ pub async fn create_handler(
             "POLICY_CHECK_FAILED",
             "insert rejected by the collection's insert policy CHECK",
         ),
+        Err(ref e) if crate::error::is_check_violation(e) => json_error(
+            StatusCode::BAD_REQUEST,
+            "CHECK_CONSTRAINT_FAILED",
+            &e.to_string(),
+        ),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("InvalidQuery") {
@@ -1173,6 +1178,11 @@ pub async fn update_handler(
             StatusCode::FORBIDDEN,
             "POLICY_CHECK_FAILED",
             "update rejected by the collection's update policy CHECK",
+        ),
+        Err(ref e) if crate::error::is_check_violation(e) => json_error(
+            StatusCode::BAD_REQUEST,
+            "CHECK_CONSTRAINT_FAILED",
+            &e.to_string(),
         ),
         Err(e) => {
             let msg = e.to_string();

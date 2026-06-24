@@ -5,6 +5,18 @@ use serde_json::json;
 
 use crate::safety::error_fixes;
 
+/// v1.43 — true when a rusqlite error is a native CHECK-constraint
+/// violation (as opposed to UNIQUE / FK / NOT NULL). Used by the REST
+/// create/update arms to map the raw SQLite CHECK message onto the typed
+/// `CHECK_CONSTRAINT_FAILED` code for admin REST / stored-RPC / edge-function
+/// writes that bypass the app-layer structured pre-check.
+pub fn is_check_violation(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::ConstraintViolation)
+    ) && e.to_string().to_uppercase().contains("CHECK")
+}
+
 /// Canonical JSON error response. v1.26: auto-attaches `suggested_fix`
 /// from the static catalog when the code is known. Unknown codes
 /// produce a body without the field (omitted via JSON `Option` shape —

@@ -20,6 +20,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Use POST /collections/<c>/list (FilterAst) or /search; /query (raw SELECT) is unavailable to anon once the tenant uses row-level policies, because drust cannot rewrite raw SQL to enforce them.",
     ),
     (
+        "CHECK_CONSTRAINT_FAILED",
+        "A value violates a field constraint (min/max/enum/max_length). Adjust the value to satisfy the collection's declared constraints, or relax the constraint via the field editor.",
+    ),
+    (
         "COLLECTION_NOT_FOUND",
         "Collection does not exist. Call `get_schema_overview` or `list_collections` to see existing collections.",
     ),
