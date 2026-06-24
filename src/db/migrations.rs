@@ -323,7 +323,14 @@ fn rebuild_one_table_strict(conn: &Connection, name: &str) -> rusqlite::Result<(
         [name],
         |r| r.get(0),
     )?;
-    let tmp = format!("{name}__strict_tmp");
+    // Temp table name uses the `_system_` prefix so it can NEVER collide with a
+    // user collection: tenants cannot create `_system_*` tables (identifier() +
+    // is_protected_collection block it), and `_system_%` is excluded from the
+    // rebuild scan. (The old `{name}__strict_tmp` was itself a valid collection
+    // name, so a tenant collection literally named `<x>__strict_tmp` would make
+    // CREATE fail and leave `<x>` permanently non-STRICT.) A leftover from a
+    // crashed prior rebuild is cleared by DROP IF EXISTS at the top of the tx.
+    let tmp = format!("_system_strict_tmp_{name}");
     let new_ddl = match make_strict_ddl(&original_sql, &tmp) {
         Some(s) => s,
         None => {
@@ -352,6 +359,9 @@ fn rebuild_one_table_strict(conn: &Connection, name: &str) -> rusqlite::Result<(
 
     let q = |s: &str| s.replace('"', "\"\"");
     let tx = conn.unchecked_transaction()?;
+    // Clear any leftover temp from a crashed prior rebuild (the `_system_`
+    // prefix means this can only ever be our own debris, never tenant data).
+    tx.execute_batch(&format!("DROP TABLE IF EXISTS \"{}\";", q(&tmp)))?;
     tx.execute_batch(&new_ddl)?;
     tx.execute_batch(&format!(
         "INSERT INTO \"{tmp}\" SELECT * FROM \"{name}\"; DROP TABLE \"{name}\"; \
