@@ -35,6 +35,7 @@ async fn seed_posts(mcp: &DrustMcp) {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         }],
     )
     .await

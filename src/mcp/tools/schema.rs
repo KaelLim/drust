@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 /// triggers behind. Block all three in one place for a clean error.
 pub const SYSTEM_COLUMNS: &[&str] = &["id", "created_at", "updated_at"];
 
-#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FieldSpec {
     pub name: String,
     pub sql_type: String, // text|integer|real|boolean|datetime|json|vector
@@ -40,6 +40,108 @@ pub struct FieldSpec {
     /// Trimmed to ≤2048 bytes. Empty / absent = no description.
     #[serde(default)]
     pub description: Option<String>,
+    /// v1.43 — structured CHECK constraints. Each compiles to ONE inline
+    /// `CHECK(...)` built only from drust-controlled escaped literals
+    /// (never raw tenant SQL — same camp as `SQL_DEFAULT_ALLOWLIST`), and
+    /// is persisted to `_system_collection_meta.field_constraints_json` so
+    /// the write path can pre-validate and codegen can reflect.
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+    #[serde(default)]
+    pub enum_values: Option<Vec<String>>,
+    #[serde(default)]
+    pub max_length: Option<u32>,
+}
+
+/// Serializable structured-constraints record persisted on
+/// `_system_collection_meta.field_constraints_json` (keyed by field name)
+/// and carried onto `storage::schema::Field` for codegen + write-path
+/// pre-checks. Mirrors the four `FieldSpec` constraint fields.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema, PartialEq)]
+pub struct FieldConstraints {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<u32>,
+}
+
+impl FieldConstraints {
+    pub fn is_empty(&self) -> bool {
+        self.min.is_none()
+            && self.max.is_none()
+            && self.enum_values.is_none()
+            && self.max_length.is_none()
+    }
+}
+
+impl FieldSpec {
+    pub fn constraints(&self) -> FieldConstraints {
+        FieldConstraints {
+            min: self.min,
+            max: self.max,
+            enum_values: self.enum_values.clone(),
+            max_length: self.max_length,
+        }
+    }
+}
+
+/// Render a constraint bound for SQL: drop the trailing `.0` for integral
+/// values so a numeric CHECK reads `>= 0` not `>= 0.0`.
+fn render_num(n: f64) -> String {
+    if n.fract() == 0.0 && n.is_finite() {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
+
+/// Compile a field's structured constraints into ONE inline CHECK clause
+/// built only from drust-controlled, escaped literals (never raw tenant
+/// SQL). Returns `None` when the field has no constraints. An `enum` on a
+/// numeric column compiles to a numeric `IN (...)`; on a text column the
+/// values are single-quote-escaped.
+pub(crate) fn compile_check(f: &FieldSpec) -> anyhow::Result<Option<String>> {
+    let mut parts: Vec<String> = Vec::new();
+    let col = f.name.replace('"', "\"\"");
+    if let Some(min) = f.min {
+        parts.push(format!("\"{col}\" >= {}", render_num(min)));
+    }
+    if let Some(max) = f.max {
+        parts.push(format!("\"{col}\" <= {}", render_num(max)));
+    }
+    if let Some(len) = f.max_length {
+        parts.push(format!("length(\"{col}\") <= {len}"));
+    }
+    if let Some(vals) = &f.enum_values {
+        if vals.is_empty() {
+            anyhow::bail!("enum_values must be non-empty for field {:?}", f.name);
+        }
+        let numeric = matches!(f.sql_type.as_str(), "integer" | "real" | "boolean");
+        let rendered: Vec<String> = if numeric {
+            vals.iter()
+                .map(|v| {
+                    v.parse::<f64>().map(render_num).map_err(|_| {
+                        anyhow::anyhow!("enum value {v:?} not numeric for {:?}", f.name)
+                    })
+                })
+                .collect::<anyhow::Result<_>>()?
+        } else {
+            vals.iter()
+                .map(|v| format!("'{}'", v.replace('\'', "''")))
+                .collect()
+        };
+        parts.push(format!("\"{col}\" IN ({})", rendered.join(",")));
+    }
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!("CHECK({})", parts.join(" AND "))))
 }
 
 fn default_true() -> bool {
@@ -138,6 +240,12 @@ fn column_expr(f: &FieldSpec) -> anyhow::Result<String> {
             _ => anyhow::bail!("default must be a literal or {{\"sql\": \"<allowlisted>\"}}"),
         };
         s.push_str(&format!(" DEFAULT {lit}"));
+    }
+    // v1.43 — structured CHECK from drust-controlled escaped literals.
+    // Order is `type NOT NULL UNIQUE DEFAULT CHECK REFERENCES`.
+    if let Some(chk) = compile_check(f)? {
+        s.push(' ');
+        s.push_str(&chk);
     }
     if let Some(fk) = &f.foreign_key {
         identifier(fk)?;
@@ -246,6 +354,18 @@ pub async fn create_collection_with_desc(
             dim: f.dim.expect("validated by column_expr"),
         })
         .collect();
+    // v1.43 — owned (field_name, constraints) pairs for the writer closure.
+    let field_constraints: Vec<(String, FieldConstraints)> = fields
+        .iter()
+        .filter_map(|f| {
+            let c = f.constraints();
+            if c.is_empty() {
+                None
+            } else {
+                Some((f.name.clone(), c))
+            }
+        })
+        .collect();
     let pool = s.inner().pool.clone();
     let pool2 = pool.clone();
     let meta_name = name.to_string();
@@ -269,6 +389,12 @@ pub async fn create_collection_with_desc(
         // 6. v1.19.1 — per-field descriptions from the pre-validated list.
         for (fname, val) in &validated_field_descs {
             write_field_description(tx, &meta_name, fname, Some(val))?;
+        }
+        // 7. v1.43 — per-field structured CHECK constraints (mirrors the DDL
+        // CHECK; persisted so the write path can pre-validate + codegen can
+        // reflect). Skip fields with no constraints.
+        for f in &field_constraints {
+            crate::storage::schema::write_field_constraints(tx, &meta_name, &f.0, &f.1)?;
         }
         Ok(())
     })
@@ -354,6 +480,23 @@ pub async fn add_field(
                 &coll_for_desc,
                 &field_name,
                 Some(&desc),
+            )
+        })
+        .await?;
+    }
+    // v1.43 — persist the new field's structured CHECK constraints (mirrors
+    // the DDL CHECK emitted by column_expr). Separate writer step so an
+    // ALTER failure never leaves orphan meta and vice versa.
+    let new_constraints = field.constraints();
+    if !new_constraints.is_empty() {
+        let coll_for_cons = collection.to_string();
+        let field_name = field.name.clone();
+        pool.with_writer(move |c| {
+            crate::storage::schema::write_field_constraints(
+                c,
+                &coll_for_cons,
+                &field_name,
+                &new_constraints,
             )
         })
         .await?;
@@ -802,6 +945,67 @@ mod field_spec_vector_tests {
     use super::*;
 
     #[test]
+    fn compile_check_builds_safe_clauses() {
+        // numeric range
+        let f = FieldSpec {
+            name: "age".into(),
+            sql_type: "integer".into(),
+            nullable: true,
+            min: Some(0.0),
+            max: Some(120.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::compile_check(&f).unwrap().unwrap(),
+            r#"CHECK("age" >= 0 AND "age" <= 120)"#
+        );
+        // enum with a quote — must be escaped, never raw
+        let g = FieldSpec {
+            name: "role".into(),
+            sql_type: "text".into(),
+            nullable: true,
+            enum_values: Some(vec!["a".into(), "o'brien".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::compile_check(&g).unwrap().unwrap(),
+            r#"CHECK("role" IN ('a','o''brien'))"#
+        );
+        // max_length
+        let h = FieldSpec {
+            name: "bio".into(),
+            sql_type: "text".into(),
+            nullable: true,
+            max_length: Some(280),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::compile_check(&h).unwrap().unwrap(),
+            r#"CHECK(length("bio") <= 280)"#
+        );
+        // numeric enum on an integer column compiles to numeric IN
+        let n = FieldSpec {
+            name: "status".into(),
+            sql_type: "integer".into(),
+            nullable: true,
+            enum_values: Some(vec!["0".into(), "1".into()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::compile_check(&n).unwrap().unwrap(),
+            r#"CHECK("status" IN (0,1))"#
+        );
+        // no constraints → None
+        let z = FieldSpec {
+            name: "x".into(),
+            sql_type: "text".into(),
+            nullable: true,
+            ..Default::default()
+        };
+        assert!(super::compile_check(&z).unwrap().is_none());
+    }
+
+    #[test]
     fn vector_field_requires_dim() {
         let f = FieldSpec {
             name: "embedding".into(),
@@ -812,6 +1016,7 @@ mod field_spec_vector_tests {
             foreign_key: None,
             dim: None,
             description: None,
+            ..Default::default()
         };
         let err = column_expr(&f).unwrap_err();
         assert!(
@@ -831,6 +1036,7 @@ mod field_spec_vector_tests {
             foreign_key: None,
             dim: Some(384),
             description: None,
+            ..Default::default()
         };
         let expr = column_expr(&f).unwrap();
         assert_eq!(expr, "\"embedding\" BLOB NOT NULL");
@@ -848,6 +1054,7 @@ mod field_spec_vector_tests {
                 foreign_key: None,
                 dim: Some(bad_dim),
                 description: None,
+                ..Default::default()
             };
             let err = column_expr(&f).unwrap_err();
             assert!(
@@ -868,6 +1075,7 @@ mod field_spec_vector_tests {
             foreign_key: None,
             dim: Some(42),
             description: None,
+            ..Default::default()
         };
         let expr = column_expr(&f).unwrap();
         assert_eq!(expr, "\"title\" TEXT");
