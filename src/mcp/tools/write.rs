@@ -14,6 +14,20 @@ fn invalid_input(msg: String) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(msg))
 }
 
+/// Backstop for the MCP write path: rewrite a raw native CHECK-constraint
+/// failure into the typed `CHECK_CONSTRAINT_FAILED: ...` message so the MCP
+/// error surfaces the SAME code the REST handlers do (`bail_mcp` parses the
+/// code off the prefix). The app-layer `check_constraints` is the fast path;
+/// this catches any constraint shape it does not model (defense in depth).
+/// Non-CHECK errors (UNIQUE / FK / NOT NULL / no-rows) pass through unchanged.
+fn map_check_violation(e: rusqlite::Error) -> rusqlite::Error {
+    if crate::error::is_check_violation(&e) {
+        invalid_input(format!("CHECK_CONSTRAINT_FAILED: {e}"))
+    } else {
+        e
+    }
+}
+
 /// v1.43 — validate provided values against each field's structured
 /// constraints (min/max/enum/max_length) and return a typed
 /// `CHECK_CONSTRAINT_FAILED: <detail>` on the first violation, so callers
@@ -22,21 +36,37 @@ fn invalid_input(msg: String) -> rusqlite::Error {
 /// RPC / edge-function writes that bypass this pre-check); this is the
 /// friendly fast-path for MCP/REST structured writes.
 ///
-/// Note: `length("col")` in SQL counts UTF-16 code units while
-/// `s.chars().count()` here counts Unicode scalar values; for `max_length`
-/// the native CHECK is authoritative and this pre-check is a close
-/// approximation — both reject the same over-long inputs in the common case.
+/// Note: `length("col")` in SQL and `s.chars().count()` here BOTH count
+/// Unicode code points (verified: `length('😀😀') = 2`), so the `max_length`
+/// pre-check and the native CHECK agree on every input. The native inline
+/// CHECK remains the authority (it also catches admin REST / stored-RPC /
+/// edge-function writes that bypass this pre-check); this is the friendly
+/// fast-path for MCP/REST structured writes.
+///
+/// Enum and min/max are TYPE-AWARE so the pre-check agrees with
+/// `compile_check`: on an integer/real/boolean field the enum compiles to a
+/// numeric `IN (...)` and a JSON number/bool is compared numerically (a JSON
+/// number would otherwise slip past a string-only check and hit the raw native
+/// CHECK). A value whose JSON shape does not match the column type is left for
+/// the native CHECK / STRICT typing to reject.
 fn check_constraints(
     schema: &crate::storage::schema::CollectionSchema,
     data: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), rusqlite::Error> {
+    // Numeric view of a JSON value: a number, or a bool (true→1, false→0,
+    // matching `json_to_sql_value`'s bool→Integer lowering).
+    fn as_num(v: &serde_json::Value) -> Option<f64> {
+        v.as_f64()
+            .or_else(|| v.as_bool().map(|b| if b { 1.0 } else { 0.0 }))
+    }
     for f in &schema.fields {
         let Some(c) = &f.constraints else { continue };
         let Some(v) = data.get(&f.name) else { continue };
         if v.is_null() {
             continue;
         }
-        if let Some(n) = v.as_f64() {
+        let numeric = matches!(f.sql_type.as_str(), "integer" | "real" | "boolean");
+        if let Some(n) = as_num(v) {
             if let Some(min) = c.min {
                 if n < min {
                     return Err(invalid_input(format!(
@@ -54,22 +84,36 @@ fn check_constraints(
                 }
             }
         }
-        if let Some(s) = v.as_str() {
-            if let Some(len) = c.max_length {
-                if s.chars().count() as u32 > len {
-                    return Err(invalid_input(format!(
-                        "CHECK_CONSTRAINT_FAILED: {} exceeds max_length {len}",
-                        f.name
-                    )));
+        if let Some(en) = &c.enum_values {
+            // Mirror compile_check: numeric column → numeric membership;
+            // text column → string membership. Skip when the value's JSON
+            // shape doesn't match the column type (native CHECK/STRICT handles).
+            let in_enum = if numeric {
+                match as_num(v) {
+                    Some(n) => en
+                        .iter()
+                        .any(|e| e.parse::<f64>().map(|ev| ev == n).unwrap_or(false)),
+                    None => true,
                 }
+            } else {
+                match v.as_str() {
+                    Some(s) => en.iter().any(|e| e == s),
+                    None => true,
+                }
+            };
+            if !in_enum {
+                return Err(invalid_input(format!(
+                    "CHECK_CONSTRAINT_FAILED: {} not in enum",
+                    f.name
+                )));
             }
-            if let Some(en) = &c.enum_values {
-                if !en.iter().any(|e| e == s) {
-                    return Err(invalid_input(format!(
-                        "CHECK_CONSTRAINT_FAILED: {} not in enum",
-                        f.name
-                    )));
-                }
+        }
+        if let (Some(s), Some(len)) = (v.as_str(), c.max_length) {
+            if s.chars().count() as u32 > len {
+                return Err(invalid_input(format!(
+                    "CHECK_CONSTRAINT_FAILED: {} exceeds max_length {len}",
+                    f.name
+                )));
             }
         }
     }
@@ -254,8 +298,9 @@ pub async fn insert_record(
             let mut stmt = tx.prepare(&sql)?;
             let col_names: Vec<String> =
                 stmt.column_names().iter().map(|s| s.to_string()).collect();
-            let rec =
-                stmt.query_row(&refs[..], |r| materialize_row(r, &col_names, &vector_names))?;
+            let rec = stmt
+                .query_row(&refs[..], |r| materialize_row(r, &col_names, &vector_names))
+                .map_err(map_check_violation)?;
             // Pull id from the RETURNING row; fall back to last_insert_rowid for
             // the (theoretical) collection without an `id` column.
             let id = rec
@@ -362,6 +407,7 @@ pub async fn update_record(
                 stmt.column_names().iter().map(|s| s.to_string()).collect();
             match stmt
                 .query_row(&refs[..], |r| materialize_row(r, &col_names, &vector_names))
+                .map_err(map_check_violation)
                 .optional()?
             {
                 Some(rec) => Ok(rec),

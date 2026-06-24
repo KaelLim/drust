@@ -7,14 +7,23 @@ use crate::safety::error_fixes;
 
 /// v1.43 — true when a rusqlite error is a native CHECK-constraint
 /// violation (as opposed to UNIQUE / FK / NOT NULL). Used by the REST
-/// create/update arms to map the raw SQLite CHECK message onto the typed
-/// `CHECK_CONSTRAINT_FAILED` code for admin REST / stored-RPC / edge-function
-/// writes that bypass the app-layer structured pre-check.
+/// create/update arms (and the MCP write backstop) to map the raw SQLite
+/// CHECK message onto the typed `CHECK_CONSTRAINT_FAILED` code for admin
+/// REST / stored-RPC / edge-function / numeric-enum writes that bypass the
+/// app-layer structured pre-check.
+///
+/// Gated on the SQLite EXTENDED result code `SQLITE_CONSTRAINT_CHECK`, NOT a
+/// case-insensitive substring of the message: a UNIQUE / NOT NULL / FK
+/// violation on a column whose NAME contains "check" (e.g. `check_sum`)
+/// produces a message like `UNIQUE constraint failed: t.check_sum`, which a
+/// substring match would mislabel as a CHECK failure. The extended code is
+/// exact and never collides with column names.
 pub fn is_check_violation(e: &rusqlite::Error) -> bool {
     matches!(
-        e.sqlite_error_code(),
-        Some(rusqlite::ErrorCode::ConstraintViolation)
-    ) && e.to_string().to_uppercase().contains("CHECK")
+        e,
+        rusqlite::Error::SqliteFailure(err, _)
+            if err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_CHECK
+    )
 }
 
 /// Canonical JSON error response. v1.26: auto-attaches `suggested_fix`
@@ -96,6 +105,33 @@ pub fn json_error_with_aliases(
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+
+    #[test]
+    fn is_check_violation_distinguishes_check_from_unique_on_check_named_col() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER CHECK(n >= 0), \
+             check_sum TEXT UNIQUE);",
+        )
+        .unwrap();
+        // A genuine CHECK violation is detected.
+        let e_check = c
+            .execute("INSERT INTO t(n, check_sum) VALUES (-1, 'a')", [])
+            .unwrap_err();
+        assert!(is_check_violation(&e_check), "real CHECK must be detected");
+        // A UNIQUE violation on a column NAMED `check_sum` must NOT be
+        // misclassified — the message contains "check" but the extended code is
+        // SQLITE_CONSTRAINT_UNIQUE, not _CHECK.
+        c.execute("INSERT INTO t(n, check_sum) VALUES (1, 'dup')", [])
+            .unwrap();
+        let e_unique = c
+            .execute("INSERT INTO t(n, check_sum) VALUES (2, 'dup')", [])
+            .unwrap_err();
+        assert!(
+            !is_check_violation(&e_unique),
+            "UNIQUE on a check_* column must NOT be misclassified as CHECK"
+        );
+    }
 
     #[tokio::test]
     async fn known_code_gets_suggested_fix() {
