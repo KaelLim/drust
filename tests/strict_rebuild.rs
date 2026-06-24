@@ -174,3 +174,49 @@ fn one_orphan_does_not_block_strict_rebuild_of_clean_tables() {
         .unwrap();
     assert_eq!(n, 1, "held-back table's row is preserved");
 }
+
+/// Regression: a tenant collection literally named `<x>__strict_tmp` must NOT
+/// collide with the STRICT-rebuild temp table for `<x>`. The temp now uses a
+/// `_system_`-prefixed name that no user collection can occupy, so both tables
+/// migrate.
+#[test]
+fn collection_named_like_temp_table_does_not_block_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("tenants").join("t-collide");
+    std::fs::create_dir_all(&p).unwrap();
+    let c = Connection::open(p.join("data.sqlite")).unwrap();
+    c.execute_batch(
+        r#"
+        CREATE TABLE "posts" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT);
+        CREATE TABLE "posts__strict_tmp" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "note" TEXT);
+        INSERT INTO "posts"(title) VALUES ('p');
+        INSERT INTO "posts__strict_tmp"(note) VALUES ('n');
+    "#,
+    )
+    .unwrap();
+    drop(c);
+
+    drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-collide").unwrap();
+
+    let c = Connection::open(dir.path().join("tenants/t-collide/data.sqlite")).unwrap();
+    for t in ["posts", "posts__strict_tmp"] {
+        let s: i64 = c
+            .query_row(
+                "SELECT strict FROM pragma_table_list WHERE name=?1",
+                [t],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(s, 1, "{t} must reach STRICT despite the name overlap");
+    }
+    // Data preserved in both.
+    let np: i64 = c
+        .query_row("SELECT count(*) FROM posts", [], |r| r.get(0))
+        .unwrap();
+    let nt: i64 = c
+        .query_row("SELECT count(*) FROM \"posts__strict_tmp\"", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!((np, nt), (1, 1), "rows preserved in both tables");
+}
