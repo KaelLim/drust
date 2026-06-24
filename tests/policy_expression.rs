@@ -22,6 +22,7 @@ fn schema(fields: &[(&str, &str)]) -> CollectionSchema {
                 default_value: None,
                 foreign_key: None,
                 description: None,
+                ..Default::default()
             })
             .collect(),
         indices: vec![],
