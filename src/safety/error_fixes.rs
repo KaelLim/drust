@@ -36,6 +36,22 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Named field does not exist on this collection. Call `describe_collection` to see existing fields.",
     ),
     (
+        "FILE_DELETE_DENIED",
+        "Anon/user bearer lacks file.delete. Enable file_anon_caps/file_user_caps via set_file_caps (MCP) or /admin/tenants/<id>/file-caps, or use a service key.",
+    ),
+    (
+        "FILE_LIST_DENIED",
+        "Anon/user bearer lacks file.list. Enable file_anon_caps/file_user_caps via set_file_caps (MCP) or /admin/tenants/<id>/file-caps, or use a service key.",
+    ),
+    (
+        "FILE_READ_DENIED",
+        "Anon/user bearer lacks file.read. Enable file_anon_caps/file_user_caps via set_file_caps (MCP) or /admin/tenants/<id>/file-caps, or use a service key.",
+    ),
+    (
+        "FILE_UPLOAD_DENIED",
+        "Anon/user bearer lacks file.upload. Enable file_anon_caps/file_user_caps via set_file_caps (MCP) or /admin/tenants/<id>/file-caps, or use a service key.",
+    ),
+    (
         "FK_RESTRICT",
         "Row is referenced by another collection's foreign key (ON DELETE RESTRICT). Delete the referencing rows first, or use `dry_run: true` to see which collections block.",
     ),

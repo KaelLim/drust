@@ -271,6 +271,22 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         "allow_anon_publish",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    // v1.42 — opt-in file-storage caps. JSON arrays (subset of
+    // {read,list,upload,delete}). Default '[]' = empty = service-only, so every
+    // existing tenant keeps today's behaviour until it opts in. add_column_if_missing
+    // is the idempotency guard (run_migrations runs every boot — never rewrite).
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "file_anon_caps_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "file_user_caps_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
     // v1.15.0 — denormalized dashboard stats sampled in background.
     add_column_if_missing(meta, "tenants", "db_bytes", "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(meta, "tenants", "files_bytes", "INTEGER NOT NULL DEFAULT 0")?;
