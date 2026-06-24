@@ -210,7 +210,16 @@ fn execute_read_query_with_named_inner(
     row_cap: usize,
 ) -> Result<QueryResult, ExecError> {
     let hash = sql_hash(sql);
-    let mut stmt = conn.prepare_cached(sql).map_err(classify)?;
+    // Plain `prepare`, NOT `prepare_cached` (matches the non-named variant
+    // above): a stored RPC / named-bind query body can be `SELECT *`, whose
+    // column set changes under add_field/drop_field. Because this path reads
+    // `column_names()` BEFORE stepping, a cached statement on the long-lived
+    // reader connection would serve a STALE column set after DDL (DDL flushes
+    // only the drust schema cache + SSE bus, never rusqlite's per-connection
+    // statement cache) — silently dropping an added column from the result or
+    // erroring on a dropped one. Same defect class as the get_handler /
+    // list_bound_rows reads; keep this read in lockstep with the live schema.
+    let mut stmt = conn.prepare(sql).map_err(classify)?;
     let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let col_count = column_names.len();
 
