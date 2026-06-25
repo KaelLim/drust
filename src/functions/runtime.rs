@@ -706,8 +706,13 @@ mod tests {
     /// Build a fully-wired `DrustMcp` over a fresh tenant pool + in-memory Garage
     /// (no `meta` — the caller is supplied directly, so the per-invocation file-cap
     /// load is bypassed; tests pass `file_caps` explicitly).
-    async fn mcp_for(tenant_id: &str) -> (DrustMcp, crate::storage::pool::SharedTenantPool, tempfile::TempDir)
-    {
+    async fn mcp_for(
+        tenant_id: &str,
+    ) -> (
+        DrustMcp,
+        crate::storage::pool::SharedTenantPool,
+        tempfile::TempDir,
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let tenants = Arc::new(crate::storage::pool::TenantRegistry::new(
             tmp.path().to_path_buf(),
