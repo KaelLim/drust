@@ -3,6 +3,7 @@
 //! wasmtime. Spec: docs/superpowers/specs/2026-06-10-drust-edge-functions-design.md.
 
 pub mod bindings;
+pub mod caller;
 pub mod dispatcher;
 pub mod executor;
 pub mod routes;
@@ -83,7 +84,13 @@ pub fn test_stack_parts(
     struct NoopRunner;
     #[async_trait::async_trait]
     impl executor::FunctionRunner for NoopRunner {
-        async fn run(&self, _t: &str, _p: &std::path::Path, _e: &str) -> executor::RunOutcome {
+        async fn run(
+            &self,
+            _t: &str,
+            _p: &std::path::Path,
+            _e: &str,
+            _caller: caller::CallerCtx,
+        ) -> executor::RunOutcome {
             executor::RunOutcome {
                 status: executor::RunStatus::Ok,
                 result: "{}".into(),

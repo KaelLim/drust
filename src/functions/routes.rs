@@ -355,6 +355,8 @@ pub async fn invoke(
             function_name: name,
             trigger: "manual".into(),
             event_json: body.event.to_string(),
+            // Service-only route (require_service_layer) → god-mode, unchanged.
+            caller: crate::functions::caller::CallerCtx::Privileged,
         })
         .await;
     Json(serde_json::json!({

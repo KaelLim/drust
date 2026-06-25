@@ -69,7 +69,12 @@ async fn happy_fixture_writes_through_host_api() {
     helpers::create_collection_via_pool(&pool, "fn_out", &[("payload", "text")]).await;
 
     let out = runner
-        .run("t-w", &fixture("happy"), r#"{"trigger":"manual"}"#)
+        .run(
+            "t-w",
+            &fixture("happy"),
+            r#"{"trigger":"manual"}"#,
+            drust::functions::caller::CallerCtx::Privileged,
+        )
         .await;
     assert_eq!(out.status, RunStatus::Ok, "result: {}", out.result);
     assert!(
@@ -90,7 +95,14 @@ async fn loop_fixture_hits_epoch_timeout() {
     cfg.timeout_secs = 1;
     let (runner, _tenants, _tmp) = real_runner(cfg).await;
     let started = std::time::Instant::now();
-    let out = runner.run("t-w", &fixture("loop"), "{}").await;
+    let out = runner
+        .run(
+            "t-w",
+            &fixture("loop"),
+            "{}",
+            drust::functions::caller::CallerCtx::Privileged,
+        )
+        .await;
     assert_eq!(out.status, RunStatus::Timeout, "result: {}", out.result);
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
@@ -103,6 +115,13 @@ async fn membomb_fixture_hits_oom() {
     let mut cfg = FnConfig::test_default();
     cfg.memory_max_bytes = 32 * 1024 * 1024;
     let (runner, _tenants, _tmp) = real_runner(cfg).await;
-    let out = runner.run("t-w", &fixture("membomb"), "{}").await;
+    let out = runner
+        .run(
+            "t-w",
+            &fixture("membomb"),
+            "{}",
+            drust::functions::caller::CallerCtx::Privileged,
+        )
+        .await;
     assert_eq!(out.status, RunStatus::Oom, "result: {}", out.result);
 }
