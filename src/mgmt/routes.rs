@@ -972,6 +972,10 @@ impl MgmtState {
                 post(super::functions_admin::toggle),
             )
             .route(
+                "/admin/tenants/{id}/_functions/{name}/invoke-acl",
+                post(super::functions_admin::set_invoke_acl),
+            )
+            .route(
                 "/admin/tenants/{id}/_functions/{name}/delete",
                 post(super::functions_admin::delete),
             )

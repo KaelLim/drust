@@ -231,6 +231,14 @@ pub struct SetFunctionActiveArgs {
     pub active: bool,
 }
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct SetFunctionInvokeAclArgs {
+    pub name: String,
+    /// Allow anon-bearer invocation (runs capability-gated as Anon). Default-deny.
+    pub anon: bool,
+    /// Allow end-user (`drust_user_*`) invocation (runs as that user). Default-deny.
+    pub user: bool,
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct InvokeFunctionArgs {
     pub name: String,
     /// JSON event payload passed to the function.
@@ -2036,6 +2044,25 @@ impl DrustMcpService {
         }
     }
 
+    #[tool(description = "Service-only — set who may invoke an edge function \
+        under their own identity: anon and/or end-user (drust_user_*). Both \
+        flags default-deny; an anon/user invocation runs capability-gated \
+        (anon_caps/user_caps + owner_field + RLS), never god-mode. Grant AND \
+        revoke both flow through here (config is service-only).")]
+    async fn set_function_invoke_acl(
+        &self,
+        Parameters(SetFunctionInvokeAclArgs { name, anon, user }): Parameters<
+            SetFunctionInvokeAclArgs,
+        >,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::functions::set_function_invoke_acl(&self.state, &name, anon, user)
+            .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
     #[tool(description = "v1.36 — Enqueue a manual invocation of an edge \
         function with an arbitrary event JSON. ASYNC: returns the enqueue \
         ack immediately; read the outcome via get_function_logs \
@@ -2144,7 +2171,8 @@ CAPABILITY GROUPS
    recent_writes — last 100 mutations for THIS tenant. Use after a retry to see what the previous attempt wrote.
 
 6. FUNCTIONS (v1.36+, service-only — edge functions: user-uploaded wasm triggered by record CRUD + file.uploaded)
-   Manage:  list_functions, set_function_active, delete_function
+   Manage:  list_functions, set_function_active, set_function_invoke_acl, delete_function
+   Invoke ACL: set_function_invoke_acl — opt anon/user into self-identity invoke (default-deny; runs capability-gated, not god-mode)
    Run:     invoke_function (async — returns enqueue ack; read outcome via get_function_logs, trigger=manual)
    Logs:    get_function_logs
    Upload:  NO MCP upload tool by design. POST the .wasm via REST:

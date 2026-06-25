@@ -54,6 +54,28 @@ pub async fn set_function_active(s: &DrustMcp, name: &str, active: bool) -> anyh
     Ok(json!({ "name": name, "active": active }))
 }
 
+/// Service-only (by MCP dispatch) config of the caller-identity invoke ACL.
+/// Grant AND revoke both flow through `set_invoke_acl` — a missing name is
+/// `FN_NOT_FOUND`. Invalidates the trigger-binding cache so the new flags take
+/// effect on the next dispatch decision. Mirrors REST `PATCH …/functions/<name>`
+/// (which routes through the same `schema::set_invoke_acl`).
+pub async fn set_function_invoke_acl(
+    s: &DrustMcp,
+    name: &str,
+    anon: bool,
+    user: bool,
+) -> anyhow::Result<Value> {
+    let inner = s.inner();
+    let hit = crate::functions::schema::set_invoke_acl(&inner.pool, name, anon, user).await?;
+    if !hit {
+        anyhow::bail!("FN_NOT_FOUND: no function named {name}");
+    }
+    if let Some(f) = inner.functions.as_ref() {
+        f.bindings.invalidate(&inner.tenant_id);
+    }
+    Ok(json!({ "name": name, "invoke_anon": anon, "invoke_user": user }))
+}
+
 pub async fn get_function_logs(
     s: &DrustMcp,
     name: &str,

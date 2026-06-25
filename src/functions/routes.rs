@@ -227,6 +227,12 @@ pub struct PatchBody {
     pub active: Option<bool>,
     pub triggers: Option<serde_json::Value>,
     pub description: Option<String>,
+    /// Caller-identity invoke ACL (T5). Service-only by the router-level
+    /// `require_service_layer` — grant AND revoke both land here. When either
+    /// is `Some`, both flags are written together (the merge below preserves
+    /// whichever side the caller omitted).
+    pub invoke_anon: Option<bool>,
+    pub invoke_user: Option<bool>,
 }
 
 pub async fn patch(
@@ -264,6 +270,36 @@ pub async fn patch(
             Ok(true) => {}
             // Reaching here means no `set_active` 404 fired (that early-returns),
             // so a zero-row update can only mean the function does not exist.
+            Ok(false) => {
+                return crate::error::json_error(
+                    StatusCode::NOT_FOUND,
+                    "FN_NOT_FOUND",
+                    "no such function",
+                );
+            }
+            Err(e) => return map_sentinel(e),
+        }
+    }
+    // Invoke ACL (T5) — service-only by `require_service_layer`. `set_invoke_acl`
+    // writes both columns in one UPDATE, so merge whichever flag the caller
+    // omitted with its current value (a one-sided PATCH must not clobber the
+    // other). Read-then-write under the same service-only surface.
+    if body.invoke_anon.is_some() || body.invoke_user.is_some() {
+        let cur = match schema::get_function(&t.pool, &name).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return crate::error::json_error(
+                    StatusCode::NOT_FOUND,
+                    "FN_NOT_FOUND",
+                    "no such function",
+                );
+            }
+            Err(e) => return map_sentinel(e),
+        };
+        let anon = body.invoke_anon.unwrap_or(cur.invoke_anon);
+        let user = body.invoke_user.unwrap_or(cur.invoke_user);
+        match schema::set_invoke_acl(&t.pool, &name, anon, user).await {
+            Ok(true) => {}
             Ok(false) => {
                 return crate::error::json_error(
                     StatusCode::NOT_FOUND,
