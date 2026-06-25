@@ -153,25 +153,6 @@ impl wasmtime_wasi::WasiView for StoreData {
     }
 }
 
-fn vis_from_str(visibility: &str) -> crate::storage::files::Visibility {
-    match visibility {
-        "public" => crate::storage::files::Visibility::Public,
-        _ => crate::storage::files::Visibility::Private,
-    }
-}
-
-/// Cache-control for a guest `put-file`, derived from the object's
-/// visibility exactly like Mode A/B (`storage::files::default_cache_control`)
-/// rather than hardcoding a public value — a private object must carry a
-/// private, non-cacheable directive on both the `_system_files` row and the
-/// Garage object.
-fn put_file_cache_control(visibility: &str) -> &'static str {
-    crate::storage::files::default_cache_control(
-        vis_from_str(visibility),
-        crate::storage::files::Disposition::Inline,
-    )
-}
-
 /// The `host` import interface. bindgen generates true async trait methods
 /// (`imports: { default: async }`), so the tool layer is awaited directly —
 /// no block_on / runtime Handle needed (plan adaptation note: preferred form).
@@ -229,44 +210,13 @@ impl host::Host for StoreData {
     }
 
     async fn get_file_bytes(&mut self, key: String) -> Result<Vec<u8>, String> {
-        let cap = self.host.file_read_max;
-        let inner = self.host.mcp.inner();
-        let garage = inner
-            .garage
-            .as_ref()
-            .ok_or("STORAGE_UNAVAILABLE: storage not configured")?;
-        // Resolve visibility → bucket from the tenant's _system_files row.
-        // Pure single-row SELECT — reader lane, same as get_file_url
-        // (mcp/tools/files.rs); never occupy the serialized writer mutex.
-        let pool = inner.pool.clone();
-        let key2 = key.clone();
-        let row: Option<(String, i64)> = pool
-            .with_reader(move |c| {
-                match c.query_row(
-                    "SELECT visibility, size_bytes FROM _system_files WHERE key = ?1",
-                    rusqlite::params![key2],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-                ) {
-                    Ok(v) => Ok(Some(v)),
-                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                    Err(e) => Err(e),
-                }
-            })
+        // The host get-file path is shared with the cap-gated enforcement core
+        // (`functions::enforce::get_file_bytes_raw`). Privileged (event/service/
+        // cron) callers hit the raw path with no cap gate — today's behavior,
+        // byte-equivalent. Anon/User invoke goes through `enforced_get_file_bytes`
+        // (Task 3 wiring), which adds the `file.read` cap gate before this.
+        crate::functions::enforce::get_file_bytes_raw(&self.host.mcp, &key, self.host.file_read_max)
             .await
-            .map_err(|e| format!("DB_ERROR: {e}"))?;
-        let (visibility, size) = row.ok_or("FILE_NOT_FOUND: no such key")?;
-        if size as u64 > cap {
-            return Err(format!(
-                "FN_FILE_TOO_LARGE: {size} bytes exceeds get-file-bytes cap {cap}"
-            ));
-        }
-        let bucket = crate::storage::files::bucket_for(vis_from_str(&visibility));
-        let object_key = format!("{}/{}", inner.tenant_id, key);
-        garage
-            .get_object_bytes_in(bucket, &object_key)
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| format!("GARAGE_GET_FAILED: {e:#}"))
     }
 
     async fn put_file(
@@ -276,91 +226,19 @@ impl host::Host for StoreData {
         content_type: String,
         visibility: String,
     ) -> Result<String, String> {
-        if !matches!(visibility.as_str(), "public" | "private") {
-            return Err("INVALID_VISIBILITY: visibility must be public|private".into());
-        }
-        let inner = self.host.mcp.inner();
-        let garage = inner
-            .garage
-            .as_ref()
-            .ok_or("STORAGE_UNAVAILABLE: storage not configured")?;
-        // Defense-in-depth parity with every other Garage write surface:
-        // Mode A enforces max_upload_bytes + the disk guard
-        // (mgmt/tenant_files.rs), Mode B enforces the disk guard
-        // (tenant/uploads/mod.rs). The guest host API enforces both too —
-        // otherwise a function could loop Garage puts up to the wasm memory
-        // cap per call with no disk-full stop.
-        if bytes.len() > inner.max_upload_bytes {
-            return Err(format!(
-                "FN_PUT_TOO_LARGE: {} bytes exceeds upload limit {}",
-                bytes.len(),
-                inner.max_upload_bytes
-            ));
-        }
-        // Best-effort like Mode A: skip (with a warn) if the path is absent.
-        match crate::storage::disk::disk_stats(crate::storage::disk::disk_check_root()) {
-            Ok(stats) if (stats.free_pct as u8) < self.host.disk_min_free_pct => {
-                return Err(format!(
-                    "DISK_FULL: {:.1}% free, minimum {}% required",
-                    stats.free_pct, self.host.disk_min_free_pct
-                ));
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "disk_stats for the disk-check root failed — skipping disk check");
-            }
-        }
-        let pool = inner.pool.clone();
-        let size = bytes.len() as i64;
-        // Cache-control derived from visibility (mirror Mode A/B) — a private
-        // object must not advertise a publicly-cacheable directive.
-        let cc = put_file_cache_control(&visibility);
-        // SQLite-first (Mode A ordering): row, then object, compensate on failure.
-        let key_w = key.clone();
-        let ct_w = content_type.clone();
-        let vis_w = visibility.clone();
-        let cc_w = cc.to_string();
-        pool.with_writer(move |c| {
-            c.execute(
-                "INSERT INTO _system_files
-                 (key, original_name, content_type, size_bytes, content_disposition,
-                  visibility, cache_control, meta_json, uploader)
-                 VALUES (?1, ?2, ?3, ?4, 'inline', ?5, ?6, NULL, 'function')",
-                rusqlite::params![key_w, key_w, ct_w, size, vis_w, cc_w],
-            )
-            .map(|_| ())
-        })
+        // Shared with the enforcement core (`functions::enforce::put_file_raw`):
+        // it carries the same max_upload_bytes + disk guard + SQLite-first
+        // ordering + visibility-derived cache_control. Privileged callers use
+        // the raw path (no cap); anon/user invoke gates `file.upload` first.
+        crate::functions::enforce::put_file_raw(
+            &self.host.mcp,
+            &key,
+            bytes,
+            &content_type,
+            &visibility,
+            self.host.disk_min_free_pct,
+        )
         .await
-        .map_err(|e| format!("DB_INSERT_FAILED: {e}"))?;
-
-        let bucket = crate::storage::files::bucket_for(vis_from_str(&visibility));
-        let object_key = format!("{}/{}", inner.tenant_id, key);
-        if let Err(e) = garage
-            .put_object_in(
-                bucket,
-                &object_key,
-                bytes.into(),
-                Some(&content_type),
-                "inline",
-                &key,
-                Some(cc),
-                None,
-            )
-            .await
-        {
-            let key_c = key.clone();
-            let _ = pool
-                .with_writer(move |c| {
-                    c.execute(
-                        "DELETE FROM _system_files WHERE key = ?1",
-                        rusqlite::params![key_c],
-                    )
-                    .map(|_| ())
-                })
-                .await;
-            return Err(format!("GARAGE_PUT_FAILED: {e:#}"));
-        }
-        Ok(serde_json::json!({"key": key, "size_bytes": size}).to_string())
     }
 
     async fn log(&mut self, level: String, msg: String) {

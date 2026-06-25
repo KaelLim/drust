@@ -5,6 +5,7 @@
 pub mod bindings;
 pub mod caller;
 pub mod dispatcher;
+pub mod enforce;
 pub mod executor;
 pub mod routes;
 pub mod runtime;
