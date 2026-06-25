@@ -50,6 +50,10 @@ struct FunctionView {
     sha_short: String,
     size_bytes: i64,
     active: bool,
+    /// Caller-identity invoke ACL (T5): may anon / end-user bearers invoke this
+    /// function (capability-gated). Default-deny; config is service-only.
+    invoke_anon: bool,
+    invoke_user: bool,
     /// Comma-joined trigger summary (e.g. `record.created:posts, file.uploaded`).
     triggers_summary: String,
     /// Status of the most recent invocation (`ok` / `error` / `timeout` / …),
@@ -111,6 +115,8 @@ async fn load_function_views(state: &TenantsState, tenant_id: &str) -> Vec<Funct
             sha_short: r.wasm_sha256.chars().take(12).collect(),
             size_bytes: r.size_bytes,
             active: r.active,
+            invoke_anon: r.invoke_anon,
+            invoke_user: r.invoke_user,
             triggers_summary: triggers_summary(&r.triggers_json),
             last_status,
             last_run_at,
@@ -216,6 +222,48 @@ pub async fn toggle(
     };
     if let Err(e) = schema::set_active(&pool, &name, !current).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    state.functions.bindings.invalidate(&tenant_id);
+    audit_admin(&tenant_id, "function.update", &name);
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/_functions"
+    )))
+    .into_response()
+}
+
+/// Form for the invoke-ACL toggles. Both checkboxes post their full state on
+/// submit (the form carries hidden defaults, so an unchecked box clears the
+/// flag); a missing field therefore means "off". Config is service-equivalent
+/// here — this handler runs under the admin session, the admin-only surface.
+#[derive(Debug, Deserialize, Default)]
+pub struct InvokeAclForm {
+    #[serde(default)]
+    pub invoke_anon: bool,
+    #[serde(default)]
+    pub invoke_user: bool,
+}
+
+/// `POST /admin/tenants/{id}/_functions/{name}/invoke-acl` — set the
+/// caller-identity invoke ACL flags in one write (grant AND revoke), invalidate
+/// the trigger-binding cache, audit, then 303 back to the list. Mirrors the
+/// `toggle` / `delete` admin actions; routes through the same
+/// `schema::set_invoke_acl` the REST + MCP surfaces use.
+pub async fn set_invoke_acl(
+    State(state): State<TenantsState>,
+    Path((tenant_id, name)): Path<(String, String)>,
+    Form(form): Form<InvokeAclForm>,
+) -> Response {
+    if let Some(r) = super::tenants::common::ensure_tenant_exists(&state, &tenant_id).await {
+        return r;
+    }
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+    };
+    match schema::set_invoke_acl(&pool, &name, form.invoke_anon, form.invoke_user).await {
+        Ok(true) => {}
+        Ok(false) => return (StatusCode::NOT_FOUND, "no such function").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
     state.functions.bindings.invalidate(&tenant_id);
     audit_admin(&tenant_id, "function.update", &name);

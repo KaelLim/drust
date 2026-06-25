@@ -83,6 +83,17 @@
                         style="display:inline;margin:0;">
                     <button type="submit" class="btn sm danger">{{ t.s("tenant_functions.btn_delete") }}</button>
                   </form>
+                  <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/invoke-acl"
+                        style="margin:8px 0 0;display:flex;gap:12px;align-items:center;justify-content:flex-end;flex-wrap:wrap;">
+                    <span style="font:600 11px/1 var(--mono);color:var(--muted);">{{ t.s("tenant_functions.invoke_acl_label") }}</span>
+                    <label style="display:inline-flex;gap:5px;align-items:center;font:500 12px/1 var(--mono);color:var(--text);">
+                      <input type="checkbox" name="invoke_anon" value="true"{% if f.invoke_anon %} checked{% endif %}>{{ t.s("tenant_functions.invoke_acl_anon") }}
+                    </label>
+                    <label style="display:inline-flex;gap:5px;align-items:center;font:500 12px/1 var(--mono);color:var(--text);">
+                      <input type="checkbox" name="invoke_user" value="true"{% if f.invoke_user %} checked{% endif %}>{{ t.s("tenant_functions.invoke_acl_user") }}
+                    </label>
+                    <button type="submit" class="btn sm">{{ t.s("tenant_functions.invoke_acl_save") }}</button>
+                  </form>
                 </td>
               </tr>
               <tr>
