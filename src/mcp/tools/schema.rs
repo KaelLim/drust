@@ -110,13 +110,13 @@ pub(crate) fn compile_check(f: &FieldSpec) -> anyhow::Result<Option<String>> {
     // Config-time sanity (defense in depth): reject constraints that are
     // unsatisfiable or that would corrupt the generated DDL, so a collection
     // can never be created with a CHECK that no value can ever pass.
-    if let (Some(min), Some(max)) = (f.min, f.max) {
-        if min > max {
-            anyhow::bail!(
-                "field {:?}: min ({min}) > max ({max}) — no value can satisfy the CHECK",
-                f.name
-            );
-        }
+    if let (Some(min), Some(max)) = (f.min, f.max)
+        && min > max
+    {
+        anyhow::bail!(
+            "field {:?}: min ({min}) > max ({max}) — no value can satisfy the CHECK",
+            f.name
+        );
     }
     if f.max_length == Some(0) {
         anyhow::bail!("field {:?}: max_length must be >= 1", f.name);
@@ -144,16 +144,15 @@ pub(crate) fn compile_check(f: &FieldSpec) -> anyhow::Result<Option<String>> {
             // unsatisfiable CHECK — STRICT INTEGER can never hold e.g. 1.5, so
             // `IN (1.5)` accepts nothing. Reject at config time (also keeps
             // codegen's numeric enum honest).
-            if int_storage {
-                if let Ok(n) = v.parse::<f64>() {
-                    if n.fract() != 0.0 {
-                        anyhow::bail!(
-                            "field {:?}: enum value {v:?} is not an integer ({} column)",
-                            f.name,
-                            f.sql_type
-                        );
-                    }
-                }
+            if int_storage
+                && let Ok(n) = v.parse::<f64>()
+                && n.fract() != 0.0
+            {
+                anyhow::bail!(
+                    "field {:?}: enum value {v:?} is not an integer ({} column)",
+                    f.name,
+                    f.sql_type
+                );
             }
         }
     }

@@ -8,7 +8,7 @@
 //! statement's pre-step `column_names()` goes stale: after `add_field` the new
 //! column is silently omitted from the response; after `drop_field` the
 //! out-of-range index 500s. A DDL path only invalidates the drust schema cache
-//! + SSE bus, NOT the reader's rusqlite statement cache — so these `SELECT *`
+//! and SSE bus, NOT the reader's rusqlite statement cache, so these `SELECT *`
 //! reads must use plain `prepare` (recompiled per call), never `prepare_cached`.
 mod helpers;
 
