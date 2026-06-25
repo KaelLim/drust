@@ -444,6 +444,7 @@ pub async fn spin_up_functions_route_stack(
             _t: &str,
             _p: &std::path::Path,
             _e: &str,
+            _caller: drust::functions::caller::CallerCtx,
         ) -> drust::functions::executor::RunOutcome {
             drust::functions::executor::RunOutcome {
                 status: drust::functions::executor::RunStatus::Ok,

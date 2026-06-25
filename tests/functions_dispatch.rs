@@ -13,7 +13,13 @@ use tower::ServiceExt;
 struct CountRunner(Arc<AtomicUsize>);
 #[async_trait::async_trait]
 impl FunctionRunner for CountRunner {
-    async fn run(&self, _t: &str, _p: &std::path::Path, ev: &str) -> RunOutcome {
+    async fn run(
+        &self,
+        _t: &str,
+        _p: &std::path::Path,
+        ev: &str,
+        _caller: drust::functions::caller::CallerCtx,
+    ) -> RunOutcome {
         assert!(ev.contains("record.created"), "payload shape");
         self.0.fetch_add(1, Ordering::SeqCst);
         RunOutcome {
@@ -91,7 +97,13 @@ async fn mode_a_upload_triggers_file_function() {
 struct CountRunner2(Arc<AtomicUsize>);
 #[async_trait::async_trait]
 impl FunctionRunner for CountRunner2 {
-    async fn run(&self, _t: &str, _p: &std::path::Path, ev: &str) -> RunOutcome {
+    async fn run(
+        &self,
+        _t: &str,
+        _p: &std::path::Path,
+        ev: &str,
+        _caller: drust::functions::caller::CallerCtx,
+    ) -> RunOutcome {
         assert!(ev.contains(r#""trigger":"file.uploaded""#));
         self.0.fetch_add(1, Ordering::SeqCst);
         RunOutcome {

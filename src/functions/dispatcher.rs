@@ -12,6 +12,7 @@
 
 use crate::functions::FnConfig;
 use crate::functions::bindings::BindingCache;
+use crate::functions::caller::CallerCtx;
 use crate::functions::executor::Invocation;
 use crate::storage::pool::TenantRegistry;
 use crate::tenant::events::Event;
@@ -102,6 +103,7 @@ impl FunctionDispatcher {
                         function_name: b.function_name.clone(),
                         trigger: format!("record.{ev_name}:{me_coll}"),
                         event_json: payload.clone(),
+                        caller: CallerCtx::Privileged,
                     },
                 )
                 .await;
@@ -122,6 +124,7 @@ impl FunctionDispatcher {
                 function_name: function_name.to_string(),
                 trigger: "manual".into(),
                 event_json,
+                caller: CallerCtx::Privileged,
             },
         )
         .await;
@@ -172,6 +175,7 @@ impl FunctionDispatcher {
                         function_name: b.function_name.clone(),
                         trigger: "file.uploaded".to_string(),
                         event_json: payload.clone(),
+                        caller: CallerCtx::Privileged,
                     },
                 )
                 .await;

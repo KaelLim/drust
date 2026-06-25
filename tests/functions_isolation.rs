@@ -28,7 +28,13 @@ struct WritingRunner {
 }
 #[async_trait::async_trait]
 impl FunctionRunner for WritingRunner {
-    async fn run(&self, tenant: &str, _p: &std::path::Path, _e: &str) -> RunOutcome {
+    async fn run(
+        &self,
+        tenant: &str,
+        _p: &std::path::Path,
+        _e: &str,
+        _caller: drust::functions::caller::CallerCtx,
+    ) -> RunOutcome {
         let mcp = self.seed.build_mcp(tenant).unwrap();
         // (1) _system_* write must bail PROTECTED_COLLECTION.
         let denied = drust::mcp::tools::write::insert_record(

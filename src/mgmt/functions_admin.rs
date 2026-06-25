@@ -301,6 +301,8 @@ pub async fn invoke(
             function_name: name.clone(),
             trigger: "manual".into(),
             event_json,
+            // Admin invoke is service-equivalent → god-mode, unchanged.
+            caller: crate::functions::caller::CallerCtx::Privileged,
         })
         .await;
     let outcome = InvokeOutcome {

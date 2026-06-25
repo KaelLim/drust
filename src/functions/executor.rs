@@ -6,6 +6,7 @@
 //! accepted (webhook philosophy).
 
 use crate::functions::FnConfig;
+use crate::functions::caller::CallerCtx;
 use crate::functions::schema::{self, LogRow};
 use crate::storage::pool::TenantRegistry;
 use dashmap::DashMap;
@@ -21,6 +22,10 @@ pub struct Invocation {
     /// "record.created:posts" / "file.uploaded" / "manual"
     pub trigger: String,
     pub event_json: String,
+    /// The identity this invocation runs as. Service invoke / event triggers /
+    /// cron are `Privileged` (god-mode); anon/user invoke (T-later) construct a
+    /// non-`Privileged` ctx. No `Default` — every construction site names it.
+    pub caller: CallerCtx,
 }
 
 /// Terminal status of one run. Maps 1:1 to `_system_function_logs.status`.
@@ -64,6 +69,7 @@ pub trait FunctionRunner: Send + Sync {
         tenant_id: &str,
         wasm_path: &std::path::Path,
         event_json: &str,
+        caller: CallerCtx,
     ) -> RunOutcome;
 }
 
@@ -245,7 +251,7 @@ impl Executor {
         };
         let path = self.artifact_path(&inv.tenant_id, &row.wasm_sha256);
         self.runner
-            .run(&inv.tenant_id, &path, &inv.event_json)
+            .run(&inv.tenant_id, &path, &inv.event_json, inv.caller.clone())
             .await
     }
 
@@ -297,7 +303,13 @@ mod tests {
     struct OkRunner;
     #[async_trait::async_trait]
     impl FunctionRunner for OkRunner {
-        async fn run(&self, _t: &str, _p: &std::path::Path, ev: &str) -> RunOutcome {
+        async fn run(
+            &self,
+            _t: &str,
+            _p: &std::path::Path,
+            ev: &str,
+            _caller: CallerCtx,
+        ) -> RunOutcome {
             RunOutcome {
                 status: RunStatus::Ok,
                 result: format!(r#"{{"echo":{ev}}}"#),
@@ -346,6 +358,7 @@ mod tests {
                 function_name: "echo".into(),
                 trigger: "manual".into(),
                 event_json: r#"{"x":1}"#.into(),
+                caller: CallerCtx::Privileged,
             })
             .await;
         assert_eq!(out.status, RunStatus::Ok);
@@ -368,6 +381,7 @@ mod tests {
                 function_name: "echo".into(),
                 trigger: "manual".into(),
                 event_json: "{}".into(),
+                caller: CallerCtx::Privileged,
             })
             .await;
         assert_eq!(out.status, RunStatus::Error);
@@ -386,6 +400,7 @@ mod tests {
                 function_name: "echo".into(),
                 trigger: "record.created:posts".into(),
                 event_json: "{}".into(),
+                caller: CallerCtx::Privileged,
             })
             .await
             .unwrap();
@@ -414,7 +429,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl FunctionRunner for SeqRunner {
-        async fn run(&self, t: &str, _p: &std::path::Path, ev: &str) -> RunOutcome {
+        async fn run(
+            &self,
+            t: &str,
+            _p: &std::path::Path,
+            ev: &str,
+            _caller: CallerCtx,
+        ) -> RunOutcome {
             let seq = serde_json::from_str::<serde_json::Value>(ev).unwrap()["seq"]
                 .as_u64()
                 .unwrap();
@@ -477,6 +498,7 @@ mod tests {
                     function_name: "echo".into(),
                     trigger: "manual".into(),
                     event_json: format!(r#"{{"seq":{seq}}}"#),
+                    caller: CallerCtx::Privileged,
                 })
                 .await
                 .unwrap();
@@ -523,6 +545,7 @@ mod tests {
                 function_name: "echo".into(),
                 trigger: "manual".into(),
                 event_json: "{}".into(),
+                caller: CallerCtx::Privileged,
             })
             .await;
         assert_eq!(out.status, RunStatus::Ok);
@@ -549,6 +572,7 @@ mod tests {
                 function_name: "echo".into(),
                 trigger: "record.created:posts".into(),
                 event_json: "{}".into(),
+                caller: CallerCtx::Privileged,
             })
             .await
             .unwrap();

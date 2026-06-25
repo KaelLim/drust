@@ -103,6 +103,13 @@ pub struct HostState {
     /// DRUST_DISK_MIN_FREE_PCT — put-file disk guard (parity with Mode A/B).
     disk_min_free_pct: u8,
     log_buf: String,
+    /// The identity this invocation runs as. Stored here so a later task can
+    /// branch the host data-plane fns on it (`Privileged` → today's god-mode
+    /// path; `Anon`/`User` → the capability-gated enforcement core). NOT yet
+    /// consulted: this task only threads it through — host fns keep calling the
+    /// god-mode tool layer, so behavior is unchanged.
+    #[allow(dead_code)]
+    caller: crate::functions::caller::CallerCtx,
 }
 
 const LOG_CAP_BYTES: usize = 64 * 1024;
@@ -463,6 +470,7 @@ impl FunctionRunner for WasmRunner {
         tenant_id: &str,
         wasm_path: &std::path::Path,
         event_json: &str,
+        caller: crate::functions::caller::CallerCtx,
     ) -> RunOutcome {
         let mcp = match self.seed.build_mcp(tenant_id) {
             Ok(m) => m,
@@ -514,6 +522,7 @@ impl FunctionRunner for WasmRunner {
                 file_read_max: self.cfg.file_read_max_bytes,
                 disk_min_free_pct: self.seed.disk_min_free_pct,
                 log_buf: String::new(),
+                caller,
             },
         };
         let mut store = Store::new(engine(), data);
@@ -645,6 +654,7 @@ mod tests {
                 file_read_max: 4 * 1024 * 1024,
                 disk_min_free_pct: 20,
                 log_buf: String::new(),
+                caller: crate::functions::caller::CallerCtx::Privileged,
             },
         };
         (store, pool, tmp)
