@@ -197,6 +197,41 @@ async fn user_invoke_owner_stamp_and_foreign_update_denied() {
     assert!(own.is_ok(), "owner may update own row: {own:?}");
 }
 
+/// A User update carrying ONLY the owner_field strips to empty data;
+/// `enforced_update` must return a clean `TYPE_MISMATCH` (mirrors the REST
+/// `update_handler` post-strip guard), not a malformed `SET ` SQL error.
+#[tokio::test(flavor = "multi_thread")]
+async fn user_invoke_update_empty_after_owner_strip_is_typed_error() {
+    let (_reg, mcp, _t) = tenant_mcp("t-enf-emptystrip").await;
+    make_owner_scoped(&mcp, "todos", "own").await;
+    seed_user(&mcp, "u-1").await;
+
+    let inserted = enforce::enforced_insert(
+        &mcp,
+        &user("u-1"),
+        "todos",
+        serde_json::json!({"title":"mine","owner":"u-1"}),
+    )
+    .await
+    .unwrap();
+    let id = inserted["record"]["id"].as_i64().unwrap();
+
+    // Only the owner_field — stripped to `{}` on the User-owner-scoped path.
+    let res = enforce::enforced_update(
+        &mcp,
+        &user("u-1"),
+        "todos",
+        id,
+        serde_json::json!({"owner":"u-1"}),
+    )
+    .await;
+    let e = res.unwrap_err().to_string();
+    assert!(
+        e.contains("TYPE_MISMATCH") && e.contains("at least one field"),
+        "empty-after-strip update must be a clean typed error, got: {e}"
+    );
+}
+
 /// RLS USING on SELECT hides non-matching rows from a user reader; RLS CHECK on
 /// INSERT rolls back a non-conforming write. Both flow through `enforce::*`.
 #[tokio::test(flavor = "multi_thread")]

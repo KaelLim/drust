@@ -151,10 +151,25 @@ pub async fn enforced_update(
         o.remove(field);
     }
 
-    // The owner clause is a WHERE-AND pre-flight (a user updating a foreign row
-    // must see not-found). The MCP `update_record_checked` only filters by id,
-    // so enforce ownership here: if an owner filter applies and the target row
-    // is not owned by the caller, return not-found WITHOUT mutating.
+    // Reject an update with no fields left (mirrors update_handler's post-strip
+    // guard). Without this, `update_record_checked` would build a malformed
+    // `SET ` clause and surface a raw SQL error to the guest. Fires for `{}` or
+    // for a User who sent only the (now-stripped) owner_field.
+    if data.as_object().is_some_and(|o| o.is_empty()) {
+        anyhow::bail!("TYPE_MISMATCH: data must have at least one field");
+    }
+
+    // Ownership/policy is a read-lane WHERE-AND PRE-FLIGHT here, NOT AND-ed into
+    // the UPDATE itself: `update_record_checked` filters by id only (unlike
+    // `delete_record_filtered`, which AND-s the owner clause atomically in-tx).
+    // A user updating a foreign / policy-hidden row must see not-found. This
+    // pre-flight-then-write is a deliberate, non-atomic divergence from REST's
+    // atomic update_handler; the TOCTOU window is benign because only the
+    // service key can reassign a row's owner (User updates strip owner_field;
+    // anon cannot write owner-scoped collections at all), so no non-service
+    // caller can escalate through it, and the in-tx policy CHECK still guards
+    // the post-image. (Follow-up: thread the owner clause into
+    // update_record_checked for full atomicity parity with delete.)
     let using_sql = crate::query::policy::policy_using_sql(ctx, &schema, DmlVerb::Update)?;
     if (owner_filter.is_some() || using_sql.is_some())
         && !is_writable_target(mcp, coll, id, &owner_filter, &using_sql).await?
@@ -405,6 +420,11 @@ fn run_list_rows(
 
 /// `get-file-bytes` raw path (no cap gate) — the byte-for-byte body lifted from
 /// the runtime host so `Privileged` and the cap-gated entry share one impl.
+///
+/// PRIVILEGED-ONLY BY CONTRACT: this bypasses file caps. Any non-`Privileged`
+/// caller MUST go through `enforced_get_file_bytes` (which applies the read cap
+/// first). Do not add a new caller of this `_raw` fn without re-checking the
+/// cap at that site.
 pub async fn get_file_bytes_raw(
     mcp: &DrustMcp,
     key: &str,
@@ -448,6 +468,11 @@ pub async fn get_file_bytes_raw(
 
 /// `put-file` raw path (no cap gate) — body lifted from the runtime host so
 /// `Privileged` and the cap-gated entry share one impl.
+///
+/// PRIVILEGED-ONLY BY CONTRACT: this bypasses file caps. Any non-`Privileged`
+/// caller MUST go through `enforced_put_file` (which applies the upload cap
+/// first). Do not add a new caller of this `_raw` fn without re-checking the
+/// cap at that site.
 pub async fn put_file_raw(
     mcp: &DrustMcp,
     key: &str,
