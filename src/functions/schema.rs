@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS _system_functions (
   triggers_json TEXT NOT NULL,
   active        INTEGER NOT NULL DEFAULT 1,
   description   TEXT NOT NULL DEFAULT '',
+  invoke_anon   INTEGER NOT NULL DEFAULT 0,
+  invoke_user   INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -51,6 +53,9 @@ pub struct FunctionRow {
     pub triggers_json: String,
     pub active: bool,
     pub description: String,
+    /// Caller-identity invoke ACL — default-deny (0). Grant is config = service-only.
+    pub invoke_anon: bool,
+    pub invoke_user: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -81,13 +86,15 @@ fn row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<FunctionRow> {
         triggers_json: r.get(4)?,
         active: r.get::<_, i64>(5)? != 0,
         description: r.get(6)?,
-        created_at: r.get(7)?,
-        updated_at: r.get(8)?,
+        invoke_anon: r.get::<_, i64>(7)? != 0,
+        invoke_user: r.get::<_, i64>(8)? != 0,
+        created_at: r.get(9)?,
+        updated_at: r.get(10)?,
     })
 }
 
-const COLS: &str =
-    "id, name, wasm_sha256, size_bytes, triggers_json, active, description, created_at, updated_at";
+const COLS: &str = "id, name, wasm_sha256, size_bytes, triggers_json, active, description, \
+     invoke_anon, invoke_user, created_at, updated_at";
 
 /// Create-or-replace by name. Errors are sentinel-prefixed (`FN_NAME_INVALID:`,
 /// `FN_LIMIT:`) so REST/MCP layers map them to error codes mechanically.
@@ -188,6 +195,30 @@ pub async fn set_active(pool: &SharedTenantPool, name: &str, active: bool) -> an
             "UPDATE _system_functions SET active = ?2,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?1",
             rusqlite::params![name, active as i64],
+        )?;
+        Ok(n > 0)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(unwrap_module_err(e)))
+}
+
+/// Set the caller-identity invoke ACL flags in one UPDATE (+ updated_at).
+/// Returns true if a row was hit — never upserts, so a missing name yields
+/// false. Grant AND revoke both flow through here; the route layer enforces
+/// that only the service key may call it (config = service-only).
+pub async fn set_invoke_acl(
+    pool: &SharedTenantPool,
+    name: &str,
+    anon: bool,
+    user: bool,
+) -> anyhow::Result<bool> {
+    let name = name.to_string();
+    pool.with_writer(move |c| {
+        ensure_tables(c)?;
+        let n = c.execute(
+            "UPDATE _system_functions SET invoke_anon = ?2, invoke_user = ?3,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?1",
+            rusqlite::params![name, anon as i64, user as i64],
         )?;
         Ok(n > 0)
     })

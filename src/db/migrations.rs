@@ -244,6 +244,33 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
             }
         }
     }
+    // Caller-identity invoke ACL: invoke_anon / invoke_user on _system_functions.
+    // Default 0 = every existing function stays service-only (grant is config,
+    // and config is service-only) — the migration mints/grants nothing, only
+    // adds the columns. Guarded by table existence: _system_functions is lazy
+    // DDL (born on first function create), so a tenant that never shipped a
+    // function must not gain the table here.
+    let has_functions: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_system_functions'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if has_functions > 0 {
+        add_column_if_missing(
+            &tx,
+            "_system_functions",
+            "invoke_anon",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(
+            &tx,
+            "_system_functions",
+            "invoke_user",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
     tx.commit()
 }
 
@@ -1244,6 +1271,93 @@ mod tests {
                 "missing {col}; cols={cols:?}"
             );
         }
+    }
+
+    #[test]
+    fn migrate_tenant_db_adds_invoke_acl_columns() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tid = "tinvokeacl";
+        let dir = tmp.path().join("tenants").join(tid);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Legacy _system_functions table WITHOUT the invoke_anon/invoke_user cols.
+        {
+            let c = Connection::open(dir.join("data.sqlite")).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (
+                    collection_name TEXT PRIMARY KEY,
+                    anon_caps_json  TEXT NOT NULL DEFAULT '[\"select\"]'
+                );
+                CREATE TABLE _system_functions (
+                    id            INTEGER PRIMARY KEY,
+                    name          TEXT NOT NULL UNIQUE,
+                    wasm_sha256   TEXT NOT NULL,
+                    size_bytes    INTEGER NOT NULL,
+                    triggers_json TEXT NOT NULL,
+                    active        INTEGER NOT NULL DEFAULT 1,
+                    description   TEXT NOT NULL DEFAULT '',
+                    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO _system_functions (name, wasm_sha256, size_bytes, triggers_json)
+                  VALUES ('fn1', 'abc', 10, '[]');",
+            )
+            .unwrap();
+        }
+        migrate_tenant_db(tmp.path(), tid).unwrap();
+        migrate_tenant_db(tmp.path(), tid).unwrap(); // idempotent — second run no-op
+        let c = Connection::open(dir.join("data.sqlite")).unwrap();
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(_system_functions)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for col in ["invoke_anon", "invoke_user"] {
+            assert!(
+                cols.contains(&col.to_string()),
+                "missing {col}; cols={cols:?}"
+            );
+        }
+        // Default 0 — every existing function stays service-only; migration grants nothing.
+        let (anon, user): (i64, i64) = c
+            .query_row(
+                "SELECT invoke_anon, invoke_user FROM _system_functions WHERE name='fn1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(anon, 0, "invoke_anon must default 0 (service-only)");
+        assert_eq!(user, 0, "invoke_user must default 0 (service-only)");
+    }
+
+    #[test]
+    fn migrate_tenant_db_invoke_acl_skips_tenant_without_functions_table() {
+        // A tenant that never shipped _system_functions must not gain the table.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tid = "tnofns";
+        let dir = tmp.path().join("tenants").join(tid);
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let c = Connection::open(dir.join("data.sqlite")).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (
+                    collection_name TEXT PRIMARY KEY,
+                    anon_caps_json  TEXT NOT NULL DEFAULT '[\"select\"]'
+                );",
+            )
+            .unwrap();
+        }
+        migrate_tenant_db(tmp.path(), tid).unwrap();
+        let c = Connection::open(dir.join("data.sqlite")).unwrap();
+        let has_fns: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_system_functions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_fns, 0, "migration must not create _system_functions");
     }
 
     #[test]

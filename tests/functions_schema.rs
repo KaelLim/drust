@@ -62,6 +62,62 @@ async fn create_list_get_delete_roundtrip() {
 }
 
 #[tokio::test]
+async fn create_then_set_invoke_acl_roundtrips() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = pool_for(dir.path());
+    schema::create_function(
+        &pool,
+        CreateFunctionParams {
+            name: "acl".into(),
+            wasm_sha256: "dd".repeat(32),
+            size_bytes: 1,
+            triggers_json: "[]".into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .expect("create");
+
+    // Default-deny: fresh function is service-only on both flags.
+    let fresh = schema::get_function(&pool, "acl")
+        .await
+        .unwrap()
+        .expect("some");
+    assert!(!fresh.invoke_anon, "invoke_anon must default false");
+    assert!(!fresh.invoke_user, "invoke_user must default false");
+
+    // Grant user-invoke only; anon stays denied.
+    let hit = schema::set_invoke_acl(&pool, "acl", false, true)
+        .await
+        .expect("set");
+    assert!(hit, "set_invoke_acl on an existing row returns true");
+    let after = schema::get_function(&pool, "acl")
+        .await
+        .unwrap()
+        .expect("some");
+    assert!(!after.invoke_anon, "anon stays denied");
+    assert!(after.invoke_user, "user grant reflected");
+
+    // Revoke user, grant anon.
+    schema::set_invoke_acl(&pool, "acl", true, false)
+        .await
+        .expect("flip");
+    let flipped = schema::get_function(&pool, "acl")
+        .await
+        .unwrap()
+        .expect("some");
+    assert!(flipped.invoke_anon, "anon grant reflected");
+    assert!(!flipped.invoke_user, "user revoke reflected");
+
+    // No-such-row returns false (no upsert).
+    let miss = schema::set_invoke_acl(&pool, "nope", true, true)
+        .await
+        .expect("miss ok");
+    assert!(!miss, "set_invoke_acl on missing name returns false");
+}
+
+#[tokio::test]
 async fn name_validation_and_per_tenant_cap() {
     let dir = tempfile::tempdir().unwrap();
     let pool = pool_for(dir.path());
