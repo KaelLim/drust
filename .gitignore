@@ -11,3 +11,15 @@ llms.md
 /meta_logs.sqlite*
 tests/fixtures/functions/src-*/target/
 tests/fixtures/functions/src-*/Cargo.lock
+
+# Local-only working docs + audit scratch (kept out of git by convention;
+# only docs/superpowers/notes/ is tracked). Silences the `git status` ?? wall.
+/.audit*/
+/docs/superpowers/plans/
+/docs/superpowers/specs/
+# Codegen golden-diff drift artifacts (written on a golden mismatch, never committed)
+*.actual.*
+# OS / editor cruft
+.DS_Store
+*.swp
+*~

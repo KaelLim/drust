@@ -252,8 +252,7 @@ folded into this release as `docker-compose.yml` changes:
   change. The whoami dual-token disclosure was refuted as by-design
   self-disclosure (service-key-gated, same tenant).
 
-Audit report: [`docs/superpowers/specs/2026-06-23-drust-iso-security-audit.md`]
-(docs/superpowers/specs/2026-06-23-drust-iso-security-audit.md). Refuted /
+Audit report: `docs/superpowers/specs/2026-06-23-drust-iso-security-audit.md` (internal, not published). Refuted /
 accepted-as-documented items (anon `/query` design, codegen anon schema
 structure, edge-function service privilege, exotic IPv6 SSRF forms, OAuth state
 secret) recorded there. `cargo audit` clean.

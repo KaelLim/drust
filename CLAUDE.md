@@ -11,7 +11,7 @@ version: 1.41.5
 
 # drust — Rust multi-tenant SQLite BaaS
 
-Self-hosted service providing a management UI (PocketHost-like) and per-tenant REST + MCP endpoints backed by isolated SQLite files. Design: [`docs/superpowers/specs/2026-04-20-drust-design.md`](../docs/superpowers/specs/2026-04-20-drust-design.md). Per-release changes live in [`CHANGELOG.md`](CHANGELOG.md); this file documents how the system is currently shaped, not the path it took to get here. For a per-file orientation index (what each `.rs` declares, imports, is imported by), see [`docs/architecture.md`](docs/architecture.md) — auto-generated, rebuild with `bash docs/gen-architecture.sh`.
+Self-hosted service providing a management UI (PocketHost-like) and per-tenant REST + MCP endpoints backed by isolated SQLite files. Per-release changes live in [`CHANGELOG.md`](CHANGELOG.md); this file documents how the system is currently shaped, not the path it took to get here. For a per-file orientation index (what each `.rs` declares, imports, is imported by), see [`docs/architecture.md`](docs/architecture.md) — auto-generated, rebuild with `bash docs/gen-architecture.sh`.
 
 ## Build & restart
 
