@@ -103,13 +103,16 @@ pub struct HostState {
     /// DRUST_DISK_MIN_FREE_PCT — put-file disk guard (parity with Mode A/B).
     disk_min_free_pct: u8,
     log_buf: String,
-    /// The identity this invocation runs as. Stored here so a later task can
-    /// branch the host data-plane fns on it (`Privileged` → today's god-mode
-    /// path; `Anon`/`User` → the capability-gated enforcement core). NOT yet
-    /// consulted: this task only threads it through — host fns keep calling the
-    /// god-mode tool layer, so behavior is unchanged.
-    #[allow(dead_code)]
+    /// The identity this invocation runs as. The six data-plane host fns branch
+    /// on it: `Privileged` → today's god-mode path (byte-for-byte unchanged);
+    /// `Anon`/`User` → the capability-gated enforcement core (`functions::enforce`)
+    /// with `caller.to_auth_ctx()` / `caller.role()`.
     caller: crate::functions::caller::CallerCtx,
+    /// The tenant's file caps (`file_anon_caps_json` / `file_user_caps_json`),
+    /// loaded ONCE per invocation from the tenant row (mirroring
+    /// `bearer_auth_layer`). Consulted only on the Anon/User file branches; the
+    /// Privileged/service path ignores it (service is unrestricted).
+    file_caps: crate::tenant::file_caps::TenantFileCaps,
 }
 
 const LOG_CAP_BYTES: usize = 64 * 1024;
@@ -162,17 +165,37 @@ impl host::Host for StoreData {
         collection: String,
         body_json: String,
     ) -> Result<String, String> {
-        let mut v: serde_json::Value =
-            serde_json::from_str(&body_json).map_err(|e| format!("bad body-json: {e}"))?;
-        v.as_object_mut()
-            .ok_or("body-json must be an object")?
-            .insert("collection".into(), serde_json::Value::String(collection));
-        let args: crate::mcp::tools::read::ListRecordsArgs =
-            serde_json::from_value(v).map_err(|e| format!("bad list args: {e}"))?;
-        crate::mcp::tools::read::list_records(&self.host.mcp, args)
-            .await
-            .map(|v| v.to_string())
-            .map_err(|e| e.to_string())
+        use crate::functions::caller::CallerCtx;
+        match &self.host.caller {
+            // Privileged: today's god-mode path, byte-for-byte unchanged.
+            CallerCtx::Privileged => {
+                let mut v: serde_json::Value =
+                    serde_json::from_str(&body_json).map_err(|e| format!("bad body-json: {e}"))?;
+                v.as_object_mut()
+                    .ok_or("body-json must be an object")?
+                    .insert("collection".into(), serde_json::Value::String(collection));
+                let args: crate::mcp::tools::read::ListRecordsArgs =
+                    serde_json::from_value(v).map_err(|e| format!("bad list args: {e}"))?;
+                crate::mcp::tools::read::list_records(&self.host.mcp, args)
+                    .await
+                    .map(|v| v.to_string())
+                    .map_err(|e| e.to_string())
+            }
+            // Anon/User: capability-gated through the enforcement core.
+            caller => {
+                debug_assert!(
+                    !matches!(caller, CallerCtx::Privileged),
+                    "non-privileged branch reached with Privileged caller"
+                );
+                let ctx = caller.to_auth_ctx();
+                let req: crate::query::list_builder::ListRequest =
+                    serde_json::from_str(&body_json).map_err(|e| format!("bad list args: {e}"))?;
+                crate::functions::enforce::enforced_list(&self.host.mcp, &ctx, &collection, req)
+                    .await
+                    .map(|v| v.to_string())
+                    .map_err(|e| e.to_string())
+            }
+        }
     }
 
     async fn insert_record(
@@ -180,12 +203,28 @@ impl host::Host for StoreData {
         collection: String,
         data_json: String,
     ) -> Result<String, String> {
+        use crate::functions::caller::CallerCtx;
         let data: serde_json::Value =
             serde_json::from_str(&data_json).map_err(|e| format!("bad data-json: {e}"))?;
-        crate::mcp::tools::write::insert_record(&self.host.mcp, &collection, data)
-            .await
-            .map(|v| v.to_string())
-            .map_err(|e| e.to_string())
+        match &self.host.caller {
+            CallerCtx::Privileged => {
+                crate::mcp::tools::write::insert_record(&self.host.mcp, &collection, data)
+                    .await
+                    .map(|v| v.to_string())
+                    .map_err(|e| e.to_string())
+            }
+            caller => {
+                debug_assert!(
+                    !matches!(caller, CallerCtx::Privileged),
+                    "non-privileged branch reached with Privileged caller"
+                );
+                let ctx = caller.to_auth_ctx();
+                crate::functions::enforce::enforced_insert(&self.host.mcp, &ctx, &collection, data)
+                    .await
+                    .map(|v| v.to_string())
+                    .map_err(|e| e.to_string())
+            }
+        }
     }
 
     async fn update_record(
@@ -194,29 +233,89 @@ impl host::Host for StoreData {
         id: i64,
         data_json: String,
     ) -> Result<String, String> {
+        use crate::functions::caller::CallerCtx;
         let data: serde_json::Value =
             serde_json::from_str(&data_json).map_err(|e| format!("bad data-json: {e}"))?;
-        crate::mcp::tools::write::update_record(&self.host.mcp, &collection, id, data)
-            .await
-            .map(|v| v.to_string())
-            .map_err(|e| e.to_string())
+        match &self.host.caller {
+            CallerCtx::Privileged => {
+                crate::mcp::tools::write::update_record(&self.host.mcp, &collection, id, data)
+                    .await
+                    .map(|v| v.to_string())
+                    .map_err(|e| e.to_string())
+            }
+            caller => {
+                debug_assert!(
+                    !matches!(caller, CallerCtx::Privileged),
+                    "non-privileged branch reached with Privileged caller"
+                );
+                let ctx = caller.to_auth_ctx();
+                crate::functions::enforce::enforced_update(
+                    &self.host.mcp,
+                    &ctx,
+                    &collection,
+                    id,
+                    data,
+                )
+                .await
+                .map(|v| v.to_string())
+                .map_err(|e| e.to_string())
+            }
+        }
     }
 
     async fn delete_record(&mut self, collection: String, id: i64) -> Result<String, String> {
-        crate::mcp::tools::write::delete_record(&self.host.mcp, &collection, id)
-            .await
-            .map(|v| v.to_string())
-            .map_err(|e| e.to_string())
+        use crate::functions::caller::CallerCtx;
+        match &self.host.caller {
+            CallerCtx::Privileged => {
+                crate::mcp::tools::write::delete_record(&self.host.mcp, &collection, id)
+                    .await
+                    .map(|v| v.to_string())
+                    .map_err(|e| e.to_string())
+            }
+            caller => {
+                debug_assert!(
+                    !matches!(caller, CallerCtx::Privileged),
+                    "non-privileged branch reached with Privileged caller"
+                );
+                let ctx = caller.to_auth_ctx();
+                crate::functions::enforce::enforced_delete(&self.host.mcp, &ctx, &collection, id)
+                    .await
+                    .map(|v| v.to_string())
+                    .map_err(|e| e.to_string())
+            }
+        }
     }
 
     async fn get_file_bytes(&mut self, key: String) -> Result<Vec<u8>, String> {
-        // The host get-file path is shared with the cap-gated enforcement core
-        // (`functions::enforce::get_file_bytes_raw`). Privileged (event/service/
-        // cron) callers hit the raw path with no cap gate — today's behavior,
-        // byte-equivalent. Anon/User invoke goes through `enforced_get_file_bytes`
-        // (Task 3 wiring), which adds the `file.read` cap gate before this.
-        crate::functions::enforce::get_file_bytes_raw(&self.host.mcp, &key, self.host.file_read_max)
-            .await
+        use crate::functions::caller::CallerCtx;
+        match &self.host.caller {
+            // Privileged (event/service/cron): raw path, no cap gate — today's
+            // behavior, byte-for-byte.
+            CallerCtx::Privileged => {
+                crate::functions::enforce::get_file_bytes_raw(
+                    &self.host.mcp,
+                    &key,
+                    self.host.file_read_max,
+                )
+                .await
+            }
+            // Anon/User: the `file.read` cap gate (against the tenant's
+            // TenantFileCaps) runs before the raw path.
+            caller => {
+                debug_assert!(
+                    !matches!(caller, CallerCtx::Privileged),
+                    "non-privileged branch reached with Privileged caller"
+                );
+                crate::functions::enforce::enforced_get_file_bytes(
+                    &self.host.mcp,
+                    caller.role(),
+                    &self.host.file_caps,
+                    &key,
+                    self.host.file_read_max,
+                )
+                .await
+            }
+        }
     }
 
     async fn put_file(
@@ -230,15 +329,37 @@ impl host::Host for StoreData {
         // it carries the same max_upload_bytes + disk guard + SQLite-first
         // ordering + visibility-derived cache_control. Privileged callers use
         // the raw path (no cap); anon/user invoke gates `file.upload` first.
-        crate::functions::enforce::put_file_raw(
-            &self.host.mcp,
-            &key,
-            bytes,
-            &content_type,
-            &visibility,
-            self.host.disk_min_free_pct,
-        )
-        .await
+        use crate::functions::caller::CallerCtx;
+        match &self.host.caller {
+            CallerCtx::Privileged => {
+                crate::functions::enforce::put_file_raw(
+                    &self.host.mcp,
+                    &key,
+                    bytes,
+                    &content_type,
+                    &visibility,
+                    self.host.disk_min_free_pct,
+                )
+                .await
+            }
+            caller => {
+                debug_assert!(
+                    !matches!(caller, CallerCtx::Privileged),
+                    "non-privileged branch reached with Privileged caller"
+                );
+                crate::functions::enforce::enforced_put_file(
+                    &self.host.mcp,
+                    caller.role(),
+                    &self.host.file_caps,
+                    &key,
+                    bytes,
+                    &content_type,
+                    &visibility,
+                    self.host.disk_min_free_pct,
+                )
+                .await
+            }
+        }
     }
 
     async fn log(&mut self, level: String, msg: String) {
@@ -293,6 +414,33 @@ pub struct HostStateSeed {
 }
 
 impl HostStateSeed {
+    /// Resolve the tenant's file caps for this invocation from the `tenants`
+    /// row (`file_anon_caps_json` / `file_user_caps_json`), mirroring the
+    /// `SQL_BEARER_AUTH_CTE` load in `bearer_auth_layer`. Only the Anon/User
+    /// file branches consult the result. Fails CLOSED to all-off (`default()`)
+    /// when `meta` is absent (test ctors) or the tenant row is missing/unreadable
+    /// — the function host carries no bearer, so the cap source is the row alone.
+    async fn load_file_caps(&self, tenant_id: &str) -> crate::tenant::file_caps::TenantFileCaps {
+        let Some(meta) = self.meta.as_ref() else {
+            return crate::tenant::file_caps::TenantFileCaps::default();
+        };
+        let conn = meta.lock().await;
+        let row: Option<(String, String)> = conn
+            .query_row(
+                "SELECT COALESCE(file_anon_caps_json, '[]'), COALESCE(file_user_caps_json, '[]') \
+                 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+                rusqlite::params![tenant_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        match row {
+            Some((anon_json, user_json)) => {
+                crate::tenant::file_caps::TenantFileCaps::from_json(&anon_json, &user_json)
+            }
+            None => crate::tenant::file_caps::TenantFileCaps::default(),
+        }
+    }
+
     /// `functions: None` here is the depth=1 recursion guard (spec §4).
     pub fn build_mcp(&self, tenant_id: &str) -> anyhow::Result<DrustMcp> {
         let pool = self.tenants.get_or_open(tenant_id)?;
@@ -386,6 +534,12 @@ impl FunctionRunner for WasmRunner {
             }
         };
 
+        // Load the tenant's file caps ONCE per invocation (mirrors how
+        // `bearer_auth_layer` resolves them from the `tenants` row). Only the
+        // Anon/User file branches consult them; the Privileged path ignores them
+        // (service is unrestricted). No `meta` (test ctors) ⇒ default = all-off.
+        let file_caps = self.seed.load_file_caps(tenant_id).await;
+
         // Locked-down WASI: no preopens, no allowed socket addrs, discarded stdio.
         let wasi = wasmtime_wasi::WasiCtxBuilder::new().build();
         let data = StoreData {
@@ -401,6 +555,7 @@ impl FunctionRunner for WasmRunner {
                 disk_min_free_pct: self.seed.disk_min_free_pct,
                 log_buf: String::new(),
                 caller,
+                file_caps,
             },
         };
         let mut store = Store::new(engine(), data);
@@ -533,9 +688,262 @@ mod tests {
                 disk_min_free_pct: 20,
                 log_buf: String::new(),
                 caller: crate::functions::caller::CallerCtx::Privileged,
+                file_caps: crate::tenant::file_caps::TenantFileCaps::default(),
             },
         };
         (store, pool, tmp)
+    }
+
+    // ── Task 3: CallerCtx-branched host imports ─────────────────────────────
+    //
+    // Drive the production `host::Host` fns directly (as the put_file tests do)
+    // with a non-Privileged `caller`, and assert the host op now runs through
+    // the capability-gated enforcement core — proving the branch is wired, not
+    // that the core itself decides correctly (that is `enforce`'s own suite).
+    use crate::functions::caller::CallerCtx;
+    use crate::mcp::server::DrustMcp;
+
+    /// Build a fully-wired `DrustMcp` over a fresh tenant pool + in-memory Garage
+    /// (no `meta` — the caller is supplied directly, so the per-invocation file-cap
+    /// load is bypassed; tests pass `file_caps` explicitly).
+    async fn mcp_for(tenant_id: &str) -> (DrustMcp, crate::storage::pool::SharedTenantPool, tempfile::TempDir)
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let tenants = Arc::new(crate::storage::pool::TenantRegistry::new(
+            tmp.path().to_path_buf(),
+            2,
+        ));
+        let pool = tenants.get_or_open(tenant_id).unwrap();
+        let garage = Arc::new(crate::storage::garage::GarageClient::from_store(
+            Arc::new(object_store::memory::InMemory::new()),
+            "unused",
+        ));
+        let rooms_cfg = crate::tenant::rooms::RoomsConfig::test_defaults();
+        let bucket = rooms_cfg.bucket();
+        let mcp = DrustMcp::new(
+            tenant_id,
+            pool.clone(),
+            crate::tenant::events::EventBus::new(),
+            crate::tenant::WebhookDispatcher::new(tenants.clone(), None),
+            Some(garage),
+            String::new(),
+            Arc::new([0u8; 32]),
+            None,
+            52_428_800,
+            1_000_000,
+            Arc::new(tokio::sync::Mutex::new(
+                crate::safety::audit_db::open_audit_db_memory().unwrap(),
+            )),
+            crate::tenant::rooms::RoomBus::new(),
+            bucket,
+            rooms_cfg,
+            None,
+            None,
+        );
+        (mcp, pool, tmp)
+    }
+
+    fn store_with(
+        mcp: DrustMcp,
+        caller: CallerCtx,
+        file_caps: crate::tenant::file_caps::TenantFileCaps,
+    ) -> StoreData {
+        StoreData {
+            wasi: wasmtime_wasi::WasiCtxBuilder::new().build(),
+            table: wasmtime::component::ResourceTable::new(),
+            limits: MemLimiter {
+                cap: 64 * 1024 * 1024,
+                oom_hit: false,
+            },
+            host: HostState {
+                mcp,
+                file_read_max: 4 * 1024 * 1024,
+                disk_min_free_pct: 0,
+                log_buf: String::new(),
+                caller,
+                file_caps,
+            },
+        }
+    }
+
+    async fn make_owner_scoped(
+        pool: &crate::storage::pool::SharedTenantPool,
+        mcp: &DrustMcp,
+        coll: &str,
+        read_scope: &str,
+    ) {
+        let coll_c = coll.to_string();
+        let scope_c = read_scope.to_string();
+        let coll_q = coll.replace('"', "\"\"");
+        pool.with_writer(move |c| {
+            c.execute_batch(&format!(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE \"{coll_q}\" (
+                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                     owner      TEXT REFERENCES _system_users(id) ON DELETE RESTRICT,
+                     title      TEXT,
+                     created_at TEXT DEFAULT (datetime('now')),
+                     updated_at TEXT DEFAULT (datetime('now'))
+                 );"
+            ))?;
+            crate::storage::schema::set_owner_field(c, &coll_c, Some("owner"), Some(&scope_c))
+        })
+        .await
+        .unwrap();
+        mcp.inner().pool.schema_cache.invalidate(coll);
+    }
+
+    async fn seed_user(pool: &crate::storage::pool::SharedTenantPool, id: &str) {
+        let id = id.to_string();
+        pool.with_writer(move |c| {
+            c.execute(
+                "INSERT INTO _system_users (id, email, password_hash, created_at, updated_at) \
+                 VALUES (?1, ?1, 'x', datetime('now'), datetime('now'))",
+                rusqlite::params![id],
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+    }
+
+    /// Anon caller invoking the insert host fn over a collection without the
+    /// insert cap is DENIED by the enforcement core (default anon_caps=[select]).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn anon_insert_host_fn_denied_without_cap() {
+        let (mcp, pool, _t) = mcp_for("t-anon").await;
+        crate::mcp::tools::schema::create_collection(
+            &mcp,
+            "notes",
+            &[crate::mcp::tools::schema::FieldSpec {
+                name: "body".into(),
+                sql_type: "text".into(),
+                nullable: true,
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+        let _ = pool; // keep handle alive
+        let mut store = store_with(mcp, CallerCtx::Anon, Default::default());
+        let r = host::Host::insert_record(
+            &mut store,
+            "notes".into(),
+            serde_json::json!({"body": "x"}).to_string(),
+        )
+        .await;
+        let e = r.unwrap_err();
+        assert!(e.contains("ANON_CAP_DENIED"), "got: {e}");
+    }
+
+    /// Granting the insert cap lets the anon host-fn insert succeed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn anon_insert_host_fn_allowed_with_cap() {
+        let (mcp, _pool, _t) = mcp_for("t-anon2").await;
+        crate::mcp::tools::schema::create_collection(
+            &mcp,
+            "notes",
+            &[crate::mcp::tools::schema::FieldSpec {
+                name: "body".into(),
+                sql_type: "text".into(),
+                nullable: true,
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+        crate::mcp::tools::schema::set_anon_caps(
+            &mcp,
+            "notes",
+            &[
+                crate::storage::schema::DmlVerb::Select,
+                crate::storage::schema::DmlVerb::Insert,
+            ],
+        )
+        .await
+        .unwrap();
+        let mut store = store_with(mcp, CallerCtx::Anon, Default::default());
+        let out = host::Host::insert_record(
+            &mut store,
+            "notes".into(),
+            serde_json::json!({"body": "x"}).to_string(),
+        )
+        .await
+        .expect("anon insert with cap");
+        assert!(out.contains("\"id\""), "inserted row: {out}");
+    }
+
+    /// User caller insert over an owner-scoped collection stamps the owner column
+    /// to the caller's user_id (the core overwrites a forged owner).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn user_insert_host_fn_stamps_owner() {
+        let (mcp, pool, _t) = mcp_for("t-user").await;
+        make_owner_scoped(&pool, &mcp, "todos", "own").await;
+        seed_user(&pool, "u-1").await;
+        let mut store = store_with(
+            mcp,
+            CallerCtx::User {
+                user_id: "u-1".into(),
+            },
+            Default::default(),
+        );
+        let out = host::Host::insert_record(
+            &mut store,
+            "todos".into(),
+            serde_json::json!({"title": "t", "owner": "u-evil"}).to_string(),
+        )
+        .await
+        .expect("user insert");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["record"]["owner"], "u-1", "owner must be stamped: {v}");
+    }
+
+    /// Privileged (service/event) caller keeps god-mode: insert succeeds with NO
+    /// cap granted — the cap gate is bypassed, today's behavior unchanged.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn privileged_insert_host_fn_god_mode() {
+        let (mcp, _pool, _t) = mcp_for("t-priv").await;
+        crate::mcp::tools::schema::create_collection(
+            &mcp,
+            "notes",
+            &[crate::mcp::tools::schema::FieldSpec {
+                name: "body".into(),
+                sql_type: "text".into(),
+                nullable: true,
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+        // no caps granted — Privileged ignores them.
+        let mut store = store_with(mcp, CallerCtx::Privileged, Default::default());
+        let out = host::Host::insert_record(
+            &mut store,
+            "notes".into(),
+            serde_json::json!({"body": "s"}).to_string(),
+        )
+        .await
+        .expect("privileged god-mode insert");
+        assert!(out.contains("\"id\""), "inserted: {out}");
+    }
+
+    /// Anon file put without the upload cap is DENIED via the enforcement core.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn anon_put_file_host_fn_denied_without_cap() {
+        let (mcp, _pool, _t) = mcp_for("t-file").await;
+        let mut store = store_with(mcp, CallerCtx::Anon, Default::default());
+        let r = host::Host::put_file(
+            &mut store,
+            "f.bin".into(),
+            b"hi".to_vec(),
+            "application/octet-stream".into(),
+            "private".into(),
+        )
+        .await;
+        assert!(
+            r.unwrap_err().contains("FILE_UPLOAD_DENIED"),
+            "anon put-file must be cap-gated"
+        );
     }
 
     async fn put_file_then_read_cc(visibility: &str) -> String {
