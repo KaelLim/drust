@@ -189,7 +189,10 @@ async fn require_write_cap(
 /// Compute an owner row-level filter `(field_name, user_id)` when:
 /// - the collection has an `owner_field` with `read_scope = "own"`, AND
 /// - the caller is a `User` token (Service and Anon bypass the filter).
-fn compute_owner_filter(ctx: &AuthCtx, schema: &CollectionSchema) -> Option<(String, String)> {
+pub(crate) fn compute_owner_filter(
+    ctx: &AuthCtx,
+    schema: &CollectionSchema,
+) -> Option<(String, String)> {
     match (
         ctx,
         schema.owner_field.as_deref(),
@@ -212,7 +215,7 @@ fn compute_owner_filter(ctx: &AuthCtx, schema: &CollectionSchema) -> Option<(Str
 /// user tamper with every other user's rows). Service and Anon bypass (Anon
 /// never reaches a write on an owner-scoped collection — it is refused earlier
 /// with `ANON_FORBIDDEN_OWNER_SCOPED`).
-fn compute_owner_write_filter(
+pub(crate) fn compute_owner_write_filter(
     ctx: &AuthCtx,
     schema: &CollectionSchema,
 ) -> Option<(String, String)> {

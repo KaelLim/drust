@@ -204,10 +204,49 @@ fn pre_encode_vectors(
     Ok(out)
 }
 
+/// An explicit-policy CHECK to evaluate on the persisted (read-back) row
+/// INSIDE the writer transaction. Threaded by the enforcement core
+/// (`src/functions/enforce.rs`) so a failing predicate rolls the write back —
+/// byte-identical to the REST handler's in-tx CHECK. `None` (the default for
+/// the service-key MCP / Privileged-function callers) means "no CHECK", so the
+/// existing call sites are unchanged.
+#[derive(Clone)]
+pub struct PolicyCheck {
+    pub ast: crate::query::vector_filter::FilterAst,
+    pub auth_id: Option<String>,
+}
+
+impl PolicyCheck {
+    /// Evaluate `ast` against the read-back `rec`; returns the rollback
+    /// sentinel error when the predicate rejects the row.
+    fn enforce(&self, rec: &serde_json::Value) -> Result<(), rusqlite::Error> {
+        let row_map = rec.as_object().cloned().unwrap_or_default();
+        let pc = crate::query::policy::PolicyCtx {
+            auth_id: self.auth_id.clone(),
+            data: Some(row_map.clone()),
+        };
+        if crate::query::policy::eval_policy(&self.ast, &row_map, &pc) {
+            Ok(())
+        } else {
+            Err(crate::query::policy::policy_check_sentinel())
+        }
+    }
+}
+
 pub async fn insert_record(
     s: &DrustMcp,
     collection: &str,
     data: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    insert_record_checked(s, collection, data, None).await
+}
+
+/// `insert_record` with an optional in-tx policy CHECK (enforcement-core entry).
+pub async fn insert_record_checked(
+    s: &DrustMcp,
+    collection: &str,
+    data: serde_json::Value,
+    policy_check: Option<PolicyCheck>,
 ) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
         anyhow::bail!(
@@ -304,6 +343,12 @@ pub async fn insert_record(
                 .get("id")
                 .and_then(|v| v.as_i64())
                 .unwrap_or_else(|| tx.last_insert_rowid());
+            // Explicit-policy CHECK on the persisted row (enforcement core).
+            // A failing predicate returns the sentinel → rolls back the INSERT,
+            // mirroring records.rs (REST). `None` for service/Privileged.
+            if let Some(check) = &policy_check {
+                check.enforce(&rec)?;
+            }
             Ok((id, rec))
         })
         .await?;
@@ -323,6 +368,17 @@ pub async fn update_record(
     collection: &str,
     id: i64,
     data: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    update_record_checked(s, collection, id, data, None).await
+}
+
+/// `update_record` with an optional in-tx policy CHECK (enforcement-core entry).
+pub async fn update_record_checked(
+    s: &DrustMcp,
+    collection: &str,
+    id: i64,
+    data: serde_json::Value,
+    policy_check: Option<PolicyCheck>,
 ) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
         anyhow::bail!(
@@ -407,7 +463,15 @@ pub async fn update_record(
                 .map_err(map_check_violation)
                 .optional()?
             {
-                Some(rec) => Ok(rec),
+                Some(rec) => {
+                    // Explicit-policy CHECK on the post-image row (enforcement
+                    // core): a failing predicate rolls the UPDATE back, mirroring
+                    // records.rs (REST). `None` for service/Privileged.
+                    if let Some(check) = &policy_check {
+                        check.enforce(&rec)?;
+                    }
+                    Ok(rec)
+                }
                 None => Err(rusqlite::Error::QueryReturnedNoRows),
             }
         })
@@ -455,21 +519,71 @@ pub async fn delete_record(
     collection: &str,
     id: i64,
 ) -> anyhow::Result<serde_json::Value> {
+    delete_record_filtered(s, collection, id, None, None).await
+}
+
+/// `delete_record` with an optional owner clause + explicit-policy USING
+/// pre-flight (enforcement-core entry). Both are applied INSIDE the writer
+/// transaction, byte-mirroring the REST `delete_handler`:
+///   - `owner` = `(field, user_id)` AND-ed onto the DELETE's `WHERE` (a User may
+///     only delete their own row → a foreign row is a no-op → 404).
+///   - `using` = `(sql_fragment, binds)` pre-flight SELECT: a row failing the
+///     compiled USING is "not a deletable target" → 404 (same `Ok(0)` arm).
+/// `None`/`None` (service / Privileged) → today's id-only DELETE, unchanged.
+pub async fn delete_record_filtered(
+    s: &DrustMcp,
+    collection: &str,
+    id: i64,
+    owner: Option<(String, String)>,
+    using: Option<(String, Vec<Value>)>,
+) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
         anyhow::bail!(
             "PROTECTED_COLLECTION: _system_* tables are read-only via MCP records tools. Use the dedicated admin tools."
         );
     }
-    let coll = collection.to_string();
     let pool = s.inner().pool.clone();
     let tenant = s.inner().tenant_id.clone();
     let bus = s.inner().bus.clone();
     let webhooks = s.inner().webhooks.clone();
+    let coll_w = collection.to_string();
     let n = pool
-        .with_writer_tx(move |tx| {
+        .with_writer_tx(move |tx| -> rusqlite::Result<usize> {
+            // Explicit-policy USING pre-flight (mirror REST delete_handler):
+            // a row failing the compiled fragment is not a deletable target.
+            if let Some((frag, pbinds)) = &using {
+                use rusqlite::OptionalExtension;
+                let q = format!(
+                    "SELECT 1 FROM \"{}\" WHERE id = ?1 AND ({frag})",
+                    coll_w.replace('"', "\"\"")
+                );
+                let mut pp: Vec<Value> = vec![Value::Integer(id)];
+                pp.extend(pbinds.iter().cloned());
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    pp.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                if tx
+                    .query_row(&q, &refs[..], |r| r.get::<_, i64>(0))
+                    .optional()?
+                    .is_none()
+                {
+                    return Ok(0usize);
+                }
+            }
+            // Owner clause AND-ed onto the DELETE — user_id is UUID-shaped,
+            // safe to inline after escaping (same as REST delete_handler).
+            let owner_clause = if let Some((field, user_id)) = &owner {
+                format!(
+                    " AND \"{}\" = '{}'",
+                    field.replace('"', "\"\""),
+                    user_id.replace('\'', "''")
+                )
+            } else {
+                String::new()
+            };
             let sql = format!(
-                "DELETE FROM \"{}\" WHERE id = ?1",
-                coll.replace('"', "\"\"")
+                "DELETE FROM \"{}\" WHERE id = ?1{}",
+                coll_w.replace('"', "\"\""),
+                owner_clause,
             );
             tx.execute(&sql, rusqlite::params![id])
         })
