@@ -64,21 +64,21 @@ fn check_constraints(
         }
         let numeric = matches!(f.sql_type.as_str(), "integer" | "real" | "boolean");
         if let Some(n) = as_num(v) {
-            if let Some(min) = c.min {
-                if n < min {
-                    return Err(invalid_input(format!(
-                        "CHECK_CONSTRAINT_FAILED: {} must be >= {min}",
-                        f.name
-                    )));
-                }
+            if let Some(min) = c.min
+                && n < min
+            {
+                return Err(invalid_input(format!(
+                    "CHECK_CONSTRAINT_FAILED: {} must be >= {min}",
+                    f.name
+                )));
             }
-            if let Some(max) = c.max {
-                if n > max {
-                    return Err(invalid_input(format!(
-                        "CHECK_CONSTRAINT_FAILED: {} must be <= {max}",
-                        f.name
-                    )));
-                }
+            if let Some(max) = c.max
+                && n > max
+            {
+                return Err(invalid_input(format!(
+                    "CHECK_CONSTRAINT_FAILED: {} must be <= {max}",
+                    f.name
+                )));
             }
         }
         if let Some(en) = &c.enum_values {
@@ -105,13 +105,13 @@ fn check_constraints(
                 )));
             }
         }
-        if let (Some(s), Some(len)) = (v.as_str(), c.max_length) {
-            if s.chars().count() as u32 > len {
-                return Err(invalid_input(format!(
-                    "CHECK_CONSTRAINT_FAILED: {} exceeds max_length {len}",
-                    f.name
-                )));
-            }
+        if let (Some(s), Some(len)) = (v.as_str(), c.max_length)
+            && s.chars().count() as u32 > len
+        {
+            return Err(invalid_input(format!(
+                "CHECK_CONSTRAINT_FAILED: {} exceeds max_length {len}",
+                f.name
+            )));
         }
     }
     Ok(())

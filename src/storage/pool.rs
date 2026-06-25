@@ -64,7 +64,7 @@ impl TenantPool {
     /// must never fail the write that triggered it.
     fn note_write_and_maybe_optimize(&self, conn: &Connection) {
         let n = self.write_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if n % DRUST_OPTIMIZE_EVERY == 0 {
+        if n.is_multiple_of(DRUST_OPTIMIZE_EVERY) {
             let _ = conn.execute_batch("PRAGMA optimize;");
             #[cfg(any(test, debug_assertions))]
             self.optimize_runs.fetch_add(1, Ordering::Relaxed);
