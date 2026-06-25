@@ -7,6 +7,7 @@ pub mod caller;
 pub mod dispatcher;
 pub mod enforce;
 pub mod executor;
+pub mod invoke_gate;
 pub mod routes;
 pub mod runtime;
 pub mod schema;

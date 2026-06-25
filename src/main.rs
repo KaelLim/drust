@@ -471,6 +471,7 @@ async fn main() -> anyhow::Result<()> {
             oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
             file_upload_rl: Arc::new(IpRateLimit::new(30, Duration::from_secs(60), 4096)),
             file_delete_rl: Arc::new(IpRateLimit::new(30, Duration::from_secs(60), 4096)),
+            fn_invoke_rl: Arc::new(IpRateLimit::new(30, Duration::from_secs(60), 4096)),
             public_url,
             oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
             // HMAC secret binding per-tenant OAuth `state` to `redirect_uri`.

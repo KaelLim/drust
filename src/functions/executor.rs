@@ -249,6 +249,22 @@ impl Executor {
                 };
             }
         };
+        // DiD layer 2 (T6): the HTTP invoke gate already checked the invoke flag
+        // for anon/user, but it captured the row earlier — re-assert here against
+        // the fresh row so a flag flipped off between gate and run still fails
+        // closed. `Privileged` (service/event/cron) bypasses unconditionally.
+        match &inv.caller {
+            CallerCtx::Privileged => {}
+            CallerCtx::Anon if row.invoke_anon => {}
+            CallerCtx::User { .. } if row.invoke_user => {}
+            _ => {
+                return RunOutcome {
+                    status: RunStatus::Error,
+                    result: "invoke ACL mismatch".into(),
+                    log_text: String::new(),
+                };
+            }
+        }
         let path = self.artifact_path(&inv.tenant_id, &row.wasm_sha256);
         self.runner
             .run(&inv.tenant_id, &path, &inv.event_json, inv.caller.clone())
@@ -554,6 +570,83 @@ mod tests {
             0,
             "sync invoke corrupted queue depth"
         );
+    }
+
+    /// DiD layer 2 (T6): a non-`Privileged` caller whose matching invoke flag
+    /// is 0 is refused at the executor even if it somehow reached run_one — the
+    /// HTTP gate captured the row earlier, so this re-assert against the fresh
+    /// row closes the flag-flipped-off-after-gate race. The seeded `echo` fn
+    /// has both flags 0 (default-deny).
+    #[tokio::test]
+    async fn non_privileged_caller_refused_when_flag_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let (exec, _reg) = setup(dir.path()).await;
+        for caller in [
+            CallerCtx::Anon,
+            CallerCtx::User {
+                user_id: "u1".into(),
+            },
+        ] {
+            let out = exec
+                .run_one(Invocation {
+                    tenant_id: "t-e".into(),
+                    function_name: "echo".into(),
+                    trigger: "manual".into(),
+                    event_json: "{}".into(),
+                    caller,
+                })
+                .await;
+            assert_eq!(out.status, RunStatus::Error);
+            assert!(
+                out.result.contains("invoke ACL mismatch"),
+                "got {}",
+                out.result
+            );
+        }
+        // Privileged is never gated by the flags.
+        let out = exec
+            .run_one(Invocation {
+                tenant_id: "t-e".into(),
+                function_name: "echo".into(),
+                trigger: "manual".into(),
+                event_json: "{}".into(),
+                caller: CallerCtx::Privileged,
+            })
+            .await;
+        assert_eq!(out.status, RunStatus::Ok);
+    }
+
+    /// DiD layer 2 admits a non-`Privileged` caller once its flag is set.
+    #[tokio::test]
+    async fn non_privileged_caller_runs_when_flag_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (exec, reg) = setup(dir.path()).await;
+        let pool = reg.get_or_open("t-e").unwrap();
+        schema::set_invoke_acl(&pool, "echo", true, true)
+            .await
+            .unwrap();
+        for caller in [
+            CallerCtx::Anon,
+            CallerCtx::User {
+                user_id: "u1".into(),
+            },
+        ] {
+            let out = exec
+                .run_one(Invocation {
+                    tenant_id: "t-e".into(),
+                    function_name: "echo".into(),
+                    trigger: "manual".into(),
+                    event_json: "{}".into(),
+                    caller,
+                })
+                .await;
+            assert_eq!(
+                out.status,
+                RunStatus::Ok,
+                "flag on must run: {}",
+                out.result
+            );
+        }
     }
 
     /// Queued completions decrement depth; the decrement saturates at zero
