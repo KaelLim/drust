@@ -1,3 +1,90 @@
+## v1.44.0 — 2026-06-25
+
+### feat — caller-identity edge-function invoke (anon/user-invokable functions, phase 1)
+
+Edge functions can now be invoked by **anon and end-user (`drust_user_*`) bearers**,
+not only by the service key — faithfully matching Supabase Edge Functions. An
+anon/user invocation runs the function **under the caller's own identity**, so its
+host data-plane access is gated by exactly the same `anon_caps` / `user_caps` +
+`owner_field` + RLS policy + file caps the caller would hit calling REST directly.
+**Config — including granting/revoking who may invoke — stays service-only.** Built
+end-to-end under workflow orchestration with explicit cross-privilege escalation
+tests as the oracle. Cron / scheduled jobs are **phase 2** (separate spec).
+
+- **`CallerCtx` execution identity** (`src/functions/caller.rs`). A three-variant
+  enum (`Privileged` | `Anon` | `User{user_id}`) threaded `Invocation` → executor →
+  host. **No `Default`, no fallthrough to `Privileged`** — by type design, an
+  anon/user invocation can never reach god-mode by accident (a CRITICAL
+  cross-privilege escalation if it could); every construction site names the
+  variant. `Privileged` (service invoke, event triggers, future cron) keeps
+  **god-mode, byte-for-byte unchanged**.
+- **Reusable enforcement core** (`src/functions/enforce.rs`). Transport-agnostic
+  per-op authorization keyed on `AuthCtx`, reproducing the REST handlers' decision
+  order EXACTLY — cap-gate (`has_dml_cap`), anon-owner-scoped deny, owner
+  stamp/filter (`compute_owner_*`) by `read_scope`, RLS USING pre-flight + in-tx
+  CHECK, per-verb file caps (`get-file-bytes`=read, `put-file`=upload) — then
+  delegates to the existing `mcp::tools::{write,read}` writers (so a function write
+  still fans out to SSE + webhooks). The function host calls this core for any
+  non-`Privileged` `CallerCtx`. The REST handlers are deliberately **not** refactored
+  onto the core in phase 1 — they remain the regression oracle, so the existing
+  `tests/` suite proves the core's decisions match REST.
+- **Invoke ACL — default-deny, service-only config.** Two columns on
+  `_system_functions` (`invoke_anon` / `invoke_user`), idempotent `ADD COLUMN` boot
+  migration guarded on `pragma_table_info`, **default 0** — every existing function
+  stays service-only; the migration mints/grants nothing. Granting AND revoking are
+  both config = **service-only** across three faces: REST `PATCH
+  /t/<id>/functions/<name>` (one-sided merge so a partial PATCH can't clobber the
+  other flag), MCP **`set_function_invoke_acl`** (**MCP tool count 58 → 59**), admin
+  `ƒ _functions` toggle.
+- **DiD ≥ 2 on the new HTTP exposure.** (1) `invoke_gate_layer`
+  (`src/functions/invoke_gate.rs`) on the `/invoke` route only — service→allow
+  (`Privileged`); user→allow iff `invoke_user` else `403 FN_INVOKE_USER_DENIED`;
+  anon→allow iff `invoke_anon` else `403 FN_INVOKE_ANON_DENIED` (alias
+  `WRITE_DENIED`); plus a per-IP `fn_invoke_rl` rate-limit (30/60s, `429
+  RATE_LIMITED_IP`) on non-service callers. CRUD + `/logs` keep
+  `require_service_layer`. (2) The executor re-asserts the function's flag against
+  the **freshly-read** row before running — a flag flipped off between gate and run
+  fails closed — and the enforcement core applies caps/owner/RLS regardless of how
+  invoke was reached. MCP `invoke_function` stays **service-only** by MCP dispatch.
+  `depth=1` / `functions:None` unchanged (no recursion relaxation); caller-supplied
+  `event_json` is no longer an escalation lever for anon/user, because the run is
+  capability-gated.
+
+### live-smoke (run against the running service on `:8793`, service key = `tokens.plaintext`)
+
+```bash
+# 0) deploy + version check
+cd /home/kaelsohappy1/tool/drust
+cargo build --release && sudo systemctl restart drust
+curl -sI http://127.0.0.1:47826/health | grep -i x-drust-version   # → 1.44.0
+
+# 1) service-seed: a collection with anon_caps/user_caps + owner_field, a user,
+#    and a function. SVC = a tenant service key (tokens.plaintext); T = tenant id.
+#    Create an owner-scoped collection where User has insert+select via user_caps:
+#      create_collection notes  (owner_field="owner", read_scope="own",
+#                                anon_caps=[], user_caps=[select,insert])
+#    Upload a .wasm that inserts a row into `notes` on invoke, then:
+#      set_function_invoke_acl name=ins invoke_user=true invoke_anon=false
+#    Register a user (drust_user_*) → USER bearer.
+
+# 2) user-invoke runs under the caller → owner stamped, caps enforced
+curl -s -H "Authorization: Bearer $USER" \
+  -X POST http://127.0.0.1:47826/t/$T/functions/ins/invoke -d '{}'
+#   ⇒ inserted row's owner == the user's id; a foreign-row UPDATE the fn attempts → 404;
+#     an op the user lacks the cap for → cap-denied INSIDE the function (not god-mode).
+
+# 3) anon-invoke denied while invoke_anon=0
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $ANON" \
+  -X POST http://127.0.0.1:47826/t/$T/functions/ins/invoke -d '{}'
+#   ⇒ 403 FN_INVOKE_ANON_DENIED
+
+# 4) event-trigger path still god-mode (Privileged, unchanged): insert a record that
+#    fires record.created → the bound function writes WITHOUT cap/owner restriction.
+#    Confirm via _system_function_logs that the trigger run succeeded.
+
+# 5) MCP invoke stays service-only: invoke_function via a USER/ANON MCP bearer → denied.
+```
+
 ## v1.43.0 — 2026-06-24
 
 ### feat — native SQLite adoption (STRICT, CHECK, RETURNING, prepare_cached, PRAGMA optimize)
