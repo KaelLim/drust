@@ -37,6 +37,12 @@ pub struct TenantAuthState {
     /// Default: 30 per 60 s each.
     pub file_upload_rl: Arc<IpRateLimit>,
     pub file_delete_rl: Arc<IpRateLimit>,
+    /// T6 — per-IP rate limiter for NON-service edge-function `/invoke`,
+    /// consulted in `functions::invoke_gate::invoke_gate_layer` after the
+    /// per-identity invoke-ACL check passes. Service bypasses. Bounds the
+    /// public anon-key invoke DoS vector that `invoke_anon`/`invoke_user` open.
+    /// Default: 30 per 60 s (mirrors `file_upload_rl`).
+    pub fn_invoke_rl: Arc<IpRateLimit>,
     /// Public-facing base URL drust serves on, e.g. `https://drust.example.com`.
     /// Read once at TenantStack construction (from `DRUST_PUBLIC_URL`) and
     /// pinned here so OAuth handlers don't have to re-read env per request
@@ -96,6 +102,7 @@ impl TenantAuthState {
             oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
             file_upload_rl: Arc::new(IpRateLimit::new(30, Duration::from_secs(60), 4096)),
             file_delete_rl: Arc::new(IpRateLimit::new(30, Duration::from_secs(60), 4096)),
+            fn_invoke_rl: Arc::new(IpRateLimit::new(30, Duration::from_secs(60), 4096)),
             public_url: String::new(),
             oauth_adapter_override: Arc::new(std::collections::HashMap::new()),
             // Tests use a fixed secret: differences between TenantAuthState

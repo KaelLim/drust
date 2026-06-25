@@ -365,10 +365,18 @@ pub struct InvokeBody {
     pub event: serde_json::Value,
 }
 
-/// POST /t/<id>/functions/<name>/invoke — synchronous test-invoke.
+/// POST /t/<id>/functions/<name>/invoke — synchronous invoke.
+///
+/// Runs under `invoke_gate_layer` (T6), NOT `require_service_layer`: service is
+/// `Privileged` (god-mode, unchanged); anon/user reach here only when the
+/// function's `invoke_anon`/`invoke_user` flag is set, and run under a
+/// non-`Privileged` `CallerCtx` so every host op is capability-gated. The
+/// caller identity is derived from the request's `TenantRef.role` + `AuthCtx`
+/// (the user_id), never defaulted — there is no fallthrough to `Privileged`.
 pub async fn invoke(
     State(st): State<FunctionsRouteState>,
     Extension(t): Extension<TenantRef>,
+    Extension(auth): Extension<crate::auth::middleware::AuthCtx>,
     Path((_tenant, name)): Path<(String, String)>,
     Json(body): Json<InvokeBody>,
 ) -> Response {
@@ -383,6 +391,29 @@ pub async fn invoke(
         }
         Err(e) => return map_sentinel(e),
     }
+    // Build the execution identity from role + AuthCtx. The gate already
+    // authorized this (role,fn) pair; here we name the matching CallerCtx
+    // variant explicitly — Service→Privileged, Anon→Anon, User→User{id}. A
+    // User bearer with no resolvable user_id (impossible past bearer_auth)
+    // fails closed to a denial rather than silently escalating.
+    let caller = match t.role {
+        crate::tenant::router::TokenRole::Service => {
+            crate::functions::caller::CallerCtx::Privileged
+        }
+        crate::tenant::router::TokenRole::Anon => crate::functions::caller::CallerCtx::Anon,
+        crate::tenant::router::TokenRole::User => match auth.user_id() {
+            Some(uid) => crate::functions::caller::CallerCtx::User {
+                user_id: uid.to_string(),
+            },
+            None => {
+                return crate::error::json_error(
+                    StatusCode::FORBIDDEN,
+                    "FN_INVOKE_USER_DENIED",
+                    "user invoke missing caller identity",
+                );
+            }
+        },
+    };
     let started = std::time::Instant::now();
     let out = st
         .executor
@@ -391,8 +422,7 @@ pub async fn invoke(
             function_name: name,
             trigger: "manual".into(),
             event_json: body.event.to_string(),
-            // Service-only route (require_service_layer) → god-mode, unchanged.
-            caller: crate::functions::caller::CallerCtx::Privileged,
+            caller,
         })
         .await;
     Json(serde_json::json!({

@@ -538,8 +538,14 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         Router::new()
     };
 
-    // v1.36 — functions REST surface, same auth stack as files_router:
-    // require_service_layer INNER to bearer_auth_layer ⇒ service-key-only.
+    // v1.36 / T6 — functions REST surface, split into two sub-routers that
+    // share `bearer_auth_layer` but differ on the inner per-route gate:
+    //   • CONFIG (CRUD + /logs): `require_service_layer` ⇒ service-key-only.
+    //   • INVOKE (/invoke): `invoke_gate_layer` ⇒ per-identity gate — service
+    //     is Privileged; anon/user allowed iff the function's invoke_anon /
+    //     invoke_user flag is set (default 0 = service-only), then per-IP
+    //     rate-limited. Granting/revoking those flags is itself service-only
+    //     config, so it lives on the CONFIG sub-router (PATCH).
     let functions_router = {
         let fr_state = crate::functions::routes::FunctionsRouteState {
             tenants: state.auth.registry.clone(),
@@ -548,7 +554,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             cfg: state.fn_cfg.clone(),
             data_root: state.auth.registry.data_root().to_path_buf(),
         };
-        Router::new()
+        let config_router = Router::new()
             .route(
                 "/t/{tenant}/functions",
                 post(crate::functions::routes::create)
@@ -564,10 +570,6 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     .delete(crate::functions::routes::delete_one),
             )
             .route(
-                "/t/{tenant}/functions/{name}/invoke",
-                post(crate::functions::routes::invoke),
-            )
-            .route(
                 "/t/{tenant}/functions/{name}/logs",
                 get(crate::functions::routes::logs),
             )
@@ -576,7 +578,26 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 auth_state.clone(),
                 router::bearer_auth_layer,
             ))
-            .with_state(fr_state)
+            .with_state(fr_state.clone());
+        let invoke_router = Router::new()
+            .route(
+                "/t/{tenant}/functions/{name}/invoke",
+                post(crate::functions::routes::invoke),
+            )
+            // Per-identity gate, INNER to bearer_auth (applied BEFORE the bearer
+            // layer in source = runs AFTER bearer on the request path, when
+            // TenantRef/AuthCtx are in extensions). Stateful: carries auth_state
+            // for the per-IP fn_invoke rate limiter.
+            .layer(axum::middleware::from_fn_with_state(
+                auth_state.clone(),
+                crate::functions::invoke_gate::invoke_gate_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                auth_state.clone(),
+                router::bearer_auth_layer,
+            ))
+            .with_state(fr_state);
+        config_router.merge(invoke_router)
     };
 
     // Auth routes: no bearer token required (register/login are public entry points).
