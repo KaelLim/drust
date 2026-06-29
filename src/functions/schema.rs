@@ -226,6 +226,39 @@ pub async fn set_invoke_acl(
     .map_err(|e| anyhow::anyhow!(unwrap_module_err(e)))
 }
 
+/// One-sided invoke-ACL update: write ONLY the flags the caller named, keeping
+/// the other at its current value — ATOMICALLY via a single
+/// `UPDATE … SET col = COALESCE(?, col)`. This replaces the REST PATCH's
+/// read-row-then-merge-then-write, which raced two concurrent one-sided PATCHes
+/// (a `{invoke_user:true}` could re-commit a flag a concurrent
+/// `{invoke_anon:false}` had just revoked). `None` ⇒ keep current; `Some(v)` ⇒
+/// set. Returns `false` when no row matched `name`. Same service-only contract
+/// as [`set_invoke_acl`].
+pub async fn set_invoke_acl_partial(
+    pool: &SharedTenantPool,
+    name: &str,
+    anon: Option<bool>,
+    user: Option<bool>,
+) -> anyhow::Result<bool> {
+    let name = name.to_string();
+    let anon = anon.map(|b| b as i64);
+    let user = user.map(|b| b as i64);
+    pool.with_writer(move |c| {
+        ensure_tables(c)?;
+        let n = c.execute(
+            "UPDATE _system_functions
+             SET invoke_anon = COALESCE(?2, invoke_anon),
+                 invoke_user = COALESCE(?3, invoke_user),
+                 updated_at  = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE name = ?1",
+            rusqlite::params![name, anon, user],
+        )?;
+        Ok(n > 0)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(unwrap_module_err(e)))
+}
+
 pub async fn update_meta(
     pool: &SharedTenantPool,
     name: &str,

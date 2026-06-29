@@ -161,10 +161,14 @@ async fn anon_invoke_burst_trips_rate_limit() {
 }
 
 #[tokio::test]
-async fn unknown_function_is_404_for_anon_grant_path() {
+async fn unknown_function_denies_identically_to_flag_off_for_anon() {
     let (router, _service, anon, _user, _tmp) =
         helpers::spin_up_tenant_with_fn_seed("t-fng-nf").await;
-    // Even with the flag off, a missing function is a clean 404 (not a 500).
+    // F5: a MISSING function must be indistinguishable from an existing-but-
+    // flag-off one on the anon gate path — a 404-vs-403 split is a function-name
+    // enumeration oracle for a public anon key. So a missing function returns
+    // the SAME `403 FN_INVOKE_ANON_DENIED` the flag-off case returns (asserted
+    // for an existing fn elsewhere in this file), never `404 FN_NOT_FOUND`.
     let resp = router
         .clone()
         .oneshot(
@@ -176,11 +180,15 @@ async fn unknown_function_is_404_for_anon_grant_path() {
         )
         .await
         .unwrap();
-    // Gate denies anon (flag off on a non-existent fn) → 403; service would 404.
-    // The key invariant: anon never reaches Privileged. 403 or 404 both uphold it.
-    assert!(
-        resp.status() == StatusCode::FORBIDDEN || resp.status() == StatusCode::NOT_FOUND,
-        "got {}",
-        resp.status()
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "missing fn must deny (403), not reveal non-existence (404)"
+    );
+    let v = json_body(resp).await;
+    assert_eq!(v["error_code"], "FN_INVOKE_ANON_DENIED", "got {v}");
+    assert_ne!(
+        v["error_code"], "FN_NOT_FOUND",
+        "must not leak function existence to anon"
     );
 }

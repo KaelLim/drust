@@ -46,6 +46,13 @@ async fn load_schema(
     }
     let pool = mcp.inner().pool.clone();
     let cache = pool.schema_cache.clone();
+    // Fast path: a cache hit needs no pooled reader. `ensure_loaded` itself
+    // short-circuits on a hit without touching the connection, but checking
+    // out a reader to discover that still serializes against the reader pool —
+    // consult the lock-free cache getter first (every enforced_* op calls this).
+    if let Some(s) = cache.get(coll) {
+        return Ok(s);
+    }
     let coll_owned = coll.to_string();
     pool.with_reader(move |c| cache.ensure_loaded(c, &coll_owned))
         .await?
@@ -210,7 +217,18 @@ pub async fn enforced_delete(
     let owner_filter = crate::tenant::records::compute_owner_write_filter(ctx, &schema);
     let using_sql = crate::query::policy::policy_using_sql(ctx, &schema, DmlVerb::Delete)?;
 
-    crate::mcp::tools::write::delete_record_filtered(mcp, coll, id, owner_filter, using_sql).await
+    // `delete_record_filtered` signals a foreign / policy-hidden / missing
+    // target as `Ok({"ok": false, "error_code": "RECORD_NOT_FOUND"})`. Normalise
+    // it to the SAME `Err(RECORD_NOT_FOUND)` that `enforced_update` bails so a
+    // guest sees ONE not-found shape across both write verbs (the host maps Err
+    // → the WIT `result` error arm).
+    let res =
+        crate::mcp::tools::write::delete_record_filtered(mcp, coll, id, owner_filter, using_sql)
+            .await?;
+    if res.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        anyhow::bail!("RECORD_NOT_FOUND: no such record");
+    }
+    Ok(res)
 }
 
 /// Pre-flight: is `id` a writable TARGET for this caller (owner clause + policy
@@ -251,12 +269,12 @@ async fn is_writable_target(
             }
             let refs: Vec<&dyn rusqlite::ToSql> =
                 pp.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            let found = c
-                .query_row(&sql, &refs[..], |_| Ok(()))
-                .optional()?
-                .is_some();
+            // Detach BEFORE `?`-propagating: a non-NoRows query error must not
+            // leave the read-only authorizer attached to the pooled connection
+            // (it would silently restrict whoever borrows that reader next).
+            let found = c.query_row(&sql, &refs[..], |_| Ok(())).optional();
             detach_authorizer(c);
-            Ok(found)
+            Ok(found?.is_some())
         })
         .await?)
 }
@@ -317,9 +335,13 @@ pub async fn enforced_list(
     let policy_clause = crate::query::policy::policy_using_sql(ctx, &schema, DmlVerb::Select)?;
 
     let owner_ref = owner_pair.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
+    // Preserve the typed `CODE: message` the REST `/list` handler returns
+    // (`SORT_DIR_INVALID`, …) instead of a Rust `Debug` rendering, via the
+    // shared `list_error_code` mapping.
     let (list_sql, count_sql, binds) =
-        build_structured_list_sql(&schema, &req, owner_ref, policy_clause)
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        build_structured_list_sql(&schema, &req, owner_ref, policy_clause).map_err(|e| {
+            anyhow::anyhow!("{}: {e}", crate::query::list_builder::list_error_code(&e))
+        })?;
 
     let vector_names: std::collections::HashSet<String> = schema
         .vector_fields
@@ -356,7 +378,10 @@ pub async fn enforced_list(
         .with_reader(move |c| -> rusqlite::Result<i64> {
             attach_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<i64> {
-                let mut stmt = c.prepare(&count_sql_owned)?;
+                // COUNT(*) text is stable for a given (schema, filter) shape and
+                // re-derives on DDL, so `prepare_cached` is allowed here (matches
+                // the REST `/list` oracle + the drust CLAUDE.md cache invariant).
+                let mut stmt = c.prepare_cached(&count_sql_owned)?;
                 let refs: Vec<&dyn rusqlite::ToSql> = binds_count
                     .iter()
                     .map(|v| v as &dyn rusqlite::ToSql)
@@ -366,8 +391,9 @@ pub async fn enforced_list(
             detach_authorizer(c);
             r
         })
-        .await
-        .unwrap_or(0);
+        // Propagate a count failure instead of masking it as `total: 0` beside a
+        // non-empty `records` page (REST `/list` returns 500 DB_ERROR here).
+        .await?;
 
     let per_page = req.per_page.unwrap_or(20);
     let page = req.page.unwrap_or(1);
@@ -822,6 +848,41 @@ mod tests {
             e.contains("RECORD_NOT_FOUND") || e.contains("no such record"),
             "got: {e}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn user_delete_foreign_row_is_errored_not_found() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        make_owner_scoped(&mcp, "todos", "own").await;
+        seed_user(&mcp, "u-1").await;
+        seed_user(&mcp, "u-2").await;
+        // u-1 owns row 1.
+        let v = enforced_insert(
+            &mcp,
+            &user("u-1"),
+            "todos",
+            serde_json::json!({"title": "a"}),
+        )
+        .await
+        .unwrap();
+        let id = v["id"].as_i64().unwrap();
+        // F8: u-2 may not delete u-1's row. enforced_delete must surface this as
+        // Err(RECORD_NOT_FOUND) — the SAME not-found shape as enforced_update —
+        // NOT the silent Ok({"ok": false}) that delete_record_filtered returns.
+        let r = enforced_delete(&mcp, &user("u-2"), "todos", id).await;
+        let e = r.unwrap_err().to_string();
+        assert!(
+            e.contains("RECORD_NOT_FOUND") || e.contains("no such record"),
+            "foreign delete must Err not-found, got: {e}"
+        );
+        // The owner's row survived the foreign no-op delete.
+        let listed = enforced_list(&mcp, &service(), "todos", ListRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(listed["total"], 1, "owner's row must survive: {listed}");
+        // The owner CAN delete their own row → Ok.
+        let ok = enforced_delete(&mcp, &user("u-1"), "todos", id).await;
+        assert!(ok.is_ok(), "owner delete must succeed: {ok:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

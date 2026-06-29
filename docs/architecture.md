@@ -26,14 +26,14 @@ generated_by: docs/gen-architecture.py
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`db/`](#srcdb) | 2 | 12 | 1 | 0 |
-| [`functions/`](#srcfunctions) | 10 | 67 | 36 | 17 |
+| [`functions/`](#srcfunctions) | 10 | 68 | 37 | 17 |
 | [`mcp/`](#srcmcp) | 19 | 145 | 57 | 30 |
 | [`mgmt/`](#srcmgmt) | 34 | 251 | 96 | 43 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
-| [`query/`](#srcquery) | 8 | 48 | 8 | 30 |
+| [`query/`](#srcquery) | 8 | 49 | 8 | 30 |
 | [`rpc/`](#srcrpc) | 6 | 37 | 16 | 9 |
 | [`safety/`](#srcsafety) | 8 | 38 | 1 | 11 |
-| [`storage/`](#srcstorage) | 14 | 105 | 14 | 79 |
+| [`storage/`](#srcstorage) | 14 | 105 | 14 | 80 |
 | [`tenant/`](#srctenant) | 34 | 213 | 108 | 61 |
 
 ## Group dependency graph
@@ -156,9 +156,9 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`executor.rs`](../src/functions/executor.rs) — Invocation executor: drains the global bounded queue into per-tenant FIFO · 5 pub
 - [`invoke_gate.rs`](../src/functions/invoke_gate.rs) — Per-identity invoke gate for `POST /t/{tenant}/functions/{name}/invoke` (T6). · 1 pub
 - [`mod.rs`](../src/functions/mod.rs) — v1.36 — Edge functions: per-tenant user-uploaded wasm components, · 11 pub
-- [`routes.rs`](../src/functions/routes.rs) — REST surface: /t/<id>/functions[…]. Service-only via the router-level · 13 pub
+- [`routes.rs`](../src/functions/routes.rs) — REST surface: /t/<id>/functions[…]. CRUD + `/logs` are service-only via the · 13 pub
 - [`runtime.rs`](../src/functions/runtime.rs) — wasmtime runtime: global Engine (OnceLock + epoch ticker thread), · 6 pub
-- [`schema.rs`](../src/functions/schema.rs) — `_system_functions` + `_system_function_logs` — lazy DDL (idempotent · 16 pub
+- [`schema.rs`](../src/functions/schema.rs) — `_system_functions` + `_system_function_logs` — lazy DDL (idempotent · 17 pub
 
 <a id="srcmcp"></a>
 
@@ -241,7 +241,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`authorizer.rs`](../src/query/authorizer.rs) — 3 pub
 - [`executor.rs`](../src/query/executor.rs) — 9 pub
 - [`filter.rs`](../src/query/filter.rs) — 5 pub
-- [`list_builder.rs`](../src/query/list_builder.rs) — Structured list-SQL builder for `POST /t/<id>/collections/<c>/list` · 4 pub
+- [`list_builder.rs`](../src/query/list_builder.rs) — Structured list-SQL builder for `POST /t/<id>/collections/<c>/list` · 5 pub
 - [`mod.rs`](../src/query/mod.rs) — 7 pub
 - [`policy.rs`](../src/query/policy.rs) — Row-level security policy engine. A `Policy` is a per-operation pair of · 12 pub
 - [`vector_codec.rs`](../src/query/vector_codec.rs) — JSON ↔ packed-f32 BLOB codec for vector fields. · 3 pub

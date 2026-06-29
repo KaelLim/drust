@@ -535,10 +535,16 @@ impl FunctionRunner for WasmRunner {
         };
 
         // Load the tenant's file caps ONCE per invocation (mirrors how
-        // `bearer_auth_layer` resolves them from the `tenants` row). Only the
-        // Anon/User file branches consult them; the Privileged path ignores them
-        // (service is unrestricted). No `meta` (test ctors) ⇒ default = all-off.
-        let file_caps = self.seed.load_file_caps(tenant_id).await;
+        // `bearer_auth_layer` resolves them from the `tenants` row), but ONLY
+        // for a non-Privileged caller: the Privileged (service/event/cron) file
+        // branches bypass caps entirely, so loading them on the god-mode hot
+        // path is a wasted meta query. No `meta` (test ctors) ⇒ default = all-off.
+        let file_caps = match &caller {
+            crate::functions::caller::CallerCtx::Privileged => {
+                crate::tenant::file_caps::TenantFileCaps::default()
+            }
+            _ => self.seed.load_file_caps(tenant_id).await,
+        };
 
         // Locked-down WASI: no preopens, no allowed socket addrs, discarded stdio.
         let wasi = wasmtime_wasi::WasiCtxBuilder::new().build();
@@ -627,6 +633,70 @@ mod tests {
     #[test]
     fn validate_rejects_garbage() {
         assert!(validate_component(b"not wasm at all").is_err());
+    }
+
+    /// F14: `HostStateSeed::load_file_caps` is the production source of an
+    /// anon/user invocation's file caps, but every other test builds the host
+    /// with `meta: None` (default all-off). Cover the real path: parse a
+    /// populated `tenants` row, fall back to all-off on a missing tenant, and —
+    /// load-bearing — honour the `deleted_at IS NULL` filter so a soft-deleted
+    /// tenant never yields caps.
+    #[tokio::test]
+    async fn load_file_caps_reads_populated_meta_row() {
+        use crate::storage::schema::FileVerb;
+        let tmp = tempfile::tempdir().unwrap();
+        let tenants = Arc::new(crate::storage::pool::TenantRegistry::new(
+            tmp.path().to_path_buf(),
+            2,
+        ));
+        let meta = rusqlite::Connection::open_in_memory().unwrap();
+        meta.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, deleted_at TEXT,
+                 file_anon_caps_json TEXT, file_user_caps_json TEXT);
+             INSERT INTO tenants (id, deleted_at, file_anon_caps_json, file_user_caps_json) VALUES
+                 ('t-fc',  NULL,                   '[\"read\",\"list\"]', '[\"upload\"]'),
+                 ('t-del', '2026-01-01T00:00:00Z', '[\"read\"]',          '[\"delete\"]');",
+        )
+        .unwrap();
+        let rooms_cfg = crate::tenant::rooms::RoomsConfig::test_defaults();
+        let bucket = rooms_cfg.bucket();
+        let seed = HostStateSeed {
+            tenants: tenants.clone(),
+            bus: crate::tenant::events::EventBus::new(),
+            webhooks: crate::tenant::WebhookDispatcher::new(tenants.clone(), None),
+            garage: None,
+            public_base_url: String::new(),
+            url_sign_secret: Arc::new([0u8; 32]),
+            meta: Some(Arc::new(tokio::sync::Mutex::new(meta))),
+            max_upload_bytes: 52_428_800,
+            index_large_table_rows: 1_000_000,
+            audit_meta_read: Arc::new(tokio::sync::Mutex::new(
+                crate::safety::audit_db::open_audit_db_memory().unwrap(),
+            )),
+            bus_rooms: crate::tenant::rooms::RoomBus::new(),
+            bucket,
+            rooms_cfg,
+            disk_min_free_pct: 20,
+        };
+
+        // Populated, live row → parsed caps (anon read+list, user upload only).
+        let caps = seed.load_file_caps("t-fc").await;
+        assert!(caps.anon.contains(&FileVerb::Read) && caps.anon.contains(&FileVerb::List));
+        assert!(!caps.anon.contains(&FileVerb::Upload) && !caps.anon.contains(&FileVerb::Delete));
+        assert!(caps.user.contains(&FileVerb::Upload));
+        assert!(!caps.user.contains(&FileVerb::Read));
+
+        // Missing tenant → default all-off.
+        let none = seed.load_file_caps("nope").await;
+        assert!(none.anon.is_empty() && none.user.is_empty());
+
+        // Soft-deleted tenant is filtered by `deleted_at IS NULL` → all-off,
+        // NOT the row's caps.
+        let del = seed.load_file_caps("t-del").await;
+        assert!(
+            del.anon.is_empty() && del.user.is_empty(),
+            "soft-deleted tenant must not yield file caps"
+        );
     }
 
     // Drive the *production* put-file host call (StoreData::put_file) with an
