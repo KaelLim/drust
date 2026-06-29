@@ -1,3 +1,44 @@
+## v1.44.1 — 2026-06-29
+
+### fix — LOW-severity findings from the v1.44.0 caller-identity-invoke review
+
+Follow-up to the adversarial review of v1.44.0 (LOW findings only; two MEDIUMs —
+`enforced_update`'s non-atomic pre-flight-then-write vs REST's in-tx atomicity, and
+the `fn_invoke_rl` ordering / writer-starvation vector — are tracked but deferred).
+The `Privileged` (service / event / cron) invoke path is **unchanged**; these
+harden the anon/user enforcement core and the HTTP invoke gate.
+
+- **Invoke-gate function-name parse is end-anchored** (`src/functions/invoke_gate.rs`).
+  `function_name_from_path` anchors on the terminal `/invoke` segment instead of the
+  first `functions` marker, so a tenant id — or a function literally named
+  `functions` / `invoke` — resolves correctly (F11).
+- **No function-name enumeration oracle on the invoke gate** (F5). A missing function
+  denies **identically** to an existing-but-flag-off one
+  (`403 FN_INVOKE_{ANON,USER}_DENIED`), never a distinct `404` — a public anon key can
+  no longer probe which function names exist.
+- **`enforced_list` surfaces honest errors** (`src/functions/enforce.rs`,
+  `src/query/list_builder.rs`). A failed count query propagates with `?` instead of
+  masking as `total=0` beside a non-empty page, and list errors carry a typed code via
+  the new `list_builder::list_error_code` (mirrors REST's `map_list_error`) instead of
+  a `Debug`-formatted enum (F3, F10).
+- **Authorizer no longer stranded on a pooled reader** (F7). `is_writable_target`
+  detaches the read-only authorizer before the `?`, so a non-`NoRows` error cannot
+  leave it attached on a reused connection.
+- **`enforced_delete` not-found matches `enforced_update`** (F8) — a foreign-row
+  delete returns the same typed `RECORD_NOT_FOUND` shape.
+- **Atomic invoke-ACL PATCH** (`src/functions/schema.rs`). `set_invoke_acl_partial`
+  (single `COALESCE` UPDATE) replaces the REST PATCH read-merge-write that could drop a
+  concurrent one-sided flag change (F9).
+- **Perf + coverage** (F13, F14): skip `load_file_caps` for `Privileged` callers,
+  `load_schema` cache-hit fast path, `prepare_cached` count; new `load_file_caps` and
+  delete-foreign-row test coverage.
+
+### docs — code-intelligence tooling switch
+
+`docs/gen-architecture.py` and `docs/architecture.md` now reference **codebase-memory-mcp**
+(`search_graph` / `trace_path` / `get_code_snippet`) for ground-truth call graphs,
+replacing the retired CodeGraph MCP; `architecture.md` regenerated.
+
 ## v1.44.0 — 2026-06-25
 
 ### feat — caller-identity edge-function invoke (anon/user-invokable functions, phase 1)
