@@ -23,11 +23,18 @@ use crate::tenant::router::{TenantAuthState, TenantRef, TokenRole};
 /// never a function name (it sits one past `{name}`).
 fn function_name_from_path(path: &str) -> Option<&str> {
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let i = segs.iter().position(|&s| s == "functions")?;
-    // …/functions/{name}/invoke → name is segs[i+1], with segs[i+2] == "invoke".
-    match (segs.get(i + 1), segs.get(i + 2)) {
-        (Some(name), Some(&"invoke")) => Some(name),
-        _ => None,
+    // Route shape is fixed: …/functions/{name}/invoke — `invoke` is ALWAYS the
+    // terminal segment, `{name}` second-to-last, and the literal `functions`
+    // marker third-to-last. Anchor from the END, not the first segment named
+    // `functions`: a tenant id may itself be `functions` (not a reserved id),
+    // and a function may be named `functions` OR `invoke` — any of which shifts
+    // a forward scan onto the wrong segment. Only one segment can be terminal,
+    // so end-anchoring is unambiguous for every (tenant, name) combination.
+    let n = segs.len();
+    if n >= 3 && segs[n - 1] == "invoke" && segs[n - 3] == "functions" {
+        Some(segs[n - 2])
+    } else {
+        None
     }
 }
 
@@ -73,15 +80,34 @@ pub async fn invoke_gate_layer(
     };
     let name = name.to_string();
 
+    // Per-role deny response. A non-service caller must NOT be able to tell
+    // "no such function" apart from "exists but its invoke flag is off": a
+    // distinct 404-vs-403 is a function-name enumeration oracle for a public
+    // anon key. Both the missing-row arm and the flag-off arm return this.
+    let deny = |role: TokenRole| {
+        let (code, msg) = match role {
+            TokenRole::Anon => (
+                "FN_INVOKE_ANON_DENIED",
+                "anon invoke not enabled for this function",
+            ),
+            TokenRole::User => (
+                "FN_INVOKE_USER_DENIED",
+                "user invoke not enabled for this function",
+            ),
+            TokenRole::Service => unreachable!("service short-circuited above"),
+        };
+        crate::error::json_error_with_aliases(
+            axum::http::StatusCode::FORBIDDEN,
+            code,
+            &["WRITE_DENIED"],
+            msg,
+        )
+    };
+
     let row = match crate::functions::schema::get_function(&pool, &name).await {
         Ok(Some(r)) => r,
-        Ok(None) => {
-            return crate::error::json_error(
-                axum::http::StatusCode::NOT_FOUND,
-                "FN_NOT_FOUND",
-                "no such function",
-            );
-        }
+        // Do NOT 404 here — that would leak function existence to anon/user.
+        Ok(None) => return deny(role),
         Err(e) => {
             return crate::error::json_error(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -97,23 +123,7 @@ pub async fn invoke_gate_layer(
         TokenRole::Service => unreachable!("service short-circuited above"),
     };
     if !allowed {
-        let (code, msg) = match role {
-            TokenRole::Anon => (
-                "FN_INVOKE_ANON_DENIED",
-                "anon invoke not enabled for this function",
-            ),
-            TokenRole::User => (
-                "FN_INVOKE_USER_DENIED",
-                "user invoke not enabled for this function",
-            ),
-            TokenRole::Service => unreachable!(),
-        };
-        return crate::error::json_error_with_aliases(
-            axum::http::StatusCode::FORBIDDEN,
-            code,
-            &["WRITE_DENIED"],
-            msg,
-        );
+        return deny(role);
     }
 
     // Allowed non-service invoke: per-IP rate-limit (cap already satisfied).
@@ -147,6 +157,30 @@ mod tests {
         assert_eq!(
             function_name_from_path("/drust/t/x/functions/abc/invoke"),
             Some("abc")
+        );
+        // A tenant whose id is literally `functions` (not a reserved id): the
+        // parser must lock onto the `functions/{name}/invoke` triple, not the
+        // first `functions` segment (which here is the tenant id).
+        assert_eq!(
+            function_name_from_path("/t/functions/functions/f1/invoke"),
+            Some("f1")
+        );
+        // A function literally named `functions` resolves too.
+        assert_eq!(
+            function_name_from_path("/t/x/functions/functions/invoke"),
+            Some("functions")
+        );
+        // Double edge case: tenant id `functions` AND a function named `invoke`
+        // (both individually valid). End-anchoring resolves the terminal triple
+        // correctly — a forward scan would mis-pick the tenant segment here.
+        assert_eq!(
+            function_name_from_path("/t/functions/functions/invoke/invoke"),
+            Some("invoke")
+        );
+        // A function named `invoke` on an ordinary tenant.
+        assert_eq!(
+            function_name_from_path("/t/x/functions/invoke/invoke"),
+            Some("invoke")
         );
     }
 

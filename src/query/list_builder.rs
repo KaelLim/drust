@@ -66,6 +66,31 @@ pub enum ListError {
     PageRangeInvalid,
 }
 
+/// Map a [`ListError`] to its stable `CODE` string (the code half of drust's
+/// `CODE: message` convention). Shared by the REST `/list` handler
+/// (`records_list::map_list_error`, which additionally picks the HTTP status)
+/// and the edge-function enforcement core (`functions::enforce::enforced_list`)
+/// so a structured-list failure surfaces the SAME typed code on both faces
+/// instead of a Rust `Debug` rendering (e.g. `SORT_DIR_INVALID`, never
+/// `SortDirInvalid`). Any new `ListError` variant must extend BOTH this fn and
+/// `map_list_error` in lockstep.
+pub fn list_error_code(e: &ListError) -> &'static str {
+    match e {
+        ListError::Filter(FilterError::Parse(_)) => "FILTER_PARSE_ERROR",
+        ListError::Filter(FilterError::UnknownField(_)) => "FILTER_UNKNOWN_FIELD",
+        ListError::Filter(FilterError::VectorField(_)) => "FILTER_VECTOR_FIELD",
+        ListError::Filter(FilterError::TooDeep) => "FILTER_TOO_DEEP",
+        // BadOperand + any future Filter variant fall under the parse bucket,
+        // matching map_list_error's `Filter(other)` arm.
+        ListError::Filter(_) => "FILTER_PARSE_ERROR",
+        ListError::SortFieldUnknown(_) => "SORT_FIELD_UNKNOWN",
+        ListError::SortVectorField(_) => "SORT_VECTOR_FIELD",
+        ListError::SortDirInvalid => "SORT_DIR_INVALID",
+        ListError::SelectFieldUnknown(_) => "SELECT_FIELD_UNKNOWN",
+        ListError::PageRangeInvalid => "PAGE_RANGE_INVALID",
+    }
+}
+
 /// Compile a structured list request into `(list_sql, count_sql, binds)`.
 ///
 /// Both SQLs use the same bind vector. The caller must supply identical

@@ -1,5 +1,9 @@
-//! REST surface: /t/<id>/functions[…]. Service-only via the router-level
-//! require_service_layer (mounted in tenant/mod.rs, files_router pattern).
+//! REST surface: /t/<id>/functions[…]. CRUD + `/logs` are service-only via the
+//! router-level `require_service_layer` (mounted in tenant/mod.rs, files_router
+//! pattern). The **`/invoke`** route is the sole exception: it runs under
+//! `invoke_gate_layer` (T6) so anon/user bearers may invoke a function whose
+//! `invoke_anon`/`invoke_user` flag is set — invoke ACL config itself stays
+//! service-only. See `invoke()` + `crate::functions::invoke_gate`.
 
 use crate::functions::FnConfig;
 use crate::functions::dispatcher::FunctionDispatcher;
@@ -280,25 +284,15 @@ pub async fn patch(
             Err(e) => return map_sentinel(e),
         }
     }
-    // Invoke ACL (T5) — service-only by `require_service_layer`. `set_invoke_acl`
-    // writes both columns in one UPDATE, so merge whichever flag the caller
-    // omitted with its current value (a one-sided PATCH must not clobber the
-    // other). Read-then-write under the same service-only surface.
+    // Invoke ACL (T5) — service-only by `require_service_layer`. A one-sided
+    // PATCH must keep whichever flag the caller omitted at its current value;
+    // `set_invoke_acl_partial` does that ATOMICALLY in one `COALESCE` UPDATE,
+    // so two concurrent one-sided PATCHes can no longer lost-update each other
+    // (the prior read-merge-write could resurrect a just-revoked flag).
     if body.invoke_anon.is_some() || body.invoke_user.is_some() {
-        let cur = match schema::get_function(&t.pool, &name).await {
-            Ok(Some(r)) => r,
-            Ok(None) => {
-                return crate::error::json_error(
-                    StatusCode::NOT_FOUND,
-                    "FN_NOT_FOUND",
-                    "no such function",
-                );
-            }
-            Err(e) => return map_sentinel(e),
-        };
-        let anon = body.invoke_anon.unwrap_or(cur.invoke_anon);
-        let user = body.invoke_user.unwrap_or(cur.invoke_user);
-        match schema::set_invoke_acl(&t.pool, &name, anon, user).await {
+        match schema::set_invoke_acl_partial(&t.pool, &name, body.invoke_anon, body.invoke_user)
+            .await
+        {
             Ok(true) => {}
             Ok(false) => {
                 return crate::error::json_error(
