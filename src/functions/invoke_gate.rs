@@ -6,9 +6,10 @@
 //! (`Privileged`); anon/user are allowed iff the function's `invoke_anon` /
 //! `invoke_user` flag is set (default 0 = service-only — every existing
 //! function is unchanged), else `403 FN_INVOKE_ANON_DENIED` /
-//! `FN_INVOKE_USER_DENIED`. On allow for a non-service caller a per-IP
-//! rate-limit (`fn_invoke_rl`, mirrors `file_upload_rl`) bounds the public
-//! anon-key DoS vector → `429 RATE_LIMITED_IP`.
+//! `FN_INVOKE_USER_DENIED`. Every non-service caller is per-IP rate-limited
+//! (`fn_invoke_rl`, mirrors `file_upload_rl`) BEFORE the function lookup —
+//! allow OR deny — so a denied-but-repeated burst cannot hammer the read-lane
+//! lookup; the public anon-key DoS vector is bounded → `429 RATE_LIMITED_IP`.
 //!
 //! This is HTTP DiD layer 1. Layer 2 lives in the executor, which re-reads the
 //! row before running and refuses a non-`Privileged` caller whose matching flag
@@ -104,6 +105,25 @@ pub async fn invoke_gate_layer(
         )
     };
 
+    // Per-IP rate-limit BEFORE the function lookup (F2): the limiter must gate
+    // EVERY non-service attempt — allow OR deny — not just the allow path. A
+    // public anon key hitting a denied (flag-off) function must not be able to
+    // hammer `get_function` unboundedly; bounding the attempt rate here caps
+    // that load before the lookup runs. IP via XFF, loopback fallback (prod is
+    // always behind nginx→Caddy). A purely per-IP 429 leaks nothing about the
+    // function, so it does not reopen the enumeration oracle the deny arm closes.
+    let ip = crate::safety::ip::client_ip(
+        req.headers(),
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+    );
+    if !auth.fn_invoke_rl.check(ip) {
+        return crate::error::json_error(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "RATE_LIMITED_IP",
+            "function invoke rate limit exceeded; retry shortly",
+        );
+    }
+
     let row = match crate::functions::schema::get_function(&pool, &name).await {
         Ok(Some(r)) => r,
         // Do NOT 404 here — that would leak function existence to anon/user.
@@ -124,20 +144,6 @@ pub async fn invoke_gate_layer(
     };
     if !allowed {
         return deny(role);
-    }
-
-    // Allowed non-service invoke: per-IP rate-limit (cap already satisfied).
-    // IP via XFF, loopback fallback (prod is always behind nginx→Caddy).
-    let ip = crate::safety::ip::client_ip(
-        req.headers(),
-        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-    );
-    if !auth.fn_invoke_rl.check(ip) {
-        return crate::error::json_error(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "RATE_LIMITED_IP",
-            "function invoke rate limit exceeded; retry shortly",
-        );
     }
 
     next.run(req).await

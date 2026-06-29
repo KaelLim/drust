@@ -369,15 +369,22 @@ pub async fn update_record(
     id: i64,
     data: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    update_record_checked(s, collection, id, data, None).await
+    update_record_checked(s, collection, id, data, None, None, None).await
 }
 
-/// `update_record` with an optional in-tx policy CHECK (enforcement-core entry).
+/// `update_record` with optional owner/USING filtering + an in-tx policy CHECK
+/// (enforcement-core entry). `owner`/`using` are `None` for service/Privileged
+/// (id-only UPDATE, unchanged); the caller-identity path passes them so the
+/// ownership clause + policy USING pre-flight are AND-ed atomically INSIDE the
+/// same write tx as the UPDATE — full parity with `delete_record_filtered`, no
+/// read-lane TOCTOU window.
 pub async fn update_record_checked(
     s: &DrustMcp,
     collection: &str,
     id: i64,
     data: serde_json::Value,
+    owner: Option<(String, String)>,
+    using: Option<(String, Vec<Value>)>,
     policy_check: Option<PolicyCheck>,
 ) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
@@ -431,19 +438,53 @@ pub async fn update_record_checked(
             // v1.43 — structured CHECK pre-validation (typed 4xx before the
             // native CHECK would raise a raw SQLite string).
             check_constraints(&schema, &data_map)?;
+            // Policy-USING pre-flight, AND-ed INSIDE this write tx (mirror
+            // delete_record_filtered): a row the caller cannot see per the
+            // update USING is not an updatable target → not-found, with NO
+            // read-lane TOCTOU window. `None` (service / Privileged) skips it.
+            if let Some((frag, pbinds)) = &using {
+                let q = format!(
+                    "SELECT 1 FROM \"{}\" WHERE id = ?1 AND ({frag})",
+                    coll.replace('"', "\"\"")
+                );
+                let mut pp: Vec<Value> = vec![Value::Integer(id)];
+                pp.extend(pbinds.iter().cloned());
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    pp.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                if tx
+                    .query_row(&q, &refs[..], |r| r.get::<_, i64>(0))
+                    .optional()?
+                    .is_none()
+                {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                }
+            }
+            // Owner clause AND-ed onto the UPDATE itself — user_id is UUID-shaped,
+            // safe to inline after escaping (same as delete_record_filtered).
+            let owner_clause = if let Some((field, user_id)) = &owner {
+                format!(
+                    " AND \"{}\" = '{}'",
+                    field.replace('"', "\"\""),
+                    user_id.replace('\'', "''")
+                )
+            } else {
+                String::new()
+            };
             let set_exprs: Vec<String> = data_map
                 .keys()
                 .enumerate()
                 .map(|(i, k)| format!("\"{}\" = ?{}", k.replace('"', "\"\""), i + 1))
                 .collect();
             // `RETURNING *` collapses the post-update read-back: a zero-row
-            // UPDATE returns no row, which `.optional()` maps to `None` →
-            // `QueryReturnedNoRows`, reproducing the old `n == 0` arm exactly.
+            // UPDATE (id absent OR the owner clause filtered it out) returns no
+            // row, which `.optional()` maps to `None` → `QueryReturnedNoRows` —
+            // the single not-found signal both callers rely on.
             let sql = format!(
-                "UPDATE \"{}\" SET {}, updated_at = datetime('now') WHERE id = ?{} RETURNING *",
+                "UPDATE \"{}\" SET {}, updated_at = datetime('now') WHERE id = ?{}{} RETURNING *",
                 coll.replace('"', "\"\""),
                 set_exprs.join(","),
-                data_map.len() + 1
+                data_map.len() + 1,
+                owner_clause
             );
             let mut params: Vec<Value> = data_map
                 .iter()
