@@ -161,6 +161,39 @@ async fn anon_invoke_burst_trips_rate_limit() {
 }
 
 #[tokio::test]
+async fn anon_invoke_burst_on_denied_fn_also_trips_rate_limit() {
+    // F2: the per-IP rate-limit must gate BEFORE the invoke-flag check, so a
+    // public anon key cannot hammer the (writer-lane, pre-fix) function lookup
+    // on a DENIED (flag-off) function unboundedly. Pre-fix the limiter sat on
+    // the allow path only — denied requests returned 403 forever and never
+    // consumed budget. After the fix a denied burst trips the SAME 429 an
+    // allowed burst does.
+    let (router, _service, anon, _user, _tmp) =
+        helpers::spin_up_tenant_with_fn_seed("t-fng-rl-deny").await;
+    // No grant — invoke_anon stays 0 (denied).
+    let mut saw_429 = false;
+    for _ in 0..40 {
+        let resp = router
+            .clone()
+            .oneshot(invoke_req("t-fng-rl-deny", &anon))
+            .await
+            .unwrap();
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            let v = json_body(resp).await;
+            assert_eq!(v["error_code"], "RATE_LIMITED_IP");
+            saw_429 = true;
+            break;
+        }
+        // Until the limit trips, a denied function returns 403 (never 200).
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+    assert!(
+        saw_429,
+        "denied-fn burst must ALSO trip the per-IP limit (rate-limit gates before the flag check)"
+    );
+}
+
+#[tokio::test]
 async fn unknown_function_denies_identically_to_flag_off_for_anon() {
     let (router, _service, anon, _user, _tmp) =
         helpers::spin_up_tenant_with_fn_seed("t-fng-nf").await;

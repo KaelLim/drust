@@ -170,9 +170,22 @@ pub async fn get_function(
     pool: &SharedTenantPool,
     name: &str,
 ) -> anyhow::Result<Option<FunctionRow>> {
+    // Read lane, NOT the writer (F2): the invoke gate calls this on every
+    // non-service request, so a writer-lane lookup (with its `ensure_tables`
+    // DDL) let a denied-but-repeated burst contend on the tenant's single
+    // writer mutex. `_system_functions` is created lazily by `create_function`
+    // (which runs its own `ensure_tables`), so a read before any function ever
+    // existed hits "no such table" — semantically "no such function" → `None`.
+    // Every caller either reads an existing function (table present) or treats
+    // absence as None, so dropping the DDL side-effect here is safe.
     let name = name.to_string();
-    pool.with_writer(move |c| {
-        ensure_tables(c)?;
+    pool.with_reader(move |c| {
+        // Defensive (F2): this lookup reads `_system_functions`, which the
+        // read-only authorizer DENIES, and it now runs on the SHARED reader
+        // pool. Clear any authorizer a prior borrower might have left attached
+        // so the read is correct regardless of pool state — it never wants one.
+        // (Belt to the suspenders of the "attach sites must detach" invariant.)
+        crate::query::authorizer::detach_authorizer(c);
         match c.query_row(
             &format!("SELECT {COLS} FROM _system_functions WHERE name = ?1"),
             rusqlite::params![name],
@@ -180,6 +193,9 @@ pub async fn get_function(
         ) {
             Ok(r) => Ok(Some(r)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(rusqlite::Error::SqliteFailure(_, Some(ref m))) if m.contains("no such table") => {
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     })

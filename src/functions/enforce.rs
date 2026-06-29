@@ -166,23 +166,13 @@ pub async fn enforced_update(
         anyhow::bail!("TYPE_MISMATCH: data must have at least one field");
     }
 
-    // Ownership/policy is a read-lane WHERE-AND PRE-FLIGHT here, NOT AND-ed into
-    // the UPDATE itself: `update_record_checked` filters by id only (unlike
-    // `delete_record_filtered`, which AND-s the owner clause atomically in-tx).
-    // A user updating a foreign / policy-hidden row must see not-found. This
-    // pre-flight-then-write is a deliberate, non-atomic divergence from REST's
-    // atomic update_handler; the TOCTOU window is benign because only the
-    // service key can reassign a row's owner (User updates strip owner_field;
-    // anon cannot write owner-scoped collections at all), so no non-service
-    // caller can escalate through it, and the in-tx policy CHECK still guards
-    // the post-image. (Follow-up: thread the owner clause into
-    // update_record_checked for full atomicity parity with delete.)
+    // Ownership + policy USING are AND-ed atomically INSIDE the update tx
+    // (update_record_checked, mirroring delete_record_filtered) — there is no
+    // separate read-lane pre-flight, so no TOCTOU window between the check and
+    // the write. A foreign / policy-hidden / missing target matches zero rows →
+    // QueryReturnedNoRows, which we normalise to the SAME RECORD_NOT_FOUND shape
+    // enforced_delete bails (the host maps Err → the WIT `result` error arm).
     let using_sql = crate::query::policy::policy_using_sql(ctx, &schema, DmlVerb::Update)?;
-    if (owner_filter.is_some() || using_sql.is_some())
-        && !is_writable_target(mcp, coll, id, &owner_filter, &using_sql).await?
-    {
-        anyhow::bail!("RECORD_NOT_FOUND: no such record");
-    }
 
     let policy_check = crate::query::policy::effective_policy_check(ctx, &schema, DmlVerb::Update)
         .map(|ast| PolicyCheck {
@@ -190,7 +180,21 @@ pub async fn enforced_update(
             auth_id: ctx.user_id().map(|s| s.to_string()),
         });
 
-    crate::mcp::tools::write::update_record_checked(mcp, coll, id, data, policy_check).await
+    match crate::mcp::tools::write::update_record_checked(
+        mcp,
+        coll,
+        id,
+        data,
+        owner_filter,
+        using_sql,
+        policy_check,
+    )
+    .await
+    {
+        Ok(v) => Ok(v),
+        Err(e) if is_no_rows(&e) => anyhow::bail!("RECORD_NOT_FOUND: no such record"),
+        Err(e) => Err(e),
+    }
 }
 
 /// DELETE under the caller's identity. Decision order mirrors
@@ -231,52 +235,15 @@ pub async fn enforced_delete(
     Ok(res)
 }
 
-/// Pre-flight: is `id` a writable TARGET for this caller (owner clause + policy
-/// USING)? Runs under the read-only authorizer (read lane). Mirrors the REST
-/// update/delete pre-flight SELECT.
-async fn is_writable_target(
-    mcp: &DrustMcp,
-    coll: &str,
-    id: i64,
-    owner: &Option<(String, String)>,
-    using: &Option<(String, Vec<rusqlite::types::Value>)>,
-) -> anyhow::Result<bool> {
-    use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
-    use rusqlite::OptionalExtension;
-    use rusqlite::types::Value;
-    let pool = mcp.inner().pool.clone();
-    let coll = coll.to_string();
-    let owner = owner.clone();
-    let using = using.clone();
-    Ok(pool
-        .with_reader(move |c| -> rusqlite::Result<bool> {
-            attach_readonly_authorizer(c);
-            let mut sql = format!(
-                "SELECT 1 FROM \"{}\" WHERE id = ?1",
-                coll.replace('"', "\"\"")
-            );
-            let mut pp: Vec<Value> = vec![Value::Integer(id)];
-            if let Some((field, user_id)) = &owner {
-                sql.push_str(&format!(
-                    " AND \"{}\" = '{}'",
-                    field.replace('"', "\"\""),
-                    user_id.replace('\'', "''")
-                ));
-            }
-            if let Some((frag, pbinds)) = &using {
-                sql.push_str(&format!(" AND ({frag})"));
-                pp.extend(pbinds.iter().cloned());
-            }
-            let refs: Vec<&dyn rusqlite::ToSql> =
-                pp.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            // Detach BEFORE `?`-propagating: a non-NoRows query error must not
-            // leave the read-only authorizer attached to the pooled connection
-            // (it would silently restrict whoever borrows that reader next).
-            let found = c.query_row(&sql, &refs[..], |_| Ok(())).optional();
-            detach_authorizer(c);
-            Ok(found?.is_some())
-        })
-        .await?)
+/// True when an `update_record_checked` error is the zero-row not-found signal
+/// — the owner + USING WHERE matched nothing (a foreign / policy-hidden /
+/// missing target). Downcast on the typed `QueryReturnedNoRows`, never a
+/// message substring, so it stays robust to error wording.
+fn is_no_rows(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::QueryReturnedNoRows)
+    )
 }
 
 /// Structured list under the caller's identity. Ports the `records_list.rs`
