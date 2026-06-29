@@ -1,3 +1,35 @@
+## v1.44.2 — 2026-06-29
+
+### fix — MEDIUM findings from the v1.44.0 caller-identity-invoke review (atomicity + invoke DoS)
+
+The two MEDIUMs deferred from the v1.44.1 LOW pass, now closed. No behavior change
+for the `Privileged` (service / event / cron) path; both harden the anon/user
+caller-identity surface. Verified by a 5-lens adversarial workflow (5 SOLID / 0
+concern / 0 broken) plus the full suite (1533/0).
+
+- **`enforced_update` is now atomic** (`src/functions/enforce.rs`,
+  `src/mcp/tools/write.rs`). The old path ran a read-lane USING/owner pre-flight
+  (`is_writable_target`) and THEN an id-only UPDATE in a separate writer tx — a
+  TOCTOU window vs REST's atomic update. `update_record_checked` now takes `owner`
+  + `using` and, INSIDE its single `with_writer_tx`, runs the policy-USING
+  pre-flight and AND-s the ownership clause onto the `UPDATE ... RETURNING *` —
+  byte-for-structure identical to the proven `delete_record_filtered`. The separate
+  `is_writable_target` pre-flight is removed; a foreign / policy-hidden / missing
+  target matches zero rows → `QueryReturnedNoRows`, normalised to `RECORD_NOT_FOUND`
+  via a typed downcast (not a message match). Service (`update_record`) passes
+  `None`/`None` — id-only UPDATE, byte-identical. (Subsumes the v1.44.1 F7 read-lane
+  authorizer concern, which lived inside the now-removed pre-flight.)
+- **Invoke gate no longer lets a denied burst hammer the writer lane**
+  (`src/functions/invoke_gate.rs`, `src/functions/schema.rs`). The per-IP
+  `fn_invoke_rl` rate-limit now gates EVERY non-service attempt BEFORE the function
+  lookup (was allow-path only, so denied requests consumed no budget and could flood
+  `get_function` unboundedly). `get_function` moved from the writer lane
+  (`with_writer` + `ensure_tables` DDL every call) to the read lane (`with_reader`,
+  with a "no such table" → `None` fallback since `create_function` self-ensures the
+  table) — removing writer-mutex contention on the lookup; a defensive
+  `detach_authorizer` keeps the `_system_functions` read correct on the shared reader
+  pool. New regression test `anon_invoke_burst_on_denied_fn_also_trips_rate_limit`.
+
 ## v1.44.1 — 2026-06-29
 
 ### fix — LOW-severity findings from the v1.44.0 caller-identity-invoke review
