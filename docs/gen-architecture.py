@@ -4,13 +4,13 @@
 Purpose: a CONCISE orientation map — which module group depends on which,
 and a one-line "what does this file do" per file. It is deliberately NOT an
 exhaustive per-symbol dump: per-file public items, imports, callers, and
-call graphs are available on demand from the CodeGraph MCP (`codegraph_*`),
-which is a live AST index. Duplicating that here just produced a 4000-line
+call graphs are available on demand from codebase-memory-mcp (search_graph,
+trace_path), a live knowledge graph. Duplicating that here just produced a 4000-line
 file nobody reads top to bottom.
 
 Index, not tutorial. Summaries come from each file's `//!` module doc.
 Group dependency edges come from `use crate::...` imports. This is textual,
-not AST — good enough for orientation; use codegraph for ground truth.
+not a full parse — good enough for orientation; use codebase-memory-mcp for ground truth.
 
 Usage:
     python3 drust/docs/gen-architecture.py
@@ -235,8 +235,8 @@ def emit(records: dict[str, dict]) -> str:
         "> This is a deliberately concise **orientation map**: module groups, their",
         "> dependency graph, and a one-line summary per file (from each file's `//!`",
         "> doc). For per-file detail — public items, signatures, imports, callers, and",
-        "> call graphs — query the **CodeGraph MCP** (`codegraph_*`), which is a live",
-        "> AST index. (Edges here are textual `use crate::` imports, not AST.)",
+        "> call graphs — query **codebase-memory-mcp** (`search_graph` / `trace_path`),",
+        "> a live indexed knowledge graph. (Edges here are textual `use crate::` imports.)",
         "",
         "## Module overview",
         "",
@@ -271,8 +271,8 @@ def emit(records: dict[str, dict]) -> str:
     lines += [
         "## Files by module",
         "",
-        "_One line per file (its `//!` summary). Use `codegraph_files` /"
-        " `codegraph_node` for the symbols and signatures inside each._",
+        "_One line per file (its `//!` summary). Use `search_graph` /"
+        " `get_code_snippet` for the symbols and signatures inside each._",
         "",
     ]
     for g in sorted(groups.keys()):
