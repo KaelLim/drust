@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-06-23
+updated: 2026-06-29
 generated_by: docs/gen-architecture.py
 ---
 
@@ -14,27 +14,27 @@ generated_by: docs/gen-architecture.py
 > This is a deliberately concise **orientation map**: module groups, their
 > dependency graph, and a one-line summary per file (from each file's `//!`
 > doc). For per-file detail — public items, signatures, imports, callers, and
-> call graphs — query the **CodeGraph MCP** (`codegraph_*`), which is a live
-> AST index. (Edges here are textual `use crate::` imports, not AST.)
+> call graphs — query **codebase-memory-mcp** (`search_graph` / `trace_path`),
+> a live indexed knowledge graph. (Edges here are textual `use crate::` imports.)
 
 ## Module overview
 
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
-| [`(root)/`](#srcroot) | 6 | 29 | 3 | 23 |
-| [`auth/`](#srcauth) | 10 | 50 | 2 | 35 |
+| [`(root)/`](#srcroot) | 6 | 30 | 3 | 23 |
+| [`auth/`](#srcauth) | 10 | 50 | 2 | 38 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
-| [`db/`](#srcdb) | 2 | 11 | 1 | 0 |
-| [`functions/`](#srcfunctions) | 7 | 53 | 20 | 14 |
-| [`mcp/`](#srcmcp) | 19 | 135 | 56 | 27 |
-| [`mgmt/`](#srcmgmt) | 34 | 249 | 96 | 43 |
+| [`db/`](#srcdb) | 2 | 12 | 1 | 0 |
+| [`functions/`](#srcfunctions) | 10 | 67 | 36 | 17 |
+| [`mcp/`](#srcmcp) | 19 | 145 | 57 | 30 |
+| [`mgmt/`](#srcmgmt) | 34 | 251 | 96 | 43 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
-| [`query/`](#srcquery) | 8 | 48 | 8 | 28 |
+| [`query/`](#srcquery) | 8 | 48 | 8 | 30 |
 | [`rpc/`](#srcrpc) | 6 | 37 | 16 | 9 |
 | [`safety/`](#srcsafety) | 8 | 38 | 1 | 11 |
-| [`storage/`](#srcstorage) | 14 | 100 | 14 | 75 |
-| [`tenant/`](#srctenant) | 33 | 203 | 104 | 55 |
+| [`storage/`](#srcstorage) | 14 | 105 | 14 | 79 |
+| [`tenant/`](#srctenant) | 34 | 213 | 108 | 61 |
 
 ## Group dependency graph
 
@@ -49,7 +49,9 @@ graph LR
   codegen --> storage
   codegen --> tenant
   db --> rpc
+  functions --> auth
   functions --> mcp
+  functions --> query
   functions --> storage
   functions --> tenant
   mcp --> query
@@ -88,7 +90,7 @@ graph LR
 
 ## Files by module
 
-_One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node` for the symbols and signatures inside each._
+_One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` for the symbols and signatures inside each._
 
 <a id="srcroot"></a>
 
@@ -97,7 +99,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`base_path.rs`](../src/base_path.rs) — Configurable external URL prefix. Every browser-facing path (redirect · 5 pub
 - [`bin_helpers.rs`](../src/bin_helpers.rs) — Shared between bin/set_admin_password.rs and tests. · 2 pub
 - [`config.rs`](../src/config.rs) — 3 pub
-- [`error.rs`](../src/error.rs) — 3 pub
+- [`error.rs`](../src/error.rs) — 4 pub
 - [`lib.rs`](../src/lib.rs) — 16 pub
 - [`main.rs`](../src/main.rs)
 
@@ -140,7 +142,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 
 ### `src/db/`
 
-- [`migrations.rs`](../src/db/migrations.rs) — 10 pub
+- [`migrations.rs`](../src/db/migrations.rs) — 11 pub
 - [`mod.rs`](../src/db/mod.rs) — 1 pub
 
 <a id="srcfunctions"></a>
@@ -148,36 +150,39 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 ### `src/functions/`
 
 - [`bindings.rs`](../src/functions/bindings.rs) — Trigger parsing + per-tenant binding cache. · 5 pub
+- [`caller.rs`](../src/functions/caller.rs) — `CallerCtx` — the execution identity of a function invocation. · 1 pub
 - [`dispatcher.rs`](../src/functions/dispatcher.rs) — `FunctionDispatcher` — mirrors `WebhookDispatcher.dispatch(&self, tenant, · 1 pub
+- [`enforce.rs`](../src/functions/enforce.rs) — Reusable, transport-agnostic enforcement core (v-fn-caller-invoke, Task 2). · 8 pub
 - [`executor.rs`](../src/functions/executor.rs) — Invocation executor: drains the global bounded queue into per-tenant FIFO · 5 pub
-- [`mod.rs`](../src/functions/mod.rs) — v1.36 — Edge functions: per-tenant user-uploaded wasm components, · 8 pub
+- [`invoke_gate.rs`](../src/functions/invoke_gate.rs) — Per-identity invoke gate for `POST /t/{tenant}/functions/{name}/invoke` (T6). · 1 pub
+- [`mod.rs`](../src/functions/mod.rs) — v1.36 — Edge functions: per-tenant user-uploaded wasm components, · 11 pub
 - [`routes.rs`](../src/functions/routes.rs) — REST surface: /t/<id>/functions[…]. Service-only via the router-level · 13 pub
 - [`runtime.rs`](../src/functions/runtime.rs) — wasmtime runtime: global Engine (OnceLock + epoch ticker thread), · 6 pub
-- [`schema.rs`](../src/functions/schema.rs) — `_system_functions` + `_system_function_logs` — lazy DDL (idempotent · 15 pub
+- [`schema.rs`](../src/functions/schema.rs) — `_system_functions` + `_system_function_logs` — lazy DDL (idempotent · 16 pub
 
 <a id="srcmcp"></a>
 
 ### `src/mcp/`
 
-- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler that exposes the 13 drust tools. · 44 pub
+- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler that exposes the 13 drust tools. · 46 pub
 - [`http_registry.rs`](../src/mcp/http_registry.rs) — Per-tenant cache of `StreamableHttpService` instances. · 2 pub
 - [`mod.rs`](../src/mcp/mod.rs) — 4 pub
 - [`server.rs`](../src/mcp/server.rs) — 3 pub
 - [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 4 pub
 - [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url. · 8 pub
-- [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by MCP dispatch (transport · 5 pub
+- [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by MCP dispatch (transport · 6 pub
 - [`tools/index.rs`](../src/mcp/tools/index.rs) — 6 pub
 - [`tools/mod.rs`](../src/mcp/tools/mod.rs) — 14 pub
 - [`tools/oauth.rs`](../src/mcp/tools/oauth.rs) — Pure async helpers for the per-tenant OAuth-provider admin MCP tools · 4 pub
-- [`tools/owner_field.rs`](../src/mcp/tools/owner_field.rs) — Pure async helpers for T25 MCP owner-field + set_self_register tools. · 3 pub
+- [`tools/owner_field.rs`](../src/mcp/tools/owner_field.rs) — Pure async helpers for T25 MCP owner-field + set_self_register tools. · 4 pub
 - [`tools/policy.rs`](../src/mcp/tools/policy.rs) — RLS Phase 8 (Config) — MCP delegate fns for per-collection, · 3 pub
 - [`tools/read.rs`](../src/mcp/tools/read.rs) — 4 pub
 - [`tools/realtime.rs`](../src/mcp/tools/realtime.rs) — MCP `set_realtime` tool — toggle SSE broadcast on one collection. · 1 pub
-- [`tools/schema.rs`](../src/mcp/tools/schema.rs) — 14 pub
+- [`tools/schema.rs`](../src/mcp/tools/schema.rs) — 16 pub
 - [`tools/user.rs`](../src/mcp/tools/user.rs) — Pure async helpers for T24 MCP user-management tools. · 6 pub
 - [`tools/vector.rs`](../src/mcp/tools/vector.rs) — MCP `search_collection` tool. Thin wrapper that constructs the same · 2 pub
 - [`tools/webhook.rs`](../src/mcp/tools/webhook.rs) — Pure async helpers for Task 7 — webhook subscription MCP tools. · 4 pub
-- [`tools/write.rs`](../src/mcp/tools/write.rs) — 4 pub
+- [`tools/write.rs`](../src/mcp/tools/write.rs) — 8 pub
 
 <a id="srcmgmt"></a>
 
@@ -193,7 +198,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`collection_list.rs`](../src/mgmt/collection_list.rs) — Admin-only POST /admin/tenants/<id>/collections/<coll>/_list endpoint · 7 pub
 - [`docs.rs`](../src/mgmt/docs.rs) — Admin-UI handler for the on-disk CHANGELOG viewer. · 2 pub
 - [`format.rs`](../src/mgmt/format.rs) — Small formatting helpers shared across the admin UI. · 1 pub
-- [`functions_admin.rs`](../src/mgmt/functions_admin.rs) — v1.36 — admin UI for the `ƒ _functions` virtual sidebar entry. · 5 pub
+- [`functions_admin.rs`](../src/mgmt/functions_admin.rs) — v1.36 — admin UI for the `ƒ _functions` virtual sidebar entry. · 7 pub
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 9 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
@@ -279,7 +284,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`mod.rs`](../src/storage/mod.rs) — 13 pub
 - [`pool.rs`](../src/storage/pool.rs) — 3 pub
 - [`quota.rs`](../src/storage/quota.rs) — 3 pub
-- [`schema.rs`](../src/storage/schema.rs) — 36 pub
+- [`schema.rs`](../src/storage/schema.rs) — 41 pub
 - [`schema_cache.rs`](../src/storage/schema_cache.rs) — 1 pub
 - [`signed_url.rs`](../src/storage/signed_url.rs) — Drust-minted, drust-served signed URLs for private file downloads. · 4 pub
 - [`tenant_db.rs`](../src/storage/tenant_db.rs) — 7 pub
@@ -294,8 +299,9 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`auth_routes.rs`](../src/tenant/auth_routes.rs) — 11 pub
 - [`collections.rs`](../src/tenant/collections.rs) — 11 pub
 - [`events.rs`](../src/tenant/events.rs) — 2 pub
+- [`file_caps.rs`](../src/tenant/file_caps.rs) — Per-tenant file-storage capabilities (v1.42). · 7 pub
 - [`mcp_dispatch.rs`](../src/tenant/mcp_dispatch.rs) — Axum handler that forwards `/t/:tenant/mcp` traffic to the · 1 pub
-- [`mod.rs`](../src/tenant/mod.rs) — 25 pub
+- [`mod.rs`](../src/tenant/mod.rs) — 26 pub
 - [`oauth_admin_routes.rs`](../src/tenant/oauth_admin_routes.rs) — Service-only admin endpoints for managing this tenant's OAuth provider · 7 pub
 - [`oauth_config.rs`](../src/tenant/oauth_config.rs) — 10 pub
 - [`oauth_routes.rs`](../src/tenant/oauth_routes.rs) — Per-tenant OAuth start + callback handlers. End users of a tenant's · 15 pub
@@ -303,7 +309,7 @@ _One line per file (its `//!` summary). Use `codegraph_files` / `codegraph_node`
 - [`policy_routes.rs`](../src/tenant/policy_routes.rs) — RLS Phase 8 (Config) — service-only REST surface for per-collection, · 4 pub
 - [`query_endpoint.rs`](../src/tenant/query_endpoint.rs) — 4 pub
 - [`realtime_routes.rs`](../src/tenant/realtime_routes.rs) — v1.16 — service-only endpoint to toggle SSE realtime broadcast on · 2 pub
-- [`records.rs`](../src/tenant/records.rs) — 8 pub
+- [`records.rs`](../src/tenant/records.rs) — 10 pub
 - [`records_list.rs`](../src/tenant/records_list.rs) — `POST /t/<id>/collections/<c>/list` — structured list endpoint. · 2 pub
 - [`rooms/audit.rs`](../src/tenant/rooms/audit.rs) — v1.31 audit emit for broadcast.publish. · 2 pub
 - [`rooms/bus.rs`](../src/tenant/rooms/bus.rs) — 2 pub
