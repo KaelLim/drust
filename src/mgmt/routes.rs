@@ -71,6 +71,10 @@ pub struct MgmtState {
     /// Default: 5 per 60 s. Defends the provider-exchange path from being
     /// flooded with attacker-supplied (code, state) pairs.
     pub admin_oauth_callback_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
+    /// v1.44 (CLI Phase 2) — per-IP limiter for POST /auth/cli/device/start
+    /// (device-code mint). Same 5/60 s shape as `admin_oauth_callback_rl` — the
+    /// credential-mint op. `poll` is intentionally NOT under this cap.
+    pub cli_device_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
     /// v1.33 — Mode B per-file ceiling (bytes). Forwarded to TenantFilesState.
     pub large_upload_max_bytes: usize,
     /// v1.33 — Mode B per-chunk body limit (bytes). Forwarded to TenantFilesState.
@@ -651,6 +655,11 @@ impl MgmtState {
                 std::time::Duration::from_secs(60),
                 4096,
             )),
+            cli_device_rl: Arc::new(crate::safety::rate_limit_ip::IpRateLimit::new(
+                5,
+                std::time::Duration::from_secs(60),
+                4096,
+            )),
             large_upload_max_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB
             large_upload_chunk_max_bytes: 64 * 1024 * 1024, // 64 MiB
             large_upload_max_sessions_per_tenant: 5,
@@ -758,6 +767,17 @@ impl MgmtState {
             .route(
                 "/admin/oauth/{provider}/callback",
                 get(crate::mgmt::oauth_login::oauth_callback),
+            )
+            // v1.44 (CLI Phase 2) — device-flow CLI login. `start` mints a
+            // device_code (rate-limited); `poll` is the RFC 8628 status poll.
+            // Both unauthenticated — the device_code is the issued bearer.
+            .route(
+                "/auth/cli/device/start",
+                post(crate::mgmt::cli_device::device_start),
+            )
+            .route(
+                "/auth/cli/device/poll",
+                post(crate::mgmt::cli_device::device_poll),
             )
             .with_state(self.clone());
 
