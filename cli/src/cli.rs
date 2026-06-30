@@ -26,6 +26,8 @@ pub enum Command {
     Auth(crate::auth::AuthArgs),
     /// Select the active tenant context
     Use(crate::commands::use_ctx::UseArgs),
+    /// Data-plane record CRUD
+    Records(crate::commands::records::RecordsArgs),
 }
 
 #[cfg(test)]
