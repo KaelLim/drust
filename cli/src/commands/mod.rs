@@ -5,4 +5,5 @@ pub mod query;
 pub mod records;
 pub mod rpc;
 pub mod search;
+pub mod tenant_admin;
 pub mod use_ctx;
