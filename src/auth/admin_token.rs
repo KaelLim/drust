@@ -146,7 +146,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(label, "cli:laptop");
-        assert!(exp > "2026".to_string(), "expires_at is a future datetime");
+        assert!(exp.as_str() > "2026", "expires_at is a future datetime");
     }
 
     #[test]
