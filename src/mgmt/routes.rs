@@ -1110,6 +1110,21 @@ impl MgmtState {
             )
             .with_state(self.clone());
 
+        // v1.44 (CLI Phase 2, T3) — device-flow approval pages. Ride inside
+        // `protected` (session-gated): a no-cookie browser request 302s to
+        // /login via admin_session_layer, preserving the browser invariant. The
+        // `approve` route is added by the T3-approve task (mints the CLI PAT).
+        let cli_device_router = Router::new()
+            .route(
+                "/auth/cli/device",
+                get(crate::mgmt::cli_device::device_page),
+            )
+            .route(
+                "/auth/cli/device/deny",
+                post(crate::mgmt::cli_device::device_deny),
+            )
+            .with_state(self.clone());
+
         // v1.25 — inner theme layer: runs after admin_session_layer so
         // AdminId is in request extensions. Falls back cookie → DB → System.
         // Overwrites whatever the outer layer set. (F5/F6 from v1.23 review.)
@@ -1139,6 +1154,7 @@ impl MgmtState {
             .merge(metrics_router)
             .merge(settings_router)
             .merge(team_router)
+            .merge(cli_device_router)
             .layer(axum::middleware::from_fn_with_state(
                 inner_theme_state,
                 crate::mgmt::theme_layer::theme_layer,
