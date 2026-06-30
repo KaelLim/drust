@@ -910,6 +910,10 @@ impl MgmtState {
                 post(super::rpc_admin::rpc_test_run),
             )
             .route(
+                "/admin/api/tenants/{id}/tokens",
+                get(super::tokens::tokens_json),
+            )
+            .route(
                 "/admin/api/tenants/{id}/tokens/{role}/reroll",
                 post(super::tokens::reroll_token_json),
             )

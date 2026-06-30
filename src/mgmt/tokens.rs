@@ -47,6 +47,7 @@ struct ApiKeysPage {
     mcp_tool_count: usize,
 }
 
+#[derive(serde::Serialize)]
 pub struct TokenSlotInfo {
     pub id: i64,
     pub created_at: String,
@@ -209,6 +210,33 @@ pub(crate) fn read_slot(
         plaintext,
         legacy_siblings: (total - 1).max(0),
     })
+}
+
+/// `GET /admin/api/tenants/{id}/tokens` — non-destructive read of the active
+/// anon + service keys (plaintext, same data the `_api_keys` page shows).
+pub async fn tokens_json(
+    State(state): State<TenantsState>,
+    Path(tenant_id): Path<String>,
+) -> Response {
+    let conn = state.session.meta.lock().await;
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tenant_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error_code":"TENANT_NOT_FOUND","message":"no such tenant"})),
+        )
+            .into_response();
+    }
+    let anon = read_slot(&conn, &tenant_id, "anon");
+    let service = read_slot(&conn, &tenant_id, "service");
+    drop(conn);
+    Json(json!({"tenant_id": tenant_id, "anon": anon, "service": service})).into_response()
 }
 
 /// `GET /admin/tenants/{id}` — redirect to the tenant Overview (v1.14+).
