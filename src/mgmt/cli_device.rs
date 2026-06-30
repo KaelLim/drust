@@ -75,7 +75,11 @@ pub async fn device_start(
     let fallback: std::net::SocketAddr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
     let ip = crate::safety::ip::client_ip(&headers, fallback);
     if !s.cli_device_rl.check(ip) {
-        return json_error(StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED_IP", "rate limited");
+        return json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "RATE_LIMITED_IP",
+            "rate limited",
+        );
     }
     let client_name = body
         .and_then(|b| b.0.client_name)
@@ -105,8 +109,7 @@ pub async fn device_start(
                     s.public_url,
                     crate::base_path::base("/auth/cli/device")
                 );
-                let verification_uri_complete =
-                    format!("{verification_uri}?user_code={user_code}");
+                let verification_uri_complete = format!("{verification_uri}?user_code={user_code}");
                 let out = json!({
                     "device_code": device_code,
                     "user_code": user_code,
@@ -314,8 +317,10 @@ pub async fn device_page(
     let csrf = generate_csrf_token();
     let html = render_approval_page(&client_name, email.as_deref(), &user_code, &csrf);
     let mut resp = Html(html).into_response();
-    resp.headers_mut()
-        .append(header::SET_COOKIE, build_csrf_cookie(&csrf).parse().unwrap());
+    resp.headers_mut().append(
+        header::SET_COOKIE,
+        build_csrf_cookie(&csrf).parse().unwrap(),
+    );
     resp
 }
 
@@ -338,8 +343,9 @@ pub async fn device_deny(
             params![form.user_code],
         );
     }
-    let entry = crate::safety::audit::AuditEntry::success("-", "-", "POST /auth/cli/device/deny", 0)
-        .with_extra(json!({ "admin_id": admin_id, "user_code": form.user_code }));
+    let entry =
+        crate::safety::audit::AuditEntry::success("-", "-", "POST /auth/cli/device/deny", 0)
+            .with_extra(json!({ "admin_id": admin_id, "user_code": form.user_code }));
     crate::safety::audit::write_entry(&s.log_dir, &entry).await;
     Html(render_denied_page()).into_response()
 }

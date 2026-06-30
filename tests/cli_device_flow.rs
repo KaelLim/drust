@@ -54,7 +54,9 @@ async fn post_json(
 }
 
 async fn jbody(r: axum::http::Response<Body>) -> serde_json::Value {
-    let b = axum::body::to_bytes(r.into_body(), 1_000_000).await.unwrap();
+    let b = axum::body::to_bytes(r.into_body(), 1_000_000)
+        .await
+        .unwrap();
     serde_json::from_slice(&b).unwrap()
 }
 
@@ -81,7 +83,10 @@ async fn start_issues_codes_and_stores_hash_only() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(stored_plain, 0, "raw device_code must never be a stored hash");
+    assert_eq!(
+        stored_plain, 0,
+        "raw device_code must never be a stored hash"
+    );
     let by_hash: i64 = c
         .query_row(
             "SELECT count(*) FROM _cli_device_codes WHERE device_code_hash = ?1",
