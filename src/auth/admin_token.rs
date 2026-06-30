@@ -45,7 +45,13 @@ pub fn mint_cli_token(
     conn.execute(
         "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext, label, expires_at) \
          VALUES (?1, ?2, ?3, ?4, datetime('now', ?5))",
-        params![admin_id, hash, plaintext, label, format!("+{ttl_secs} seconds")],
+        params![
+            admin_id,
+            hash,
+            plaintext,
+            label,
+            format!("+{ttl_secs} seconds")
+        ],
     )?;
     Ok((conn.last_insert_rowid(), plaintext))
 }
@@ -127,7 +133,9 @@ mod tests {
         assert!(id > 0);
         assert!(plaintext.starts_with(CLI_TOKEN_PREFIX));
         // Resolves through the SAME admin-PAT lookup path → admin_id 5 (no new privilege).
-        let hit = lookup(&conn, &plaintext).unwrap().expect("CLI PAT resolves");
+        let hit = lookup(&conn, &plaintext)
+            .unwrap()
+            .expect("CLI PAT resolves");
         assert_eq!(hit.admin_id, 5);
         // The label + a future expiry are persisted (outside the relaxed index).
         let (label, exp): (String, String) = conn
