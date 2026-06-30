@@ -28,6 +28,8 @@ pub enum Command {
     Use(crate::commands::use_ctx::UseArgs),
     /// Data-plane record CRUD
     Records(crate::commands::records::RecordsArgs),
+    /// Collection read + index/config + schema mutation (via MCP)
+    Collections(crate::commands::collections::CollectionsArgs),
 }
 
 #[cfg(test)]
