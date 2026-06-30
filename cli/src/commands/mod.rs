@@ -1,4 +1,5 @@
 pub mod collections;
+pub mod functions;
 pub mod query;
 pub mod records;
 pub mod rpc;

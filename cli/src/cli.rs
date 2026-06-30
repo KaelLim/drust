@@ -36,6 +36,8 @@ pub enum Command {
     Search(crate::commands::search::SearchArgs),
     /// Stored RPC call/list
     Rpc(crate::commands::rpc::RpcArgs),
+    /// Data-plane edge functions
+    Functions(crate::commands::functions::FunctionsArgs),
 }
 
 #[cfg(test)]
