@@ -62,3 +62,50 @@ async fn device_login_then_status() {
     .await
     .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refresh_then_logout() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth/cli/token/refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token":"drust_pat_cli_NEW","expires_at":"2026-07-02T00:00:00Z"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/auth/cli/token"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let uri = server.uri();
+    let home = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        cli(&home)
+            .args([
+                "auth",
+                "login",
+                "--host",
+                "t",
+                "--url",
+                &uri,
+                "--with-token",
+                "drust_pat_cli_a",
+            ])
+            .assert()
+            .success();
+        cli(&home)
+            .args(["auth", "refresh"])
+            .assert()
+            .success();
+        cli(&home)
+            .args(["auth", "logout"])
+            .assert()
+            .success();
+        // host removed → status errors
+        cli(&home).args(["auth", "status"]).assert().failure();
+    })
+    .await
+    .unwrap();
+}
