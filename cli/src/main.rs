@@ -20,6 +20,9 @@ async fn run(cli: Cli) -> i32 {
         Command::Use(u) => commands::use_ctx::run(&cli, u).await,
         Command::Records(a) => commands::records::run(&cli, a).await,
         Command::Collections(a) => commands::collections::run(&cli, a).await,
+        Command::Query(a) => commands::query::run(&cli, a).await,
+        Command::Search(a) => commands::search::run(&cli, a).await,
+        Command::Rpc(a) => commands::rpc::run(&cli, a).await,
     };
     match res {
         Ok(code) => code,
