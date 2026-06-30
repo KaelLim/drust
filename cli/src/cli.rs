@@ -38,6 +38,8 @@ pub enum Command {
     Rpc(crate::commands::rpc::RpcArgs),
     /// Data-plane edge functions
     Functions(crate::commands::functions::FunctionsArgs),
+    /// Per-tenant file storage
+    Files(crate::commands::files::FilesArgs),
 }
 
 #[cfg(test)]
