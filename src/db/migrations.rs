@@ -536,6 +536,14 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     // 2. Add plaintext column (NULL for any pre-existing hash-only rows).
     add_column_if_missing(meta, "_admin_tokens", "plaintext", "TEXT")?;
 
+    // v1.44 (T4) — labeled, expiring CLI PATs coexist with the single unlabeled
+    // UI PAT. Added BEFORE the legacy-revoke (step 3) and the backfill probe
+    // (step 7) so both can exclude labeled rows; re-asserted after the rebuild
+    // in case a legacy kind/name rebuild dropped them. New rows default both to
+    // NULL → every existing UI PAT stays unlabeled + non-expiring. Mints nothing.
+    add_column_if_missing(meta, "_admin_tokens", "label", "TEXT")?; // NULL = unlabeled UI PAT
+    add_column_if_missing(meta, "_admin_tokens", "expires_at", "TEXT")?; // NULL = never expires
+
     // 3. Soft-revoke active LEGACY rows (kind='manual' from Task 8 and
     //    kind='auto_mcp' from v1.29.2 — neither stored plaintext). The backfill
     //    loop below produces fresh plaintext-bearing rows.
@@ -546,9 +554,12 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     //    admin's PAT on every restart (breaking PAT-based integrations, e.g. an
     //    MCP connection keyed on a PAT, and accumulating junk rows). Legacy rows
     //    are exactly the plaintext-less ones; once migrated, this is a no-op.
+    //    v1.44 (T4) — DiD: also exclude `label IS NOT NULL`, so the legacy sweep
+    //    can never touch a labeled CLI PAT regardless of whether its mint path set
+    //    plaintext. A labeled row survives via EITHER guard alone.
     meta.execute_batch(
         "UPDATE _admin_tokens SET revoked_at = datetime('now') \
-         WHERE revoked_at IS NULL AND plaintext IS NULL;",
+         WHERE revoked_at IS NULL AND plaintext IS NULL AND label IS NULL;",
     )?;
 
     // 4. Swap the partial unique index: drop the kind-based one, create one
@@ -602,8 +613,19 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         )?;
     }
 
-    // 7. Backfill: every admin missing an active PAT gets a fresh one.
-    //    Idempotent — admins that already have an active row are skipped.
+    // v1.44 (T4) — re-assert label/expires_at BEFORE the backfill probe: a legacy
+    // kind/name rebuild (step 5/6) recreates the table with only the 7 canonical
+    // columns, dropping the columns Edit A added. The probe below is label-qualified,
+    // so the column must exist here in every path (fresh + post-rebuild).
+    add_column_if_missing(meta, "_admin_tokens", "label", "TEXT")?;
+    add_column_if_missing(meta, "_admin_tokens", "expires_at", "TEXT")?;
+
+    // 7. Backfill: every admin missing an active UNLABELED (UI) PAT gets a fresh
+    //    one. Idempotent — admins that already have an active unlabeled row are
+    //    skipped. v1.44 (T4) — qualified `AND label IS NULL` so a labeled CLI PAT
+    //    is NOT counted as the admin's UI PAT (otherwise an admin holding only a
+    //    CLI PAT would never get the unlabeled UI PAT the settings page reads); the
+    //    mint stays unlabeled, satisfying the relaxed index.
     let admin_ids: Vec<i64> = {
         let mut stmt = meta.prepare("SELECT id FROM admins")?;
         stmt.query_map([], |r| r.get(0))?
@@ -612,7 +634,8 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     for aid in admin_ids {
         let has_active: bool = meta
             .query_row(
-                "SELECT 1 FROM _admin_tokens WHERE admin_id = ?1 AND revoked_at IS NULL",
+                "SELECT 1 FROM _admin_tokens \
+                 WHERE admin_id = ?1 AND revoked_at IS NULL AND label IS NULL",
                 rusqlite::params![aid],
                 |_| Ok(()),
             )
@@ -625,6 +648,27 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
                 rusqlite::params![aid, hash, plaintext],
             )?;
         }
+    }
+
+    // v1.44 (T4) — relax the active-PAT unique index so ONE unlabeled UI PAT and
+    // N labeled CLI PATs coexist (the UI invariant — ≤1 unlabeled active per admin
+    // — is preserved byte-for-byte). DROP+CREATE is guarded on `sqlite_master.sql
+    // NOT LIKE '%label%'` so a second boot, where the index is already relaxed, is
+    // a pure no-op (never rebuilt, never reverted) per the v1.41.5 invariant.
+    let needs_relax: bool = meta
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='index' \
+             AND name='uniq_admin_tokens_active' AND sql NOT LIKE '%label%'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if needs_relax {
+        meta.execute_batch(
+            "DROP INDEX IF EXISTS uniq_admin_tokens_active; \
+             CREATE UNIQUE INDEX IF NOT EXISTS uniq_admin_tokens_active \
+                 ON _admin_tokens(admin_id) WHERE revoked_at IS NULL AND label IS NULL;",
+        )?;
     }
 
     // v1.29.5 — admin session token_hash column (H4-2 phase 1).
@@ -912,6 +956,83 @@ mod tests {
             [],
         )
         .expect_err("second active row should violate uniq_admin_tokens_active");
+    }
+
+    #[test]
+    fn t4_multi_pat_relax_idempotent_ui_and_cli_survive_second_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        meta.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY);
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, \
+                 password_hash TEXT NOT NULL, email TEXT, \
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')));
+             INSERT INTO admins (username, password_hash) VALUES ('kael', 'h');",
+        )
+        .unwrap();
+
+        // Boot 1: backfill mints the unlabeled UI PAT.
+        run_migrations(&meta, dir.path()).unwrap();
+        let ui_hash: String = meta
+            .query_row(
+                "SELECT token_hash FROM _admin_tokens \
+                 WHERE admin_id=1 AND revoked_at IS NULL AND label IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("one unlabeled UI PAT after boot 1");
+
+        // New columns exist; relaxed index references label.
+        let cols: Vec<String> = meta
+            .prepare("PRAGMA table_info(_admin_tokens)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(cols.contains(&"label".to_string()) && cols.contains(&"expires_at".to_string()));
+        let idx_sql: String = meta
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='uniq_admin_tokens_active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(idx_sql.contains("revoked_at IS NULL") && idx_sql.contains("label IS NULL"));
+
+        // A labeled CLI PAT coexists (relaxed index permits it).
+        meta.execute(
+            "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext, label, expires_at) \
+             VALUES (1, 'cli_h', 'cli_p', 'cli:laptop', datetime('now','+1 day'))",
+            [],
+        )
+        .expect("labeled CLI PAT must NOT violate the relaxed unique index");
+
+        // Boot 2 (restart): neither PAT is rerolled.
+        run_migrations(&meta, dir.path()).unwrap();
+        let ui_hash2: String = meta
+            .query_row(
+                "SELECT token_hash FROM _admin_tokens \
+                 WHERE admin_id=1 AND revoked_at IS NULL AND label IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            ui_hash, ui_hash2,
+            "UI PAT survives byte-for-byte (v1.41.5 invariant)"
+        );
+        let cli_active: i64 = meta
+            .query_row(
+                "SELECT COUNT(*) FROM _admin_tokens WHERE token_hash='cli_h' AND revoked_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            cli_active, 1,
+            "labeled CLI PAT survives the legacy-revoke + second boot"
+        );
     }
 
     #[test]
