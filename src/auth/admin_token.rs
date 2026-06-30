@@ -71,7 +71,8 @@ pub fn lookup(conn: &Connection, bearer: &str) -> rusqlite::Result<Option<AdminT
     let h = hash_token(bearer);
     match conn.query_row(
         "SELECT id, admin_id FROM _admin_tokens \
-         WHERE token_hash = ?1 AND revoked_at IS NULL",
+         WHERE token_hash = ?1 AND revoked_at IS NULL \
+           AND (expires_at IS NULL OR expires_at > datetime('now'))",
         params![h],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
     ) {
@@ -157,7 +158,9 @@ mod tests {
                 id INTEGER PRIMARY KEY,
                 admin_id INTEGER NOT NULL,
                 token_hash TEXT NOT NULL UNIQUE,
-                revoked_at TEXT
+                revoked_at TEXT,
+                label TEXT,
+                expires_at TEXT
             ) STRICT;",
         )
         .unwrap();
@@ -181,6 +184,44 @@ mod tests {
         assert!(
             lookup(&conn, &plaintext).unwrap().is_none(),
             "soft-revoked PAT must not authenticate"
+        );
+    }
+
+    #[test]
+    fn lookup_rejects_expired_pat_accepts_future_and_null() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _admin_tokens (id INTEGER PRIMARY KEY, admin_id INTEGER NOT NULL, \
+                token_hash TEXT NOT NULL UNIQUE, revoked_at TEXT, label TEXT, expires_at TEXT) STRICT;",
+        )
+        .unwrap();
+        let mk = |conn: &Connection, exp: &str| {
+            let p = generate_cli_token();
+            let h = hash_token(&p);
+            conn.execute(
+                &format!(
+                    "INSERT INTO _admin_tokens (admin_id, token_hash, label, expires_at) \
+                     VALUES (1, ?1, 'cli:x', {exp})"
+                ),
+                rusqlite::params![h],
+            )
+            .unwrap();
+            p
+        };
+        let past = mk(&conn, "datetime('now','-1 hour')");
+        let future = mk(&conn, "datetime('now','+1 hour')");
+        let never = mk(&conn, "NULL");
+        assert!(
+            lookup(&conn, &past).unwrap().is_none(),
+            "expired PAT must not resolve"
+        );
+        assert!(
+            lookup(&conn, &future).unwrap().is_some(),
+            "unexpired PAT resolves"
+        );
+        assert!(
+            lookup(&conn, &never).unwrap().is_some(),
+            "NULL expiry never expires"
         );
     }
 }
