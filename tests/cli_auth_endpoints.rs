@@ -236,12 +236,28 @@ fn app2(dir: &TempDir) -> axum::Router {
 
 /// Initialize the process-global audit writer once per test binary (OnceLock,
 /// modeled on `tests/admin_pat_reroll.rs::reroll_emits_revoke_and_mint_audit_rows`).
+///
+/// Unlike that single-audit-test oracle, this binary has TWO audit-asserting
+/// tests (logout + UI-revoke). `AuditWriter::new` spawns its drain task via
+/// `tokio::spawn`, which binds to the CURRENT runtime — so if the first
+/// `#[tokio::test]` to init the writer finishes before a later test reads, its
+/// runtime (and the drain task) is gone and the later test's rows never persist.
+/// Host the writer on a dedicated LEAKED multi-thread runtime so the drain task
+/// outlives every per-test runtime.
 static AUDIT_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 fn init_global_audit() {
     AUDIT_PATH.get_or_init(|| {
         let dir = Box::new(tempdir().unwrap());
         let path = dir.path().join("test_global_audit_cli_auth.sqlite");
         let conn = open_audit_db_write(&path).unwrap();
+        let rt = Box::leak(Box::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap(),
+        ));
+        let _guard = rt.enter(); // AuditWriter::new's tokio::spawn lands on `rt`
         let writer = AuditWriter::new(conn);
         drust::safety::audit_db::init_globals(writer);
         Box::leak(dir); // keep the directory alive for the process
@@ -386,4 +402,30 @@ async fn ui_revoke_cannot_touch_another_admins_token_or_the_ui_pat() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND); // CLI_TOKEN_NOT_FOUND, fail-closed
     assert!(!row_is_revoked(&open_meta_ro(&dir), other));
+}
+
+// ─── T7 — settings page lists labeled CLI tokens ──────────────────────────────
+
+#[tokio::test]
+async fn settings_page_lists_labeled_cli_tokens() {
+    let (app, dir) = spin_up().await;
+    let (admin_id, session) = insert_admin(&dir, "kael@x", "owner");
+    seed_cli_pat_for(&dir, admin_id, "cli:macbook");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/settings")
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html =
+        String::from_utf8(axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap().to_vec())
+            .unwrap();
+    assert!(html.contains("cli:macbook"));
+    assert!(html.contains("/admin/settings/cli-tokens/")); // a revoke form action
 }

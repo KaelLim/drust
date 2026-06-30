@@ -147,6 +147,16 @@ async fn design_showcase(
     .into_response()
 }
 
+/// v1.44 (CLI Phase 2, T7) — one active labeled CLI PAT row for the settings
+/// listing. Askama reads the public fields directly (same module as the page).
+struct CliTokenRow {
+    id: i64,
+    label: String,
+    created_at: String,
+    last_used_at: Option<String>,
+    expires_at: Option<String>,
+}
+
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsPage {
@@ -170,6 +180,9 @@ struct SettingsPage {
     pat_hash_prefix: Option<String>,
     /// Caller's PAT last-used timestamp; `None` if the PAT has never authenticated.
     pat_last_used_at: Option<String>,
+    /// v1.44 (T7) — caller's active labeled CLI PATs (device-flow / `drust auth
+    /// login`), listed with a per-row revoke form.
+    cli_tokens: Vec<CliTokenRow>,
 }
 
 async fn settings_page(
@@ -197,6 +210,30 @@ async fn settings_page(
         None => (None, None, None),
     };
 
+    // v1.44 (T7) — the caller's active labeled CLI PATs, listed alongside the
+    // single unlabeled UI PAT above. Each gets a per-row revoke form.
+    let cli_tokens: Vec<CliTokenRow> = {
+        let conn = state.meta.lock().await;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, label, created_at, last_used_at, expires_at FROM _admin_tokens \
+                 WHERE admin_id = ?1 AND revoked_at IS NULL AND label IS NOT NULL \
+                 ORDER BY created_at DESC",
+            )
+            .unwrap();
+        stmt.query_map(rusqlite::params![caller_id], |r| {
+            Ok(CliTokenRow {
+                id: r.get(0)?,
+                label: r.get(1)?,
+                created_at: r.get(2)?,
+                last_used_at: r.get(3)?,
+                expires_at: r.get(4)?,
+            })
+        })
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
+    };
+
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         SettingsPage {
@@ -216,6 +253,7 @@ async fn settings_page(
             pat_plaintext,
             pat_hash_prefix,
             pat_last_used_at,
+            cli_tokens,
         }
         .render()
         .unwrap_or_default(),
