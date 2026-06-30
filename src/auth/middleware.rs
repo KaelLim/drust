@@ -1,3 +1,4 @@
+use crate::auth::admin_token;
 use crate::auth::session::validate_session;
 use crate::error::json_error;
 use axum::extract::{FromRequestParts, Path, State};
@@ -72,29 +73,57 @@ pub async fn admin_session_layer(
     mut req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let cookie_val = extract_cookie(&req, SESSION_COOKIE);
-    let admin_id = match cookie_val {
+    // 1. Cookie session (unchanged primary path).
+    let admin_id = match extract_cookie(&req, SESSION_COOKIE) {
         Some(v) => {
             let conn = state.meta.lock().await;
             validate_session(&conn, &v).ok().flatten()
         }
         None => None,
     };
-    match admin_id {
-        Some(id) => {
-            req.extensions_mut().insert(AdminId(id));
-            next.run(req).await
-        }
-        None => {
-            let mut r = Response::new(axum::body::Body::empty());
-            *r.status_mut() = StatusCode::SEE_OTHER;
-            r.headers_mut().insert(
-                header::LOCATION,
-                crate::base_path::base("/login").parse().unwrap(),
-            );
-            r
+    if let Some(id) = admin_id {
+        req.extensions_mut().insert(AdminId(id));
+        return next.run(req).await;
+    }
+    // 2. Admin-PAT fallback (T5). Only a drust_pat_* bearer is an admin credential.
+    let bearer = extract_bearer(&req);
+    if let Some(tok) = bearer
+        .as_deref()
+        .filter(|t| t.starts_with(admin_token::TOKEN_PREFIX))
+    {
+        let hit = {
+            let conn = state.meta.lock().await;
+            admin_token::lookup(&conn, tok).ok().flatten()
+        };
+        match hit {
+            Some(h) => {
+                req.extensions_mut().insert(AdminId(h.admin_id));
+                return next.run(req).await;
+            }
+            None => {
+                return json_error(
+                    StatusCode::UNAUTHORIZED,
+                    "ADMIN_PAT_INVALID",
+                    "admin PAT invalid, expired, or revoked",
+                );
+            }
         }
     }
+    // 3. No admin credential — content negotiate (browser 302 preserved).
+    if wants_json(&req) {
+        return json_error(
+            StatusCode::UNAUTHORIZED,
+            "HTTP_401",
+            "authentication required",
+        );
+    }
+    let mut r = Response::new(axum::body::Body::empty());
+    *r.status_mut() = StatusCode::SEE_OTHER;
+    r.headers_mut().insert(
+        header::LOCATION,
+        crate::base_path::base("/login").parse().unwrap(),
+    );
+    r
 }
 
 fn extract_cookie<B>(req: &Request<B>, name: &str) -> Option<String> {
@@ -108,6 +137,20 @@ fn extract_cookie<B>(req: &Request<B>, name: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
+    let raw = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
+    raw.strip_prefix("Bearer ")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn wants_json<B>(req: &Request<B>) -> bool {
+    req.headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|a| a.contains("application/json"))
 }
 
 pub fn build_session_cookie(token: &str, ttl_secs: u64) -> String {
