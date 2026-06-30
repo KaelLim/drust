@@ -76,7 +76,9 @@ async fn login(cli: &Cli, l: &LoginArgs) -> anyhow::Result<i32> {
     let base_url = match (&l.url, l.cloud) {
         (Some(u), _) => u.trim_end_matches('/').to_string(),
         (None, true) => {
-            anyhow::bail!("cloud ({DRUST_CLOUD_HOST}) not yet available — pass --url <instance incl. /drust>")
+            anyhow::bail!(
+                "cloud ({DRUST_CLOUD_HOST}) not yet available — pass --url <instance incl. /drust>"
+            )
         }
         (None, false) => anyhow::bail!("pass --url <instance incl. /drust> or --cloud"),
     };

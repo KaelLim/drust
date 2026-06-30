@@ -37,7 +37,9 @@ async fn team_list_invite_role_rm() {
         .await;
     Mock::given(method("POST"))
         .and(path("/admin/team"))
-        .and(body_json(serde_json::json!({"email":"new@b.com","role":"member"})))
+        .and(body_json(
+            serde_json::json!({"email":"new@b.com","role":"member"}),
+        ))
         .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
             "id":2,"email":"new@b.com","role":"member"})))
         .mount(&server)
@@ -66,7 +68,15 @@ async fn team_list_invite_role_rm() {
             .success()
             .stdout(predicate::str::contains("a@b.com"));
         cli(&home)
-            .args(["--json", "admin", "team", "invite", "new@b.com", "--role", "member"])
+            .args([
+                "--json",
+                "admin",
+                "team",
+                "invite",
+                "new@b.com",
+                "--role",
+                "member",
+            ])
             .assert()
             .success()
             .stdout(predicate::str::contains("new@b.com"));
@@ -99,7 +109,15 @@ async fn team_invite_403_not_owner_surfaces_code() {
     tokio::task::spawn_blocking(move || {
         login(&home, &uri);
         cli(&home)
-            .args(["--json", "admin", "team", "invite", "new@b.com", "--role", "member"])
+            .args([
+                "--json",
+                "admin",
+                "team",
+                "invite",
+                "new@b.com",
+                "--role",
+                "member",
+            ])
             .assert()
             .code(1) // 4xx app error → exit 1 (no client-side role gate)
             .stderr(predicate::str::contains("NOT_OWNER"));

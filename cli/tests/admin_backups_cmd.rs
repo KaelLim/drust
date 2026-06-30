@@ -51,7 +51,9 @@ async fn backups_list_inspect_download_restore() {
         .and(path(format!("/admin/backups/{F}/restore")))
         .respond_with(ResponseTemplate::new(303).insert_header(
             "location",
-            format!("/drust/admin/backups/{F}/inspect?restored=9f&dest=%2Fdata%2F_trash%2F9f-restored-x"),
+            format!(
+                "/drust/admin/backups/{F}/inspect?restored=9f&dest=%2Fdata%2F_trash%2F9f-restored-x"
+            ),
         ))
         .mount(&server)
         .await;

@@ -48,13 +48,18 @@ async fn post_unauth_sends_no_authorization() {
     Mock::given(method("POST"))
         .and(path("/auth/cli/device/start"))
         .and(NoAuthHeader)
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"device_code":"d"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"device_code":"d"})),
+        )
         .mount(&server)
         .await;
     // anonymous() carries no token; post_unauth never adds the Authorization header.
     let c = DrustClient::anonymous(server.uri());
     let v = c
-        .post_unauth("/auth/cli/device/start", serde_json::json!({"client_name":"lappy"}))
+        .post_unauth(
+            "/auth/cli/device/start",
+            serde_json::json!({"client_name":"lappy"}),
+        )
         .await
         .unwrap();
     assert_eq!(v["device_code"], "d");
@@ -65,12 +70,10 @@ async fn restore_redirect_capture() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/admin/backups/x.tar.zst/restore"))
-        .respond_with(
-            ResponseTemplate::new(303).insert_header(
-                "location",
-                "/drust/admin/backups/x/inspect?restored=9f&dest=%2Ftrash",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(303).insert_header(
+            "location",
+            "/drust/admin/backups/x/inspect?restored=9f&dest=%2Ftrash",
+        ))
         .mount(&server)
         .await;
     let c = DrustClient::new(server.uri(), "tok");

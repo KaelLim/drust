@@ -99,7 +99,10 @@ mod tests {
     #[test]
     fn poll_decision_covers_rfc8628() {
         use PollDecision::*;
-        assert!(matches!(decide("pending", None, 5), Keep { interval_secs: 5 }));
+        assert!(matches!(
+            decide("pending", None, 5),
+            Keep { interval_secs: 5 }
+        ));
         assert!(matches!(
             decide("slow_down", None, 5),
             SlowDown { interval_secs: 10 }
@@ -111,6 +114,9 @@ mod tests {
         assert!(matches!(decide("approved", None, 5), Expired)); // fail closed
         assert!(matches!(decide("denied", None, 5), Denied));
         assert!(matches!(decide("expired", None, 5), Expired));
-        assert!(matches!(decide("garbage", None, 7), Keep { interval_secs: 7 }));
+        assert!(matches!(
+            decide("garbage", None, 7),
+            Keep { interval_secs: 7 }
+        ));
     }
 }

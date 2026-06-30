@@ -95,14 +95,8 @@ async fn refresh_then_logout() {
             ])
             .assert()
             .success();
-        cli(&home)
-            .args(["auth", "refresh"])
-            .assert()
-            .success();
-        cli(&home)
-            .args(["auth", "logout"])
-            .assert()
-            .success();
+        cli(&home).args(["auth", "refresh"]).assert().success();
+        cli(&home).args(["auth", "logout"]).assert().success();
         // host removed → status errors
         cli(&home).args(["auth", "status"]).assert().failure();
     })

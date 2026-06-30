@@ -39,7 +39,10 @@ pub async fn run(cli: &Cli, a: &TeamArgs) -> anyhow::Result<i32> {
             if let Some(r) = role {
                 b.insert("role".into(), r.clone().into());
             }
-            finish(&ctx, c.send_json(Method::POST, "/admin/team", b.into()).await)
+            finish(
+                &ctx,
+                c.send_json(Method::POST, "/admin/team", b.into()).await,
+            )
         }
         TeamCmd::Role { id, role } => finish(
             &ctx,

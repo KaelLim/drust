@@ -38,7 +38,8 @@ pub async fn run(cli: &Cli, a: &BackupsArgs) -> anyhow::Result<i32> {
         BackupsCmd::List => finish(&ctx, c.get("/admin/api/backups").await),
         BackupsCmd::Inspect { filename } => finish(
             &ctx,
-            c.get(&format!("/admin/api/backups/{filename}/inspect")).await,
+            c.get(&format!("/admin/api/backups/{filename}/inspect"))
+                .await,
         ),
         BackupsCmd::Download { filename, out } => {
             match c

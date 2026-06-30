@@ -23,9 +23,10 @@ pub async fn run(cli: &Cli, a: &KeysArgs) -> anyhow::Result<i32> {
     let ctx = Ctx::build(cli, false)?;
     let c = &ctx.client;
     match &a.cmd {
-        KeysCmd::List { tenant } => {
-            finish(&ctx, c.get(&format!("/admin/api/tenants/{tenant}/tokens")).await)
-        }
+        KeysCmd::List { tenant } => finish(
+            &ctx,
+            c.get(&format!("/admin/api/tenants/{tenant}/tokens")).await,
+        ),
         KeysCmd::Reroll { tenant, role } => finish(
             &ctx,
             c.send_json(
