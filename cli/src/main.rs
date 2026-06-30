@@ -24,6 +24,7 @@ async fn run(cli: Cli) -> i32 {
         Command::Search(a) => commands::search::run(&cli, a).await,
         Command::Rpc(a) => commands::rpc::run(&cli, a).await,
         Command::Functions(a) => commands::functions::run(&cli, a).await,
+        Command::Files(a) => commands::files::run(&cli, a).await,
     };
     match res {
         Ok(code) => code,
