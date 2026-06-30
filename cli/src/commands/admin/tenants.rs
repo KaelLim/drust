@@ -53,7 +53,8 @@ pub async fn run(cli: &Cli, a: &TenantsArgs) -> anyhow::Result<i32> {
             }
             finish(
                 &ctx,
-                c.send_json(Method::POST, "/admin/api/tenants", b.into()).await,
+                c.send_json(Method::POST, "/admin/api/tenants", b.into())
+                    .await,
             )
         }
         TenantsCmd::Rm { id } => match c.delete(&format!("/admin/api/tenants/{id}")).await {
