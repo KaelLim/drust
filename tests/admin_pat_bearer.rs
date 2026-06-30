@@ -212,6 +212,74 @@ async fn pat_bearer_audit_row_carries_actor_admin_id() {
 }
 
 #[tokio::test]
+async fn expired_cli_pat_is_rejected_on_data_plane() {
+    let (app, _ui_pat, admin_id, dir) = app_with_pat("pat-exp").await;
+    // Mint an EXPIRED CLI PAT for the same admin (relaxed index permits coexistence).
+    let cli = drust::auth::admin_token::generate_cli_token();
+    let h = drust::auth::admin_token::hash_token(&cli);
+    {
+        let conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext, label, expires_at) \
+             VALUES (?1, ?2, ?3, 'cli:laptop', datetime('now','-1 hour'))",
+            params![admin_id, h, cli],
+        )
+        .unwrap();
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/t/pat-exp/collections")
+                .header(header::AUTHORIZATION, format!("Bearer {cli}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "expired CLI PAT must 401"
+    );
+}
+
+#[tokio::test]
+async fn unexpired_cli_pat_resolves_on_data_plane() {
+    let (app, _ui_pat, admin_id, dir) = app_with_pat("pat-ok").await;
+    // A future-expiry CLI PAT resolves to Service { admin_id }, like the UI PAT.
+    let cli = drust::auth::admin_token::generate_cli_token();
+    let h = drust::auth::admin_token::hash_token(&cli);
+    {
+        let conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext, label, expires_at) \
+             VALUES (?1, ?2, ?3, 'cli:laptop', datetime('now','+1 hour'))",
+            params![admin_id, h, cli],
+        )
+        .unwrap();
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/t/pat-ok/collections")
+                .header(header::AUTHORIZATION, format!("Bearer {cli}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "unexpired CLI PAT resolves to Service"
+    );
+}
+
+#[tokio::test]
 async fn non_pat_bearer_does_not_pollute_pat_path() {
     // A regular shared service token should still resolve to Service { admin_id: None }
     // and NOT get actor_admin_id in the audit row.
