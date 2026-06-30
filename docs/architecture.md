@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-06-29
+updated: 2026-06-30
 generated_by: docs/gen-architecture.py
 ---
 
@@ -21,14 +21,14 @@ generated_by: docs/gen-architecture.py
 
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
-| [`(root)/`](#srcroot) | 6 | 30 | 3 | 23 |
-| [`auth/`](#srcauth) | 10 | 50 | 2 | 38 |
+| [`(root)/`](#srcroot) | 6 | 30 | 3 | 24 |
+| [`auth/`](#srcauth) | 10 | 53 | 3 | 41 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
-| [`db/`](#srcdb) | 2 | 12 | 1 | 0 |
+| [`db/`](#srcdb) | 2 | 13 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 68 | 37 | 17 |
 | [`mcp/`](#srcmcp) | 19 | 145 | 57 | 30 |
-| [`mgmt/`](#srcmgmt) | 34 | 251 | 96 | 43 |
+| [`mgmt/`](#srcmgmt) | 35 | 281 | 100 | 44 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 8 | 49 | 8 | 30 |
 | [`rpc/`](#srcrpc) | 6 | 37 | 16 | 9 |
@@ -108,7 +108,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 ### `src/auth/`
 
 - [`admin.rs`](../src/auth/admin.rs) — 3 pub
-- [`admin_token.rs`](../src/auth/admin_token.rs) — Per-admin Personal Access Token (PAT) primitives. v1.29.0. · 5 pub
+- [`admin_token.rs`](../src/auth/admin_token.rs) — Per-admin Personal Access Token (PAT) primitives. v1.29.0. · 8 pub
 - [`bearer.rs`](../src/auth/bearer.rs) — 4 pub
 - [`middleware.rs`](../src/auth/middleware.rs) — 8 pub
 - [`mod.rs`](../src/auth/mod.rs) — 9 pub
@@ -142,7 +142,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/db/`
 
-- [`migrations.rs`](../src/db/migrations.rs) — 11 pub
+- [`migrations.rs`](../src/db/migrations.rs) — 12 pub
 - [`mod.rs`](../src/db/mod.rs) — 1 pub
 
 <a id="srcfunctions"></a>
@@ -188,13 +188,14 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/mgmt/`
 
-- [`admin_pat.rs`](../src/mgmt/admin_pat.rs) — v1.29.3 S2c — single per-admin PAT reroll endpoint. · 2 pub
+- [`admin_pat.rs`](../src/mgmt/admin_pat.rs) — v1.29.3 S2c — single per-admin PAT reroll endpoint. · 6 pub
 - [`admin_profile.rs`](../src/mgmt/admin_profile.rs) — v1.28.9 — admin profile extension surfaced through the sidebar. · 4 pub
 - [`admin_rooms.rs`](../src/mgmt/admin_rooms.rs) — v1.31 — admin-side broadcast room operations. · 2 pub
 - [`admin_team.rs`](../src/mgmt/admin_team.rs) — Admin team management — list/invite/role-change/remove. · 8 pub
-- [`audit.rs`](../src/mgmt/audit.rs) — Admin-UI audit log viewer. · 25 pub
-- [`backups.rs`](../src/mgmt/backups.rs) — Admin-UI handlers for `drust-backup` snapshot inspection + download. · 10 pub
+- [`audit.rs`](../src/mgmt/audit.rs) — Admin-UI audit log viewer. · 30 pub
+- [`backups.rs`](../src/mgmt/backups.rs) — Admin-UI handlers for `drust-backup` snapshot inspection + download. · 12 pub
 - [`browse.rs`](../src/mgmt/browse.rs) — 20 pub
+- [`cli_device.rs`](../src/mgmt/cli_device.rs) — CLI device-flow login (RFC 8628-shaped). v1.44 (CLI Phase 2). · 16 pub
 - [`collection_list.rs`](../src/mgmt/collection_list.rs) — Admin-only POST /admin/tenants/<id>/collections/<coll>/_list endpoint · 7 pub
 - [`docs.rs`](../src/mgmt/docs.rs) — Admin-UI handler for the on-disk CHANGELOG viewer. · 2 pub
 - [`format.rs`](../src/mgmt/format.rs) — Small formatting helpers shared across the admin UI. · 1 pub
@@ -202,7 +203,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 9 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
-- [`mod.rs`](../src/mgmt/mod.rs) — 27 pub
+- [`mod.rs`](../src/mgmt/mod.rs) — 28 pub
 - [`oauth_login.rs`](../src/mgmt/oauth_login.rs) — Admin-specific OAuth glue. Calls into src/oauth/ (provider-agnostic · 4 pub
 - [`public_files.rs`](../src/mgmt/public_files.rs) — Admin UI for the host-level public bucket. Provides list, upload, delete, · 20 pub
 - [`routes.rs`](../src/mgmt/routes.rs) — 2 pub
@@ -214,14 +215,14 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`tenant_files.rs`](../src/mgmt/tenant_files.rs) — Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign). · 16 pub
 - [`tenants.rs`](../src/mgmt/tenants.rs) — 8 pub
 - [`tenants/common.rs`](../src/mgmt/tenants/common.rs) — Cross-page helpers shared by the OAuth-providers and Webhooks admin pages. · 2 pub
-- [`tenants/crud.rs`](../src/mgmt/tenants/crud.rs) — Tenant CRUD / lifecycle (group B): list page, create/delete, self-register · 12 pub
+- [`tenants/crud.rs`](../src/mgmt/tenants/crud.rs) — Tenant CRUD / lifecycle (group B): list page, create/delete, self-register · 13 pub
 - [`tenants/files_page.rs`](../src/mgmt/tenants/files_page.rs) — Tenant-files admin page (group D). Relocated from `tenants.rs` by Finding #4. · 3 pub
 - [`tenants/oauth_page.rs`](../src/mgmt/tenants/oauth_page.rs) — OAuth-providers admin page (group E). Relocated from `tenants.rs` by Finding #4. · 6 pub
 - [`tenants/overview.rs`](../src/mgmt/tenants/overview.rs) — Tenant overview admin page (group C). Relocated from `tenants.rs` by Finding #4. · 1 pub
 - [`tenants/webhooks_page.rs`](../src/mgmt/tenants/webhooks_page.rs) — Webhooks admin page (group F). Relocated from `tenants.rs` by Finding #4. · 4 pub
 - [`theme.rs`](../src/mgmt/theme.rs) — Server-side theming for the admin UI. See spec · 12 pub
 - [`theme_layer.rs`](../src/mgmt/theme_layer.rs) — Theme resolution + `Extension<Theme>` attachment for admin requests. · 3 pub
-- [`tokens.rs`](../src/mgmt/tokens.rs) — 8 pub
+- [`tokens.rs`](../src/mgmt/tokens.rs) — 9 pub
 
 <a id="srcoauth"></a>
 
