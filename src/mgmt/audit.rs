@@ -1111,6 +1111,190 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<AuditEntry> {
     })
 }
 
+// ===== Admin-plane audit JSON twins (v1.44, CLI Phase 2 T8) =====
+
+#[derive(serde::Serialize)]
+pub struct TopTenantJson {
+    pub tenant: String,
+    pub tenant_name: String,
+    pub count: u64,
+    pub error_pct: f64,
+}
+#[derive(serde::Serialize)]
+pub struct OverviewJson {
+    pub total: u64,
+    pub error_count: u64,
+    pub error_pct: f64,
+    pub p50_ms: u64,
+    pub p99_ms: u64,
+    pub rps_avg: f64,
+    pub dropped_total: u64,
+    pub top_tenants: Vec<TopTenantJson>,
+    pub top_slow_ops: Vec<AuditEntryView>,
+}
+#[derive(serde::Serialize)]
+pub struct AuditJson {
+    pub tab: &'static str,
+    pub window: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overview: Option<OverviewJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<AuditEntryView>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_before_ts: Option<String>,
+}
+
+async fn audit_json_inner(
+    audit_conn: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    tenant_name_map: std::collections::HashMap<String, String>,
+    scope: AuditScope,
+    q: &AuditQuery,
+) -> AuditJson {
+    let now = chrono::Utc::now();
+    let window = Window::from_str_or_default(q.window.as_deref().unwrap_or(""));
+    let tab: &'static str = match q.tab.as_deref() {
+        Some("browse") => "browse",
+        _ => "overview",
+    };
+    let status_filter: Option<&str> = match q.status.as_deref() {
+        Some("ok") => Some("ok"),
+        Some("error") => Some("error"),
+        _ => None,
+    };
+    let cutoff_ts = (now - chrono::Duration::seconds(window.seconds()))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    let tenant_filter: Option<String> = match &scope {
+        AuditScope::Tenant(id) => Some(id.clone()),
+        AuditScope::Host => q.tenant.as_ref().filter(|s| !s.is_empty()).cloned(),
+    };
+    let op_filter: Option<String> = q.op.as_ref().filter(|s| !s.is_empty()).cloned();
+    let guard = audit_conn.lock().await;
+    let conn: &rusqlite::Connection = &guard;
+    if tab == "overview" {
+        let ov = aggregate_via_sql(conn, &cutoff_ts, tenant_filter.as_deref(), window);
+        let top_tenants = ov
+            .top_tenants
+            .iter()
+            .map(|t| TopTenantJson {
+                tenant: t.tenant.clone(),
+                tenant_name: resolve_tenant_name(&tenant_name_map, &t.tenant),
+                count: t.count,
+                error_pct: t.error_pct,
+            })
+            .collect();
+        let top_slow_ops = ov
+            .top_slow_ops
+            .iter()
+            .map(|e| {
+                AuditEntryView::from_entry(e, &resolve_tenant_name(&tenant_name_map, &e.tenant))
+            })
+            .collect();
+        drop(guard);
+        AuditJson {
+            tab,
+            window: window.as_str(),
+            tenant: tenant_filter,
+            overview: Some(OverviewJson {
+                total: ov.total,
+                error_count: ov.error_count,
+                error_pct: ov.error_pct,
+                p50_ms: ov.p50_ms,
+                p99_ms: ov.p99_ms,
+                rps_avg: ov.rps_avg,
+                dropped_total: ov.dropped_total,
+                top_tenants,
+                top_slow_ops,
+            }),
+            entries: None,
+            next_before_ts: None,
+        }
+    } else {
+        let mut page = query_browse(
+            conn,
+            &cutoff_ts,
+            tenant_filter.as_deref(),
+            op_filter.as_deref(),
+            status_filter,
+            q.before_ts.as_deref(),
+            PAGE_SIZE + 1,
+        );
+        drop(guard);
+        let has_more = page.len() > PAGE_SIZE;
+        if has_more {
+            page.truncate(PAGE_SIZE);
+        }
+        let next = if has_more {
+            page.last().map(|e| e.ts.clone())
+        } else {
+            None
+        };
+        let entries = page
+            .iter()
+            .map(|e| {
+                AuditEntryView::from_entry(e, &resolve_tenant_name(&tenant_name_map, &e.tenant))
+            })
+            .collect();
+        AuditJson {
+            tab,
+            window: window.as_str(),
+            tenant: tenant_filter,
+            overview: None,
+            entries: Some(entries),
+            next_before_ts: next,
+        }
+    }
+}
+
+pub async fn audit_host_json(
+    State(state): State<crate::mgmt::tenants::TenantsState>,
+    Query(q): Query<AuditQuery>,
+) -> Response {
+    let map = {
+        let meta = state.session.meta.lock().await;
+        build_tenant_name_map(&meta)
+    };
+    axum::Json(audit_json_inner(&state.audit_meta_read, map, AuditScope::Host, &q).await)
+        .into_response()
+}
+
+pub async fn audit_tenant_json(
+    State(state): State<crate::mgmt::tenants::TenantsState>,
+    axum::extract::Path(tenant_id): axum::extract::Path<String>,
+    Query(q): Query<AuditQuery>,
+) -> Response {
+    let (map, exists) = {
+        let meta = state.session.meta.lock().await;
+        let exists = meta
+            .query_row(
+                "SELECT 1 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+                rusqlite::params![tenant_id],
+                |_| Ok(()),
+            )
+            .is_ok();
+        (build_tenant_name_map(&meta), exists)
+    };
+    if !exists {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error_code":"TENANT_NOT_FOUND","message":"no such tenant"})),
+        )
+            .into_response();
+    }
+    axum::Json(
+        audit_json_inner(
+            &state.audit_meta_read,
+            map,
+            AuditScope::Tenant(tenant_id),
+            &q,
+        )
+        .await,
+    )
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

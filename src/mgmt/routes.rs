@@ -988,6 +988,11 @@ impl MgmtState {
                 post(super::collection_list::admin_list_handler),
             )
             .route("/admin/audit", get(super::audit::audit_host_page))
+            .route("/admin/api/audit", get(super::audit::audit_host_json))
+            .route(
+                "/admin/api/tenants/{id}/audit",
+                get(super::audit::audit_tenant_json),
+            )
             .route(
                 "/admin/tenants/{id}/_logs",
                 get(super::audit::audit_tenant_page),
