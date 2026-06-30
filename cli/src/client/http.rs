@@ -85,6 +85,71 @@ impl DrustClient {
             Err(ApiError::from_body(status, &body))
         }
     }
+
+    /// Token-less client for the device flow (the `device_code` is the pending-grant bearer).
+    pub fn anonymous(base_url: impl Into<String>) -> DrustClient {
+        DrustClient::new(base_url, "")
+    }
+
+    /// Device start/poll are unauthenticated (the device_code is the pending-grant bearer, RFC 8628).
+    pub async fn post_unauth(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.run(
+            self.inner
+                .post(self.url(path))
+                .header("accept", "application/json")
+                .json(&body),
+        )
+        .await
+    }
+
+    /// Form POST that does NOT follow redirects — backups restore answers 303 → inspect?dest=…
+    pub async fn post_form_capture_redirect(
+        &self,
+        path: &str,
+        form: &[(&str, &str)],
+    ) -> Result<RedirectInfo, ApiError> {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(net_err)?;
+        let resp = client
+            .post(self.url(path))
+            .header("authorization", format!("Bearer {}", self.token))
+            .form(form)
+            .send()
+            .await
+            .map_err(net_err)?;
+        let status = resp.status().as_u16();
+        if status == 302 || status == 303 {
+            let location = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            Ok(RedirectInfo { status, location })
+        } else if (200..300).contains(&status) {
+            Ok(RedirectInfo {
+                status,
+                location: String::new(),
+            })
+        } else {
+            Err(ApiError::from_body(
+                status,
+                &resp.json().await.unwrap_or(serde_json::Value::Null),
+            ))
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RedirectInfo {
+    pub status: u16,
+    pub location: String,
 }
 
 fn net_err(e: reqwest::Error) -> ApiError {
@@ -113,6 +178,16 @@ mod tests {
         assert_eq!(
             c2.url("/t/9f/collections"),
             "https://drust.com/t/9f/collections"
+        );
+    }
+
+    #[test]
+    fn anonymous_omits_bearer() {
+        // The device-flow client carries no token; url() still joins verbatim.
+        let c = DrustClient::anonymous("https://x/drust");
+        assert_eq!(
+            c.url("/auth/cli/device/start"),
+            "https://x/drust/auth/cli/device/start"
         );
     }
 }
