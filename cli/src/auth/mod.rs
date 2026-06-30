@@ -90,6 +90,9 @@ async fn login(cli: &Cli, l: &LoginArgs) -> anyhow::Result<i32> {
     } else {
         let label = l.label.clone().unwrap_or_else(default_label);
         let grant = crate::auth::device::run_device_flow(&base_url, &label, !l.no_browser).await?;
+        if let Some(exp) = &grant.expires_at {
+            eprintln!("CLI token expires at {exp}");
+        }
         let console = grant
             .consoles
             .as_ref()
