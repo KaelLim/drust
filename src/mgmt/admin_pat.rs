@@ -266,7 +266,11 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
         let tx = match conn.unchecked_transaction() {
             Ok(t) => t,
             Err(e) => {
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL",
+                    &e.to_string(),
+                );
             }
         };
         if let Err(e) = tx.execute(
@@ -274,13 +278,21 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
              VALUES (?1, ?2, ?3, ?4, datetime('now', ?5))",
             params![caller.admin_id, hash_new, plaintext_new, label, ttl_mod],
         ) {
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                &e.to_string(),
+            );
         }
         if let Err(e) = tx.execute(
             "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE id = ?1",
             params![caller.token_id],
         ) {
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                &e.to_string(),
+            );
         }
         let exp: String = match tx.query_row(
             "SELECT expires_at FROM _admin_tokens WHERE token_hash = ?1",
@@ -289,11 +301,19 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
         ) {
             Ok(v) => v,
             Err(e) => {
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL",
+                    &e.to_string(),
+                );
             }
         };
         if let Err(e) = tx.commit() {
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                &e.to_string(),
+            );
         }
         Ok(exp)
         // conn guard drops here — before any .await
@@ -336,7 +356,11 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
              WHERE id = ?1 AND admin_id = ?2 AND label IS NOT NULL",
             params![caller.token_id, caller.admin_id],
         ) {
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                &e.to_string(),
+            );
         }
     }
     s.auth_cache.clear_admin_pat(caller.admin_id);
