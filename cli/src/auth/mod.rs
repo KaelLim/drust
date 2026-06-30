@@ -26,15 +26,24 @@ pub enum AuthCmd {
 pub struct LoginArgs {
     /// Instance base URL, including the /drust base_path, e.g. https://host/drust
     #[arg(long)]
-    pub url: String,
-    /// Paste an existing admin PAT (drust_pat_*).
+    pub url: Option<String>,
+    /// Use the baked drust.com cloud host (not yet available).
     #[arg(long)]
-    pub with_token: String,
+    pub cloud: bool,
+    /// Paste an existing admin PAT (drust_pat_*) — Phase-1 escape hatch.
+    #[arg(long)]
+    pub with_token: Option<String>,
+    /// Label for the minted CLI PAT (default drust-cli@<hostname>).
+    #[arg(long)]
+    pub label: Option<String>,
+    /// Do not auto-open the verification URL in a browser.
+    #[arg(long)]
+    pub no_browser: bool,
 }
 
 pub async fn run(cli: &Cli, a: &AuthArgs) -> anyhow::Result<i32> {
     match &a.cmd {
-        AuthCmd::Login(l) => login(cli, l),
+        AuthCmd::Login(l) => login(cli, l).await,
         AuthCmd::Logout => logout(cli),
         AuthCmd::Status => status(cli),
     }
@@ -46,26 +55,61 @@ fn host_key(cli: &Cli) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("pass --host <name> to name this host"))
 }
 
-fn login(cli: &Cli, l: &LoginArgs) -> anyhow::Result<i32> {
+const DRUST_CLOUD_HOST: &str = "https://drust.com"; // D-12: forward-looking; OSS uses --url
+
+/// Label stamped on the minted CLI PAT (`drust-cli@<hostname>`); falls back to a const.
+fn default_label() -> String {
+    let host = std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "cli".to_string());
+    format!("drust-cli@{host}")
+}
+
+async fn login(cli: &Cli, l: &LoginArgs) -> anyhow::Result<i32> {
     let key = host_key(cli)?;
-    anyhow::ensure!(
-        l.with_token.starts_with("drust_pat_"),
-        "token must be a drust_pat_* admin PAT"
-    );
+    let base_url = match (&l.url, l.cloud) {
+        (Some(u), _) => u.trim_end_matches('/').to_string(),
+        (None, true) => {
+            anyhow::bail!("cloud ({DRUST_CLOUD_HOST}) not yet available — pass --url <instance incl. /drust>")
+        }
+        (None, false) => anyhow::bail!("pass --url <instance incl. /drust> or --cloud"),
+    };
+    let (token, console) = if let Some(pat) = &l.with_token {
+        // Phase-1 path preserved.
+        anyhow::ensure!(
+            pat.starts_with("drust_pat_"),
+            "token must be a drust_pat_* admin PAT"
+        );
+        (pat.clone(), Some("default".to_string()))
+    } else {
+        let label = l.label.clone().unwrap_or_else(default_label);
+        let grant = crate::auth::device::run_device_flow(&base_url, &label, !l.no_browser).await?;
+        let console = grant
+            .consoles
+            .as_ref()
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("default")
+            .to_string();
+        (grant.token, Some(console))
+    };
     let mut cfg = store::load()?;
-    let token_ref = store::write_token(&key, &l.with_token);
+    let token_ref = store::write_token(&key, &token);
     cfg.hosts.insert(
         key.clone(),
         Host {
-            base_url: l.url.trim_end_matches('/').to_string(),
+            base_url: base_url.clone(),
             token_ref,
-            default_console: Some("default".into()),
+            default_console: console,
             default_tenant: None,
         },
     );
     cfg.active_host = Some(key.clone());
     store::save(&cfg)?;
-    println!("logged in to host '{key}' ({})", l.url);
+    println!("logged in to host '{key}' ({base_url})");
     Ok(0)
 }
 
