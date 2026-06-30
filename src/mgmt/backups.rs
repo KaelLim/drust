@@ -12,6 +12,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -616,6 +617,154 @@ pub async fn download_one(
             .unwrap(),
     );
     resp
+}
+
+// ===== Admin-plane backups JSON twins (v1.44, CLI Phase 2 T8) =====
+
+#[derive(serde::Serialize)]
+struct BackupRowJson {
+    filename: String,
+    size_bytes: u64,
+    mtime_iso: String,
+}
+
+pub async fn backups_json(State(state): State<BackupsState>) -> Response {
+    let dir = state.data_dir.join("backups");
+    let mut rows: Vec<BackupRowJson> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut collected: Vec<(String, u64, SystemTime)> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if !is_safe_backup_filename(&name) {
+                    return None;
+                }
+                let md = e.metadata().ok()?;
+                if !md.is_file() {
+                    return None;
+                }
+                Some((name, md.len(), md.modified().unwrap_or(SystemTime::UNIX_EPOCH)))
+            })
+            .collect();
+        collected.sort_by(|a, b| b.0.cmp(&a.0));
+        for (filename, size_bytes, mtime) in collected {
+            let dt: DateTime<Utc> = mtime.into();
+            rows.push(BackupRowJson {
+                filename,
+                size_bytes,
+                mtime_iso: dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            });
+        }
+    }
+    axum::Json(rows).into_response()
+}
+
+#[derive(serde::Serialize)]
+struct TenantInBackupJson {
+    id: String,
+    name: String,
+    created_at: String,
+    db_size_bytes: Option<u64>,
+    db_present: bool,
+}
+#[derive(serde::Serialize)]
+struct BackupInspectJson {
+    filename: String,
+    snapshot_ts: String,
+    snapshot_size_bytes: u64,
+    tenants: Vec<TenantInBackupJson>,
+}
+
+pub async fn inspect_json(State(state): State<BackupsState>, Path(filename): Path<String>) -> Response {
+    if !is_safe_backup_filename(&filename) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error_code":"BAD_REQUEST","message":"invalid backup name"})),
+        )
+            .into_response();
+    }
+    let backup_path = state.data_dir.join("backups").join(&filename);
+    let metadata = match std::fs::metadata(&backup_path) {
+        Ok(m) => m,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(json!({"error_code":"NOT_FOUND","message":"backup not found"})),
+            )
+                .into_response();
+        }
+    };
+    let snapshot_size_bytes = metadata.len();
+    let snapshot_mtime: DateTime<Utc> = metadata
+        .modified()
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(|_| Utc::now());
+    let bpc = backup_path.clone();
+    let (meta_tmp, sizes) = match tokio::task::spawn_blocking(move || extract_meta_and_sizes(&bpc))
+        .await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                axum::Json(json!({"error_code":"BACKUP_UNREADABLE","message":e.to_string()})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error_code":"INTERNAL","message":format!("join error: {e}")})),
+            )
+                .into_response();
+        }
+    };
+    let conn = match rusqlite::Connection::open_with_flags(
+        meta_tmp.path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error_code":"INTERNAL","message":format!("open meta.sqlite: {e}")})),
+            )
+                .into_response();
+        }
+    };
+    let tenants: Vec<TenantInBackupJson> = conn
+        .prepare("SELECT id, name, created_at FROM tenants WHERE deleted_at IS NULL ORDER BY name")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map(|rows| {
+                rows.filter_map(Result::ok)
+                    .map(|(id, name, created_at)| {
+                        let db_present = sizes.contains_key(&id);
+                        TenantInBackupJson {
+                            db_present,
+                            db_size_bytes: sizes.get(&id).copied(),
+                            id,
+                            name,
+                            created_at,
+                        }
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    axum::Json(BackupInspectJson {
+        filename,
+        snapshot_ts: snapshot_mtime.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        snapshot_size_bytes,
+        tenants,
+    })
+    .into_response()
 }
 
 #[cfg(test)]

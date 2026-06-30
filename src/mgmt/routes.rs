@@ -1071,6 +1071,11 @@ impl MgmtState {
         // (extract via `tar --zstd -xf`) until we add a guarded UI flow.
         let backups_router = Router::new()
             .route("/admin/backups", get(super::backups::list_page))
+            .route("/admin/api/backups", get(super::backups::backups_json))
+            .route(
+                "/admin/api/backups/{filename}/inspect",
+                get(super::backups::inspect_json),
+            )
             .route(
                 "/admin/backups/{filename}/download",
                 get(super::backups::download_one),
