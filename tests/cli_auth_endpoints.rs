@@ -13,6 +13,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use drust::auth::admin_token::{generate_cli_token, hash_token};
 use drust::mgmt::routes::MgmtState;
+use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use drust::storage::meta::{bootstrap_admin, open_meta};
 use rusqlite::{Connection, params};
 use std::path::PathBuf;
@@ -219,4 +220,79 @@ async fn refresh_refuses_the_unlabeled_ui_pat() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(body_json(resp).await["error_code"], "NOT_A_CLI_TOKEN");
+}
+
+// ─── audit + second-router helpers (T6 logout) ────────────────────────────────
+
+/// Build a fresh mgmt router over an EXISTING meta.sqlite (no bootstrap /
+/// migrate) — `oneshot` consumes a router, so a second probe needs a new one.
+fn app2(dir: &TempDir) -> axum::Router {
+    let data_dir = dir.path().to_path_buf();
+    let log_dir = data_dir.join("audit");
+    let conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
+    let state = build_state(conn, data_dir.clone(), log_dir);
+    state.with_data_dir(data_dir)
+}
+
+/// Initialize the process-global audit writer once per test binary (OnceLock,
+/// modeled on `tests/admin_pat_reroll.rs::reroll_emits_revoke_and_mint_audit_rows`).
+static AUDIT_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+fn init_global_audit() {
+    AUDIT_PATH.get_or_init(|| {
+        let dir = Box::new(tempdir().unwrap());
+        let path = dir.path().join("test_global_audit_cli_auth.sqlite");
+        let conn = open_audit_db_write(&path).unwrap();
+        let writer = AuditWriter::new(conn);
+        drust::safety::audit_db::init_globals(writer);
+        Box::leak(dir); // keep the directory alive for the process
+        path
+    });
+}
+
+/// True if an audit row with `op` + `actor_admin_id == Some(admin_id)` landed.
+fn audit_has(op: &str, admin_id: i64) -> bool {
+    let path = AUDIT_PATH.get().expect("init_global_audit must run first");
+    let r = open_audit_db_read(path).unwrap();
+    let mut stmt = r
+        .prepare(
+            "SELECT actor_admin_id FROM audit WHERE op = ?1 ORDER BY id DESC LIMIT 50",
+        )
+        .unwrap();
+    let rows: Vec<Option<i64>> = stmt
+        .query_map(params![op], |row| row.get::<_, Option<i64>>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    rows.iter().any(|aid| *aid == Some(admin_id))
+}
+
+// ─── T6 — DELETE /auth/cli/token (logout self-revoke) ─────────────────────────
+
+#[tokio::test]
+async fn logout_revokes_the_authenticating_cli_token_and_fires_audit() {
+    init_global_audit(); // OnceLock pattern from admin_pat_reroll.rs
+    let (app, dir) = spin_up().await;
+    let (admin_id, cli) = seed_cli_pat(&dir, "cli:laptop");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/auth/cli/token")
+                .header(header::AUTHORIZATION, format!("Bearer {cli}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["revoked"], serde_json::json!(true));
+    assert!(is_revoked(&open_meta_ro(&dir), &hash_of(&cli)));
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert!(audit_has("admin.token.revoke", admin_id)); // reads meta_logs
+    // same token no longer authenticates
+    let r2 = app2(&dir)
+        .oneshot(post_bearer("/auth/cli/token/refresh", &cli))
+        .await
+        .unwrap();
+    assert_eq!(r2.status(), StatusCode::UNAUTHORIZED);
 }
