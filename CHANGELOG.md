@@ -1,3 +1,14 @@
+## v1.44.3 — 2026-06-30
+
+### fix — admin UI: drop the redundant `who-av` avatar
+
+Removed the `who-av` avatar from the `/admin/team` member rows (and its empty
+header column) and from the admin sidebar footer (`_admin_sidebar.html`) — the
+name/email already identify the admin, so the initials/photo chip was redundant.
+The now-unused `picture_url` + `initials` fields are dropped from `AdminTeamRow`
+(and the query stops selecting/computing them), keeping `clippy -D warnings`
+clean. `compute_initials` stays (still used by the collection sidebar).
+
 ## v1.44.2 — 2026-06-29
 
 ### fix — MEDIUM findings from the v1.44.0 caller-identity-invoke review (atomicity + invoke DoS)
