@@ -136,3 +136,87 @@ async fn whoami_rejects_missing_bearer_with_json_401_not_redirect() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED); // JSON, never 303
     assert_eq!(body_json(resp).await["error_code"], "CLI_AUTH_REQUIRED");
 }
+
+// ─── read helpers (T6 refresh / logout / UI revoke) ───────────────────────────
+
+fn hash_of(t: &str) -> String {
+    hash_token(t)
+}
+
+fn post_bearer(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// The bootstrapped admin's backfilled unlabeled UI PAT: `(admin_id, plaintext)`.
+fn ui_pat_of(dir: &TempDir) -> (i64, String) {
+    let conn = open_meta_ro(dir);
+    conn.query_row(
+        "SELECT admin_id, plaintext FROM _admin_tokens \
+         WHERE revoked_at IS NULL AND label IS NULL",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .unwrap()
+}
+
+fn is_revoked(conn: &Connection, hash: &str) -> bool {
+    let revoked: Option<String> = conn
+        .query_row(
+            "SELECT revoked_at FROM _admin_tokens WHERE token_hash = ?1",
+            params![hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    revoked.is_some()
+}
+
+fn active_labeled_count(conn: &Connection, admin_id: i64) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM _admin_tokens \
+         WHERE admin_id = ?1 AND label IS NOT NULL AND revoked_at IS NULL",
+        params![admin_id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+// ─── T6 — POST /auth/cli/token/refresh ────────────────────────────────────────
+
+#[tokio::test]
+async fn refresh_mints_labeled_pat_and_revokes_only_the_old_one() {
+    let (app, dir) = spin_up().await;
+    let (admin_id, ui_pat) = ui_pat_of(&dir); // the backfilled unlabeled UI PAT
+    let (_, old_cli) = seed_cli_pat(&dir, "cli:laptop");
+    let old_hash = hash_of(&old_cli);
+    let resp = app
+        .oneshot(post_bearer("/auth/cli/token/refresh", &old_cli))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let b = body_json(resp).await;
+    let new_tok = b["access_token"].as_str().unwrap();
+    assert!(new_tok.starts_with("drust_pat_cli_")); // T4 generate_cli_token
+    assert!(b["expires_at"].is_string());
+    // old CLI PAT now revoked, new one active+labeled, UI PAT untouched
+    let c = open_meta_ro(&dir);
+    assert!(is_revoked(&c, &old_hash));
+    assert_eq!(active_labeled_count(&c, admin_id), 1);
+    assert!(!is_revoked(&c, &hash_of(&ui_pat))); // UI PAT survives
+}
+
+#[tokio::test]
+async fn refresh_refuses_the_unlabeled_ui_pat() {
+    let (app, dir) = spin_up().await;
+    let (_, ui_pat) = ui_pat_of(&dir);
+    let resp = app
+        .oneshot(post_bearer("/auth/cli/token/refresh", &ui_pat))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body_json(resp).await["error_code"], "NOT_A_CLI_TOKEN");
+}
