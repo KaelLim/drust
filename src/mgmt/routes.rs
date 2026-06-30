@@ -789,6 +789,10 @@ impl MgmtState {
                 "/auth/cli/token/refresh",
                 post(crate::mgmt::admin_pat::cli_token_refresh),
             )
+            .route(
+                "/auth/cli/token",
+                axum::routing::delete(crate::mgmt::admin_pat::cli_token_logout),
+            )
             .with_state(self.clone());
 
         // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require

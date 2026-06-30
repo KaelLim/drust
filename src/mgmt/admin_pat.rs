@@ -320,6 +320,30 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
     resp
 }
 
+/// `DELETE /auth/cli/token` — logout self-revoke. Soft-revokes the
+/// authenticating CLI PAT, scoped to `id AND admin_id AND label IS NOT NULL`
+/// (the `label IS NOT NULL` predicate is a no-op safety net fencing the UI PAT
+/// off from the CLI lifecycle — DiD with the resolver's own label check).
+pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) -> Response {
+    let caller = match resolve_cli_caller(&s.meta, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    {
+        let conn = s.meta.lock().await;
+        if let Err(e) = conn.execute(
+            "UPDATE _admin_tokens SET revoked_at = datetime('now') \
+             WHERE id = ?1 AND admin_id = ?2 AND label IS NOT NULL",
+            params![caller.token_id, caller.admin_id],
+        ) {
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+        }
+    }
+    s.auth_cache.clear_admin_pat(caller.admin_id);
+    emit_audit_revoke(caller.admin_id);
+    Json(serde_json::json!({ "revoked": true })).into_response()
+}
+
 // ─── internal helpers ─────────────────────────────────────────────────────────
 
 fn emit_audit_mint(caller_id: i64) {
