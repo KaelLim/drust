@@ -389,6 +389,7 @@ WITH bearer_match AS ( \
            NULL AS bound_tenant \
     FROM _admin_tokens p \
     WHERE p.token_hash = ?2 AND p.revoked_at IS NULL \
+      AND (p.expires_at IS NULL OR p.expires_at > datetime('now')) \
     UNION ALL \
     SELECT k.role AS kind, NULL AS token_id, NULL AS admin_id, \
            k.tenant_id AS bound_tenant \
