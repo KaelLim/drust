@@ -28,6 +28,7 @@ async fn run(cli: Cli) -> i32 {
         Command::Users(a) => commands::tenant_admin::users_run(&cli, a).await,
         Command::Webhooks(a) => commands::tenant_admin::webhooks_run(&cli, a).await,
         Command::Oauth(a) => commands::tenant_admin::oauth_run(&cli, a).await,
+        Command::Admin(a) => commands::admin::run(&cli, a).await,
     };
     match res {
         Ok(code) => code,
