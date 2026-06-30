@@ -2,6 +2,7 @@
 pub mod device;
 
 use crate::cli::Cli;
+use crate::client::http::DrustClient;
 use crate::config::hosts::Host;
 use crate::config::store;
 use clap::{Args, Subcommand};
@@ -14,9 +15,11 @@ pub struct AuthArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCmd {
-    /// Log in by pasting an existing admin PAT (Phase 1).
+    /// Log in via the gh-style device flow (or --with-token to paste a PAT).
     Login(LoginArgs),
-    /// Remove the stored credential for a host.
+    /// Re-mint the CLI PAT (server soft-revokes the old one).
+    Refresh,
+    /// Revoke the CLI PAT server-side, then remove the stored credential.
     Logout,
     /// Show the active host + identity.
     Status,
@@ -44,7 +47,8 @@ pub struct LoginArgs {
 pub async fn run(cli: &Cli, a: &AuthArgs) -> anyhow::Result<i32> {
     match &a.cmd {
         AuthCmd::Login(l) => login(cli, l).await,
-        AuthCmd::Logout => logout(cli),
+        AuthCmd::Refresh => refresh(cli).await,
+        AuthCmd::Logout => logout(cli).await,
         AuthCmd::Status => status(cli),
     }
 }
@@ -113,9 +117,40 @@ async fn login(cli: &Cli, l: &LoginArgs) -> anyhow::Result<i32> {
     Ok(0)
 }
 
-fn logout(cli: &Cli) -> anyhow::Result<i32> {
+async fn refresh(cli: &Cli) -> anyhow::Result<i32> {
+    let cfg = store::load()?;
+    let key = cfg.resolve_host_key(cli.host.as_deref())?;
+    let host = cfg.hosts.get(&key).expect("resolved").clone();
+    let client = DrustClient::new(host.base_url.clone(), store::read_token(&key, &host)?);
+    let v = client
+        .send_json(
+            reqwest::Method::POST,
+            "/auth/cli/token/refresh",
+            serde_json::json!({}),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let new = v["access_token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no access_token in refresh"))?;
+    let mut cfg = cfg;
+    cfg.hosts.get_mut(&key).unwrap().token_ref = store::write_token(&key, new);
+    store::save(&cfg)?;
+    println!("refreshed PAT for '{key}'");
+    Ok(0)
+}
+
+async fn logout(cli: &Cli) -> anyhow::Result<i32> {
     let mut cfg = store::load()?;
     let key = cfg.resolve_host_key(cli.host.as_deref())?;
+    if let Some(host) = cfg.hosts.get(&key).cloned() {
+        // Best-effort server-side revoke before clearing local state.
+        if let Ok(tok) = store::read_token(&key, &host) {
+            let _ = DrustClient::new(host.base_url, tok)
+                .delete("/auth/cli/token")
+                .await;
+        }
+    }
     cfg.hosts.remove(&key);
     if cfg.active_host.as_deref() == Some(&key) {
         cfg.active_host = cfg.hosts.keys().next().cloned();
