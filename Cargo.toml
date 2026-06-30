@@ -80,3 +80,7 @@ regex-lite = "0.1"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[workspace]
+members = ["cli"]
+resolver = "2"
