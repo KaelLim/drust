@@ -35,6 +35,28 @@ async fn app() -> (
     (state.with_data_dir(data), dir, meta)
 }
 
+async fn login(app: &axum::Router) -> String {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from("username=root&password=hunter2"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let sc = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    sc.split(';').next().unwrap().to_string()
+}
+
 async fn post_json(
     app: &axum::Router,
     uri: &str,
@@ -245,4 +267,153 @@ async fn start_rate_limited() {
     assert_eq!(sixth.status(), StatusCode::TOO_MANY_REQUESTS);
     let v = jbody(sixth).await;
     assert_eq!(v["error_code"], "RATE_LIMITED_IP");
+}
+
+#[tokio::test]
+async fn start_approve_poll_full_happy_path() {
+    let (app, _d, _m) = app().await;
+    let v = jbody(
+        post_json(
+            &app,
+            "/auth/cli/device/start",
+            serde_json::json!({"client_name":"lappy"}),
+        )
+        .await,
+    )
+    .await;
+    let dc = v["device_code"].as_str().unwrap().to_string();
+    let uc = v["user_code"].as_str().unwrap().to_string();
+    let cookie = login(&app).await;
+    let csrf = "csrf-xyz";
+    let combined = format!("{cookie}; drust_cli_csrf={csrf}");
+    let appr = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/cli/device/approve")
+                .header(header::COOKIE, combined)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("user_code={uc}&csrf={csrf}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(appr.status().is_success());
+    let got = jbody(
+        post_json(
+            &app,
+            "/auth/cli/device/poll",
+            serde_json::json!({"device_code":dc}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(got["status"], "approved");
+    assert!(
+        got["access_token"]
+            .as_str()
+            .unwrap()
+            .starts_with("drust_pat_cli_")
+    );
+    // bootstrap_admin sets username+password only (no email), so admins.email is
+    // NULL → admin.email is null. Assert the admin identity via the deterministic id.
+    assert_eq!(got["admin"]["id"], 1);
+}
+
+#[tokio::test]
+async fn migrations_twice_then_full_flow_keeps_ui_pat() {
+    // v1.41.5 regression guard, extended: a second boot's run_migrations is a pure
+    // no-op (UI PAT not rerolled), and the CLI approve flow mints a LABELED PAT
+    // that coexists under the relaxed unique index without touching the UI PAT.
+    let (app, dir, meta) = app().await;
+    {
+        let conn = meta.lock().await;
+        drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    }
+    let ui_before: i64 = meta
+        .lock()
+        .await
+        .query_row(
+            "SELECT COUNT(*) FROM _admin_tokens \
+             WHERE admin_id=1 AND label IS NULL AND revoked_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ui_before, 1, "exactly one unlabeled UI PAT after two boots");
+
+    let v = jbody(
+        post_json(
+            &app,
+            "/auth/cli/device/start",
+            serde_json::json!({"client_name":"lappy"}),
+        )
+        .await,
+    )
+    .await;
+    let dc = v["device_code"].as_str().unwrap().to_string();
+    let uc = v["user_code"].as_str().unwrap().to_string();
+    let cookie = login(&app).await;
+    let csrf = "csrf-xyz";
+    let combined = format!("{cookie}; drust_cli_csrf={csrf}");
+    let appr = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/cli/device/approve")
+                .header(header::COOKIE, combined)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("user_code={uc}&csrf={csrf}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(appr.status().is_success());
+    let got = jbody(
+        post_json(
+            &app,
+            "/auth/cli/device/poll",
+            serde_json::json!({"device_code":dc}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(got["status"], "approved");
+    assert!(
+        got["access_token"]
+            .as_str()
+            .unwrap()
+            .starts_with("drust_pat_cli_")
+    );
+
+    let ui_after: i64 = meta
+        .lock()
+        .await
+        .query_row(
+            "SELECT COUNT(*) FROM _admin_tokens \
+             WHERE admin_id=1 AND label IS NULL AND revoked_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        ui_after, 1,
+        "the unlabeled UI PAT is untouched by the CLI approve flow"
+    );
+    let cli_active: i64 = meta
+        .lock()
+        .await
+        .query_row(
+            "SELECT COUNT(*) FROM _admin_tokens \
+             WHERE admin_id=1 AND label IS NOT NULL AND revoked_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cli_active, 1,
+        "exactly one labeled CLI PAT minted by approve"
+    );
 }

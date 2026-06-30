@@ -1120,6 +1120,10 @@ impl MgmtState {
                 get(crate::mgmt::cli_device::device_page),
             )
             .route(
+                "/auth/cli/device/approve",
+                post(crate::mgmt::cli_device::device_approve),
+            )
+            .route(
                 "/auth/cli/device/deny",
                 post(crate::mgmt::cli_device::device_deny),
             )
