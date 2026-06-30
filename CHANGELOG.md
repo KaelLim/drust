@@ -1,3 +1,60 @@
+## v1.45.0 — 2026-06-30
+
+### feat — drust CLI: gh-style device-flow login + host admin-plane (server T1–T8 + CLI)
+
+The `drust` CLI gains a GitHub-CLI-style `auth login` (browser **device flow**, no
+pasted token) and reaches the **host admin-plane** (`drust admin tenants|keys|team|
+audit|backups`). Built Phase-1 (client-only crate, branch `feat/drust-cli-phase1`)
++ Phase-2 (this release: server endpoints + the admin/device CLI commands). Verified
+by a 5-lens adversarial workflow on the widened auth boundary (**0 REAL / 0
+UNCERTAIN**; the one DoS-hardening candidate on the unauthenticated `/poll` was
+refuted — 128-bit `device_code`, per-device `slow_down`, no new mutex surface) plus
+the full suite (**1575/0**), `cargo fmt --check`, `cargo audit`, and `clippy
+--all-targets -D warnings` all green.
+
+**No new privilege.** Every CLI PAT still resolves to `AuthCtx::Service{admin_id}`;
+the admin PAT was already cross-tenant. T5 widens **reachability** of `/admin/*`
+(cookie → cookie-**or**-PAT), not authority. Fine-grained per-tenant scoping remains
+the separate RBAC follow-up (sub-project B).
+
+- **Device flow** (`src/mgmt/cli_device.rs`, new): public `POST /auth/cli/device/start`
+  + `/poll` (RFC-8628 state machine, but `poll` returns **HTTP 200 + `{status}`** body,
+  not the 400-error style); protected approval **page** + `POST .../approve` / `/deny`
+  behind `admin_session_layer` with **double-submit CSRF** (`drust_cli_csrf` cookie +
+  hidden field bound to session + `user_code`). `device_code` is 128-bit; `user_code`
+  is Crockford `XXXX-XXXX` (no I/L/O/U). Approve mints a labeled PAT for the **approving
+  session's** admin (never a caller-supplied id) and `poll` returns it **once**. New
+  `_cli_device_codes` table + hourly reaper; `cli_device_rl` (5/60 s) on `start`.
+- **Multi-PAT** (T4, `src/auth/admin_token.rs` + `src/db/migrations.rs`): a labeled
+  sub-namespace `drust_pat_cli_*` — `mint_cli_token` / `generate_cli_token`, plus
+  `_admin_tokens.{label,expires_at}` columns and a **relaxed** `uniq_admin_tokens_active`
+  index so one unlabeled UI PAT and N labeled CLI PATs coexist per admin. Expiry is
+  enforced at **both** resolution sites (admin-plane resolver + data-plane bearer CTE).
+  Migration is **idempotent** (v1.41.5 invariant): the v1.29.3 legacy-revoke and the
+  has-active backfill probe are qualified `AND label IS NULL`, the index relax is guarded
+  on `sqlite_master.sql NOT LIKE '%label%'`, and reroll now **revokes only the unlabeled
+  UI PAT** (CLI PATs survive a UI-key reroll). It mints/revokes/deletes **no** active
+  credential on boot.
+- **Admin-plane bearer fallback** (T5, `src/auth/middleware.rs`): `admin_session_layer`
+  is now cookie-**or**-PAT — a `drust_pat_*` bearer resolving to an admin reaches
+  `/admin/*`. The **browser-302 invariant is preserved**: no-bearer + `Accept: text/html`
+  still 302s to `/login`; only a present bearer / `Accept: application/json` gets a JSON 401.
+- **Token lifecycle** (T6/T7): `GET /auth/cli/whoami`, `POST /auth/cli/token/refresh`
+  (re-mint + soft-revoke old in one tx; refuses the unlabeled UI PAT → `403
+  NOT_A_CLI_TOKEN`), `DELETE /auth/cli/token` (server-side self-revoke) on the **public**
+  router via a self-contained `resolve_cli_caller` (JSON 401, never 302). Admin-settings
+  UI lists + revokes labeled CLI tokens, with audit rows.
+- **Admin JSON twins** (T8): `GET /admin/api/{tenants, tenants/{id}/tokens, audit,
+  tenants/{id}/audit, backups, backups/{f}/inspect}` — JSON variants reusing the existing
+  read logic, admin-gated, for the CLI's `admin` commands.
+- **CLI commands**: `auth login` (device flow by default, `--with-token` escape hatch,
+  `--url <instance/drust>`; `--cloud` errors "not yet available" until drust.com exists),
+  `auth refresh` / `logout`, and `admin tenants|keys|team|audit|backups`. The CLI stays a
+  thin bearer client over the Phase-1 `DrustClient`/`Ctx`/`Renderer` contract.
+
+MCP tool count unchanged at **59** (the CLI adds HTTP endpoints, no MCP tools). Bundled
+with the `chore(deps)` wasmtime 45.0.3 bump (RUSTSEC-2026-0188).
+
 ## v1.44.3 — 2026-06-30
 
 ### fix — admin UI: drop the redundant `who-av` avatar
