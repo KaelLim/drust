@@ -40,6 +40,12 @@ pub enum Command {
     Functions(crate::commands::functions::FunctionsArgs),
     /// Per-tenant file storage
     Files(crate::commands::files::FilesArgs),
+    /// Per-tenant end-user management
+    Users(crate::commands::tenant_admin::UsersArgs),
+    /// Per-tenant outbound webhooks
+    Webhooks(crate::commands::tenant_admin::WebhooksArgs),
+    /// Per-tenant end-user OAuth providers
+    Oauth(crate::commands::tenant_admin::OauthArgs),
 }
 
 #[cfg(test)]
