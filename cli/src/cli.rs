@@ -46,6 +46,8 @@ pub enum Command {
     Webhooks(crate::commands::tenant_admin::WebhooksArgs),
     /// Per-tenant end-user OAuth providers
     Oauth(crate::commands::tenant_admin::OauthArgs),
+    /// Host admin-plane: tenants / keys / team / audit / backups
+    Admin(crate::commands::admin::AdminArgs),
 }
 
 #[cfg(test)]
