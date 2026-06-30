@@ -12,9 +12,9 @@
 
 use axum::Extension;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::sync::Arc;
@@ -342,6 +342,38 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
     s.auth_cache.clear_admin_pat(caller.admin_id);
     emit_audit_revoke(caller.admin_id);
     Json(serde_json::json!({ "revoked": true })).into_response()
+}
+
+/// `POST /admin/settings/cli-tokens/{id}/revoke` — admin-UI per-row revoke of a
+/// labeled CLI PAT (cookie-gated via `admin_session_layer` → `AdminId`). The
+/// UPDATE is scoped `id AND admin_id AND label IS NOT NULL AND revoked_at IS
+/// NULL` so a guessed id belonging to another admin, the unlabeled UI PAT, or
+/// an already-revoked row all yield `changes()==0` → `404` (fail-closed, no
+/// cross-admin revoke).
+pub async fn cli_token_revoke(
+    State(s): State<MgmtState>,
+    Extension(AdminId(caller_id)): Extension<AdminId>,
+    Path(token_id): Path<i64>,
+) -> Response {
+    let changed = {
+        let conn = s.meta.lock().await;
+        conn.execute(
+            "UPDATE _admin_tokens SET revoked_at = datetime('now') \
+             WHERE id = ?1 AND admin_id = ?2 AND label IS NOT NULL AND revoked_at IS NULL",
+            params![token_id, caller_id],
+        )
+        .unwrap_or(0)
+    };
+    if changed == 0 {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "CLI_TOKEN_NOT_FOUND",
+            "no active CLI token with that id for this admin",
+        );
+    }
+    s.auth_cache.clear_admin_pat(caller_id);
+    emit_audit_revoke(caller_id);
+    Redirect::to(&crate::base_path::base("/admin/settings")).into_response()
 }
 
 // ─── internal helpers ─────────────────────────────────────────────────────────

@@ -1106,6 +1106,11 @@ impl MgmtState {
                 "/admin/settings/token/reroll",
                 axum::routing::post(super::admin_pat::reroll),
             )
+            // v1.44 (CLI Phase 2, T7) — per-row revoke of a labeled CLI PAT.
+            .route(
+                "/admin/settings/cli-tokens/{id}/revoke",
+                axum::routing::post(super::admin_pat::cli_token_revoke),
+            )
             .with_state(settings_state);
 
         // v1.29.0 — admin team management CRUD.
