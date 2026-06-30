@@ -138,18 +138,17 @@ async fn team_page(
 ) -> Response {
     let rows: Vec<AdminTeamRow> = {
         let conn = s.meta.lock().await;
-        let mut stmt = match conn
-            .prepare("SELECT id, display_name, email, role FROM admins ORDER BY id")
-        {
-            Ok(s) => s,
-            Err(e) => {
-                return (
+        let mut stmt =
+            match conn.prepare("SELECT id, display_name, email, role FROM admins ORDER BY id") {
+                Ok(s) => s,
+                Err(e) => {
+                    return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
                 )
                     .into_response();
-            }
-        };
+                }
+            };
         stmt.query_map([], |r| {
             let id: i64 = r.get(0)?;
             let display_name: Option<String> = r.get(1)?;
