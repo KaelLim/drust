@@ -779,6 +779,12 @@ impl MgmtState {
                 "/auth/cli/device/poll",
                 post(crate::mgmt::cli_device::device_poll),
             )
+            // v1.44 (CLI Phase 2, T6) — CLI-PAT lifecycle. Self-authenticating
+            // against the CLI/UI PAT bearer; JSON 401 on failure, never a 302.
+            .route(
+                "/auth/cli/whoami",
+                get(crate::mgmt::admin_pat::cli_whoami),
+            )
             .with_state(self.clone());
 
         // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require
