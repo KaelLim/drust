@@ -26,6 +26,8 @@ use tokio::sync::Mutex;
 
 pub const CLI_DEVICE_CODE_TTL_SECS: i64 = 900; // 15 min device-code lifetime
 pub const CLI_DEVICE_POLL_INTERVAL_SECS: i64 = 5; // RFC 8628 interval
+/// Lifetime of the CLI PAT minted on device approval (D-10: 24h default).
+pub const CLI_PAT_TTL: i64 = 86400;
 /// Crockford-ish alphabet: no I L O U / 0 1 (visually confusable).
 const USER_CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -278,6 +280,12 @@ pub struct DenyForm {
     pub csrf: String,
 }
 
+#[derive(Deserialize)]
+pub struct ApproveForm {
+    pub user_code: String,
+    pub csrf: String,
+}
+
 /// GET /auth/cli/device — the admin-facing approval page. Rides inside
 /// `protected`, so a no-cookie browser request 302s to /login before reaching
 /// here (browser invariant preserved untouched). Sets the double-submit CSRF
@@ -348,6 +356,73 @@ pub async fn device_deny(
             .with_extra(json!({ "admin_id": admin_id, "user_code": form.user_code }));
     crate::safety::audit::write_entry(&s.log_dir, &entry).await;
     Html(render_denied_page()).into_response()
+}
+
+/// POST /auth/cli/device/approve — double-submit-CSRF-gated. Under ONE meta lock
+/// (TOCTOU-safe: re-verify → mint → commit all on the serialized connection):
+/// re-confirm the row is still `pending` + unexpired, mint a labeled, expiring
+/// `drust_pat_cli_*` PAT via the T4 primitive (inserted OUTSIDE the relaxed
+/// `uniq_admin_tokens_active` index, so it never collides with the admin's single
+/// unlabeled UI/MCP PAT), and flip the row to `approved` carrying `admin_id` +
+/// `minted_token_id`. The PAT plaintext is never copied into the device table —
+/// the CLI's next poll reads it once from `_admin_tokens.plaintext` and redeems.
+pub async fn device_approve(
+    State(s): State<MgmtState>,
+    Extension(AdminId(admin_id)): Extension<AdminId>,
+    headers: HeaderMap,
+    Form(form): Form<ApproveForm>,
+) -> Response {
+    if let Err(resp) = check_csrf(&headers, &form.csrf) {
+        return resp;
+    }
+    let client_name = {
+        let conn = s.meta.lock().await;
+        // Re-verify pending + unexpired under the lock (TOCTOU-safe).
+        let row: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT id, client_name FROM _cli_device_codes \
+                 WHERE user_code=?1 AND status='pending' \
+                   AND datetime(expires_at) > datetime('now')",
+                params![form.user_code],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        let Some((row_id, client_name)) = row else {
+            return Html(render_not_found_page()).into_response();
+        };
+        // Mint the labeled, expiring CLI PAT (T4-owned primitive). The non-NULL
+        // `label` keeps it outside the relaxed unique index and excludes it from
+        // the migration legacy-revoke + reroll sweep.
+        let (token_id, _plaintext) = match crate::auth::admin_token::mint_cli_token(
+            &conn,
+            admin_id,
+            &client_name,
+            CLI_PAT_TTL,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = ?e, "cli device_approve: mint_cli_token failed");
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DEVICE_MINT_FAILED",
+                    "could not mint CLI token",
+                );
+            }
+        };
+        let _ = conn.execute(
+            "UPDATE _cli_device_codes \
+             SET status='approved', admin_id=?1, minted_token_id=?2 WHERE id=?3",
+            params![admin_id, token_id, row_id],
+        );
+        client_name
+    };
+    let entry =
+        crate::safety::audit::AuditEntry::success("-", "-", "POST /auth/cli/device/approve", 0)
+            .with_extra(json!({ "admin_id": admin_id, "client_name": client_name }));
+    crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+    Html(render_approved_page()).into_response()
 }
 
 /// Double-submit CSRF: the `drust_cli_csrf` cookie must equal the form `csrf`
@@ -459,6 +534,17 @@ fn render_denied_page() -> String {
 <body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto">
 <h1>Request denied</h1>
 <p>The device authorization request was denied. You can close this window.</p>
+</body></html>"#
+        .to_string()
+}
+
+fn render_approved_page() -> String {
+    r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Device authorized</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto">
+<h1>Device authorized</h1>
+<p>You have authorized the CLI device. Return to your terminal — it will pick up
+the credential automatically. You can close this window.</p>
 </body></html>"#
         .to_string()
 }
