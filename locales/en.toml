@@ -696,6 +696,16 @@ legacy_plaintext_unavailable = "Plaintext unavailable for legacy PAT — press R
 reroll_text = "Rerolling immediately invalidates your current PAT. Every Claude Code mcp.json, environment variable, or script using this PAT will return 401 — you'll have to update the token on each machine. Continue?"
 reroll_title = "Reroll PAT"
 
+[settings.cli_tokens]
+card_title = "CLI access tokens"
+desc = "Labeled, expiring tokens minted by `drust auth login` (device flow). Revoking one signs that machine out; it does not affect your MCP PAT above."
+col_created = "Created"
+col_last_used = "Last used"
+col_expires = "Expires"
+btn_revoke = "Revoke"
+empty = "No CLI tokens. Run `drust auth login` to mint one."
+never = "never"
+
 [tenant_api_keys.alert]
 update_failed_title = "Update failed"
 

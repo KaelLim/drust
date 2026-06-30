@@ -219,6 +219,37 @@
           </div>
         </div>
 
+        <div class="card" style="margin-top:18px;">
+          <div class="card-head"><div>
+            <div class="card-title">{{ t.s("settings.cli_tokens.card_title") }}</div>
+            <div class="card-sub">{{ t.s("settings.cli_tokens.desc") }}</div>
+          </div></div>
+          <div class="card-body" style="padding:14px 16px;">
+            {% if cli_tokens.is_empty() %}
+              <div class="muted">{{ t.s("settings.cli_tokens.empty") }}</div>
+            {% else %}
+              {% for tok in cli_tokens %}
+              <div class="key-row">
+                <div class="key-info">
+                  <div class="key-name">{{ tok.label }}</div>
+                  <div class="key-desc muted">
+                    {{ t.s("settings.cli_tokens.col_created") }}: <code>{{ tok.created_at }}</code> ·
+                    {{ t.s("settings.cli_tokens.col_last_used") }}:
+                    {% match tok.last_used_at %}{% when Some with (v) %}<code>{{ v }}</code>{% when None %}{{ t.s("settings.cli_tokens.never") }}{% endmatch %} ·
+                    {{ t.s("settings.cli_tokens.col_expires") }}:
+                    {% match tok.expires_at %}{% when Some with (v) %}<code>{{ v }}</code>{% when None %}—{% endmatch %}
+                  </div>
+                </div>
+                <form method="post" class="cli-revoke-form" style="margin:0;"
+                      action="{{ crate::base_path::base_path() }}/admin/settings/cli-tokens/{{ tok.id }}/revoke">
+                  <button class="btn sm danger" type="submit">{{ t.s("settings.cli_tokens.btn_revoke") }}</button>
+                </form>
+              </div>
+              {% endfor %}
+            {% endif %}
+          </div>
+        </div>
+
     </div>
 {% endblock %}
 
