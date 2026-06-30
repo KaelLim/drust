@@ -229,6 +229,97 @@ pub async fn cli_whoami(State(s): State<MgmtState>, headers: HeaderMap) -> Respo
     .into_response()
 }
 
+/// CLI-PAT lifetime in seconds (`DRUST_CLI_PAT_TTL_SECS`, default 24h, D-10).
+fn cli_pat_ttl_secs() -> i64 {
+    std::env::var("DRUST_CLI_PAT_TTL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(86_400)
+}
+
+/// `POST /auth/cli/token/refresh` — re-mint a fresh labeled CLI PAT and
+/// soft-revoke the old one (D-15: refresh = re-mint + revoke, no long-lived
+/// refresh token). Refuses the unlabeled UI PAT (`403 NOT_A_CLI_TOKEN`) — it is
+/// rerolled via `/admin/settings/token/reroll`, never here. The INSERT + revoke
+/// run in one `unchecked_transaction` so the unique index is never transiently
+/// violated; the relaxed T4 index does not constrain labeled rows, so old+new
+/// active inside the tx is legal.
+pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -> Response {
+    let caller = match resolve_cli_caller(&s.meta, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    if caller.label.is_none() {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "NOT_A_CLI_TOKEN",
+            "only labeled CLI tokens can be refreshed; reroll the UI token at /admin/settings",
+        );
+    }
+    let plaintext_new = crate::auth::admin_token::generate_cli_token();
+    let hash_new = hash_token(&plaintext_new);
+    let label = caller.label.clone();
+    let ttl_mod = format!("+{} seconds", cli_pat_ttl_secs());
+    let expires_at: Result<String, Response> = {
+        let conn = s.meta.lock().await;
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => {
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            }
+        };
+        if let Err(e) = tx.execute(
+            "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext, label, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, datetime('now', ?5))",
+            params![caller.admin_id, hash_new, plaintext_new, label, ttl_mod],
+        ) {
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+        }
+        if let Err(e) = tx.execute(
+            "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE id = ?1",
+            params![caller.token_id],
+        ) {
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+        }
+        let exp: String = match tx.query_row(
+            "SELECT expires_at FROM _admin_tokens WHERE token_hash = ?1",
+            params![hash_new],
+            |r| r.get(0),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            }
+        };
+        if let Err(e) = tx.commit() {
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+        }
+        Ok(exp)
+        // conn guard drops here — before any .await
+    };
+    let expires_at = match expires_at {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    // hook (same class as reroll hook 2) — the old CLI PAT is soft-revoked.
+    s.auth_cache.clear_admin_pat(caller.admin_id);
+    emit_audit_revoke(caller.admin_id);
+    emit_audit_mint(caller.admin_id);
+
+    let mut resp = Json(serde_json::json!({
+        "access_token": plaintext_new,
+        "expires_at": expires_at,
+        "admin": { "id": caller.admin_id, "email": caller.email },
+    }))
+    .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("x-drust-sensitive"),
+        axum::http::header::HeaderValue::from_static("true"),
+    );
+    resp
+}
+
 // ─── internal helpers ─────────────────────────────────────────────────────────
 
 fn emit_audit_mint(caller_id: i64) {

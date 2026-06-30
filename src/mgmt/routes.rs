@@ -785,6 +785,10 @@ impl MgmtState {
                 "/auth/cli/whoami",
                 get(crate::mgmt::admin_pat::cli_whoami),
             )
+            .route(
+                "/auth/cli/token/refresh",
+                post(crate::mgmt::admin_pat::cli_token_refresh),
+            )
             .with_state(self.clone());
 
         // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require
