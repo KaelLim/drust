@@ -9,12 +9,13 @@
 //! hourly by [`sweep_expired_device_codes`].
 
 use crate::auth::admin_token::hash_token;
+use crate::auth::middleware::AdminId;
 use crate::error::json_error;
 use crate::mgmt::routes::MgmtState;
-use axum::Json;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::extract::{Form, Query, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{Html, IntoResponse, Response};
+use axum::{Extension, Json};
 use base64::Engine;
 use rand::{Rng, RngCore};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -260,6 +261,200 @@ pub async fn device_poll(State(s): State<MgmtState>, Json(req): Json<PollReq>) -
     } else {
         poll_status("pending")
     }
+}
+
+#[derive(Deserialize)]
+pub struct PageQuery {
+    #[serde(default)]
+    pub user_code: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DenyForm {
+    pub user_code: String,
+    pub csrf: String,
+}
+
+/// GET /auth/cli/device — the admin-facing approval page. Rides inside
+/// `protected`, so a no-cookie browser request 302s to /login before reaching
+/// here (browser invariant preserved untouched). Sets the double-submit CSRF
+/// cookie and bakes the same token into the approve/deny forms.
+pub async fn device_page(
+    State(s): State<MgmtState>,
+    Extension(AdminId(admin_id)): Extension<AdminId>,
+    Query(q): Query<PageQuery>,
+) -> Response {
+    let user_code = q.user_code.unwrap_or_default();
+    let conn = s.meta.lock().await;
+    let client_name: Option<String> = conn
+        .query_row(
+            "SELECT client_name FROM _cli_device_codes \
+             WHERE user_code=?1 AND status='pending' \
+               AND datetime(expires_at) > datetime('now')",
+            params![user_code],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let Some(client_name) = client_name else {
+        drop(conn);
+        return Html(render_not_found_page()).into_response();
+    };
+    let email: Option<String> = conn
+        .query_row(
+            "SELECT email FROM admins WHERE id=?1",
+            params![admin_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+    drop(conn);
+
+    let csrf = generate_csrf_token();
+    let html = render_approval_page(&client_name, email.as_deref(), &user_code, &csrf);
+    let mut resp = Html(html).into_response();
+    resp.headers_mut()
+        .append(header::SET_COOKIE, build_csrf_cookie(&csrf).parse().unwrap());
+    resp
+}
+
+/// POST /auth/cli/device/deny — double-submit-CSRF-gated. Flips a pending row to
+/// `denied`; the CLI's next poll then reads `{"status":"denied"}`.
+pub async fn device_deny(
+    State(s): State<MgmtState>,
+    Extension(AdminId(admin_id)): Extension<AdminId>,
+    headers: HeaderMap,
+    Form(form): Form<DenyForm>,
+) -> Response {
+    if let Err(resp) = check_csrf(&headers, &form.csrf) {
+        return resp;
+    }
+    {
+        let conn = s.meta.lock().await;
+        let _ = conn.execute(
+            "UPDATE _cli_device_codes SET status='denied' \
+             WHERE user_code=?1 AND status='pending'",
+            params![form.user_code],
+        );
+    }
+    let entry = crate::safety::audit::AuditEntry::success("-", "-", "POST /auth/cli/device/deny", 0)
+        .with_extra(json!({ "admin_id": admin_id, "user_code": form.user_code }));
+    crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+    Html(render_denied_page()).into_response()
+}
+
+/// Double-submit CSRF: the `drust_cli_csrf` cookie must equal the form `csrf`
+/// field, and neither may be empty. `SameSite=Lax` lets the cookie ride the
+/// same-site form POST while blocking cross-site forgery.
+fn check_csrf(headers: &HeaderMap, form_csrf: &str) -> Result<(), Response> {
+    let cookie_csrf = read_cookie(headers, "drust_cli_csrf");
+    if !form_csrf.is_empty() && cookie_csrf.as_deref() == Some(form_csrf) {
+        Ok(())
+    } else {
+        Err(json_error(
+            StatusCode::FORBIDDEN,
+            "CSRF_MISMATCH",
+            "CSRF token missing or mismatched",
+        ))
+    }
+}
+
+fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    for part in raw.split(';') {
+        let part = part.trim();
+        if let Some((k, v)) = part.split_once('=')
+            && k == name
+        {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+fn generate_csrf_token() -> String {
+    let mut b = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut b);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+}
+
+/// Server-rendered double-submit cookie. `HttpOnly` is safe here because the
+/// SERVER (not JS) bakes the same token into the form; mirrors
+/// `build_session_cookie` (`middleware.rs`). `Path` via `base_path::cookie_path`.
+fn build_csrf_cookie(csrf: &str) -> String {
+    let cpath = crate::base_path::cookie_path("");
+    let base = format!("drust_cli_csrf={csrf}; Path={cpath}; HttpOnly; SameSite=Lax");
+    if std::env::var("DRUST_DEV_NO_SECURE_COOKIES").is_ok() {
+        base
+    } else {
+        format!("{base}; Secure")
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
+fn render_approval_page(
+    client_name: &str,
+    email: Option<&str>,
+    user_code: &str,
+    csrf: &str,
+) -> String {
+    let approve = crate::base_path::base("/auth/cli/device/approve");
+    let deny = crate::base_path::base("/auth/cli/device/deny");
+    let cn = html_escape(client_name);
+    let uc = html_escape(user_code);
+    let who = html_escape(email.unwrap_or("this account"));
+    let csrf = html_escape(csrf);
+    format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Authorize CLI device</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;line-height:1.5">
+<h1>Authorize a device</h1>
+<p>The client <strong>{cn}</strong> is requesting access to your drust account
+(<strong>{who}</strong>).</p>
+<p>Verification code: <code>{uc}</code></p>
+<p>Only continue if you just started a <code>drust auth login</code> on this device.</p>
+<form method="post" action="{approve}" style="display:inline">
+  <input type="hidden" name="user_code" value="{uc}">
+  <input type="hidden" name="csrf" value="{csrf}">
+  <button type="submit">Authorize</button>
+</form>
+<form method="post" action="{deny}" style="display:inline">
+  <input type="hidden" name="user_code" value="{uc}">
+  <input type="hidden" name="csrf" value="{csrf}">
+  <button type="submit">Deny</button>
+</form>
+</body></html>"#
+    )
+}
+
+fn render_not_found_page() -> String {
+    r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Code not found</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto">
+<h1>Code not found or expired</h1>
+<p>This verification code is unknown, already used, or has expired. Start a new
+<code>drust auth login</code> and try again.</p>
+</body></html>"#
+        .to_string()
+}
+
+fn render_denied_page() -> String {
+    r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>Request denied</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto">
+<h1>Request denied</h1>
+<p>The device authorization request was denied. You can close this window.</p>
+</body></html>"#
+        .to_string()
 }
 
 /// Best-effort hourly cleanup: delete every device-code row whose `expires_at`
