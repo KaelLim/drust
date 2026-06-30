@@ -277,7 +277,7 @@ fn audit_has(op: &str, admin_id: i64) -> bool {
         .unwrap()
         .filter_map(|r| r.ok())
         .collect();
-    rows.iter().any(|aid| *aid == Some(admin_id))
+    rows.contains(&Some(admin_id))
 }
 
 // ─── T6 — DELETE /auth/cli/token (logout self-revoke) ─────────────────────────
