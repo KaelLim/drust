@@ -18,6 +18,7 @@ async fn run(cli: Cli) -> i32 {
     let res = match &cli.command {
         Command::Auth(a) => auth::run(&cli, a).await,
         Command::Use(u) => commands::use_ctx::run(&cli, u).await,
+        Command::Records(a) => commands::records::run(&cli, a).await,
     };
     match res {
         Ok(code) => code,
