@@ -55,7 +55,10 @@ mod tests {
 
     #[test]
     fn parses_global_flags() {
-        let cli = Cli::try_parse_from(["drust", "--host", "tool", "--tenant", "9f", "--json", "auth", "status"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "drust", "--host", "tool", "--tenant", "9f", "--json", "auth", "status",
+        ])
+        .unwrap();
         assert_eq!(cli.host.as_deref(), Some("tool"));
         assert_eq!(cli.tenant.as_deref(), Some("9f"));
         assert!(cli.json);

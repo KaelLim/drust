@@ -21,7 +21,11 @@ impl ApiError {
             error_aliases: body
                 .get("error_aliases")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default(),
         }
     }
@@ -54,23 +58,27 @@ mod tests {
 
     #[test]
     fn parses_envelope_and_maps_exit_codes() {
-        let e = ApiError::from_body(403, &json!({
-            "error_code": "WRITE_DENIED",
-            "message": "service key required",
-            "error_aliases": ["SERVICE_REQUIRED"]
-        }));
+        let e = ApiError::from_body(
+            403,
+            &json!({
+                "error_code": "WRITE_DENIED",
+                "message": "service key required",
+                "error_aliases": ["SERVICE_REQUIRED"]
+            }),
+        );
         assert_eq!(e.error_code, "WRITE_DENIED");
         assert_eq!(e.message, "service key required");
-        assert_eq!(e.suggested_fix, None);          // missing key, never null
+        assert_eq!(e.suggested_fix, None); // missing key, never null
         assert!(e.matches("WRITE_DENIED"));
-        assert!(e.matches("SERVICE_REQUIRED"));      // alias also matches
+        assert!(e.matches("SERVICE_REQUIRED")); // alias also matches
         assert!(!e.matches("OTHER"));
-        assert_eq!(e.exit_code(), 1);                // generic 4xx
+        assert_eq!(e.exit_code(), 1); // generic 4xx
 
-        let unauth = ApiError::from_body(401, &json!({"error_code":"HTTP_401","message":"no token"}));
-        assert_eq!(unauth.exit_code(), 2);           // 401 → "run drust auth login"
+        let unauth =
+            ApiError::from_body(401, &json!({"error_code":"HTTP_401","message":"no token"}));
+        assert_eq!(unauth.exit_code(), 2); // 401 → "run drust auth login"
 
         let server = ApiError::from_body(500, &json!({"error_code":"DB_ERROR","message":"boom"}));
-        assert_eq!(server.exit_code(), 3);           // 5xx
+        assert_eq!(server.exit_code(), 3); // 5xx
     }
 }
