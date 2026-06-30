@@ -120,7 +120,11 @@ async fn revoked_pat_gets_401() {
         )
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "unresolved PAT -> 401");
+    assert_eq!(
+        r.status(),
+        StatusCode::UNAUTHORIZED,
+        "unresolved PAT -> 401"
+    );
 }
 
 #[tokio::test]
