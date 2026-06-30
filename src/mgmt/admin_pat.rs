@@ -52,8 +52,11 @@ pub async fn reroll(
         };
 
         if let Err(e) = tx.execute(
+            // v1.44 (T4) — scope to the unlabeled UI PAT so the reroll never nukes
+            // the admin's labeled CLI PATs (which live outside the relaxed
+            // uniq_admin_tokens_active index). The INSERT below mints unlabeled.
             "UPDATE _admin_tokens SET revoked_at = datetime('now') \
-             WHERE admin_id = ?1 AND revoked_at IS NULL",
+             WHERE admin_id = ?1 AND revoked_at IS NULL AND label IS NULL",
             params![caller_id],
         ) {
             return json_error(
