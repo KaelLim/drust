@@ -270,9 +270,7 @@ fn audit_has(op: &str, admin_id: i64) -> bool {
     let path = AUDIT_PATH.get().expect("init_global_audit must run first");
     let r = open_audit_db_read(path).unwrap();
     let mut stmt = r
-        .prepare(
-            "SELECT actor_admin_id FROM audit WHERE op = ?1 ORDER BY id DESC LIMIT 50",
-        )
+        .prepare("SELECT actor_admin_id FROM audit WHERE op = ?1 ORDER BY id DESC LIMIT 50")
         .unwrap();
     let rows: Vec<Option<i64>> = stmt
         .query_map(params![op], |row| row.get::<_, Option<i64>>(0))
@@ -423,9 +421,13 @@ async fn settings_page_lists_labeled_cli_tokens() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let html =
-        String::from_utf8(axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap().to_vec())
-            .unwrap();
+    let html = String::from_utf8(
+        axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
     assert!(html.contains("cli:macbook"));
     assert!(html.contains("/admin/settings/cli-tokens/")); // a revoke form action
 }
