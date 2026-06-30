@@ -30,6 +30,12 @@ pub enum Command {
     Records(crate::commands::records::RecordsArgs),
     /// Collection read + index/config + schema mutation (via MCP)
     Collections(crate::commands::collections::CollectionsArgs),
+    /// Raw service-only SELECT (requires --unsafe)
+    Query(crate::commands::query::QueryArgs),
+    /// Vector similarity search
+    Search(crate::commands::search::SearchArgs),
+    /// Stored RPC call/list
+    Rpc(crate::commands::rpc::RpcArgs),
 }
 
 #[cfg(test)]
