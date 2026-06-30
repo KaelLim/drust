@@ -22,6 +22,7 @@ keyring     = { version = "3", features = ["apple-native", "windows-native", "li
 directories = "5"
 toml        = "0.8"
 anyhow      = "1"
+open        = "5"
 
 [dev-dependencies]
 wiremock   = "0.6"

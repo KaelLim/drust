@@ -1,4 +1,6 @@
 //! `drust auth login|logout|status` (Phase 1: --with-token only; device flow is Phase 2).
+pub mod device;
+
 use crate::cli::Cli;
 use crate::config::hosts::Host;
 use crate::config::store;
