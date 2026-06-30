@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
 
+[lib]
+name = "drust_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "drust"
 path = "src/main.rs"
