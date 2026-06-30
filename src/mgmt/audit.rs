@@ -1279,7 +1279,9 @@ pub async fn audit_tenant_json(
     if !exists {
         return (
             axum::http::StatusCode::NOT_FOUND,
-            axum::Json(serde_json::json!({"error_code":"TENANT_NOT_FOUND","message":"no such tenant"})),
+            axum::Json(
+                serde_json::json!({"error_code":"TENANT_NOT_FOUND","message":"no such tenant"}),
+            ),
         )
             .into_response();
     }
