@@ -643,7 +643,11 @@ pub async fn backups_json(State(state): State<BackupsState>) -> Response {
                 if !md.is_file() {
                     return None;
                 }
-                Some((name, md.len(), md.modified().unwrap_or(SystemTime::UNIX_EPOCH)))
+                Some((
+                    name,
+                    md.len(),
+                    md.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                ))
             })
             .collect();
         collected.sort_by(|a, b| b.0.cmp(&a.0));
@@ -675,7 +679,10 @@ struct BackupInspectJson {
     tenants: Vec<TenantInBackupJson>,
 }
 
-pub async fn inspect_json(State(state): State<BackupsState>, Path(filename): Path<String>) -> Response {
+pub async fn inspect_json(
+    State(state): State<BackupsState>,
+    Path(filename): Path<String>,
+) -> Response {
     if !is_safe_backup_filename(&filename) {
         return (
             StatusCode::BAD_REQUEST,
@@ -727,7 +734,9 @@ pub async fn inspect_json(State(state): State<BackupsState>, Path(filename): Pat
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error_code":"INTERNAL","message":format!("open meta.sqlite: {e}")})),
+                axum::Json(
+                    json!({"error_code":"INTERNAL","message":format!("open meta.sqlite: {e}")}),
+                ),
             )
                 .into_response();
         }
