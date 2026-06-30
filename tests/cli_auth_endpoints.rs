@@ -296,3 +296,94 @@ async fn logout_revokes_the_authenticating_cli_token_and_fires_audit() {
         .unwrap();
     assert_eq!(r2.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ─── T7 helpers (cookie-gated admin-UI revoke) ────────────────────────────────
+
+/// Insert an admin directly + create a session. Returns `(admin_id, cookie)`.
+/// Modeled on `tests/admin_pat_reroll.rs::insert_admin`.
+fn insert_admin(dir: &TempDir, email: &str, role: &str) -> (i64, String) {
+    let conn = open_meta_ro(dir);
+    let username = email.split('@').next().unwrap_or("admin").to_string();
+    conn.execute(
+        "INSERT INTO admins (username, password_hash, email, role) VALUES (?1, '$oauth-only$', ?2, ?3)",
+        params![username, email, role],
+    )
+    .unwrap();
+    let admin_id = conn.last_insert_rowid();
+    let session_token = {
+        use base64::Engine;
+        use rand::RngCore;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    };
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(7);
+    conn.execute(
+        "INSERT INTO sessions (token, admin_id, expires_at) VALUES (?1, ?2, ?3)",
+        params![session_token, admin_id, expires_at.to_rfc3339()],
+    )
+    .unwrap();
+    (admin_id, format!("drust_session={session_token}"))
+}
+
+/// Seed a labeled CLI PAT for `admin_id`; return the new row id.
+fn seed_cli_pat_for(dir: &TempDir, admin_id: i64, label: &str) -> i64 {
+    insert_cli_pat(dir, admin_id, label).0
+}
+
+fn row_is_revoked(conn: &Connection, id: i64) -> bool {
+    let revoked: Option<String> = conn
+        .query_row(
+            "SELECT revoked_at FROM _admin_tokens WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    revoked.is_some()
+}
+
+// ─── T7 — POST /admin/settings/cli-tokens/{id}/revoke ─────────────────────────
+
+#[tokio::test]
+async fn ui_revoke_soft_revokes_scoped_to_caller_and_fires_clear_and_audit() {
+    init_global_audit();
+    let (app, dir) = spin_up().await;
+    let (admin_id, session) = insert_admin(&dir, "kael@x", "owner");
+    let id = seed_cli_pat_for(&dir, admin_id, "cli:laptop"); // returns row id
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/settings/cli-tokens/{id}/revoke"))
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER); // 303 → /admin/settings
+    assert!(row_is_revoked(&open_meta_ro(&dir), id));
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert!(audit_has("admin.token.revoke", admin_id));
+}
+
+#[tokio::test]
+async fn ui_revoke_cannot_touch_another_admins_token_or_the_ui_pat() {
+    let (app, dir) = spin_up().await;
+    let (_a, session) = insert_admin(&dir, "a@x", "owner");
+    let (b_id, _) = insert_admin(&dir, "b@x", "member");
+    let other = seed_cli_pat_for(&dir, b_id, "cli:other"); // belongs to admin B
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/settings/cli-tokens/{other}/revoke"))
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND); // CLI_TOKEN_NOT_FOUND, fail-closed
+    assert!(!row_is_revoked(&open_meta_ro(&dir), other));
+}
