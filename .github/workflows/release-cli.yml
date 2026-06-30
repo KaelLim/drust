@@ -1,0 +1,42 @@
+name: Release CLI
+on:
+  push:
+    tags: ['v*']
+permissions: {}
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin,       runner: macos-13 }
+          - { target: aarch64-apple-darwin,      runner: macos-14 }
+          - { target: x86_64-pc-windows-msvc,    runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release -p drust-cli --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/drust"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          out="drust-${{ matrix.target }}"
+          [[ "${{ matrix.target }}" == *windows* ]] && out="$out.exe"
+          cp "$bin" "$out"
+          sha256sum "$out" > "$out.sha256" || shasum -a 256 "$out" > "$out.sha256"
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            drust-${{ matrix.target }}*
