@@ -67,12 +67,6 @@
   </nav>
 
   <div class="sidebar-foot">
-    {% match admin.picture_url %}
-      {% when Some with (url) %}
-        <img class="who-av who-av-img" src="{{ url }}" alt="" referrerpolicy="no-referrer">
-      {% when None %}
-        <div class="who-av">{{ admin.initials }}</div>
-    {% endmatch %}
     <div class="who">
       <div class="who-name">{{ admin.display_name.as_deref().unwrap_or("admin") }}</div>
       <div class="who-mail">{{ admin.email.as_deref().unwrap_or("") }}</div>

@@ -25,7 +25,6 @@
     <table class="data">
       <thead>
         <tr>
-          <th style="width:40px;"></th>
           <th>{{ t.s("admin_team.col.name") }}</th>
           <th>{{ t.s("admin_team.col.email") }}</th>
           <th style="width:120px;">{{ t.s("admin_team.col.role") }}</th>
@@ -35,14 +34,6 @@
       <tbody>
         {% for row in admins %}
         <tr data-admin-id="{{ row.id }}" data-admin-email="{% match row.email %}{% when Some with (e) %}{{ e }}{% when None %}{% endmatch %}" data-admin-role="{{ row.role }}">
-          <td>
-            {% match row.picture_url %}
-              {% when Some with (url) %}
-                <img class="who-av who-av-img" src="{{ url }}" alt="" referrerpolicy="no-referrer">
-              {% when None %}
-                <div class="who-av">{{ row.initials }}</div>
-            {% endmatch %}
-          </td>
           <td>{% match row.display_name %}{% when Some with (n) %}{{ n }}{% when None %}<span class="muted-cell">—</span>{% endmatch %}</td>
           <td class="mono-cell">{% match row.email %}{% when Some with (e) %}{{ e }}{% when None %}<span class="muted-cell">—</span>{% endmatch %}</td>
           <td>
