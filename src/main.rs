@@ -397,6 +397,27 @@ async fn main() -> anyhow::Result<()> {
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
+    // v1.44 (CLI Phase 2, T1) — hourly reaper for expired device-flow codes.
+    // Unconditional (device codes are independent of Garage). Reaping is
+    // best-effort cleanup; `expires_at` is the source of truth, so a missed
+    // tick just means rows linger until the next sweep.
+    {
+        let meta_for_reaper = meta.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tick.tick().await; // consume immediate tick
+            loop {
+                tick.tick().await;
+                let reaped =
+                    drust::mgmt::cli_device::sweep_expired_device_codes(&meta_for_reaper).await;
+                if reaped > 0 {
+                    tracing::info!(reaped, "cli device-code reaper swept expired codes");
+                }
+            }
+        });
+    }
+
     let limiter = Arc::new(RateLimiter::with_cap(
         cfg.rate_limit_per_token,
         Duration::from_secs(cfg.rate_limit_window_secs),

@@ -15,6 +15,22 @@ CREATE TABLE IF NOT EXISTS _admin_tokens (
 CREATE INDEX IF NOT EXISTS idx_admin_tokens_admin ON _admin_tokens(admin_id);
 "#;
 
+pub const SQL_CREATE_CLI_DEVICE_CODES_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS _cli_device_codes (
+    id                INTEGER PRIMARY KEY,
+    device_code_hash  TEXT    NOT NULL UNIQUE,
+    user_code         TEXT    NOT NULL UNIQUE,
+    client_name       TEXT    NOT NULL DEFAULT 'drust-cli',
+    status            TEXT    NOT NULL DEFAULT 'pending',
+    admin_id          INTEGER,
+    minted_token_id   INTEGER,
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+    expires_at        TEXT    NOT NULL,
+    last_polled_at    TEXT
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_cli_device_codes_expires ON _cli_device_codes(expires_at);
+"#;
+
 pub const SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS: &str = r#"
 CREATE TABLE IF NOT EXISTS _system_users (
   id            TEXT PRIMARY KEY,
@@ -632,6 +648,11 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         )?;
     }
 
+    // v1.44 (CLI Phase 2, T1) — ephemeral device-flow rendezvous table.
+    // CREATE TABLE/INDEX IF NOT EXISTS only; mints/revokes/deletes no
+    // credential, so a second boot is a pure no-op (v1.41.5 invariant).
+    meta.execute_batch(SQL_CREATE_CLI_DEVICE_CODES_IF_NOT_EXISTS)?;
+
     report.meta_done = true;
 
     let mut stmt = meta.prepare("SELECT id FROM tenants")?;
@@ -891,6 +912,28 @@ mod tests {
             [],
         )
         .expect_err("second active row should violate uniq_admin_tokens_active");
+    }
+
+    #[test]
+    fn cli_device_codes_create_is_idempotent() {
+        let conn = fresh();
+        conn.execute_batch(SQL_CREATE_CLI_DEVICE_CODES_IF_NOT_EXISTS)
+            .unwrap();
+        conn.execute_batch(SQL_CREATE_CLI_DEVICE_CODES_IF_NOT_EXISTS)
+            .unwrap(); // second boot = no-op
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_cli_device_codes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        // STRICT enforced: a non-NULL text status is fine; the table is empty.
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM _cli_device_codes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     #[test]

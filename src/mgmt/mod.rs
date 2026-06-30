@@ -5,6 +5,7 @@ pub mod admin_team;
 pub mod audit;
 pub mod backups;
 pub mod browse;
+pub mod cli_device;
 pub mod collection_list;
 pub mod docs;
 pub mod format;
