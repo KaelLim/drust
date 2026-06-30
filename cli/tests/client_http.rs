@@ -1,5 +1,5 @@
 use drust_cli::client::http::DrustClient;
-use wiremock::matchers::{method, path, header};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
@@ -8,7 +8,9 @@ async fn get_sends_bearer_and_parses_json() {
     Mock::given(method("GET"))
         .and(path("/t/9f/collections"))
         .and(header("authorization", "Bearer drust_pat_cli_x"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"collections":[]})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"collections":[]})),
+        )
         .mount(&server)
         .await;
 

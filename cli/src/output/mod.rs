@@ -15,7 +15,11 @@ impl Renderer {
         if output == Some("human") {
             return Renderer::Human;
         }
-        if stdout_is_tty { Renderer::Human } else { Renderer::Json }
+        if stdout_is_tty {
+            Renderer::Human
+        } else {
+            Renderer::Json
+        }
     }
 
     /// Render a success JSON value. Json = passthrough; Human = pretty.
@@ -36,7 +40,10 @@ impl Renderer {
                 if let Some(fix) = &e.suggested_fix {
                     obj.insert("suggested_fix".into(), fix.clone().into());
                 }
-                eprintln!("{}", serde_json::to_string(&serde_json::Value::Object(obj)).unwrap());
+                eprintln!(
+                    "{}",
+                    serde_json::to_string(&serde_json::Value::Object(obj)).unwrap()
+                );
             }
             Renderer::Human => {
                 eprintln!("error: {}", e.message);
@@ -76,9 +83,21 @@ mod tests {
 
     #[test]
     fn resolve_picks_json_when_flag_or_piped() {
-        assert!(matches!(Renderer::resolve(true, None, true), Renderer::Json));   // --json wins on a TTY
-        assert!(matches!(Renderer::resolve(false, Some("json"), true), Renderer::Json));
-        assert!(matches!(Renderer::resolve(false, None, false), Renderer::Json)); // piped → auto json
-        assert!(matches!(Renderer::resolve(false, None, true), Renderer::Human)); // interactive default
+        assert!(matches!(
+            Renderer::resolve(true, None, true),
+            Renderer::Json
+        )); // --json wins on a TTY
+        assert!(matches!(
+            Renderer::resolve(false, Some("json"), true),
+            Renderer::Json
+        ));
+        assert!(matches!(
+            Renderer::resolve(false, None, false),
+            Renderer::Json
+        )); // piped → auto json
+        assert!(matches!(
+            Renderer::resolve(false, None, true),
+            Renderer::Human
+        )); // interactive default
     }
 }

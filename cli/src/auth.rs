@@ -39,20 +39,28 @@ pub async fn run(cli: &Cli, a: &AuthArgs) -> anyhow::Result<i32> {
 }
 
 fn host_key(cli: &Cli) -> anyhow::Result<String> {
-    cli.host.clone().ok_or_else(|| anyhow::anyhow!("pass --host <name> to name this host"))
+    cli.host
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("pass --host <name> to name this host"))
 }
 
 fn login(cli: &Cli, l: &LoginArgs) -> anyhow::Result<i32> {
     let key = host_key(cli)?;
-    anyhow::ensure!(l.with_token.starts_with("drust_pat_"), "token must be a drust_pat_* admin PAT");
+    anyhow::ensure!(
+        l.with_token.starts_with("drust_pat_"),
+        "token must be a drust_pat_* admin PAT"
+    );
     let mut cfg = store::load()?;
     let token_ref = store::write_token(&key, &l.with_token);
-    cfg.hosts.insert(key.clone(), Host {
-        base_url: l.url.trim_end_matches('/').to_string(),
-        token_ref,
-        default_console: Some("default".into()),
-        default_tenant: None,
-    });
+    cfg.hosts.insert(
+        key.clone(),
+        Host {
+            base_url: l.url.trim_end_matches('/').to_string(),
+            token_ref,
+            default_console: Some("default".into()),
+            default_tenant: None,
+        },
+    );
     cfg.active_host = Some(key.clone());
     store::save(&cfg)?;
     println!("logged in to host '{key}' ({})", l.url);

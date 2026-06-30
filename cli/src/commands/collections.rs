@@ -4,27 +4,47 @@ use crate::client::mcp;
 use crate::commands::records::finish;
 use crate::ctx::Ctx;
 use clap::{Args, Subcommand};
-use reqwest::Method;
 
 #[derive(Args, Debug)]
-pub struct CollectionsArgs { #[command(subcommand)] pub cmd: CollectionsCmd }
+pub struct CollectionsArgs {
+    #[command(subcommand)]
+    pub cmd: CollectionsCmd,
+}
 
 #[derive(Subcommand, Debug)]
 pub enum CollectionsCmd {
     List,
-    Describe { coll: String },
+    Describe {
+        coll: String,
+    },
     Overview,
     Openapi,
     Types,
     Zod,
     /// create_collection via MCP
-    Create { name: String, #[arg(long, default_value="[]")] fields: String },
+    Create {
+        name: String,
+        #[arg(long, default_value = "[]")]
+        fields: String,
+    },
     /// add_field via MCP
-    AddField { coll: String, #[arg(long)] field: String },
+    AddField {
+        coll: String,
+        #[arg(long)]
+        field: String,
+    },
     /// drop_collection via MCP
-    Drop { coll: String },
+    Drop {
+        coll: String,
+    },
     /// set_anon_caps / set_user_caps via MCP
-    SetCaps { coll: String, #[arg(long)] anon: Option<String>, #[arg(long)] user: Option<String> },
+    SetCaps {
+        coll: String,
+        #[arg(long)]
+        anon: Option<String>,
+        #[arg(long)]
+        user: Option<String>,
+    },
 }
 
 pub async fn run(cli: &Cli, a: &CollectionsArgs) -> anyhow::Result<i32> {
@@ -62,7 +82,13 @@ pub async fn run(cli: &Cli, a: &CollectionsArgs) -> anyhow::Result<i32> {
 
 async fn print_text(ctx: &Ctx, path: &str) -> anyhow::Result<i32> {
     match ctx.client.get_bytes(path).await {
-        Ok(b) => { print!("{}", String::from_utf8_lossy(&b)); Ok(0) }
-        Err(e) => { ctx.renderer.error(&e); Ok(e.exit_code()) }
+        Ok(b) => {
+            print!("{}", String::from_utf8_lossy(&b));
+            Ok(0)
+        }
+        Err(e) => {
+            ctx.renderer.error(&e);
+            Ok(e.exit_code())
+        }
     }
 }

@@ -13,10 +13,25 @@ pub async fn call_tool(
         "jsonrpc":"2.0","id":1,"method":"tools/call",
         "params":{"name":tool,"arguments":args}
     });
-    let resp = client.send_json(Method::POST, &format!("/t/{tenant}/mcp"), req).await?;
+    let resp = client
+        .send_json(Method::POST, &format!("/t/{tenant}/mcp"), req)
+        .await?;
     if let Some(err) = resp.get("error") {
-        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("mcp error").to_string();
-        return Err(ApiError { status: 400, error_code: "MCP_ERROR".into(), message: msg, suggested_fix: None, error_aliases: vec![] });
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("mcp error")
+            .to_string();
+        return Err(ApiError {
+            status: 400,
+            error_code: "MCP_ERROR".into(),
+            message: msg,
+            suggested_fix: None,
+            error_aliases: vec![],
+        });
     }
-    Ok(resp.get("result").cloned().unwrap_or(serde_json::Value::Null))
+    Ok(resp
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
 }

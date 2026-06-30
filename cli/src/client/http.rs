@@ -53,7 +53,11 @@ impl DrustClient {
     }
 
     pub async fn delete(&self, path: &str) -> Result<(), ApiError> {
-        let resp = self.req(Method::DELETE, path).send().await.map_err(net_err)?;
+        let resp = self
+            .req(Method::DELETE, path)
+            .send()
+            .await
+            .map_err(net_err)?;
         let status = resp.status().as_u16();
         if (200..300).contains(&status) {
             Ok(())
@@ -100,9 +104,15 @@ mod tests {
     #[test]
     fn url_joins_verbatim_without_touching_base_path() {
         let c = DrustClient::new("https://tool.tzuchi-org.tw/drust", "drust_pat_cli_x");
-        assert_eq!(c.url("/t/9f/collections"), "https://tool.tzuchi-org.tw/drust/t/9f/collections");
+        assert_eq!(
+            c.url("/t/9f/collections"),
+            "https://tool.tzuchi-org.tw/drust/t/9f/collections"
+        );
         // Cloud root mode (empty base_path) must also be verbatim:
         let c2 = DrustClient::new("https://drust.com", "drust_pat_cli_x");
-        assert_eq!(c2.url("/t/9f/collections"), "https://drust.com/t/9f/collections");
+        assert_eq!(
+            c2.url("/t/9f/collections"),
+            "https://drust.com/t/9f/collections"
+        );
     }
 }
