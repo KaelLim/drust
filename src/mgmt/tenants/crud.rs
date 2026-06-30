@@ -536,6 +536,46 @@ pub async fn get_publish_policy(
     }
 }
 
+// ===== Admin-plane richer tenant list JSON (v1.44, CLI Phase 2 T8) =====
+
+#[derive(Serialize)]
+struct TenantApiRow {
+    id: String,
+    name: String,
+    created_at: String,
+    quota_db_mb: i64,
+    quota_rows: i64,
+    db_bytes: i64,
+    files_bytes: i64,
+    stats_updated_at: Option<String>,
+}
+
+/// `GET /admin/api/tenants` — richer-than-cmdk JSON list (quota + denormalized
+/// stats from the meta `tenants` row). Excludes soft-deleted. Admin-session gated.
+pub async fn tenants_json(State(state): State<TenantsState>) -> Response {
+    let conn = state.session.meta.lock().await;
+    let mut out: Vec<TenantApiRow> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, name, created_at, quota_db_mb, quota_rows, db_bytes, files_bytes, stats_updated_at \
+         FROM tenants WHERE deleted_at IS NULL ORDER BY id",
+    ) && let Ok(rows) = stmt.query_map([], |r| {
+        Ok(TenantApiRow {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            created_at: r.get(2)?,
+            quota_db_mb: r.get(3)?,
+            quota_rows: r.get(4)?,
+            db_bytes: r.get(5)?,
+            files_bytes: r.get(6)?,
+            stats_updated_at: r.get(7)?,
+        })
+    }) {
+        out.extend(rows.flatten());
+    }
+    drop(conn);
+    Json(out).into_response()
+}
+
 // ===== Cmd-K palette JSON endpoint (v1.14) =====
 // Lightweight tenant list for the global ⌘K palette. Service-only? No —
 // admin-session gated (same as the rest of /admin/*). Returns 0 rows
