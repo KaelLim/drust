@@ -287,6 +287,88 @@ async fn audit_default_flip_and_apply_all() {
     );
 }
 
+/// Fetch an admin HTML page with the PAT bearer; returns (status, body).
+async fn send_page(app: &axum::Router, uri: String, pat: &str) -> (StatusCode, String) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {pat}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 8 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Task 10: `GET /admin/tenants/{id}/_settings` renders the Settings page
+/// (rename form + audit-default toggle + read-only retention display +
+/// apply-to-all wired to the Task 9 bulk endpoint), and the shared sidebar
+/// gains the `⚙ _settings` virtual entry on other tenant pages.
+#[tokio::test]
+async fn settings_page_renders_with_sidebar_entry() {
+    let (app, pat, tenants, _dir) = app().await;
+
+    let (status, html) = send_page(&app, format!("/admin/tenants/{TID}/_settings"), &pat).await;
+    assert_eq!(status, StatusCode::OK, "settings page must render");
+    assert!(
+        html.contains(r#"id="tenant-name-input""#),
+        "rename input must be present"
+    );
+    assert!(
+        html.contains(r#"value="Old Name""#),
+        "rename input must be prefilled with the current display name"
+    );
+    assert!(
+        html.contains(&format!("/admin/tenants/{TID}/audit/apply-all")),
+        "apply-to-all must target the Task 9 bulk endpoint"
+    );
+    assert!(
+        html.contains(r#"id="audit-default-toggle""#),
+        "tenant audit-default toggle must be present"
+    );
+    assert!(
+        html.contains(r#"id="retention-days""#),
+        "read-only retention-days display must be present"
+    );
+
+    // A collection page (any page including the shared sidebar) must link to
+    // the new `⚙ _settings` virtual entry.
+    let reg = drust::mcp::server::McpRegistry::new(tenants.clone());
+    let svc = reg.get_or_create(TID).await.unwrap();
+    drust::mcp::tools::schema::create_collection(&svc, "c_side", &[fld("body")])
+        .await
+        .unwrap();
+    let (status, html) = send_page(
+        &app,
+        format!("/admin/tenants/{TID}/collections/c_side"),
+        &pat,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "collection page must render");
+    assert!(
+        html.contains(&format!("/admin/tenants/{TID}/_settings")),
+        "sidebar must contain the _settings entry"
+    );
+}
+
+/// The settings page 404s for a missing / soft-deleted tenant instead of
+/// rendering an empty shell.
+#[tokio::test]
+async fn settings_page_unknown_tenant_404s() {
+    let (app, pat, _tenants, _dir) = app().await;
+    let (status, _html) =
+        send_page(&app, "/admin/tenants/no-such-tenant/_settings".into(), &pat).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 /// Both routes live inside the `admin_session_layer`-gated router: with no
 /// bearer and a JSON Accept they must 401 (never reach the handler).
 #[tokio::test]

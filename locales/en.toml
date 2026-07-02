@@ -438,6 +438,7 @@ functions = "Functions"
 logs = "Logs"
 oauth_providers = "OAuth providers"
 overview = "Overview"
+settings = "Settings"
 stored_rpc = "Stored RPC"
 webhooks = "Webhooks"
 
@@ -458,6 +459,9 @@ backend = "Backend"
 collections = "Collections"
 connect = "Connect"
 home = "Home"
+
+[collection_sidebar.settings]
+title = "rename · record-history default"
 
 [collection_sidebar.status]
 healthy = "tenant healthy"
@@ -1082,6 +1086,45 @@ truncated = "truncated"
 
 [tenant_rpc_test.sql]
 heading = "sql"
+
+[tenant_settings.audit]
+apply_all_button = "Apply default to all collections"
+apply_all_confirm_body = "This overwrites the per-collection record-history flag on every existing collection with the tenant default. Continue?"
+apply_all_confirm_title = "Apply to all collections?"
+apply_all_done_body = "Record-history flag updated on {n} collections."
+apply_all_done_title = "Applied"
+apply_all_hint = "Overwrites every existing collection with the tenant default above."
+default_cap_desc = "New collections start with record history on. Existing collections keep their own flag until you apply the default to all."
+default_cap_name = "Audit new collections by default"
+retention_days = "{n} days"
+retention_forever = "keep forever (retention disabled)"
+retention_hint = "History rows older than this are pruned daily. Set via env DRUST_AUDIT_HISTORY_RETENTION_DAYS; 0 keeps forever."
+retention_label = "Retention"
+sub = "Record history captures a full old/new row snapshot inside every write transaction. Read access is service/admin only."
+title = "Record history"
+update_failed_title = "Update failed"
+
+[tenant_settings.head]
+sub = "Tenant-level settings: display name and the record-history audit default. Everything else stays on its own page — see Related settings below."
+title = "Settings"
+
+[tenant_settings.meta]
+description = "drust admin — tenant {tenant_name}: settings (rename, record-history audit default)."
+
+[tenant_settings.rename]
+failed_title = "Rename failed"
+label = "Display name"
+save = "Save"
+sub = "Display name only — the tenant id, URLs, and API keys never change."
+title = "Rename"
+
+[tenant_settings.related]
+api_keys_desc = "anon/service keys · publish policy · self-register"
+functions_desc = "edge functions (wasm) · invoke ACL"
+oauth_desc = "per-tenant Google/GitHub sign-in"
+sub = "These live on their own pages — linked here, not moved."
+title = "Related settings"
+webhooks_desc = "outbound webhook subscriptions"
 
 [tenants_list.actions]
 new_tenant = "New tenant"
