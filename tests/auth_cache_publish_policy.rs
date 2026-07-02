@@ -18,6 +18,7 @@ async fn publish_policy_change_clears_tenant_entries() {
             publish_anon_allowed: false,
             email_snapshot: None,
             file_caps: Default::default(),
+            expires_at: None,
         },
     );
 

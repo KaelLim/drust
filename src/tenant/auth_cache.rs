@@ -24,6 +24,15 @@ use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+/// Parse a SQLite `datetime()` string ("YYYY-MM-DD HH:MM:SS", always UTC) into
+/// a chrono UTC timestamp. `None` if the input is not that exact shape — the
+/// caller then declines to cache rather than fail open to "never expires".
+pub fn parse_sqlite_utc(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|ndt| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc))
+}
+
 /// Cache-local role. The live `crate::tenant::router::TokenRole` is
 /// `Copy` and carries no data, so it cannot hold the PAT `admin_id`. This
 /// enum mirrors the three `AuthCtx` shapes a `Bearer` hit reconstructs:
@@ -55,6 +64,13 @@ pub enum CachedAuth {
         /// reconstruct the SAME `TenantFileCaps` the CTE path produces, never
         /// a default — a stale-empty hit would wrongly DENY a permitted op.
         file_caps: crate::tenant::file_caps::TenantFileCaps,
+        /// v1.45.1 (F3) — PAT expiry captured at fill time. `None` = a
+        /// never-expiring bearer (service/anon, or the unlabeled UI PAT whose
+        /// `expires_at` is NULL). `Some(t)` = a labeled CLI PAT; the router
+        /// hit path MUST reject once `Utc::now() >= t`, mirroring the `User`
+        /// variant, else an expired CLI PAT keeps resolving for up to
+        /// `safety_ttl` after it expires.
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// `drust_user_*` session bearer. `expires_at` is the cached source of
     /// truth → self-check, no `_system_sessions` read on a hit. The
@@ -233,6 +249,7 @@ mod tests {
                 publish_anon_allowed: false,
                 email_snapshot: Some("admin@x".to_string()),
                 file_caps: Default::default(),
+                expires_at: None,
             },
         );
         assert_eq!(c.len(), 1);
@@ -263,6 +280,7 @@ mod tests {
                 publish_anon_allowed: false,
                 email_snapshot: None,
                 file_caps: Default::default(),
+                expires_at: None,
             },
         );
         // Fresh: hit.
@@ -273,6 +291,32 @@ mod tests {
         assert!(c.get("h2").is_none());
         assert_eq!(c.misses(), 1);
         assert_eq!(c.len(), 0);
+    }
+
+    #[test]
+    fn bearer_entry_carries_expiry_field() {
+        let c = AuthCache::new(Duration::from_secs(10), 200_000);
+        let past = chrono::Utc::now() - chrono::Duration::seconds(1);
+        c.insert(
+            "h".into(),
+            CachedAuth::Bearer {
+                bound_tenant_id: "t".into(),
+                role: CachedRole::AdminPat { admin_id: 1 },
+                publish_user_allowed: false,
+                publish_anon_allowed: false,
+                email_snapshot: None,
+                file_caps: Default::default(),
+                expires_at: Some(past),
+            },
+        );
+        // The cache itself still returns it (freshness only); the router hit path
+        // is responsible for the expiry check — assert the field round-trips.
+        match c.get("h") {
+            Some(CachedAuth::Bearer { expires_at, .. }) => {
+                assert!(expires_at.is_some_and(|e| e < chrono::Utc::now()));
+            }
+            _ => panic!("expected Bearer"),
+        }
     }
 
     #[test]

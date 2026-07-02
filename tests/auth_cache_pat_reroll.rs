@@ -20,6 +20,7 @@ async fn pat_reroll_clears_cached_admin_pat_bearers() {
             publish_anon_allowed: false,
             email_snapshot: Some("admin42@x".to_string()),
             file_caps: Default::default(),
+            expires_at: None,
         },
     );
     // A different admin's PAT must survive.
@@ -32,6 +33,7 @@ async fn pat_reroll_clears_cached_admin_pat_bearers() {
             publish_anon_allowed: false,
             email_snapshot: Some("admin99@x".to_string()),
             file_caps: Default::default(),
+            expires_at: None,
         },
     );
 
