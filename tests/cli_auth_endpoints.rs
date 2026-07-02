@@ -339,6 +339,30 @@ async fn logout_revokes_the_authenticating_cli_token_and_fires_audit() {
     assert_eq!(r2.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// v1.45.1 (F6) — logout with the unlabeled UI PAT must report `{"revoked":false}`
+/// (the `label IS NOT NULL` scope correctly leaves the UI PAT alone; only the
+/// response used to lie). The UI PAT still resolves afterward.
+#[tokio::test]
+async fn logout_with_ui_pat_reports_not_revoked_and_leaves_it_active() {
+    let (app, dir) = spin_up().await;
+    let (_admin_id, ui_pat) = ui_pat_of(&dir);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/auth/cli/token")
+                .header(header::AUTHORIZATION, format!("Bearer {ui_pat}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["revoked"], serde_json::json!(false));
+    // UI PAT untouched → still resolves.
+    assert!(!is_revoked(&open_meta_ro(&dir), &hash_of(&ui_pat)));
+}
+
 // ─── T7 helpers (cookie-gated admin-UI revoke) ────────────────────────────────
 
 /// Insert an admin directly + create a session. Returns `(admin_id, cookie)`.
