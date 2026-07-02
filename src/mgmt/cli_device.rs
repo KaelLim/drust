@@ -143,7 +143,20 @@ pub async fn device_start(
 /// POST /auth/cli/device/poll — the RFC 8628 state machine. Always HTTP 200 with
 /// a `status` field for lifecycle states. An unknown code returns a flat
 /// `expired` (no enumeration signal).
-pub async fn device_poll(State(s): State<MgmtState>, Json(req): Json<PollReq>) -> Response {
+pub async fn device_poll(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(req): Json<PollReq>,
+) -> Response {
+    let fallback: std::net::SocketAddr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+    let ip = crate::safety::ip::client_ip(&headers, fallback);
+    if !s.cli_poll_rl.check(ip) {
+        return json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "RATE_LIMITED_IP",
+            "rate limited",
+        );
+    }
     let hash = hash_token(&req.device_code);
     let conn = s.meta.lock().await;
 

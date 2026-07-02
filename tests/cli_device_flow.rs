@@ -294,6 +294,29 @@ async fn start_rate_limited() {
 }
 
 #[tokio::test]
+async fn poll_rate_limited() {
+    // F5: the unauthenticated poll endpoint is per-IP rate-limited (60/60s).
+    let (app, _dir, _meta) = app().await;
+    let mk = || {
+        Request::builder()
+            .method("POST")
+            .uri("/auth/cli/device/poll")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", "8.8.8.8, 10.0.0.1")
+            .body(Body::from(r#"{"device_code":"nope"}"#))
+            .unwrap()
+    };
+    for _ in 0..60 {
+        let r = app.clone().oneshot(mk()).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+    let over = app.clone().oneshot(mk()).await.unwrap();
+    assert_eq!(over.status(), StatusCode::TOO_MANY_REQUESTS);
+    let v = jbody(over).await;
+    assert_eq!(v["error_code"], "RATE_LIMITED_IP");
+}
+
+#[tokio::test]
 async fn start_approve_poll_full_happy_path() {
     let (app, _d, _m) = app().await;
     let v = jbody(

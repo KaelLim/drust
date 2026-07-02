@@ -75,6 +75,11 @@ pub struct MgmtState {
     /// (device-code mint). Same 5/60 s shape as `admin_oauth_callback_rl` — the
     /// credential-mint op. `poll` is intentionally NOT under this cap.
     pub cli_device_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
+    /// v1.45.1 (F5) — per-IP limit on the unauthenticated device `poll` so a
+    /// flood of random device_codes cannot serialize the global meta mutex.
+    /// Generous (60/60s) because a legit CLI polls ~12/min; multiple clients
+    /// behind one NAT still fit.
+    pub cli_poll_rl: std::sync::Arc<crate::safety::rate_limit_ip::IpRateLimit>,
     /// v1.33 — Mode B per-file ceiling (bytes). Forwarded to TenantFilesState.
     pub large_upload_max_bytes: usize,
     /// v1.33 — Mode B per-chunk body limit (bytes). Forwarded to TenantFilesState.
@@ -695,6 +700,11 @@ impl MgmtState {
             )),
             cli_device_rl: Arc::new(crate::safety::rate_limit_ip::IpRateLimit::new(
                 5,
+                std::time::Duration::from_secs(60),
+                4096,
+            )),
+            cli_poll_rl: Arc::new(crate::safety::rate_limit_ip::IpRateLimit::new(
+                60,
                 std::time::Duration::from_secs(60),
                 4096,
             )),
