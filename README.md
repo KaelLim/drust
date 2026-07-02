@@ -13,7 +13,7 @@ vector search, and WebAssembly edge functions. One file per tenant. No database 
 [![MCP](https://img.shields.io/badge/MCP-native-7c3aed)](https://modelcontextprotocol.io)
 [![SQLite](https://img.shields.io/badge/SQLite-embedded-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](#zap-quickstart)
-[![Version](https://img.shields.io/badge/version-v1.41.5-success)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.45.1-success)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 [**Quickstart**](#zap-quickstart) · [**What you can build**](#rocket-what-you-can-build) · [**Why drust**](#bulb-why-drust) · [**Docs**](docs/architecture.md) · [繁體中文](README.zh.md)
@@ -45,6 +45,7 @@ Spinning up a Postgres or Supabase per project is overkill for the hundreds of s
 - **:closed_lock_with_key: Security that composes.** `owner_field` + per-operation RLS policies (structured Filter AST → `?`-bound SQL) AND-compose on every read/write/realtime surface. The write path **never** accepts raw SQL.
 - **:feather: Fast and dense.** ~15 MB idle, ~13k req/s on a laptop, dozens of tenants on a 256 MB box. Built in Rust on [axum](https://github.com/tokio-rs/axum) + [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk).
 - **:battery: Batteries included.** Realtime (SSE + WS rooms), vector search, wasm edge functions, stored RPCs, per-tenant OAuth, outbound webhooks (SSRF-guarded), S3 file storage with resumable uploads, typed-client codegen (OpenAPI / TS / Zod), Prometheus metrics, daily backups, and a Supabase-style admin UI.
+- **:computer: A gh-style CLI.** The `drust` command-line tool logs in via a browser **device flow** (`drust auth login` — no pasted token) and drives the host admin-plane (`drust admin tenants|keys|team|audit|backups`) plus per-tenant CRUD, all over the same HTTP surface. Prebuilt binaries ship per release for Linux (x86_64 / aarch64), macOS (Apple Silicon), and Windows.
 
 ## :bar_chart: How it compares
 
