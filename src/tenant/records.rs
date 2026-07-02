@@ -845,6 +845,9 @@ pub async fn create_handler(
         crate::query::policy::effective_policy_check(&ctx, &schema, DmlVerb::Insert).cloned();
     let auth_id_for_check: Option<String> = ctx.user_id().map(|s| s.to_string());
 
+    // v1.46 — history attribution, derived once from the request identity.
+    let actor = crate::storage::record_history::AuditActor::from_auth_ctx(&ctx);
+
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
@@ -926,6 +929,18 @@ pub async fn create_handler(
                     return Err(crate::query::policy::policy_check_sentinel());
                 }
             }
+            // v1.46 — history capture (in-tx, atomic). new = the persisted row;
+            // vectors already stripped from `rec` via `retain` above.
+            crate::storage::record_history::capture(
+                tx,
+                &coll_clone,
+                crate::storage::record_history::HistoryOp::Insert,
+                id,
+                None,
+                Some(&rec),
+                &actor,
+                schema.audit_enabled,
+            )?;
             Ok((id, rec))
         })
         .await;
@@ -1084,6 +1099,9 @@ pub async fn update_handler(
         .map(|v| v.name.clone())
         .collect();
 
+    // v1.46 — history attribution, derived once from the request identity.
+    let actor = crate::storage::record_history::AuditActor::from_auth_ctx(&ctx);
+
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
@@ -1126,6 +1144,20 @@ pub async fn update_handler(
                     return Err(rusqlite::Error::QueryReturnedNoRows);
                 }
             }
+            // v1.46 — pre-image for history, gated + owner-scoped (only the row
+            // this caller may update). Shared projector = plain prepare + vectors
+            // hidden (v1.43 reader-cache rule).
+            let old_json = if schema.audit_enabled {
+                crate::storage::record_history::select_row_json_owner(
+                    tx,
+                    &coll_clone,
+                    id,
+                    &owner_filter,
+                    &vector_names,
+                )?
+            } else {
+                None
+            };
             let set_exprs: Vec<String> = data
                 .keys()
                 .enumerate()
@@ -1205,6 +1237,18 @@ pub async fn update_handler(
                     return Err(crate::query::policy::policy_check_sentinel());
                 }
             }
+            // v1.46 — history capture (in-tx, atomic), AFTER the policy CHECK so
+            // a rejected update leaves no history row even before rollback.
+            crate::storage::record_history::capture(
+                tx,
+                &coll_clone,
+                crate::storage::record_history::HistoryOp::Update,
+                id,
+                old_json.as_ref(),
+                Some(&rec),
+                &actor,
+                schema.audit_enabled,
+            )?;
             Ok(rec)
         })
         .await;
@@ -1367,6 +1411,17 @@ pub async fn delete_handler(
         }
     }
 
+    // v1.46 — history attribution + gate. The delete closure never fetches the
+    // schema (it only issues the DELETE), so the gate + vector names come from
+    // the schema `require_write_cap` already returned above.
+    let actor = crate::storage::record_history::AuditActor::from_auth_ctx(&ctx);
+    let audit_enabled_flag = schema.audit_enabled;
+    let vec_names: std::collections::HashSet<String> = schema
+        .vector_fields
+        .iter()
+        .map(|v| v.name.clone())
+        .collect();
+
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
@@ -1399,12 +1454,37 @@ pub async fn delete_handler(
             } else {
                 String::new()
             };
+            // v1.46 — pre-image before the DELETE, owner-scoped (shared projector).
+            let old_json = if audit_enabled_flag {
+                crate::storage::record_history::select_row_json_owner(
+                    tx,
+                    &coll_clone,
+                    id,
+                    &owner_filter,
+                    &vec_names,
+                )?
+            } else {
+                None
+            };
             let sql = format!(
                 "DELETE FROM \"{}\" WHERE id = ?1{}",
                 coll_clone.replace('"', "\"\""),
                 owner_clause,
             );
-            tx.execute(&sql, rusqlite::params![id])
+            let n = tx.execute(&sql, rusqlite::params![id])?;
+            if n > 0 {
+                crate::storage::record_history::capture(
+                    tx,
+                    &coll_clone,
+                    crate::storage::record_history::HistoryOp::Delete,
+                    id,
+                    old_json.as_ref(),
+                    None,
+                    &actor,
+                    audit_enabled_flag,
+                )?;
+            }
+            Ok(n)
         })
         .await;
     match res {
