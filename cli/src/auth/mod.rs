@@ -82,13 +82,21 @@ async fn login(cli: &Cli, l: &LoginArgs) -> anyhow::Result<i32> {
         }
         (None, false) => anyhow::bail!("pass --url <instance incl. /drust> or --cloud"),
     };
-    let (token, console) = if let Some(pat) = &l.with_token {
-        // Phase-1 path preserved.
+    let (token, console) = if let Some(pat_arg) = &l.with_token {
+        let pat = if pat_arg == "-" {
+            use std::io::Read;
+            let mut s = String::new();
+            std::io::stdin().read_to_string(&mut s)?;
+            s.trim().to_string()
+        } else {
+            eprintln!("warning: passing a token on the command line leaks it into shell history and `ps`; prefer `--with-token -` to read it from stdin, or the default device flow");
+            pat_arg.clone()
+        };
         anyhow::ensure!(
             pat.starts_with("drust_pat_"),
             "token must be a drust_pat_* admin PAT"
         );
-        (pat.clone(), Some("default".to_string()))
+        (pat, Some("default".to_string()))
     } else {
         let label = l.label.clone().unwrap_or_else(default_label);
         let grant = crate::auth::device::run_device_flow(&base_url, &label, !l.no_browser).await?;
