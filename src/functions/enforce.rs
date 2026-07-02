@@ -122,7 +122,10 @@ pub async fn enforced_insert(
             auth_id: ctx.user_id().map(|s| s.to_string()),
         });
 
-    crate::mcp::tools::write::insert_record_checked(mcp, coll, data, policy_check).await
+    // v1.46 — the history row is attributed to the actual caller identity,
+    // never blanket-`service` (the wrappers inject `service()` themselves).
+    let actor = crate::storage::record_history::AuditActor::from_auth_ctx(ctx);
+    crate::mcp::tools::write::insert_record_checked(mcp, coll, data, policy_check, actor).await
 }
 
 /// UPDATE under the caller's identity. Decision order mirrors
@@ -180,6 +183,7 @@ pub async fn enforced_update(
             auth_id: ctx.user_id().map(|s| s.to_string()),
         });
 
+    let actor = crate::storage::record_history::AuditActor::from_auth_ctx(ctx);
     match crate::mcp::tools::write::update_record_checked(
         mcp,
         coll,
@@ -188,6 +192,7 @@ pub async fn enforced_update(
         owner_filter,
         using_sql,
         policy_check,
+        actor,
     )
     .await
     {
@@ -226,9 +231,16 @@ pub async fn enforced_delete(
     // it to the SAME `Err(RECORD_NOT_FOUND)` that `enforced_update` bails so a
     // guest sees ONE not-found shape across both write verbs (the host maps Err
     // → the WIT `result` error arm).
-    let res =
-        crate::mcp::tools::write::delete_record_filtered(mcp, coll, id, owner_filter, using_sql)
-            .await?;
+    let actor = crate::storage::record_history::AuditActor::from_auth_ctx(ctx);
+    let res = crate::mcp::tools::write::delete_record_filtered(
+        mcp,
+        coll,
+        id,
+        owner_filter,
+        using_sql,
+        actor,
+    )
+    .await?;
     if res.get("ok").and_then(|v| v.as_bool()) == Some(false) {
         anyhow::bail!("RECORD_NOT_FOUND: no such record");
     }

@@ -213,3 +213,103 @@ async fn disabled_collection_captures_nothing() {
         "gate off → no history row for the insert"
     );
 }
+
+// ── Task 5: MCP/edge write path (write.rs *_checked + enforce.rs) ────────────
+
+/// DrustMcp harness over a fresh tenant dir — same shape as
+/// `tests/mcp_write_schema.rs::svc`. `McpRegistry::new` builds with
+/// `meta: None`, so `create_collection` stamps the default-ON audit gate.
+async fn mcp_svc(dir: &tempfile::TempDir, tenant: &str) -> drust::mcp::server::DrustMcp {
+    let data = dir.path().to_path_buf();
+    let tr = std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(data.clone(), 2));
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::mcp::server::McpRegistry::new(tr)
+        .get_or_create(tenant)
+        .await
+        .unwrap()
+}
+
+fn fld(name: &str, ty: &str) -> drust::mcp::tools::schema::FieldSpec {
+    drust::mcp::tools::schema::FieldSpec {
+        name: name.into(),
+        sql_type: ty.into(),
+        nullable: true,
+        unique: false,
+        default_value: None,
+        foreign_key: None,
+        dim: None,
+        description: None,
+        ..Default::default()
+    }
+}
+
+// Edge-function/MCP path: MCP service write → service actor.
+#[tokio::test]
+async fn mcp_service_write_captures_service_actor() {
+    let d = tempfile::tempdir().unwrap();
+    let svc = mcp_svc(&d, "mcphist").await;
+    drust::mcp::tools::schema::create_collection(&svc, "notes", &[fld("body", "text")])
+        .await
+        .unwrap();
+    drust::mcp::tools::write::insert_record(&svc, "notes", serde_json::json!({"body": "x"}))
+        .await
+        .unwrap();
+    let ak: String = svc
+        .inner()
+        .pool
+        .with_reader(|c| {
+            c.query_row("SELECT actor_kind FROM _system_record_history", [], |r| {
+                r.get(0)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(ak, "service");
+}
+
+// enforced_insert with AuthCtx::User → actor_kind='user', actor_id=user_id.
+#[tokio::test]
+async fn enforced_user_write_captures_user_actor() {
+    let d = tempfile::tempdir().unwrap();
+    let svc = mcp_svc(&d, "mcphist").await;
+    drust::mcp::tools::schema::create_collection(&svc, "notes", &[fld("body", "text")])
+        .await
+        .unwrap();
+    // default user_caps = [select] → grant insert so the cap gate passes.
+    drust::mcp::tools::schema::set_user_caps(
+        &svc,
+        "notes",
+        &[
+            drust::storage::schema::DmlVerb::Select,
+            drust::storage::schema::DmlVerb::Insert,
+        ],
+    )
+    .await
+    .unwrap();
+    let ctx = drust::auth::middleware::AuthCtx::User {
+        user_id: "u9".into(),
+        token_hash: "x".into(),
+    };
+    drust::functions::enforce::enforced_insert(
+        &svc,
+        &ctx,
+        "notes",
+        serde_json::json!({"body": "y"}),
+    )
+    .await
+    .unwrap();
+    let (ak, ai): (String, String) = svc
+        .inner()
+        .pool
+        .with_reader(|c| {
+            c.query_row(
+                "SELECT actor_kind, actor_id FROM _system_record_history",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(ak, "user");
+    assert_eq!(ai, "u9");
+}
