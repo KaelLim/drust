@@ -5,11 +5,11 @@ use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{
     CollectionSchema, DmlVerb, collection_exists, describe_collection, has_dml_cap,
-    is_protected_collection,
+    is_protected_collection, write_audit_enabled,
 };
 use crate::tenant::WebhookDispatcher;
 use crate::tenant::events::{Event, EventBus};
-use crate::tenant::router::TenantRef;
+use crate::tenant::router::{TenantRef, TokenRole};
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -1609,6 +1609,80 @@ pub async fn history_handler(
             &e.to_string(),
         ),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PutAuditBody {
+    pub enabled: bool,
+}
+
+/// v1.46 — `PUT /t/{tenant}/collections/{coll}/audit` body `{"enabled": bool}`.
+/// Service-only config toggle for the record-history capture gate
+/// (`_system_collection_meta.audit_enabled`). Mirrors the realtime toggle's
+/// shape MINUS the bus eviction — flipping audit changes what is RECORDED,
+/// never what a subscriber may SEE, so in-flight SSE connections stay up.
+pub async fn put_audit_handler(
+    Extension(t): Extension<TenantRef>,
+    Path((_tenant, coll)): Path<(String, String)>,
+    Json(body): Json<PutAuditBody>,
+) -> Response {
+    // 1. service-only (same posture as the MCP `set_audit_enabled` tool).
+    if !matches!(t.role, TokenRole::Service) {
+        return json_error_with_aliases(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            &["SERVICE_REQUIRED"],
+            "service token required",
+        );
+    }
+    // 2. protected.
+    if is_protected_collection(&coll) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "PROTECTED_COLLECTION",
+            "cannot toggle audit on _system_ collection",
+        );
+    }
+    // 3. existence check folded inside the writer closure (TOCTOU vs a
+    //    concurrent drop_collection), then upsert the gate.
+    let pool = t.pool.clone();
+    let coll_w = coll.clone();
+    let enabled = body.enabled;
+    let wrote = pool
+        .with_writer(move |c| -> rusqlite::Result<bool> {
+            if !collection_exists(c, &coll_w)? {
+                return Ok(false);
+            }
+            write_audit_enabled(c, &coll_w, enabled)?;
+            Ok(true)
+        })
+        .await;
+    match wrote {
+        Ok(true) => {}
+        Ok(false) => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "COLLECTION_NOT_FOUND",
+                "no such collection",
+            );
+        }
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
+    }
+    // 4. refresh the cached CollectionSchema the write choke points read.
+    //    NO bus eviction — see the doc comment above.
+    pool.schema_cache.invalidate(&coll);
+    Json(json!({
+        "ok": true,
+        "collection": coll,
+        "audit_enabled": enabled,
+    }))
+    .into_response()
 }
 
 #[cfg(test)]

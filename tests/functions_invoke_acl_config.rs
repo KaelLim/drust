@@ -170,13 +170,14 @@ async fn mcp_set_function_invoke_acl_happy_path() {
 }
 
 #[test]
-fn mcp_exposes_fifty_nine_tools() {
-    // T5 adds `set_function_invoke_acl`, bumping the documented MCP tool count
-    // from 58 to 59. `tool_count()` is derived from the macro-generated router,
-    // so this pins router reality to the spec'd number.
+fn mcp_exposes_sixty_one_tools() {
+    // v1.46 adds `set_audit_enabled` + `get_record_history`, bumping the
+    // documented MCP tool count from 59 to 61. `tool_count()` is derived from
+    // the macro-generated router, so this pins router reality to the spec'd
+    // number.
     assert_eq!(
         drust::mcp::handler::DrustMcpService::tool_count(),
-        59,
-        "MCP tool count must be 59 after adding set_function_invoke_acl"
+        61,
+        "MCP tool count must be 61 after adding set_audit_enabled + get_record_history"
     );
 }
