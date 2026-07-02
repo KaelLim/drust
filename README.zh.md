@@ -13,7 +13,7 @@
 [![MCP](https://img.shields.io/badge/MCP-native-7c3aed)](https://modelcontextprotocol.io)
 [![SQLite](https://img.shields.io/badge/SQLite-embedded-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](#zap-快速開始)
-[![Version](https://img.shields.io/badge/version-v1.41.5-success)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.45.1-success)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
 [**快速開始**](#zap-快速開始) · [**你能做什麼**](#rocket-你能做什麼) · [**為何選 drust**](#bulb-為何選-drust) · [**文件**](docs/architecture.md) · [English](README.md)
@@ -45,6 +45,7 @@
 - **:closed_lock_with_key: 會疊加的安全。** `owner_field` + per-operation RLS policy（結構化 Filter AST → `?`-bound SQL）在每個讀/寫/realtime 面 AND 疊加。寫入路徑**永不**吃 raw SQL。
 - **:feather: 最快又最密。** idle 約 15 MB、筆電上約 13k req/s、256 MB 的機器塞數十個租戶。以 Rust 建構於 [axum](https://github.com/tokio-rs/axum) + [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk)。
 - **:battery: 電池全附。** Realtime（SSE + WS rooms）、向量搜尋、wasm edge functions、stored RPC、per-tenant OAuth、outbound webhooks（含 SSRF 防護）、S3 檔案儲存含可續傳上傳、型別化 client codegen（OpenAPI / TS / Zod）、Prometheus metrics、每日備份，以及 Supabase 風格後台。
+- **:computer: gh 風 CLI。** `drust` 命令列工具以瀏覽器 **device flow** 登入（`drust auth login`，不貼 token），操作 host admin-plane（`drust admin tenants|keys|team|audit|backups`)與 per-tenant CRUD，全走同一套 HTTP 介面。每次 release 附 Linux（x86_64 / aarch64）、macOS（Apple Silicon）、Windows 預編 binary。
 
 ## :bar_chart: 對照
 
