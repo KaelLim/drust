@@ -387,6 +387,7 @@ async fn main() -> anyhow::Result<()> {
         admin_login_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         admin_oauth_callback_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
         cli_device_rl: Arc::new(IpRateLimit::new(5, Duration::from_secs(60), 4096)),
+        cli_poll_rl: Arc::new(IpRateLimit::new(60, Duration::from_secs(60), 4096)),
         large_upload_max_bytes: lu_max,
         large_upload_chunk_max_bytes: lu_chunk,
         large_upload_max_sessions_per_tenant: lu_sessions,
