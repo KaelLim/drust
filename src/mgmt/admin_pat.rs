@@ -358,23 +358,24 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
         Ok(c) => c,
         Err(e) => return e,
     };
-    {
+    let n = {
         let conn = s.meta.lock().await;
-        if let Err(e) = conn.execute(
+        match conn.execute(
             "UPDATE _admin_tokens SET revoked_at = datetime('now') \
-             WHERE id = ?1 AND admin_id = ?2 AND label IS NOT NULL",
+             WHERE id = ?1 AND admin_id = ?2 AND label IS NOT NULL AND revoked_at IS NULL",
             params![caller.token_id, caller.admin_id],
         ) {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL",
-                &e.to_string(),
-            );
+            Ok(n) => n,
+            Err(e) => {
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            }
         }
+    };
+    if n > 0 {
+        s.auth_cache.clear_admin_pat(caller.admin_id);
+        emit_audit_revoke(caller.admin_id);
     }
-    s.auth_cache.clear_admin_pat(caller.admin_id);
-    emit_audit_revoke(caller.admin_id);
-    Json(serde_json::json!({ "revoked": true })).into_response()
+    Json(serde_json::json!({ "revoked": n > 0 })).into_response()
 }
 
 /// `POST /admin/settings/cli-tokens/{id}/revoke` — admin-UI per-row revoke of a
