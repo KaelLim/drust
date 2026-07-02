@@ -85,31 +85,26 @@ pub async fn admin_session_layer(
         req.extensions_mut().insert(AdminId(id));
         return next.run(req).await;
     }
-    // 2. Admin-PAT fallback (T5). Only a drust_pat_* bearer is an admin credential.
-    let bearer = extract_bearer(&req);
-    if let Some(tok) = bearer
-        .as_deref()
-        .filter(|t| t.starts_with(admin_token::TOKEN_PREFIX))
-    {
-        let hit = {
-            let conn = state.meta.lock().await;
-            admin_token::lookup(&conn, tok).ok().flatten()
-        };
-        match hit {
-            Some(h) => {
+    // 2. Admin-PAT fallback (T5). A PRESENT bearer is always a credential
+    //    attempt → JSON 401 on failure, never a browser redirect (invariant).
+    if let Some(tok) = extract_bearer(&req) {
+        if tok.starts_with(admin_token::TOKEN_PREFIX) {
+            let hit = {
+                let conn = state.meta.lock().await;
+                admin_token::lookup(&conn, &tok).ok().flatten()
+            };
+            if let Some(h) = hit {
                 req.extensions_mut().insert(AdminId(h.admin_id));
                 return next.run(req).await;
             }
-            None => {
-                return json_error(
-                    StatusCode::UNAUTHORIZED,
-                    "ADMIN_PAT_INVALID",
-                    "admin PAT invalid, expired, or revoked",
-                );
-            }
         }
+        return json_error(
+            StatusCode::UNAUTHORIZED,
+            "ADMIN_PAT_INVALID",
+            "admin PAT invalid, expired, or revoked",
+        );
     }
-    // 3. No admin credential — content negotiate (browser 302 preserved).
+    // 3. No credential at all — content negotiate (browser 303 preserved).
     if wants_json(&req) {
         return json_error(
             StatusCode::UNAUTHORIZED,

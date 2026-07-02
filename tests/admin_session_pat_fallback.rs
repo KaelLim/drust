@@ -128,6 +128,29 @@ async fn revoked_pat_gets_401() {
 }
 
 #[tokio::test]
+async fn present_malformed_bearer_browser_gets_401_not_303() {
+    // F13: a PRESENT bearer is always a credential attempt -> JSON 401, even
+    // for a browser (no Accept: application/json). Only a truly absent bearer
+    // falls to the content-negotiated 303 redirect.
+    let (app, _p, _c) = app().await;
+    let r = app
+        .oneshot(
+            req("/whoami")
+                .header(header::AUTHORIZATION, "Bearer garbage")
+                .header(header::ACCEPT, "text/html,application/xhtml+xml")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::UNAUTHORIZED,
+        "present non-PAT bearer must 401, never 303"
+    );
+}
+
+#[tokio::test]
 async fn valid_cookie_still_passes() {
     let (app, _p, cookie) = app().await;
     let r = app
