@@ -273,26 +273,35 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
                 );
             }
         };
+        // v1.45.1 (F2) — revoke the old row FIRST, conditional on it still being
+        // active, and require exactly one row. A concurrent/replayed refresh of
+        // the same token loses this race (0 rows) → abort WITHOUT minting a
+        // second successor. resolve_cli_caller ran outside this tx, so the row
+        // may already be revoked by a racing refresh.
+        let revoked = match tx.execute(
+            "UPDATE _admin_tokens SET revoked_at = datetime('now') \
+             WHERE id = ?1 AND revoked_at IS NULL",
+            params![caller.token_id],
+        ) {
+            Ok(n) => n,
+            Err(e) => {
+                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            }
+        };
+        if revoked != 1 {
+            // tx drops → rollback; nothing minted.
+            return json_error(
+                StatusCode::CONFLICT,
+                "CLI_TOKEN_ALREADY_ROTATED",
+                "this CLI token was already rotated or revoked; log in again",
+            );
+        }
         if let Err(e) = tx.execute(
             "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext, label, expires_at) \
              VALUES (?1, ?2, ?3, ?4, datetime('now', ?5))",
             params![caller.admin_id, hash_new, plaintext_new, label, ttl_mod],
         ) {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL",
-                &e.to_string(),
-            );
-        }
-        if let Err(e) = tx.execute(
-            "UPDATE _admin_tokens SET revoked_at = datetime('now') WHERE id = ?1",
-            params![caller.token_id],
-        ) {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL",
-                &e.to_string(),
-            );
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
         }
         let exp: String = match tx.query_row(
             "SELECT expires_at FROM _admin_tokens WHERE token_hash = ?1",

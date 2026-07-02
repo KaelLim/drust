@@ -210,6 +210,34 @@ async fn refresh_mints_labeled_pat_and_revokes_only_the_old_one() {
     assert!(!is_revoked(&c, &hash_of(&ui_pat))); // UI PAT survives
 }
 
+/// v1.45.1 (F2) — two concurrent refreshes of the SAME CLI PAT must never leave
+/// two active successors. The meta mutex is released between `resolve_cli_caller`
+/// and the mint/revoke tx, so both requests can resolve the token as active; the
+/// fix revokes-conditional FIRST inside the tx and aborts (409) the loser instead
+/// of minting a second successor. Shared router (one meta connection, as in prod)
+/// on a 2-worker runtime: tokio Mutex FIFO fairness forces both resolves ahead of
+/// the tx phase, so pre-fix this reliably leaves 2 active labeled PATs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_refresh_replay_never_mints_a_second_active_pat() {
+    let (app, dir) = spin_up().await;
+    let (admin_id, _ui) = ui_pat_of(&dir);
+    let (_, old_cli) = seed_cli_pat(&dir, "cli:laptop");
+    let (a, b) = (app.clone(), app.clone());
+    let (t1, t2) = (old_cli.clone(), old_cli.clone());
+    let h1 =
+        tokio::spawn(async move { a.oneshot(post_bearer("/auth/cli/token/refresh", &t1)).await });
+    let h2 =
+        tokio::spawn(async move { b.oneshot(post_bearer("/auth/cli/token/refresh", &t2)).await });
+    let s1 = h1.await.unwrap().unwrap().status();
+    let s2 = h2.await.unwrap().unwrap().status();
+    let c = open_meta_ro(&dir);
+    assert_eq!(
+        active_labeled_count(&c, admin_id),
+        1,
+        "a replayed refresh minted a second active PAT (statuses={s1:?}, {s2:?})"
+    );
+}
+
 #[tokio::test]
 async fn refresh_refuses_the_unlabeled_ui_pat() {
     let (app, dir) = spin_up().await;
