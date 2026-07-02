@@ -66,13 +66,22 @@ pub async fn run(cli: &Cli, a: &CollectionsArgs) -> anyhow::Result<i32> {
         CollectionsCmd::Drop { coll } =>
             finish(&ctx, mcp::call_tool(c, t, "drop_collection", serde_json::json!({"collection":coll})).await),
         CollectionsCmd::SetCaps { coll, anon, user } => {
+            if anon.is_none() && user.is_none() {
+                anyhow::bail!("pass --anon and/or --user (a JSON caps array)");
+            }
             if let Some(a) = anon {
-                let _ = mcp::call_tool(c, t, "set_anon_caps",
+                let r = mcp::call_tool(c, t, "set_anon_caps",
                     serde_json::json!({"collection":coll,"caps": serde_json::from_str::<serde_json::Value>(a)?})).await;
+                if r.is_err() {
+                    return finish(&ctx, r);
+                }
             }
             if let Some(u) = user {
-                let _ = mcp::call_tool(c, t, "set_user_caps",
+                let r = mcp::call_tool(c, t, "set_user_caps",
                     serde_json::json!({"collection":coll,"caps": serde_json::from_str::<serde_json::Value>(u)?})).await;
+                if r.is_err() {
+                    return finish(&ctx, r);
+                }
             }
             ctx.renderer.value(&serde_json::json!({"ok":true}));
             Ok(0)
