@@ -151,6 +151,23 @@ pub struct SetRealtimeArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetAuditEnabledArgs {
+    pub collection: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetRecordHistoryArgs {
+    pub collection: String,
+    /// Optional — restrict the trail to one record's id.
+    #[serde(default)]
+    pub record_id: Option<i64>,
+    /// 1..=200; defaults to 50 (newest first).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetPolicyArgs {
     pub collection: String,
     /// One of "select" | "insert" | "update" | "delete".
@@ -884,6 +901,56 @@ impl DrustMcpService {
         }): Parameters<SetRealtimeArgs>,
     ) -> Result<CallToolResult, McpError> {
         match crate::mcp::tools::realtime::set_realtime(&self.state, &collection, enabled).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.46 — Toggle record-history capture for one \
+        collection. When enabled (the default), every insert/update/delete \
+        writes a full old/new row snapshot into the tenant's \
+        _system_record_history trail, atomically with the mutation; when \
+        disabled, new writes leave no trail (rows already captured are kept \
+        until retention prunes them, default 7 days). Does NOT affect SSE or \
+        row visibility. Read the trail back with `get_record_history`. \
+        Refuses `_system_*` collections.")]
+    async fn set_audit_enabled(
+        &self,
+        Parameters(SetAuditEnabledArgs {
+            collection,
+            enabled,
+        }): Parameters<SetAuditEnabledArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::audit::set_audit_enabled(&self.state, &collection, enabled).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.46 — Read one collection's record-history trail \
+        (newest first): rows {id, op: insert|update|delete, old, new, \
+        actor_kind, actor_id, ts} carrying full old/new row snapshots \
+        captured atomically with each write. Pass `record_id` to follow one \
+        record's timeline; `limit` is 1..=200 (default 50), `total` reports \
+        the full match count. Service-only — history aggregates every user's \
+        row values. Rows older than the retention window (default 7 days) \
+        are pruned.")]
+    async fn get_record_history(
+        &self,
+        Parameters(GetRecordHistoryArgs {
+            collection,
+            record_id,
+            limit,
+        }): Parameters<GetRecordHistoryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::audit::get_record_history(
+            &self.state,
+            &collection,
+            record_id,
+            limit,
+        )
+        .await
+        {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }

@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod exploration;
 pub mod files;
 pub mod functions;
