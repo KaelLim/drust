@@ -230,7 +230,7 @@ pub async fn cli_whoami(State(s): State<MgmtState>, headers: HeaderMap) -> Respo
 }
 
 /// CLI-PAT lifetime in seconds (`DRUST_CLI_PAT_TTL_SECS`, default 24h, D-10).
-fn cli_pat_ttl_secs() -> i64 {
+pub(crate) fn cli_pat_ttl_secs() -> i64 {
     std::env::var("DRUST_CLI_PAT_TTL_SECS")
         .ok()
         .and_then(|v| v.parse().ok())

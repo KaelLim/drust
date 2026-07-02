@@ -82,6 +82,30 @@ async fn jbody(r: axum::http::Response<Body>) -> serde_json::Value {
     serde_json::from_slice(&b).unwrap()
 }
 
+/// F1: the approval CSRF token is HMAC-bound to `user_code`, so a test must read
+/// the real value the server bakes into the page's `drust_cli_csrf` cookie.
+async fn fetch_csrf(app: &axum::Router, cookie: &str, uc: &str) -> String {
+    let page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/auth/cli/device?user_code={uc}"))
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    page.headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|c| c.to_str().ok())
+        .find_map(|c| c.strip_prefix("drust_cli_csrf="))
+        .map(|c| c.split(';').next().unwrap().to_string())
+        .expect("csrf cookie set on page")
+}
+
 #[tokio::test]
 async fn page_redirects_without_session() {
     // browser invariant preserved
@@ -225,4 +249,59 @@ async fn deny_requires_csrf_then_flips_status() {
         )
         .unwrap();
     assert_eq!(s, "denied");
+}
+
+#[tokio::test]
+#[serial_test::serial(env_cli_pat_ttl)]
+async fn approve_honors_pat_ttl_env() {
+    // F9: the minted CLI PAT honors DRUST_CLI_PAT_TTL_SECS, not the 24h const.
+    // SAFETY: the serial wrapper ensures no concurrent env access.
+    unsafe {
+        std::env::set_var("DRUST_CLI_PAT_TTL_SECS", "300");
+    }
+    let (app, _d, meta) = app().await;
+    let v = jbody(
+        post_json(
+            &app,
+            "/auth/cli/device/start",
+            serde_json::json!({"client_name":"lappy"}),
+        )
+        .await,
+    )
+    .await;
+    let uc = v["user_code"].as_str().unwrap().to_string();
+    let cookie = login(&app).await;
+    let csrf = fetch_csrf(&app, &cookie, &uc).await;
+    let combined = format!("{cookie}; drust_cli_csrf={csrf}");
+    let appr = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/cli/device/approve")
+                .header(header::COOKIE, combined)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("user_code={uc}&csrf={csrf}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(appr.status().is_success());
+    let secs: i64 = meta
+        .lock()
+        .await
+        .query_row(
+            "SELECT CAST((julianday(expires_at) - julianday('now')) * 86400 AS INTEGER) \
+             FROM _admin_tokens WHERE admin_id=1 AND label IS NOT NULL AND revoked_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    unsafe {
+        std::env::remove_var("DRUST_CLI_PAT_TTL_SECS");
+    }
+    assert!(
+        (200..400).contains(&secs),
+        "expires_at should be ~300s out (DRUST_CLI_PAT_TTL_SECS), got {secs}"
+    );
 }
