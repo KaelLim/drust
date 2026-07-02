@@ -189,7 +189,14 @@
 <script>
   (function () {
     var dataEl = document.getElementById('audit-entries');
-    if (!dataEl || !window.drustUI) return;
+    // NOTE: do NOT gate on window.drustUI here — this IIFE runs at parse time,
+    // but _modal.html (which defines window.drustUI) is included AFTER this body
+    // in audit_tenant/audit_host, so drustUI is not defined yet. Gating here
+    // would silently skip binding every row (click-to-open dead). The .tl-row
+    // elements already exist above this script, so bind now and check drustUI at
+    // click time inside openDetail (drustUI exists by then), matching how every
+    // other page uses it.
+    if (!dataEl) return;
     var entries;
     try { entries = JSON.parse(dataEl.textContent); } catch (e) { return; }
 
@@ -218,7 +225,7 @@
     }
 
     function openDetail(e) {
-      if (!e) return;
+      if (!e || !window.drustUI) return;
       var fields = [];
       fields.push(field(L.timestamp, e.ts, { mono: true }));
       var displayTenant = e.tenant === '-' ? 'admin' : (e.tenant_name || e.tenant);
