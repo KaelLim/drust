@@ -106,6 +106,9 @@ mod tests {
         write_0600(&p, "active_host = \"t\"\n").unwrap();
         let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "active_host = \"t\"\n");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "active_host = \"t\"\n"
+        );
     }
 }

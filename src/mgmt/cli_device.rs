@@ -655,7 +655,10 @@ mod gen_tests {
         assert!(check_csrf(&h, "forged", "ABCD-EFGH").is_err());
         // the server-issued token passes double-submit:
         let mut h2 = HeaderMap::new();
-        h2.insert(header::COOKIE, format!("drust_cli_csrf={a}").parse().unwrap());
+        h2.insert(
+            header::COOKIE,
+            format!("drust_cli_csrf={a}").parse().unwrap(),
+        );
         assert!(check_csrf(&h2, &a, "ABCD-EFGH").is_ok());
     }
     #[test]

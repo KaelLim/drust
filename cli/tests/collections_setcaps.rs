@@ -14,7 +14,14 @@ async fn login(tmp: &std::path::Path, uri: &str) {
         .unwrap()
         .env("XDG_CONFIG_HOME", tmp)
         .args([
-            "auth", "login", "--host", "t", "--url", uri, "--with-token", "drust_pat_cli_a",
+            "auth",
+            "login",
+            "--host",
+            "t",
+            "--url",
+            uri,
+            "--with-token",
+            "drust_pat_cli_a",
         ])
         .assert()
         .success();
