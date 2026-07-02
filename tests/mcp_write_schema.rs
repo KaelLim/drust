@@ -828,3 +828,40 @@ async fn delete_record_with_unknown_id_returns_record_not_found() {
     );
     assert_eq!(resp["ok"], false);
 }
+
+#[tokio::test]
+async fn create_collection_defaults_audit_enabled_to_one() {
+    // v1.46 — a new collection inherits the tenant's `audit_default`. The
+    // test harness `McpRegistry::new` has `meta: None`, which maps to the
+    // default-ON posture (spec §5.2 / D4), so the stamped flag must be true.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "notes",
+        &[FieldSpec {
+            name: "body".into(),
+            sql_type: "text".into(),
+            nullable: false,
+            unique: false,
+            default_value: None,
+            foreign_key: None,
+            dim: None,
+            description: None,
+            ..Default::default()
+        }],
+    )
+    .await
+    .unwrap();
+    let schema = s
+        .inner()
+        .pool
+        .with_reader(|c| drust::storage::schema::describe_collection(c, "notes"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        schema.audit_enabled,
+        "new collection inherits audit_default=1"
+    );
+}

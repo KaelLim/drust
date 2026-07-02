@@ -106,7 +106,12 @@ CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
   select_policy_json       TEXT,
   insert_policy_json       TEXT,
   update_policy_json       TEXT,
-  delete_policy_json       TEXT
+  delete_policy_json       TEXT,
+  -- v1.46: record-history capture gate (default ON, D4 posture). Kept in
+  -- lockstep with the migrate_tenant_db add_column_if_missing (v1.32.8
+  -- parity rule: runtime-created tenants only see this CREATE, never the
+  -- boot migration pass, so the column must exist in both).
+  audit_enabled            INTEGER NOT NULL DEFAULT 1
 );
 
 -- v1.6: stored RPC functions (Supabase-style named SELECTs).

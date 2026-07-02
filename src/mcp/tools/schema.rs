@@ -415,6 +415,31 @@ pub async fn create_collection_with_desc(
             }
         })
         .collect();
+    // v1.46 — new collections inherit the tenant's audit default (spec §5.2).
+    // Cold DDL path: a single meta read is acceptable here (the hot write
+    // path never touches the meta mutex). `meta` is None in test-only ctors
+    // → default ON (matches the column DEFAULT and the D4 posture).
+    let audit_default: bool = {
+        use rusqlite::OptionalExtension;
+        let inner = s.inner();
+        match inner.meta.as_ref() {
+            Some(m) => {
+                let tid = inner.tenant_id.clone();
+                let conn = m.lock().await;
+                conn.query_row(
+                    "SELECT audit_default FROM tenants WHERE id = ?1",
+                    rusqlite::params![tid],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()
+                .ok()
+                .flatten()
+                .unwrap_or(1)
+                    != 0
+            }
+            None => true,
+        }
+    };
     let pool = s.inner().pool.clone();
     let pool2 = pool.clone();
     let meta_name = name.to_string();
@@ -427,6 +452,9 @@ pub async fn create_collection_with_desc(
         // 3. v1.16: opt-in posture. Existing collections were backfilled to
         // 1 by the migration; brand-new collections start at 0.
         crate::storage::schema::write_realtime_enabled(tx, &meta_name, false)?;
+        // 3b. v1.46 — stamp the record-history gate from the tenant's
+        // audit_default (materialized, not read-time-inherited — spec §5.2).
+        crate::storage::schema::write_audit_enabled(tx, &meta_name, audit_default)?;
         // 4. Vector fields (if any).
         if !vector_fields.is_empty() {
             crate::storage::schema::write_vector_fields(tx, &meta_name, &vector_fields)?;

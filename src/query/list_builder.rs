@@ -285,6 +285,7 @@ mod tests {
                 dim: 8,
             }],
             realtime_enabled: true,
+            audit_enabled: true,
             description: None,
             policies: Default::default(),
         }
