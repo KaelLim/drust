@@ -453,6 +453,7 @@ functions = "函式"
 logs = "日誌"
 oauth_providers = "OAuth 供應商"
 overview = "總覽"
+settings = "設定"
 stored_rpc = "已儲存 RPC"
 webhooks = "Webhooks"
 
@@ -473,6 +474,9 @@ backend = "後端"
 collections = "資料表"
 connect = "連線"
 home = "首頁"
+
+[collection_sidebar.settings]
+title = "重新命名 · 紀錄歷史預設"
 
 [collection_sidebar.status]
 healthy = "租戶健康"
@@ -1104,6 +1108,45 @@ truncated = "已截斷"
 
 [tenant_rpc_test.sql]
 heading = "SQL"
+
+[tenant_settings.audit]
+apply_all_button = "套用預設到所有資料表"
+apply_all_confirm_body = "這會以租戶預設值覆寫每個既有資料表的紀錄歷史開關。要繼續嗎？"
+apply_all_confirm_title = "套用到所有資料表？"
+apply_all_done_body = "已更新 {n} 個資料表的紀錄歷史開關。"
+apply_all_done_title = "已套用"
+apply_all_hint = "會以上方租戶預設值覆寫所有既有資料表。"
+default_cap_desc = "新建立的資料表預設開啟紀錄歷史；既有資料表維持各自的開關，直到你套用預設到所有資料表。"
+default_cap_name = "新資料表預設開啟稽核"
+retention_days = "{n} 天"
+retention_forever = "永久保留（已停用清理）"
+retention_hint = "超過此天數的歷史紀錄每日清理。由環境變數 DRUST_AUDIT_HISTORY_RETENTION_DAYS 設定；0 表示永久保留。"
+retention_label = "保留期"
+sub = "紀錄歷史會在每筆寫入交易內擷取完整的新舊列快照，僅限 service/admin 讀取。"
+title = "紀錄歷史"
+update_failed_title = "更新失敗"
+
+[tenant_settings.head]
+sub = "租戶層級設定：顯示名稱與紀錄歷史稽核預設。其他設定仍在各自頁面 — 見下方相關設定。"
+title = "設定"
+
+[tenant_settings.meta]
+description = "drust admin — 租戶 {tenant_name}：設定（重新命名、紀錄歷史稽核預設）。"
+
+[tenant_settings.rename]
+failed_title = "重新命名失敗"
+label = "顯示名稱"
+save = "儲存"
+sub = "僅變更顯示名稱 — 租戶 id、URL 與 API 金鑰皆不變。"
+title = "重新命名"
+
+[tenant_settings.related]
+api_keys_desc = "anon/service 金鑰 · 發佈政策 · 自助註冊"
+functions_desc = "邊緣函式（wasm）· 呼叫 ACL"
+oauth_desc = "租戶專屬 Google/GitHub 登入"
+sub = "這些設定仍在各自頁面 — 此處僅提供連結，未搬移。"
+title = "相關設定"
+webhooks_desc = "對外 webhook 訂閱"
 
 [tenants_list.actions]
 new_tenant = "新增租戶"

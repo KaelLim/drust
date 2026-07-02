@@ -1,0 +1,201 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ t.s("common.app.title") }} — {{ tenant_name }} / _settings{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.fmt1("tenant_settings.meta.description", "tenant_name", tenant_name) }}">{% endblock %}
+{% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
+
+{% block content %}
+    <div class="page page-wide">
+
+        <div class="view-head">
+          <div class="grow">
+            <div class="eyebrow">{{ t.s("common.eyebrow.tenant_backend") }}</div>
+            <h1 class="view-title">{{ t.s("tenant_settings.head.title") }}</h1>
+            <p class="view-sub">{{ t.s("tenant_settings.head.sub") }}</p>
+          </div>
+        </div>
+
+        <!-- 1. Rename — display name only; tenant id / URL slug never changes. -->
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">{{ t.s("tenant_settings.rename.title") }}</div>
+              <div class="card-sub">{{ t.s("tenant_settings.rename.sub") }}</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <form id="rename-form" onsubmit="return false;" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+              <div class="field" style="flex:1;min-width:240px;max-width:420px;">
+                <label for="tenant-name-input">{{ t.s("tenant_settings.rename.label") }}</label>
+                <input class="input" id="tenant-name-input" name="name" maxlength="200" required
+                       autocomplete="off" spellcheck="false" value="{{ tenant_name }}">
+              </div>
+              <button type="submit" class="btn primary" id="rename-save">{{ t.s("tenant_settings.rename.save") }}</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- 2. Record-history audit — tenant default + retention + apply-to-all. -->
+        <div class="card" style="margin-top:22px;">
+          <div class="card-head">
+            <div>
+              <div class="card-title">{{ t.s("tenant_settings.audit.title") }}</div>
+              <div class="card-sub">{{ t.s("tenant_settings.audit.sub") }}</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <form id="audit-default-form" onsubmit="return false;">
+              <label class="cap-tile{% if audit_default %} on{% endif %}" style="max-width:520px;">
+                <input type="checkbox" id="audit-default-toggle" {% if audit_default %}checked{% endif %} style="display:none;">
+                <span class="cap-glyph">AUD</span>
+                <div>
+                  <div class="cap-name">{{ t.s("tenant_settings.audit.default_cap_name") }}</div>
+                  <div class="cap-desc">{{ t.s("tenant_settings.audit.default_cap_desc") }}</div>
+                </div>
+                <span class="cap-switch" aria-hidden="true"></span>
+              </label>
+            </form>
+            <div class="row" style="margin-top:14px;gap:10px;align-items:center;flex-wrap:wrap;">
+              <!-- .lbl / .hint are component-scoped (.prov-fields / .field) — inline the muted look here. -->
+              <span style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.3px;color:var(--muted);text-transform:uppercase;">{{ t.s("tenant_settings.audit.retention_label") }}</span>
+              <code id="retention-days" data-days="{{ retention_days }}">
+                {%- if retention_days == 0 -%}
+                  {{ t.s("tenant_settings.audit.retention_forever") }}
+                {%- else -%}
+                  {{ t.fmt1("tenant_settings.audit.retention_days", "n", retention_days) }}
+                {%- endif -%}
+              </code>
+              <span style="color:var(--muted-2);font-size:11px;">{{ t.s("tenant_settings.audit.retention_hint") }}</span>
+            </div>
+            <div class="row" style="margin-top:14px;gap:10px;align-items:center;flex-wrap:wrap;">
+              <button type="button" class="btn" id="audit-apply-all">{{ t.s("tenant_settings.audit.apply_all_button") }}</button>
+              <span style="color:var(--muted-2);font-size:11px;">{{ t.s("tenant_settings.audit.apply_all_hint") }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Related settings — links only, nothing relocated (spec D8). -->
+        <div class="card" style="margin-top:22px;">
+          <div class="card-head">
+            <div>
+              <div class="card-title">{{ t.s("tenant_settings.related.title") }}</div>
+              <div class="card-sub">{{ t.s("tenant_settings.related.sub") }}</div>
+            </div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px;">
+            <div>
+              <a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_api_keys">{{ t.s("collection_sidebar.nav.api_keys") }}</a>
+              <span style="color:var(--muted-2);font-size:11px;margin-left:8px;">{{ t.s("tenant_settings.related.api_keys_desc") }}</span>
+            </div>
+            <div>
+              <a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_oauth_providers">{{ t.s("collection_sidebar.nav.oauth_providers") }}</a>
+              <span style="color:var(--muted-2);font-size:11px;margin-left:8px;">{{ t.s("tenant_settings.related.oauth_desc") }}</span>
+            </div>
+            <div>
+              <a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_webhooks">{{ t.s("collection_sidebar.nav.webhooks") }}</a>
+              <span style="color:var(--muted-2);font-size:11px;margin-left:8px;">{{ t.s("tenant_settings.related.webhooks_desc") }}</span>
+            </div>
+            <div>
+              <a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_functions">{{ t.s("collection_sidebar.nav.functions") }}</a>
+              <span style="color:var(--muted-2);font-size:11px;margin-left:8px;">{{ t.s("tenant_settings.related.functions_desc") }}</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "_mascot.html" %}
+{% include "_cmdk.html" %}
+{% include "_modal.html" %}
+<script>
+  // Rename — PATCH {name}; reload on success so the sidebar name refreshes.
+  (function () {
+    var form = document.getElementById('rename-form');
+    if (!form) return;
+    form.addEventListener('submit', function () {
+      var input = document.getElementById('tenant-name-input');
+      var name = (input.value || '').trim();
+      if (!name) { input.focus(); return; }
+      fetch('{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name})
+      }).then(function (r) {
+        if (r.ok) { location.reload(); return; }
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          drustUI.alert({
+            title: '{{ t.s("tenant_settings.rename.failed_title") }}',
+            body: (b && (b.message || b.error_code)) || ''
+          });
+        });
+      }).catch(function () {
+        drustUI.alert({title: '{{ t.s("tenant_settings.rename.failed_title") }}', body: ''});
+      });
+    });
+  })();
+
+  // Audit-default toggle — optimistic flip, PATCH partial-update, roll back
+  // on failure. Same tile pattern as the publish-policy checkboxes.
+  (function () {
+    var form = document.getElementById('audit-default-form');
+    if (!form) return;
+    var tile = form.querySelector('.cap-tile');
+    var cb = document.getElementById('audit-default-toggle');
+    if (!tile || !cb) return;
+    tile.addEventListener('click', function (e) {
+      if (e.target.tagName === 'INPUT') return;
+      // preventDefault cancels the native <label>->checkbox toggle so the
+      // manual flip below is the sole state mutation.
+      e.preventDefault();
+      var newVal = !cb.checked;
+      cb.checked = newVal;
+      tile.classList.toggle('on', newVal);
+      fetch('{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({audit_default: newVal})
+      }).then(function (r) {
+        if (!r.ok) {
+          cb.checked = !newVal;
+          tile.classList.toggle('on', !newVal);
+          drustUI.alert({title: '{{ t.s("tenant_settings.audit.update_failed_title") }}', body: ''});
+        } else if (window.chonkReact) {
+          window.chonkReact('happy', 600);
+        }
+      }).catch(function () {
+        cb.checked = !newVal;
+        tile.classList.toggle('on', !newVal);
+        drustUI.alert({title: '{{ t.s("tenant_settings.audit.update_failed_title") }}', body: ''});
+      });
+    });
+  })();
+
+  // Apply-to-all — confirm, POST the Task 9 bulk endpoint, report the count.
+  (function () {
+    var btn = document.getElementById('audit-apply-all');
+    if (!btn) return;
+    btn.addEventListener('click', async function () {
+      var ok = await drustUI.confirm({
+        title: '{{ t.s("tenant_settings.audit.apply_all_confirm_title") }}',
+        body: '{{ t.s("tenant_settings.audit.apply_all_confirm_body") }}',
+        okText: '{{ t.s("tenant_settings.audit.apply_all_button") }}'
+      });
+      if (!ok) return;
+      fetch('{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/audit/apply-all', {method: 'POST'})
+        .then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+        .then(function (b) {
+          drustUI.alert({
+            title: '{{ t.s("tenant_settings.audit.apply_all_done_title") }}',
+            body: '{{ t.s("tenant_settings.audit.apply_all_done_body") }}'.replace('{n}', b.updated)
+          });
+          if (window.chonkReact) window.chonkReact('happy', 600);
+        })
+        .catch(function () {
+          drustUI.alert({title: '{{ t.s("tenant_settings.audit.update_failed_title") }}', body: ''});
+        });
+    });
+  })();
+</script>
+{% endblock %}

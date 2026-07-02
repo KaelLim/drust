@@ -887,6 +887,13 @@ impl MgmtState {
                 "/admin/tenants/{id}/audit/apply-all",
                 post(super::tenant_settings::apply_audit_default_all),
             )
+            // v1.46 — `⚙ _settings` virtual sidebar entry: rename form +
+            // audit default toggle + apply-to-all, and links to the pages
+            // that already host related settings (nothing relocated).
+            .route(
+                "/admin/tenants/{id}/_settings",
+                get(super::tenant_settings::tenant_settings_page),
+            )
             .route("/admin/tenants/{id}/_overview", get(tenant_overview_page))
             // v1.31 — broadcast room operations (drop hung subscribers).
             .route(
