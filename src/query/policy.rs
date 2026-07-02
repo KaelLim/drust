@@ -695,6 +695,7 @@ mod tests {
             read_scope: None,
             vector_fields: vec![],
             realtime_enabled: true,
+            audit_enabled: true,
             description: None,
             policies: Default::default(),
         }

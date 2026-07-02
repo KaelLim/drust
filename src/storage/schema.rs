@@ -419,6 +419,10 @@ pub struct CollectionSchema {
     /// rows present before v1.16 (column default 1). New collections
     /// created from v1.16+ start at `false` via `create_collection`.
     pub realtime_enabled: bool,
+    /// v1.46 — whether record-history capture is active for this collection.
+    /// Defaults to `true` (column DEFAULT 1); the sole runtime gate, read from
+    /// the schema cache so the hot write path never touches the meta mutex.
+    pub audit_enabled: bool,
     /// Collection-level free-form description (v1.19).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -504,6 +508,21 @@ fn read_realtime_enabled(conn: &Connection, coll: &str) -> rusqlite::Result<bool
     let row: Option<i64> = conn
         .query_row(
             "SELECT realtime_enabled FROM _system_collection_meta WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| r.get::<_, i64>(0),
+        )
+        .ok();
+    Ok(row.map(|n| n != 0).unwrap_or(true))
+}
+
+/// v1.46 — read the record-history capture gate for a single collection.
+/// Missing meta row (legacy) → default ON, matching the column DEFAULT 1
+/// (D4 default-on posture). `pub` because the MCP/edge write path reads the
+/// gate directly off the tx when it has no `describe_collection` in hand.
+pub fn read_audit_enabled(conn: &Connection, coll: &str) -> rusqlite::Result<bool> {
+    let row: Option<i64> = conn
+        .query_row(
+            "SELECT audit_enabled FROM _system_collection_meta WHERE collection_name = ?1",
             rusqlite::params![coll],
             |r| r.get::<_, i64>(0),
         )
@@ -829,6 +848,7 @@ pub fn describe_collection(
     let (owner_field, read_scope) = read_owner_field(conn, name)?;
     let vector_fields = read_vector_fields(conn, name)?;
     let realtime_enabled = read_realtime_enabled(conn, name)?;
+    let audit_enabled = read_audit_enabled(conn, name)?;
     let description = read_collection_description(conn, name)?;
     let policies = read_policies(conn, name)?;
     Ok(Some(CollectionSchema {
@@ -842,6 +862,7 @@ pub fn describe_collection(
         read_scope,
         vector_fields,
         realtime_enabled,
+        audit_enabled,
         description,
         policies,
     }))
@@ -943,6 +964,24 @@ pub fn write_realtime_enabled(
          ON CONFLICT(collection_name) DO UPDATE SET \
               realtime_enabled = excluded.realtime_enabled, \
               updated_at       = excluded.updated_at",
+        rusqlite::params![coll, v],
+    )?;
+    Ok(())
+}
+
+/// v1.46 — upsert the record-history capture gate. Mirrors
+/// `write_realtime_enabled`'s upsert shape so legacy collections without a
+/// meta row get one created with default `anon_caps = [select]` (never
+/// silently dropping the write).
+pub fn write_audit_enabled(conn: &Connection, coll: &str, enabled: bool) -> rusqlite::Result<()> {
+    let v: i64 = if enabled { 1 } else { 0 };
+    conn.execute(
+        "INSERT INTO _system_collection_meta \
+              (collection_name, anon_caps_json, audit_enabled, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              audit_enabled = excluded.audit_enabled, \
+              updated_at    = excluded.updated_at",
         rusqlite::params![coll, v],
     )?;
     Ok(())
@@ -1165,6 +1204,7 @@ mod meta_io_tests {
                 owner_field        TEXT,
                 read_scope         TEXT,
                 realtime_enabled   INTEGER NOT NULL DEFAULT 1,
+                audit_enabled      INTEGER NOT NULL DEFAULT 1,
                 select_policy_json TEXT,
                 insert_policy_json TEXT,
                 update_policy_json TEXT,
@@ -1374,6 +1414,36 @@ mod meta_io_tests {
         assert!(!read_realtime_enabled(&conn, "posts").unwrap());
         write_realtime_enabled(&conn, "posts", true).unwrap();
         assert!(read_realtime_enabled(&conn, "posts").unwrap());
+    }
+
+    #[test]
+    fn read_audit_enabled_defaults_true_when_no_row() {
+        // v1.46 — legacy collection with no meta row reads back as audit ON,
+        // matching the column DEFAULT (D4 default-on posture).
+        let (_t, conn) = fresh();
+        assert!(read_audit_enabled(&conn, "posts").unwrap());
+    }
+
+    #[test]
+    fn write_audit_then_read_roundtrips_both_values() {
+        let (_t, conn) = fresh();
+        write_audit_enabled(&conn, "posts", false).unwrap();
+        assert!(!read_audit_enabled(&conn, "posts").unwrap());
+        write_audit_enabled(&conn, "posts", true).unwrap();
+        assert!(read_audit_enabled(&conn, "posts").unwrap());
+    }
+
+    #[test]
+    fn write_audit_preserves_existing_anon_caps() {
+        // Same upsert-preserves-other-cols invariant as realtime/owner_field:
+        // toggling the audit gate must never wipe anon_caps_json.
+        let (_t, conn) = fresh();
+        let mut caps = BTreeSet::new();
+        caps.insert(DmlVerb::Insert);
+        write_anon_caps(&conn, "posts", &caps).unwrap();
+        write_audit_enabled(&conn, "posts", false).unwrap();
+        assert_eq!(read_anon_caps(&conn, "posts").unwrap(), caps);
+        assert!(!read_audit_enabled(&conn, "posts").unwrap());
     }
 
     #[test]
@@ -1624,6 +1694,7 @@ mod cap_gate_tests {
             read_scope: None,
             vector_fields: vec![],
             realtime_enabled: true,
+            audit_enabled: true,
             description: None,
             policies: Default::default(),
         }
@@ -1648,6 +1719,7 @@ mod cap_gate_tests {
             read_scope: read_scope.map(|s| s.to_string()),
             vector_fields: vec![],
             realtime_enabled: true,
+            audit_enabled: true,
             description: None,
             policies: Default::default(),
         }
