@@ -6,6 +6,7 @@ pub mod janitor;
 pub mod meta;
 pub mod pool;
 pub mod quota;
+pub mod record_history;
 pub mod schema;
 pub mod schema_cache;
 pub mod signed_url;

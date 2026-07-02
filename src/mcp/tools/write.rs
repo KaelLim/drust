@@ -139,8 +139,9 @@ fn json_to_sql_value(v: &serde_json::Value) -> Value {
 /// into a JSON object, hiding declared vector columns entirely and rendering
 /// any BLOB as `{"__blob_bytes": n}`. Shared by the `RETURNING *` insert and
 /// update read-back paths so both render byte-identical rows — same per-column
-/// shape the REST records.rs path produces.
-fn materialize_row(
+/// shape the REST records.rs path produces. `pub`: also the row projector for
+/// the shared record-history pre-image helper (`storage::record_history`).
+pub fn materialize_row(
     r: &rusqlite::Row<'_>,
     col_names: &[String],
     vector_names: &HashSet<String>,
