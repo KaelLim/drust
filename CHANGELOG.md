@@ -1,3 +1,70 @@
+## v1.45.1 — 2026-07-02
+
+### fix — CLI review findings F1–F13 + two-pass adversarial review follow-ups + audit-UI click-to-open
+
+Bugfix release addressing the 13 findings (F1–F13) from the codex + adversarial
+review of the v1.45.0 CLI feature — none exploitable in prod, several real
+defense-in-depth / correctness gaps — plus the follow-up findings surfaced by a
+second review pass, and an unrelated admin-audit-UI regression reported live.
+No new privilege, no schema migration, no MCP tool count change (still 59).
+Full gate: `make test-all` green, `clippy --all-targets -D warnings` clean,
+`cargo fmt --check` clean.
+
+**F1–F13 fixes:**
+
+- **F3** — `CachedAuth::Bearer` now carries `expires_at`; the router auth-cache
+  hit path rejects an expired CLI PAT (mirrors the `User` variant). Previously an
+  expired PAT kept resolving for up to `safety_ttl` (10 s) on a cache hit.
+- **F2** — `cli_token_refresh` revokes the old row **conditionally first** inside
+  the tx (`WHERE revoked_at IS NULL`, require 1 row, else `409
+  CLI_TOKEN_ALREADY_ROTATED` + rollback) — a replayed/concurrent refresh can no
+  longer mint a second active successor PAT.
+- **F6** — CLI logout reports `{"revoked": n>0}` honestly (never claims to have
+  revoked the unlabeled UI PAT, which it correctly leaves alone).
+- **F1** — device-flow CSRF token is an **HMAC** bound to both `admin_id` and
+  `user_code` under a per-process secret (was an unbound random double-submit),
+  atop the unchanged `SameSite=Lax` admin-session gate.
+- **F5** — per-IP rate limit (`cli_poll_rl`, 60/60 s) on the unauthenticated
+  device `poll` so a flood of random `device_code`s cannot serialize the global
+  meta mutex.
+- **F9** — device approval mints with `DRUST_CLI_PAT_TTL_SECS` (was always 24 h),
+  clamped to `[1, 10y]` so a huge value cannot overflow `datetime()` to NULL.
+- **F10** — device approval mints + flips the device row in one transaction with a
+  conditional (`AND status='pending'`, 1 row) flip; a raced approval rolls back
+  instead of orphaning a PAT.
+- **F13** — `admin_session_layer` treats **any present bearer** as a credential
+  attempt → JSON 401 on failure; only a truly absent bearer gets the
+  content-negotiated 303/JSON split (browser-302 invariant preserved). Scheme
+  match is case-insensitive (RFC 7235).
+- **F4** — `drust collections set-caps` propagates MCP errors instead of always
+  printing `{"ok":true}`.
+- **F7** — CLI logout warns on a server-side revoke failure (network error, or a
+  `{"revoked":false}` body) instead of silently reporting success.
+- **F8** — `hosts.toml` is written `0600` from creation (no umask 0644 window on
+  the keyring-failure inline fallback).
+- **F11** — `--with-token -` reads the PAT from stdin; a literal argv token warns.
+- **F12** — `login` refuses cleartext `http://` to a non-loopback host without
+  `--insecure`; loopback is decided by a parsed loopback `IpAddr` (rejecting the
+  `127.evil.com` hostname trick) and by a case-insensitive, userinfo-stripping
+  authority parse (rejecting `HTTP://` and `localhost@evil.example`). The client
+  also refuses an `https→http` redirect downgrade.
+
+**Adversarial-review follow-ups** (workflow 5-lens + codex co-review, each finding
+triaged against the code — 2 codex candidates verified non-issues: text-expiry is
+drust-format-controlled, per-IP fallback matches every existing limiter).
+
+**Audit UI** — admin audit-log rows are clickable again. The browse-tab
+click-binding IIFE ran at parse time but `_modal.html` (which defines
+`window.drustUI`) was included after `_audit_body.html`, so the old
+`if (!window.drustUI) return` guard bailed before binding any row. The check now
+runs at click time inside `openDetail`.
+
+> [!NOTE]
+> Known gap (backlog, not this release): metadata/config MCP ops
+> (`set_description`, `set_anon_caps`/`set_user_caps`, `set_policy`, …) emit no
+> audit row, so config changes are not surfaced by `recent_writes` or the `_logs`
+> viewer. Auditing them is a separate follow-up.
+
 ## v1.45.0 — 2026-06-30
 
 ### feat — drust CLI: gh-style device-flow login + host admin-plane (server T1–T8 + CLI)
