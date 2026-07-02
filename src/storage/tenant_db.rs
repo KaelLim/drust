@@ -178,6 +178,10 @@ fn apply_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS)?;
     conn.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)?;
     conn.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_UPLOAD_SESSIONS_IF_NOT_EXISTS)?;
+    // v1.46 — same parity rule for the record-history trail: a tenant created
+    // at runtime must get _system_record_history on pool open (spec §5.1) or
+    // its first audited write would fail until the next boot's migration pass.
+    conn.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_RECORD_HISTORY_IF_NOT_EXISTS)?;
     Ok(())
 }
 
