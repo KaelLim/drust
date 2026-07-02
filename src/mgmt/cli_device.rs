@@ -30,7 +30,10 @@ use tokio::sync::Mutex;
 
 pub const CLI_DEVICE_CODE_TTL_SECS: i64 = 900; // 15 min device-code lifetime
 pub const CLI_DEVICE_POLL_INTERVAL_SECS: i64 = 5; // RFC 8628 interval
-/// Lifetime of the CLI PAT minted on device approval (D-10: 24h default).
+/// Documented default lifetime of the CLI PAT minted on device approval
+/// (D-10: 24h). The live value comes from
+/// [`crate::mgmt::admin_pat::cli_pat_ttl_secs`] (`DRUST_CLI_PAT_TTL_SECS`, F9);
+/// this const records that function's fallback.
 pub const CLI_PAT_TTL: i64 = 86400;
 /// Crockford-ish alphabet: no I L O U / 0 1 (visually confusable).
 const USER_CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -416,7 +419,7 @@ pub async fn device_approve(
             &conn,
             admin_id,
             &client_name,
-            CLI_PAT_TTL,
+            crate::mgmt::admin_pat::cli_pat_ttl_secs(),
         ) {
             Ok(v) => v,
             Err(e) => {
