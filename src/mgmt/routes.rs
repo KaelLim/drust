@@ -875,7 +875,18 @@ impl MgmtState {
                 axum::routing::delete(soft_delete_tenant),
             )
             .route("/admin/tenants/{id}/delete", post(soft_delete_tenant_form))
-            .route("/admin/tenants/{id}", get(super::tokens::detail_redirect))
+            // v1.46 — Settings backend: PATCH partial-updates display name
+            // and/or audit_default (one-sided merge); apply-all pushes the
+            // current audit_default onto every existing collection.
+            .route(
+                "/admin/tenants/{id}",
+                get(super::tokens::detail_redirect)
+                    .patch(super::tenant_settings::patch_tenant_settings),
+            )
+            .route(
+                "/admin/tenants/{id}/audit/apply-all",
+                post(super::tenant_settings::apply_audit_default_all),
+            )
             .route("/admin/tenants/{id}/_overview", get(tenant_overview_page))
             // v1.31 — broadcast room operations (drop hung subscribers).
             .route(
