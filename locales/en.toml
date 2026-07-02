@@ -1203,6 +1203,10 @@ eyebrow = "Tenant · backend"
 subtitle = "Outbound notifications on record created / updated / deleted. Signed with HMAC-SHA256 in the X-Drust-Signature header. Retried up to 4× inline (0s / 1s / 5s / 30s)."
 title = "Webhooks"
 
+[collection_page.audit]
+hint = "While on, every write captures an old/new row snapshot into _system_record_history (service/admin read-only; pruned per the tenant retention setting)."
+toggle_label = "Capture record history"
+
 [collection_page.desc]
 add = "Add description"
 edit_aria = "Edit description"
@@ -1215,6 +1219,16 @@ indexes_heading = "indexes"
 next = "Next"
 prev = "Prev"
 
+[collection_page.history]
+btn = "History"
+col_field = "field"
+col_new = "new"
+col_old = "old"
+empty = "No history captured for this record."
+error = "Failed to load history"
+no_field_changes = "No field-level changes."
+title = "Record history"
+
 [collection_page.settings]
 close = "Close settings"
 run_explain = "Run EXPLAIN…"
@@ -1222,6 +1236,7 @@ title = "Collection settings"
 
 [collection_page.settings.section]
 anon = "Anonymous access"
+audit = "Record history"
 developer = "Developer"
 policies = "Row-level policies"
 realtime = "Realtime broadcast"

@@ -450,6 +450,16 @@ for (;;) {
             </details>
           </section>
           <section>
+            <h3>{{ t.s("collection_page.settings.section.audit") }}</h3>
+            <form id="audit-form" method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/audit">
+              <label class="check">
+                <input type="checkbox" name="enabled" value="1"{% if audit_enabled %} checked{% endif %}>
+                <span>{{ t.s("collection_page.audit.toggle_label") }}</span>
+              </label>
+            </form>
+            <p style="font:400 12px/1.5 var(--sans);color:var(--muted);margin:8px 0 0;">{{ t.s("collection_page.audit.hint") }}</p>
+          </section>
+          <section>
             <h3>{{ t.s("collection_page.settings.section.policies") }}</h3>
             <p style="font:400 12px/1.5 var(--sans);color:var(--muted);margin:0 0 8px;">{{ t.s("collection_page.policies.intro") }}</p>
             {% if owner_field.is_some() %}
@@ -481,6 +491,17 @@ for (;;) {
               <button type="button" id="explain-close" class="btn btn-sm btn-ghost">Close</button>
             </div>
             <pre id="explain-output" class="explain" hidden style="margin-top:10px;max-height:300px;overflow:auto;"></pre>
+          </div>
+        </div>
+
+        {# ============================== History modal (v1.46) ============================== #}
+        <div id="history-modal" class="coll-modal" hidden>
+          <div class="coll-modal-body" style="max-width:760px;">
+            <h2 style="font:600 16px/1 var(--sans);margin:0 0 12px;">{{ t.s("collection_page.history.title") }} <span id="history-rec-label" style="color:var(--muted);font-family:var(--mono);font-weight:400;"></span></h2>
+            <div id="history-timeline" style="max-height:60vh;overflow:auto;"></div>
+            <div style="margin-top:10px;display:flex;gap:8px;">
+              <button type="button" id="history-close" class="btn btn-sm btn-ghost">Close</button>
+            </div>
           </div>
         </div>
 
@@ -554,7 +575,11 @@ for (;;) {
     const empty = document.getElementById('rows-empty');
     const labels = resp.column_labels || resp.columns;
     lastList = { rows: resp.rows, columns: resp.columns, labels: labels };
-    thead.innerHTML = resp.columns.map(function(_c, i){ return '<th>' + escapeHtml(labels[i]) + '</th>'; }).join('');
+    // v1.46 — per-record History action needs the row's id; hide the
+    // trailing action column entirely when the projection has no id.
+    var idIdx = resp.columns.indexOf('id');
+    thead.innerHTML = resp.columns.map(function(_c, i){ return '<th>' + escapeHtml(labels[i]) + '</th>'; }).join('')
+      + (idIdx === -1 ? '' : '<th style="width:1%;"></th>');
     if (resp.rows.length === 0) {
       tbody.innerHTML = '';
       empty.hidden = false;
@@ -565,7 +590,9 @@ for (;;) {
           var v = cell === null ? 'NULL' : String(cell);
           var cls = cell === null ? ' class="null"' : '';
           return '<td' + cls + ' data-r="' + r + '" data-c="' + c + '">' + escapeHtml(v) + '</td>';
-        }).join('') + '</tr>';
+        }).join('')
+        + (idIdx === -1 ? '' : '<td style="white-space:nowrap;"><button type="button" class="btn btn-sm btn-ghost row-history-btn" data-record-id="' + escapeHtml(String(row[idIdx])) + '">{{ t.s("collection_page.history.btn") }}</button></td>')
+        + '</tr>';
       }).join('');
     }
     document.getElementById('pager-page-of').innerHTML =
@@ -870,6 +897,15 @@ for (;;) {
     if (!e.target.checked) fd.delete('enabled');
     await fetch(e.target.form.action, { method: 'POST', body: new URLSearchParams(fd) });
   });
+  // Audit (record-history) toggle: submit on change — same pattern as
+  // realtime. Posts to the admin-plane wrapper (the browser holds the
+  // admin session, not a service bearer, so the data-plane PUT …/audit
+  // is out of reach here).
+  document.getElementById('audit-form').querySelector('input[type=checkbox]').addEventListener('change', async (e) => {
+    const fd = new FormData(e.target.form);
+    if (!e.target.checked) fd.delete('enabled');
+    await fetch(e.target.form.action, { method: 'POST', body: new URLSearchParams(fd) });
+  });
 
   // ── Explain modal ────────────────────────────────────────────────────
   const modal = document.getElementById('explain-modal');
@@ -886,6 +922,94 @@ for (;;) {
     const j = await r.json();
     out.textContent = j.plan ? j.plan.map(p => (p.parent > 0 ? '  ' : '') + p.detail).join('\n')
                               : `${j.error_code || 'ERROR'}: ${j.message || ''}`;
+  });
+
+  // ── Record history viewer (v1.46) ────────────────────────────────────
+  // Per-row "History" action. Timeline rows come from the existing admin
+  // _list endpoint over _system_record_history; the old→new diff is
+  // computed HERE from old_json/new_json (never stored server-side). No
+  // history data is inlined into the page at render time — everything is
+  // fetched on click and HTML-escaped before insertion, so the
+  // script_json island escaper is not involved.
+  const histModal = document.getElementById('history-modal');
+  const histBody  = document.getElementById('history-timeline');
+  document.getElementById('history-close').addEventListener('click', function(){ histModal.hidden = true; });
+  histModal.addEventListener('click', function(ev){ if (ev.target === histModal) histModal.hidden = true; });
+
+  function histParse(s){
+    if (s == null || s === 'NULL' || s === '') return null;
+    try { return JSON.parse(s); } catch (e) { return null; }
+  }
+  function histCell(v){
+    if (v === undefined) return '<em style="color:var(--muted-2,currentColor);">—</em>';
+    var s = (v === null) ? 'NULL' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    return escapeHtml(s);
+  }
+  function renderHistory(resp){
+    var col = {};
+    resp.columns.forEach(function(c, i){ col[c] = i; });
+    if (!resp.rows.length) {
+      histBody.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);">{{ t.s("collection_page.history.empty") }}</div>';
+      return;
+    }
+    histBody.innerHTML = resp.rows.map(function(row){
+      var op = String(row[col.op]);
+      var actor = String(row[col.actor_kind]);
+      var actorId = row[col.actor_id];
+      if (actorId != null && actorId !== 'NULL' && actorId !== '') actor += ':' + actorId;
+      var oldObj = histParse(row[col.old_json]);
+      var newObj = histParse(row[col.new_json]);
+      var keys = {};
+      Object.keys(oldObj || {}).forEach(function(k){ keys[k] = 1; });
+      Object.keys(newObj || {}).forEach(function(k){ keys[k] = 1; });
+      var body = Object.keys(keys).sort().map(function(k){
+        var o = oldObj ? oldObj[k] : undefined;
+        var n = newObj ? newObj[k] : undefined;
+        var changed = JSON.stringify(o) !== JSON.stringify(n);
+        if (op === 'update' && !changed) return '';  // updates: changed fields only
+        var mark = changed ? ' style="background:color-mix(in srgb, currentColor 6%, transparent);"' : '';
+        return '<tr' + mark + '><td class="mono-cell" style="font-size:12px;">' + escapeHtml(k) + '</td><td style="font-size:12px;">' + histCell(o) + '</td><td style="font-size:12px;">' + histCell(n) + '</td></tr>';
+      }).join('');
+      if (!body) body = '<tr><td colspan="3" style="color:var(--muted-2,currentColor);">{{ t.s("collection_page.history.no_field_changes") }}</td></tr>';
+      return '<div style="margin:0 0 14px;border:1px solid var(--border-mid);border-radius:8px;overflow:hidden;">'
+        + '<div style="display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border-mid);font:400 12px/1.4 var(--sans);color:var(--muted);">'
+        +   '<span class="pill ' + (op === 'insert' ? 'mint' : op === 'delete' ? 'warn' : 'accent') + '"><span class="dot"></span>' + escapeHtml(op) + '</span>'
+        +   '<span style="font-family:var(--mono);">#' + escapeHtml(String(row[col.id])) + '</span>'
+        +   '<span>' + escapeHtml(String(row[col.ts])) + ' UTC</span>'
+        +   '<span>' + escapeHtml(actor) + '</span>'
+        + '</div>'
+        + '<table class="data"><thead><tr><th>{{ t.s("collection_page.history.col_field") }}</th><th>{{ t.s("collection_page.history.col_old") }}</th><th>{{ t.s("collection_page.history.col_new") }}</th></tr></thead><tbody>' + body + '</tbody></table>'
+        + '</div>';
+    }).join('');
+  }
+  document.getElementById('rows-tbody').addEventListener('click', function(ev){
+    var btn = ev.target.closest('.row-history-btn');
+    if (!btn) return;
+    var raw = btn.dataset.recordId;
+    var n = Number(raw);
+    var rid = (raw !== '' && !isNaN(n)) ? n : raw;
+    document.getElementById('history-rec-label').textContent = '#' + raw;
+    histBody.innerHTML = '<div style="padding:24px;color:var(--muted);">…</div>';
+    histModal.hidden = false;
+    fetch('{{ crate::base_path::base_path() }}/admin/tenants/' + tenantId + '/collections/_system_record_history/_list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        filters: [
+          { field: 'collection', op: 'eq', value: collName },
+          { field: 'record_id', op: 'eq', value: rid }
+        ],
+        sort: { field: 'id', dir: 'desc' },
+        page: 1,
+        per_page: 200
+      })
+    }).then(function(r){
+      if (!r.ok) return r.json().catch(function(){ return {}; }).then(function(j){ throw new Error(j.error_code || r.statusText); });
+      return r.json();
+    }).then(renderHistory)
+      .catch(function(e){
+        histBody.innerHTML = '<div style="padding:24px;color:var(--danger, currentColor);">{{ t.s("collection_page.history.error") }}: ' + escapeHtml(e.message || String(e)) + '</div>';
+      });
   });
 
   // ── Policy builder (RLS v1.38) ───────────────────────────────────────

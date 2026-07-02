@@ -48,6 +48,9 @@ struct RowsPage {
     /// v1.16 — whether SSE broadcast is enabled for this collection. Drives
     /// the Realtime tab's single toggle.
     realtime_enabled: bool,
+    /// v1.46 — whether record-history capture is enabled for this
+    /// collection. Drives the Record-history toggle in the [⚙] popover.
+    audit_enabled: bool,
     /// Index list for the Indexes tab.
     indices: Vec<IndexInfo>,
     /// v1.19 — collection-level description for the description tile.
@@ -326,6 +329,9 @@ pub async fn collection_rows_page(
     // when no `_system_collection_meta` row exists yet.
     let realtime_enabled = schema.realtime_enabled;
 
+    // v1.46 — record-history capture gate, same schema row (defaults true).
+    let audit_enabled = schema.audit_enabled;
+
     // Cross-reference indices to mark fields that participate in any
     // explicit index. Used by the Definition view to render an IDX badge.
     let indexed_fields: std::collections::HashSet<String> = schema
@@ -408,6 +414,7 @@ pub async fn collection_rows_page(
             anon_cap_choices,
             user_cap_choices,
             realtime_enabled,
+            audit_enabled,
             collection_description: schema.description,
             policies_json,
             owner_field,
@@ -632,6 +639,79 @@ pub async fn update_realtime(
     }
     Redirect::to(&crate::base_path::base(&format!(
         "/admin/tenants/{tenant_id}/collections/{coll_name}?tab=realtime"
+    )))
+    .into_response()
+}
+
+/// Form payload for the Record-history toggle in the [⚙] popover.
+///
+/// Same browser checkbox semantics as [`RealtimeForm`]: a checked box
+/// submits `enabled=1`; an unchecked box omits the field entirely.
+#[derive(serde::Deserialize)]
+pub struct AuditForm {
+    #[serde(default)]
+    pub enabled: Option<String>,
+}
+
+/// POST `/admin/tenants/{tenant}/collections/{coll}/audit`.
+///
+/// v1.46 — admin-plane wrapper over `write_audit_enabled`: the [⚙] popover's
+/// Record-history toggle posts here via `fetch()` (the admin UI holds an
+/// admin session, not a bearer token, so it cannot reuse the service-only
+/// data-plane `PUT …/audit` route — same rationale as
+/// `admin_update_policies`). Mirrors `update_realtime` MINUS the bus
+/// eviction: flipping audit changes what is RECORDED, never what a
+/// subscriber may SEE, so in-flight SSE connections stay up. Existence is
+/// checked INSIDE the writer closure (TOCTOU vs a concurrent
+/// `drop_collection`), mirroring the data-plane `put_audit_handler`.
+pub async fn update_audit(
+    State(state): State<TenantsState>,
+    Path((tenant_id, coll_name)): Path<(String, String)>,
+    axum_extra::extract::Form(form): axum_extra::extract::Form<AuditForm>,
+) -> Response {
+    let meta = state.session.meta.lock().await;
+    if !tenant_active(&meta, &tenant_id) {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    }
+    drop(meta);
+
+    // The gate rides _system_collection_meta; `_system_*` tables are never
+    // audited and the popover never renders for them — reject a hand-crafted
+    // POST outright (same posture as admin_update_policies).
+    if crate::storage::schema::is_protected_collection(&coll_name) {
+        return json_err(
+            StatusCode::FORBIDDEN,
+            "PROTECTED_COLLECTION",
+            "cannot toggle audit on a _system_* collection",
+        );
+    }
+
+    let enabled = form.enabled.is_some();
+    let pool = match state.tenants.get_or_open(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let coll_for_writer = coll_name.clone();
+    let wrote = pool
+        .with_writer(move |c| -> rusqlite::Result<bool> {
+            if !crate::storage::schema::collection_exists(c, &coll_for_writer)? {
+                return Ok(false);
+            }
+            crate::storage::schema::write_audit_enabled(c, &coll_for_writer, enabled)?;
+            Ok(true)
+        })
+        .await;
+    match wrote {
+        Ok(true) => {}
+        Ok(false) => return (StatusCode::NOT_FOUND, "collection not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+
+    // Refresh the cached CollectionSchema the write choke points read.
+    // NO bus eviction — see the doc comment above.
+    pool.schema_cache.invalidate(&coll_name);
+    Redirect::to(&crate::base_path::base(&format!(
+        "/admin/tenants/{tenant_id}/collections/{coll_name}"
     )))
     .into_response()
 }
