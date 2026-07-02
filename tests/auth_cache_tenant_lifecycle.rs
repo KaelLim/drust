@@ -18,6 +18,7 @@ async fn soft_delete_clears_tenant_scoped_entries() {
             publish_anon_allowed: false,
             email_snapshot: None,
             file_caps: Default::default(),
+            expires_at: None,
         },
     );
     cache.insert(
@@ -41,6 +42,7 @@ async fn soft_delete_clears_tenant_scoped_entries() {
             publish_anon_allowed: false,
             email_snapshot: None,
             file_caps: Default::default(),
+            expires_at: None,
         },
     );
 
@@ -64,6 +66,7 @@ async fn create_recycling_id_clears_stale_entries() {
             publish_anon_allowed: false,
             email_snapshot: None,
             file_caps: Default::default(),
+            expires_at: None,
         },
     );
     let (state, _dir) = helpers::tenants_state_with_cache("recy", cache.clone()).await;
@@ -81,6 +84,7 @@ async fn create_recycling_id_clears_stale_entries() {
             publish_anon_allowed: false,
             email_snapshot: None,
             file_caps: Default::default(),
+            expires_at: None,
         },
     );
     // CreateTenantJson derives only Deserialize (NOT Default), so every field

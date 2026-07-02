@@ -19,6 +19,7 @@ async fn reroll_clears_cached_service_bearer() {
             publish_anon_allowed: false,
             email_snapshot: None,
             file_caps: Default::default(),
+            expires_at: None,
         },
     );
     assert_eq!(cache.len(), 1);

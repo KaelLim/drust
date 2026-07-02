@@ -233,12 +233,28 @@ pub async fn bearer_auth_layer(
                     publish_anon_allowed,
                     email_snapshot,
                     file_caps,
+                    expires_at,
                 } => {
                     // Cross-tenant guard: the cached entry is bound to one
                     // tenant; a request for a different tenant in the path
                     // must not be served from it.
                     if bound_tenant_id != tenant_id {
                         // Fall through to the DB path (do NOT serve from cache).
+                    } else if let Some(exp) = expires_at
+                        && chrono::Utc::now() >= exp
+                    {
+                        // v1.45.1 (F3) — reject an expired PAT on the hit path,
+                        // mirroring the User variant. `None` = never expires.
+                        state.auth_cache.remove(&hash);
+                        crate::mgmt::metrics::metrics()
+                            .bearer_denied_total
+                            .with_label_values(&["admin_pat", "HTTP_401"])
+                            .inc();
+                        return json_error(
+                            StatusCode::UNAUTHORIZED,
+                            "UNAUTHENTICATED",
+                            "token expired",
+                        );
                     } else {
                         let pool = match state.registry.get_or_open(&tenant_id) {
                             Ok(p) => p,
@@ -386,13 +402,13 @@ pub async fn bearer_auth_layer(
         const SQL_BEARER_AUTH_CTE: &str = "\
 WITH bearer_match AS ( \
     SELECT 'admin_pat' AS kind, p.id AS token_id, p.admin_id, \
-           NULL AS bound_tenant \
+           NULL AS bound_tenant, p.expires_at AS expires_at \
     FROM _admin_tokens p \
     WHERE p.token_hash = ?2 AND p.revoked_at IS NULL \
       AND (p.expires_at IS NULL OR p.expires_at > datetime('now')) \
     UNION ALL \
     SELECT k.role AS kind, NULL AS token_id, NULL AS admin_id, \
-           k.tenant_id AS bound_tenant \
+           k.tenant_id AS bound_tenant, NULL AS expires_at \
     FROM tokens k \
     JOIN tenants n ON n.id = k.tenant_id \
     WHERE k.token_hash = ?3 AND k.revoked_at IS NULL AND n.deleted_at IS NULL \
@@ -407,7 +423,8 @@ SELECT \
     (SELECT COALESCE(allow_user_publish, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
     (SELECT COALESCE(allow_anon_publish, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
     (SELECT COALESCE(file_anon_caps_json, '[]') FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
-    (SELECT COALESCE(file_user_caps_json, '[]') FROM tenants WHERE id = ?1 AND deleted_at IS NULL)";
+    (SELECT COALESCE(file_user_caps_json, '[]') FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
+    (SELECT expires_at FROM bearer_match LIMIT 1)";
 
         let pat_hash = bearer
             .starts_with(crate::auth::admin_token::TOKEN_PREFIX)
@@ -424,6 +441,7 @@ SELECT \
             i64,            // allow_anon_publish (v1.32.5)
             String,         // file_anon_caps_json (v1.42) — '[]' when tenant missing
             String,         // file_user_caps_json (v1.42)
+            Option<String>, // pat_expires_at (v1.45.1 F3)
         )> = {
             let conn = state.meta.lock().await;
             conn.query_row(
@@ -444,6 +462,7 @@ SELECT \
                     r.get::<_, Option<i64>>(7)?.unwrap_or(0),
                     r.get::<_, Option<String>>(8)?.unwrap_or_else(|| "[]".into()),
                     r.get::<_, Option<String>>(9)?.unwrap_or_else(|| "[]".into()),
+                    r.get::<_, Option<String>>(10)?,
                 )),
             )
             .ok()
@@ -459,6 +478,7 @@ SELECT \
             allow_anon_publish,
             file_anon_caps_json,
             file_user_caps_json,
+            pat_expires_raw,
         ) = meta_row.unwrap_or_default();
         let publish_policy = crate::tenant::rooms::policy::TenantPublishPolicy {
             allow_user: allow_user_publish != 0,
@@ -599,22 +619,33 @@ SELECT \
                 });
                 req.extensions_mut().insert(publish_policy);
                 req.extensions_mut().insert(file_caps.clone());
-                state.auth_cache.insert(
-                    hash.clone(),
-                    crate::tenant::auth_cache::CachedAuth::Bearer {
-                        bound_tenant_id: tenant_id.clone(),
-                        role: crate::tenant::auth_cache::CachedRole::AdminPat { admin_id },
-                        publish_user_allowed: publish_policy.allow_user,
-                        publish_anon_allowed: publish_policy.allow_anon,
-                        // Audit parity — cache the PAT email so a HIT can restore
-                        // `resolved_email_snapshot`. `resolved_email_snapshot` was
-                        // just set from `pat_email_snapshot` above; clone it (an
-                        // `Option<String>`) so the original still flows to the
-                        // audit branch this request.
-                        email_snapshot: resolved_email_snapshot.clone(),
-                        file_caps: file_caps.clone(),
-                    },
-                );
+                // v1.45.1 (F3) — carry PAT expiry into the cache so a HIT can
+                // reject an expired CLI PAT. If the DB gave a non-NULL expiry we
+                // cannot parse, skip caching entirely (the DB CTE still enforces
+                // it) rather than fall open to "never expires".
+                let cached_exp = pat_expires_raw
+                    .as_deref()
+                    .and_then(crate::tenant::auth_cache::parse_sqlite_utc);
+                let skip_cache = pat_expires_raw.is_some() && cached_exp.is_none();
+                if !skip_cache {
+                    state.auth_cache.insert(
+                        hash.clone(),
+                        crate::tenant::auth_cache::CachedAuth::Bearer {
+                            bound_tenant_id: tenant_id.clone(),
+                            role: crate::tenant::auth_cache::CachedRole::AdminPat { admin_id },
+                            publish_user_allowed: publish_policy.allow_user,
+                            publish_anon_allowed: publish_policy.allow_anon,
+                            // Audit parity — cache the PAT email so a HIT can restore
+                            // `resolved_email_snapshot`. `resolved_email_snapshot` was
+                            // just set from `pat_email_snapshot` above; clone it (an
+                            // `Option<String>`) so the original still flows to the
+                            // audit branch this request.
+                            email_snapshot: resolved_email_snapshot.clone(),
+                            file_caps: file_caps.clone(),
+                            expires_at: cached_exp,
+                        },
+                    );
+                }
             }
             Some(role_str @ ("service" | "anon")) => {
                 // Cross-tenant token guard (preserves pre-D9 wire 404).
@@ -669,6 +700,8 @@ SELECT \
                         // as the DB path leaves it for these roles.
                         email_snapshot: None,
                         file_caps: file_caps.clone(),
+                        // Service/anon tokens never expire.
+                        expires_at: None,
                     },
                 );
             }
