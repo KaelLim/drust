@@ -1502,6 +1502,115 @@ pub async fn delete_handler(
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct HistoryQs {
+    #[serde(default)]
+    pub record_id: Option<i64>,
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub per_page: Option<u32>,
+}
+
+/// v1.46 — service-only read over the per-tenant `_system_record_history`
+/// trail: `GET /t/<id>/collections/<coll>/history?record_id=&page=&per_page=`.
+///
+/// History aggregates EVERY user's row values, so anon/user bearers are denied
+/// outright (`403 HISTORY_READ_DENIED`, alias `WRITE_DENIED`) — same posture
+/// as `/query`. The table is `_system_*`: the read-only authorizer is NOT
+/// attached (`mgmt/collection_list.rs`'s admin-path approach — pooled readers
+/// carry no authorizer unless a closure attaches one), while the connection
+/// itself stays `SQLITE_OPEN_READONLY`. Explicit column projection over a
+/// drust-owned table → the v1.43 `SELECT *` reader-cache rule does not bite,
+/// but plain `prepare` is used regardless.
+pub async fn history_handler(
+    Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((_tenant, coll)): Path<(String, String)>,
+    Query(q): Query<HistoryQs>,
+) -> Response {
+    if !matches!(ctx, AuthCtx::Service { .. }) {
+        return json_error_with_aliases(
+            StatusCode::FORBIDDEN,
+            "HISTORY_READ_DENIED",
+            &["WRITE_DENIED"],
+            "record history is service-only — anon/user tokens cannot read it",
+        );
+    }
+    let per_page = q.per_page.unwrap_or(50).clamp(1, 200);
+    let page = q.page.unwrap_or(1).max(1);
+    let offset = (page as i64 - 1) * per_page as i64;
+
+    let coll_clone = coll.clone();
+    let record_id = q.record_id;
+    let out = t
+        .pool
+        .with_reader(
+            move |c| -> rusqlite::Result<(Vec<serde_json::Value>, i64)> {
+                let mut where_sql = String::from("collection = ?");
+                let mut binds: Vec<Value> = vec![Value::Text(coll_clone.clone())];
+                if let Some(rid) = record_id {
+                    where_sql.push_str(" AND record_id = ?");
+                    binds.push(Value::Integer(rid));
+                }
+                let total: i64 = {
+                    let refs: Vec<&dyn rusqlite::ToSql> =
+                        binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                    c.query_row(
+                        &format!("SELECT COUNT(*) FROM _system_record_history WHERE {where_sql}"),
+                        &refs[..],
+                        |r| r.get(0),
+                    )?
+                };
+                let sql = format!(
+                    "SELECT id, op, old_json, new_json, actor_kind, actor_id, ts \
+                     FROM _system_record_history WHERE {where_sql} \
+                     ORDER BY id DESC LIMIT ? OFFSET ?"
+                );
+                binds.push(Value::Integer(per_page as i64));
+                binds.push(Value::Integer(offset));
+                let mut stmt = c.prepare(&sql)?;
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                let mut rows_iter = stmt.query(&refs[..])?;
+                // Snapshots were stored via serde_json::Value::to_string, so
+                // they parse back losslessly; a NULL column renders as null.
+                let parse_snapshot = |s: Option<String>| -> serde_json::Value {
+                    s.and_then(|x| serde_json::from_str(&x).ok())
+                        .unwrap_or(serde_json::Value::Null)
+                };
+                let mut rows: Vec<serde_json::Value> = Vec::new();
+                while let Some(r) = rows_iter.next()? {
+                    rows.push(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "op": r.get::<_, String>(1)?,
+                        "old": parse_snapshot(r.get::<_, Option<String>>(2)?),
+                        "new": parse_snapshot(r.get::<_, Option<String>>(3)?),
+                        "actor_kind": r.get::<_, String>(4)?,
+                        "actor_id": r.get::<_, Option<String>>(5)?,
+                        "ts": r.get::<_, String>(6)?,
+                    }));
+                }
+                Ok((rows, total))
+            },
+        )
+        .await;
+    match out {
+        Ok((rows, total)) => Json(json!({
+            "rows": rows,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+        }))
+        .into_response(),
+        Err(e) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DB_ERROR",
+            &e.to_string(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod deny_message_tests {
     use crate::storage::schema::DmlVerb;
