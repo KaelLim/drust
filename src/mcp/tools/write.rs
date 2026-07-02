@@ -239,7 +239,14 @@ pub async fn insert_record(
     collection: &str,
     data: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    insert_record_checked(s, collection, data, None).await
+    insert_record_checked(
+        s,
+        collection,
+        data,
+        None,
+        crate::storage::record_history::AuditActor::service(),
+    )
+    .await
 }
 
 /// `insert_record` with an optional in-tx policy CHECK (enforcement-core entry).
@@ -248,6 +255,7 @@ pub async fn insert_record_checked(
     collection: &str,
     data: serde_json::Value,
     policy_check: Option<PolicyCheck>,
+    actor: crate::storage::record_history::AuditActor,
 ) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
         anyhow::bail!(
@@ -350,6 +358,18 @@ pub async fn insert_record_checked(
             if let Some(check) = &policy_check {
                 check.enforce(&rec)?;
             }
+            // v1.46 — history capture (in-tx, atomic; after the policy CHECK so
+            // a rejected insert leaves no history row). new = the persisted row.
+            crate::storage::record_history::capture(
+                tx,
+                &coll,
+                crate::storage::record_history::HistoryOp::Insert,
+                id,
+                None,
+                Some(&rec),
+                &actor,
+                schema.audit_enabled,
+            )?;
             Ok((id, rec))
         })
         .await?;
@@ -370,7 +390,17 @@ pub async fn update_record(
     id: i64,
     data: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    update_record_checked(s, collection, id, data, None, None, None).await
+    update_record_checked(
+        s,
+        collection,
+        id,
+        data,
+        None,
+        None,
+        None,
+        crate::storage::record_history::AuditActor::service(),
+    )
+    .await
 }
 
 /// `update_record` with optional owner/USING filtering + an in-tx policy CHECK
@@ -379,6 +409,7 @@ pub async fn update_record(
 /// ownership clause + policy USING pre-flight are AND-ed atomically INSIDE the
 /// same write tx as the UPDATE — full parity with `delete_record_filtered`, no
 /// read-lane TOCTOU window.
+#[allow(clippy::too_many_arguments)]
 pub async fn update_record_checked(
     s: &DrustMcp,
     collection: &str,
@@ -387,6 +418,7 @@ pub async fn update_record_checked(
     owner: Option<(String, String)>,
     using: Option<(String, Vec<Value>)>,
     policy_check: Option<PolicyCheck>,
+    actor: crate::storage::record_history::AuditActor,
 ) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
         anyhow::bail!(
@@ -460,6 +492,20 @@ pub async fn update_record_checked(
                     return Err(rusqlite::Error::QueryReturnedNoRows);
                 }
             }
+            // v1.46 — pre-image for history, gated + owner-scoped (only a row
+            // this caller may update is recorded). Shared projector = plain
+            // prepare + vectors hidden (v1.43 reader-cache rule).
+            let old_json = if schema.audit_enabled {
+                crate::storage::record_history::select_row_json_owner(
+                    tx,
+                    &coll,
+                    id,
+                    &owner,
+                    &vector_names,
+                )?
+            } else {
+                None
+            };
             // Owner clause AND-ed onto the UPDATE itself — user_id is UUID-shaped,
             // safe to inline after escaping (same as delete_record_filtered).
             let owner_clause = if let Some((field, user_id)) = &owner {
@@ -512,6 +558,18 @@ pub async fn update_record_checked(
                     if let Some(check) = &policy_check {
                         check.enforce(&rec)?;
                     }
+                    // v1.46 — history capture (in-tx; after the CHECK so a
+                    // rejected update leaves no history row even before rollback).
+                    crate::storage::record_history::capture(
+                        tx,
+                        &coll,
+                        crate::storage::record_history::HistoryOp::Update,
+                        id,
+                        old_json.as_ref(),
+                        Some(&rec),
+                        &actor,
+                        schema.audit_enabled,
+                    )?;
                     Ok(rec)
                 }
                 None => Err(rusqlite::Error::QueryReturnedNoRows),
@@ -561,7 +619,15 @@ pub async fn delete_record(
     collection: &str,
     id: i64,
 ) -> anyhow::Result<serde_json::Value> {
-    delete_record_filtered(s, collection, id, None, None).await
+    delete_record_filtered(
+        s,
+        collection,
+        id,
+        None,
+        None,
+        crate::storage::record_history::AuditActor::service(),
+    )
+    .await
 }
 
 /// `delete_record` with an optional owner clause + explicit-policy USING
@@ -578,6 +644,7 @@ pub async fn delete_record_filtered(
     id: i64,
     owner: Option<(String, String)>,
     using: Option<(String, Vec<Value>)>,
+    actor: crate::storage::record_history::AuditActor,
 ) -> anyhow::Result<serde_json::Value> {
     if is_protected_collection(collection) {
         anyhow::bail!(
@@ -591,6 +658,21 @@ pub async fn delete_record_filtered(
     let coll_w = collection.to_string();
     let n = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<usize> {
+            // v1.46 — one describe covers both the audit gate and the vector
+            // names for the pre-image projector. A missing collection maps to
+            // (gate off, no vectors) so the DELETE below surfaces the same
+            // "no such table" error as before.
+            let (audit_on, vnames) = match describe_collection(tx, &coll_w)? {
+                Some(schema) => (
+                    schema.audit_enabled,
+                    schema
+                        .vector_fields
+                        .iter()
+                        .map(|v| v.name.clone())
+                        .collect::<HashSet<String>>(),
+                ),
+                None => (false, HashSet::new()),
+            };
             // Explicit-policy USING pre-flight (mirror REST delete_handler):
             // a row failing the compiled fragment is not a deletable target.
             if let Some((frag, pbinds)) = &using {
@@ -611,6 +693,15 @@ pub async fn delete_record_filtered(
                     return Ok(0usize);
                 }
             }
+            // v1.46 — pre-image before the DELETE, owner-scoped (shared
+            // projector; only a row this caller may delete is recorded).
+            let old_json = if audit_on {
+                crate::storage::record_history::select_row_json_owner(
+                    tx, &coll_w, id, &owner, &vnames,
+                )?
+            } else {
+                None
+            };
             // Owner clause AND-ed onto the DELETE — user_id is UUID-shaped,
             // safe to inline after escaping (same as REST delete_handler).
             let owner_clause = if let Some((field, user_id)) = &owner {
@@ -627,7 +718,20 @@ pub async fn delete_record_filtered(
                 coll_w.replace('"', "\"\""),
                 owner_clause,
             );
-            tx.execute(&sql, rusqlite::params![id])
+            let n = tx.execute(&sql, rusqlite::params![id])?;
+            if n > 0 {
+                crate::storage::record_history::capture(
+                    tx,
+                    &coll_w,
+                    crate::storage::record_history::HistoryOp::Delete,
+                    id,
+                    old_json.as_ref(),
+                    None,
+                    &actor,
+                    audit_on,
+                )?;
+            }
+            Ok(n)
         })
         .await?;
     if n == 0 {
