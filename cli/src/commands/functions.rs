@@ -110,7 +110,7 @@ pub async fn run(cli: &Cli, a: &FunctionsArgs) -> anyhow::Result<i32> {
         }
         FunctionsCmd::Delete { name } => {
             match c.delete(&format!("/t/{t}/functions/{name}")).await {
-                Ok(()) => {
+                Ok(_) => {
                     ctx.renderer
                         .value(&serde_json::json!({"deleted":true,"name":name}));
                     Ok(0)

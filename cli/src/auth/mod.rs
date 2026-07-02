@@ -53,12 +53,22 @@ fn guard_scheme(url: &str, insecure: bool) -> anyhow::Result<()> {
     // hostnames are case-insensitive, and IP/port are numeric.
     let lower = url.trim_start().to_ascii_lowercase();
     if let Some(rest) = lower.strip_prefix("http://") {
-        let host = rest.split('/').next().unwrap_or("");
+        let authority = rest.split('/').next().unwrap_or("");
+        // Strip any `[userinfo@]` — the real host is after the LAST '@'. Without
+        // this, `http://localhost:80@evil.example` parses host_only="localhost"
+        // here while reqwest connects to evil.example (F12 review H1).
+        let hostport = authority
+            .rsplit_once('@')
+            .map(|(_, h)| h)
+            .unwrap_or(authority);
         // Strip the port; handle the `[::1]:8793` IPv6 bracket form too.
-        let host_only = if let Some(inner) = host.strip_prefix('[') {
+        let host_only = if let Some(inner) = hostport.strip_prefix('[') {
             inner.split(']').next().unwrap_or(inner)
         } else {
-            host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
+            hostport
+                .rsplit_once(':')
+                .map(|(h, _)| h)
+                .unwrap_or(hostport)
         };
         // Loopback iff it is literally `localhost` OR parses as a loopback IP.
         // A hostname like `127.evil.com` / `127.0.0.1.evil.com` is NOT a valid
@@ -200,6 +210,14 @@ async fn logout(cli: &Cli) -> anyhow::Result<i32> {
                 .delete("/auth/cli/token")
                 .await
             {
+                // review M7: a 2xx with revoked:false means the server declined
+                // to revoke (e.g. this is the unlabeled UI PAT, per F6) — do not
+                // silently claim success.
+                Ok(body) if body.get("revoked") == Some(&serde_json::Value::Bool(false)) => {
+                    eprintln!(
+                        "warning: the server did not revoke this token (it is not a CLI token — likely the UI PAT); it remains active. Revoke it in the admin UI if needed."
+                    )
+                }
                 Ok(_) => {}
                 Err(e) => eprintln!(
                     "warning: server-side revoke failed ({e}); this token may remain valid until it expires — run `drust auth refresh` from a trusted host or revoke it in the admin UI"
@@ -243,6 +261,12 @@ mod tests {
         assert!(guard_scheme("Http://example.com/drust", false).is_err());
         // and case-insensitive loopback still passes
         assert!(guard_scheme("HTTP://127.0.0.1:8793/drust", false).is_ok());
+        // F12 review H1: userinfo must not be mistaken for the host — the real
+        // host is after the last '@'. Refuse cleartext to the true remote host.
+        assert!(guard_scheme("http://localhost:80@evil.example/drust", false).is_err());
+        assert!(guard_scheme("http://127.0.0.1@evil.example/drust", false).is_err());
+        // userinfo in front of a genuine loopback host still passes
+        assert!(guard_scheme("http://user@127.0.0.1:8793/drust", false).is_ok());
     }
 }
 

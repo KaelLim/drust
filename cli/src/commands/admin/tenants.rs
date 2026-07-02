@@ -58,7 +58,7 @@ pub async fn run(cli: &Cli, a: &TenantsArgs) -> anyhow::Result<i32> {
             )
         }
         TenantsCmd::Rm { id } => match c.delete(&format!("/admin/api/tenants/{id}")).await {
-            Ok(()) => {
+            Ok(_) => {
                 ctx.renderer
                     .value(&serde_json::json!({"deleted":true,"id":id}));
                 Ok(0)

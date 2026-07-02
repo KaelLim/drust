@@ -136,9 +136,14 @@ fn extract_cookie<B>(req: &Request<B>, name: &str) -> Option<String> {
 
 fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
     let raw = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
-    raw.strip_prefix("Bearer ")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    // HTTP auth schemes are case-insensitive (RFC 7235) — accept `bearer`/`BEARER`
+    // too so a present-but-lowercase credential is still treated as present
+    // (review L9), not silently redirected as if no credential were sent.
+    let rest = raw
+        .split_once(' ')
+        .and_then(|(scheme, rest)| scheme.eq_ignore_ascii_case("Bearer").then_some(rest))?;
+    let tok = rest.trim();
+    (!tok.is_empty()).then(|| tok.to_string())
 }
 
 fn wants_json<B>(req: &Request<B>) -> bool {

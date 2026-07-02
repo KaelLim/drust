@@ -131,7 +131,7 @@ pub async fn run(cli: &Cli, a: &RecordsArgs) -> anyhow::Result<i32> {
                     .delete(&format!("/t/{t}/records/{coll}/{id}"))
                     .await
                 {
-                    Ok(()) => {
+                    Ok(_) => {
                         ctx.renderer
                             .value(&serde_json::json!({"deleted":true,"id":id}));
                         Ok(0)

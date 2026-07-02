@@ -37,7 +37,7 @@ pub async fn users_run(cli: &Cli, a: &UsersArgs) -> anyhow::Result<i32> {
             .await,
         ),
         UsersCmd::Delete { id } => match c.delete(&format!("/t/{t}/admin/users/{id}")).await {
-            Ok(()) => {
+            Ok(_) => {
                 ctx.renderer
                     .value(&serde_json::json!({"deleted":true,"id":id}));
                 Ok(0)
@@ -83,7 +83,7 @@ pub async fn webhooks_run(cli: &Cli, a: &WebhooksArgs) -> anyhow::Result<i32> {
         ),
         WebhooksCmd::Delete { id } => {
             match c.delete(&format!("/t/{t}/admin/webhooks/{id}")).await {
-                Ok(()) => {
+                Ok(_) => {
                     ctx.renderer
                         .value(&serde_json::json!({"deleted":true,"id":id}));
                     Ok(0)
@@ -139,7 +139,7 @@ pub async fn oauth_run(cli: &Cli, a: &OauthArgs) -> anyhow::Result<i32> {
             .delete(&format!("/t/{t}/admin/oauth-providers/{provider}"))
             .await
         {
-            Ok(()) => {
+            Ok(_) => {
                 ctx.renderer
                     .value(&serde_json::json!({"deleted":true,"provider":provider}));
                 Ok(0)
