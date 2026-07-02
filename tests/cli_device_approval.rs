@@ -177,8 +177,29 @@ async fn deny_requires_csrf_then_flips_status() {
         .await
         .unwrap();
     assert_eq!(bad.status(), StatusCode::FORBIDDEN);
-    // good CSRF (cookie value == form value) -> status denied
-    let csrf = "tok123";
+    // good CSRF: the server-issued token is HMAC-bound to user_code (F1). Fetch
+    // the approval page to obtain the real drust_cli_csrf cookie value, then
+    // double-submit it.
+    let page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/auth/cli/device?user_code={uc}"))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let csrf = page
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|c| c.to_str().ok())
+        .find_map(|c| c.strip_prefix("drust_cli_csrf="))
+        .map(|c| c.split(';').next().unwrap().to_string())
+        .expect("csrf cookie set on page");
     let combined = format!("{cookie}; drust_cli_csrf={csrf}");
     let ok = app
         .clone()

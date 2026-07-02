@@ -17,11 +17,15 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::{Extension, Json};
 use base64::Engine;
+use hmac::{Hmac, Mac};
 use rand::{Rng, RngCore};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::json;
+use sha2::Sha256;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
 pub const CLI_DEVICE_CODE_TTL_SECS: i64 = 900; // 15 min device-code lifetime
@@ -322,7 +326,7 @@ pub async fn device_page(
         .flatten();
     drop(conn);
 
-    let csrf = generate_csrf_token();
+    let csrf = csrf_for(&user_code);
     let html = render_approval_page(&client_name, email.as_deref(), &user_code, &csrf);
     let mut resp = Html(html).into_response();
     resp.headers_mut().append(
@@ -340,7 +344,7 @@ pub async fn device_deny(
     headers: HeaderMap,
     Form(form): Form<DenyForm>,
 ) -> Response {
-    if let Err(resp) = check_csrf(&headers, &form.csrf) {
+    if let Err(resp) = check_csrf(&headers, &form.csrf, &form.user_code) {
         return resp;
     }
     {
@@ -372,7 +376,7 @@ pub async fn device_approve(
     headers: HeaderMap,
     Form(form): Form<ApproveForm>,
 ) -> Response {
-    if let Err(resp) = check_csrf(&headers, &form.csrf) {
+    if let Err(resp) = check_csrf(&headers, &form.csrf, &form.user_code) {
         return resp;
     }
     let client_name = {
@@ -425,12 +429,16 @@ pub async fn device_approve(
     Html(render_approved_page()).into_response()
 }
 
-/// Double-submit CSRF: the `drust_cli_csrf` cookie must equal the form `csrf`
-/// field, and neither may be empty. `SameSite=Lax` lets the cookie ride the
-/// same-site form POST while blocking cross-site forgery.
-fn check_csrf(headers: &HeaderMap, form_csrf: &str) -> Result<(), Response> {
-    let cookie_csrf = read_cookie(headers, "drust_cli_csrf");
-    if !form_csrf.is_empty() && cookie_csrf.as_deref() == Some(form_csrf) {
+/// Double-submit CSRF token, HMAC-bound to the `user_code` (v1.45.1 F1) so it
+/// cannot be forged by a party that does not hold the process secret, and is
+/// tied to the specific device request. Atop the `SameSite=Lax` admin-session
+/// gate (the `AdminId` requirement), this closes sibling-subdomain cookie-toss.
+fn check_csrf(headers: &HeaderMap, form_csrf: &str, user_code: &str) -> Result<(), Response> {
+    let cookie_csrf = read_cookie(headers, "drust_cli_csrf").unwrap_or_default();
+    let expected = csrf_for(user_code);
+    let double_submit_ok: bool = cookie_csrf.as_bytes().ct_eq(form_csrf.as_bytes()).into();
+    let bound_ok: bool = form_csrf.as_bytes().ct_eq(expected.as_bytes()).into();
+    if !form_csrf.is_empty() && double_submit_ok && bound_ok {
         Ok(())
     } else {
         Err(json_error(
@@ -454,10 +462,25 @@ fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
-fn generate_csrf_token() -> String {
-    let mut b = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut b);
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+/// Per-process CSRF secret. A restart rotates it — in-flight approval pages
+/// then fail CSRF and the admin retries (15-min device TTL bounds the window).
+fn csrf_secret() -> &'static [u8; 32] {
+    static SECRET: OnceLock<[u8; 32]> = OnceLock::new();
+    SECRET.get_or_init(|| {
+        let mut b = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut b);
+        b
+    })
+}
+
+/// Double-submit CSRF token, HMAC-bound to the `user_code` (v1.45.1 F1) so it
+/// cannot be forged by a party that does not hold the process secret, and is
+/// tied to the specific device request. Atop the `SameSite=Lax` admin-session
+/// gate (the `AdminId` requirement), this closes sibling-subdomain cookie-toss.
+fn csrf_for(user_code: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(csrf_secret()).expect("hmac key");
+    mac.update(user_code.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
 
 /// Server-rendered double-submit cookie. `HttpOnly` is safe here because the
@@ -576,6 +599,20 @@ mod gen_tests {
                 assert!(USER_CODE_ALPHABET.contains(&(ch as u8)));
             }
         }
+    }
+    #[test]
+    fn csrf_is_bound_to_user_code() {
+        let a = csrf_for("ABCD-EFGH");
+        assert_eq!(a, csrf_for("ABCD-EFGH")); // stable within process
+        assert_ne!(a, csrf_for("WXYZ-2345")); // bound to the code
+        // a forged token that merely matches itself in cookie+form must fail:
+        let mut h = HeaderMap::new();
+        h.insert(header::COOKIE, "drust_cli_csrf=forged".parse().unwrap());
+        assert!(check_csrf(&h, "forged", "ABCD-EFGH").is_err());
+        // the server-issued token passes double-submit:
+        let mut h2 = HeaderMap::new();
+        h2.insert(header::COOKIE, format!("drust_cli_csrf={a}").parse().unwrap());
+        assert!(check_csrf(&h2, &a, "ABCD-EFGH").is_ok());
     }
     #[test]
     fn device_code_is_high_entropy_and_hashes_stably() {
