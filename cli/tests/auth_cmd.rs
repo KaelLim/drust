@@ -75,3 +75,46 @@ async fn logout_warns_when_server_revoke_fails() {
     // local state cleared: status errors.
     cli(tmp.path()).args(["auth", "status"]).assert().failure();
 }
+
+#[test]
+fn with_token_dash_reads_pat_from_stdin() {
+    let tmp = tempfile::tempdir().unwrap();
+    cli(tmp.path())
+        .args([
+            "auth",
+            "login",
+            "--host",
+            "s",
+            "--url",
+            "https://tool.example/drust",
+            "--with-token",
+            "-",
+        ])
+        .write_stdin("drust_pat_cli_fromstdin\n")
+        .assert()
+        .success();
+    cli(tmp.path())
+        .args(["auth", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tool.example"));
+}
+
+#[test]
+fn with_token_literal_argv_warns() {
+    let tmp = tempfile::tempdir().unwrap();
+    cli(tmp.path())
+        .args([
+            "auth",
+            "login",
+            "--host",
+            "a",
+            "--url",
+            "https://tool.example/drust",
+            "--with-token",
+            "drust_pat_cli_argv",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("shell history"));
+}
