@@ -282,6 +282,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             post(records_list::post_list_explain),
         )
         .route(
+            "/t/{tenant}/collections/{coll}/history",
+            get(records::history_handler),
+        )
+        .route(
             "/t/{tenant}/collections/{coll}/realtime",
             put({
                 let b = bus.clone();
