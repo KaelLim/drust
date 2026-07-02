@@ -22,6 +22,7 @@ pub mod signed_bytes;
 pub mod stats;
 pub mod tenant_broadcast;
 pub mod tenant_files;
+pub mod tenant_settings;
 pub mod tenants;
 pub mod theme;
 pub mod theme_layer;
