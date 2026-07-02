@@ -984,6 +984,10 @@ impl MgmtState {
                 post(super::browse::update_realtime),
             )
             .route(
+                "/admin/tenants/{id}/collections/{coll}/audit",
+                post(super::browse::update_audit),
+            )
+            .route(
                 "/admin/tenants/{id}/collections/{coll}/description",
                 post(super::browse::admin_update_collection_description),
             )

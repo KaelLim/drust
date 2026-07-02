@@ -369,6 +369,232 @@ async fn settings_page_unknown_tenant_404s() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+// ───────────────── Task 11: collection editor audit toggle + History ─────────
+
+/// Send a form-encoded POST with the PAT bearer (the [⚙] popover toggles
+/// submit `application/x-www-form-urlencoded` via fetch); returns status.
+async fn send_form(app: &axum::Router, uri: String, pat: &str, body: &'static str) -> StatusCode {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {pat}"))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    resp.status()
+}
+
+/// Slice the audit form out of the page so ` checked` assertions can't
+/// accidentally match the realtime / caps checkboxes elsewhere in the
+/// popover.
+fn audit_form_fragment(html: &str) -> &str {
+    let start = html
+        .find(r#"id="audit-form""#)
+        .expect("[⚙] popover must contain the audit form");
+    let end = html[start..].find("</form>").expect("audit form closes") + start;
+    &html[start..end]
+}
+
+/// Task 11: the [⚙] settings popover carries a Record-history toggle whose
+/// checkbox reflects `describe_collection().audit_enabled` and posts to the
+/// admin-plane audit toggle route (the browser holds an admin session, not
+/// a service bearer, so it cannot call the data-plane `PUT …/audit`).
+#[tokio::test]
+async fn collection_settings_popover_has_audit_toggle() {
+    let (app, pat, tenants, dir) = app().await;
+    let reg = drust::mcp::server::McpRegistry::new(tenants.clone());
+    let svc = reg.get_or_create(TID).await.unwrap();
+    drust::mcp::tools::schema::create_collection(&svc, "c_aud", &[fld("body")])
+        .await
+        .unwrap();
+
+    let (status, html) = send_page(
+        &app,
+        format!("/admin/tenants/{TID}/collections/c_aud"),
+        &pat,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "collection page must render");
+    let form = audit_form_fragment(&html);
+    assert!(
+        form.contains(&format!("/admin/tenants/{TID}/collections/c_aud/audit")),
+        "audit form must target the admin audit toggle route; got: {form}"
+    );
+    assert!(
+        form.contains(" checked"),
+        "audit checkbox must reflect audit_enabled=true (the stamped default); got: {form}"
+    );
+
+    // Unchecking the box submits an empty form (checkbox semantics: absent
+    // field = off) — the flag flips in _system_collection_meta…
+    let st = send_form(
+        &app,
+        format!("/admin/tenants/{TID}/collections/c_aud/audit"),
+        &pat,
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::SEE_OTHER, "toggle POST redirects back");
+    assert_eq!(
+        audit_flags(&dir),
+        vec![("c_aud".into(), 0)],
+        "toggle-off must write audit_enabled=0"
+    );
+
+    // …and the re-rendered popover reflects the new describe_collection state.
+    let (_, html) = send_page(
+        &app,
+        format!("/admin/tenants/{TID}/collections/c_aud"),
+        &pat,
+    )
+    .await;
+    let form = audit_form_fragment(&html);
+    assert!(
+        !form.contains(" checked"),
+        "audit checkbox must reflect audit_enabled=false after toggle-off; got: {form}"
+    );
+
+    // Toggle back on round-trips.
+    let st = send_form(
+        &app,
+        format!("/admin/tenants/{TID}/collections/c_aud/audit"),
+        &pat,
+        "enabled=1",
+    )
+    .await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    assert_eq!(audit_flags(&dir), vec![("c_aud".into(), 1)]);
+}
+
+/// The admin toggle must refresh the cached CollectionSchema the write
+/// choke points read (same invalidation the data-plane PUT does) and must
+/// refuse `_system_*` names outright.
+#[tokio::test]
+async fn admin_audit_toggle_invalidates_cache_and_rejects_system() {
+    let (app, pat, tenants, dir) = app().await;
+    let reg = drust::mcp::server::McpRegistry::new(tenants.clone());
+    let svc = reg.get_or_create(TID).await.unwrap();
+    drust::mcp::tools::schema::create_collection(&svc, "c_gate", &[fld("body")])
+        .await
+        .unwrap();
+
+    let pool = tenants.get_or_open(TID).unwrap();
+    let cache = pool.schema_cache.clone();
+    pool.with_reader(move |c| {
+        cache.ensure_loaded(c, "c_gate")?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(pool.schema_cache.get("c_gate").is_some(), "cache primed");
+
+    let st = send_form(
+        &app,
+        format!("/admin/tenants/{TID}/collections/c_gate/audit"),
+        &pat,
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    assert_eq!(audit_flags(&dir), vec![("c_gate".into(), 0)]);
+    assert!(
+        pool.schema_cache.get("c_gate").is_none(),
+        "toggle must invalidate the schema cache so capture re-reads the gate"
+    );
+
+    // _system_* stays un-togglable from the admin plane too (the popover
+    // never renders for them; a hand-crafted POST gets a hard 403).
+    let st = send_form(
+        &app,
+        format!("/admin/tenants/{TID}/collections/_system_users/audit"),
+        &pat,
+        "enabled=1",
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+}
+
+/// Task 11: the collection editor embeds the per-record History action —
+/// a row-level button + modal wired to the existing admin `_list` endpoint
+/// over `_system_record_history` (the old→new diff is computed client-side
+/// from old_json/new_json, never stored). Assert the embedded hooks AND
+/// that the exact request shape the JS sends works server-side.
+#[tokio::test]
+async fn collection_page_embeds_history_viewer() {
+    let (app, pat, tenants, _dir) = app().await;
+    let reg = drust::mcp::server::McpRegistry::new(tenants.clone());
+    let svc = reg.get_or_create(TID).await.unwrap();
+    drust::mcp::tools::schema::create_collection(&svc, "c_hist", &[fld("body")])
+        .await
+        .unwrap();
+
+    let (status, html) = send_page(
+        &app,
+        format!("/admin/tenants/{TID}/collections/c_hist"),
+        &pat,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("/collections/_system_record_history/_list"),
+        "history viewer must fetch through the admin _list endpoint"
+    );
+    assert!(
+        html.contains("row-history-btn"),
+        "table rows must carry the per-record History action"
+    );
+    assert!(
+        html.contains(r#"id="history-modal""#),
+        "history timeline modal must be present"
+    );
+
+    // Server side of the viewer: capture one insert, then issue the exact
+    // filter shape the JS sends and expect the captured row back.
+    drust::mcp::tools::write::insert_record(&svc, "c_hist", json!({"body": "b1"}))
+        .await
+        .unwrap();
+    let (st, body) = send_json(
+        &app,
+        "POST",
+        format!("/admin/tenants/{TID}/collections/_system_record_history/_list"),
+        &pat,
+        Some(json!({
+            "filters": [
+                {"field": "collection", "op": "eq", "value": "c_hist"},
+                {"field": "record_id", "op": "eq", "value": 1}
+            ],
+            "sort": {"field": "id", "dir": "desc"},
+            "page": 1,
+            "per_page": 200
+        })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "viewer _list request must succeed; body: {body}"
+    );
+    assert_eq!(body["total"], 1, "one captured insert; body: {body}");
+    let cols: Vec<String> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    let op_idx = cols.iter().position(|c| c == "op").unwrap();
+    let new_idx = cols.iter().position(|c| c == "new_json").unwrap();
+    let row = body["rows"][0].as_array().unwrap();
+    assert_eq!(row[op_idx], "insert");
+    let new_obj: serde_json::Value = serde_json::from_str(row[new_idx].as_str().unwrap()).unwrap();
+    assert_eq!(new_obj["body"], "b1", "new_json carries the inserted row");
+}
+
 /// Both routes live inside the `admin_session_layer`-gated router: with no
 /// bearer and a JSON Accept they must 401 (never reach the handler).
 #[tokio::test]
