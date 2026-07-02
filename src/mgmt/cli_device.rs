@@ -342,7 +342,7 @@ pub async fn device_page(
         .flatten();
     drop(conn);
 
-    let csrf = csrf_for(&user_code);
+    let csrf = csrf_for(admin_id, &user_code);
     let html = render_approval_page(&client_name, email.as_deref(), &user_code, &csrf);
     let mut resp = Html(html).into_response();
     resp.headers_mut().append(
@@ -360,7 +360,7 @@ pub async fn device_deny(
     headers: HeaderMap,
     Form(form): Form<DenyForm>,
 ) -> Response {
-    if let Err(resp) = check_csrf(&headers, &form.csrf, &form.user_code) {
+    if let Err(resp) = check_csrf(&headers, &form.csrf, &form.user_code, admin_id) {
         return resp;
     }
     {
@@ -392,7 +392,7 @@ pub async fn device_approve(
     headers: HeaderMap,
     Form(form): Form<ApproveForm>,
 ) -> Response {
-    if let Err(resp) = check_csrf(&headers, &form.csrf, &form.user_code) {
+    if let Err(resp) = check_csrf(&headers, &form.csrf, &form.user_code, admin_id) {
         return resp;
     }
     let client_name = {
@@ -444,17 +444,29 @@ pub async fn device_approve(
                 );
             }
         };
-        if let Err(e) = tx.execute(
+        // Conditional flip (review M6): require the row still be `pending`. If a
+        // racing writer already approved/redeemed/denied it (the SELECT above ran
+        // before BEGIN), 0 rows update → roll back so we never mint a second PAT
+        // over an already-decided device row. Mirrors the F2 refresh guard.
+        let flipped = match tx.execute(
             "UPDATE _cli_device_codes \
-             SET status='approved', admin_id=?1, minted_token_id=?2 WHERE id=?3",
+             SET status='approved', admin_id=?1, minted_token_id=?2 \
+             WHERE id=?3 AND status='pending'",
             params![admin_id, token_id, row_id],
         ) {
-            tracing::warn!(error = ?e, "cli device_approve: row flip failed");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "DEVICE_MINT_FAILED",
-                "could not finalize approval",
-            );
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(error = ?e, "cli device_approve: row flip failed");
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DEVICE_MINT_FAILED",
+                    "could not finalize approval",
+                );
+            }
+        };
+        if flipped != 1 {
+            // tx drops → rollback; the just-minted PAT is discarded.
+            return Html(render_not_found_page()).into_response();
         }
         if let Err(e) = tx.commit() {
             tracing::warn!(error = ?e, "cli device_approve: commit failed");
@@ -477,9 +489,14 @@ pub async fn device_approve(
 /// cannot be forged by a party that does not hold the process secret, and is
 /// tied to the specific device request. Atop the `SameSite=Lax` admin-session
 /// gate (the `AdminId` requirement), this closes sibling-subdomain cookie-toss.
-fn check_csrf(headers: &HeaderMap, form_csrf: &str, user_code: &str) -> Result<(), Response> {
+fn check_csrf(
+    headers: &HeaderMap,
+    form_csrf: &str,
+    user_code: &str,
+    admin_id: i64,
+) -> Result<(), Response> {
     let cookie_csrf = read_cookie(headers, "drust_cli_csrf").unwrap_or_default();
-    let expected = csrf_for(user_code);
+    let expected = csrf_for(admin_id, user_code);
     let double_submit_ok: bool = cookie_csrf.as_bytes().ct_eq(form_csrf.as_bytes()).into();
     let bound_ok: bool = form_csrf.as_bytes().ct_eq(expected.as_bytes()).into();
     if !form_csrf.is_empty() && double_submit_ok && bound_ok {
@@ -517,12 +534,16 @@ fn csrf_secret() -> &'static [u8; 32] {
     })
 }
 
-/// Double-submit CSRF token, HMAC-bound to the `user_code` (v1.45.1 F1) so it
-/// cannot be forged by a party that does not hold the process secret, and is
-/// tied to the specific device request. Atop the `SameSite=Lax` admin-session
-/// gate (the `AdminId` requirement), this closes sibling-subdomain cookie-toss.
-fn csrf_for(user_code: &str) -> String {
+/// Double-submit CSRF token, HMAC-bound to BOTH the approving `admin_id` and the
+/// `user_code` (v1.45.1 F1 + review H2) under a per-process secret. Binding to
+/// admin_id means a token issued for one admin's session does NOT validate under
+/// another admin's approve — so even a cookie-tossed value cannot drive an
+/// owner-bound approval. Atop the `SameSite=Lax` admin-session gate (the
+/// `AdminId` requirement, the primary control), this is defense in depth.
+fn csrf_for(admin_id: i64, user_code: &str) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(csrf_secret()).expect("hmac key");
+    mac.update(admin_id.to_le_bytes().as_slice());
+    mac.update(b":");
     mac.update(user_code.as_bytes());
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
@@ -645,21 +666,24 @@ mod gen_tests {
         }
     }
     #[test]
-    fn csrf_is_bound_to_user_code() {
-        let a = csrf_for("ABCD-EFGH");
-        assert_eq!(a, csrf_for("ABCD-EFGH")); // stable within process
-        assert_ne!(a, csrf_for("WXYZ-2345")); // bound to the code
+    fn csrf_is_bound_to_admin_and_user_code() {
+        let a = csrf_for(7, "ABCD-EFGH");
+        assert_eq!(a, csrf_for(7, "ABCD-EFGH")); // stable within process
+        assert_ne!(a, csrf_for(7, "WXYZ-2345")); // bound to the code
+        assert_ne!(a, csrf_for(8, "ABCD-EFGH")); // bound to the admin (H2)
         // a forged token that merely matches itself in cookie+form must fail:
         let mut h = HeaderMap::new();
         h.insert(header::COOKIE, "drust_cli_csrf=forged".parse().unwrap());
-        assert!(check_csrf(&h, "forged", "ABCD-EFGH").is_err());
-        // the server-issued token passes double-submit:
+        assert!(check_csrf(&h, "forged", "ABCD-EFGH", 7).is_err());
+        // the server-issued token passes double-submit for the right admin:
         let mut h2 = HeaderMap::new();
         h2.insert(
             header::COOKIE,
             format!("drust_cli_csrf={a}").parse().unwrap(),
         );
-        assert!(check_csrf(&h2, &a, "ABCD-EFGH").is_ok());
+        assert!(check_csrf(&h2, &a, "ABCD-EFGH", 7).is_ok());
+        // ...but NOT for a different admin (cookie-toss cannot cross admins):
+        assert!(check_csrf(&h2, &a, "ABCD-EFGH", 8).is_err());
     }
     #[test]
     fn device_code_is_high_entropy_and_hashes_stably() {

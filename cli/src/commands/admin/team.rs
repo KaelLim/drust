@@ -54,7 +54,7 @@ pub async fn run(cli: &Cli, a: &TeamArgs) -> anyhow::Result<i32> {
             .await,
         ),
         TeamCmd::Rm { id } => match c.delete(&format!("/admin/team/{id}")).await {
-            Ok(()) => {
+            Ok(_) => {
                 ctx.renderer
                     .value(&serde_json::json!({"removed":true,"id":id}));
                 Ok(0)

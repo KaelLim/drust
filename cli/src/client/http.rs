@@ -8,12 +8,35 @@ pub struct DrustClient {
     inner: reqwest::Client,
 }
 
+/// Client that refuses an https→http redirect downgrade (review M5): reqwest
+/// preserves the Authorization header across a same-host redirect, so a 3xx to
+/// http:// would leak the bearer/PAT over cleartext. Bounded to 10 hops.
+fn build_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let downgrade = attempt
+                .previous()
+                .last()
+                .map(|prev| prev.scheme() == "https" && attempt.url().scheme() == "http")
+                .unwrap_or(false);
+            if downgrade {
+                attempt.error("refusing https->http redirect downgrade")
+            } else if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl DrustClient {
     pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> DrustClient {
         DrustClient {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token: token.into(),
-            inner: reqwest::Client::new(),
+            inner: build_client(),
         }
     }
 
@@ -52,17 +75,20 @@ impl DrustClient {
         self.run(self.req(method, path).json(&body)).await
     }
 
-    pub async fn delete(&self, path: &str) -> Result<(), ApiError> {
+    /// Returns the parsed 2xx body (review M7 — callers such as `auth logout`
+    /// need to inspect e.g. `{"revoked":false}`; value-ignoring callers keep
+    /// using `Ok(_)`).
+    pub async fn delete(&self, path: &str) -> Result<serde_json::Value, ApiError> {
         let resp = self
             .req(Method::DELETE, path)
             .send()
             .await
             .map_err(net_err)?;
         let status = resp.status().as_u16();
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
         if (200..300).contains(&status) {
-            Ok(())
+            Ok(body)
         } else {
-            let body = resp.json().await.unwrap_or(serde_json::Value::Null);
             Err(ApiError::from_body(status, &body))
         }
     }

@@ -80,7 +80,7 @@ pub async fn run(cli: &Cli, a: &FilesArgs) -> anyhow::Result<i32> {
             }
         }
         FilesCmd::Delete { key } => match c.delete(&format!("/t/{t}/files/{key}")).await {
-            Ok(()) => {
+            Ok(_) => {
                 ctx.renderer
                     .value(&serde_json::json!({"deleted":true,"key":key}));
                 Ok(0)

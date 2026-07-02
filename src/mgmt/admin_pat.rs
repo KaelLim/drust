@@ -230,11 +230,17 @@ pub async fn cli_whoami(State(s): State<MgmtState>, headers: HeaderMap) -> Respo
 }
 
 /// CLI-PAT lifetime in seconds (`DRUST_CLI_PAT_TTL_SECS`, default 24h, D-10).
+/// Clamped to `[1, MAX]` (10 years). Without the upper clamp a huge value would
+/// overflow SQLite's `datetime('now','+N seconds')` to NULL, which every
+/// resolver reads as never-expiring — silently minting a PERMANENT token, the
+/// opposite of a short TTL (review M4).
 pub(crate) fn cli_pat_ttl_secs() -> i64 {
+    const MAX_TTL_SECS: i64 = 315_360_000; // 10 years
     std::env::var("DRUST_CLI_PAT_TTL_SECS")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.parse::<i64>().ok())
         .filter(|n| *n > 0)
+        .map(|n| n.min(MAX_TTL_SECS))
         .unwrap_or(86_400)
 }
 
