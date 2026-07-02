@@ -82,6 +82,30 @@ async fn jbody(r: axum::http::Response<Body>) -> serde_json::Value {
     serde_json::from_slice(&b).unwrap()
 }
 
+/// F1: the approval CSRF token is HMAC-bound to `user_code`, so a test must read
+/// the real value the server bakes into the page's `drust_cli_csrf` cookie.
+async fn fetch_csrf(app: &axum::Router, cookie: &str, uc: &str) -> String {
+    let page = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/auth/cli/device?user_code={uc}"))
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    page.headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|c| c.to_str().ok())
+        .find_map(|c| c.strip_prefix("drust_cli_csrf="))
+        .map(|c| c.split(';').next().unwrap().to_string())
+        .expect("csrf cookie set on page")
+}
+
 #[tokio::test]
 async fn start_issues_codes_and_stores_hash_only() {
     let (app, _dir, meta) = app().await;
@@ -284,7 +308,7 @@ async fn start_approve_poll_full_happy_path() {
     let dc = v["device_code"].as_str().unwrap().to_string();
     let uc = v["user_code"].as_str().unwrap().to_string();
     let cookie = login(&app).await;
-    let csrf = "csrf-xyz";
+    let csrf = fetch_csrf(&app, &cookie, &uc).await;
     let combined = format!("{cookie}; drust_cli_csrf={csrf}");
     let appr = app
         .clone()
@@ -355,7 +379,7 @@ async fn migrations_twice_then_full_flow_keeps_ui_pat() {
     let dc = v["device_code"].as_str().unwrap().to_string();
     let uc = v["user_code"].as_str().unwrap().to_string();
     let cookie = login(&app).await;
-    let csrf = "csrf-xyz";
+    let csrf = fetch_csrf(&app, &cookie, &uc).await;
     let combined = format!("{cookie}; drust_cli_csrf={csrf}");
     let appr = app
         .clone()
