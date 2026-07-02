@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-06-30
+updated: 2026-07-02
 generated_by: docs/gen-architecture.py
 ---
 
@@ -28,13 +28,13 @@ generated_by: docs/gen-architecture.py
 | [`db/`](#srcdb) | 2 | 13 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 68 | 37 | 17 |
 | [`mcp/`](#srcmcp) | 19 | 145 | 57 | 30 |
-| [`mgmt/`](#srcmgmt) | 35 | 281 | 100 | 44 |
+| [`mgmt/`](#srcmgmt) | 35 | 282 | 100 | 44 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 8 | 49 | 8 | 30 |
 | [`rpc/`](#srcrpc) | 6 | 37 | 16 | 9 |
 | [`safety/`](#srcsafety) | 8 | 38 | 1 | 11 |
 | [`storage/`](#srcstorage) | 14 | 105 | 14 | 80 |
-| [`tenant/`](#srctenant) | 34 | 213 | 108 | 61 |
+| [`tenant/`](#srctenant) | 34 | 214 | 108 | 61 |
 
 ## Group dependency graph
 
@@ -188,7 +188,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/mgmt/`
 
-- [`admin_pat.rs`](../src/mgmt/admin_pat.rs) — v1.29.3 S2c — single per-admin PAT reroll endpoint. · 6 pub
+- [`admin_pat.rs`](../src/mgmt/admin_pat.rs) — v1.29.3 S2c — single per-admin PAT reroll endpoint. · 7 pub
 - [`admin_profile.rs`](../src/mgmt/admin_profile.rs) — v1.28.9 — admin profile extension surfaced through the sidebar. · 4 pub
 - [`admin_rooms.rs`](../src/mgmt/admin_rooms.rs) — v1.31 — admin-side broadcast room operations. · 2 pub
 - [`admin_team.rs`](../src/mgmt/admin_team.rs) — Admin team management — list/invite/role-change/remove. · 8 pub
@@ -296,7 +296,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 ### `src/tenant/`
 
 - [`admin_user_routes.rs`](../src/tenant/admin_user_routes.rs) — Service-only admin endpoints for managing users within a tenant. · 9 pub
-- [`auth_cache.rs`](../src/tenant/auth_cache.rs) — v1.35 — process-local invalidate-on-write auth cache for `bearer_auth_layer`. · 3 pub
+- [`auth_cache.rs`](../src/tenant/auth_cache.rs) — v1.35 — process-local invalidate-on-write auth cache for `bearer_auth_layer`. · 4 pub
 - [`auth_routes.rs`](../src/tenant/auth_routes.rs) — 11 pub
 - [`collections.rs`](../src/tenant/collections.rs) — 11 pub
 - [`events.rs`](../src/tenant/events.rs) — 2 pub
