@@ -42,6 +42,27 @@ pub struct LoginArgs {
     /// Do not auto-open the verification URL in a browser.
     #[arg(long)]
     pub no_browser: bool,
+    /// Allow cleartext http:// to a non-loopback host (NOT recommended).
+    #[arg(long)]
+    pub insecure: bool,
+}
+
+fn guard_scheme(url: &str, insecure: bool) -> anyhow::Result<()> {
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = rest.split('/').next().unwrap_or("");
+        let host_only = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+        let is_loopback = host_only == "localhost"
+            || host_only == "127.0.0.1"
+            || host_only == "[::1]"
+            || host_only == "::1"
+            || host_only.starts_with("127.");
+        if !is_loopback && !insecure {
+            anyhow::bail!(
+                "refusing to send credentials over cleartext http:// to '{host_only}'; use https:// or pass --insecure for a trusted local network"
+            );
+        }
+    }
+    Ok(())
 }
 
 pub async fn run(cli: &Cli, a: &AuthArgs) -> anyhow::Result<i32> {
@@ -82,6 +103,7 @@ async fn login(cli: &Cli, l: &LoginArgs) -> anyhow::Result<i32> {
         }
         (None, false) => anyhow::bail!("pass --url <instance incl. /drust> or --cloud"),
     };
+    guard_scheme(&base_url, l.insecure)?;
     let (token, console) = if let Some(pat_arg) = &l.with_token {
         let pat = if pat_arg == "-" {
             use std::io::Read;
@@ -178,6 +200,25 @@ async fn logout(cli: &Cli) -> anyhow::Result<i32> {
     store::save(&cfg)?;
     println!("logged out of '{key}'");
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guard_scheme;
+
+    #[test]
+    fn guard_scheme_rules() {
+        // cleartext to a public host is refused without --insecure
+        assert!(guard_scheme("http://example.com/drust", false).is_err());
+        // https is always fine
+        assert!(guard_scheme("https://example.com/drust", false).is_ok());
+        // loopback over http is fine (dev)
+        assert!(guard_scheme("http://127.0.0.1:8793/drust", false).is_ok());
+        assert!(guard_scheme("http://localhost:8793/drust", false).is_ok());
+        assert!(guard_scheme("http://[::1]:8793/drust", false).is_ok());
+        // --insecure opts into cleartext to a public host
+        assert!(guard_scheme("http://example.com/drust", true).is_ok());
+    }
 }
 
 fn status(cli: &Cli) -> anyhow::Result<i32> {
