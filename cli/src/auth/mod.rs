@@ -48,14 +48,27 @@ pub struct LoginArgs {
 }
 
 fn guard_scheme(url: &str, insecure: bool) -> anyhow::Result<()> {
-    if let Some(rest) = url.strip_prefix("http://") {
+    // Case-insensitive: reqwest lowercases the scheme, so `HTTP://` must not
+    // slip past the guard (F12 review). Lowercasing is safe here — schemes and
+    // hostnames are case-insensitive, and IP/port are numeric.
+    let lower = url.trim_start().to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("http://") {
         let host = rest.split('/').next().unwrap_or("");
-        let host_only = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+        // Strip the port; handle the `[::1]:8793` IPv6 bracket form too.
+        let host_only = if let Some(inner) = host.strip_prefix('[') {
+            inner.split(']').next().unwrap_or(inner)
+        } else {
+            host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
+        };
+        // Loopback iff it is literally `localhost` OR parses as a loopback IP.
+        // A hostname like `127.evil.com` / `127.0.0.1.evil.com` is NOT a valid
+        // IpAddr, so it is correctly treated as remote (F12 review — the old
+        // `starts_with("127.")` classified those as loopback).
         let is_loopback = host_only == "localhost"
-            || host_only == "127.0.0.1"
-            || host_only == "[::1]"
-            || host_only == "::1"
-            || host_only.starts_with("127.");
+            || host_only
+                .parse::<std::net::IpAddr>()
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false);
         if !is_loopback && !insecure {
             anyhow::bail!(
                 "refusing to send credentials over cleartext http:// to '{host_only}'; use https:// or pass --insecure for a trusted local network"
@@ -111,7 +124,9 @@ async fn login(cli: &Cli, l: &LoginArgs) -> anyhow::Result<i32> {
             std::io::stdin().read_to_string(&mut s)?;
             s.trim().to_string()
         } else {
-            eprintln!("warning: passing a token on the command line leaks it into shell history and `ps`; prefer `--with-token -` to read it from stdin, or the default device flow");
+            eprintln!(
+                "warning: passing a token on the command line leaks it into shell history and `ps`; prefer `--with-token -` to read it from stdin, or the default device flow"
+            );
             pat_arg.clone()
         };
         anyhow::ensure!(
@@ -218,6 +233,16 @@ mod tests {
         assert!(guard_scheme("http://[::1]:8793/drust", false).is_ok());
         // --insecure opts into cleartext to a public host
         assert!(guard_scheme("http://example.com/drust", true).is_ok());
+        // F12 review: a hostname that merely LOOKS loopback is remote — the
+        // `127.evil.com` / `127.0.0.1.evil.com` subdomain trick must be refused.
+        assert!(guard_scheme("http://127.evil.com/drust", false).is_err());
+        assert!(guard_scheme("http://127.0.0.1.evil.com/drust", false).is_err());
+        // F12 review: the scheme check is case-insensitive — `HTTP://` to a
+        // remote host is still refused (reqwest lowercases the scheme).
+        assert!(guard_scheme("HTTP://example.com/drust", false).is_err());
+        assert!(guard_scheme("Http://example.com/drust", false).is_err());
+        // and case-insensitive loopback still passes
+        assert!(guard_scheme("HTTP://127.0.0.1:8793/drust", false).is_ok());
     }
 }
 

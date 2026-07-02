@@ -285,7 +285,11 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
         ) {
             Ok(n) => n,
             Err(e) => {
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL",
+                    &e.to_string(),
+                );
             }
         };
         if revoked != 1 {
@@ -301,7 +305,11 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
              VALUES (?1, ?2, ?3, ?4, datetime('now', ?5))",
             params![caller.admin_id, hash_new, plaintext_new, label, ttl_mod],
         ) {
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL",
+                &e.to_string(),
+            );
         }
         let exp: String = match tx.query_row(
             "SELECT expires_at FROM _admin_tokens WHERE token_hash = ?1",
@@ -367,7 +375,11 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
         ) {
             Ok(n) => n,
             Err(e) => {
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &e.to_string());
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL",
+                    &e.to_string(),
+                );
             }
         }
     };
