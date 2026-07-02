@@ -101,6 +101,28 @@ CREATE INDEX IF NOT EXISTS idx_system_upload_sessions_expires
   ON "_system_upload_sessions"(expires_at);
 "#;
 
+// v1.46 — record-history trail (supa_audit-style). STRICT + drop-protected by
+// the _system_ prefix; never self-audited (write path rejects _system_).
+// Shared const so `migrate_tenant_db` (boot, existing tenants) and
+// `tenant_db::apply_schema` (runtime-created tenants, v1.32.8 parity rule)
+// produce exactly the same schema forever.
+pub const SQL_CREATE_SYSTEM_RECORD_HISTORY_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS _system_record_history (
+    id           INTEGER PRIMARY KEY,
+    collection   TEXT    NOT NULL,
+    record_id    INTEGER NOT NULL,
+    op           TEXT    NOT NULL CHECK (op IN ('insert','update','delete')),
+    old_json     TEXT,
+    new_json     TEXT,
+    actor_kind   TEXT    NOT NULL,
+    actor_id     TEXT,
+    actor_hint   TEXT,
+    ts           TEXT    NOT NULL DEFAULT (datetime('now'))
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_sysrechist_rec ON _system_record_history(collection, record_id, id);
+CREATE INDEX IF NOT EXISTS idx_sysrechist_ts  ON _system_record_history(ts);
+"#;
+
 pub fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -187,6 +209,16 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
          WHERE user_caps_json IS NULL",
         [],
     )?;
+    // v1.46 — per-collection audit-history gate (default ON). Idempotent.
+    add_column_if_missing(
+        &tx,
+        "_system_collection_meta",
+        "audit_enabled",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    // v1.46 — record-history trail (supa_audit-style). STRICT + drop-protected
+    // by the _system_ prefix; never self-audited (write path rejects _system_).
+    tx.execute_batch(SQL_CREATE_SYSTEM_RECORD_HISTORY_IF_NOT_EXISTS)?;
     // v1.29.5 — _system_rpc.callable_by (H3-1 phase 1). Idempotent
     // backfill from anon_callable: 1 → ["anon","user"], 0 → [].
     // Guarded by table existence — _system_rpc only exists on tenants
@@ -498,6 +530,14 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     add_column_if_missing(meta, "tenants", "db_bytes", "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(meta, "tenants", "files_bytes", "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(meta, "tenants", "stats_updated_at", "TEXT")?;
+    // v1.46 — tenant-level audit default (seeds new collections + "apply to all").
+    // Existing tenants backfill to 1 via the column DEFAULT (D4 default-on).
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "audit_default",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
 
     // v1.29.0 — team management: role column + backfill
     add_column_if_missing(meta, "admins", "role", "TEXT NOT NULL DEFAULT 'member'")?;
@@ -1992,5 +2032,116 @@ mod tests {
     #[test]
     fn make_strict_ddl_rejects_unexpected_shape() {
         assert!(super::make_strict_ddl("not a create table", "x").is_none());
+    }
+
+    #[test]
+    fn migrate_tenant_db_adds_audit_enabled_and_history_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-audit");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        // Seed a pre-existing _system_collection_meta shaped like production,
+        // with one legacy row (backfills to audit ON via the column DEFAULT).
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (
+                    collection_name TEXT PRIMARY KEY,
+                    anon_caps_json  TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL);
+                 INSERT INTO _system_collection_meta
+                    (collection_name, anon_caps_json, updated_at)
+                    VALUES ('legacy', '[\"select\"]', '2026-01-01');",
+            )
+            .unwrap();
+        }
+        migrate_tenant_db(dir.path(), "t-audit").unwrap();
+
+        let c = Connection::open(&p).unwrap();
+        // Column exists and existing rows default to 1 (D4 default-on backfill).
+        let cols: Vec<String> = c
+            .prepare("PRAGMA table_info(_system_collection_meta)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"audit_enabled".to_string()),
+            "audit_enabled column missing after migration; cols = {cols:?}"
+        );
+        let v: i64 = c
+            .query_row(
+                "SELECT audit_enabled FROM _system_collection_meta WHERE collection_name = 'legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, 1, "existing collections backfill to audit ON");
+        // History table exists and is STRICT.
+        let strict: i64 = c
+            .query_row(
+                "SELECT strict FROM pragma_table_list WHERE name = '_system_record_history'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(strict, 1, "_system_record_history must be STRICT");
+        // Both indexes exist.
+        let idx: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name IN ('idx_sysrechist_rec', 'idx_sysrechist_ts')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 2, "idx_sysrechist_rec + idx_sysrechist_ts must exist");
+        // Re-run is idempotent.
+        migrate_tenant_db(dir.path(), "t-audit").unwrap();
+    }
+
+    #[test]
+    fn open_write_creates_record_history_table() {
+        // v1.32.8 parity rule: a tenant created AT RUNTIME goes through
+        // open_write → apply_schema only (never migrate_tenant_db until the
+        // next boot), so apply_schema must also create _system_record_history
+        // — otherwise the fresh tenant's first audited write would fail.
+        let dir = tempfile::tempdir().unwrap();
+        let c = crate::storage::tenant_db::open_write(dir.path(), "t-fresh").unwrap();
+        let strict: i64 = c
+            .query_row(
+                "SELECT strict FROM pragma_table_list WHERE name = '_system_record_history'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(strict, 1, "_system_record_history must exist and be STRICT");
+    }
+
+    #[test]
+    fn run_migrations_adds_tenants_audit_default_defaulting_to_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        // Minimal meta shape run_migrations requires (tenants + admins).
+        meta.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT);
+             INSERT INTO tenants (id, name) VALUES ('t1', 'One');
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, \
+                 password_hash TEXT NOT NULL, email TEXT, \
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')));",
+        )
+        .unwrap();
+        let tdir = dir.path().join("tenants");
+        std::fs::create_dir_all(&tdir).unwrap();
+        run_migrations(&meta, &tdir).unwrap();
+        let d: i64 = meta
+            .query_row(
+                "SELECT audit_default FROM tenants WHERE id = 't1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(d, 1, "existing tenants backfill to audit ON");
     }
 }
