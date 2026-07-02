@@ -151,9 +151,15 @@ async fn logout(cli: &Cli) -> anyhow::Result<i32> {
     if let Some(host) = cfg.hosts.get(&key).cloned() {
         // Best-effort server-side revoke before clearing local state.
         if let Ok(tok) = store::read_token(&key, &host) {
-            let _ = DrustClient::new(host.base_url, tok)
+            match DrustClient::new(host.base_url, tok)
                 .delete("/auth/cli/token")
-                .await;
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => eprintln!(
+                    "warning: server-side revoke failed ({e}); this token may remain valid until it expires — run `drust auth refresh` from a trusted host or revoke it in the admin UI"
+                ),
+            }
         }
     }
     cfg.hosts.remove(&key);
