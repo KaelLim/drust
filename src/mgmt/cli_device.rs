@@ -412,11 +412,24 @@ pub async fn device_approve(
         let Some((row_id, client_name)) = row else {
             return Html(render_not_found_page()).into_response();
         };
-        // Mint the labeled, expiring CLI PAT (T4-owned primitive). The non-NULL
-        // `label` keeps it outside the relaxed unique index and excludes it from
-        // the migration legacy-revoke + reroll sweep.
+        // Mint + row-flip in ONE transaction (F10): either both commit or
+        // neither, so a failed flip never leaves an orphan PAT + a stuck-pending
+        // device row. The labeled, expiring CLI PAT (T4-owned primitive) has a
+        // non-NULL `label` that keeps it outside the relaxed unique index and
+        // excludes it from the migration legacy-revoke + reroll sweep.
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(error = ?e, "cli device_approve: tx open failed");
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DEVICE_MINT_FAILED",
+                    "could not mint CLI token",
+                );
+            }
+        };
         let (token_id, _plaintext) = match crate::auth::admin_token::mint_cli_token(
-            &conn,
+            &tx,
             admin_id,
             &client_name,
             crate::mgmt::admin_pat::cli_pat_ttl_secs(),
@@ -431,11 +444,26 @@ pub async fn device_approve(
                 );
             }
         };
-        let _ = conn.execute(
+        if let Err(e) = tx.execute(
             "UPDATE _cli_device_codes \
              SET status='approved', admin_id=?1, minted_token_id=?2 WHERE id=?3",
             params![admin_id, token_id, row_id],
-        );
+        ) {
+            tracing::warn!(error = ?e, "cli device_approve: row flip failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DEVICE_MINT_FAILED",
+                "could not finalize approval",
+            );
+        }
+        if let Err(e) = tx.commit() {
+            tracing::warn!(error = ?e, "cli device_approve: commit failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DEVICE_MINT_FAILED",
+                "could not finalize approval",
+            );
+        }
         client_name
     };
     let entry =

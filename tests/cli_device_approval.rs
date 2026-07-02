@@ -305,3 +305,65 @@ async fn approve_honors_pat_ttl_env() {
         "expires_at should be ~300s out (DRUST_CLI_PAT_TTL_SECS), got {secs}"
     );
 }
+
+#[tokio::test]
+async fn approve_postconditions_atomic() {
+    // F10: after a successful approve, the device row is `approved` with a
+    // non-null minted_token_id AND exactly one labeled PAT exists — the mint and
+    // the row-flip commit together (one tx) or neither.
+    let (app, _d, meta) = app().await;
+    let v = jbody(
+        post_json(
+            &app,
+            "/auth/cli/device/start",
+            serde_json::json!({"client_name":"lappy"}),
+        )
+        .await,
+    )
+    .await;
+    let uc = v["user_code"].as_str().unwrap().to_string();
+    let cookie = login(&app).await;
+    let csrf = fetch_csrf(&app, &cookie, &uc).await;
+    let combined = format!("{cookie}; drust_cli_csrf={csrf}");
+    let appr = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/cli/device/approve")
+                .header(header::COOKIE, combined)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("user_code={uc}&csrf={csrf}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(appr.status().is_success());
+    let c = meta.lock().await;
+    let (status, minted): (String, Option<i64>) = c
+        .query_row(
+            "SELECT status, minted_token_id FROM _cli_device_codes WHERE user_code=?1",
+            rusqlite::params![uc],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "approved");
+    let minted = minted.expect("minted_token_id must be set");
+    let labeled: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM _admin_tokens \
+             WHERE admin_id=1 AND label IS NOT NULL AND revoked_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(labeled, 1);
+    let exists: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM _admin_tokens WHERE id=?1 AND revoked_at IS NULL",
+            rusqlite::params![minted],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(exists, 1, "device row references the minted PAT");
+}
