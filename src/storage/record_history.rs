@@ -4,8 +4,11 @@
 //! with the write (spec §5.3). Row values stay in the tenant DB (isolation).
 
 use crate::auth::middleware::AuthCtx;
+use crate::storage::pool::TenantRegistry;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Clone, Copy, Debug)]
 pub enum HistoryOp {
@@ -136,6 +139,101 @@ pub fn select_row_json_owner(
         crate::mcp::tools::write::materialize_row(r, &col_names, vector_names)
     })
     .optional()
+}
+
+/// Retention window in days for `_system_record_history` rows. Env knob
+/// `DRUST_AUDIT_HISTORY_RETENTION_DAYS`, default 7; `0` disables pruning
+/// (keep forever). Unparseable values fall back to the default.
+pub fn retention_days_from_env() -> u64 {
+    std::env::var("DRUST_AUDIT_HISTORY_RETENTION_DAYS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(7)
+}
+
+/// Delete history rows older than `days`. Returns the number of rows
+/// deleted. `days == 0` → retention disabled → no delete, `Ok(0)`.
+pub fn prune_tenant(conn: &Connection, days: u64) -> rusqlite::Result<usize> {
+    if days == 0 {
+        return Ok(0); // retention disabled → keep forever
+    }
+    let cutoff = format!("-{days} days");
+    conn.execute(
+        "DELETE FROM _system_record_history WHERE ts < datetime('now', ?1)",
+        rusqlite::params![cutoff],
+    )
+}
+
+/// Daily retention janitor over every live tenant's `_system_record_history`.
+///
+/// Anchored to wall-clock 03:00 UTC via the same `next_0300_utc` helper the
+/// `meta_logs` audit-retention loop uses, so the cadence doesn't drift with
+/// process uptime. Live-tenant iteration mirrors the session/upload janitors:
+/// enumerate `tenants WHERE deleted_at IS NULL` from meta, skip tenants whose
+/// `data.sqlite` is gone, then prune through the SHARED per-tenant writer
+/// mutex (`pool.with_writer`) so deletes serialize with request writes.
+///
+/// `DRUST_AUDIT_HISTORY_RETENTION_DAYS=0` → log once and never schedule a
+/// delete. Spawn from main as
+/// `tokio::spawn(record_history::spawn_retention_task(meta, registry))`.
+pub async fn spawn_retention_task(meta: Arc<Mutex<Connection>>, registry: Arc<TenantRegistry>) {
+    let days = retention_days_from_env();
+    if days == 0 {
+        tracing::info!(
+            "record-history retention disabled (DRUST_AUDIT_HISTORY_RETENTION_DAYS=0); keeping rows forever"
+        );
+        return;
+    }
+    loop {
+        let now = chrono::Utc::now();
+        let next = crate::safety::audit_db::next_0300_utc(now);
+        let dur = (next - now)
+            .to_std()
+            .unwrap_or(std::time::Duration::from_secs(60));
+        tokio::time::sleep(dur).await;
+
+        let ids: Vec<String> = {
+            let conn = meta.lock().await;
+            conn.prepare("SELECT id FROM tenants WHERE deleted_at IS NULL")
+                .and_then(|mut s| {
+                    s.query_map([], |r| r.get::<_, String>(0))
+                        .and_then(|it| it.collect())
+                })
+                .unwrap_or_default()
+        };
+        let mut total = 0usize;
+        for tid in ids {
+            // Same guard as the session janitor: a live meta row whose
+            // data.sqlite is already gone must not be re-created by the
+            // pool open.
+            let p = registry
+                .data_root()
+                .join("tenants")
+                .join(&tid)
+                .join("data.sqlite");
+            if !p.exists() {
+                continue;
+            }
+            match registry.get_or_open(&tid) {
+                Ok(pool) => match pool.with_writer(|c| prune_tenant(c, days)).await {
+                    Ok(n) => total += n,
+                    Err(e) => {
+                        tracing::warn!(tenant = %tid, err = ?e, "record-history retention prune failed")
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(tenant = %tid, err = ?e, "record-history retention: pool open failed")
+                }
+            }
+        }
+        if total > 0 {
+            tracing::info!(
+                deleted = total,
+                days,
+                "record-history retention pruned stale rows"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

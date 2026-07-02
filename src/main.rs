@@ -483,6 +483,16 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // v1.46 — record-history retention janitor. Daily prune of per-tenant
+    // _system_record_history rows older than DRUST_AUDIT_HISTORY_RETENTION_DAYS
+    // (default 7; 0 disables). Anchored to 03:00 UTC like the meta_logs audit
+    // retention; iterates live tenants through the shared registry so each
+    // DELETE serializes on the per-tenant writer mutex.
+    tokio::spawn(drust::storage::record_history::spawn_retention_task(
+        meta.clone(),
+        tenants.clone(),
+    ));
+
     let tenant_stack = TenantStack {
         auth: TenantAuthState {
             meta: meta.clone(),
