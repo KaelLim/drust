@@ -224,26 +224,35 @@ pub struct TxCommitError(pub String);
 ///
 /// 1. defensive `detach_authorizer` (spec §14 Q4 — `with_writer` does
 ///    not auto-detach; previous closures may have leaked one).
+///    1b. precompute the audited table set (v1.46 R2) while the
+///    connection is still unrestricted — the writable authorizer denies
+///    the `sqlite_master` / `_system_collection_meta` reads this needs.
+///    Skipped on `dry_run` (always rolled back → nothing to audit).
 /// 2. raw `SAVEPOINT drust_rpc_v2` (authorizer would Deny Savepoint).
 /// 3. `attach_writable_authorizer` — from here every prepare is gated.
 ///    3b. install the scoped preupdate capture hook (v1.46 — record
-///    history for arbitrary RPC SQL). The hook buffers per-row old/new
-///    images; it MUST be removed on every exit path below.
+///    history for arbitrary RPC SQL) ONLY when the audited set is
+///    non-empty and not `dry_run` — audit off must cost zero buffering
+///    (R2). The hook buffers bounded per-row old/new images
+///    (`CaptureLimits` caps rows/bytes; BLOBs buffer as length only);
+///    when installed it MUST be removed on every exit path below.
 /// 4. split + execute loop. On split or execute_one failure we record
 ///    the error but DO NOT short-circuit step 5/6 — the savepoint must
 ///    be resolved cleanly.
-///    4b. remove the preupdate hook (success AND error paths) — a
-///    leaked hook would capture unrelated later writes on this pooled
-///    connection.
+///    4b. remove the preupdate hook if installed (success AND error
+///    paths) — a leaked hook would capture unrelated later writes on
+///    this pooled connection.
 /// 5. MANDATORY `detach_authorizer` BEFORE step 6 (RELEASE would be
 ///    Denied otherwise).
-///    5b. on the commit path only (no error, not `dry_run`): flush the
-///    buffered changes into `_system_record_history` INSIDE the
-///    still-open savepoint, so history commits atomically with the
-///    mutation. Fail-closed: a flush error rolls the whole RPC back.
-///    On the error / `dry_run` path the buffer is simply dropped — and
-///    even if rows had been flushed, the `ROLLBACK TO` in step 6 would
-///    discard them with the mutation (same savepoint).
+///    5b. on the commit path only (no error, hook installed — which
+///    implies not `dry_run`): flush the buffered changes into
+///    `_system_record_history` INSIDE the still-open savepoint, so
+///    history commits atomically with the mutation. Fail-closed: a
+///    flush error (including a `CaptureLimits` cap exceeded in the
+///    hook) rolls the whole RPC back. On the error / `dry_run` path
+///    the buffer is simply dropped — and even if rows had been
+///    flushed, the `ROLLBACK TO` in step 6 would discard them with
+///    the mutation (same savepoint).
 /// 6. `ROLLBACK TO` (if error or `dry_run`) then `RELEASE`.
 /// 7. return outcome.
 ///
@@ -265,6 +274,7 @@ pub async fn run_write_rpc(
     bound: BTreeMap<String, BoundValue>,
     dry_run: bool,
     actor: crate::storage::record_history::AuditActor,
+    limits: crate::storage::record_history::CaptureLimits,
 ) -> Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError> {
     let res: rusqlite::Result<Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError>> =
         pool.with_writer(move |conn| {
@@ -273,6 +283,27 @@ pub async fn run_write_rpc(
             //    closure left an authorizer attached it would
             //    prevent step 2 (Savepoint is Denied).
             crate::query::authorizer::detach_authorizer(conn);
+
+            // ── STEP 1b (v1.46 R2): precompute the audited table set
+            //    while the connection is unrestricted (the writable
+            //    authorizer denies sqlite_master/_system_* reads). The
+            //    set cannot go stale mid-run: the authorizer denies
+            //    writes to _system_collection_meta and all DDL.
+            //    dry_run never flushes → skip capture entirely.
+            //    Fail-closed: without the set the RPC must not run
+            //    un-audited.
+            let audited = if dry_run {
+                std::collections::HashSet::new()
+            } else {
+                match crate::storage::record_history::audited_data_tables(conn) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return Ok(Err(TxCommitError(format!(
+                            "record-history audited-set precompute failed: {e}"
+                        ))));
+                    }
+                }
+            };
 
             // ── STEP 2: SAVEPOINT (raw, no authorizer). If this
             //    fails we have nothing to roll back; surface as
@@ -285,22 +316,31 @@ pub async fn run_write_rpc(
             //    every conn.prepare is gated.
             crate::query::authorizer::attach_writable_authorizer(conn);
 
-            // ── STEP 3b: install the scoped preupdate capture hook.
-            //    (Installing runs no SQL, so the authorizer is inert
-            //    here.) Fail-closed: if the hook cannot be installed,
-            //    the RPC must not run un-audited.
-            let capture_buf = match crate::storage::record_history::install_preupdate_capture(conn)
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    crate::query::authorizer::detach_authorizer(conn);
-                    let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
-                    if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
-                        return Ok(Err(TxCommitError(rel.to_string())));
+            // ── STEP 3b: install the scoped preupdate capture hook —
+            //    ONLY when something can actually be captured (audited
+            //    set non-empty; dry_run yields an empty set above).
+            //    `None` = no hook installed; every later hook touchpoint
+            //    (split-fail removal, STEP 4b, STEP 5b) is conditional
+            //    on it. (Installing runs no SQL, so the authorizer is
+            //    inert here.) Fail-closed: if the hook cannot be
+            //    installed, the RPC must not run un-audited.
+            let capture_buf = if audited.is_empty() {
+                None
+            } else {
+                match crate::storage::record_history::install_preupdate_capture(
+                    conn, audited, limits,
+                ) {
+                    Ok(b) => Some(b),
+                    Err(e) => {
+                        crate::query::authorizer::detach_authorizer(conn);
+                        let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
+                        if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
+                            return Ok(Err(TxCommitError(rel.to_string())));
+                        }
+                        return Ok(Err(TxCommitError(format!(
+                            "record-history hook install failed: {e}"
+                        ))));
                     }
-                    return Ok(Err(TxCommitError(format!(
-                        "record-history hook install failed: {e}"
-                    ))));
                 }
             };
 
@@ -309,9 +349,11 @@ pub async fn run_write_rpc(
                 Ok(s) => s,
                 Err(e) => {
                     // Split failed. Mirror the inline path: remove the
-                    // capture hook, detach, ROLLBACK + RELEASE, return
-                    // statement err.
-                    let _ = crate::storage::record_history::remove_preupdate_capture(conn);
+                    // capture hook (if installed), detach, ROLLBACK +
+                    // RELEASE, return statement err.
+                    if capture_buf.is_some() {
+                        let _ = crate::storage::record_history::remove_preupdate_capture(conn);
+                    }
                     crate::query::authorizer::detach_authorizer(conn);
                     let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
                     if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
@@ -358,11 +400,14 @@ pub async fn run_write_rpc(
                 }
             }
 
-            // ── STEP 4b: remove the preupdate hook — on EVERY path,
-            //    BEFORE the flush and before savepoint resolution.
-            //    Removal failure is fail-closed: roll everything back
-            //    rather than leave a hook that captures later writes.
-            if let Err(e) = crate::storage::record_history::remove_preupdate_capture(conn) {
+            // ── STEP 4b: remove the preupdate hook (when installed) —
+            //    on EVERY path, BEFORE the flush and before savepoint
+            //    resolution. Removal failure is fail-closed: roll
+            //    everything back rather than leave a hook that captures
+            //    later writes.
+            if capture_buf.is_some()
+                && let Err(e) = crate::storage::record_history::remove_preupdate_capture(conn)
+            {
                 crate::query::authorizer::detach_authorizer(conn);
                 let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
                 if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
@@ -379,14 +424,16 @@ pub async fn run_write_rpc(
             // ── STEP 5b: commit path only — flush buffered changes to
             //    `_system_record_history` INSIDE the still-open
             //    savepoint (authorizer already detached, so the
-            //    `_system_` INSERTs are permitted). On error/dry_run
-            //    the buffer is dropped; STEP 6's ROLLBACK TO would
-            //    discard any flushed rows anyway (same savepoint).
-            //    Fail-closed: flush failure → roll the RPC back.
+            //    `_system_` INSERTs are permitted). `capture_buf` is
+            //    `Some` only when NOT dry_run, so the dry_run skip is
+            //    by construction. On error the buffer is dropped;
+            //    STEP 6's ROLLBACK TO would discard any flushed rows
+            //    anyway (same savepoint). Fail-closed: flush failure
+            //    (row-value read error OR a CaptureLimits cap
+            //    exceeded) → roll the RPC back.
             if exec_error.is_none()
-                && !dry_run
-                && let Err(e) =
-                    crate::storage::record_history::flush_captured(conn, &capture_buf, &actor)
+                && let Some(buf) = &capture_buf
+                && let Err(e) = crate::storage::record_history::flush_captured(conn, buf, &actor)
             {
                 let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
                 if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {

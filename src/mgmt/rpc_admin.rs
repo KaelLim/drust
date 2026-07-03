@@ -977,6 +977,7 @@ pub async fn rpc_test_run(
                 bound,
                 dry_run,
                 actor,
+                crate::storage::record_history::CaptureLimits::from_env(),
             )
             .await;
             let duration_ms = started.elapsed().as_millis();

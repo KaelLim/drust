@@ -221,60 +221,137 @@ pub fn capture_owner_cascade(
 // `flush_captured` writes the gated history rows INSIDE the same savepoint —
 // atomic with the mutation by construction. The hook closure must NOT touch
 // the `Connection` (SQLite forbids re-entrant use from inside the hook); it
-// only copies accessor values into owned `Value`s and pushes them.
+// only copies accessor values into bounded [`CapturedValue`]s and pushes
+// them. Buffering is bounded (v1.46 R2): only tables in the precomputed
+// audited set buffer at all, BLOBs buffer as length only, and
+// [`CaptureLimits`] caps rows + approximate bytes — exceeding a cap fails
+// the whole RPC closed rather than committing a partial audit trail.
+
+/// Bounds for the preupdate capture buffer (v1.46 R2). A write RPC that
+/// changes more rows / buffers more approximate bytes than these limits
+/// fails closed (the RPC rolls back) instead of holding an unbounded table
+/// image in RAM while the per-tenant writer mutex is held. `0` disables
+/// that dimension (unlimited).
+#[derive(Clone, Copy, Debug)]
+pub struct CaptureLimits {
+    pub max_rows: usize,
+    pub max_bytes: usize,
+}
+
+impl CaptureLimits {
+    /// Production limits: `DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS` (default
+    /// 10_000) / `DRUST_AUDIT_RPC_CAPTURE_MAX_BYTES` (default 64 MiB).
+    /// Unparseable values fall back to the default. Tests construct small
+    /// literals instead — never mutate the process-global env (tests run
+    /// in parallel).
+    pub fn from_env() -> Self {
+        fn knob(name: &str, default: usize) -> usize {
+            std::env::var(name)
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(default)
+        }
+        CaptureLimits {
+            max_rows: knob("DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS", 10_000),
+            max_bytes: knob("DRUST_AUDIT_RPC_CAPTURE_MAX_BYTES", 67_108_864),
+        }
+    }
+}
 
 /// One buffered row change from the preupdate hook. `old`/`new` hold the raw
 /// column values in table-declaration (storage) order — projection to JSON
 /// happens later in [`flush_captured`], where the `Connection` may be used.
 #[derive(Debug)]
-pub struct BufferedChange {
-    pub table: String,
-    pub op: HistoryOp,
-    pub rowid: i64,
-    pub old: Option<Vec<rusqlite::types::Value>>,
-    pub new: Option<Vec<rusqlite::types::Value>>,
+pub(crate) struct BufferedChange {
+    pub(crate) table: String,
+    pub(crate) op: HistoryOp,
+    pub(crate) rowid: i64,
+    pub(crate) old: Option<Vec<CapturedValue>>,
+    pub(crate) new: Option<Vec<CapturedValue>>,
 }
 
 /// Shared hook buffer. `error` is set when the hook could not read a row
-/// value — [`flush_captured`] then fails closed (the caller rolls back the
-/// RPC rather than committing an unaudited mutation).
+/// value or a [`CaptureLimits`] cap was exceeded — [`flush_captured`] then
+/// fails closed (the caller rolls back the RPC rather than committing an
+/// unaudited mutation).
 ///
 /// `Arc<std::sync::Mutex<..>>` rather than `Rc<RefCell<..>>` because
 /// `Connection::preupdate_hook` requires the closure to be `Send + 'static`.
 /// The lock is never contended (hook + flush run on the same thread inside
 /// the writer closure); it exists only to satisfy the bound.
 #[derive(Debug, Default)]
-pub struct CaptureBuffer {
-    pub changes: Vec<BufferedChange>,
-    pub error: Option<String>,
+pub(crate) struct CaptureBuffer {
+    pub(crate) changes: Vec<BufferedChange>,
+    /// Approximate buffered payload size, maintained incrementally by the
+    /// hook so the byte-limit check is O(1) per change.
+    pub(crate) approx_bytes: usize,
+    pub(crate) error: Option<String>,
 }
 
-pub type SharedCaptureBuffer = Arc<std::sync::Mutex<CaptureBuffer>>;
+pub(crate) type SharedCaptureBuffer = Arc<std::sync::Mutex<CaptureBuffer>>;
 
-/// Owned copy of a preupdate accessor value. Deliberately NOT
-/// `rusqlite::types::Value::from(ValueRef)` — that impl panics on invalid
-/// UTF-8, and a panic inside the hook is swallowed by rusqlite's
-/// `catch_unwind` (the change would silently vanish → fail-open). Lossy text
-/// conversion matches `materialize_row`'s `from_utf8_lossy` semantics.
-fn owned_value(v: rusqlite::types::ValueRef<'_>) -> rusqlite::types::Value {
-    use rusqlite::types::{Value, ValueRef};
-    match v {
-        ValueRef::Null => Value::Null,
-        ValueRef::Integer(i) => Value::Integer(i),
-        ValueRef::Real(f) => Value::Real(f),
-        ValueRef::Text(t) => Value::Text(String::from_utf8_lossy(t).into_owned()),
-        ValueRef::Blob(b) => Value::Blob(b.to_vec()),
+/// Owned, BOUNDED copy of a preupdate accessor value (v1.46 R2). BLOBs are
+/// buffered as LENGTH ONLY — the flush projection renders
+/// `{"__blob_bytes": n}` (identical output to `materialize_row`), so the
+/// content never needs to sit in RAM; vector columns (also BLOBs) are
+/// additionally omitted by name at flush. Text is copied lossily
+/// (`from_utf8_lossy`, matching `materialize_row`) — deliberately NOT
+/// `rusqlite::types::Value::from(ValueRef)`, which panics on invalid UTF-8,
+/// and a panic inside the hook is swallowed by rusqlite's `catch_unwind`
+/// (the change would silently vanish → fail-open).
+#[derive(Debug)]
+pub(crate) enum CapturedValue {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    BlobLen(usize),
+}
+
+impl CapturedValue {
+    fn from_ref(v: rusqlite::types::ValueRef<'_>) -> Self {
+        use rusqlite::types::ValueRef;
+        match v {
+            ValueRef::Null => CapturedValue::Null,
+            ValueRef::Integer(i) => CapturedValue::Integer(i),
+            ValueRef::Real(f) => CapturedValue::Real(f),
+            ValueRef::Text(t) => CapturedValue::Text(String::from_utf8_lossy(t).into_owned()),
+            ValueRef::Blob(b) => CapturedValue::BlobLen(b.len()),
+        }
     }
+
+    /// Approximate buffered size: fixed 8-byte overhead per value plus the
+    /// text payload. BLOB content is never buffered → overhead only.
+    fn approx_bytes(&self) -> usize {
+        8 + match self {
+            CapturedValue::Text(s) => s.len(),
+            _ => 0,
+        }
+    }
+}
+
+fn vals_bytes(vals: &[CapturedValue]) -> usize {
+    vals.iter().map(CapturedValue::approx_bytes).sum()
+}
+
+/// Actionable cap-exceeded message: names the limit, the env knob, and the
+/// two remediations (disable audit / batch the operation).
+fn limit_error(kind: &str, knob: &str, max: usize) -> String {
+    format!(
+        "record-history capture exceeded the {kind} of {max} ({knob}; 0 = unlimited). \
+         Disable audit on the collection (set_audit_enabled) or batch the operation \
+         into smaller writes."
+    )
 }
 
 fn copy_old(
     acc: &rusqlite::hooks::PreUpdateOldValueAccessor,
-) -> Result<Vec<rusqlite::types::Value>, String> {
+) -> Result<Vec<CapturedValue>, String> {
     let n = acc.get_column_count();
     let mut out = Vec::with_capacity(n as usize);
     for i in 0..n {
         match acc.get_old_column_value(i) {
-            Ok(v) => out.push(owned_value(v)),
+            Ok(v) => out.push(CapturedValue::from_ref(v)),
             Err(e) => return Err(format!("preupdate old[{i}]: {e}")),
         }
     }
@@ -283,30 +360,76 @@ fn copy_old(
 
 fn copy_new(
     acc: &rusqlite::hooks::PreUpdateNewValueAccessor,
-) -> Result<Vec<rusqlite::types::Value>, String> {
+) -> Result<Vec<CapturedValue>, String> {
     let n = acc.get_column_count();
     let mut out = Vec::with_capacity(n as usize);
     for i in 0..n {
         match acc.get_new_column_value(i) {
-            Ok(v) => out.push(owned_value(v)),
+            Ok(v) => out.push(CapturedValue::from_ref(v)),
             Err(e) => return Err(format!("preupdate new[{i}]: {e}")),
         }
     }
     Ok(out)
 }
 
+/// v1.46 R2 — enumerate the tenant's audited data tables in one pass:
+/// every `sqlite_master` table that is neither `sqlite_*` internal nor
+/// [`crate::storage::schema::is_protected_collection`], and whose
+/// `audit_enabled` gate reads ON (missing meta row → default ON).
+///
+/// `run_write_rpc` calls this BEFORE `attach_writable_authorizer` — the
+/// authorizer denies `sqlite_master` / `_system_*` reads, so the set must
+/// be computed while the connection is unrestricted. The set cannot go
+/// stale within the run: the writable authorizer denies
+/// Insert/Update/Delete on `_system_collection_meta` (protected prefix)
+/// and all DDL, so RPC SQL can neither flip `audit_enabled` nor create
+/// tables mid-run.
+pub(crate) fn audited_data_tables(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let names: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?;
+        let it = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        it.collect::<Result<_, _>>()?
+    };
+    let mut set = HashSet::new();
+    for name in names {
+        if name.starts_with("sqlite_") || crate::storage::schema::is_protected_collection(&name) {
+            continue;
+        }
+        if crate::storage::schema::read_audit_enabled(conn, &name)? {
+            set.insert(name);
+        }
+    }
+    Ok(set)
+}
+
 /// Install the scoped preupdate capture hook on `conn` and return the shared
 /// buffer it fills. The closure filters `_system_*` tables (which also keeps
 /// the flush's own history INSERTs invisible → no recursion) and `sqlite_*`
-/// internals. Callers MUST pair this with [`remove_preupdate_capture`] on
-/// every exit path — a leaked hook would buffer unrelated later writes.
-pub fn install_preupdate_capture(conn: &Connection) -> rusqlite::Result<SharedCaptureBuffer> {
+/// internals, then skips any table not in the precomputed `audited` set
+/// (v1.46 R2 — audit-off tables cost zero; the flush-side
+/// `read_audit_enabled` gate stays the authority as defense in depth).
+/// `limits` bounds the buffer; exceeding a cap sets `error` so the flush
+/// fails the whole RPC closed. Callers MUST pair this with
+/// [`remove_preupdate_capture`] on every exit path — a leaked hook would
+/// buffer unrelated later writes.
+pub(crate) fn install_preupdate_capture(
+    conn: &Connection,
+    audited: HashSet<String>,
+    limits: CaptureLimits,
+) -> rusqlite::Result<SharedCaptureBuffer> {
     use rusqlite::hooks::{Action, PreUpdateCase};
     let buf: SharedCaptureBuffer = Arc::new(std::sync::Mutex::new(CaptureBuffer::default()));
     let hook_buf = Arc::clone(&buf);
     conn.preupdate_hook(Some(
         move |_action: Action, _db: &str, tbl: &str, case: &PreUpdateCase| {
             if tbl.starts_with("_system_") || tbl.starts_with("sqlite_") {
+                return;
+            }
+            // v1.46 R2: only audited tables buffer at all. The set is
+            // complete for the whole RPC — the writable authorizer denies
+            // both DDL (no new tables mid-run) and `_system_collection_meta`
+            // writes (no audit_enabled flip mid-run).
+            if !audited.contains(tbl) {
                 return;
             }
             let mut g = match hook_buf.lock() {
@@ -340,13 +463,25 @@ pub fn install_preupdate_capture(conn: &Connection) -> rusqlite::Result<SharedCa
                     }
                 };
                 let rowid = new_value_accessor.get_new_row_id();
-                if let Some(pending) = g
+                if let Some(idx) = g
                     .changes
-                    .iter_mut()
-                    .rev()
-                    .find(|c| c.table == tbl && c.rowid == rowid && c.new.is_some())
+                    .iter()
+                    .rposition(|c| c.table == tbl && c.rowid == rowid && c.new.is_some())
                 {
-                    pending.new = Some(new);
+                    // Merging replaces the pending new-image — re-account
+                    // its bytes (the merged image may be larger).
+                    let replaced = g.changes[idx].new.as_ref().map_or(0, |v| vals_bytes(v));
+                    let next_bytes = g.approx_bytes.saturating_sub(replaced) + vals_bytes(&new);
+                    if limits.max_bytes != 0 && next_bytes > limits.max_bytes {
+                        g.error = Some(limit_error(
+                            "byte limit",
+                            "DRUST_AUDIT_RPC_CAPTURE_MAX_BYTES",
+                            limits.max_bytes,
+                        ));
+                        return;
+                    }
+                    g.approx_bytes = next_bytes;
+                    g.changes[idx].new = Some(new);
                     return;
                 }
                 // No pending change to merge into — unreachable today
@@ -386,7 +521,31 @@ pub fn install_preupdate_capture(conn: &Connection) -> rusqlite::Result<SharedCa
                 PreUpdateCase::Unknown => Err("unknown preupdate case".to_string()),
             };
             match change {
-                Ok(c) => g.changes.push(c),
+                Ok(c) => {
+                    // v1.46 R2: bound the buffer. A change past either cap
+                    // fails the RPC closed (via `error` → flush Err) —
+                    // never a silently truncated audit trail.
+                    if limits.max_rows != 0 && g.changes.len() >= limits.max_rows {
+                        g.error = Some(limit_error(
+                            "row limit",
+                            "DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS",
+                            limits.max_rows,
+                        ));
+                        return;
+                    }
+                    let c_bytes = c.old.as_ref().map_or(0, |v| vals_bytes(v))
+                        + c.new.as_ref().map_or(0, |v| vals_bytes(v));
+                    if limits.max_bytes != 0 && g.approx_bytes + c_bytes > limits.max_bytes {
+                        g.error = Some(limit_error(
+                            "byte limit",
+                            "DRUST_AUDIT_RPC_CAPTURE_MAX_BYTES",
+                            limits.max_bytes,
+                        ));
+                        return;
+                    }
+                    g.approx_bytes += c_bytes;
+                    g.changes.push(c);
+                }
                 Err(e) => g.error = Some(e),
             }
         },
@@ -394,9 +553,10 @@ pub fn install_preupdate_capture(conn: &Connection) -> rusqlite::Result<SharedCa
     Ok(buf)
 }
 
-/// Remove the preupdate capture hook. Must run on EVERY `run_write_rpc` exit
-/// path (success and error) BEFORE `flush_captured` / savepoint resolution.
-pub fn remove_preupdate_capture(conn: &Connection) -> rusqlite::Result<()> {
+/// Remove the preupdate capture hook. Must run on EVERY exit path of a
+/// caller that installed it (success and error) BEFORE `flush_captured` /
+/// savepoint resolution.
+pub(crate) fn remove_preupdate_capture(conn: &Connection) -> rusqlite::Result<()> {
     use rusqlite::hooks::{Action, PreUpdateCase};
     conn.preupdate_hook(None::<fn(Action, &str, &str, &PreUpdateCase)>)
 }
@@ -449,14 +609,13 @@ fn load_table_projection(
 }
 
 /// Zip buffered values to column names — SAME projection semantics as
-/// `materialize_row` (Null/Integer/Real/Text as-is, Blob → `{__blob_bytes}`,
-/// vector columns omitted entirely).
+/// `materialize_row` (Null/Integer/Real/Text as-is, Blob → `{__blob_bytes}`
+/// rendered from the buffered LENGTH, vector columns omitted entirely).
 fn project_values(
     table: &str,
-    vals: &[rusqlite::types::Value],
+    vals: &[CapturedValue],
     proj: &TableProjection,
 ) -> rusqlite::Result<serde_json::Value> {
-    use rusqlite::types::Value;
     if vals.len() != proj.col_names.len() {
         return Err(capture_error(format!(
             "record-history flush: {table} captured {} values but has {} columns",
@@ -470,11 +629,11 @@ fn project_values(
             continue;
         }
         let jv = match v {
-            Value::Null => serde_json::Value::Null,
-            Value::Integer(i) => serde_json::json!(i),
-            Value::Real(f) => serde_json::json!(f),
-            Value::Text(t) => serde_json::Value::String(t.clone()),
-            Value::Blob(b) => serde_json::json!({ "__blob_bytes": b.len() }),
+            CapturedValue::Null => serde_json::Value::Null,
+            CapturedValue::Integer(i) => serde_json::json!(i),
+            CapturedValue::Real(f) => serde_json::json!(f),
+            CapturedValue::Text(t) => serde_json::Value::String(t.clone()),
+            CapturedValue::BlobLen(n) => serde_json::json!({ "__blob_bytes": n }),
         };
         obj.insert(name.clone(), jv);
     }
@@ -487,7 +646,7 @@ fn project_values(
 /// and written via [`capture`]. Returns the number of history rows written.
 /// Fails closed: a buffered hook error or projection mismatch returns `Err`
 /// so the caller rolls the whole RPC back.
-pub fn flush_captured(
+pub(crate) fn flush_captured(
     tx: &Connection,
     buf: &SharedCaptureBuffer,
     actor: &AuditActor,
@@ -497,6 +656,7 @@ pub fn flush_captured(
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
+        g.approx_bytes = 0;
         (std::mem::take(&mut g.changes), g.error.take())
     };
     if let Some(msg) = error {
@@ -709,12 +869,24 @@ mod tests {
         assert_eq!(ai, "u-1");
     }
 
+    /// Both limit dimensions disabled — the shape most tests want.
+    fn unlimited() -> CaptureLimits {
+        CaptureLimits {
+            max_rows: 0,
+            max_bytes: 0,
+        }
+    }
+
+    fn audited(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn preupdate_capture_roundtrip_insert_update_delete() {
         let c = hist_conn();
         c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT, data BLOB);")
             .unwrap();
-        let buf = install_preupdate_capture(&c).unwrap();
+        let buf = install_preupdate_capture(&c, audited(&["notes"]), unlimited()).unwrap();
         c.execute_batch(
             "INSERT INTO notes (id, body, data) VALUES (1, 'a', x'0102');
              UPDATE notes SET body = 'b' WHERE id = 1;
@@ -774,7 +946,10 @@ mod tests {
              INSERT INTO _system_collection_meta (collection_name, audit_enabled) VALUES ('quiet', 0);",
         )
         .unwrap();
-        let buf = install_preupdate_capture(&c).unwrap();
+        // `quiet` is deliberately in the audited set here: this test pins the
+        // FLUSH-side gate (defense in depth), which stays the authority even
+        // when the hook-side set is wrong.
+        let buf = install_preupdate_capture(&c, audited(&["loud", "quiet"]), unlimited()).unwrap();
         c.execute_batch(
             "INSERT INTO loud (id, x) VALUES (1, 'a');
              INSERT INTO quiet (id, x) VALUES (1, 'b');
@@ -798,6 +973,212 @@ mod tests {
             })
             .unwrap();
         assert_eq!(coll, "loud");
+    }
+
+    // ── v1.46 R2: capture limits + blob-length-only buffering ────────────
+
+    #[test]
+    fn capture_row_limit_sets_error_and_flush_fails_closed() {
+        let c = hist_conn();
+        c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
+            .unwrap();
+        let buf = install_preupdate_capture(
+            &c,
+            audited(&["notes"]),
+            CaptureLimits {
+                max_rows: 2,
+                max_bytes: 0,
+            },
+        )
+        .unwrap();
+        c.execute_batch(
+            "INSERT INTO notes (id, body) VALUES (1, 'a');
+             INSERT INTO notes (id, body) VALUES (2, 'b');
+             INSERT INTO notes (id, body) VALUES (3, 'c');",
+        )
+        .unwrap();
+        remove_preupdate_capture(&c).unwrap();
+        let err = flush_captured(&c, &buf, &AuditActor::service()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("row limit"), "names the exceeded limit: {msg}");
+        assert!(
+            msg.contains("DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS"),
+            "names the env knob: {msg}"
+        );
+        assert!(
+            msg.contains("set_audit_enabled"),
+            "suggests disabling audit: {msg}"
+        );
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM _system_record_history", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 0, "fail closed — nothing flushed");
+    }
+
+    #[test]
+    fn capture_byte_limit_sets_error_and_flush_fails_closed() {
+        let c = hist_conn();
+        c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
+            .unwrap();
+        let buf = install_preupdate_capture(
+            &c,
+            audited(&["notes"]),
+            CaptureLimits {
+                max_rows: 0,
+                max_bytes: 64,
+            },
+        )
+        .unwrap();
+        let big = "x".repeat(1024);
+        c.execute(
+            "INSERT INTO notes (id, body) VALUES (1, ?1)",
+            rusqlite::params![big],
+        )
+        .unwrap();
+        remove_preupdate_capture(&c).unwrap();
+        let err = flush_captured(&c, &buf, &AuditActor::service()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("byte limit"),
+            "names the exceeded limit: {msg}"
+        );
+        assert!(
+            msg.contains("DRUST_AUDIT_RPC_CAPTURE_MAX_BYTES"),
+            "names the env knob: {msg}"
+        );
+    }
+
+    #[test]
+    fn capture_at_row_limit_boundary_succeeds() {
+        let c = hist_conn();
+        c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
+            .unwrap();
+        let buf = install_preupdate_capture(
+            &c,
+            audited(&["notes"]),
+            CaptureLimits {
+                max_rows: 2,
+                max_bytes: 0,
+            },
+        )
+        .unwrap();
+        c.execute_batch(
+            "INSERT INTO notes (id, body) VALUES (1, 'a');
+             INSERT INTO notes (id, body) VALUES (2, 'b');",
+        )
+        .unwrap();
+        remove_preupdate_capture(&c).unwrap();
+        let n = flush_captured(&c, &buf, &AuditActor::service()).unwrap();
+        assert_eq!(n, 2, "exactly max_rows changes are still fine");
+    }
+
+    #[test]
+    fn capture_buffers_blob_length_never_content() {
+        let c = hist_conn();
+        c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, data BLOB);")
+            .unwrap();
+        // Byte budget FAR smaller than the blob: only its length may be
+        // buffered, so the insert must fit.
+        let buf = install_preupdate_capture(
+            &c,
+            audited(&["notes"]),
+            CaptureLimits {
+                max_rows: 0,
+                max_bytes: 256,
+            },
+        )
+        .unwrap();
+        let blob = vec![0u8; 100_000];
+        c.execute(
+            "INSERT INTO notes (id, data) VALUES (1, ?1)",
+            rusqlite::params![blob],
+        )
+        .unwrap();
+        remove_preupdate_capture(&c).unwrap();
+        {
+            let g = buf.lock().unwrap();
+            assert!(
+                g.error.is_none(),
+                "100 KB blob fits a 256-byte budget — content is not buffered: {:?}",
+                g.error
+            );
+            let new = g.changes[0].new.as_ref().unwrap();
+            assert!(
+                new.iter()
+                    .any(|v| matches!(v, CapturedValue::BlobLen(100_000))),
+                "blob buffered as length only: {new:?}"
+            );
+        }
+        let n = flush_captured(&c, &buf, &AuditActor::service()).unwrap();
+        assert_eq!(n, 1);
+        let nj: String = c
+            .query_row("SELECT new_json FROM _system_record_history", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let new: serde_json::Value = serde_json::from_str(&nj).unwrap();
+        assert_eq!(
+            new["data"],
+            serde_json::json!({"__blob_bytes": 100_000}),
+            "projection output unchanged: {new}"
+        );
+    }
+
+    #[test]
+    fn capture_skips_tables_not_in_audited_set() {
+        let c = hist_conn();
+        c.execute_batch(
+            "CREATE TABLE loud (id INTEGER PRIMARY KEY, x TEXT);
+             CREATE TABLE quiet (id INTEGER PRIMARY KEY, x TEXT);",
+        )
+        .unwrap();
+        let buf = install_preupdate_capture(&c, audited(&["loud"]), unlimited()).unwrap();
+        c.execute_batch(
+            "INSERT INTO loud (id, x) VALUES (1, 'a');
+             INSERT INTO quiet (id, x) VALUES (1, 'b');",
+        )
+        .unwrap();
+        remove_preupdate_capture(&c).unwrap();
+        let g = buf.lock().unwrap();
+        assert_eq!(
+            g.changes.len(),
+            1,
+            "non-audited table never enters the buffer: {:?}",
+            g.changes
+        );
+        assert_eq!(g.changes[0].table, "loud");
+    }
+
+    #[test]
+    fn audited_data_tables_excludes_system_sqlite_and_gate_off() {
+        let c = hist_conn();
+        c.execute_batch(
+            "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, audit_enabled INTEGER NOT NULL DEFAULT 1);
+             CREATE TABLE loud (id INTEGER PRIMARY KEY AUTOINCREMENT, x TEXT);
+             CREATE TABLE quiet (id INTEGER PRIMARY KEY, x TEXT);
+             INSERT INTO _system_collection_meta (collection_name, audit_enabled) VALUES ('quiet', 0);
+             INSERT INTO loud (x) VALUES ('seed sqlite_sequence');",
+        )
+        .unwrap();
+        let set = audited_data_tables(&c).unwrap();
+        assert!(set.contains("loud"), "{set:?}");
+        assert!(!set.contains("quiet"), "gate-off excluded: {set:?}");
+        assert!(
+            !set.iter()
+                .any(|n| n.starts_with("_system_") || n.starts_with("sqlite_")),
+            "system/internal tables excluded: {set:?}"
+        );
+    }
+
+    #[test]
+    fn capture_limits_from_env_defaults() {
+        // The knobs are unset in the test environment (tests must never
+        // mutate the process-global env) → documented defaults.
+        let l = CaptureLimits::from_env();
+        assert_eq!(l.max_rows, 10_000);
+        assert_eq!(l.max_bytes, 67_108_864);
     }
 
     #[test]
