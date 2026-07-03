@@ -718,6 +718,12 @@ async fn run_rpc_with_limits(
 // Exceeding max_rows on an audited collection → the RPC errors AND rolls
 // back (data unchanged, zero history rows). Fail-closed, never a partial
 // audit trail.
+//
+// v1.46 R8: the cap hit must surface on the STATEMENT-ERROR channel
+// (`Ok(Err(RpcStatementError))`), NOT as `TxCommitError` — the savepoint IS
+// resolved cleanly (ROLLBACK TO + RELEASE both ran) and the failure is
+// caller-remediable, so the "savepoint state undefined, operator must look"
+// 500 contract would be a mislabel.
 #[tokio::test]
 async fn rpc_exceeding_capture_row_limit_errors_and_rolls_back() {
     let (_app, tid, _svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-lim").await;
@@ -735,14 +741,68 @@ async fn rpc_exceeding_capture_row_limit_errors_and_rolls_back() {
         },
     )
     .await;
-    let err = res.expect_err("3 row changes > max_rows=2 must fail the RPC");
-    let msg = err.to_string();
+    let stmt_err = res
+        .expect("cap hit resolves the savepoint cleanly — never TxCommitError")
+        .expect_err("3 row changes > max_rows=2 must fail the RPC");
+    assert!(
+        stmt_err.capture_limit_exceeded,
+        "typed as a capture-limit hit (→ 409 CAPTURE_LIMIT_EXCEEDED): {stmt_err:?}"
+    );
+    let msg = &stmt_err.message;
     assert!(
         msg.contains("DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS"),
         "actionable error names the knob: {msg}"
     );
+    assert!(
+        msg.contains("set_audit_enabled"),
+        "actionable error suggests disabling audit: {msg}"
+    );
 
     assert_eq!(qtys(&pool).await, vec![1, 2, 3], "mutation rolled back");
+    assert!(
+        history_rows(&pool).await.is_empty(),
+        "no partial history survives the rollback"
+    );
+}
+
+// REST end-to-end: a capture-limit hit maps to HTTP 409 with error code
+// CAPTURE_LIMIT_EXCEEDED (LARGE_TABLE precedent — config-remediable
+// conflict), never 500 TX_COMMIT_FAILED (which would page an operator and
+// make retry-on-5xx clients re-fail forever). The REST caller threads
+// `CaptureLimits::from_env()`; the knobs are unset in the test env, so the
+// documented default of 10_000 rows applies — one INSERT changing 10_001
+// rows trips it WITHOUT mutating process env (tests run in parallel).
+#[tokio::test]
+async fn rest_capture_limit_hit_maps_to_409_capture_limit_exceeded() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-409").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    let values: Vec<String> = (0..10_001).map(|i| format!("({i})")).collect();
+    let sql = format!("INSERT INTO orders (qty) VALUES {}", values.join(","));
+    create_rpc(&pool, "big_insert", &sql, "[]", false).await;
+
+    let r = app
+        .oneshot(req("POST", &tid, "/rpc/big_insert", Some(json!({})), &svc))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::CONFLICT,
+        "caller-remediable cap hit is 409, not 500"
+    );
+    let v = read_json(r).await;
+    assert_eq!(v["error_code"], "CAPTURE_LIMIT_EXCEEDED", "{v}");
+    let msg = v["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS"),
+        "message keeps the actionable knob text: {v}"
+    );
+    assert!(
+        v["suggested_fix"].is_string(),
+        "catalog fix attached for LLM callers: {v}"
+    );
+
+    assert_eq!(orders_count(&pool).await, 0, "mutation rolled back");
     assert!(
         history_rows(&pool).await.is_empty(),
         "no partial history survives the rollback"

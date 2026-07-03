@@ -284,6 +284,17 @@ pub(crate) struct BufferedChange {
     pub(crate) new: Option<Vec<CapturedValue>>,
 }
 
+/// Why the hook buffer failed, split by remediation class (v1.46 R8).
+/// `LimitExceeded` — a [`CaptureLimits`] cap was hit; caller-remediable
+/// (batch the operation / raise the knob / disable audit on the collection)
+/// and surfaced as HTTP 409 `CAPTURE_LIMIT_EXCEEDED`. `Internal` — a hook
+/// accessor/copy failure; genuinely internal, stays in the 500 class.
+#[derive(Debug)]
+pub(crate) enum CaptureError {
+    LimitExceeded(String),
+    Internal(String),
+}
+
 /// Shared hook buffer. `error` is set when the hook could not read a row
 /// value or a [`CaptureLimits`] cap was exceeded — [`flush_captured`] then
 /// fails closed (the caller rolls back the RPC rather than committing an
@@ -299,7 +310,7 @@ pub(crate) struct CaptureBuffer {
     /// Approximate buffered payload size, maintained incrementally by the
     /// hook so the byte-limit check is O(1) per change.
     pub(crate) approx_bytes: usize,
-    pub(crate) error: Option<String>,
+    pub(crate) error: Option<CaptureError>,
 }
 
 pub(crate) type SharedCaptureBuffer = Arc<std::sync::Mutex<CaptureBuffer>>;
@@ -472,7 +483,7 @@ pub(crate) fn install_preupdate_capture(
                 let new = match copy_new(new_value_accessor) {
                     Ok(n) => n,
                     Err(e) => {
-                        g.error = Some(e);
+                        g.error = Some(CaptureError::Internal(e));
                         return;
                     }
                 };
@@ -487,11 +498,11 @@ pub(crate) fn install_preupdate_capture(
                     let replaced = g.changes[idx].new.as_ref().map_or(0, |v| vals_bytes(v));
                     let next_bytes = g.approx_bytes.saturating_sub(replaced) + vals_bytes(&new);
                     if limits.max_bytes != 0 && next_bytes > limits.max_bytes {
-                        g.error = Some(limit_error(
+                        g.error = Some(CaptureError::LimitExceeded(limit_error(
                             "byte limit",
                             "DRUST_AUDIT_RPC_CAPTURE_MAX_BYTES",
                             limits.max_bytes,
-                        ));
+                        )));
                         return;
                     }
                     g.approx_bytes = next_bytes;
@@ -540,27 +551,27 @@ pub(crate) fn install_preupdate_capture(
                     // fails the RPC closed (via `error` → flush Err) —
                     // never a silently truncated audit trail.
                     if limits.max_rows != 0 && g.changes.len() >= limits.max_rows {
-                        g.error = Some(limit_error(
+                        g.error = Some(CaptureError::LimitExceeded(limit_error(
                             "row limit",
                             "DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS",
                             limits.max_rows,
-                        ));
+                        )));
                         return;
                     }
                     let c_bytes = c.old.as_ref().map_or(0, |v| vals_bytes(v))
                         + c.new.as_ref().map_or(0, |v| vals_bytes(v));
                     if limits.max_bytes != 0 && g.approx_bytes + c_bytes > limits.max_bytes {
-                        g.error = Some(limit_error(
+                        g.error = Some(CaptureError::LimitExceeded(limit_error(
                             "byte limit",
                             "DRUST_AUDIT_RPC_CAPTURE_MAX_BYTES",
                             limits.max_bytes,
-                        ));
+                        )));
                         return;
                     }
                     g.approx_bytes += c_bytes;
                     g.changes.push(c);
                 }
-                Err(e) => g.error = Some(e),
+                Err(e) => g.error = Some(CaptureError::Internal(e)),
             }
         },
     ))?;
@@ -580,6 +591,20 @@ pub(crate) fn remove_preupdate_capture(conn: &Connection) -> rusqlite::Result<()
 struct TableProjection {
     col_names: Vec<String>,
     vector_names: HashSet<String>,
+}
+
+/// [`flush_captured`] failure, split by remediation class (v1.46 R8):
+/// `LimitExceeded` carries the actionable cap-exceeded message verbatim —
+/// the RPC executor routes it down the statement-error channel so both
+/// callers surface HTTP 409 `CAPTURE_LIMIT_EXCEEDED`. `Db` is genuinely
+/// internal (hook accessor failure, projection mismatch, SQLite error) and
+/// keeps the `TxCommitError` / HTTP 500 path.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum FlushError {
+    #[error("{0}")]
+    LimitExceeded(String),
+    #[error(transparent)]
+    Db(#[from] rusqlite::Error),
 }
 
 /// Typed internal error for capture failures — keeps flush inside
@@ -659,12 +684,14 @@ fn project_values(
 /// off → that table's rows are dropped; otherwise each row is projected
 /// and written via [`capture`]. Returns the number of history rows written.
 /// Fails closed: a buffered hook error or projection mismatch returns `Err`
-/// so the caller rolls the whole RPC back.
+/// so the caller rolls the whole RPC back. The `Err` is typed
+/// ([`FlushError`]): a cap hit is `LimitExceeded` (caller-remediable →
+/// 409), everything else is `Db` (internal → 500).
 pub(crate) fn flush_captured(
     tx: &Connection,
     buf: &SharedCaptureBuffer,
     actor: &AuditActor,
-) -> rusqlite::Result<usize> {
+) -> Result<usize, FlushError> {
     let (changes, error) = {
         let mut g = match buf.lock() {
             Ok(g) => g,
@@ -673,10 +700,14 @@ pub(crate) fn flush_captured(
         g.approx_bytes = 0;
         (std::mem::take(&mut g.changes), g.error.take())
     };
-    if let Some(msg) = error {
-        return Err(capture_error(format!(
-            "record-history preupdate capture failed: {msg}"
-        )));
+    match error {
+        Some(CaptureError::LimitExceeded(msg)) => return Err(FlushError::LimitExceeded(msg)),
+        Some(CaptureError::Internal(msg)) => {
+            return Err(FlushError::Db(capture_error(format!(
+                "record-history preupdate capture failed: {msg}"
+            ))));
+        }
+        None => {}
     }
     let mut meta: std::collections::HashMap<String, Option<TableProjection>> =
         std::collections::HashMap::new();
@@ -1013,6 +1044,10 @@ mod tests {
         .unwrap();
         remove_preupdate_capture(&c).unwrap();
         let err = flush_captured(&c, &buf, &AuditActor::service()).unwrap_err();
+        assert!(
+            matches!(err, FlushError::LimitExceeded(_)),
+            "cap hit is typed caller-remediable (v1.46 R8): {err:?}"
+        );
         let msg = err.to_string();
         assert!(msg.contains("row limit"), "names the exceeded limit: {msg}");
         assert!(
@@ -1053,6 +1088,10 @@ mod tests {
         .unwrap();
         remove_preupdate_capture(&c).unwrap();
         let err = flush_captured(&c, &buf, &AuditActor::service()).unwrap_err();
+        assert!(
+            matches!(err, FlushError::LimitExceeded(_)),
+            "cap hit is typed caller-remediable (v1.46 R8): {err:?}"
+        );
         let msg = err.to_string();
         assert!(
             msg.contains("byte limit"),
