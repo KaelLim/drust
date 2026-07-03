@@ -20,8 +20,13 @@
 FROM rust:1-slim-bookworm AS builder
 
 # build-essential = cc + headers for rusqlite's bundled SQLite C compile.
+# clang + libclang-dev = bindgen: the rusqlite `preupdate_hook` feature
+# (record-history capture for write-mode RPCs, v1.46+) forces libsqlite3-sys
+# into buildtime_bindgen, which needs libclang.so AND clang's builtin headers
+# (stdarg.h). Dropping these makes `cargo build --locked` fail here while
+# host builds keep working — do not remove.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential pkg-config \
+ && apt-get install -y --no-install-recommends build-essential pkg-config clang libclang-dev \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build

@@ -18,6 +18,12 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # bindgen (forced by rusqlite's preupdate_hook feature, v1.46+) needs
+      # libclang.so + clang builtin headers. Runner images usually ship clang,
+      # but the dev lib is not guaranteed — install explicitly.
+      - name: Install libclang (bindgen for libsqlite3-sys preupdate_hook)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang libclang-dev
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
