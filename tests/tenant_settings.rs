@@ -287,6 +287,79 @@ async fn audit_default_flip_and_apply_all() {
     );
 }
 
+/// A legacy collection with NO `_system_collection_meta` row must still be
+/// covered by apply-all: the runtime gate (`read_audit_enabled`) defaults a
+/// missing row to ON, so a blanket `UPDATE _system_collection_meta` that
+/// skips row-less collections would leave them silently capturing after a
+/// tenant-wide disable. Apply-all must upsert (create the missing row) and
+/// count the collection as updated.
+#[tokio::test]
+async fn apply_all_covers_meta_row_less_legacy_collections() {
+    let (app, pat, tenants, dir) = app().await;
+    let reg = drust::mcp::server::McpRegistry::new(tenants.clone());
+    let svc = reg.get_or_create(TID).await.unwrap();
+    for coll in ["c_legacy", "c_meta"] {
+        drust::mcp::tools::schema::create_collection(&svc, coll, &[fld("body")])
+            .await
+            .unwrap();
+    }
+    let db_path = dir.path().join("tenants").join(TID).join("data.sqlite");
+    // Simulate a pre-meta legacy collection: delete its meta row by hand.
+    {
+        let c = rusqlite::Connection::open(&db_path).unwrap();
+        c.execute(
+            "DELETE FROM _system_collection_meta WHERE collection_name = 'c_legacy'",
+            [],
+        )
+        .unwrap();
+        // Sanity: the runtime gate defaults the missing row to ON.
+        assert!(
+            drust::storage::schema::read_audit_enabled(&c, "c_legacy").unwrap(),
+            "missing meta row must default the capture gate to ON"
+        );
+    }
+    assert_eq!(
+        audit_flags(&dir),
+        vec![("c_meta".into(), 1)],
+        "precondition: c_legacy has no meta row"
+    );
+
+    // Tenant-wide disable: flip the default off, then push it to all.
+    let (status, body) = send_json(
+        &app,
+        "PATCH",
+        format!("/admin/tenants/{TID}"),
+        &pat,
+        Some(json!({"audit_default": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "PATCH must 200; body: {body}");
+    let (status, body) = send_json(
+        &app,
+        "POST",
+        format!("/admin/tenants/{TID}/audit/apply-all"),
+        &pat,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "apply-all must 200; body: {body}");
+    assert_eq!(
+        body["updated"], 2,
+        "updated count must include the row-less legacy collection; body: {body}"
+    );
+    assert_eq!(
+        audit_flags(&dir),
+        vec![("c_legacy".into(), 0), ("c_meta".into(), 0)],
+        "apply-all must CREATE the missing meta row with audit_enabled=0"
+    );
+    // The runtime gate now reads OFF for the legacy collection.
+    let c = rusqlite::Connection::open(&db_path).unwrap();
+    assert!(
+        !drust::storage::schema::read_audit_enabled(&c, "c_legacy").unwrap(),
+        "capture gate must be OFF after apply-all"
+    );
+}
+
 /// Fetch an admin HTML page with the PAT bearer; returns (status, body).
 async fn send_page(app: &axum::Router, uri: String, pat: &str) -> (StatusCode, String) {
     let resp = app
