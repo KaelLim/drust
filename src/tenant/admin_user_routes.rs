@@ -8,15 +8,15 @@
 //!   DELETE /t/{tenant}/admin/users/{uid}        — delete + cascade
 //!   POST   /t/{tenant}/admin/users/{uid}/revoke-sessions — kick all sessions
 
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 
-use crate::auth::middleware::ServiceTid;
+use crate::auth::middleware::{AuthCtx, ServiceTid};
 use crate::error::json_error;
 use crate::tenant::router::TenantAuthState;
 
@@ -300,6 +300,7 @@ pub async fn update_user_handler(
 pub async fn delete_user_handler(
     State(state): State<TenantAuthState>,
     ServiceTid(tid): ServiceTid,
+    Extension(ctx): Extension<AuthCtx>,
     Path(params): Path<HashMap<String, String>>,
 ) -> Response {
     let uid = match get_uid(&params) {
@@ -310,6 +311,10 @@ pub async fn delete_user_handler(
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
+    // History attribution: an admin PAT resolves to
+    // `AuthCtx::Service { admin_id: Some(_) }`, so the cascade rows below
+    // carry the operating admin's id (a plain service key stays id=None).
+    let actor = crate::storage::record_history::AuditActor::from_auth_ctx(&ctx);
     let uid2 = uid.clone();
     let res = pool
         .with_writer(
@@ -329,7 +334,6 @@ pub async fn delete_user_handler(
                 // v1.46 — per-row history capture BEFORE each bulk DELETE,
                 // inside the same tx (spec §4: bulk-delete paths iterate and
                 // capture). Same shared helper as the MCP delete_user site.
-                let actor = crate::storage::record_history::AuditActor::service();
                 let mut deleted_records = serde_json::Map::new();
                 for (coll, field) in &owner_cols {
                     crate::storage::record_history::capture_owner_cascade(

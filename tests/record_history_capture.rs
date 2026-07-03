@@ -411,18 +411,32 @@ async fn seed_owned_tasks(pool: &SharedTenantPool, owner: &str, other: &str) {
 }
 
 /// All op='delete' history rows: (collection, record_id, old_json, new_json,
-/// actor_kind), insertion order.
-type DeleteHistRow = (String, i64, Option<String>, Option<String>, String);
+/// actor_kind, actor_id), insertion order.
+type DeleteHistRow = (
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+);
 
 async fn delete_history(pool: &SharedTenantPool) -> Vec<DeleteHistRow> {
     pool.with_reader(|c| {
         let mut stmt = c.prepare(
-            "SELECT collection, record_id, old_json, new_json, actor_kind \
+            "SELECT collection, record_id, old_json, new_json, actor_kind, actor_id \
              FROM _system_record_history WHERE op = 'delete' ORDER BY id",
         )?;
         let rows = stmt
             .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -449,9 +463,13 @@ async fn mcp_delete_user_cascade_captures_per_row_history() {
     let mut record_ids: Vec<i64> = rows.iter().map(|r| r.1).collect();
     record_ids.sort();
     assert_eq!(record_ids, vec![1, 2], "only the owned rows are captured");
-    for (coll, _id, old, new, actor) in &rows {
+    for (coll, _id, old, new, actor, actor_id) in &rows {
         assert_eq!(coll.as_str(), "tasks");
         assert_eq!(actor.as_str(), "service");
+        assert_eq!(
+            actor_id, &None,
+            "MCP is service-key-only — no per-request admin identity"
+        );
         assert!(new.is_none(), "delete has no post-image");
         let old: serde_json::Value =
             serde_json::from_str(old.as_deref().expect("old_json present")).unwrap();
@@ -478,8 +496,9 @@ async fn mcp_delete_user_cascade_captures_per_row_history() {
 // contract (both sites route through the shared capture_owner_cascade).
 #[tokio::test]
 async fn rest_admin_delete_user_cascade_captures_per_row_history() {
+    use axum::Extension;
     use axum::extract::{Path, State};
-    use drust::auth::middleware::ServiceTid;
+    use drust::auth::middleware::{AuthCtx, ServiceTid};
     use std::collections::HashMap;
 
     let (auth_state, dir, uid) = helpers::auth_state_with_seeded_user("cas2").await;
@@ -489,9 +508,13 @@ async fn rest_admin_delete_user_cascade_captures_per_row_history() {
     let mut params = HashMap::new();
     params.insert("tenant".to_string(), "cas2".to_string());
     params.insert("uid".to_string(), uid.clone());
+    // Admin PAT identity: bearer_auth_layer resolves a PAT to
+    // AuthCtx::Service { admin_id: Some(id) } and inserts it as a request
+    // extension — mirrored here for the direct handler call.
     let resp = drust::tenant::admin_user_routes::delete_user_handler(
         State(auth_state),
         ServiceTid("cas2".to_string()),
+        Extension(AuthCtx::Service { admin_id: Some(7) }),
         Path(params),
     )
     .await;
@@ -499,9 +522,15 @@ async fn rest_admin_delete_user_cascade_captures_per_row_history() {
 
     let rows = delete_history(&pool).await;
     assert_eq!(rows.len(), 2, "one history row per cascaded delete");
-    for (coll, _id, old, new, actor) in &rows {
+    for (coll, _id, old, new, actor, actor_id) in &rows {
         assert_eq!(coll.as_str(), "tasks");
         assert_eq!(actor.as_str(), "service");
+        assert_eq!(
+            actor_id.as_deref(),
+            Some("7"),
+            "REST cascade is attributed to the operating admin (admin PAT → \
+             AuthCtx::Service {{ admin_id }})"
+        );
         assert!(new.is_none(), "delete has no post-image");
         let old: serde_json::Value =
             serde_json::from_str(old.as_deref().expect("old_json present")).unwrap();
