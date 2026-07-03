@@ -319,6 +319,57 @@ async fn enforced_user_write_captures_user_actor() {
     );
 }
 
+// Edge-function User identity (CallerCtx::User → to_auth_ctx, empty
+// token_hash: the function host carries no bearer) → actor_hint IS NULL,
+// never '' (an empty prefix would join every `_system_sessions` row).
+#[tokio::test]
+async fn enforced_user_write_via_caller_ctx_has_null_actor_hint() {
+    let d = tempfile::tempdir().unwrap();
+    let svc = mcp_svc(&d, "mcphist").await;
+    drust::mcp::tools::schema::create_collection(&svc, "notes", &[fld("body", "text")])
+        .await
+        .unwrap();
+    drust::mcp::tools::schema::set_user_caps(
+        &svc,
+        "notes",
+        &[
+            drust::storage::schema::DmlVerb::Select,
+            drust::storage::schema::DmlVerb::Insert,
+        ],
+    )
+    .await
+    .unwrap();
+    let ctx = drust::functions::caller::CallerCtx::User {
+        user_id: "u9".into(),
+    }
+    .to_auth_ctx();
+    drust::functions::enforce::enforced_insert(
+        &svc,
+        &ctx,
+        "notes",
+        serde_json::json!({"body": "y"}),
+    )
+    .await
+    .unwrap();
+    let (ak, ah): (String, Option<String>) = svc
+        .inner()
+        .pool
+        .with_reader(|c| {
+            c.query_row(
+                "SELECT actor_kind, actor_hint FROM _system_record_history",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(ak, "user");
+    assert_eq!(
+        ah, None,
+        "hashless User identity must store SQL NULL actor_hint, not ''"
+    );
+}
+
 // ── delete_user owner cascade (shared capture_owner_cascade, both sites) ─────
 
 use drust::storage::pool::SharedTenantPool;
