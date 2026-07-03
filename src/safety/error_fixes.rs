@@ -20,6 +20,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Use POST /collections/<c>/list (FilterAst) or /search; /query (raw SELECT) is unavailable to anon once the tenant uses row-level policies, because drust cannot rewrite raw SQL to enforce them.",
     ),
     (
+        "CAPTURE_LIMIT_EXCEEDED",
+        "This write RPC changed more audited rows/bytes than the record-history capture buffer allows; the RPC was rolled back. Batch the operation into smaller writes, raise DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS / DRUST_AUDIT_RPC_CAPTURE_MAX_BYTES, or disable audit on the collection via set_audit_enabled.",
+    ),
+    (
         "CHECK_CONSTRAINT_FAILED",
         "A value violates a field constraint (min/max/enum/max_length). Adjust the value to satisfy the collection's declared constraints, or relax the constraint via the field editor.",
     ),

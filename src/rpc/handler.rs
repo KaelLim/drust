@@ -455,7 +455,14 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
             ExecError::Sql(_) => json_error(StatusCode::BAD_REQUEST, "SQL_ERROR", &e.to_string()),
         },
         RpcOutcome::StatementFailed(e) => {
-            let code = if e.authorizer_denied {
+            // v1.46 R8: a record-history CaptureLimits cap hit is
+            // caller-remediable (batch the operation, raise the knob, or
+            // disable audit) and the savepoint WAS resolved cleanly —
+            // 409 (LARGE_TABLE precedent for config-remediable
+            // conflicts), never the 500 TX_COMMIT_FAILED class.
+            let code = if e.capture_limit_exceeded {
+                "CAPTURE_LIMIT_EXCEEDED"
+            } else if e.authorizer_denied {
                 "INVALID_SQL_FOR_MODE"
             } else {
                 "RPC_STATEMENT_FAILED"
@@ -464,17 +471,29 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
             body.insert("error_code".into(), json!(code));
             body.insert(
                 "message".into(),
-                json!(format!(
-                    "statement {} failed: {}",
-                    e.statement_index, e.message
-                )),
+                if e.capture_limit_exceeded {
+                    // Not a per-statement failure — the actionable cap
+                    // message stands alone (names the knob + remediations).
+                    json!(e.message)
+                } else {
+                    json!(format!(
+                        "statement {} failed: {}",
+                        e.statement_index, e.message
+                    ))
+                },
             );
-            body.insert("statement_index".into(), json!(e.statement_index));
+            if !e.capture_limit_exceeded {
+                body.insert("statement_index".into(), json!(e.statement_index));
+            }
             if let Some(fix) = crate::safety::error_fixes::lookup(code) {
                 body.insert("suggested_fix".into(), json!(fix));
             }
             let mut resp = Json(serde_json::Value::Object(body)).into_response();
-            *resp.status_mut() = StatusCode::BAD_REQUEST;
+            *resp.status_mut() = if e.capture_limit_exceeded {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            };
             resp.extensions_mut()
                 .insert(crate::safety::audit::AuditExtra(json!({
                     "rpc_mode": "write",

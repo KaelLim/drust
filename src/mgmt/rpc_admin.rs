@@ -1018,19 +1018,31 @@ pub async fn rpc_test_run(
                     // Locale-aware so zh-TW users get a localized prefix; the
                     // underlying sqlite text stays English (rusqlite produces
                     // English; localizing those is out of scope).
-                    let t = Translator::new(locale);
-                    let prefix = t.fmt1(
-                        "tenant_rpc.errors.statement_failed",
-                        "index",
-                        stmt_err.statement_index,
-                    );
+                    //
+                    // v1.46 R8: a record-history capture-limit hit is not a
+                    // per-statement failure — render its actionable message
+                    // under the CAPTURE_LIMIT_EXCEEDED code (mirrors the REST
+                    // 409 mapping; same code-prefix pattern as the
+                    // TX_COMMIT_FAILED arm below). Banner semantics are
+                    // unchanged: the run rolled back, nothing persisted.
+                    let err_text = if stmt_err.capture_limit_exceeded {
+                        format!("CAPTURE_LIMIT_EXCEEDED: {}", stmt_err.message)
+                    } else {
+                        let t = Translator::new(locale);
+                        let prefix = t.fmt1(
+                            "tenant_rpc.errors.statement_failed",
+                            "index",
+                            stmt_err.statement_index,
+                        );
+                        format!("{prefix}: {}", stmt_err.message)
+                    };
                     render_test_outcome(
                         tenant_id,
                         tenant_name,
                         collections,
                         &stored,
                         visible_inputs,
-                        Err(format!("{prefix}: {}", stmt_err.message)),
+                        Err(err_text),
                         explain_rows,
                         duration_ms,
                         bound_json,

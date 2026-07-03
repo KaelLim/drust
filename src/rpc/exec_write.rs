@@ -53,6 +53,14 @@ pub struct RpcStatementError {
     /// "not authorized" / "prohibited" in the error message). Lets the
     /// handler emit INVALID_SQL_FOR_MODE instead of RPC_STATEMENT_FAILED.
     pub authorizer_denied: bool,
+    /// v1.46 R8: true when the failure is a record-history `CaptureLimits`
+    /// cap hit (not a per-statement SQL failure — the flush runs after the
+    /// statement loop; `statement_index` then carries the count of
+    /// statements that executed). Caller-remediable (batch the operation,
+    /// raise the knob, or disable audit) and the savepoint was resolved
+    /// cleanly, so callers map it to HTTP 409 `CAPTURE_LIMIT_EXCEEDED`,
+    /// never the 500 `TX_COMMIT_FAILED` class.
+    pub capture_limit_exceeded: bool,
 }
 
 /// Split `sql` on `;` and validate each chunk with `sqlite3_complete`.
@@ -72,6 +80,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
                 statement_index: out.len() + 1,
                 message: format!("statement contains NUL byte: {e}"),
                 authorizer_denied: false,
+                capture_limit_exceeded: false,
             })?;
             // SAFETY: sqlite3_complete reads the NUL-terminated string we own.
             let complete = unsafe { rusqlite::ffi::sqlite3_complete(cstr.as_ptr()) };
@@ -98,6 +107,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
             statement_index: out.len() + 1,
             message: format!("statement contains NUL byte: {e}"),
             authorizer_denied: false,
+            capture_limit_exceeded: false,
         })?;
         let complete = unsafe { rusqlite::ffi::sqlite3_complete(cstr.as_ptr()) };
         if complete == 0 {
@@ -105,6 +115,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
                 statement_index: out.len() + 1,
                 message: format!("incomplete statement at end of body: {tail}"),
                 authorizer_denied: false,
+                capture_limit_exceeded: false,
             });
         }
         out.push(tail.to_string());
@@ -209,6 +220,7 @@ fn classify(err: rusqlite::Error, statement_index: usize) -> RpcStatementError {
         statement_index,
         message: msg,
         authorizer_denied: denied,
+        capture_limit_exceeded: false,
     }
 }
 
@@ -249,10 +261,14 @@ pub struct TxCommitError(pub String);
 ///    `_system_record_history` INSIDE the still-open savepoint, so
 ///    history commits atomically with the mutation. Fail-closed: a
 ///    flush error (including a `CaptureLimits` cap exceeded in the
-///    hook) rolls the whole RPC back. On the error / `dry_run` path
-///    the buffer is simply dropped — and even if rows had been
-///    flushed, the `ROLLBACK TO` in step 6 would discard them with
-///    the mutation (same savepoint).
+///    hook) rolls the whole RPC back. The failure class splits (v1.46
+///    R8): a cap hit returns as `Ok(Err(RpcStatementError))` with
+///    `capture_limit_exceeded: true` (caller-remediable → HTTP 409
+///    `CAPTURE_LIMIT_EXCEEDED`); any other flush failure stays
+///    `TxCommitError`. On the error / `dry_run` path the buffer is
+///    simply dropped — and even if rows had been flushed, the
+///    `ROLLBACK TO` in step 6 would discard them with the mutation
+///    (same savepoint).
 /// 6. `ROLLBACK TO` (if error or `dry_run`) then `RELEASE`.
 /// 7. return outcome.
 ///
@@ -260,7 +276,9 @@ pub struct TxCommitError(pub String);
 /// - `Ok(Ok(WriteRpcOutcome))` — every statement succeeded; on `dry_run`
 ///   the SAVEPOINT was rolled back but `outcome.dry_run == true`.
 /// - `Ok(Err(RpcStatementError))` — one statement failed (split or
-///   execute_one). All effects were rolled back.
+///   execute_one), or the record-history capture limit was exceeded
+///   (`capture_limit_exceeded: true`, v1.46 R8). All effects were
+///   rolled back.
 /// - `Err(TxCommitError)` — `RELEASE drust_rpc_v2` itself failed; the
 ///   savepoint state is undefined and the operator needs to look.
 ///
@@ -439,9 +457,29 @@ pub async fn run_write_rpc(
                 if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
                     return Ok(Err(TxCommitError(rel.to_string())));
                 }
-                return Ok(Err(TxCommitError(format!(
-                    "record-history flush failed: {e}"
-                ))));
+                // v1.46 R8: split by remediation class. A CaptureLimits
+                // cap hit is caller-remediable (batch the operation,
+                // raise the knob, or disable audit) and the savepoint
+                // was just resolved cleanly above — route it down the
+                // statement-error channel (both callers map it to HTTP
+                // 409 CAPTURE_LIMIT_EXCEEDED), never TxCommitError,
+                // whose contract is "savepoint state undefined, operator
+                // must look". Genuinely internal flush failures keep the
+                // TxCommitError / 500 path.
+                use crate::storage::record_history::FlushError;
+                return match e {
+                    FlushError::LimitExceeded(msg) => Ok(Ok(Err(RpcStatementError {
+                        // Not a per-statement failure — the flush runs
+                        // after the loop; carry the executed count.
+                        statement_index: statement_count,
+                        message: msg,
+                        authorizer_denied: false,
+                        capture_limit_exceeded: true,
+                    }))),
+                    FlushError::Db(db) => Ok(Err(TxCommitError(format!(
+                        "record-history flush failed: {db}"
+                    )))),
+                };
             }
 
             // ── STEP 6: resolve savepoint.
