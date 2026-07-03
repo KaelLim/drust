@@ -313,3 +313,172 @@ async fn enforced_user_write_captures_user_actor() {
     assert_eq!(ak, "user");
     assert_eq!(ai, "u9");
 }
+
+// ── delete_user owner cascade (shared capture_owner_cascade, both sites) ─────
+
+use drust::storage::pool::SharedTenantPool;
+
+/// Owner-scoped `tasks` collection with 2 rows owned by `owner` and 1 by
+/// `other`. The meta row is created by the `set_owner_field` upsert, so
+/// `audit_enabled` sits at the column DEFAULT 1 (gate ON) unless a test
+/// flips it off explicitly.
+async fn seed_owned_tasks(pool: &SharedTenantPool, owner: &str, other: &str) {
+    let owner = owner.to_string();
+    let other = other.to_string();
+    pool.with_writer(move |c| {
+        c.execute_batch(
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                body TEXT,
+                owner TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )?;
+        drust::storage::schema::set_owner_field(c, "tasks", Some("owner"), Some("own"))?;
+        c.execute(
+            "INSERT INTO tasks (body, owner) VALUES ('a1', ?1)",
+            rusqlite::params![owner],
+        )?;
+        c.execute(
+            "INSERT INTO tasks (body, owner) VALUES ('a2', ?1)",
+            rusqlite::params![owner],
+        )?;
+        c.execute(
+            "INSERT INTO tasks (body, owner) VALUES ('b1', ?1)",
+            rusqlite::params![other],
+        )?;
+        Ok::<_, rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+}
+
+/// All op='delete' history rows: (collection, record_id, old_json, new_json,
+/// actor_kind), insertion order.
+type DeleteHistRow = (String, i64, Option<String>, Option<String>, String);
+
+async fn delete_history(pool: &SharedTenantPool) -> Vec<DeleteHistRow> {
+    pool.with_reader(|c| {
+        let mut stmt = c.prepare(
+            "SELECT collection, record_id, old_json, new_json, actor_kind \
+             FROM _system_record_history WHERE op = 'delete' ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .await
+    .unwrap()
+}
+
+// Site 1 — MCP tools::user::delete_user: the owner cascade must emit one
+// op=delete history row PER deleted row (old populated, new NULL, service
+// actor), and must not touch or capture other users' rows.
+#[tokio::test]
+async fn mcp_delete_user_cascade_captures_per_row_history() {
+    let (pool, _d, uid) = helpers::seed_user_for_mcp("cas1").await;
+    seed_owned_tasks(&pool, &uid, "u-other").await;
+
+    let out = drust::mcp::tools::user::delete_user(&pool, uid.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(out["deleted_records"]["tasks"], 2);
+
+    let rows = delete_history(&pool).await;
+    assert_eq!(rows.len(), 2, "one history row per cascaded delete");
+    let mut record_ids: Vec<i64> = rows.iter().map(|r| r.1).collect();
+    record_ids.sort();
+    assert_eq!(record_ids, vec![1, 2], "only the owned rows are captured");
+    for (coll, _id, old, new, actor) in &rows {
+        assert_eq!(coll.as_str(), "tasks");
+        assert_eq!(actor.as_str(), "service");
+        assert!(new.is_none(), "delete has no post-image");
+        let old: serde_json::Value =
+            serde_json::from_str(old.as_deref().expect("old_json present")).unwrap();
+        assert_eq!(old["owner"], uid.as_str(), "pre-image carries the owner");
+        assert!(
+            old["body"] == "a1" || old["body"] == "a2",
+            "pre-image carries the row fields: {old}"
+        );
+    }
+    // The other user's row survives, uncaptured.
+    let (n, owner_left): (i64, String) = pool
+        .with_reader(|c| {
+            c.query_row("SELECT COUNT(*), MAX(owner) FROM tasks", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "foreign row untouched by the cascade");
+    assert_eq!(owner_left, "u-other");
+}
+
+// Site 2 — REST admin delete_user_handler: same cascade, same capture
+// contract (both sites route through the shared capture_owner_cascade).
+#[tokio::test]
+async fn rest_admin_delete_user_cascade_captures_per_row_history() {
+    use axum::extract::{Path, State};
+    use drust::auth::middleware::ServiceTid;
+    use std::collections::HashMap;
+
+    let (auth_state, dir, uid) = helpers::auth_state_with_seeded_user("cas2").await;
+    let pool = helpers::grab_pool("cas2", &dir).await;
+    seed_owned_tasks(&pool, &uid, "u-other").await;
+
+    let mut params = HashMap::new();
+    params.insert("tenant".to_string(), "cas2".to_string());
+    params.insert("uid".to_string(), uid.clone());
+    let resp = drust::tenant::admin_user_routes::delete_user_handler(
+        State(auth_state),
+        ServiceTid("cas2".to_string()),
+        Path(params),
+    )
+    .await;
+    assert!(resp.status().is_success());
+
+    let rows = delete_history(&pool).await;
+    assert_eq!(rows.len(), 2, "one history row per cascaded delete");
+    for (coll, _id, old, new, actor) in &rows {
+        assert_eq!(coll.as_str(), "tasks");
+        assert_eq!(actor.as_str(), "service");
+        assert!(new.is_none(), "delete has no post-image");
+        let old: serde_json::Value =
+            serde_json::from_str(old.as_deref().expect("old_json present")).unwrap();
+        assert_eq!(old["owner"], uid.as_str());
+    }
+    let n: i64 = pool
+        .with_reader(|c| c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "foreign row untouched by the cascade");
+}
+
+// audit_enabled=0 → the cascade still deletes but captures nothing.
+#[tokio::test]
+async fn delete_user_cascade_gate_off_captures_nothing() {
+    let (pool, _d, uid) = helpers::seed_user_for_mcp("cas0").await;
+    seed_owned_tasks(&pool, &uid, "u-other").await;
+    pool.with_writer(|c| drust::storage::schema::write_audit_enabled(c, "tasks", false))
+        .await
+        .unwrap();
+
+    drust::mcp::tools::user::delete_user(&pool, uid.clone(), None)
+        .await
+        .unwrap();
+
+    let rows = delete_history(&pool).await;
+    assert!(
+        rows.is_empty(),
+        "gate off → no history rows for the cascade"
+    );
+    let n: i64 = pool
+        .with_reader(|c| c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "cascade still deleted the owned rows");
+}

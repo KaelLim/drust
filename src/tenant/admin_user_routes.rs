@@ -326,8 +326,15 @@ pub async fn delete_user_handler(
                         .collect::<Result<_, _>>()?
                 };
                 // 2. Cascade-delete user's records from each collection.
+                // v1.46 — per-row history capture BEFORE each bulk DELETE,
+                // inside the same tx (spec §4: bulk-delete paths iterate and
+                // capture). Same shared helper as the MCP delete_user site.
+                let actor = crate::storage::record_history::AuditActor::service();
                 let mut deleted_records = serde_json::Map::new();
                 for (coll, field) in &owner_cols {
+                    crate::storage::record_history::capture_owner_cascade(
+                        &tx, coll, field, &uid2, &actor,
+                    )?;
                     let n = tx.execute(
                         &format!(
                             "DELETE FROM \"{}\" WHERE \"{}\" = ?1",

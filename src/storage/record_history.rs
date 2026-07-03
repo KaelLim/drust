@@ -141,6 +141,61 @@ pub fn select_row_json_owner(
     .optional()
 }
 
+/// Per-row pre-image capture for a bulk owner cascade (the `delete_user`
+/// "DELETE all rows owned by uid" paths — spec §4: bulk-delete paths must
+/// iterate and capture per row). Runs INSIDE the caller's write tx so every
+/// history row commits (or rolls back) atomically with the cascade DELETE it
+/// records. Gated by the collection's `audit_enabled` (off → `Ok(0)`).
+///
+/// Rows are projected through the SAME projector the single-row paths use
+/// (`materialize_row`: BLOB → `{__blob_bytes}`, vector columns hidden). The
+/// `SELECT *` uses PLAIN `prepare` — never `prepare_cached` (v1.43 invariant:
+/// a cached `SELECT *` serves a stale column set after DDL).
+///
+/// Returns the number of rows captured. Shared by BOTH cascade sites
+/// (`mcp/tools/user.rs::delete_user` and
+/// `tenant/admin_user_routes.rs::delete_user_handler`).
+pub fn capture_owner_cascade(
+    tx: &Connection,
+    collection: &str,
+    owner_field: &str,
+    owner_value: &str,
+    actor: &AuditActor,
+) -> rusqlite::Result<usize> {
+    if !crate::storage::schema::read_audit_enabled(tx, collection)? {
+        return Ok(0);
+    }
+    let vector_names: HashSet<String> = crate::storage::schema::read_vector_fields(tx, collection)?
+        .into_iter()
+        .map(|vf| vf.name)
+        .collect();
+    let sql = format!(
+        "SELECT * FROM \"{}\" WHERE \"{}\" = ?1",
+        collection.replace('"', "\"\""),
+        owner_field.replace('"', "\"\"")
+    );
+    let mut stmt = tx.prepare(&sql)?;
+    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let mut rows = stmt.query(rusqlite::params![owner_value])?;
+    let mut captured = 0usize;
+    while let Some(r) = rows.next()? {
+        let id: i64 = r.get("id")?;
+        let old = crate::mcp::tools::write::materialize_row(r, &col_names, &vector_names)?;
+        capture(
+            tx,
+            collection,
+            HistoryOp::Delete,
+            id,
+            Some(&old),
+            None,
+            actor,
+            true,
+        )?;
+        captured += 1;
+    }
+    Ok(captured)
+}
+
 /// Retention window in days for `_system_record_history` rows. Env knob
 /// `DRUST_AUDIT_HISTORY_RETENTION_DAYS`, default 7; `0` disables pruning
 /// (keep forever). Unparseable values fall back to the default.
