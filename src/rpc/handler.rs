@@ -274,6 +274,7 @@ pub async fn call_rpc(
                     bound,
                     dry_run,
                     crate::storage::record_history::AuditActor::from_auth_ctx(&ctx_for_lookup),
+                    crate::storage::record_history::CaptureLimits::from_env(),
                 )
                 .await
                 {

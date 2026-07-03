@@ -679,6 +679,160 @@ async fn rpc_upsert_update_arm_on_canonical_collection_captures_once() {
     assert_eq!(inserts, 1, "no phantom op=insert from the upsert: {rows:?}");
 }
 
+// ── v1.46 R2: capture limits — the preupdate buffer is bounded. ───────────
+//
+// These call `run_write_rpc` directly with tiny `CaptureLimits` (production
+// callers pass `CaptureLimits::from_env()`); tests must never mutate the
+// process-global env, so the limits are threaded as a parameter.
+
+async fn qtys(pool: &drust::storage::pool::SharedTenantPool) -> Vec<i64> {
+    pool.with_reader(|c| {
+        let mut s = c.prepare("SELECT qty FROM orders ORDER BY id")?;
+        s.query_map([], |r| r.get(0))?
+            .collect::<Result<Vec<i64>, _>>()
+    })
+    .await
+    .unwrap()
+}
+
+async fn run_rpc_with_limits(
+    pool: &drust::storage::pool::SharedTenantPool,
+    sql: &str,
+    dry_run: bool,
+    limits: drust::storage::record_history::CaptureLimits,
+) -> Result<
+    Result<drust::rpc::exec_write::WriteRpcOutcome, drust::rpc::exec_write::RpcStatementError>,
+    drust::rpc::exec_write::TxCommitError,
+> {
+    drust::rpc::exec_write::run_write_rpc(
+        pool,
+        sql.to_string(),
+        std::collections::BTreeMap::new(),
+        dry_run,
+        drust::storage::record_history::AuditActor::service(),
+        limits,
+    )
+    .await
+}
+
+// Exceeding max_rows on an audited collection → the RPC errors AND rolls
+// back (data unchanged, zero history rows). Fail-closed, never a partial
+// audit trail.
+#[tokio::test]
+async fn rpc_exceeding_capture_row_limit_errors_and_rolls_back() {
+    let (_app, tid, _svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-lim").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    seed_orders(&pool, &[1, 2, 3]).await;
+
+    let res = run_rpc_with_limits(
+        &pool,
+        "UPDATE orders SET qty = qty + 10",
+        false,
+        drust::storage::record_history::CaptureLimits {
+            max_rows: 2,
+            max_bytes: 0,
+        },
+    )
+    .await;
+    let err = res.expect_err("3 row changes > max_rows=2 must fail the RPC");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS"),
+        "actionable error names the knob: {msg}"
+    );
+
+    assert_eq!(qtys(&pool).await, vec![1, 2, 3], "mutation rolled back");
+    assert!(
+        history_rows(&pool).await.is_empty(),
+        "no partial history survives the rollback"
+    );
+}
+
+// Exactly at the limit → still succeeds (boundary is inclusive).
+#[tokio::test]
+async fn rpc_at_capture_row_limit_succeeds() {
+    let (_app, tid, _svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-lim2").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    seed_orders(&pool, &[1, 2]).await;
+
+    let res = run_rpc_with_limits(
+        &pool,
+        "UPDATE orders SET qty = qty + 10",
+        false,
+        drust::storage::record_history::CaptureLimits {
+            max_rows: 2,
+            max_bytes: 0,
+        },
+    )
+    .await;
+    let outcome = res.unwrap().unwrap();
+    assert_eq!(outcome.affected_rows, 2);
+    assert_eq!(qtys(&pool).await, vec![11, 12]);
+    assert_eq!(history_rows(&pool).await.len(), 2, "both rows captured");
+}
+
+// audit_enabled=0 → the hook is never installed, so even a limit far below
+// the change count cannot trip: "audit off = zero cost" is behaviorally
+// observable (a buffered-but-dropped-at-flush design would error here).
+#[tokio::test]
+async fn audit_disabled_rpc_ignores_capture_limits() {
+    let (_app, tid, _svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-lim0").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    pool.with_writer(|c| drust::storage::schema::write_audit_enabled(c, "orders", false))
+        .await
+        .unwrap();
+    seed_orders(&pool, &[1, 2, 3]).await;
+
+    let res = run_rpc_with_limits(
+        &pool,
+        "UPDATE orders SET qty = qty + 10",
+        false,
+        drust::storage::record_history::CaptureLimits {
+            max_rows: 1,
+            max_bytes: 0,
+        },
+    )
+    .await;
+    let outcome = res.unwrap().unwrap();
+    assert_eq!(outcome.affected_rows, 3, "audit off → limits are inert");
+    assert_eq!(qtys(&pool).await, vec![11, 12, 13]);
+    assert!(
+        history_rows(&pool).await.is_empty(),
+        "gate off → no history"
+    );
+}
+
+// dry_run on an AUDITED collection with a tiny limit → succeeds (capture is
+// skipped entirely on dry_run; the savepoint is rolled back regardless).
+#[tokio::test]
+async fn dry_run_rpc_skips_capture_even_with_tiny_limits() {
+    let (_app, tid, _svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-limd").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    seed_orders(&pool, &[1, 2, 3]).await;
+
+    let res = run_rpc_with_limits(
+        &pool,
+        "UPDATE orders SET qty = qty + 10",
+        true,
+        drust::storage::record_history::CaptureLimits {
+            max_rows: 1,
+            max_bytes: 0,
+        },
+    )
+    .await;
+    let outcome = res.unwrap().unwrap();
+    assert!(outcome.dry_run);
+    assert_eq!(qtys(&pool).await, vec![1, 2, 3], "dry_run persists nothing");
+    assert!(
+        history_rows(&pool).await.is_empty(),
+        "no history on dry_run"
+    );
+}
+
 // ── Anon-callable write RPC called with the anon bearer → actor_kind=anon. ─
 
 #[tokio::test]
