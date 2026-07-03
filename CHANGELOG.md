@@ -1,3 +1,82 @@
+## v1.46.0 — 2026-07-03
+
+### feat — record-history audit (supa_audit-equivalent) + per-tenant Settings page
+
+Every committed write to a tenant data collection now stores a full old/new row
+snapshot in the per-tenant `_system_record_history` table — captured **inside
+the same write transaction** (rollback discards data + history together),
+default ON, ~7-day retention. Plus a `⚙ _settings` admin page: tenant display
+rename and the tenant-wide `audit_default` toggle with apply-to-all. MCP tool
+count **59 → 61**. Full gate: `make test-all` green,
+`clippy --all-targets -D warnings` clean, `cargo audit` clean.
+
+**Capture engine (`src/storage/record_history.rs`):**
+
+- **`_system_record_history`** (STRICT, drop-protected, lazy + boot migration):
+  `(collection, record_id, op ∈ insert|update|delete, old_json, new_json,
+  actor_kind, actor_id, actor_hint, ts)` + record/ts indexes. Projections are
+  `materialize_row`-identical: BLOB → `{"__blob_bytes": n}`, vectors omitted.
+- **Every write choke point wired** (new invariant — see `CLAUDE.md`):
+  REST `/records/*` create/update/delete (`src/tenant/records.rs`), MCP/edge
+  `insert/update/delete_record_{checked,filtered}` (`src/mcp/tools/write.rs`,
+  edge functions thread the real caller identity from `functions/enforce.rs`),
+  the `delete_user` owner cascade (BOTH parallel sites via
+  `capture_owner_cascade`, pre-DELETE, same tx), and **write-mode stored RPCs**
+  via a connection-scoped SQLite **preupdate hook** installed for exactly the
+  savepoint's lifetime in `run_write_rpc`.
+- **Preupdate-hook hardening** (round-2 adversarial findings, all fixed):
+  trigger-driven events (`get_query_depth() > 0`, the convergent
+  `<coll>_updated_at` trigger) **merge into their depth-0 change** so
+  `new_json` equals the committed row — without this every RPC UPDATE
+  double-captured; audited-table set precomputed BEFORE
+  `attach_writable_authorizer` (hook not installed on `dry_run` / nothing
+  audited; the authorizer denies RPC SQL touching `_system_collection_meta`,
+  so the set cannot go stale mid-run); blob content never buffered
+  (`CapturedValue::BlobLen` — length only); buffer caps
+  `DRUST_AUDIT_RPC_CAPTURE_MAX_ROWS` (10 000) /
+  `DRUST_AUDIT_RPC_CAPTURE_MAX_BYTES` (64 MiB, `0` = unlimited) fail closed →
+  RPC rolls back with **`409 CAPTURE_LIMIT_EXCEEDED`** (+ suggested-fix
+  catalog entry). MCP `call_rpc` stays on the read-only executor —
+  `run_write_rpc` is the single raw-write site.
+- **Actor attribution**: `AuditActor {kind: service|anon|user, id, hint}` —
+  PAT-driven service calls carry `admin_id` (REST cascade site included);
+  user `hint` = first 12 chars of the base64 session-token hash, joinable to
+  `_system_sessions.token_hash` ONLY; empty token hash (edge-function host) →
+  NULL.
+- **Gating**: per-collection `_system_collection_meta.audit_enabled`
+  (default ON, missing row = ON), seeded at create from
+  `tenants.audit_default` (meta.sqlite `ADD COLUMN`, idempotent boot
+  migration).
+- **Read surface service/admin-only**: REST
+  `GET /t/<id>/collections/<c>/history` (anon/user → `403
+  HISTORY_READ_DENIED`), MCP `get_record_history`, client-side history diff
+  viewer in the admin collection editor.
+- **Retention**: daily in-process janitor,
+  `DRUST_AUDIT_HISTORY_RETENTION_DAYS` (default 7, `0` = keep forever).
+
+**Settings surface:**
+
+- `⚙ _settings` sidebar entry + page (`src/mgmt/tenant_settings.rs`): tenant
+  display-name rename (`INVALID_NAME` validation) and `audit_default` toggle;
+  apply-to-all does a per-collection `audit_enabled` **upsert** so
+  meta-row-less legacy collections are covered too.
+- Config faces for per-collection audit: MCP `set_audit_enabled`, service-only
+  REST `PUT /t/<id>/collections/<c>/audit`, admin `[⚙]` popover toggle.
+
+**Build/deploy note:** the rusqlite `preupdate_hook` feature forces
+`libsqlite3-sys` into buildtime bindgen — building now requires
+`clang` + `libclang` (Dockerfile builder + CI install it; this host has
+`libclang-18-dev`). CLI crate unaffected (no rusqlite dependency).
+
+**Tests:** ~60 new assertions across `tests/record_history_capture.rs`,
+`record_history_read.rs`, `record_history_retention.rs`,
+`record_history_rpc.rs`, `tenant_settings.rs` — including capture atomicity
+(CHECK / policy-CHECK / FK-RESTRICT rollback), trigger dedupe against REAL
+`create_collection` collections, cap-exceeded rollback, per-actor attribution,
+and service-only read enforcement. Three adversarial review rounds
+(2 × 3-lens + 1 × 2-lens workflows); every finding triaged against code and
+fixed or refuted — final round surfaced only the 409 error-class fix.
+
 ## v1.45.1 — 2026-07-02
 
 ### fix — CLI review findings F1–F13 + two-pass adversarial review follow-ups + audit-UI click-to-open
