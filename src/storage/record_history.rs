@@ -34,6 +34,11 @@ impl HistoryOp {
 pub struct AuditActor {
     pub kind: &'static str,
     pub id: Option<String>,
+    /// User arm only: 12-hex-char prefix of the session token hash, joinable
+    /// to `_system_sessions.token_hash` (and the access log's token
+    /// fingerprint) to correlate a history row with the session that wrote
+    /// it. `None` for anon (no token identity) and service (admin
+    /// attribution rides `id`).
     pub hint: Option<String>,
 }
 
@@ -60,10 +65,21 @@ impl AuditActor {
                 id: admin_id.map(|i| i.to_string()),
                 hint: None,
             },
-            AuthCtx::User { user_id, .. } => AuditActor {
+            AuthCtx::User {
+                user_id,
+                token_hash,
+            } => AuditActor {
                 kind: "user",
                 id: Some(user_id.clone()),
-                hint: None,
+                // 12-hex-char prefix of the session token hash (spec §5.1).
+                // `get(..12)` is char-boundary-safe on the hex string and
+                // falls back to the whole string when shorter — never panics.
+                hint: Some(
+                    token_hash
+                        .get(..12)
+                        .unwrap_or(token_hash.as_str())
+                        .to_string(),
+                ),
             },
         }
     }
@@ -366,18 +382,28 @@ mod tests {
     #[test]
     fn from_auth_ctx_maps_all_roles() {
         use crate::auth::middleware::AuthCtx;
-        assert_eq!(AuditActor::from_auth_ctx(&AuthCtx::Anon).kind, "anon");
-        assert_eq!(
-            AuditActor::from_auth_ctx(&AuthCtx::Service { admin_id: Some(3) })
-                .id
-                .as_deref(),
-            Some("3")
-        );
+        let anon = AuditActor::from_auth_ctx(&AuthCtx::Anon);
+        assert_eq!(anon.kind, "anon");
+        assert_eq!(anon.hint, None, "anon carries no token hint");
+        let svc = AuditActor::from_auth_ctx(&AuthCtx::Service { admin_id: Some(3) });
+        assert_eq!(svc.id.as_deref(), Some("3"));
+        assert_eq!(svc.hint, None, "service attribution rides id, not hint");
         let u = AuditActor::from_auth_ctx(&AuthCtx::User {
             user_id: "u9".into(),
-            token_hash: "x".into(),
+            token_hash: "abcdef0123456789deadbeef".into(),
         });
         assert_eq!(u.kind, "user");
         assert_eq!(u.id.as_deref(), Some("u9"));
+        assert_eq!(
+            u.hint.as_deref(),
+            Some("abcdef012345"),
+            "user hint = first 12 chars of token_hash"
+        );
+        // token_hash shorter than 12 chars → whole string, never panic.
+        let short = AuditActor::from_auth_ctx(&AuthCtx::User {
+            user_id: "u9".into(),
+            token_hash: "x".into(),
+        });
+        assert_eq!(short.hint.as_deref(), Some("x"));
     }
 }

@@ -288,7 +288,7 @@ async fn enforced_user_write_captures_user_actor() {
     .unwrap();
     let ctx = drust::auth::middleware::AuthCtx::User {
         user_id: "u9".into(),
-        token_hash: "x".into(),
+        token_hash: "abcdef0123456789deadbeef".into(),
     };
     drust::functions::enforce::enforced_insert(
         &svc,
@@ -298,20 +298,25 @@ async fn enforced_user_write_captures_user_actor() {
     )
     .await
     .unwrap();
-    let (ak, ai): (String, String) = svc
+    let (ak, ai, ah): (String, String, Option<String>) = svc
         .inner()
         .pool
         .with_reader(|c| {
             c.query_row(
-                "SELECT actor_kind, actor_id FROM _system_record_history",
+                "SELECT actor_kind, actor_id, actor_hint FROM _system_record_history",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
         })
         .await
         .unwrap();
     assert_eq!(ak, "user");
     assert_eq!(ai, "u9");
+    assert_eq!(
+        ah.as_deref(),
+        Some("abcdef012345"),
+        "user write records the 12-char token_hash prefix as actor_hint"
+    );
 }
 
 // ── delete_user owner cascade (shared capture_owner_cascade, both sites) ─────
