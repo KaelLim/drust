@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-07-02
+updated: 2026-07-03
 generated_by: docs/gen-architecture.py
 ---
 
@@ -21,20 +21,20 @@ generated_by: docs/gen-architecture.py
 
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
-| [`(root)/`](#srcroot) | 6 | 30 | 3 | 24 |
-| [`auth/`](#srcauth) | 10 | 53 | 3 | 41 |
+| [`(root)/`](#srcroot) | 6 | 30 | 3 | 25 |
+| [`auth/`](#srcauth) | 10 | 53 | 3 | 42 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
-| [`db/`](#srcdb) | 2 | 13 | 1 | 0 |
+| [`db/`](#srcdb) | 2 | 14 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 68 | 37 | 17 |
-| [`mcp/`](#srcmcp) | 19 | 145 | 57 | 30 |
-| [`mgmt/`](#srcmgmt) | 35 | 282 | 100 | 44 |
+| [`mcp/`](#srcmcp) | 20 | 151 | 59 | 31 |
+| [`mgmt/`](#srcmgmt) | 36 | 290 | 104 | 47 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 8 | 49 | 8 | 30 |
-| [`rpc/`](#srcrpc) | 6 | 37 | 16 | 9 |
+| [`rpc/`](#srcrpc) | 6 | 37 | 17 | 9 |
 | [`safety/`](#srcsafety) | 8 | 38 | 1 | 11 |
-| [`storage/`](#srcstorage) | 14 | 105 | 14 | 80 |
-| [`tenant/`](#srctenant) | 34 | 214 | 108 | 61 |
+| [`storage/`](#srcstorage) | 15 | 127 | 16 | 83 |
+| [`tenant/`](#srctenant) | 34 | 218 | 108 | 61 |
 
 ## Group dependency graph
 
@@ -142,7 +142,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/db/`
 
-- [`migrations.rs`](../src/db/migrations.rs) — 12 pub
+- [`migrations.rs`](../src/db/migrations.rs) — 13 pub
 - [`mod.rs`](../src/db/mod.rs) — 1 pub
 
 <a id="srcfunctions"></a>
@@ -164,15 +164,16 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/mcp/`
 
-- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler that exposes the 13 drust tools. · 46 pub
+- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler that exposes the 13 drust tools. · 48 pub
 - [`http_registry.rs`](../src/mcp/http_registry.rs) — Per-tenant cache of `StreamableHttpService` instances. · 2 pub
 - [`mod.rs`](../src/mcp/mod.rs) — 4 pub
 - [`server.rs`](../src/mcp/server.rs) — 3 pub
+- [`tools/audit.rs`](../src/mcp/tools/audit.rs) — v1.46 — MCP audit tools over the per-tenant record-history trail. · 2 pub
 - [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 4 pub
 - [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url. · 8 pub
 - [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by MCP dispatch (transport · 6 pub
 - [`tools/index.rs`](../src/mcp/tools/index.rs) — 6 pub
-- [`tools/mod.rs`](../src/mcp/tools/mod.rs) — 14 pub
+- [`tools/mod.rs`](../src/mcp/tools/mod.rs) — 15 pub
 - [`tools/oauth.rs`](../src/mcp/tools/oauth.rs) — Pure async helpers for the per-tenant OAuth-provider admin MCP tools · 4 pub
 - [`tools/owner_field.rs`](../src/mcp/tools/owner_field.rs) — Pure async helpers for T25 MCP owner-field + set_self_register tools. · 4 pub
 - [`tools/policy.rs`](../src/mcp/tools/policy.rs) — RLS Phase 8 (Config) — MCP delegate fns for per-collection, · 3 pub
@@ -182,7 +183,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`tools/user.rs`](../src/mcp/tools/user.rs) — Pure async helpers for T24 MCP user-management tools. · 6 pub
 - [`tools/vector.rs`](../src/mcp/tools/vector.rs) — MCP `search_collection` tool. Thin wrapper that constructs the same · 2 pub
 - [`tools/webhook.rs`](../src/mcp/tools/webhook.rs) — Pure async helpers for Task 7 — webhook subscription MCP tools. · 4 pub
-- [`tools/write.rs`](../src/mcp/tools/write.rs) — 8 pub
+- [`tools/write.rs`](../src/mcp/tools/write.rs) — 9 pub
 
 <a id="srcmgmt"></a>
 
@@ -194,7 +195,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`admin_team.rs`](../src/mgmt/admin_team.rs) — Admin team management — list/invite/role-change/remove. · 8 pub
 - [`audit.rs`](../src/mgmt/audit.rs) — Admin-UI audit log viewer. · 30 pub
 - [`backups.rs`](../src/mgmt/backups.rs) — Admin-UI handlers for `drust-backup` snapshot inspection + download. · 12 pub
-- [`browse.rs`](../src/mgmt/browse.rs) — 20 pub
+- [`browse.rs`](../src/mgmt/browse.rs) — 22 pub
 - [`cli_device.rs`](../src/mgmt/cli_device.rs) — CLI device-flow login (RFC 8628-shaped). v1.44 (CLI Phase 2). · 16 pub
 - [`collection_list.rs`](../src/mgmt/collection_list.rs) — Admin-only POST /admin/tenants/<id>/collections/<coll>/_list endpoint · 7 pub
 - [`docs.rs`](../src/mgmt/docs.rs) — Admin-UI handler for the on-disk CHANGELOG viewer. · 2 pub
@@ -203,7 +204,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 9 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
-- [`mod.rs`](../src/mgmt/mod.rs) — 28 pub
+- [`mod.rs`](../src/mgmt/mod.rs) — 29 pub
 - [`oauth_login.rs`](../src/mgmt/oauth_login.rs) — Admin-specific OAuth glue. Calls into src/oauth/ (provider-agnostic · 4 pub
 - [`public_files.rs`](../src/mgmt/public_files.rs) — Admin UI for the host-level public bucket. Provides list, upload, delete, · 20 pub
 - [`routes.rs`](../src/mgmt/routes.rs) — 2 pub
@@ -213,6 +214,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`stats.rs`](../src/mgmt/stats.rs) — Tenant-stats denormalization sampler. · 4 pub
 - [`tenant_broadcast.rs`](../src/mgmt/tenant_broadcast.rs) — v1.31.5 — Admin Broadcast Inspector page. · 1 pub
 - [`tenant_files.rs`](../src/mgmt/tenant_files.rs) — Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign). · 16 pub
+- [`tenant_settings.rs`](../src/mgmt/tenant_settings.rs) — v1.46 — per-tenant Settings backend (spec §5.6): display-name rename + · 5 pub
 - [`tenants.rs`](../src/mgmt/tenants.rs) — 8 pub
 - [`tenants/common.rs`](../src/mgmt/tenants/common.rs) — Cross-page helpers shared by the OAuth-providers and Webhooks admin pages. · 2 pub
 - [`tenants/crud.rs`](../src/mgmt/tenants/crud.rs) — Tenant CRUD / lifecycle (group B): list page, create/delete, self-register · 13 pub
@@ -282,10 +284,11 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`garage.rs`](../src/storage/garage.rs) — Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the · 5 pub
 - [`janitor.rs`](../src/storage/janitor.rs) — 1 pub
 - [`meta.rs`](../src/storage/meta.rs) — 3 pub
-- [`mod.rs`](../src/storage/mod.rs) — 13 pub
+- [`mod.rs`](../src/storage/mod.rs) — 14 pub
 - [`pool.rs`](../src/storage/pool.rs) — 3 pub
 - [`quota.rs`](../src/storage/quota.rs) — 3 pub
-- [`schema.rs`](../src/storage/schema.rs) — 41 pub
+- [`record_history.rs`](../src/storage/record_history.rs) — v1.46 — supa_audit-style record-history capture. One shared helper wired · 19 pub
+- [`schema.rs`](../src/storage/schema.rs) — 43 pub
 - [`schema_cache.rs`](../src/storage/schema_cache.rs) — 1 pub
 - [`signed_url.rs`](../src/storage/signed_url.rs) — Drust-minted, drust-served signed URLs for private file downloads. · 4 pub
 - [`tenant_db.rs`](../src/storage/tenant_db.rs) — 7 pub
@@ -310,7 +313,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`policy_routes.rs`](../src/tenant/policy_routes.rs) — RLS Phase 8 (Config) — service-only REST surface for per-collection, · 4 pub
 - [`query_endpoint.rs`](../src/tenant/query_endpoint.rs) — 4 pub
 - [`realtime_routes.rs`](../src/tenant/realtime_routes.rs) — v1.16 — service-only endpoint to toggle SSE realtime broadcast on · 2 pub
-- [`records.rs`](../src/tenant/records.rs) — 10 pub
+- [`records.rs`](../src/tenant/records.rs) — 14 pub
 - [`records_list.rs`](../src/tenant/records_list.rs) — `POST /t/<id>/collections/<c>/list` — structured list endpoint. · 2 pub
 - [`rooms/audit.rs`](../src/tenant/rooms/audit.rs) — v1.31 audit emit for broadcast.publish. · 2 pub
 - [`rooms/bus.rs`](../src/tenant/rooms/bus.rs) — 2 pub
