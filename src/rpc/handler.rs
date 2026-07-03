@@ -273,6 +273,7 @@ pub async fn call_rpc(
                     stored.sql.clone(),
                     bound,
                     dry_run,
+                    crate::storage::record_history::AuditActor::from_auth_ctx(&ctx_for_lookup),
                 )
                 .await
                 {

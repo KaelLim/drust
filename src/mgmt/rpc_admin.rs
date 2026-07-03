@@ -801,6 +801,7 @@ pub async fn rpc_test_run(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    admin_id: Option<axum::Extension<crate::auth::middleware::AdminId>>,
     Path((tenant_id, name)): Path<(String, String)>,
     axum::Form(form): axum::Form<RpcTestRunForm>,
 ) -> Response {
@@ -955,10 +956,29 @@ pub async fn rpc_test_run(
                 }
             };
 
+            // History attribution: the playground runs with service
+            // power; carry the admin id when the session layer provided
+            // one (cookie or PAT), else plain service.
+            let actor = match &admin_id {
+                Some(axum::Extension(crate::auth::middleware::AdminId(id))) => {
+                    crate::storage::record_history::AuditActor {
+                        kind: "service",
+                        id: Some(id.to_string()),
+                        hint: None,
+                    }
+                }
+                None => crate::storage::record_history::AuditActor::service(),
+            };
+
             let started = std::time::Instant::now();
-            let run_res =
-                crate::rpc::exec_write::run_write_rpc(&pool, stored.sql.clone(), bound, dry_run)
-                    .await;
+            let run_res = crate::rpc::exec_write::run_write_rpc(
+                &pool,
+                stored.sql.clone(),
+                bound,
+                dry_run,
+                actor,
+            )
+            .await;
             let duration_ms = started.elapsed().as_millis();
 
             match run_res {

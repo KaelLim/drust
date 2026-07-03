@@ -212,6 +212,296 @@ pub fn capture_owner_cascade(
     Ok(captured)
 }
 
+// ─── Write-mode RPC capture via a scoped SQLite preupdate hook ──────────────
+//
+// `run_write_rpc` executes arbitrary tenant SQL (INSERT/UPDATE/DELETE) that
+// the structured choke points never see, so per-row old/new images are
+// captured at the CONNECTION level: a preupdate hook installed for exactly
+// the duration of the RPC savepoint buffers each row change, and
+// `flush_captured` writes the gated history rows INSIDE the same savepoint —
+// atomic with the mutation by construction. The hook closure must NOT touch
+// the `Connection` (SQLite forbids re-entrant use from inside the hook); it
+// only copies accessor values into owned `Value`s and pushes them.
+
+/// One buffered row change from the preupdate hook. `old`/`new` hold the raw
+/// column values in table-declaration (storage) order — projection to JSON
+/// happens later in [`flush_captured`], where the `Connection` may be used.
+#[derive(Debug)]
+pub struct BufferedChange {
+    pub table: String,
+    pub op: HistoryOp,
+    pub rowid: i64,
+    pub old: Option<Vec<rusqlite::types::Value>>,
+    pub new: Option<Vec<rusqlite::types::Value>>,
+}
+
+/// Shared hook buffer. `error` is set when the hook could not read a row
+/// value — [`flush_captured`] then fails closed (the caller rolls back the
+/// RPC rather than committing an unaudited mutation).
+///
+/// `Arc<std::sync::Mutex<..>>` rather than `Rc<RefCell<..>>` because
+/// `Connection::preupdate_hook` requires the closure to be `Send + 'static`.
+/// The lock is never contended (hook + flush run on the same thread inside
+/// the writer closure); it exists only to satisfy the bound.
+#[derive(Debug, Default)]
+pub struct CaptureBuffer {
+    pub changes: Vec<BufferedChange>,
+    pub error: Option<String>,
+}
+
+pub type SharedCaptureBuffer = Arc<std::sync::Mutex<CaptureBuffer>>;
+
+/// Owned copy of a preupdate accessor value. Deliberately NOT
+/// `rusqlite::types::Value::from(ValueRef)` — that impl panics on invalid
+/// UTF-8, and a panic inside the hook is swallowed by rusqlite's
+/// `catch_unwind` (the change would silently vanish → fail-open). Lossy text
+/// conversion matches `materialize_row`'s `from_utf8_lossy` semantics.
+fn owned_value(v: rusqlite::types::ValueRef<'_>) -> rusqlite::types::Value {
+    use rusqlite::types::{Value, ValueRef};
+    match v {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::Integer(i),
+        ValueRef::Real(f) => Value::Real(f),
+        ValueRef::Text(t) => Value::Text(String::from_utf8_lossy(t).into_owned()),
+        ValueRef::Blob(b) => Value::Blob(b.to_vec()),
+    }
+}
+
+fn copy_old(
+    acc: &rusqlite::hooks::PreUpdateOldValueAccessor,
+) -> Result<Vec<rusqlite::types::Value>, String> {
+    let n = acc.get_column_count();
+    let mut out = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        match acc.get_old_column_value(i) {
+            Ok(v) => out.push(owned_value(v)),
+            Err(e) => return Err(format!("preupdate old[{i}]: {e}")),
+        }
+    }
+    Ok(out)
+}
+
+fn copy_new(
+    acc: &rusqlite::hooks::PreUpdateNewValueAccessor,
+) -> Result<Vec<rusqlite::types::Value>, String> {
+    let n = acc.get_column_count();
+    let mut out = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        match acc.get_new_column_value(i) {
+            Ok(v) => out.push(owned_value(v)),
+            Err(e) => return Err(format!("preupdate new[{i}]: {e}")),
+        }
+    }
+    Ok(out)
+}
+
+/// Install the scoped preupdate capture hook on `conn` and return the shared
+/// buffer it fills. The closure filters `_system_*` tables (which also keeps
+/// the flush's own history INSERTs invisible → no recursion) and `sqlite_*`
+/// internals. Callers MUST pair this with [`remove_preupdate_capture`] on
+/// every exit path — a leaked hook would buffer unrelated later writes.
+pub fn install_preupdate_capture(conn: &Connection) -> rusqlite::Result<SharedCaptureBuffer> {
+    use rusqlite::hooks::{Action, PreUpdateCase};
+    let buf: SharedCaptureBuffer = Arc::new(std::sync::Mutex::new(CaptureBuffer::default()));
+    let hook_buf = Arc::clone(&buf);
+    conn.preupdate_hook(Some(
+        move |_action: Action, _db: &str, tbl: &str, case: &PreUpdateCase| {
+            if tbl.starts_with("_system_") || tbl.starts_with("sqlite_") {
+                return;
+            }
+            let mut g = match hook_buf.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if g.error.is_some() {
+                return; // already failed — flush will reject the whole run
+            }
+            let change = match case {
+                PreUpdateCase::Insert(acc) => copy_new(acc).map(|new| BufferedChange {
+                    table: tbl.to_string(),
+                    op: HistoryOp::Insert,
+                    rowid: acc.get_new_row_id(),
+                    old: None,
+                    new: Some(new),
+                }),
+                PreUpdateCase::Delete(acc) => copy_old(acc).map(|old| BufferedChange {
+                    table: tbl.to_string(),
+                    op: HistoryOp::Delete,
+                    rowid: acc.get_old_row_id(),
+                    old: Some(old),
+                    new: None,
+                }),
+                PreUpdateCase::Update {
+                    old_value_accessor,
+                    new_value_accessor,
+                } => copy_old(old_value_accessor).and_then(|old| {
+                    copy_new(new_value_accessor).map(|new| BufferedChange {
+                        table: tbl.to_string(),
+                        op: HistoryOp::Update,
+                        rowid: new_value_accessor.get_new_row_id(),
+                        old: Some(old),
+                        new: Some(new),
+                    })
+                }),
+                PreUpdateCase::Unknown => Err("unknown preupdate case".to_string()),
+            };
+            match change {
+                Ok(c) => g.changes.push(c),
+                Err(e) => g.error = Some(e),
+            }
+        },
+    ))?;
+    Ok(buf)
+}
+
+/// Remove the preupdate capture hook. Must run on EVERY `run_write_rpc` exit
+/// path (success and error) BEFORE `flush_captured` / savepoint resolution.
+pub fn remove_preupdate_capture(conn: &Connection) -> rusqlite::Result<()> {
+    use rusqlite::hooks::{Action, PreUpdateCase};
+    conn.preupdate_hook(None::<fn(Action, &str, &str, &PreUpdateCase)>)
+}
+
+/// Per-table projection metadata for [`flush_captured`]. `None` in the cache
+/// means audit is disabled for that table → drop its buffered rows.
+struct TableProjection {
+    col_names: Vec<String>,
+    vector_names: HashSet<String>,
+}
+
+/// Typed internal error for capture failures — keeps flush inside
+/// `rusqlite::Result` so the executor's error plumbing stays uniform.
+fn capture_error(msg: String) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+        Some(msg),
+    )
+}
+
+fn load_table_projection(
+    tx: &Connection,
+    table: &str,
+) -> rusqlite::Result<Option<TableProjection>> {
+    if !crate::storage::schema::read_audit_enabled(tx, table)? {
+        return Ok(None);
+    }
+    // PLAIN prepare — never prepare_cached (v1.43 invariant). Column order
+    // from pragma_table_info (cid ASC) matches the preupdate accessors'
+    // column indices (both are table-declaration order).
+    let mut stmt = tx.prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")?;
+    let col_names: Vec<String> = stmt
+        .query_map(rusqlite::params![table], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    if col_names.is_empty() {
+        // Table vanished between the hook firing and the flush (same-run
+        // DDL). Fail closed rather than guessing a projection.
+        return Err(capture_error(format!(
+            "record-history flush: no columns for table {table}"
+        )));
+    }
+    let vector_names: HashSet<String> = crate::storage::schema::read_vector_fields(tx, table)?
+        .into_iter()
+        .map(|vf| vf.name)
+        .collect();
+    Ok(Some(TableProjection {
+        col_names,
+        vector_names,
+    }))
+}
+
+/// Zip buffered values to column names — SAME projection semantics as
+/// `materialize_row` (Null/Integer/Real/Text as-is, Blob → `{__blob_bytes}`,
+/// vector columns omitted entirely).
+fn project_values(
+    table: &str,
+    vals: &[rusqlite::types::Value],
+    proj: &TableProjection,
+) -> rusqlite::Result<serde_json::Value> {
+    use rusqlite::types::Value;
+    if vals.len() != proj.col_names.len() {
+        return Err(capture_error(format!(
+            "record-history flush: {table} captured {} values but has {} columns",
+            vals.len(),
+            proj.col_names.len()
+        )));
+    }
+    let mut obj = serde_json::Map::new();
+    for (name, v) in proj.col_names.iter().zip(vals) {
+        if proj.vector_names.contains(name) {
+            continue;
+        }
+        let jv = match v {
+            Value::Null => serde_json::Value::Null,
+            Value::Integer(i) => serde_json::json!(i),
+            Value::Real(f) => serde_json::json!(f),
+            Value::Text(t) => serde_json::Value::String(t.clone()),
+            Value::Blob(b) => serde_json::json!({ "__blob_bytes": b.len() }),
+        };
+        obj.insert(name.clone(), jv);
+    }
+    Ok(serde_json::Value::Object(obj))
+}
+
+/// Flush the buffered preupdate changes into `_system_record_history`,
+/// INSIDE the caller's still-open savepoint. Per table: `audit_enabled`
+/// off → that table's rows are dropped; otherwise each row is projected
+/// and written via [`capture`]. Returns the number of history rows written.
+/// Fails closed: a buffered hook error or projection mismatch returns `Err`
+/// so the caller rolls the whole RPC back.
+pub fn flush_captured(
+    tx: &Connection,
+    buf: &SharedCaptureBuffer,
+    actor: &AuditActor,
+) -> rusqlite::Result<usize> {
+    let (changes, error) = {
+        let mut g = match buf.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        (std::mem::take(&mut g.changes), g.error.take())
+    };
+    if let Some(msg) = error {
+        return Err(capture_error(format!(
+            "record-history preupdate capture failed: {msg}"
+        )));
+    }
+    let mut meta: std::collections::HashMap<String, Option<TableProjection>> =
+        std::collections::HashMap::new();
+    let mut written = 0usize;
+    for ch in &changes {
+        let proj = match meta.entry(ch.table.clone()) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(load_table_projection(tx, &ch.table)?)
+            }
+        };
+        let Some(proj) = proj else {
+            continue; // audit_enabled = 0 → drop this table's rows
+        };
+        let old_json = ch
+            .old
+            .as_ref()
+            .map(|vals| project_values(&ch.table, vals, proj))
+            .transpose()?;
+        let new_json = ch
+            .new
+            .as_ref()
+            .map(|vals| project_values(&ch.table, vals, proj))
+            .transpose()?;
+        capture(
+            tx,
+            &ch.table,
+            ch.op,
+            ch.rowid,
+            old_json.as_ref(),
+            new_json.as_ref(),
+            actor,
+            true, // gated above via read_audit_enabled
+        )?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 /// Retention window in days for `_system_record_history` rows. Env knob
 /// `DRUST_AUDIT_HISTORY_RETENTION_DAYS`, default 7; `0` disables pruning
 /// (keep forever). Unparseable values fall back to the default.
@@ -377,6 +667,97 @@ mod tests {
         assert_eq!(serde_json::from_str::<serde_json::Value>(&nj).unwrap(), new);
         assert_eq!(ak, "user");
         assert_eq!(ai, "u-1");
+    }
+
+    #[test]
+    fn preupdate_capture_roundtrip_insert_update_delete() {
+        let c = hist_conn();
+        c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT, data BLOB);")
+            .unwrap();
+        let buf = install_preupdate_capture(&c).unwrap();
+        c.execute_batch(
+            "INSERT INTO notes (id, body, data) VALUES (1, 'a', x'0102');
+             UPDATE notes SET body = 'b' WHERE id = 1;
+             DELETE FROM notes WHERE id = 1;",
+        )
+        .unwrap();
+        remove_preupdate_capture(&c).unwrap();
+        let actor = AuditActor::service();
+        let n = flush_captured(&c, &buf, &actor).unwrap();
+        assert_eq!(n, 3, "insert + update + delete each captured");
+
+        let rows: Vec<(String, i64, Option<String>, Option<String>)> = {
+            let mut stmt = c
+                .prepare(
+                    "SELECT op, record_id, old_json, new_json \
+                     FROM _system_record_history ORDER BY id",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].0, "insert");
+        assert_eq!(rows[0].1, 1);
+        assert!(rows[0].2.is_none());
+        let new: serde_json::Value = serde_json::from_str(rows[0].3.as_deref().unwrap()).unwrap();
+        assert_eq!(new["body"], "a");
+        assert_eq!(new["id"].as_i64(), Some(1), "IPK column carries the rowid");
+        assert_eq!(
+            new["data"],
+            serde_json::json!({"__blob_bytes": 2}),
+            "BLOB projects as __blob_bytes"
+        );
+        assert_eq!(rows[1].0, "update");
+        let old: serde_json::Value = serde_json::from_str(rows[1].2.as_deref().unwrap()).unwrap();
+        let new: serde_json::Value = serde_json::from_str(rows[1].3.as_deref().unwrap()).unwrap();
+        assert_eq!(old["body"], "a");
+        assert_eq!(new["body"], "b");
+        assert_eq!(rows[2].0, "delete");
+        assert!(rows[2].3.is_none());
+
+        // Post-removal writes are NOT captured.
+        c.execute_batch("INSERT INTO notes (id, body) VALUES (2, 'later');")
+            .unwrap();
+        assert_eq!(flush_captured(&c, &buf, &actor).unwrap(), 0);
+    }
+
+    #[test]
+    fn preupdate_capture_skips_system_and_gate_off_tables() {
+        let c = hist_conn();
+        c.execute_batch(
+            "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, audit_enabled INTEGER NOT NULL DEFAULT 1);
+             CREATE TABLE loud (id INTEGER PRIMARY KEY, x TEXT);
+             CREATE TABLE quiet (id INTEGER PRIMARY KEY, x TEXT);
+             INSERT INTO _system_collection_meta (collection_name, audit_enabled) VALUES ('quiet', 0);",
+        )
+        .unwrap();
+        let buf = install_preupdate_capture(&c).unwrap();
+        c.execute_batch(
+            "INSERT INTO loud (id, x) VALUES (1, 'a');
+             INSERT INTO quiet (id, x) VALUES (1, 'b');
+             INSERT INTO _system_collection_meta (collection_name, audit_enabled) VALUES ('other', 1);",
+        )
+        .unwrap();
+        remove_preupdate_capture(&c).unwrap();
+        {
+            let g = buf.lock().unwrap();
+            assert_eq!(
+                g.changes.len(),
+                2,
+                "_system_* writes never enter the buffer"
+            );
+        }
+        let n = flush_captured(&c, &buf, &AuditActor::service()).unwrap();
+        assert_eq!(n, 1, "gate-off table's rows dropped at flush");
+        let coll: String = c
+            .query_row("SELECT collection FROM _system_record_history", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(coll, "loud");
     }
 
     #[test]
