@@ -27,20 +27,23 @@ impl HistoryOp {
     }
 }
 
-/// Best-effort attribution for a history row. `id`/`hint` are nullable — the
-/// per-request access log already carries the token fingerprint; this is the
-/// forensic "who" on the row value.
+/// Best-effort attribution for a history row. `id`/`hint` are nullable — this
+/// is the forensic "who" on the row value.
 #[derive(Clone, Debug)]
 pub struct AuditActor {
     pub kind: &'static str,
     pub id: Option<String>,
-    /// User arm only: 12-hex-char prefix of the session token hash, joinable
-    /// to `_system_sessions.token_hash` (and the access log's token
-    /// fingerprint) to correlate a history row with the session that wrote
-    /// it. `None` for anon (no token identity) and service (admin
-    /// attribution rides `id`). An EMPTY `token_hash` (edge-function User
-    /// identity — the function host carries no bearer) also maps to `None`,
-    /// never `Some("")`: an empty prefix would join every session.
+    /// User arm only: first 12 chars of the base64 (URL_SAFE_NO_PAD) SHA-256
+    /// session-token hash (`user_session::hash_token` — NOT hex; may contain
+    /// `-`/`_`). Prefix-joinable to `_system_sessions.token_hash` ONLY, to
+    /// correlate a history row with the session that wrote it. It is NOT
+    /// correlatable with the access log's `token_hint`
+    /// (`bearer.rs::token_hint`), which is a plaintext bearer prefix —
+    /// derivationally incompatible with any hash prefix. `None` for anon (no
+    /// token identity) and service (admin attribution rides `id`). An EMPTY
+    /// `token_hash` (edge-function User identity — the function host carries
+    /// no bearer) also maps to `None`, never `Some("")`: an empty prefix
+    /// would join every session.
     pub hint: Option<String>,
 }
 
@@ -73,11 +76,14 @@ impl AuditActor {
             } => AuditActor {
                 kind: "user",
                 id: Some(user_id.clone()),
-                // 12-hex-char prefix of the session token hash (spec §5.1).
-                // `get(..12)` is char-boundary-safe on the hex string and
-                // falls back to the whole string when shorter — never panics.
-                // Empty hash (edge-function User identity: no bearer on the
-                // function host) → None, never Some("").
+                // First 12 chars of the base64url (URL_SAFE_NO_PAD) SHA-256
+                // session-token hash — prefix-joins
+                // `_system_sessions.token_hash` only, never the access log's
+                // plaintext token_hint. `get(..12)` is char-boundary-safe
+                // (base64url is ASCII) and falls back to the whole string
+                // when shorter — never panics. Empty hash (edge-function
+                // User identity: no bearer on the function host) → None,
+                // never Some("").
                 hint: if token_hash.is_empty() {
                     None
                 } else {
