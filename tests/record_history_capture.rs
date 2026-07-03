@@ -748,6 +748,86 @@ async fn rest_update_check_violation_leaves_history_unchanged() {
     assert_eq!(age, 20, "row unchanged by the rolled-back UPDATE");
 }
 
+// Spec §11 — capture atomicity, written-then-rolled-back direction. Every
+// other §11 test fails BEFORE any capture executes; this one pins the ONE
+// shipped ordering where history rows ARE written first:
+// `capture_owner_cascade` inserts per-row op=delete history BEFORE the
+// cascade DELETE (record_history.rs), so a DELETE that then fails — here an
+// ON DELETE RESTRICT foreign key (FieldSpec.foreign_key compiles to
+// `REFERENCES "<target>"("id") ON DELETE RESTRICT`; writers run
+// `PRAGMA foreign_keys = ON`, tenant_db.rs) — must roll the whole
+// delete_user tx back, taking the already-written history rows with it. A
+// regression that moved capture outside the write transaction would leave
+// the history rows committed and turn this red.
+#[tokio::test]
+async fn delete_user_cascade_fk_restrict_rolls_back_captured_history() {
+    let (pool, d, uid) = helpers::seed_user_for_mcp("casfk").await;
+
+    // Collection A (owner-scoped, audited: create_collection's meta row
+    // carries audit_enabled DEFAULT 1) + collection B with a RESTRICT FK
+    // into A — both through the canonical create_collection path.
+    let svc = mcp_svc(&d, "casfk").await;
+    drust::mcp::tools::schema::create_collection(
+        &svc,
+        "tasks",
+        &[fld("body", "text"), fld("owner", "text")],
+    )
+    .await
+    .unwrap();
+    let mut task_ref = fld("task_id", "integer");
+    task_ref.foreign_key = Some("tasks".into());
+    drust::mcp::tools::schema::create_collection(&svc, "task_refs", &[task_ref])
+        .await
+        .unwrap();
+
+    let owner = uid.clone();
+    pool.with_writer(move |c| {
+        drust::storage::schema::set_owner_field(c, "tasks", Some("owner"), Some("own"))?;
+        c.execute(
+            "INSERT INTO tasks (body, owner) VALUES ('a1', ?1)",
+            rusqlite::params![owner],
+        )?;
+        // The reference that makes the cascade DELETE fail AFTER
+        // capture_owner_cascade has already written its history rows.
+        c.execute("INSERT INTO task_refs (task_id) VALUES (1)", [])?;
+        Ok::<_, rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+
+    let err = drust::mcp::tools::user::delete_user(&pool, uid.clone(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("FOREIGN KEY constraint failed"),
+        "cascade DELETE blocked by the RESTRICT FK: {err}"
+    );
+
+    let uid2 = uid.clone();
+    let (users, tasks, hist): (i64, i64, i64) = pool
+        .with_reader(move |c| {
+            let users = c.query_row(
+                "SELECT COUNT(*) FROM _system_users WHERE id = ?1",
+                rusqlite::params![uid2],
+                |r| r.get(0),
+            )?;
+            let tasks = c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?;
+            let hist = c.query_row("SELECT COUNT(*) FROM _system_record_history", [], |r| {
+                r.get(0)
+            })?;
+            Ok::<_, rusqlite::Error>((users, tasks, hist))
+        })
+        .await
+        .unwrap();
+    assert_eq!(users, 1, "(a) rolled-back tx keeps the user row");
+    assert_eq!(tasks, 1, "(b) rolled-back tx keeps the owned row");
+    assert_eq!(
+        hist, 0,
+        "(c) history rows written by capture_owner_cascade BEFORE the failed \
+         DELETE roll back with the tx"
+    );
+}
+
 // audit_enabled=0 → the cascade still deletes but captures nothing.
 #[tokio::test]
 async fn delete_user_cascade_gate_off_captures_nothing() {
