@@ -124,12 +124,17 @@ pub async fn patch_tenant_settings(
 
 /// `POST /admin/tenants/{id}/audit/apply-all`
 ///
-/// Pushes the tenant's CURRENT `audit_default` onto every existing
-/// collection's `_system_collection_meta.audit_enabled` in one bulk UPDATE
-/// (spec §5.2 — flipping the default never magically inherits; this is the
-/// explicit propagation action). Returns
+/// Pushes the tenant's CURRENT `audit_default` onto every existing data
+/// collection's `_system_collection_meta.audit_enabled` — one
+/// `write_audit_enabled` upsert per collection enumerated off
+/// `sqlite_master`, all inside one transaction (spec §5.2 — flipping the
+/// default never magically inherits; this is the explicit propagation
+/// action). NOT a blanket `UPDATE _system_collection_meta`: that would
+/// silently skip legacy collections with no meta row, and the runtime gate
+/// (`read_audit_enabled`) defaults a missing row to ON — so a tenant-wide
+/// disable would leave those still capturing. Returns
 /// `{"ok": true, "audit_enabled": <bool>, "updated": <n>}` where `n` counts
-/// the meta rows written. NO SSE evict — audit does not gate realtime
+/// the collections touched. NO SSE evict — audit does not gate realtime
 /// (mirrors `put_audit_handler`).
 pub async fn apply_audit_default_all(
     State(state): State<TenantsState>,
@@ -173,14 +178,31 @@ pub async fn apply_audit_default_all(
             );
         }
     };
-    let v = target as i64;
     let updated = match pool
-        .with_writer(move |c| {
-            c.execute(
-                "UPDATE _system_collection_meta \
-                 SET audit_enabled = ?1, updated_at = datetime('now')",
-                rusqlite::params![v],
-            )
+        .with_writer_tx(move |tx| {
+            // Enumerate REAL data collections (same shape as
+            // `schema::list_collections`: sqlite_master tables minus
+            // `sqlite_%` minus protected `_system_%`), then upsert each —
+            // `write_audit_enabled` creates a missing meta row with proper
+            // defaults, so row-less legacy collections are covered too.
+            let names = {
+                let mut stmt = tx.prepare(
+                    "SELECT name FROM sqlite_master \
+                     WHERE type='table' AND name NOT LIKE 'sqlite_%' \
+                     ORDER BY name",
+                )?;
+                stmt.query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<Result<Vec<String>, _>>()?
+            };
+            let mut n = 0usize;
+            for name in names {
+                if crate::storage::schema::is_protected_collection(&name) {
+                    continue;
+                }
+                crate::storage::schema::write_audit_enabled(tx, &name, target)?;
+                n += 1;
+            }
+            Ok(n)
         })
         .await
     {
