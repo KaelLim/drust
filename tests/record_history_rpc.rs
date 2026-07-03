@@ -421,6 +421,264 @@ async fn sequential_runs_do_not_double_capture() {
     );
 }
 
+// ── Trigger-driven preupdate events (canonical collections) ───────────────
+//
+// Every collection created through the CANONICAL create_collection path
+// carries an AFTER UPDATE trigger `<name>_updated_at` that rewrites
+// `updated_at`. SQLite fires the preupdate hook for trigger sub-statements
+// too (query depth 1), so without depth handling one logical UPDATE would
+// buffer TWO changes → two op=update history rows. The fix merges the
+// trigger's fresh new-image into the pending depth-0 change, so exactly one
+// row is written and its new_json equals the COMMITTED row (trigger-refreshed
+// updated_at) — same fidelity contract the structured path gets from
+// RETURNING * (v1.43 convergent-trigger note).
+
+/// Create a collection through the CANONICAL create_collection path (same
+/// shape as tests/record_history_capture.rs::mcp_svc) so the table carries
+/// the `<name>_updated_at` trigger + the default-ON audit meta row.
+async fn create_collection_canonical(
+    dir: &tempfile::TempDir,
+    tenant: &str,
+    name: &str,
+    fields: &[drust::mcp::tools::schema::FieldSpec],
+) {
+    let data = dir.path().to_path_buf();
+    let tr = std::sync::Arc::new(drust::storage::pool::TenantRegistry::new(data, 2));
+    let svc = drust::mcp::server::McpRegistry::new(tr)
+        .get_or_create(tenant)
+        .await
+        .unwrap();
+    drust::mcp::tools::schema::create_collection(&svc, name, fields)
+        .await
+        .unwrap();
+}
+
+fn fld(name: &str, ty: &str) -> drust::mcp::tools::schema::FieldSpec {
+    drust::mcp::tools::schema::FieldSpec {
+        name: name.into(),
+        sql_type: ty.into(),
+        nullable: true,
+        ..Default::default()
+    }
+}
+
+/// POST one record through the structured REST path; returns the new id.
+async fn rest_insert(
+    app: &axum::Router,
+    tid: &str,
+    tok: &str,
+    coll: &str,
+    data: serde_json::Value,
+) -> i64 {
+    let r = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            tid,
+            &format!("/records/{coll}"),
+            Some(json!({ "data": data })),
+            tok,
+        ))
+        .await
+        .unwrap();
+    let status = r.status();
+    let v = read_json(r).await;
+    assert_eq!(status, StatusCode::CREATED, "{status} {v}");
+    v["id"].as_i64().unwrap()
+}
+
+async fn committed_updated_at(
+    pool: &drust::storage::pool::SharedTenantPool,
+    coll: &str,
+    id: i64,
+) -> String {
+    let sql = format!("SELECT updated_at FROM \"{coll}\" WHERE id = ?1");
+    pool.with_reader(move |c| c.query_row(&sql, rusqlite::params![id], |r| r.get(0)))
+        .await
+        .unwrap()
+}
+
+// One logical UPDATE via a write RPC on a canonical (triggered) collection →
+// exactly ONE op=update history row, whose new_json carries the
+// trigger-refreshed updated_at (== the committed row), not the stale depth-0
+// image.
+#[tokio::test]
+async fn rpc_update_on_canonical_collection_captures_once() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-trig").await;
+    create_collection_canonical(&dir, &tid, "items", &[fld("qty", "integer")]).await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+
+    let id = rest_insert(&app, &tid, &svc, "items", json!({"qty": 1})).await;
+
+    // datetime('now') is second-resolution: sleep >1s so the trigger's
+    // refreshed updated_at provably differs from the insert-time value.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    create_rpc(
+        &pool,
+        "bump",
+        "UPDATE items SET qty = qty + 1 WHERE id = :id",
+        r#"[{"name":"id","type":"integer"}]"#,
+        false,
+    )
+    .await;
+    let r = app
+        .oneshot(req(
+            "POST",
+            &tid,
+            "/rpc/bump",
+            Some(json!({"id": id})),
+            &svc,
+        ))
+        .await
+        .unwrap();
+    let status = r.status();
+    let v = read_json(r).await;
+    assert!(status.is_success(), "{status} {v}");
+
+    let rows = history_rows(&pool).await;
+    let updates: Vec<&HistRow> = rows.iter().filter(|r| r.op == "update").collect();
+    assert_eq!(
+        updates.len(),
+        1,
+        "one logical UPDATE → exactly ONE op=update row (trigger event must merge, not duplicate): {rows:?}"
+    );
+    let row = updates[0];
+    assert_eq!(row.record_id, id);
+    let old: serde_json::Value =
+        serde_json::from_str(row.old_json.as_deref().expect("old present")).unwrap();
+    let new: serde_json::Value =
+        serde_json::from_str(row.new_json.as_deref().expect("new present")).unwrap();
+    assert_eq!(old["qty"].as_i64(), Some(1));
+    assert_eq!(new["qty"].as_i64(), Some(2));
+
+    let committed = committed_updated_at(&pool, "items", id).await;
+    assert_eq!(
+        new["updated_at"].as_str(),
+        Some(committed.as_str()),
+        "new_json carries the trigger-refreshed updated_at (== committed row): {new}"
+    );
+    assert_ne!(
+        old["updated_at"], new["updated_at"],
+        "trigger refresh actually changed updated_at — guards the equality \
+         assertion above from passing vacuously"
+    );
+}
+
+// Multi-row RPC UPDATE on a canonical collection: 3 rows → exactly 3
+// op=update rows (trigger events merged per row, not doubled to 6).
+#[tokio::test]
+async fn rpc_multirow_update_on_canonical_collection_captures_per_row_once() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-trig3").await;
+    create_collection_canonical(&dir, &tid, "items", &[fld("qty", "integer")]).await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+
+    for q in [1i64, 2, 3] {
+        rest_insert(&app, &tid, &svc, "items", json!({ "qty": q })).await;
+    }
+
+    create_rpc(
+        &pool,
+        "bump_all",
+        "UPDATE items SET qty = qty + 10",
+        "[]",
+        false,
+    )
+    .await;
+    let r = app
+        .oneshot(req("POST", &tid, "/rpc/bump_all", Some(json!({})), &svc))
+        .await
+        .unwrap();
+    let status = r.status();
+    let v = read_json(r).await;
+    assert!(status.is_success(), "{status} {v}");
+    assert_eq!(v["affected_rows"].as_i64(), Some(3));
+
+    let rows = history_rows(&pool).await;
+    let updates: Vec<&HistRow> = rows.iter().filter(|r| r.op == "update").collect();
+    assert_eq!(
+        updates.len(),
+        3,
+        "3 updated rows → exactly 3 op=update rows: {rows:?}"
+    );
+    let mut ids: Vec<i64> = updates.iter().map(|r| r.record_id).collect();
+    ids.sort();
+    assert_eq!(ids, vec![1, 2, 3], "one merged row per updated record");
+    for row in &updates {
+        let old: serde_json::Value =
+            serde_json::from_str(row.old_json.as_deref().expect("old present")).unwrap();
+        let new: serde_json::Value =
+            serde_json::from_str(row.new_json.as_deref().expect("new present")).unwrap();
+        assert_eq!(old["qty"].as_i64(), Some(row.record_id));
+        assert_eq!(new["qty"].as_i64(), Some(row.record_id + 10));
+    }
+}
+
+// INSERT ... ON CONFLICT DO UPDATE hitting an existing row: the update arm
+// fires the trigger too → still exactly ONE op=update history row.
+#[tokio::test]
+async fn rpc_upsert_update_arm_on_canonical_collection_captures_once() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-ups").await;
+    create_collection_canonical(
+        &dir,
+        &tid,
+        "items",
+        &[
+            drust::mcp::tools::schema::FieldSpec {
+                name: "sku".into(),
+                sql_type: "text".into(),
+                nullable: true,
+                unique: true,
+                ..Default::default()
+            },
+            fld("qty", "integer"),
+        ],
+    )
+    .await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+
+    let id = rest_insert(&app, &tid, &svc, "items", json!({"sku": "a", "qty": 1})).await;
+
+    create_rpc(
+        &pool,
+        "upsert",
+        "INSERT INTO items (sku, qty) VALUES (:s, :q) \
+         ON CONFLICT(sku) DO UPDATE SET qty = excluded.qty",
+        r#"[{"name":"s","type":"text"},{"name":"q","type":"integer"}]"#,
+        false,
+    )
+    .await;
+    let r = app
+        .oneshot(req(
+            "POST",
+            &tid,
+            "/rpc/upsert",
+            Some(json!({"s": "a", "q": 99})),
+            &svc,
+        ))
+        .await
+        .unwrap();
+    let status = r.status();
+    let v = read_json(r).await;
+    assert!(status.is_success(), "{status} {v}");
+
+    let rows = history_rows(&pool).await;
+    let updates: Vec<&HistRow> = rows.iter().filter(|r| r.op == "update").collect();
+    assert_eq!(
+        updates.len(),
+        1,
+        "upsert update arm → exactly ONE op=update row: {rows:?}"
+    );
+    assert_eq!(updates[0].record_id, id);
+    let new: serde_json::Value =
+        serde_json::from_str(updates[0].new_json.as_deref().expect("new present")).unwrap();
+    assert_eq!(new["qty"].as_i64(), Some(99));
+    // The conflicting INSERT never lands as a row change: only the REST
+    // seed's op=insert row exists.
+    let inserts = rows.iter().filter(|r| r.op == "insert").count();
+    assert_eq!(inserts, 1, "no phantom op=insert from the upsert: {rows:?}");
+}
+
 // ── Anon-callable write RPC called with the anon bearer → actor_kind=anon. ─
 
 #[tokio::test]

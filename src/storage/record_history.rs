@@ -316,6 +316,46 @@ pub fn install_preupdate_capture(conn: &Connection) -> rusqlite::Result<SharedCa
             if g.error.is_some() {
                 return; // already failed — flush will reject the whole run
             }
+            // Trigger-driven UPDATE (query depth > 0): every canonical
+            // collection carries the convergent `<name>_updated_at` AFTER
+            // UPDATE trigger, so one logical UPDATE fires this hook twice —
+            // depth 0 (the statement; stale updated_at) and depth 1 (the
+            // trigger; refreshed updated_at). Merge the trigger's fresh
+            // new-image into the pending depth-0 change so `new_json`
+            // equals the COMMITTED row — the same fidelity contract the
+            // structured path gets from `RETURNING *` (v1.43
+            // convergent-trigger note) — instead of double-capturing.
+            // Insert/Delete are buffered as-is at any depth: no drust
+            // trigger produces them today.
+            if let PreUpdateCase::Update {
+                new_value_accessor, ..
+            } = case
+                && new_value_accessor.get_query_depth() > 0
+            {
+                let new = match copy_new(new_value_accessor) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        g.error = Some(e);
+                        return;
+                    }
+                };
+                let rowid = new_value_accessor.get_new_row_id();
+                if let Some(pending) = g
+                    .changes
+                    .iter_mut()
+                    .rev()
+                    .find(|c| c.table == tbl && c.rowid == rowid && c.new.is_some())
+                {
+                    pending.new = Some(new);
+                    return;
+                }
+                // No pending change to merge into — unreachable today
+                // (tenants cannot create triggers; drust's only trigger is
+                // the convergent updated_at one, which always follows its
+                // buffered depth-0 change). Fall through fail-closed so a
+                // hypothetical future trigger's changes are captured as
+                // their own change rather than silently dropped.
+            }
             let change = match case {
                 PreUpdateCase::Insert(acc) => copy_new(acc).map(|new| BufferedChange {
                     table: tbl.to_string(),
