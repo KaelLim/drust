@@ -458,6 +458,211 @@ async fn rest_admin_delete_user_cascade_captures_per_row_history() {
     assert_eq!(n, 1, "foreign row untouched by the cascade");
 }
 
+// ── §11 capture atomicity: forced write failure → no history row ─────────────
+
+/// Constrained `people` collection (integer `age`, max 150 → inline native
+/// CHECK) created through the canonical MCP `create_collection` — same
+/// FieldSpec shape as tests/check_constraints_writepath.rs — over the SAME
+/// tenant dir the REST router serves. The meta row it writes stamps the
+/// default-ON audit gate.
+async fn seed_constrained_people(d: &tempfile::TempDir) {
+    let svc = mcp_svc(d, "hist").await;
+    drust::mcp::tools::schema::create_collection(
+        &svc,
+        "people",
+        &[drust::mcp::tools::schema::FieldSpec {
+            name: "age".into(),
+            sql_type: "integer".into(),
+            nullable: true,
+            min: Some(0.0),
+            max: Some(150.0),
+            ..Default::default()
+        }],
+    )
+    .await
+    .unwrap();
+}
+
+// Spec §11 — capture atomicity, INSERT path: a CHECK-constraint violation
+// inside the writer transaction (records.rs create_handler has no app-layer
+// pre-check; the native CHECK raises in-tx) surfaces as the typed 400 and
+// rolls back BOTH the row and any history capture.
+#[tokio::test]
+async fn rest_insert_check_violation_leaves_no_history() {
+    let (app, tok, d) = spin_up_tenant("hist").await;
+    seed_constrained_people(&d).await;
+
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/t/hist/records/people")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"data":{"age":999}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    let b = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error_code"], "CHECK_CONSTRAINT_FAILED", "typed: {v}");
+
+    assert_eq!(
+        history_total(&d).await,
+        0,
+        "failed INSERT must leave no history row"
+    );
+    let pool = grab_pool("hist", &d).await;
+    let n: i64 = pool
+        .with_reader(|c| c.query_row("SELECT COUNT(*) FROM people", [], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "the INSERT itself rolled back");
+}
+
+// Spec §11 — capture atomicity, policy-CHECK path: the in-tx insert policy
+// CHECK (write.rs insert_record_checked) fires AFTER the INSERT and BEFORE
+// the capture call, so a rejected row rolls back the already-executed INSERT
+// and leaves zero history rows. Policy shape mirrors enforce.rs
+// policy_check_fail_rolls_back (`n > 10`).
+#[tokio::test]
+async fn policy_check_failure_leaves_no_history() {
+    let d = tempfile::tempdir().unwrap();
+    let svc = mcp_svc(&d, "polhist").await;
+    drust::mcp::tools::schema::create_collection(&svc, "items", &[fld("n", "integer")])
+        .await
+        .unwrap();
+    // default user_caps = [select] → grant insert so the cap gate passes and
+    // the policy CHECK is what rejects.
+    drust::mcp::tools::schema::set_user_caps(
+        &svc,
+        "items",
+        &[
+            drust::storage::schema::DmlVerb::Select,
+            drust::storage::schema::DmlVerb::Insert,
+        ],
+    )
+    .await
+    .unwrap();
+    drust::mcp::tools::policy::set_policy(
+        &svc,
+        "items",
+        "insert",
+        None,
+        Some(serde_json::json!({ "n": { "gt": 10 } })),
+    )
+    .await
+    .unwrap();
+
+    let ctx = drust::auth::middleware::AuthCtx::User {
+        user_id: "u9".into(),
+        token_hash: "x".into(),
+    };
+    let err = drust::functions::enforce::enforced_insert(
+        &svc,
+        &ctx,
+        "items",
+        serde_json::json!({"n": 5}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("POLICY_CHECK_FAILED"),
+        "got: {err}"
+    );
+
+    let (hist, rows): (i64, i64) = svc
+        .inner()
+        .pool
+        .with_reader(|c| {
+            let hist: i64 =
+                c.query_row("SELECT COUNT(*) FROM _system_record_history", [], |r| {
+                    r.get(0)
+                })?;
+            let rows: i64 = c.query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))?;
+            Ok::<_, rusqlite::Error>((hist, rows))
+        })
+        .await
+        .unwrap();
+    assert_eq!(hist, 0, "policy-rejected INSERT must leave no history row");
+    assert_eq!(rows, 0, "the INSERT itself rolled back");
+}
+
+// Spec §11 — capture atomicity, UPDATE path: after one clean insert (exactly
+// one history row), a CHECK-violating REST PATCH rolls back — no `update`
+// history row appears, the total stays at 1, and the row keeps its
+// pre-update value.
+#[tokio::test]
+async fn rest_update_check_violation_leaves_history_unchanged() {
+    let (app, tok, d) = spin_up_tenant("hist").await;
+    seed_constrained_people(&d).await;
+
+    // Clean insert → 1 insert-history row.
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/t/hist/records/people")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"data":{"age":20}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let b = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let id = v["id"].as_i64().unwrap();
+    assert_eq!(history_total(&d).await, 1, "baseline: the insert captured");
+
+    // Violating update → typed 400, rolled back.
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PATCH)
+                .uri(format!("/t/hist/records/people/{id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"data":{"age":999}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    let b = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error_code"], "CHECK_CONSTRAINT_FAILED", "typed: {v}");
+
+    assert_eq!(
+        history_total(&d).await,
+        1,
+        "failed UPDATE must not add a history row"
+    );
+    assert!(
+        history_rows(&d, "update").await.is_empty(),
+        "no op=update row after rollback"
+    );
+    // The row itself kept the pre-update value → the UPDATE rolled back too.
+    let pool = grab_pool("hist", &d).await;
+    let age: i64 = pool
+        .with_reader(move |c| {
+            c.query_row(
+                "SELECT age FROM people WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(age, 20, "row unchanged by the rolled-back UPDATE");
+}
+
 // audit_enabled=0 → the cascade still deletes but captures nothing.
 #[tokio::test]
 async fn delete_user_cascade_gate_off_captures_nothing() {
