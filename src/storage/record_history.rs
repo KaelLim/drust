@@ -38,7 +38,9 @@ pub struct AuditActor {
     /// to `_system_sessions.token_hash` (and the access log's token
     /// fingerprint) to correlate a history row with the session that wrote
     /// it. `None` for anon (no token identity) and service (admin
-    /// attribution rides `id`).
+    /// attribution rides `id`). An EMPTY `token_hash` (edge-function User
+    /// identity — the function host carries no bearer) also maps to `None`,
+    /// never `Some("")`: an empty prefix would join every session.
     pub hint: Option<String>,
 }
 
@@ -74,12 +76,18 @@ impl AuditActor {
                 // 12-hex-char prefix of the session token hash (spec §5.1).
                 // `get(..12)` is char-boundary-safe on the hex string and
                 // falls back to the whole string when shorter — never panics.
-                hint: Some(
-                    token_hash
-                        .get(..12)
-                        .unwrap_or(token_hash.as_str())
-                        .to_string(),
-                ),
+                // Empty hash (edge-function User identity: no bearer on the
+                // function host) → None, never Some("").
+                hint: if token_hash.is_empty() {
+                    None
+                } else {
+                    Some(
+                        token_hash
+                            .get(..12)
+                            .unwrap_or(token_hash.as_str())
+                            .to_string(),
+                    )
+                },
             },
         }
     }
@@ -1207,5 +1215,16 @@ mod tests {
             token_hash: "x".into(),
         });
         assert_eq!(short.hint.as_deref(), Some("x"));
+        // Empty token_hash (edge-function User identity: the function host
+        // carries no bearer) → hint must be None, never Some("") — an empty
+        // prefix would join against EVERY `_system_sessions.token_hash`.
+        let hashless = AuditActor::from_auth_ctx(&AuthCtx::User {
+            user_id: "u9".into(),
+            token_hash: String::new(),
+        });
+        assert_eq!(
+            hashless.hint, None,
+            "empty token_hash carries no session correlation"
+        );
     }
 }
