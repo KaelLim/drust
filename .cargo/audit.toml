@@ -1,0 +1,19 @@
+# cargo-audit project config. Every ignore below MUST carry a justification
+# and a removal condition — re-evaluate on each release.
+
+[advisories]
+ignore = [
+    # quick-xml 0.39.4 DoS advisories (RUSTSEC-2026-0194 quadratic
+    # duplicate-attribute check, RUSTSEC-2026-0195 unbounded NsReader
+    # namespace allocation), both patched only in quick-xml >= 0.41.0.
+    # UPGRADE UNREACHABLE as of 2026-07-03: quick-xml is a transitive dep of
+    # object_store (S3 response XML parsing) and even the latest
+    # object_store 0.14.0 pins quick-xml ^0.40.1 (< 0.41) — no compatible
+    # fixed version exists anywhere in the dep graph. Risk accepted because
+    # the XML object_store parses comes exclusively from the
+    # operator-configured S3 endpoint (Garage on 127.0.0.1 in our
+    # deployment) — never from anonymous or attacker-controlled input.
+    # REMOVE both lines as soon as object_store allows quick-xml >= 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
