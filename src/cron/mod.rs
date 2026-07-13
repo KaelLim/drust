@@ -3,6 +3,7 @@
 //! `Privileged` identity by an in-process minute-tick scheduler.
 //! Spec: docs/superpowers/specs/2026-07-13-drust-cron-design.md.
 
+pub mod index;
 pub mod schedule;
 pub mod store;
 
@@ -35,6 +36,25 @@ impl CronConfig {
         Self {
             max_jobs_per_tenant: 10,
             disabled: false,
+        }
+    }
+}
+
+/// Shared cron handle threaded into the tenant stack (REST/MCP/admin config
+/// surfaces reload `index` after every committed mutation; the scheduler
+/// snapshots it each minute tick).
+pub struct CronState {
+    pub index: std::sync::Arc<index::CronIndex>,
+    pub cfg: CronConfig,
+}
+
+impl CronState {
+    /// Test factory — fresh empty index + `CronConfig::test_default()`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn test_default() -> Self {
+        Self {
+            index: std::sync::Arc::new(index::CronIndex::new()),
+            cfg: CronConfig::test_default(),
         }
     }
 }
