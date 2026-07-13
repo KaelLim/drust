@@ -395,8 +395,10 @@ pub async fn soft_delete_tenant(
     state.auth_cache.clear_tenant(&id);
     // v1.48 — drop the tenant's cron schedule-index entry; otherwise a
     // deleted tenant's `* * * * *` job error-loops every minute until
-    // restart (the fire-time re-assert fails closed, but noisily).
-    state.cron.index.invalidate(&id);
+    // restart (the fire-time re-assert fails closed, but noisily). Async:
+    // takes the per-tenant reload lock so an in-flight reload cannot
+    // re-insert a ghost entry after this removal.
+    state.cron.index.invalidate(&id).await;
     StatusCode::NO_CONTENT.into_response()
 }
 
