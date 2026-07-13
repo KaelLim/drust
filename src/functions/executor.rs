@@ -213,12 +213,18 @@ impl Executor {
     }
 
     async fn resolve_and_run(&self, inv: &Invocation) -> RunOutcome {
-        let pool = match self.tenants.get_or_open(&inv.tenant_id) {
-            Ok(p) => p,
-            Err(e) => {
+        // `get_if_live`, never `get_or_open`: a soft-delete landing during
+        // the permit/tenant-lock waits in run_one must not let this re-entry
+        // resurrect the dead tenant's data.sqlite outside `_trash`
+        // (get_or_open's open_write = create_dir_all + SQLITE_OPEN_CREATE +
+        // full schema). The create-free open is the atomic guard — no
+        // check-then-act window.
+        let pool = match self.tenants.get_if_live(&inv.tenant_id) {
+            Some(p) => p,
+            None => {
                 return RunOutcome {
                     status: RunStatus::Error,
-                    result: format!("tenant open failed: {e}"),
+                    result: "tenant gone".into(),
                     log_text: String::new(),
                 };
             }
@@ -273,7 +279,10 @@ impl Executor {
 
     async fn record(&self, inv: &Invocation, out: &RunOutcome, duration_ms: i64) {
         let invocation_id = uuid::Uuid::new_v4().to_string();
-        if let Ok(pool) = self.tenants.get_or_open(&inv.tenant_id) {
+        // Same liveness rule as resolve_and_run: a gone tenant must not get
+        // `_system_function_logs` resurrected — skip the log row (the host
+        // audit row below still records the attempt in meta_logs).
+        if let Some(pool) = self.tenants.get_if_live(&inv.tenant_id) {
             let _ = schema::insert_log(
                 &pool,
                 LogRow {

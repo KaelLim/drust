@@ -11,7 +11,7 @@ use drust::cron::index::{CronIndex, IndexedJob};
 use drust::cron::scheduler::{CronDeps, run_due_job};
 use drust::cron::{CronConfig, store};
 use drust::functions::caller::CallerCtx;
-use drust::functions::executor::{Executor, FunctionRunner, RunOutcome, RunStatus};
+use drust::functions::executor::{Executor, FunctionRunner, Invocation, RunOutcome, RunStatus};
 use drust::storage::pool::{SharedTenantPool, TenantRegistry};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -595,6 +595,51 @@ async fn fire_after_tenant_soft_delete_skips_and_does_not_resurrect_db() {
     assert!(
         !db.exists(),
         "fire must not re-create data.sqlite for a soft-deleted tenant"
+    );
+}
+
+// ── Executor-level closure of the same hazard: `run_one` re-enters the
+//    registry by tenant id (resolve_and_run + record), so a soft-delete
+//    landing during the permit/tenant-lock waits — AFTER `run_due_job`'s own
+//    exists() probe passed — must NOT let `get_or_open`'s `open_write`
+//    (create_dir_all + SQLITE_OPEN_CREATE + full schema) resurrect the dead
+//    tenant outside `_trash`. Exercise `run_one` directly on a gone tenant:
+//    error outcome, no runner call, nothing re-created, no log row. ──────────
+
+#[tokio::test]
+async fn executor_run_one_on_gone_tenant_errors_without_resurrecting_db() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (registry, executor, tmp) =
+        helpers::cron_test_stack("t-cron10", Arc::new(CountRunner(hits.clone()))).await;
+
+    // Simulate soft-delete after the Invocation path was built: dir moved
+    // into _trash, pool evicted from the registry (src/mgmt/tenants.rs order).
+    let tenant_dir = tmp.path().join("tenants").join("t-cron10");
+    let trash = tmp.path().join("_trash");
+    std::fs::create_dir_all(&trash).unwrap();
+    std::fs::rename(&tenant_dir, trash.join("t-cron10-0")).unwrap();
+    registry.evict("t-cron10");
+
+    let out = executor
+        .run_one(Invocation {
+            tenant_id: "t-cron10".into(),
+            function_name: "f1".into(),
+            trigger: "cron:tick".into(),
+            event_json: "{}".into(),
+            caller: CallerCtx::Privileged,
+        })
+        .await;
+
+    assert_eq!(out.status, RunStatus::Error, "{out:?}");
+    assert!(out.result.contains("tenant gone"), "got {}", out.result);
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "runner never invoked");
+    assert!(
+        !tenant_dir.exists(),
+        "run_one must not re-create the tenant dir for a soft-deleted tenant"
+    );
+    assert!(
+        !tenant_dir.join("data.sqlite").exists(),
+        "run_one must not re-create data.sqlite for a soft-deleted tenant"
     );
 }
 

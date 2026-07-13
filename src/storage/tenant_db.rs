@@ -206,6 +206,22 @@ pub fn open_write(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connectio
     Ok(conn)
 }
 
+/// Like `open_write`, but NEVER creates anything: no `create_dir_all`, no
+/// `SQLITE_OPEN_CREATE`, no `apply_schema` — the database must already exist
+/// on disk or the open fails (`SQLITE_CANTOPEN`). This is the OS-level atomic
+/// guard `TenantRegistry::get_if_live` builds on: a tenant soft-deleted (dir
+/// moved into `_trash`) between any liveness probe and this open cannot be
+/// resurrected, because SQLite itself refuses to create the missing file.
+pub fn open_write_existing(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection> {
+    // Register sqlite-vec's auto-extension BEFORE Connection::open so
+    // the new connection sees vec_distance_* on first use. Idempotent.
+    ensure_sqlite_vec_loaded();
+    let path = tenant_data_path(data_root, tenant_id);
+    let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    apply_common_pragmas(&conn)?;
+    Ok(conn)
+}
+
 pub fn open_read(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection> {
     let path = tenant_data_path(data_root, tenant_id);
     if !path.exists() {
