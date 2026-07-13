@@ -207,11 +207,16 @@ pub fn open_write(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connectio
 }
 
 /// Like `open_write`, but NEVER creates anything: no `create_dir_all`, no
-/// `SQLITE_OPEN_CREATE`, no `apply_schema` — the database must already exist
-/// on disk or the open fails (`SQLITE_CANTOPEN`). This is the OS-level atomic
-/// guard `TenantRegistry::get_if_live` builds on: a tenant soft-deleted (dir
+/// `SQLITE_OPEN_CREATE` — the database must already exist on disk or the
+/// open fails (`SQLITE_CANTOPEN`). This is the OS-level atomic guard
+/// `TenantRegistry::get_if_live` builds on: a tenant soft-deleted (dir
 /// moved into `_trash`) between any liveness probe and this open cannot be
 /// resurrected, because SQLite itself refuses to create the missing file.
+/// Everything else matches `open_write` — including the idempotent
+/// `apply_schema` catch-up (pure `CREATE ... IF NOT EXISTS` batches on the
+/// EXISTING file; it cannot create the file itself). Omitting it would let a
+/// pool first opened via `get_if_live` — then cached for the process
+/// lifetime — miss `_system_*` tables added by an upgrade.
 pub fn open_write_existing(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connection> {
     // Register sqlite-vec's auto-extension BEFORE Connection::open so
     // the new connection sees vec_distance_* on first use. Idempotent.
@@ -219,6 +224,7 @@ pub fn open_write_existing(data_root: &Path, tenant_id: &str) -> anyhow::Result<
     let path = tenant_data_path(data_root, tenant_id);
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     apply_common_pragmas(&conn)?;
+    apply_schema(&conn)?;
     Ok(conn)
 }
 
@@ -415,5 +421,31 @@ mod user_caps_column_tests {
             )
             .unwrap();
         assert_eq!(v, None, "omitting user_caps_json on INSERT must yield NULL");
+    }
+
+    #[test]
+    fn open_write_existing_applies_schema_catchup_but_never_creates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Missing file → open fails AND nothing is created (the atomic
+        // no-resurrect guard get_if_live builds on).
+        assert!(super::open_write_existing(root, "ghost").is_err());
+        assert!(!super::tenant_data_path(root, "ghost").exists());
+        assert!(!super::tenant_dir(root, "ghost").exists());
+        // A pre-existing raw DB missing every _system_ table (an upgrade
+        // scenario) must get the idempotent CREATE IF NOT EXISTS catch-up —
+        // get_if_live caches the pool it opens, so skipping it here would
+        // hide new tables for the process lifetime.
+        std::fs::create_dir_all(super::tenant_dir(root, "t1")).unwrap();
+        drop(Connection::open(super::tenant_data_path(root, "t1")).unwrap());
+        let c = super::open_write_existing(root, "t1").unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = '_system_rpc'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "schema catch-up must run on existing DBs");
     }
 }
