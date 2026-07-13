@@ -393,6 +393,10 @@ pub async fn soft_delete_tenant(
     // v1.35 hook 3 — drop every cached Bearer + User bound to this
     // tenant so no stale grant survives the soft-delete.
     state.auth_cache.clear_tenant(&id);
+    // v1.48 — drop the tenant's cron schedule-index entry; otherwise a
+    // deleted tenant's `* * * * *` job error-loops every minute until
+    // restart (the fire-time re-assert fails closed, but noisily).
+    state.cron.index.invalidate(&id);
     StatusCode::NO_CONTENT.into_response()
 }
 

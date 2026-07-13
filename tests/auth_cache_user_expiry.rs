@@ -71,6 +71,7 @@ async fn expired_user_entry_rejected_from_cache_without_db_read() {
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

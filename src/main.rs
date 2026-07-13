@@ -319,6 +319,15 @@ async fn main() -> anyhow::Result<()> {
     );
     fn_executor.spawn_loop(fn_rx);
 
+    // v1.48 — cron state: in-memory schedule index + env knobs, threaded into
+    // the tenant stack (REST config surface) and MgmtState (admin page +
+    // soft-delete invalidation hook). The minute-tick scheduler + boot scan
+    // arm in Task 9.
+    let cron_state = Arc::new(drust::cron::CronState {
+        index: Arc::new(drust::cron::index::CronIndex::new()),
+        cfg: drust::cron::CronConfig::from_env(),
+    });
+
     let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
         tenants.clone(),
         bus.clone(),
@@ -408,6 +417,7 @@ async fn main() -> anyhow::Result<()> {
         functions: functions.clone(),
         functions_exec: fn_executor.clone(),
         fn_data_root: cfg.data_dir.clone(),
+        cron: cron_state.clone(),
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
@@ -541,6 +551,7 @@ async fn main() -> anyhow::Result<()> {
         functions: functions.clone(),
         functions_exec: fn_executor.clone(),
         fn_cfg: fn_cfg.clone(),
+        cron: cron_state.clone(),
         cors_origins: cfg.cors_origins.clone(),
     };
     let tenant_router = build_tenant_router(tenant_stack);

@@ -57,6 +57,7 @@ async fn app_with_limiter(
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     });
     (app, tok, dir)

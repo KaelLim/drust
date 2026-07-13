@@ -75,6 +75,11 @@ pub struct TenantsState {
     /// v1.36 — artifact root (same dir the tenant pools use). The admin
     /// delete handler GCs the content-addressed `{sha}.wasm` blob from here.
     pub fn_data_root: PathBuf,
+    /// v1.48 — cron handle. `soft_delete_tenant` invalidates the tenant's
+    /// schedule-index entry so a deleted tenant's jobs stop being considered
+    /// by the minute tick (the fire-time re-assert would fail closed anyway,
+    /// but noisily, every minute until restart).
+    pub cron: Arc<crate::cron::CronState>,
 }
 
 /// Test-only constructor available in debug builds.
@@ -128,6 +133,7 @@ impl TenantsState {
             functions,
             functions_exec,
             fn_data_root,
+            cron: Arc::new(crate::cron::CronState::test_default()),
         }
     }
 }

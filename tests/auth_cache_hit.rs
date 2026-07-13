@@ -55,6 +55,7 @@ async fn spin_with_cache(
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
     (build_tenant_router(stack), tok, cache, dir)
