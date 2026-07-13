@@ -157,8 +157,14 @@ pub struct AuditWriter {
 /// retention).
 pub enum WriterCmd {
     Insert(crate::safety::audit::AuditEntry),
-    RunRetention { cutoff_ts: String, vacuum: bool },
-    SetMeta { key: String, value: String },
+    RunRetention {
+        cutoff_ts: Option<String>,
+        vacuum: bool,
+    },
+    SetMeta {
+        key: String,
+        value: String,
+    },
 }
 
 impl AuditWriter {
@@ -201,8 +207,10 @@ impl AuditWriter {
     }
 
     /// Used by the retention task. Blocking send is acceptable because
-    /// retention runs on its own task, not in a request path.
-    pub async fn send_retention(&self, cutoff_ts: String, vacuum: bool) {
+    /// retention runs on its own task, not in a request path. `None`
+    /// cutoff = retention disabled (`DRUST_AUDIT_LOG_RETENTION_DAYS=0`):
+    /// no DELETE, but `vacuum` still applies.
+    pub async fn send_retention(&self, cutoff_ts: Option<String>, vacuum: bool) {
         if let Err(e) = self
             .tx
             .send(WriterCmd::RunRetention { cutoff_ts, vacuum })
@@ -412,7 +420,7 @@ async fn writer_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriterCmd>) {
                             if !buf.is_empty() {
                                 flush(&mut conn, &mut buf);
                             }
-                            run_retention(&mut conn, &cutoff_ts, vacuum);
+                            run_retention(&mut conn, cutoff_ts.as_deref(), vacuum);
                             break;
                         }
                         Some(WriterCmd::SetMeta { key, value }) => {
@@ -490,10 +498,13 @@ fn flush(conn: &mut Connection, buf: &mut Vec<crate::safety::audit::AuditEntry>)
     }
 }
 
-fn run_retention(conn: &mut Connection, cutoff_ts: &str, vacuum: bool) {
-    match conn.execute("DELETE FROM audit WHERE ts < ?1", params![cutoff_ts]) {
-        Ok(n) => tracing::info!(deleted = n, cutoff = %cutoff_ts, "audit retention"),
-        Err(e) => tracing::error!(err=?e, "audit retention DELETE"),
+fn run_retention(conn: &mut Connection, cutoff_ts: Option<&str>, vacuum: bool) {
+    match cutoff_ts {
+        Some(cutoff) => match conn.execute("DELETE FROM audit WHERE ts < ?1", params![cutoff]) {
+            Ok(n) => tracing::info!(deleted = n, cutoff = %cutoff, "audit retention"),
+            Err(e) => tracing::error!(err=?e, "audit retention DELETE"),
+        },
+        None => tracing::info!("audit retention: DELETE skipped (retention disabled)"),
     }
     if vacuum {
         if let Err(e) = conn.execute("VACUUM", []) {
@@ -777,5 +788,41 @@ mod tests {
         // main.rs cutoff computation — treated the same as unparseable.
         assert_eq!(parse_audit_log_retention_days(Some("40000")), 90);
         assert_eq!(parse_audit_log_retention_days(Some("99999999999")), 90);
+    }
+
+    #[test]
+    fn run_retention_none_cutoff_skips_delete() {
+        let mut conn = open_audit_db_memory().unwrap();
+        conn.execute(
+            "INSERT INTO audit (ts, op, status) VALUES ('2020-01-01T00:00:00.000Z', 'GET /x', 'ok')",
+            [],
+        )
+        .unwrap();
+        run_retention(&mut conn, None, false);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "None cutoff must not delete anything");
+    }
+
+    #[test]
+    fn run_retention_some_cutoff_deletes_only_older_rows() {
+        let mut conn = open_audit_db_memory().unwrap();
+        conn.execute(
+            "INSERT INTO audit (ts, op, status) VALUES
+             ('2020-01-01T00:00:00.000Z', 'GET /old', 'ok'),
+             ('2026-06-01T00:00:00.000Z', 'GET /new', 'ok')",
+            [],
+        )
+        .unwrap();
+        run_retention(&mut conn, Some("2026-01-01T00:00:00.000Z"), false);
+        let ops: Vec<String> = conn
+            .prepare("SELECT op FROM audit ORDER BY ts")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(ops, vec!["GET /new".to_string()]);
     }
 }
