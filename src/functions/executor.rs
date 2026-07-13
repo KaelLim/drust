@@ -224,7 +224,11 @@ impl Executor {
             None => {
                 return RunOutcome {
                     status: RunStatus::Error,
-                    result: "tenant gone".into(),
+                    // "or unopenable": get_if_live also returns None for an
+                    // EXISTING file whose open failed (fd exhaustion, perms)
+                    // — the underlying error is in the server log. Don't
+                    // point operators at soft-delete for a resource blip.
+                    result: "tenant gone or unopenable".into(),
                     log_text: String::new(),
                 };
             }
