@@ -4,6 +4,7 @@
 //! Spec: docs/superpowers/specs/2026-07-13-drust-cron-design.md.
 
 pub mod schedule;
+pub mod store;
 
 /// Env-driven cron knobs. Parsed once in `main.rs`; cloned everywhere.
 #[derive(Clone, Debug)]
