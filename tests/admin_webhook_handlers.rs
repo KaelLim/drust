@@ -112,7 +112,7 @@ async fn sidebar_includes_webhooks_entry() {
     assert!(
         body.contains("_webhooks"),
         "sidebar must contain '_webhooks' entry; body excerpt:\n{}",
-        &body.chars().take(800).collect::<String>()
+        body.chars().take(800).collect::<String>()
     );
     // The 🔔 emoji icon was replaced by an inline SVG during the v1.15
     // design overhaul. Anchor on the link's title attribute instead — it
@@ -146,7 +146,7 @@ async fn empty_state_renders_with_add_form() {
     assert!(
         body_lower.contains("no webhook"),
         "page should show empty-state hint; body excerpt:\n{}",
-        &body.chars().take(800).collect::<String>()
+        body.chars().take(800).collect::<String>()
     );
     // Add-form: must POST to the same URL and accept collection/events/url
     assert!(
