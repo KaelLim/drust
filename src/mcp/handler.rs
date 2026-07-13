@@ -471,6 +471,38 @@ pub struct BroadcastArgs {
     pub payload: Value,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateCronJobArgs {
+    /// Job name — `[a-z0-9_-]{1,64}`, unique per tenant.
+    pub name: String,
+    /// 5-field cron expression (minute hour day month weekday), UTC.
+    /// No seconds field, no `@aliases`.
+    pub schedule: String,
+    /// "function" (edge function) or "rpc" (stored RPC).
+    pub target_kind: String,
+    /// Name of the edge function or stored RPC to run.
+    pub target_name: String,
+    /// Optional JSON OBJECT as a string, <= 64 KiB. Functions receive it
+    /// as `event.payload`; RPCs bind it as named params. Omitted →
+    /// functions get a null payload / RPCs run with no binds.
+    #[serde(default)]
+    pub payload_json: Option<String>,
+    /// Defaults to true.
+    #[serde(default)]
+    pub active: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeleteCronJobArgs {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetCronJobActiveArgs {
+    pub name: String,
+    pub active: bool,
+}
+
 // --- Handler -----------------------------------------------------------
 
 #[derive(Clone)]
@@ -2157,6 +2189,83 @@ impl DrustMcpService {
             Err(e) => bail_mcp(e),
         }
     }
+
+    #[tool(description = "v1.48 — Create a cron job: run one edge function \
+        or stored RPC on a 5-field cron schedule (minute hour day month \
+        weekday), UTC, minute resolution — no seconds field, no @aliases. \
+        Service-only. Jobs run at service (Privileged) identity; an RPC \
+        declaring :user_id is refused (CRON_RPC_USER_ID). The target is \
+        immutable — delete + create to retarget. payload_json (optional \
+        JSON object as a string, <= 64 KiB): functions receive it as \
+        event.payload, RPCs bind it as named params; omitted means a null \
+        payload / no binds. Errors: CRON_INVALID_NAME, \
+        CRON_INVALID_SCHEDULE, CRON_TARGET_NOT_FOUND, CRON_DUPLICATE, \
+        CRON_JOB_LIMIT, CRON_PAYLOAD_TOO_LARGE, CRON_RPC_USER_ID.")]
+    async fn create_cron_job(
+        &self,
+        Parameters(CreateCronJobArgs {
+            name,
+            schedule,
+            target_kind,
+            target_name,
+            payload_json,
+            active,
+        }): Parameters<CreateCronJobArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::cron::create_cron_job(
+            &self.state,
+            &name,
+            &schedule,
+            &target_kind,
+            &target_name,
+            payload_json.as_deref(),
+            active.unwrap_or(true),
+        )
+        .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.48 — List this tenant's cron jobs (service-only): \
+        name, schedule (5-field, UTC), target, payload, active flag, \
+        last_run_at/last_status/last_error, and the computed next_fire. \
+        Per-job run history has no MCP tool — read the last 20 outcomes via \
+        REST GET /t/<tenant>/cron/<name>/runs with the service bearer.")]
+    async fn list_cron_jobs(&self) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::cron::list_cron_jobs(&self.state).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.48 — Enable/disable a cron job without deleting \
+        it (service-only). Disabled jobs keep their config and run history \
+        and stop firing within the current minute. Errors: CRON_NOT_FOUND.")]
+    async fn set_cron_job_active(
+        &self,
+        Parameters(SetCronJobActiveArgs { name, active }): Parameters<SetCronJobActiveArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::cron::set_cron_job_active(&self.state, &name, active).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(description = "v1.48 — Delete a cron job and its run history \
+        (service-only, irreversible). Changing a job's target is delete + \
+        create — the target is immutable on PATCH/update surfaces. \
+        Errors: CRON_NOT_FOUND.")]
+    async fn delete_cron_job(
+        &self,
+        Parameters(DeleteCronJobArgs { name }): Parameters<DeleteCronJobArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::cron::delete_cron_job(&self.state, &name).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
 }
 
 // v1.31.4 — onboarding map for LLM clients. Replaces the legacy 50-name
@@ -2244,6 +2353,15 @@ CAPABILITY GROUPS
    Logs:    get_function_logs
    Upload:  NO MCP upload tool by design. POST the .wasm via REST:
      POST {base}{bp}/t/{tenant_id}/functions   (multipart: name, wasm, triggers, description; service bearer)
+
+7. CRON (v1.48+, service-only — schedule edge functions or stored RPCs)
+   Manage:  create_cron_job, list_cron_jobs, set_cron_job_active, delete_cron_job
+   Schedule: 5-field cron (minute hour day month weekday), UTC, minute resolution — no seconds, no @aliases
+   Target:  target_kind 'function' | 'rpc' + target_name; immutable — delete + create to retarget
+   Payload: optional JSON object string (<=64 KiB) — functions get it as event.payload,
+            RPCs bind it as named params; omitted means null payload / no binds
+   Jobs run at service (Privileged) identity; an RPC declaring :user_id is refused.
+   Run history (last 20): REST GET {base}{bp}/t/{tenant_id}/cron/<name>/runs (service bearer)
 
 RECIPES
   "Look around"           → get_schema_overview

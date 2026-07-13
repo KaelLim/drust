@@ -60,6 +60,15 @@ pub struct DrustMcpInner {
     /// recursion guard (spec §4): a guest-initiated write fires SSE +
     /// webhooks but can never enqueue another function.
     pub functions: Option<Arc<crate::functions::dispatcher::FunctionDispatcher>>,
+    /// v1.48 — shared cron state (schedule index + knobs). The MCP cron
+    /// tools reload THIS index after every mutation, so prod (`main.rs`)
+    /// MUST hand in the SAME `CronState` the minute-tick scheduler
+    /// snapshots, via `McpRegistry::with_cron` — a detached default here
+    /// means an MCP-created job never fires until the next boot scan.
+    /// `DrustMcp::new` defaults to a fresh detached state so test-only
+    /// ctors and the executor host state (which exposes no cron tools)
+    /// need no wiring.
+    pub cron: Arc<crate::cron::CronState>,
 }
 
 /// Newtype so we can hand out `Arc` without exposing the inner struct.
@@ -106,7 +115,18 @@ impl DrustMcp {
                 rooms_cfg,
                 auth_cache,
                 functions,
+                cron: fresh_cron_state(),
             }),
+        }
+    }
+    /// v1.48 — swap in the process-shared cron state (see
+    /// `DrustMcpInner::cron`). Builder-style so `DrustMcp::new`'s
+    /// signature (and its non-cron callers) stay untouched.
+    pub fn with_cron(self, cron: Arc<crate::cron::CronState>) -> Self {
+        let mut inner = (*self.inner).clone();
+        inner.cron = cron;
+        Self {
+            inner: Arc::new(inner),
         }
     }
     pub fn inner(&self) -> Arc<DrustMcpInner> {
@@ -173,6 +193,11 @@ pub struct McpRegistry {
     /// the test-only `new` / `with_bus` ctors; the prod path
     /// (`with_bus_and_storage`) always carries the `main.rs` instance.
     functions: Option<Arc<crate::functions::dispatcher::FunctionDispatcher>>,
+    /// v1.48 — shared cron state threaded into every `DrustMcp` this
+    /// registry mints (see `DrustMcpInner::cron`). All ctors default to a
+    /// fresh detached state; the prod path in `main.rs` MUST override it
+    /// with the scheduler's instance via `with_cron`.
+    cron: Arc<crate::cron::CronState>,
     services: DashMap<String, DrustMcp>,
 }
 
@@ -196,6 +221,7 @@ impl McpRegistry {
             rooms_cfg,
             auth_cache: None,
             functions: None,
+            cron: fresh_cron_state(),
             services: DashMap::new(),
         }
     }
@@ -218,6 +244,7 @@ impl McpRegistry {
             rooms_cfg,
             auth_cache: None,
             functions: None,
+            cron: fresh_cron_state(),
             services: DashMap::new(),
         }
     }
@@ -255,8 +282,18 @@ impl McpRegistry {
             rooms_cfg,
             auth_cache: Some(auth_cache),
             functions: Some(functions),
+            cron: fresh_cron_state(),
             services: DashMap::new(),
         }
+    }
+    /// v1.48 — thread the process-shared cron state into every `DrustMcp`
+    /// this registry mints. `main.rs` MUST chain this onto
+    /// `with_bus_and_storage` with the scheduler's `CronState`; without it
+    /// the MCP cron tools reload a detached index and MCP-created jobs
+    /// don't fire until restart.
+    pub fn with_cron(mut self, cron: Arc<crate::cron::CronState>) -> Self {
+        self.cron = cron;
+        self
     }
     pub async fn get_or_create(&self, tenant_id: &str) -> anyhow::Result<DrustMcp> {
         if let Some(s) = self.services.get(tenant_id) {
@@ -280,13 +317,26 @@ impl McpRegistry {
             self.rooms_cfg.clone(),
             self.auth_cache.clone(),
             self.functions.clone(),
-        );
+        )
+        .with_cron(self.cron.clone());
         self.services.insert(tenant_id.to_string(), svc.clone());
         Ok(svc)
     }
     pub fn evict(&self, tenant_id: &str) {
         self.services.remove(tenant_id);
     }
+}
+
+/// v1.48 — detached default for construction sites that don't thread the
+/// process-shared cron state: the test-only registry ctors, the prod
+/// registry BEFORE `with_cron` overrides it, and the functions-executor
+/// host state (which exposes no cron tools). Valid in every build profile —
+/// it is a real, just unshared, `CronState`.
+fn fresh_cron_state() -> Arc<crate::cron::CronState> {
+    Arc::new(crate::cron::CronState {
+        index: Arc::new(crate::cron::index::CronIndex::new()),
+        cfg: crate::cron::CronConfig::from_env(),
+    })
 }
 
 /// v1.26 — used by the test-only `McpRegistry::new` / `with_bus`

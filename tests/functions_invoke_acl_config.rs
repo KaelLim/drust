@@ -170,14 +170,14 @@ async fn mcp_set_function_invoke_acl_happy_path() {
 }
 
 #[test]
-fn mcp_exposes_sixty_one_tools() {
-    // v1.46 adds `set_audit_enabled` + `get_record_history`, bumping the
-    // documented MCP tool count from 59 to 61. `tool_count()` is derived from
-    // the macro-generated router, so this pins router reality to the spec'd
-    // number.
+fn mcp_exposes_sixty_five_tools() {
+    // v1.48 adds the four cron tools (create_cron_job, list_cron_jobs,
+    // set_cron_job_active, delete_cron_job), bumping the documented MCP tool
+    // count from 61 to 65. `tool_count()` is derived from the macro-generated
+    // router, so this pins router reality to the spec'd number.
     assert_eq!(
         drust::mcp::handler::DrustMcpService::tool_count(),
-        61,
-        "MCP tool count must be 61 after adding set_audit_enabled + get_record_history"
+        65,
+        "MCP tool count must be 65 after adding the four cron tools"
     );
 }

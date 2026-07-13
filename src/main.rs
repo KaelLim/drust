@@ -328,23 +328,29 @@ async fn main() -> anyhow::Result<()> {
         cfg: drust::cron::CronConfig::from_env(),
     });
 
-    let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
-        tenants.clone(),
-        bus.clone(),
-        webhooks.clone(),
-        garage.clone(),
-        cfg.public_base_url.clone(),
-        url_sign_secret.clone(),
-        Some(meta.clone()),
-        max_upload_bytes,
-        cfg.index_large_table_rows,
-        audit_meta_read.clone(),
-        bus_rooms.clone(),
-        bucket.clone(),
-        rooms_cfg.clone(),
-        auth_cache.clone(),
-        functions.clone(),
-    ));
+    let mcp_reg = Arc::new(
+        McpRegistry::with_bus_and_storage(
+            tenants.clone(),
+            bus.clone(),
+            webhooks.clone(),
+            garage.clone(),
+            cfg.public_base_url.clone(),
+            url_sign_secret.clone(),
+            Some(meta.clone()),
+            max_upload_bytes,
+            cfg.index_large_table_rows,
+            audit_meta_read.clone(),
+            bus_rooms.clone(),
+            bucket.clone(),
+            rooms_cfg.clone(),
+            auth_cache.clone(),
+            functions.clone(),
+        )
+        // v1.48 — the MCP cron tools reload the SAME schedule index the
+        // minute-tick scheduler snapshots; a detached default would strand
+        // MCP-created jobs until the next boot scan.
+        .with_cron(cron_state.clone()),
+    );
     let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 
     let public_url = std::env::var("DRUST_PUBLIC_URL").unwrap_or_default();
