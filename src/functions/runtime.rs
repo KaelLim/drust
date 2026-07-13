@@ -443,7 +443,15 @@ impl HostStateSeed {
 
     /// `functions: None` here is the depth=1 recursion guard (spec §4).
     pub fn build_mcp(&self, tenant_id: &str) -> anyhow::Result<DrustMcp> {
-        let pool = self.tenants.get_or_open(tenant_id)?;
+        // `get_if_live`, NOT `get_or_open`: the runner resolves by tenant-id
+        // string after arbitrary queue/lock waits, so a soft-delete landing
+        // in that window must fail the build — never re-create the dead
+        // tenant's data.sqlite (the create-free open is the atomic guard;
+        // completes the executor-side fix, which alone left this re-entry).
+        let pool = self
+            .tenants
+            .get_if_live(tenant_id)
+            .ok_or_else(|| anyhow::anyhow!("tenant gone or unopenable: {tenant_id}"))?;
         Ok(DrustMcp::new(
             tenant_id,
             pool,
@@ -633,6 +641,53 @@ mod tests {
     #[test]
     fn validate_rejects_garbage() {
         assert!(validate_component(b"not wasm at all").is_err());
+    }
+
+    /// The runner resolves tenants by id string AFTER arbitrary queue/lock
+    /// waits, so `build_mcp` must never take the create-happy `get_or_open`
+    /// path: a gone tenant fails the build and leaves no directory behind.
+    /// (Reverting `build_mcp` to `get_or_open` makes both assertions fail —
+    /// the dir would be re-created with a fresh data.sqlite.)
+    #[test]
+    fn build_mcp_never_recreates_a_gone_tenant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tenants = Arc::new(crate::storage::pool::TenantRegistry::new(
+            tmp.path().to_path_buf(),
+            2,
+        ));
+        let rooms_cfg = crate::tenant::rooms::RoomsConfig::test_defaults();
+        let bucket = rooms_cfg.bucket();
+        let seed = HostStateSeed {
+            tenants: tenants.clone(),
+            bus: crate::tenant::events::EventBus::new(),
+            webhooks: crate::tenant::WebhookDispatcher::new(tenants.clone(), None),
+            garage: None,
+            public_base_url: String::new(),
+            url_sign_secret: Arc::new([0u8; 32]),
+            meta: None,
+            max_upload_bytes: 52_428_800,
+            index_large_table_rows: 1_000_000,
+            audit_meta_read: Arc::new(tokio::sync::Mutex::new(
+                crate::safety::audit_db::open_audit_db_memory().unwrap(),
+            )),
+            bus_rooms: crate::tenant::rooms::RoomBus::new(),
+            bucket,
+            rooms_cfg,
+            disk_min_free_pct: 20,
+        };
+        let err = match seed.build_mcp("ghost") {
+            Ok(_) => panic!("build_mcp on a gone tenant must error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("tenant gone"),
+            "unexpected error: {err}"
+        );
+        let dir = tmp.path().join("tenants").join("ghost");
+        assert!(
+            !dir.exists(),
+            "build_mcp must not re-create a gone tenant's directory"
+        );
     }
 
     /// F14: `HostStateSeed::load_file_caps` is the production source of an
