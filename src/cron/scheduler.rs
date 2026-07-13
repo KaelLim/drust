@@ -82,8 +82,8 @@ impl Drop for InFlightGuard {
 /// 1. overlap gate (previous fire of the SAME job still running →
 ///    `skipped_overlap` run row, no dispatch);
 /// 2. fire-time re-assert against the fresh DB row (fail-closed: row gone /
-///    inactive / schedule changed → return silently — whoever changed it
-///    already reloaded the index);
+///    recreated under a new id / inactive / schedule changed → return
+///    silently — whoever changed it already reloaded the index);
 /// 3. dispatch by `target_kind` at `Privileged`/service identity;
 /// 4. record the outcome (+ measured duration) in `_system_cron_runs`.
 pub async fn run_due_job(
@@ -160,6 +160,9 @@ pub async fn run_due_job(
     let Some(fresh) = fresh else {
         return; // deleted under us
     };
+    if fresh.id != job.id {
+        return; // deleted + recreated under us — the snapshot's row is gone
+    }
     if !fresh.active || fresh.schedule != job.schedule {
         return; // disabled or rescheduled under us
     }

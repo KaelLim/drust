@@ -246,6 +246,56 @@ async fn reassert_blocks_disabled_and_deleted_jobs() {
     );
 }
 
+// ── Fire-time re-assert pins the row ID, not just the name: delete+recreate
+//    of the same name (new AUTOINCREMENT id, same schedule) between snapshot
+//    and re-assert must NOT let the stale snapshot's target execute — the run
+//    would land under the old job_id as an invisible orphan (list_runs joins
+//    runs→jobs by id, and the old id no longer resolves). ────────────────────
+
+#[tokio::test]
+async fn reassert_blocks_deleted_and_recreated_job_with_same_name() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (registry, executor, _tmp) =
+        helpers::cron_test_stack("t-cron7", Arc::new(CountRunner(hits.clone()))).await;
+    let pool = registry.get_or_open("t-cron7").unwrap();
+
+    let j_old = pool
+        .with_writer(|c| store::create_job(c, "sync", "* * * * *", "function", "f1", None, true))
+        .await
+        .unwrap();
+    let stale = indexed(&j_old);
+
+    // Delete + recreate: same name and schedule, DIFFERENT target, new id.
+    assert!(
+        pool.with_writer(|c| store::delete_job(c, "sync"))
+            .await
+            .unwrap()
+    );
+    let j_new = pool
+        .with_writer(|c| store::create_job(c, "sync", "* * * * *", "function", "f2", None, true))
+        .await
+        .unwrap();
+    assert_ne!(j_new.id, j_old.id, "recreate mints a new AUTOINCREMENT id");
+
+    let d = deps(registry.clone(), executor);
+    run_due_job(d, "t-cron7".into(), stale, minute_now()).await;
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "stale snapshot's target must not execute"
+    );
+    assert!(
+        runs_for(&pool, "sync").await.is_empty(),
+        "no run row joined to the recreated job"
+    );
+    assert_eq!(
+        count_rows(&pool, "SELECT COUNT(*) FROM _system_cron_runs").await,
+        0,
+        "no orphan run row under the old (deleted) job_id either"
+    );
+}
+
 // ── Overlap: a second fire of the SAME still-running job records a
 //    skipped_overlap run without dispatching; the first still lands ok. ─────
 
