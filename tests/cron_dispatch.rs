@@ -669,6 +669,69 @@ async fn rpc_write_target_executes_and_captures_record_history() {
     );
 }
 
+// ── Fresh-row dispatch: payload_json is the one PATCH-mutable field the
+//    fire-time re-assert does NOT compare, so a payload PATCH racing a queued
+//    fire (id, active, schedule all unchanged — the re-assert passes) must
+//    still dispatch the FRESH payload, never the tick snapshot's stale one. ──
+
+#[tokio::test]
+async fn dispatch_binds_fresh_payload_after_racing_patch() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (registry, executor, _tmp) =
+        helpers::cron_test_stack("t-cron13", Arc::new(CountRunner(hits.clone()))).await;
+    let pool = registry.get_or_open("t-cron13").unwrap();
+    create_items_collection(&registry, "t-cron13").await;
+    create_rpc(
+        &pool,
+        "ins",
+        "INSERT INTO items (v) VALUES (:v)",
+        r#"[{"name":"v","type":"text"}]"#,
+        "write",
+    )
+    .await;
+    let job = pool
+        .with_writer(|c| {
+            store::create_job(
+                c,
+                "race",
+                "* * * * *",
+                "rpc",
+                "ins",
+                Some(r#"{"v":"old"}"#),
+                true,
+            )
+        })
+        .await
+        .unwrap();
+    let stale = indexed(&job);
+
+    // Payload PATCH lands between the tick snapshot and the fire — id,
+    // active, and schedule are unchanged, so the re-assert lets it through.
+    pool.with_writer(|c| store::update_job(c, "race", None, Some(Some(r#"{"v":"new"}"#)), None))
+        .await
+        .unwrap();
+
+    let d = deps(registry.clone(), executor);
+    run_due_job(d, "t-cron13".into(), stale, minute_now()).await;
+
+    let runs = runs_for(&pool, "race").await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].status, "ok", "{runs:?}");
+    let v: String = pool
+        .with_reader(|c| c.query_row("SELECT v FROM items", [], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(
+        v, "new",
+        "fire must bind the freshly re-read payload, not the tick snapshot's"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "rpc target never touches the runner"
+    );
+}
+
 // ── Soft-delete race: tenant dir moved to _trash (pool evicted) between the
 //    index snapshot and the fire. `run_due_job` must NOT re-create
 //    `data.sqlite` via `get_or_open` (open_write: create_dir_all +

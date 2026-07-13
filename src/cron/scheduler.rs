@@ -111,7 +111,9 @@ impl Drop for InFlightGuard {
 /// 2. fire-time re-assert against the fresh DB row (fail-closed: row gone /
 ///    recreated under a new id / inactive / schedule changed → return
 ///    silently — whoever changed it already reloaded the index);
-/// 3. dispatch by `target_kind` at `Privileged`/service identity;
+/// 3. dispatch by `target_kind` at `Privileged`/service identity — binding
+///    the freshly re-read row (payload_json is PATCH-mutable and NOT part of
+///    the re-assert comparison), never the tick snapshot;
 /// 4. record the outcome (+ measured duration) in `_system_cron_runs`.
 pub async fn run_due_job(
     deps: Arc<CronDeps>,
@@ -218,6 +220,17 @@ pub async fn run_due_job(
     if !fresh.active || fresh.schedule != job.schedule {
         return; // disabled or rescheduled under us
     }
+    // Dispatch from the FRESH row, not the tick snapshot: payload_json is
+    // the one PATCH-mutable field the re-assert above deliberately does not
+    // compare, so a payload update racing a queued fire (window stretched by
+    // the tenant-gate/permit waits) must run the NEW payload. target_kind /
+    // target_name are immutable today, but fresh is strictly safer.
+    let job = IndexedJob {
+        target_kind: fresh.target_kind,
+        target_name: fresh.target_name,
+        payload_json: fresh.payload_json,
+        ..job
+    };
 
     // ── 3. Dispatch.
     let started = std::time::Instant::now();
