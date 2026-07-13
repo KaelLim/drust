@@ -51,6 +51,15 @@ pub fn next_minute(after: DateTime<Utc>) -> DateTime<Utc> {
         + chrono::Duration::minutes(1)
 }
 
+/// Monotonic-minute gate: a tick target is dispatched only if it is strictly
+/// after the last dispatched minute. The loop recomputes its target from
+/// `Utc::now()` every iteration, so a backward wall-clock step (NTP) would
+/// otherwise make the same UTC minute fire twice — `in_flight` only guards
+/// while the first run is still executing. Pure so it is testable.
+pub fn should_fire(last_fired: Option<DateTime<Utc>>, minute: DateTime<Utc>) -> bool {
+    last_fired.is_none_or(|l| minute > l)
+}
+
 /// Filter an index snapshot down to the jobs whose schedule fires at exactly
 /// `minute`. Parse errors are silently not-due (`schedule::is_due` fails
 /// closed; create-time validation is the loud gate).
@@ -346,6 +355,7 @@ pub async fn spawn_scheduler(deps: Arc<CronDeps>) {
         tracing::info!("cron scheduler disabled (DRUST_CRON_DISABLED=1)");
         return;
     }
+    let mut last_fired: Option<DateTime<Utc>> = None;
     loop {
         let now = Utc::now();
         let minute = next_minute(now);
@@ -355,6 +365,10 @@ pub async fn spawn_scheduler(deps: Arc<CronDeps>) {
                 .unwrap_or(std::time::Duration::from_secs(1)),
         )
         .await;
+        if !should_fire(last_fired, minute) {
+            continue; // backward wall-clock step — this minute already fired
+        }
+        last_fired = Some(minute);
         for (tenant, job) in collect_due(&deps.index.snapshot(), minute) {
             tokio::spawn(run_due_job(deps.clone(), tenant, job, minute));
         }
@@ -392,6 +406,32 @@ mod tests {
             next_minute(exact),
             chrono::Utc.with_ymd_and_hms(2026, 7, 13, 8, 31, 0).unwrap()
         );
+    }
+
+    #[test]
+    fn should_fire_none_fires() {
+        let m = chrono::Utc.with_ymd_and_hms(2026, 7, 13, 8, 30, 0).unwrap();
+        assert!(should_fire(None, m));
+    }
+
+    #[test]
+    fn should_fire_later_minute_fires() {
+        let last = chrono::Utc.with_ymd_and_hms(2026, 7, 13, 8, 30, 0).unwrap();
+        let m = chrono::Utc.with_ymd_and_hms(2026, 7, 13, 8, 31, 0).unwrap();
+        assert!(should_fire(Some(last), m));
+    }
+
+    #[test]
+    fn should_fire_same_minute_does_not_refire() {
+        let m = chrono::Utc.with_ymd_and_hms(2026, 7, 13, 8, 30, 0).unwrap();
+        assert!(!should_fire(Some(m), m));
+    }
+
+    #[test]
+    fn should_fire_earlier_minute_after_backward_step_does_not_fire() {
+        let last = chrono::Utc.with_ymd_and_hms(2026, 7, 13, 8, 31, 0).unwrap();
+        let m = chrono::Utc.with_ymd_and_hms(2026, 7, 13, 8, 30, 0).unwrap();
+        assert!(!should_fire(Some(last), m));
     }
 
     #[test]
