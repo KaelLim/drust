@@ -379,6 +379,200 @@ async fn index_reloads_on_create_and_deactivate() {
     );
 }
 
+// --- Task 7: MCP tools (direct-fn, the functions_invoke_acl_config.rs
+// pattern). MCP dispatch is service-only by construction, so no per-tool
+// role check is exercised here — the transport rejects anon/user bearers.
+
+/// MCP create/list/toggle/delete round-trip against a `DrustMcp` sharing the
+/// router's `CronState` (the `with_cron` plumbing main.rs uses): mutations
+/// made over MCP are visible via REST AND reload the shared schedule index.
+#[tokio::test]
+async fn mcp_tools_crud_roundtrip_visible_via_rest_and_shared_index() {
+    use drust::mcp::tools::cron as mcp_cron;
+    use std::sync::Arc;
+
+    let (app, service, _anon, _user, cron, tmp) = helpers::spin_up_cron_stack("t-cr-mcp").await;
+    let tr = Arc::new(drust::storage::pool::TenantRegistry::new(
+        tmp.path().to_path_buf(),
+        2,
+    ));
+    let reg = drust::mcp::server::McpRegistry::new(tr).with_cron(cron.clone());
+    let s = reg.get_or_create("t-cr-mcp").await.unwrap();
+
+    // Create over MCP (payload riding along; explicit active=true).
+    let v = mcp_cron::create_cron_job(
+        &s,
+        "mjob",
+        "*/5 * * * *",
+        "function",
+        "f1",
+        Some(r#"{"a":1}"#),
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(v["name"], "mjob");
+    assert_eq!(v["schedule"], "*/5 * * * *");
+    assert_eq!(v["active"], true);
+    assert!(
+        v["next_fire"].is_string(),
+        "create echoes a computed next_fire, got {}",
+        v["next_fire"]
+    );
+
+    // Visible via REST list on the router.
+    let resp = app
+        .clone()
+        .oneshot(req("GET", "/t/t-cr-mcp/cron", &service, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rest = json_body(resp).await;
+    let jobs = rest["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0]["name"], "mjob");
+    assert_eq!(jobs[0]["payload_json"], r#"{"a":1}"#);
+
+    // The SHARED index gained the job (MCP reload-on-write).
+    let snap = cron.index.snapshot();
+    assert_eq!(
+        snap.len(),
+        1,
+        "shared index gained the tenant on MCP create"
+    );
+    assert_eq!(snap[0].0, "t-cr-mcp");
+    assert_eq!(snap[0].1[0].name, "mjob");
+
+    // MCP list mirrors REST.
+    let v = mcp_cron::list_cron_jobs(&s).await.unwrap();
+    let jobs = v["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert!(jobs[0]["next_fire"].is_string());
+
+    // Toggle off over MCP → reflected over REST AND the index empties.
+    let v = mcp_cron::set_cron_job_active(&s, "mjob", false)
+        .await
+        .unwrap();
+    assert_eq!(v["active"], false);
+    let resp = app
+        .clone()
+        .oneshot(req("GET", "/t/t-cr-mcp/cron/mjob", &service, None))
+        .await
+        .unwrap();
+    let rest = json_body(resp).await;
+    assert_eq!(rest["active"], false, "toggle visible via REST get");
+    assert!(
+        cron.index.snapshot().is_empty(),
+        "deactivating the only job over MCP empties the shared index"
+    );
+
+    // Toggle back on → index regains it.
+    let v = mcp_cron::set_cron_job_active(&s, "mjob", true)
+        .await
+        .unwrap();
+    assert_eq!(v["active"], true);
+    assert_eq!(cron.index.snapshot().len(), 1);
+
+    // Delete over MCP → REST get 404 and index empty again.
+    let v = mcp_cron::delete_cron_job(&s, "mjob").await.unwrap();
+    assert_eq!(v["deleted"], true);
+    assert_eq!(v["name"], "mjob");
+    let resp = app
+        .clone()
+        .oneshot(req("GET", "/t/t-cr-mcp/cron/mjob", &service, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(cron.index.snapshot().is_empty());
+}
+
+/// MCP tools surface the SAME wire codes as REST (`bail_mcp` reads the code
+/// off the `"<CODE>: <message>"` prefix).
+#[tokio::test]
+async fn mcp_tools_map_ops_errors_to_wire_codes() {
+    use drust::mcp::tools::cron as mcp_cron;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let tr = Arc::new(drust::storage::pool::TenantRegistry::new(data.clone(), 2));
+    let _ = drust::storage::tenant_db::open_write(&data, "t-cr-mcperr").unwrap();
+    let reg = drust::mcp::server::McpRegistry::new(tr);
+    let s = reg.get_or_create("t-cr-mcperr").await.unwrap();
+
+    // Seed one function target so the happy-path create (for duplicate) works.
+    drust::functions::schema::create_function(
+        &s.inner().pool,
+        drust::functions::schema::CreateFunctionParams {
+            name: "f1".into(),
+            wasm_sha256: "00".repeat(32),
+            size_bytes: 1,
+            triggers_json: "[]".into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .unwrap();
+
+    let err = mcp_cron::create_cron_job(&s, "bad name!", "* * * * *", "function", "f1", None, true)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().starts_with("CRON_INVALID_NAME"),
+        "bad name → CRON_INVALID_NAME, got {err}"
+    );
+
+    let err = mcp_cron::create_cron_job(&s, "j", "@daily", "function", "f1", None, true)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().starts_with("CRON_INVALID_SCHEDULE"),
+        "alias schedule → CRON_INVALID_SCHEDULE, got {err}"
+    );
+
+    let err = mcp_cron::create_cron_job(&s, "j", "* * * * *", "function", "ghost", None, true)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().starts_with("CRON_TARGET_NOT_FOUND"),
+        "missing target → CRON_TARGET_NOT_FOUND, got {err}"
+    );
+
+    let err =
+        mcp_cron::create_cron_job(&s, "j", "* * * * *", "function", "f1", Some("[1,2]"), true)
+            .await
+            .unwrap_err();
+    assert!(
+        err.to_string().starts_with("CRON_PAYLOAD_TOO_LARGE"),
+        "non-object payload → CRON_PAYLOAD_TOO_LARGE, got {err}"
+    );
+
+    mcp_cron::create_cron_job(&s, "j", "* * * * *", "function", "f1", None, true)
+        .await
+        .unwrap();
+    let err = mcp_cron::create_cron_job(&s, "j", "* * * * *", "function", "f1", None, true)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().starts_with("CRON_DUPLICATE"),
+        "duplicate name → CRON_DUPLICATE, got {err}"
+    );
+
+    let err = mcp_cron::set_cron_job_active(&s, "ghost", true)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().starts_with("CRON_NOT_FOUND"),
+        "toggle on missing job → CRON_NOT_FOUND, got {err}"
+    );
+    let err = mcp_cron::delete_cron_job(&s, "ghost").await.unwrap_err();
+    assert!(
+        err.to_string().starts_with("CRON_NOT_FOUND"),
+        "delete on missing job → CRON_NOT_FOUND, got {err}"
+    );
+}
+
 /// Tenant soft-delete hook: `soft_delete_tenant` must invalidate the cron
 /// index so a deleted tenant's jobs stop being considered by the minute tick.
 #[tokio::test]
