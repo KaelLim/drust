@@ -34,6 +34,11 @@ pub struct IndexedJob {
 /// is proportional to cron adoption, not tenant count.
 pub struct CronIndex {
     map: dashmap::DashMap<String, Arc<Vec<IndexedJob>>>,
+    /// Per-tenant reload serialization. `reload` is read-then-insert with an
+    /// await between; without this lock two concurrent reloads could commit
+    /// an OLDER snapshot last, silently dropping the newest job until the
+    /// next reload/restart.
+    locks: dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl Default for CronIndex {
@@ -46,13 +51,21 @@ impl CronIndex {
     pub fn new() -> Self {
         Self {
             map: dashmap::DashMap::new(),
+            locks: dashmap::DashMap::new(),
         }
     }
 
     /// Reload one tenant's entry from its DB: ACTIVE jobs only; an empty
     /// result (or a read error — fail closed, logged) removes the entry.
     /// Reader lane only: never creates the cron tables.
+    ///
+    /// Reloads for the same tenant are serialized: the DB read happens under
+    /// the same per-tenant lock as the map write, so the last writer always
+    /// observed the newest DB state (no lost-update between concurrent
+    /// reloads).
     pub async fn reload(&self, tenant: &str, pool: &SharedTenantPool) {
+        let lock = self.locks.entry(tenant.to_string()).or_default().clone();
+        let _guard = lock.lock().await;
         let jobs = match pool.with_reader(store::list_jobs_reader).await {
             Ok(jobs) => jobs,
             Err(e) => {
@@ -81,6 +94,11 @@ impl CronIndex {
 
     /// Drop a tenant's entry outright (tenant soft-delete path — the DB is
     /// gone/moving, so there is nothing to reload from).
+    ///
+    /// Deliberately sync and NOT serialized against `reload`: it is only
+    /// called after tenant soft-delete, after which no reload for that
+    /// tenant should follow — so there is no reload/invalidate ordering to
+    /// defend. Do not call it as a "refresh" on a live tenant; use `reload`.
     pub fn invalidate(&self, tenant: &str) {
         self.map.remove(tenant);
     }
@@ -172,6 +190,55 @@ mod tests {
             .unwrap();
         idx.reload(&tenant, &pool).await;
         assert!(idx.snapshot().is_empty());
+    }
+
+    /// Lost-update race: two concurrent reloads read-then-insert with an
+    /// await between, so an OLDER snapshot can be committed last and the
+    /// newest job silently vanishes from the index. With per-tenant reload
+    /// serialization this is deterministic: every reload reads under the
+    /// lock, so whichever reload runs last observed the final DB state.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_reloads_never_lose_the_newest_job() {
+        let (registry, tenant, _tmp) = test_registry_with_tenant();
+        let pool = registry.get_or_open(&tenant).unwrap();
+        let idx = Arc::new(CronIndex::new());
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let pool = pool.clone();
+            let idx = idx.clone();
+            let tenant = tenant.clone();
+            handles.push(tokio::spawn(async move {
+                let name = format!("j{i}");
+                pool.with_writer(move |c| {
+                    crate::cron::store::create_job(
+                        c,
+                        &name,
+                        "* * * * *",
+                        "function",
+                        "f",
+                        None,
+                        true,
+                    )
+                })
+                .await
+                .unwrap();
+                idx.reload(&tenant, &pool).await;
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let snap = idx.snapshot();
+        assert_eq!(snap.len(), 1);
+        let names: std::collections::HashSet<&str> =
+            snap[0].1.iter().map(|j| j.name.as_str()).collect();
+        for i in 0..8 {
+            let name = format!("j{i}");
+            assert!(
+                names.contains(name.as_str()),
+                "job {name} lost from index after concurrent reloads; indexed: {names:?}"
+            );
+        }
     }
 
     #[tokio::test]
