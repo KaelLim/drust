@@ -485,6 +485,123 @@ async fn dispatch_concurrency_is_bounded_by_cron_permits() {
     }
 }
 
+// ── Ordering pin: the overlap in_flight gate sits BEFORE the permit acquire,
+//    and the overlap-skip path records its run row WITHOUT taking a permit.
+//    With the single permit exhausted by a parked fire of X, a queued fire of
+//    Y holds Y's in-flight marker while it waits for the permit, so a SECOND
+//    fire of Y must return promptly with a `skipped_overlap` run row — while
+//    the permit is still exhausted. Swapping the gate/permit order (Y's first
+//    fire would then wait permit-first, marker never set, and the second fire
+//    would queue too) or making the skip path take a permit turns the bounded
+//    waits below into timeouts. Y lives in a SECOND tenant so its first fire
+//    queues on the global permit itself, not on X's tenant mutex. ────────────
+
+#[tokio::test]
+async fn overlap_gate_precedes_permit_and_skip_records_without_permit() {
+    let started = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (registry, executor, _tmp) = helpers::cron_test_stack(
+        "t-cron14",
+        Arc::new(BlockingRunner {
+            started: started.clone(),
+            release: release.clone(),
+            hits: hits.clone(),
+            current: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
+        }),
+    )
+    .await;
+    let pool_x = registry.get_or_open("t-cron14").unwrap();
+    // Tenant B carries job Y as a fast read-RPC — never touches the runner,
+    // so once X's permit frees up, Y's queued fire completes on its own.
+    let pool_y = registry.get_or_open("t-cron15").unwrap();
+    create_rpc(&pool_y, "ping", "SELECT 1 AS x", "[]", "read").await;
+
+    let j_x = pool_x
+        .with_writer(|c| store::create_job(c, "x", "* * * * *", "function", "f1", None, true))
+        .await
+        .unwrap();
+    let j_y = pool_y
+        .with_writer(|c| store::create_job(c, "y", "* * * * *", "rpc", "ping", None, true))
+        .await
+        .unwrap();
+
+    let d = deps_with_permits(registry.clone(), executor, CronConfig::test_default(), 1);
+
+    // X parks inside the runner, holding the ONLY permit.
+    let t_x = tokio::spawn(run_due_job(
+        d.clone(),
+        "t-cron14".into(),
+        indexed(&j_x),
+        minute_now(),
+    ));
+    started.acquire().await.unwrap().forget();
+    assert_eq!(d.permits.available_permits(), 0, "X holds the only permit");
+
+    // Y's first fire queues on the permit. Its in-flight marker is inserted
+    // BEFORE the permit wait — exactly the ordering under test — so wait
+    // (bounded) until the marker is visible before firing Y again.
+    let t_y = tokio::spawn(run_due_job(
+        d.clone(),
+        "t-cron15".into(),
+        indexed(&j_y),
+        minute_now(),
+    ));
+    let key = ("t-cron15".to_string(), j_y.id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !d.in_flight.contains_key(&key) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "queued fire never registered its in-flight marker — is the \
+             overlap gate ordered after the permit acquire?"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        runs_for(&pool_y, "y").await.is_empty(),
+        "Y's first fire is queued on the permit, not yet run"
+    );
+
+    // Second fire of Y: must return promptly (skip paths never take a
+    // permit) and record skipped_overlap WHILE the permit is exhausted.
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        run_due_job(d.clone(), "t-cron15".into(), indexed(&j_y), minute_now()),
+    )
+    .await;
+    assert!(
+        second.is_ok(),
+        "overlap skip waited on the exhausted permit — skip paths must be permit-free"
+    );
+    assert_eq!(
+        d.permits.available_permits(),
+        0,
+        "the skip was recorded while X still held the only permit"
+    );
+    let runs = runs_for(&pool_y, "y").await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].status, "skipped_overlap", "{runs:?}");
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "only X entered the runner");
+
+    // Release X; Y's queued fire then takes the freed permit and lands ok.
+    release.notify_one();
+    t_x.await.unwrap();
+    t_y.await.unwrap();
+
+    let runs_x = runs_for(&pool_x, "x").await;
+    assert_eq!(runs_x.len(), 1, "{runs_x:?}");
+    assert_eq!(runs_x[0].status, "ok", "{runs_x:?}");
+    let runs_y = runs_for(&pool_y, "y").await;
+    assert_eq!(runs_y.len(), 2, "{runs_y:?}");
+    let statuses: std::collections::HashSet<&str> =
+        runs_y.iter().map(|r| r.status.as_str()).collect();
+    assert!(
+        statuses.contains("ok") && statuses.contains("skipped_overlap"),
+        "Y's statuses are exactly {{ok, skipped_overlap}}: {runs_y:?}"
+    );
+}
+
 // ── Per-tenant single-flight: one tenant's slow jobs can hold at most ONE
 //    global permit, so another tenant's due work still dispatches (no
 //    head-of-line starvation). permits=2, tenant A has TWO parked function
