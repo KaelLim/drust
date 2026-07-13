@@ -247,7 +247,7 @@ async fn password_hash_is_masked_in_system_users_page() {
     assert!(
         body.contains("user@example.com"),
         "user email should appear in the _list response; body excerpt:\n{}",
-        &body.chars().take(400).collect::<String>()
+        body.chars().take(400).collect::<String>()
     );
     // The argon2 PHC string must NOT appear anywhere in the response.
     assert!(
