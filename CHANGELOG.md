@@ -1,3 +1,16 @@
+## v1.47.0 — 2026-07-13
+
+### Added
+
+- `DRUST_AUDIT_LOG_RETENTION_DAYS`: the `meta_logs.sqlite` audit-row retention
+  window is now operator-configurable (previously hardcoded 90 days).
+  Default `90` — unset deployments are byte-identical to before. `0` = keep
+  rows forever: the daily DELETE is skipped but the monthly VACUUM still
+  runs (WAL reclaim). Unparseable values or values above 36500 days warn and
+  fall back to 90. The effective value is logged at boot. Named as the
+  sibling of `DRUST_AUDIT_HISTORY_RETENTION_DAYS` (record history): LOG =
+  access log, HISTORY = data snapshots — independent windows by design.
+
 ## v1.46.0 — 2026-07-03
 
 ### feat — record-history audit (supa_audit-equivalent) + per-tenant Settings page
