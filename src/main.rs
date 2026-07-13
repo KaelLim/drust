@@ -320,13 +320,38 @@ async fn main() -> anyhow::Result<()> {
     fn_executor.spawn_loop(fn_rx);
 
     // v1.48 — cron state: in-memory schedule index + env knobs, threaded into
-    // the tenant stack (REST config surface) and MgmtState (admin page +
-    // soft-delete invalidation hook). The minute-tick scheduler + boot scan
-    // arm in Task 9.
+    // the tenant stack (REST config surface), McpRegistry (MCP tools) and
+    // MgmtState (admin page + soft-delete invalidation hook). The scheduler
+    // below snapshots the SAME index those surfaces reload on every write.
     let cron_state = Arc::new(drust::cron::CronState {
         index: Arc::new(drust::cron::index::CronIndex::new()),
         cfg: drust::cron::CronConfig::from_env(),
     });
+    if cron_state.cfg.disabled {
+        tracing::info!("cron scheduler disabled (DRUST_CRON_DISABLED=1)");
+    } else {
+        let cron_deps = Arc::new(drust::cron::scheduler::CronDeps {
+            registry: tenants.clone(),
+            index: cron_state.index.clone(),
+            executor: fn_executor.clone(),
+            in_flight: Arc::new(dashmap::DashMap::new()),
+            cfg: cron_state.cfg.clone(),
+        });
+        // Boot scan reuses the shared meta handle (one short lock to list
+        // live tenant ids, reader-lane reload per tenant — never creates
+        // cron tables), then the minute tick arms on the same task.
+        let boot_meta = meta.clone();
+        let cron_index = cron_state.index.clone();
+        let cron_registry = tenants.clone();
+        tokio::spawn(async move {
+            cron_index.boot_scan(boot_meta, cron_registry).await;
+            drust::cron::scheduler::spawn_scheduler(cron_deps).await;
+        });
+        tracing::info!(
+            max_jobs_per_tenant = cron_state.cfg.max_jobs_per_tenant,
+            "cron scheduler armed"
+        );
+    }
 
     let mcp_reg = Arc::new(
         McpRegistry::with_bus_and_storage(

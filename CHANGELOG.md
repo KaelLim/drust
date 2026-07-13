@@ -1,3 +1,47 @@
+## v1.48.0 — 2026-07-13
+
+### Added
+
+- Cron / scheduled jobs (`src/cron/`, new `croner` dep): tenants schedule
+  their own edge functions or stored RPCs with 5-field cron expressions
+  (minute hour day month weekday, **UTC only** — no seconds, no `@aliases`;
+  validated at create, `CRON_INVALID_SCHEDULE`). Targets execute at
+  `Privileged`/service identity: functions via the synchronous
+  `Executor::run_one` path (same as REST `/invoke`, NOT the event queue),
+  RPCs via the existing read/write executors — write-mode RPCs go through
+  `run_write_rpc`, so record-history capture rides unchanged with a service
+  actor. An RPC declaring `:user_id` is refused at create AND at fire
+  (`CRON_RPC_USER_ID` — there is no end-user to bind).
+- Scheduler: in-process minute tick over an invalidate-on-write in-memory
+  index (`CronIndex`; every config mutation reloads its tenant entry after
+  commit, a boot scan repopulates via the reader lane without creating
+  tables, tenant soft-delete invalidates). Fire-time policies: each fire
+  **re-asserts the fresh job row** (deleted / deactivated / schedule-changed
+  → silent skip, fail closed), **overlapping fires of the same job skip**
+  with a `skipped_overlap` run row, and missed minutes (process downtime)
+  are skipped, never replayed. `DRUST_CRON_DISABLED=1` keeps the scheduler
+  unspawned.
+- Storage: per-tenant lazy STRICT tables `_system_cron_jobs` +
+  `_system_cron_runs` (drop-protected by prefix). Run history is pruned to
+  the newest 20 rows per job; each run records status
+  (`ok` / `error` / `skipped_overlap`), error text and duration, and the
+  job row carries denormalized `last_run_at` / `last_status` / `last_error`
+  / `last_duration_ms`.
+- Config surfaces (all **service-only**; anon/user → the layer's
+  `403 WRITE_DENIED`): REST `POST/GET /t/<id>/cron`,
+  `GET/PATCH/DELETE /t/<id>/cron/<name>` (PATCH = `{schedule?, payload_json?,
+  active?}`; target immutable — delete + create to change it),
+  `GET /t/<id>/cron/<name>/runs`; 4 MCP tools `create_cron_job` /
+  `list_cron_jobs` / `set_cron_job_active` / `delete_cron_job` (MCP tool
+  count **61 → 65**); admin `⏰ _cron` page (job table with next-fire /
+  last-result, create form, per-job run history, toggle + delete).
+- Limits & codes: per-tenant job cap `DRUST_CRON_MAX_JOBS_PER_TENANT`
+  (default 10, `CRON_JOB_LIMIT`); payload must be a JSON object ≤ 64 KiB
+  (`CRON_PAYLOAD_TOO_LARGE`); RPC-style name validation
+  (`CRON_INVALID_NAME`); target must exist at create
+  (`CRON_TARGET_NOT_FOUND`); duplicate name → `CRON_DUPLICATE`; unknown job
+  → `CRON_NOT_FOUND`.
+
 ## v1.47.0 — 2026-07-13
 
 ### Added
