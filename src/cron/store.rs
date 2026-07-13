@@ -414,4 +414,51 @@ mod tests {
         assert!(create_job(&c, "j", "* * * * *", "function", "f", None, true).is_err());
         assert_eq!(count_jobs(&c).unwrap(), 1);
     }
+
+    /// Pins the "record atomically" half of b101bea end-to-end: scheduler
+    /// callers wrap `record_run` in `pool.with_writer_tx`, so a failure later
+    /// in the same closure must roll back ALL THREE statements — no run row,
+    /// no `last_*` update. A regression to plain `with_writer` recording
+    /// would leave the partial write visible (each statement auto-commits),
+    /// and this test would catch it.
+    #[tokio::test]
+    async fn record_run_via_with_writer_tx_rolls_back_fully_on_err() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let registry = crate::storage::pool::TenantRegistry::new(tmp.path().to_path_buf(), 2);
+        let pool = registry.get_or_open("t-cron-store-tx").unwrap();
+        let job = pool
+            .with_writer(|c| create_job(c, "j", "* * * * *", "function", "f", None, true))
+            .await
+            .unwrap();
+        assert!(job.last_status.is_none(), "fresh job has no last_status");
+
+        let job_id = job.id;
+        let res: rusqlite::Result<()> = pool
+            .with_writer_tx(move |tx| {
+                record_run(tx, job_id, "2026-07-13T00:00Z", "ok", None, Some(1))?;
+                Err(rusqlite::Error::QueryReturnedNoRows)
+            })
+            .await;
+        assert!(res.is_err(), "closure error must surface, got {res:?}");
+
+        // Full rollback: neither the run row nor the job's last_* survives.
+        let runs = pool
+            .with_reader(|c| list_runs_reader(c, "j"))
+            .await
+            .unwrap();
+        assert!(runs.is_empty(), "rolled-back run row must not be visible");
+        let job = pool
+            .with_reader(|c| get_job_reader(c, "j"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            job.last_status.is_none(),
+            "last_status must stay NULL after rollback"
+        );
+        assert!(
+            job.last_run_at.is_none(),
+            "last_run_at must stay NULL after rollback"
+        );
+    }
 }
