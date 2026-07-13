@@ -1102,6 +1102,25 @@ impl MgmtState {
                 "/admin/tenants/{id}/_functions/{name}/invoke",
                 post(super::functions_admin::invoke),
             )
+            // v1.48 cron admin UI — virtual sidebar entry `⏰ _cron`. GET
+            // renders the job table + per-job runs + the create form; POST
+            // creates (re-render with banner on validation error);
+            // `{name}/toggle` flips active; `{name}/delete` removes the job
+            // and its runs. All mutations route through the shared
+            // `cron::ops` cores — validation + index reload identical to
+            // the REST/MCP faces.
+            .route(
+                "/admin/tenants/{id}/_cron",
+                get(super::cron_admin::page).post(super::cron_admin::create),
+            )
+            .route(
+                "/admin/tenants/{id}/_cron/{name}/toggle",
+                post(super::cron_admin::toggle),
+            )
+            .route(
+                "/admin/tenants/{id}/_cron/{name}/delete",
+                post(super::cron_admin::delete),
+            )
             .with_state(tenants_state);
 
         // Backups sub-router — list + download snapshots produced by

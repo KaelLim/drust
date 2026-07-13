@@ -7,6 +7,7 @@ pub mod backups;
 pub mod browse;
 pub mod cli_device;
 pub mod collection_list;
+pub mod cron_admin;
 pub mod docs;
 pub mod format;
 pub mod functions_admin;

@@ -419,6 +419,9 @@ title = "live WebSocket testing"
 [collection_sidebar.brand]
 meta = "tenant studio"
 
+[collection_sidebar.cron]
+title = "scheduled jobs (5-field cron, UTC)"
+
 [collection_sidebar.end_users]
 title = "registered end-users"
 
@@ -432,6 +435,7 @@ title = "audit · request history"
 [collection_sidebar.nav]
 api_keys = "API keys"
 broadcast = "Broadcast"
+cron = "Cron"
 end_users = "End-users"
 files = "Files"
 functions = "Functions"
@@ -483,6 +487,31 @@ title = "Empty tenant"
 [collections.page]
 meta_description = "drust admin — {tenant_name} has no collections yet. Collections appear automatically once your client writes the first record."
 title = "drust admin — {tenant_name} / collections (empty)"
+
+[cron_admin]
+col_actions = "Actions"
+col_active = "Active"
+col_name = "Name"
+col_schedule = "Schedule"
+col_target = "Target"
+create_button = "Create job"
+create_failed_title = "Create failed"
+create_title = "Create a job"
+delete_confirm = "Delete this cron job?"
+desc = "Schedule edge functions or stored RPCs with 5-field cron expressions (UTC)."
+empty_state = "No cron jobs yet. Create one below."
+last_run = "Last run"
+name_label = "name"
+next_fire = "Next fire"
+payload_label = "payload JSON (optional object)"
+runs_title = "Recent runs"
+schedule_hint = "5-field cron (minute hour day month weekday), UTC"
+schedule_label = "schedule"
+target_label = "target kind"
+target_name_label = "target name"
+title = "Cron Jobs"
+toggle_off = "Disable"
+toggle_on = "Enable"
 
 [design.alerts]
 heading = "Alerts"

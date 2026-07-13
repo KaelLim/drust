@@ -8,7 +8,7 @@
 
      Virtual entries: _overview, _settings, _api_keys, _rpc, _broadcast,
                       _system_files, _system_users, _oauth_providers,
-                      _webhooks, _functions, _logs.
+                      _webhooks, _functions, _cron, _logs.
 -->
 <aside class="tenant-sidebar">
   <div class="brand">
@@ -92,6 +92,11 @@
        href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_functions" title="{{ t.s("collection_sidebar.functions.title") }}">
       <span class="nav-icon" style="font:600 15px/1 var(--mono);display:grid;place-items:center;">ƒ</span>
       {{ t.s("collection_sidebar.nav.functions") }}
+    </a>
+    <a class="nav-item{% if active_coll == "_cron" %} on{% endif %}"
+       href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_cron" title="{{ t.s("collection_sidebar.cron.title") }}">
+      <span class="nav-icon" style="font:600 13px/1 var(--mono);display:grid;place-items:center;">⏰</span>
+      {{ t.s("collection_sidebar.nav.cron") }}
     </a>
     <a class="nav-item{% if active_coll == "_logs" %} on{% endif %}"
        href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_logs" title="{{ t.s("collection_sidebar.logs.title") }}">

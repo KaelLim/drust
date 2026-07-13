@@ -434,6 +434,9 @@ title = "WebSocket 即時測試"
 [collection_sidebar.brand]
 meta = "租戶工作台"
 
+[collection_sidebar.cron]
+title = "排程任務（5 欄位 cron，UTC）"
+
 [collection_sidebar.end_users]
 title = "已註冊終端使用者"
 
@@ -447,6 +450,7 @@ title = "稽核 · 請求歷史"
 [collection_sidebar.nav]
 api_keys = "API 金鑰"
 broadcast = "廣播"
+cron = "排程"
 end_users = "終端使用者"
 files = "檔案"
 functions = "函式"
@@ -498,6 +502,31 @@ title = "空租戶"
 [collections.page]
 meta_description = "drust 管理 — {tenant_name} 尚無資料表。當你的客戶端寫入第一筆記錄後，資料表會自動出現。"
 title = "drust 管理 — {tenant_name} / 資料表（空）"
+
+[cron_admin]
+col_actions = "操作"
+col_active = "啟用"
+col_name = "名稱"
+col_schedule = "排程"
+col_target = "目標"
+create_button = "建立"
+create_failed_title = "建立失敗"
+create_title = "建立排程任務"
+delete_confirm = "刪除這個排程任務？"
+desc = "以 5 欄位 cron 運算式（UTC）排程邊緣函式或已儲存 RPC。"
+empty_state = "還沒有排程任務。在下方建立一個。"
+last_run = "上次執行"
+name_label = "名稱"
+next_fire = "下次觸發"
+payload_label = "payload JSON（選填，物件）"
+runs_title = "近期執行紀錄"
+schedule_hint = "5 欄位 cron（分 時 日 月 週），UTC"
+schedule_label = "排程"
+target_label = "目標類型"
+target_name_label = "目標名稱"
+title = "Cron 排程"
+toggle_off = "停用"
+toggle_on = "啟用"
 
 # Design system page strings — every entry is low-confidence because
 # this page is a developer reference; preferred terminology may differ
