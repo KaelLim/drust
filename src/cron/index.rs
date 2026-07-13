@@ -269,6 +269,69 @@ mod tests {
         }
     }
 
+    /// Deterministic companion to the storm test above (which exercises the
+    /// lost-update race probabilistically and rarely fails without the lock):
+    /// with the tenant's per-tenant lock held — as an in-flight reload would
+    /// hold it — a spawned `reload` must block, leaving the map entry
+    /// unchanged; only after the lock is released may it commit the fresh DB
+    /// state. Reverting the lock in `reload` makes the "entry unchanged while
+    /// held" assertion fail deterministically.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reload_serializes_on_the_per_tenant_lock() {
+        let (registry, tenant, _tmp) = test_registry_with_tenant();
+        let pool = registry.get_or_open(&tenant).unwrap();
+        pool.with_writer(|c| {
+            crate::cron::store::create_job(c, "first", "* * * * *", "function", "f", None, true)
+        })
+        .await
+        .unwrap();
+        let idx = Arc::new(CronIndex::new());
+        idx.reload(&tenant, &pool).await;
+        assert_eq!(idx.snapshot()[0].1.len(), 1);
+
+        // Add a second job: the index entry is now stale until a reload lands.
+        pool.with_writer(|c| {
+            crate::cron::store::create_job(c, "second", "* * * * *", "function", "f", None, true)
+        })
+        .await
+        .unwrap();
+
+        // Hold the tenant's reload lock, as an in-flight reload would.
+        let lock = idx.locks.entry(tenant.clone()).or_default().clone();
+        let guard = lock.lock().await;
+
+        let idx2 = idx.clone();
+        let pool2 = pool.clone();
+        let t2 = tenant.clone();
+        let handle = tokio::spawn(async move { idx2.reload(&t2, &pool2).await });
+
+        // reload must block behind the held lock: the entry stays as-is.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !handle.is_finished(),
+            "reload must block while the per-tenant lock is held"
+        );
+        let held = idx.snapshot();
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            held[0].1.len(),
+            1,
+            "entry must not change while the per-tenant lock is held"
+        );
+
+        drop(guard);
+        handle.await.unwrap();
+        let after = idx.snapshot();
+        assert_eq!(after.len(), 1);
+        let names: std::collections::HashSet<&str> =
+            after[0].1.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["first", "second"].into_iter().collect(),
+            "released reload must commit the fresh DB state"
+        );
+    }
+
     /// In-memory "meta" connection with the shape `boot_scan` queries,
     /// seeded with one live tenant row.
     fn test_meta_with_tenant(tenant: &str) -> Arc<tokio::sync::Mutex<rusqlite::Connection>> {
