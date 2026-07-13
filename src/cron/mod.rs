@@ -17,6 +17,12 @@ pub struct CronConfig {
     pub max_jobs_per_tenant: i64,
     /// DRUST_CRON_DISABLED — `1` means the scheduler is not spawned.
     pub disabled: bool,
+    /// DRUST_CRON_CONCURRENCY — global bound on concurrently-dispatching
+    /// cron fires across all tenants (default 4, clamped to >= 1). Function
+    /// targets are additionally bounded by `DRUST_FN_CONCURRENCY` downstream;
+    /// this knob is what bounds RPC targets, which would otherwise dispatch
+    /// unbounded SQL work when many jobs fire on the same minute.
+    pub concurrency: usize,
 }
 
 impl CronConfig {
@@ -30,6 +36,7 @@ impl CronConfig {
         Self {
             max_jobs_per_tenant: env_or("DRUST_CRON_MAX_JOBS_PER_TENANT", 10),
             disabled: std::env::var("DRUST_CRON_DISABLED").as_deref() == Ok("1"),
+            concurrency: env_or("DRUST_CRON_CONCURRENCY", 4usize).max(1),
         }
     }
 
@@ -39,6 +46,7 @@ impl CronConfig {
         Self {
             max_jobs_per_tenant: 10,
             disabled: false,
+            concurrency: 4,
         }
     }
 }

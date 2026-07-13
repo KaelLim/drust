@@ -20,7 +20,10 @@
   → silent skip, fail closed), **overlapping fires of the same job skip**
   with a `skipped_overlap` run row, and missed minutes (process downtime)
   are skipped, never replayed. `DRUST_CRON_DISABLED=1` keeps the scheduler
-  unspawned.
+  unspawned. Dispatch concurrency is globally bounded by
+  `DRUST_CRON_CONCURRENCY` (default 4, min 1) — function targets are also
+  bounded downstream by `DRUST_FN_CONCURRENCY`, RPC targets only by this
+  knob; overlap skips bypass the bound.
 - Storage: per-tenant lazy STRICT tables `_system_cron_jobs` +
   `_system_cron_runs` (drop-protected by prefix). Run history is pruned to
   the newest 20 rows per job; each run records status

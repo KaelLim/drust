@@ -39,13 +39,18 @@ impl FunctionRunner for CountRunner {
     }
 }
 
-/// Runner that parks inside `run_one` until released — makes the overlap
-/// window deterministic: `started` fires once the first fire is definitely
-/// holding the in-flight marker, `release` lets it finish.
+/// Runner that parks inside `run_one` until released — makes the overlap /
+/// concurrency windows deterministic: `started` gains one permit per entry
+/// (counting, so two entries never coalesce the way a `Notify` would),
+/// `release` lets a parked run finish. Also tracks peak concurrency
+/// (`current` incremented on entry / decremented on exit, max folded into
+/// `peak`) so the DRUST_CRON_CONCURRENCY bound is observable.
 struct BlockingRunner {
-    started: Arc<tokio::sync::Notify>,
+    started: Arc<tokio::sync::Semaphore>,
     release: Arc<tokio::sync::Notify>,
     hits: Arc<AtomicUsize>,
+    current: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -58,8 +63,11 @@ impl FunctionRunner for BlockingRunner {
         _caller: CallerCtx,
     ) -> RunOutcome {
         self.hits.fetch_add(1, Ordering::SeqCst);
-        self.started.notify_one();
+        let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        self.started.add_permits(1);
         self.release.notified().await;
+        self.current.fetch_sub(1, Ordering::SeqCst);
         RunOutcome {
             status: RunStatus::Ok,
             result: "{}".into(),
@@ -69,12 +77,24 @@ impl FunctionRunner for BlockingRunner {
 }
 
 fn deps(registry: Arc<TenantRegistry>, executor: Arc<Executor>) -> Arc<CronDeps> {
+    let cfg = CronConfig::test_default();
+    let permits = cfg.concurrency;
+    deps_with_permits(registry, executor, cfg, permits)
+}
+
+fn deps_with_permits(
+    registry: Arc<TenantRegistry>,
+    executor: Arc<Executor>,
+    cfg: CronConfig,
+    permits: usize,
+) -> Arc<CronDeps> {
     Arc::new(CronDeps {
         registry,
         index: Arc::new(CronIndex::new()),
         executor,
         in_flight: Arc::new(dashmap::DashMap::new()),
-        cfg: CronConfig::test_default(),
+        permits: Arc::new(tokio::sync::Semaphore::new(permits)),
+        cfg,
     })
 }
 
@@ -301,7 +321,7 @@ async fn reassert_blocks_deleted_and_recreated_job_with_same_name() {
 
 #[tokio::test]
 async fn overlap_second_fire_records_skipped_overlap() {
-    let started = Arc::new(tokio::sync::Notify::new());
+    let started = Arc::new(tokio::sync::Semaphore::new(0));
     let release = Arc::new(tokio::sync::Notify::new());
     let hits = Arc::new(AtomicUsize::new(0));
     let (registry, executor, _tmp) = helpers::cron_test_stack(
@@ -310,6 +330,8 @@ async fn overlap_second_fire_records_skipped_overlap() {
             started: started.clone(),
             release: release.clone(),
             hits: hits.clone(),
+            current: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
         }),
     )
     .await;
@@ -327,7 +349,7 @@ async fn overlap_second_fire_records_skipped_overlap() {
         indexed(&job),
         minute_now(),
     ));
-    started.notified().await;
+    started.acquire().await.unwrap().forget();
 
     // Second fire of the same job returns quickly with skipped_overlap.
     run_due_job(d, "t-cron3".into(), indexed(&job), minute_now()).await;
@@ -362,6 +384,104 @@ async fn overlap_second_fire_records_skipped_overlap() {
         Some("ok"),
         "the completed run wrote last_* after the skip"
     );
+}
+
+// ── Global dispatch bound (DRUST_CRON_CONCURRENCY): with permits=1, two
+//    due jobs in two DIFFERENT tenants never dispatch concurrently — the
+//    second fire waits for the first's permit instead of running alongside
+//    it, and both still complete ok. Cross-tenant on purpose: the executor
+//    already serializes same-tenant function runs (tenant lock), so only
+//    distinct tenants observe the herd the cron permit bound exists for.
+//    (The overlap gate above is a different mechanism: it skips a second
+//    fire of the SAME job.) ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn dispatch_concurrency_is_bounded_by_cron_permits() {
+    let started = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (registry, executor, _tmp) = helpers::cron_test_stack(
+        "t-cron8",
+        Arc::new(BlockingRunner {
+            started: started.clone(),
+            release: release.clone(),
+            hits: hits.clone(),
+            current: Arc::new(AtomicUsize::new(0)),
+            peak: peak.clone(),
+        }),
+    )
+    .await;
+    let pool_a = registry.get_or_open("t-cron8").unwrap();
+    // Second tenant in the SAME registry/executor, with its own `f1` row.
+    let pool_b = registry.get_or_open("t-cron9").unwrap();
+    drust::functions::schema::create_function(
+        &pool_b,
+        drust::functions::schema::CreateFunctionParams {
+            name: "f1".into(),
+            wasm_sha256: "00".repeat(32),
+            size_bytes: 1,
+            triggers_json: "[]".into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .unwrap();
+    let j_a = pool_a
+        .with_writer(|c| store::create_job(c, "a", "* * * * *", "function", "f1", None, true))
+        .await
+        .unwrap();
+    let j_b = pool_b
+        .with_writer(|c| store::create_job(c, "b", "* * * * *", "function", "f1", None, true))
+        .await
+        .unwrap();
+
+    let d = deps_with_permits(registry.clone(), executor, CronConfig::test_default(), 1);
+    let t_a = tokio::spawn(run_due_job(
+        d.clone(),
+        "t-cron8".into(),
+        indexed(&j_a),
+        minute_now(),
+    ));
+    let t_b = tokio::spawn(run_due_job(
+        d.clone(),
+        "t-cron9".into(),
+        indexed(&j_b),
+        minute_now(),
+    ));
+
+    // One fire is inside the runner (permit held). While it parks there, the
+    // other fire must NOT be able to enter — probe with a bounded wait for a
+    // second `started` permit: bounded dispatch can never grant it (timeout),
+    // unbounded dispatch grants it almost immediately (the executor's own
+    // semaphore is 2 in test_default, so it would not save us).
+    started.acquire().await.unwrap().forget();
+    let second_entered =
+        tokio::time::timeout(std::time::Duration::from_millis(300), started.acquire()).await;
+    assert!(
+        second_entered.is_err(),
+        "second fire entered the runner while the first held the only permit"
+    );
+    // Release the first; only then can the second acquire the permit, enter,
+    // and be released in turn.
+    release.notify_one();
+    started.acquire().await.unwrap().forget();
+    release.notify_one();
+    t_a.await.unwrap();
+    t_b.await.unwrap();
+
+    assert_eq!(hits.load(Ordering::SeqCst), 2, "both jobs dispatched");
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        1,
+        "permits=1 serializes fires across tenants"
+    );
+    for (pool, name) in [(&pool_a, "a"), (&pool_b, "b")] {
+        let runs = runs_for(pool, name).await;
+        assert_eq!(runs.len(), 1, "{name}: {runs:?}");
+        assert_eq!(runs[0].status, "ok", "{name}: {runs:?}");
+    }
 }
 
 // ── RPC write target: executes via run_write_rpc, so record-history capture
