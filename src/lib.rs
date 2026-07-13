@@ -22,6 +22,7 @@ pub mod base_path;
 pub mod bin_helpers;
 pub mod codegen;
 pub mod config;
+pub mod cron;
 pub mod db;
 pub mod error;
 pub mod functions;

@@ -63,6 +63,7 @@ wasmtime           = { version = "45", default-features = false, features = ["ru
 wasmtime-wasi      = "45"
 async-trait        = "0.1"
 regex-lite         = "0.1"
+croner = "3.0.1"
 
 [dev-dependencies]
 serial_test        = "3"
