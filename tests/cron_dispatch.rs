@@ -386,6 +386,48 @@ async fn rpc_write_target_executes_and_captures_record_history() {
     );
 }
 
+// ── Soft-delete race: tenant dir moved to _trash (pool evicted) between the
+//    index snapshot and the fire. `run_due_job` must NOT re-create
+//    `data.sqlite` via `get_or_open` (open_write: create_dir_all +
+//    SQLITE_OPEN_CREATE + full schema) — the same hazard `boot_scan` guards
+//    in src/cron/index.rs. ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn fire_after_tenant_soft_delete_skips_and_does_not_resurrect_db() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (registry, executor, tmp) =
+        helpers::cron_test_stack("t-cron6", Arc::new(CountRunner(hits.clone()))).await;
+    let pool = registry.get_or_open("t-cron6").unwrap();
+    let job = pool
+        .with_writer(|c| store::create_job(c, "tick", "* * * * *", "function", "f1", None, true))
+        .await
+        .unwrap();
+    let stale = indexed(&job);
+    drop(pool);
+
+    // Simulate soft-delete: dir moved into _trash, pool evicted from the
+    // registry (src/mgmt/tenants.rs order).
+    let tenant_dir = tmp.path().join("tenants").join("t-cron6");
+    let trash = tmp.path().join("_trash");
+    std::fs::create_dir_all(&trash).unwrap();
+    std::fs::rename(&tenant_dir, trash.join("t-cron6-0")).unwrap();
+    registry.evict("t-cron6");
+
+    let d = deps(registry.clone(), executor);
+    run_due_job(d, "t-cron6".into(), stale, minute_now()).await;
+
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "runner never invoked");
+    let db = tmp
+        .path()
+        .join("tenants")
+        .join("t-cron6")
+        .join("data.sqlite");
+    assert!(
+        !db.exists(),
+        "fire must not re-create data.sqlite for a soft-deleted tenant"
+    );
+}
+
 // ── RPC declaring :user_id — cron has no user identity to bind, so the fire
 //    is refused: error run, no execution. Covers BOTH modes (the guard sits
 //    before mode dispatch; the write-mode sibling makes non-execution
