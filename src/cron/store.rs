@@ -234,7 +234,12 @@ pub fn count_jobs(c: &Connection) -> rusqlite::Result<i64> {
 }
 
 /// INSERT run + prune to the newest 20 for that job + UPDATE the job's
-/// `last_*` columns. Three statements, one caller-owned writer closure.
+/// `last_*` columns. Three statements, one caller-owned writer closure —
+/// scheduler callers wrap this in `with_writer_tx` so all three commit or
+/// roll back together. If the job row is gone (deleted while the run was
+/// in flight — `_system_cron_runs` has no FK and `delete_job`'s cascade
+/// already ran), this is a no-op: writing would re-insert an orphan row
+/// invisible to `list_runs_reader`'s JOIN that nothing ever deletes.
 pub fn record_run(
     c: &Connection,
     job_id: i64,
@@ -244,6 +249,15 @@ pub fn record_run(
     duration_ms: Option<i64>,
 ) -> rusqlite::Result<()> {
     ensure_tables(c)?;
+    match c.query_row(
+        "SELECT 1 FROM _system_cron_jobs WHERE id = ?1",
+        rusqlite::params![job_id],
+        |_| Ok(()),
+    ) {
+        Ok(()) => {}
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+        Err(e) => return Err(e),
+    }
     c.execute(
         "INSERT INTO _system_cron_runs (job_id, fired_at, status, error, duration_ms)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -377,6 +391,20 @@ mod tests {
             .unwrap();
         assert_eq!(orphans, 0);
         assert!(!delete_job(&c, "j").unwrap());
+    }
+
+    #[test]
+    fn record_run_for_deleted_job_is_noop() {
+        let c = conn();
+        let j = create_job(&c, "j", "* * * * *", "function", "f", None, true).unwrap();
+        assert!(delete_job(&c, "j").unwrap());
+        // A run finishing after delete_job must not re-insert an orphan row
+        // (no FK on _system_cron_runs; the delete's cascade already ran).
+        record_run(&c, j.id, "2026-07-13T00:00Z", "ok", None, Some(5)).unwrap();
+        let orphans: i64 = c
+            .query_row("SELECT COUNT(*) FROM _system_cron_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphans, 0, "no orphan run row for a deleted job");
     }
 
     #[test]

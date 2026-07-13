@@ -145,8 +145,8 @@ pub async fn run_due_job(
         let job_id = job.id;
         let fired_c = fired.clone();
         if let Err(e) = pool
-            .with_writer(move |c| {
-                store::record_run(c, job_id, &fired_c, "skipped_overlap", None, None)
+            .with_writer_tx(move |tx| {
+                store::record_run(tx, job_id, &fired_c, "skipped_overlap", None, None)
             })
             .await
         {
@@ -208,9 +208,9 @@ pub async fn run_due_job(
     let job_id = job.id;
     let fired_c = fired.clone();
     if let Err(e) = pool
-        .with_writer(move |c| {
+        .with_writer_tx(move |tx| {
             store::record_run(
-                c,
+                tx,
                 job_id,
                 &fired_c,
                 status,
