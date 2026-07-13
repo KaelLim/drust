@@ -73,6 +73,13 @@ impl CronIndex {
                 Vec::new()
             }
         };
+        self.apply_jobs(tenant, jobs);
+    }
+
+    /// Shared jobs→entry mapping for `reload` and `boot_scan`: keep ACTIVE
+    /// jobs only; an empty result removes the tenant's entry. Callers hold
+    /// the per-tenant reload lock so read-then-apply stays atomic.
+    fn apply_jobs(&self, tenant: &str, jobs: Vec<store::CronJob>) {
         let active: Vec<IndexedJob> = jobs
             .into_iter()
             .filter(|j| j.active)
@@ -115,8 +122,11 @@ impl CronIndex {
     /// Boot: populate the index from every live tenant. Iteration mirrors
     /// `record_history::spawn_retention_task` — enumerate
     /// `tenants WHERE deleted_at IS NULL` from meta, skip tenants whose
-    /// `data.sqlite` is gone (a live meta row must not re-create the file
-    /// via the pool open), then `reload` each through the reader lane.
+    /// `data.sqlite` is gone (a live meta row must not re-create the file),
+    /// then read each through a TRANSIENT read-only connection. The registry
+    /// is a parameter for `data_root()` ONLY — `get_or_open` would cache
+    /// every live tenant's full pool (writer + readers) forever, regressing
+    /// the lazy-on-first-request pool opens (v1.47 behavior).
     pub async fn boot_scan(
         &self,
         meta: Arc<tokio::sync::Mutex<rusqlite::Connection>>,
@@ -140,12 +150,23 @@ impl CronIndex {
             if !p.exists() {
                 continue;
             }
-            match registry.get_or_open(&tid) {
-                Ok(pool) => self.reload(&tid, &pool).await,
+            // Same per-tenant lock as `reload`: a mutation-driven reload
+            // racing the boot scan must not be overwritten by a stale read.
+            let lock = self.locks.entry(tid.clone()).or_default().clone();
+            let _guard = lock.lock().await;
+            let jobs = match rusqlite::Connection::open_with_flags(
+                &p,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .and_then(|c| store::list_jobs_reader(&c))
+            {
+                Ok(jobs) => jobs,
                 Err(e) => {
-                    tracing::warn!(tenant = %tid, err = ?e, "cron boot scan: pool open failed")
+                    tracing::warn!(tenant = %tid, err = ?e, "cron boot scan: transient read failed; skipping tenant");
+                    continue;
                 }
-            }
+            };
+            self.apply_jobs(&tid, jobs);
         }
     }
 }
@@ -239,6 +260,82 @@ mod tests {
                 "job {name} lost from index after concurrent reloads; indexed: {names:?}"
             );
         }
+    }
+
+    /// In-memory "meta" connection with the shape `boot_scan` queries,
+    /// seeded with one live tenant row.
+    fn test_meta_with_tenant(tenant: &str) -> Arc<tokio::sync::Mutex<rusqlite::Connection>> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE tenants (id TEXT PRIMARY KEY, deleted_at TEXT)")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO tenants (id) VALUES (?1)",
+            rusqlite::params![tenant],
+        )
+        .unwrap();
+        Arc::new(tokio::sync::Mutex::new(conn))
+    }
+
+    /// Boot scan must populate the index from disk WITHOUT opening tenant
+    /// pools — v1.47 opened pools lazily on first request, and the boot
+    /// scan must not regress that by warming every live tenant's pool.
+    #[tokio::test]
+    async fn boot_scan_populates_index_via_transient_reads_not_pool_cache() {
+        let (registry, tenant, _tmp) = test_registry_with_tenant();
+        let pool = registry.get_or_open(&tenant).unwrap();
+        pool.with_writer(|c| {
+            crate::cron::store::create_job(c, "boot", "* * * * *", "function", "f", None, true)
+        })
+        .await
+        .unwrap();
+        // Fresh registry over the same data root: boot-time state, no pools open.
+        let boot_registry = Arc::new(TenantRegistry::new(registry.data_root().to_path_buf(), 2));
+        let idx = CronIndex::new();
+        idx.boot_scan(test_meta_with_tenant(&tenant), boot_registry.clone())
+            .await;
+        let snap = idx.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].0, tenant);
+        assert_eq!(snap[0].1.len(), 1);
+        assert_eq!(snap[0].1[0].name, "boot");
+        assert_eq!(
+            boot_registry.cached_count(),
+            0,
+            "boot scan must read via transient connections, not cache tenant pools"
+        );
+    }
+
+    /// Transient-read property: scanning a tenant that never used cron must
+    /// neither create `_system_cron_jobs` nor cache the tenant's pool.
+    #[tokio::test]
+    async fn boot_scan_on_cronless_tenant_creates_no_tables_and_caches_no_pool() {
+        let (registry, tenant, _tmp) = test_registry_with_tenant();
+        let boot_registry = Arc::new(TenantRegistry::new(registry.data_root().to_path_buf(), 2));
+        let idx = CronIndex::new();
+        idx.boot_scan(test_meta_with_tenant(&tenant), boot_registry.clone())
+            .await;
+        assert!(idx.snapshot().is_empty());
+        assert_eq!(
+            boot_registry.cached_count(),
+            0,
+            "boot scan must not cache tenant pools"
+        );
+        let p = registry
+            .data_root()
+            .join("tenants")
+            .join(&tenant)
+            .join("data.sqlite");
+        let c =
+            rusqlite::Connection::open_with_flags(&p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let has: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='_system_cron_jobs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has, 0, "boot scan must not create cron tables");
     }
 
     #[tokio::test]
