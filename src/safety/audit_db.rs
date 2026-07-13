@@ -825,4 +825,38 @@ mod tests {
             .unwrap();
         assert_eq!(ops, vec!["GET /new".to_string()]);
     }
+
+    #[test]
+    fn run_retention_none_cutoff_still_vacuums() {
+        // Pins the documented `DRUST_AUDIT_LOG_RETENTION_DAYS=0` contract:
+        // the DELETE is skipped but the monthly VACUUM still runs (WAL /
+        // space reclaim on keep-forever deployments). Moving the vacuum
+        // block inside the `Some(cutoff)` arm must fail this test.
+        let mut conn = open_audit_db_memory().unwrap();
+        let pad = "x".repeat(200);
+        for _ in 0..500 {
+            conn.execute(
+                "INSERT INTO audit (ts, op, status) VALUES ('2020-01-01T00:00:00.000Z', ?1, 'ok')",
+                params![pad],
+            )
+            .unwrap();
+        }
+        conn.execute("DELETE FROM audit WHERE status = 'ok'", [])
+            .unwrap();
+        let free_before: i64 = conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            free_before > 0,
+            "precondition: bulk delete must leave free pages, got {free_before}"
+        );
+        run_retention(&mut conn, None, true);
+        let free_after: i64 = conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            free_after, 0,
+            "VACUUM must run even when cutoff is None (retention disabled)"
+        );
+    }
 }
