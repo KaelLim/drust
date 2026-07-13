@@ -1,0 +1,160 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ t.s("cron_admin.title") }} · {{ tenant_name }}{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.s("cron_admin.desc") }}">{% endblock %}
+{% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
+
+{% block content %}
+    <div class="page page-wide">
+
+        <div class="view-head">
+          <div class="grow">
+            <div class="eyebrow">{{ tenant_name }}</div>
+            <h1 class="view-title"><span>⏰</span> {{ t.s("cron_admin.title") }}</h1>
+            <p class="view-sub">{{ t.s("cron_admin.desc") }}</p>
+          </div>
+        </div>
+
+        {% if let Some(e) = error_banner %}
+        <div class="banner danger" style="margin-bottom:18px;">
+          <div class="b-body">
+            <div class="b-title"><b>{{ t.s("cron_admin.create_failed_title") }}</b></div>
+            <pre style="margin-top:10px;background:var(--bg-2);padding:10px 12px;border-radius:6px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.5 var(--mono);color:var(--text);white-space:pre-wrap;word-break:break-word;">{{ e }}</pre>
+          </div>
+        </div>
+        {% endif %}
+
+        {% if jobs.is_empty() %}
+        <div class="card" style="margin-bottom:24px;">
+          <div class="empty" style="padding:42px 24px 28px;">
+            <div style="margin-bottom:14px;display:grid;place-items:center;">
+              <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
+            </div>
+            <h3>{{ t.s("cron_admin.empty_state") }}</h3>
+          </div>
+        </div>
+        {% else %}
+        <div class="card" style="margin-bottom:24px;overflow:hidden;">
+          <table class="grid-table" style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr>
+                <th style="text-align:left;">{{ t.s("cron_admin.col_name") }}</th>
+                <th style="text-align:left;">{{ t.s("cron_admin.col_schedule") }}</th>
+                <th style="text-align:left;">{{ t.s("cron_admin.col_target") }}</th>
+                <th style="text-align:left;">{{ t.s("cron_admin.next_fire") }}</th>
+                <th style="text-align:left;">{{ t.s("cron_admin.last_run") }}</th>
+                <th style="text-align:center;">{{ t.s("cron_admin.col_active") }}</th>
+                <th style="text-align:right;">{{ t.s("cron_admin.col_actions") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for j in jobs %}
+              <tr>
+                <td><b>{{ j.name }}</b></td>
+                <td><code style="font:500 12px/1 var(--mono);">{{ j.schedule }}</code></td>
+                <td><span style="font:500 12px/1.4 var(--mono);color:var(--muted);">{{ j.target }}</span></td>
+                <td>
+                  {% if let Some(nf) = j.next_fire %}
+                  <span style="font:500 12px/1 var(--mono);">{{ nf }}</span>
+                  {% else %}
+                  <span class="pill muted">—</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if let Some(ls) = j.last_status %}
+                    <span class="pill {% if ls == "ok" %}mint{% else %}danger{% endif %}">{{ ls }}</span>
+                    {% if let Some(lr) = j.last_run_at %}
+                    <div style="font:500 11px/1 var(--mono);color:var(--muted);margin-top:3px;">{{ lr }}</div>
+                    {% endif %}
+                  {% else %}
+                    <span class="pill muted">{{ t.s("tenant_functions.never_run") }}</span>
+                  {% endif %}
+                </td>
+                <td style="text-align:center;">
+                  {% if j.active %}<span class="pill mint"><span class="dot"></span>{{ t.s("tenant_functions.active_on") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_functions.active_off") }}</span>{% endif %}
+                </td>
+                <td style="text-align:right;white-space:nowrap;">
+                  <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_cron/{{ j.name }}/toggle" style="display:inline;margin:0;">
+                    <button type="submit" class="btn sm">{% if j.active %}{{ t.s("cron_admin.toggle_off") }}{% else %}{{ t.s("cron_admin.toggle_on") }}{% endif %}</button>
+                  </form>
+                  <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_cron/{{ j.name }}/delete"
+                        onsubmit="return confirm('{{ t.s("cron_admin.delete_confirm") }} {{ j.name }}');"
+                        style="display:inline;margin:0;">
+                    <button type="submit" class="btn sm danger">{{ t.s("tenant_functions.btn_delete") }}</button>
+                  </form>
+                </td>
+              </tr>
+              <tr>
+                <td colspan="7" style="padding:0 12px 12px;">
+                  <details>
+                    <summary style="cursor:pointer;font:600 12px/1 var(--mono);color:var(--muted);">{{ t.s("cron_admin.runs_title") }}</summary>
+                    {% if j.runs.is_empty() %}
+                    <p style="font:500 12px/1 var(--mono);color:var(--muted);margin:8px 0 0;">{{ t.s("tenant_functions.never_run") }}</p>
+                    {% else %}
+                    {% for r in j.runs %}
+                    <div style="margin-top:8px;border-left:2px solid var(--border-mid);padding-left:10px;">
+                      <div style="font:500 11px/1.4 var(--mono);color:var(--muted);">
+                        <span class="pill {% if r.status == "ok" %}mint{% else %}danger{% endif %}">{{ r.status }}</span>
+                        {{ r.fired_at }}{% if let Some(d) = r.duration_ms %} · {{ d }} ms{% endif %}
+                      </div>
+                      {% if let Some(err) = r.error %}<pre style="margin:4px 0 0;background:var(--bg-2);padding:8px 10px;border-radius:6px;font:500 11px/1.5 var(--mono);color:var(--text);overflow-x:auto;white-space:pre-wrap;word-break:break-word;">{{ err }}</pre>{% endif %}
+                    </div>
+                    {% endfor %}
+                    {% endif %}
+                  </details>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="card-title">{{ t.s("cron_admin.create_title") }}</div>
+              <div class="card-sub">{{ t.s("cron_admin.schedule_hint") }}</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_cron" style="display:grid;gap:12px;max-width:560px;">
+              <div class="field">
+                <label for="cron-name">{{ t.s("cron_admin.name_label") }}</label>
+                <input class="input" id="cron-name" name="name" required maxlength="64" autocomplete="off" spellcheck="false" placeholder="nightly-sync">
+              </div>
+              <div class="field">
+                <label for="cron-schedule">{{ t.s("cron_admin.schedule_label") }}</label>
+                <input class="input" id="cron-schedule" name="schedule" required autocomplete="off" spellcheck="false" placeholder="*/15 * * * *" style="font-family:var(--mono);">
+              </div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                <div class="field" style="min-width:140px;">
+                  <label for="cron-target-kind">{{ t.s("cron_admin.target_label") }}</label>
+                  <select class="input" id="cron-target-kind" name="target_kind">
+                    <option value="function">function</option>
+                    <option value="rpc">rpc</option>
+                  </select>
+                </div>
+                <div class="field" style="flex:1;min-width:200px;">
+                  <label for="cron-target-name">{{ t.s("cron_admin.target_name_label") }}</label>
+                  <input class="input" id="cron-target-name" name="target_name" required autocomplete="off" spellcheck="false">
+                </div>
+              </div>
+              <div class="field">
+                <label for="cron-payload">{{ t.s("cron_admin.payload_label") }}</label>
+                <textarea id="cron-payload" name="payload" rows="3" spellcheck="false"
+                          style="width:100%;font:500 12px/1.5 var(--mono);background:var(--bg-2);color:var(--text);border:1px solid var(--border-mid);border-radius:6px;padding:8px 10px;"
+                          placeholder='{&quot;key&quot;:&quot;value&quot;}'></textarea>
+              </div>
+              <div><button type="submit" class="btn primary">{{ t.s("cron_admin.create_button") }}</button></div>
+            </form>
+          </div>
+        </div>
+
+      </div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "_mascot.html" %}
+{% include "_cmdk.html" %}
+{% endblock %}
