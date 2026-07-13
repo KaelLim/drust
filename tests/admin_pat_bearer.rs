@@ -78,6 +78,7 @@ async fn app_with_pat(tenant: &str) -> (axum::Router, String, i64, tempfile::Tem
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     });
 

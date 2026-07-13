@@ -52,6 +52,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
@@ -170,6 +171,7 @@ pub async fn spin_up_tenant_with_fn_runner(
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
@@ -259,6 +261,7 @@ pub async fn spin_up_tenant_with_fn_seed(
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
@@ -268,6 +271,100 @@ pub async fn spin_up_tenant_with_fn_seed(
 pub async fn grab_pool(tenant: &str, dir: &tempfile::TempDir) -> SharedTenantPool {
     let reg = TenantRegistry::new(dir.path().to_path_buf(), 2);
     reg.get_or_open(tenant).unwrap()
+}
+
+/// Cron REST stack (tests/cron_rest.rs): like `spin_up_tenant_with_fn_seed`
+/// (service + anon + real user-session bearers, one seeded `_system_functions`
+/// row `f1` as a create-target), but ALSO returns the `Arc<CronState>` handle
+/// the router holds, so tests can observe index reload-on-write. Returns
+/// `(router, service_token, anon_token, user_token, cron_state, tmp)`.
+pub async fn spin_up_cron_stack(
+    tenant: &str,
+) -> (
+    Router,
+    String,
+    String,
+    String,
+    Arc<drust::cron::CronState>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let service = generate_token();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, 'service')",
+        rusqlite::params![tenant, hash_token(&service)],
+    )
+    .unwrap();
+    let anon = generate_token();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, 'anon')",
+        rusqlite::params![tenant, hash_token(&anon)],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
+    let webhooks = WebhookDispatcher::new(tenants.clone(), None);
+    let meta = Arc::new(Mutex::new(conn));
+    let state = TenantAuthState::test_default(meta, tenants.clone());
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
+
+    // Seed one function row `f1` — the function-target the create tests use.
+    let pool = tenants.get_or_open(tenant).unwrap();
+    drust::functions::schema::create_function(
+        &pool,
+        drust::functions::schema::CreateFunctionParams {
+            name: "f1".into(),
+            wasm_sha256: "00".repeat(32),
+            size_bytes: 1,
+            triggers_json: "[]".into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .unwrap();
+
+    // One `_system_users` row + session so the service-only gate can be proven
+    // against the user branch of `bearer_auth_layer`, not just anon.
+    let user_token = pool
+        .with_writer(|c| {
+            c.execute(
+                "INSERT INTO _system_users (id, email, password_hash, created_at, updated_at) \
+                 VALUES ('u-cron-seed', 'u@x', 'h', datetime('now'), datetime('now'))",
+                [],
+            )?;
+            drust::auth::user_session::create_session(c, "u-cron-seed", None, 30)
+        })
+        .await
+        .unwrap();
+
+    let cron = Arc::new(drust::cron::CronState::test_default());
+    let stack = TenantStack {
+        auth: state,
+        bus: bus.clone(),
+        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
+        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
+        mcp: test_mcp_http(tenants, bus),
+        files: None,
+        webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
+        cron: cron.clone(),
+        cors_origins: Vec::new(),
+    };
+    let app = build_tenant_router(stack);
+    (app, service, anon, user_token, cron, dir)
 }
 
 /// Minimal stack for the cron dispatch tests (tests/cron_dispatch.rs): a
@@ -515,6 +612,7 @@ pub async fn spin_up_functions_route_stack(
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
@@ -646,6 +744,7 @@ pub async fn spin_up_tenant_with_role_cached(
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
@@ -695,6 +794,7 @@ pub async fn spin_up_tenant_with_threshold(
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

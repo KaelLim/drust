@@ -62,6 +62,9 @@ pub struct TenantStack {
     pub functions_exec: Arc<crate::functions::executor::Executor>,
     /// v1.36 — env knobs (wasm size cap etc.) for the functions REST routes.
     pub fn_cfg: crate::functions::FnConfig,
+    /// v1.48 — cron config handle: schedule index (reloaded on every config
+    /// write) + env knobs. Consumed by the service-only `/t/<id>/cron` routes.
+    pub cron: Arc<crate::cron::CronState>,
     /// Allow-list for cross-origin browser fetch on tenant routes (parsed
     /// from `DRUST_CORS_ORIGINS`). Empty Vec ⇒ no CORS layer, browsers
     /// keep blocking — same as before this feature shipped.
@@ -608,6 +611,32 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         config_router.merge(invoke_router)
     };
 
+    // v1.48 — cron REST config surface. Service-only: same layer stack as the
+    // functions config_router above (`require_service_layer` inner to
+    // `bearer_auth_layer`), so anon/user bearers get `403 WRITE_DENIED` on
+    // every route before a handler runs.
+    let cron_router = Router::new()
+        .route(
+            "/t/{tenant}/cron",
+            post(crate::cron::routes::create).get(crate::cron::routes::list),
+        )
+        .route(
+            "/t/{tenant}/cron/{name}",
+            get(crate::cron::routes::get_one)
+                .patch(crate::cron::routes::patch)
+                .delete(crate::cron::routes::delete_one),
+        )
+        .route(
+            "/t/{tenant}/cron/{name}/runs",
+            get(crate::cron::routes::runs),
+        )
+        .layer(axum::middleware::from_fn(router::require_service_layer))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            router::bearer_auth_layer,
+        ))
+        .with_state(state.cron.clone());
+
     // Auth routes: no bearer token required (register/login are public entry points).
     // State is TenantAuthState (for meta db + registry + rate limiters), but
     // these routes are NOT wrapped in bearer_auth_layer.
@@ -668,6 +697,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     let merged = core
         .merge(files_router)
         .merge(functions_router)
+        .merge(cron_router)
         .merge(auth_router)
         .merge(ws_router);
     // CORS layer goes OUTSIDE bearer_auth_layer (= applied last) so OPTIONS

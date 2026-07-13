@@ -54,6 +54,7 @@ async fn missed_hook_revocation_honored_within_safety_ttl() {
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);

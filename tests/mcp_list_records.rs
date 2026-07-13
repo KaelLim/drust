@@ -195,6 +195,7 @@ async fn mcp_stack(tenant: &str) -> (axum::Router, String, tempfile::TempDir) {
         functions,
         functions_exec,
         fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     });
     (app, service_tok, dir)

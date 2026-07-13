@@ -99,6 +99,10 @@ pub struct MgmtState {
     /// v1.36 — artifact root (same dir the tenant pools use), forwarded to
     /// `TenantsState` so the admin delete handler can GC the wasm blob.
     pub fn_data_root: std::path::PathBuf,
+    /// v1.48 — cron handle (index + knobs), forwarded to `TenantsState` so
+    /// `soft_delete_tenant` can invalidate the tenant's schedule-index entry
+    /// (and the admin `⏰ _cron` page can reach the ops cores).
+    pub cron: Arc<crate::cron::CronState>,
 }
 
 #[derive(Template)]
@@ -719,6 +723,7 @@ impl MgmtState {
             functions,
             functions_exec,
             fn_data_root: data_dir,
+            cron: Arc::new(crate::cron::CronState::test_default()),
         }
     }
 }
@@ -769,6 +774,7 @@ impl MgmtState {
             functions: self.functions.clone(),
             functions_exec: self.functions_exec.clone(),
             fn_data_root: self.fn_data_root.clone(),
+            cron: self.cron.clone(),
         };
         let public_files_state = PublicFilesState {
             session: session.clone(),

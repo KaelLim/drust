@@ -4,6 +4,8 @@
 //! Spec: docs/superpowers/specs/2026-07-13-drust-cron-design.md.
 
 pub mod index;
+pub mod ops;
+pub mod routes;
 pub mod schedule;
 pub mod scheduler;
 pub mod store;
