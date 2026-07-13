@@ -34,6 +34,10 @@ pub struct CronDeps {
     pub executor: Arc<Executor>,
     /// `(tenant, job id)` in-flight markers — the overlap-skip gate.
     pub in_flight: Arc<dashmap::DashMap<(String, i64), ()>>,
+    /// Global dispatch-concurrency bound (`Semaphore::new(cfg.concurrency)`,
+    /// see `DRUST_CRON_CONCURRENCY`). Acquired per fire AFTER the overlap
+    /// gate — overlap skips only write a run row and never need a permit.
+    pub permits: Arc<tokio::sync::Semaphore>,
     pub cfg: CronConfig,
 }
 
@@ -80,7 +84,8 @@ impl Drop for InFlightGuard {
 
 /// Execute one due fire. Order is load-bearing:
 /// 1. overlap gate (previous fire of the SAME job still running →
-///    `skipped_overlap` run row, no dispatch);
+///    `skipped_overlap` run row, no dispatch — recorded WITHOUT a permit);
+/// 1b. global dispatch permit (`DRUST_CRON_CONCURRENCY`), held to the end;
 /// 2. fire-time re-assert against the fresh DB row (fail-closed: row gone /
 ///    recreated under a new id / inactive / schedule changed → return
 ///    silently — whoever changed it already reloaded the index);
@@ -143,6 +148,20 @@ pub async fn run_due_job(
     let _guard = InFlightGuard {
         map: deps.in_flight.clone(),
         key,
+    };
+
+    // ── 1b. Global dispatch bound (DRUST_CRON_CONCURRENCY): N tenants × 10
+    //    jobs all due at :00 must not thundering-herd the pools — function
+    //    targets are bounded downstream by run_one's DRUST_FN_CONCURRENCY
+    //    semaphore, but RPC targets have no other global bound. Acquired
+    //    AFTER the overlap gate (a skipped fire only writes a run row and
+    //    never needs a permit; the in-flight marker held across this wait
+    //    means a same-job re-fire still skips) and held through dispatch +
+    //    outcome record (released on drop). `acquire` only errors if the
+    //    semaphore is closed, which never happens — treat as shutdown.
+    let _permit = match deps.permits.acquire().await {
+        Ok(p) => p,
+        Err(_) => return,
     };
 
     // ── 2. Fire-time re-assert (fail-closed net for index staleness).
