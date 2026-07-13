@@ -138,25 +138,16 @@ pub async fn run_due_job(
 ) {
     let fired = fired_minute.format("%Y-%m-%dT%H:%MZ").to_string();
     // Soft-delete race: the tenant dir may have moved to `_trash` (pool
-    // evicted) between the index snapshot and this fire. Skip tenants whose
-    // `data.sqlite` is gone — `get_or_open` would otherwise RE-CREATE the
-    // file via the pool open (open_write: create_dir_all + SQLITE_OPEN_CREATE
-    // + full schema) for the dead tenant. Same guard as `boot_scan`
-    // (src/cron/index.rs). No run row — the tenant is gone.
-    let p = deps
-        .registry
-        .data_root()
-        .join("tenants")
-        .join(&tenant)
-        .join("data.sqlite");
-    if !p.exists() {
-        tracing::debug!(tenant = %tenant, job = %job.name, "cron fire skipped: tenant data.sqlite gone");
-        return;
-    }
-    let pool = match deps.registry.get_or_open(&tenant) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(tenant = %tenant, job = %job.name, err = ?e, "cron: tenant open failed; fire skipped");
+    // evicted) between the index snapshot and this fire. `get_if_live` is
+    // the create-free, OS-atomic resolution — SQLite itself refuses to
+    // create the missing file, so a dead tenant can never be resurrected
+    // by this open (same primitive as the executor's guard; a plain
+    // exists()-then-get_or_open would reopen the check-then-act window).
+    // No run row — the tenant is gone.
+    let pool = match deps.registry.get_if_live(&tenant) {
+        Some(p) => p,
+        None => {
+            tracing::debug!(tenant = %tenant, job = %job.name, "cron fire skipped: tenant gone or unopenable");
             return;
         }
     };
