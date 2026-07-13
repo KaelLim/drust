@@ -89,11 +89,21 @@ async fn main() -> anyhow::Result<()> {
         "audit SQLite ready"
     );
 
-    // v1.24.2 — daily retention: DELETE rows older than 90 days; VACUUM
-    // on day 1 OR when last_vacuum_ts is in a previous month. Anchored
-    // to wall-clock 03:00 UTC via sleep_until so the cadence doesn't
-    // drift with process uptime, and a restart on day 1 doesn't skip
-    // the month's VACUUM. See F4 in the v1.24 hardening spec.
+    // v1.24.2 — daily retention: DELETE rows older than the configured
+    // window; VACUUM on day 1 OR when last_vacuum_ts is in a previous
+    // month. Anchored to wall-clock 03:00 UTC via sleep_until so the
+    // cadence doesn't drift with process uptime, and a restart on day 1
+    // doesn't skip the month's VACUUM. See F4 in the v1.24 hardening spec.
+    // v1.47 — window comes from DRUST_AUDIT_LOG_RETENTION_DAYS (default
+    // 90; 0 = keep forever, DELETE skipped, monthly VACUUM unchanged).
+    let audit_retention_days = drust::safety::audit_db::audit_log_retention_days();
+    if audit_retention_days == 0 {
+        tracing::info!(
+            "audit-log retention disabled (DRUST_AUDIT_LOG_RETENTION_DAYS=0); keeping rows forever, monthly VACUUM still runs"
+        );
+    } else {
+        tracing::info!(days = audit_retention_days, "audit-log retention window");
+    }
     let audit_meta_for_retention = std::sync::Arc::new(tokio::sync::Mutex::new(
         drust::safety::audit_db::open_audit_db_read(&audit_db_path)?,
     ));
@@ -107,9 +117,11 @@ async fn main() -> anyhow::Result<()> {
             tokio::time::sleep(dur).await;
 
             let fired = chrono::Utc::now();
-            let cutoff = (fired - chrono::Duration::days(90))
-                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                .to_string();
+            let cutoff = (audit_retention_days > 0).then(|| {
+                (fired - chrono::Duration::days(audit_retention_days as i64))
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string()
+            });
 
             let last =
                 drust::safety::audit_db::read_last_vacuum_ts(&audit_meta_for_retention).await;

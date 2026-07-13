@@ -238,7 +238,7 @@ async fn retention_deletes_old_rows() {
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     // Send retention with cutoff at 2026-01-01: old rows go away
-    w.send_retention("2026-01-01T00:00:00.000Z".to_string(), false)
+    w.send_retention(Some("2026-01-01T00:00:00.000Z".to_string()), false)
         .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     let r = open_audit_db_read(&path).unwrap();
