@@ -102,12 +102,19 @@ impl CronIndex {
     /// Drop a tenant's entry outright (tenant soft-delete path — the DB is
     /// gone/moving, so there is nothing to reload from).
     ///
-    /// Deliberately sync and NOT serialized against `reload`: it is only
-    /// called after tenant soft-delete, after which no reload for that
-    /// tenant should follow — so there is no reload/invalidate ordering to
-    /// defend. Do not call it as a "refresh" on a live tenant; use `reload`.
-    pub fn invalidate(&self, tenant: &str) {
+    /// Takes the SAME per-tenant lock as `reload`: a reload already in
+    /// flight at soft-delete time would otherwise re-insert the entry AFTER
+    /// this removal — a ghost entry spawning a skipped fire every due minute
+    /// until restart. Serialized, either the reload finishes first and this
+    /// removes its entry for good, or the reload runs after — it re-reads a
+    /// renamed/gone DB, fails closed, and leaves the entry absent. The
+    /// locks-map entry is removed too: in-flight holders keep their `Arc`
+    /// clone, and a later reload lazily recreates it.
+    pub async fn invalidate(&self, tenant: &str) {
+        let lock = self.locks.entry(tenant.to_string()).or_default().clone();
+        let _guard = lock.lock().await;
         self.map.remove(tenant);
+        self.locks.remove(tenant);
     }
 
     /// Point-in-time copy for the minute tick. Cheap: clones the `Arc`s,
@@ -336,6 +343,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has, 0, "boot scan must not create cron tables");
+    }
+
+    /// Ghost-entry race: `invalidate` must take the SAME per-tenant lock
+    /// `reload` uses, otherwise a reload already in flight at soft-delete
+    /// time can re-insert the entry AFTER invalidate removed it.
+    /// Deterministic interleave: with the tenant's reload lock held
+    /// (simulating an in-flight reload), a spawned `invalidate` must block
+    /// and the entry must stay present; once the lock is released it
+    /// completes, the entry is gone, and the locks-map entry is dropped too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalidate_blocks_on_reload_lock_then_removes_entry_and_lock() {
+        let (registry, tenant, _tmp) = test_registry_with_tenant();
+        let pool = registry.get_or_open(&tenant).unwrap();
+        pool.with_writer(|c| {
+            crate::cron::store::create_job(c, "ghost", "* * * * *", "function", "f", None, true)
+        })
+        .await
+        .unwrap();
+        let idx = Arc::new(CronIndex::new());
+        idx.reload(&tenant, &pool).await;
+        assert_eq!(idx.snapshot().len(), 1);
+
+        // Hold the tenant's reload lock, as an in-flight `reload` would.
+        let lock = idx.locks.entry(tenant.clone()).or_default().clone();
+        let guard = lock.lock().await;
+
+        let idx2 = idx.clone();
+        let t2 = tenant.clone();
+        let handle = tokio::spawn(async move { idx2.invalidate(&t2).await });
+
+        // invalidate must block behind the held lock: entry stays visible.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !handle.is_finished(),
+            "invalidate must block while the reload lock is held"
+        );
+        assert_eq!(
+            idx.snapshot().len(),
+            1,
+            "entry must not be removed while the reload lock is held"
+        );
+
+        drop(guard);
+        handle.await.unwrap();
+        assert!(
+            idx.snapshot().is_empty(),
+            "invalidate must remove the entry once it acquires the lock"
+        );
+        assert!(
+            !idx.locks.contains_key(&tenant),
+            "invalidate must drop the locks-map entry too"
+        );
     }
 
     #[tokio::test]
