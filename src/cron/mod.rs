@@ -5,6 +5,7 @@
 
 pub mod index;
 pub mod schedule;
+pub mod scheduler;
 pub mod store;
 
 /// Env-driven cron knobs. Parsed once in `main.rs`; cloned everywhere.
