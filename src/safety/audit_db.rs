@@ -358,6 +358,41 @@ pub async fn read_last_vacuum_ts(
         .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
+/// Retention window in days for `meta_logs.sqlite` audit rows. Env knob
+/// `DRUST_AUDIT_LOG_RETENTION_DAYS`, default 90; `0` disables the daily
+/// DELETE (keep forever — the monthly VACUUM still runs so the WAL keeps
+/// getting reclaimed). Named as the sibling of
+/// `DRUST_AUDIT_HISTORY_RETENTION_DAYS` (record history, per-tenant
+/// snapshots): LOG = access log, HISTORY = data snapshots.
+pub fn audit_log_retention_days() -> u64 {
+    parse_audit_log_retention_days(
+        std::env::var("DRUST_AUDIT_LOG_RETENTION_DAYS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Pure parse core, split out so tests never touch process env. Values
+/// above 36500 days (100 years) are rejected like garbage: they would
+/// overflow chrono date arithmetic in the cutoff computation.
+fn parse_audit_log_retention_days(raw: Option<&str>) -> u64 {
+    const DEFAULT: u64 = 90;
+    const MAX_DAYS: u64 = 36_500;
+    match raw {
+        None => DEFAULT,
+        Some(s) => match s.trim().parse::<u64>() {
+            Ok(n) if n <= MAX_DAYS => n,
+            _ => {
+                tracing::warn!(
+                    value = %s,
+                    "DRUST_AUDIT_LOG_RETENTION_DAYS unparseable or > 36500; falling back to 90"
+                );
+                DEFAULT
+            }
+        },
+    }
+}
+
 async fn writer_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriterCmd>) {
     let mut buf: Vec<crate::safety::audit::AuditEntry> = Vec::with_capacity(FLUSH_BATCH_SIZE);
     let flush_window = std::time::Duration::from_millis(FLUSH_INTERVAL_MS);
@@ -710,5 +745,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row, (Some(42), Some("x@y".to_string())));
+    }
+
+    #[test]
+    fn retention_days_default_when_unset() {
+        assert_eq!(parse_audit_log_retention_days(None), 90);
+    }
+
+    #[test]
+    fn retention_days_parses_custom_value() {
+        assert_eq!(parse_audit_log_retention_days(Some("30")), 30);
+        assert_eq!(parse_audit_log_retention_days(Some(" 30 ")), 30);
+    }
+
+    #[test]
+    fn retention_days_zero_means_keep_forever() {
+        assert_eq!(parse_audit_log_retention_days(Some("0")), 0);
+    }
+
+    #[test]
+    fn retention_days_garbage_falls_back_to_default() {
+        assert_eq!(parse_audit_log_retention_days(Some("ninety")), 90);
+        assert_eq!(parse_audit_log_retention_days(Some("-5")), 90);
+        assert_eq!(parse_audit_log_retention_days(Some("")), 90);
+        assert_eq!(parse_audit_log_retention_days(Some("30.5")), 90);
+    }
+
+    #[test]
+    fn retention_days_absurdly_large_falls_back_to_default() {
+        // > 36500 days (100 years) would overflow chrono date math in the
+        // main.rs cutoff computation — treated the same as unparseable.
+        assert_eq!(parse_audit_log_retention_days(Some("40000")), 90);
+        assert_eq!(parse_audit_log_retention_days(Some("99999999999")), 90);
     }
 }
