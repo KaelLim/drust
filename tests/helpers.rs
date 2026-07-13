@@ -270,6 +270,47 @@ pub async fn grab_pool(tenant: &str, dir: &tempfile::TempDir) -> SharedTenantPoo
     reg.get_or_open(tenant).unwrap()
 }
 
+/// Minimal stack for the cron dispatch tests (tests/cron_dispatch.rs): a
+/// registry over a tempdir with one opened tenant (`get_or_open` runs
+/// `open_write` → full `_system_*` schema), one seeded `_system_functions`
+/// row `f1` (sha `00…`, triggers `[]` — the injected mock runner never reads
+/// the artifact), and an `Executor` wired to that runner. No router / meta /
+/// dispatcher — `run_due_job` talks to the registry + executor directly, the
+/// same pieces `spin_up_tenant_with_fn_runner` builds for the REST path.
+pub async fn cron_test_stack(
+    tenant: &str,
+    runner: Arc<dyn drust::functions::executor::FunctionRunner>,
+) -> (
+    Arc<TenantRegistry>,
+    Arc<drust::functions::executor::Executor>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let pool = tenants.get_or_open(tenant).unwrap();
+
+    drust::functions::schema::create_function(
+        &pool,
+        drust::functions::schema::CreateFunctionParams {
+            name: "f1".into(),
+            wasm_sha256: "00".repeat(32),
+            size_bytes: 1,
+            triggers_json: "[]".into(),
+            description: String::new(),
+        },
+        10,
+    )
+    .await
+    .unwrap();
+
+    let fn_cfg = drust::functions::FnConfig::test_default();
+    let depth = Arc::new(dashmap::DashMap::new());
+    let executor =
+        drust::functions::executor::Executor::new(runner, tenants.clone(), fn_cfg, data, depth);
+    (tenants, executor, dir)
+}
+
 /// Returned by [`spin_up_isolation_stack`]: the dispatcher to fire record
 /// events at, plus an SSE-reach counter incremented by a bus subscriber task.
 pub struct IsolationStack {
