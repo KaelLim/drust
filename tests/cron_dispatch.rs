@@ -93,6 +93,7 @@ fn deps_with_permits(
         index: Arc::new(CronIndex::new()),
         executor,
         in_flight: Arc::new(dashmap::DashMap::new()),
+        tenant_gate: dashmap::DashMap::new(),
         permits: Arc::new(tokio::sync::Semaphore::new(permits)),
         cfg,
     })
@@ -479,6 +480,118 @@ async fn dispatch_concurrency_is_bounded_by_cron_permits() {
     );
     for (pool, name) in [(&pool_a, "a"), (&pool_b, "b")] {
         let runs = runs_for(pool, name).await;
+        assert_eq!(runs.len(), 1, "{name}: {runs:?}");
+        assert_eq!(runs[0].status, "ok", "{name}: {runs:?}");
+    }
+}
+
+// ── Per-tenant single-flight: one tenant's slow jobs can hold at most ONE
+//    global permit, so another tenant's due work still dispatches (no
+//    head-of-line starvation). permits=2, tenant A has TWO parked function
+//    jobs due, tenant B one fast RPC job. Without the tenant gate, A's first
+//    job parks in the runner holding permit 1 while A's second job holds
+//    permit 2 (blocked on the executor's same-tenant lock) — B starves. With
+//    the gate, A's second job waits on the tenant mutex BEFORE taking a
+//    permit, so one permit stays free for B. ────────────────────────────────
+
+#[tokio::test]
+async fn tenant_single_flight_prevents_one_tenant_monopolizing_permits() {
+    let started = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (registry, executor, _tmp) = helpers::cron_test_stack(
+        "t-cron11",
+        Arc::new(BlockingRunner {
+            started: started.clone(),
+            release: release.clone(),
+            hits: hits.clone(),
+            current: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
+        }),
+    )
+    .await;
+    let pool_a = registry.get_or_open("t-cron11").unwrap();
+    // Second tenant with a fast read-RPC job — never touches the runner, so
+    // its completion is observable while tenant A's runner gate stays held.
+    let pool_b = registry.get_or_open("t-cron12").unwrap();
+    create_rpc(&pool_b, "ping", "SELECT 1 AS x", "[]", "read").await;
+
+    let j_a1 = pool_a
+        .with_writer(|c| store::create_job(c, "a1", "* * * * *", "function", "f1", None, true))
+        .await
+        .unwrap();
+    let j_a2 = pool_a
+        .with_writer(|c| store::create_job(c, "a2", "* * * * *", "function", "f1", None, true))
+        .await
+        .unwrap();
+    let j_b = pool_b
+        .with_writer(|c| store::create_job(c, "b", "* * * * *", "rpc", "ping", None, true))
+        .await
+        .unwrap();
+
+    let d = deps_with_permits(registry.clone(), executor, CronConfig::test_default(), 2);
+    let t_a1 = tokio::spawn(run_due_job(
+        d.clone(),
+        "t-cron11".into(),
+        indexed(&j_a1),
+        minute_now(),
+    ));
+    let t_a2 = tokio::spawn(run_due_job(
+        d.clone(),
+        "t-cron11".into(),
+        indexed(&j_a2),
+        minute_now(),
+    ));
+
+    // One A job is parked inside the runner (tenant gate + one permit held).
+    started.acquire().await.unwrap().forget();
+
+    let t_b = tokio::spawn(run_due_job(
+        d.clone(),
+        "t-cron12".into(),
+        indexed(&j_b),
+        minute_now(),
+    ));
+
+    // B completes while A's runner gate is still held — the per-tenant
+    // single-flight keeps A's second job off the global permits.
+    tokio::time::timeout(std::time::Duration::from_secs(5), t_b)
+        .await
+        .expect("tenant B starved: tenant A's jobs hold every cron permit")
+        .unwrap();
+    let runs_b = runs_for(&pool_b, "b").await;
+    assert_eq!(runs_b.len(), 1, "{runs_b:?}");
+    assert_eq!(runs_b[0].status, "ok", "{runs_b:?}");
+
+    // A's second job must NOT have entered the runner (per-tenant
+    // serialization): probe with a bounded wait for a second `started` permit.
+    let second_entered =
+        tokio::time::timeout(std::time::Duration::from_millis(300), started.acquire()).await;
+    assert!(
+        second_entered.is_err(),
+        "tenant A's second job entered the runner while its first still ran"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "exactly one A job dispatched so far"
+    );
+
+    // Release the parked A job; the second then takes the gate, runs, and is
+    // released in turn — serialization delays, never drops, same-tenant work.
+    release.notify_one();
+    started.acquire().await.unwrap().forget();
+    release.notify_one();
+    t_a1.await.unwrap();
+    t_a2.await.unwrap();
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        2,
+        "both A jobs eventually dispatched"
+    );
+    for name in ["a1", "a2"] {
+        let runs = runs_for(&pool_a, name).await;
         assert_eq!(runs.len(), 1, "{name}: {runs:?}");
         assert_eq!(runs[0].status, "ok", "{name}: {runs:?}");
     }

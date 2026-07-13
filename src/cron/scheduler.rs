@@ -34,9 +34,19 @@ pub struct CronDeps {
     pub executor: Arc<Executor>,
     /// `(tenant, job id)` in-flight markers — the overlap-skip gate.
     pub in_flight: Arc<dashmap::DashMap<(String, i64), ()>>,
+    /// Per-tenant single-flight gate, acquired BEFORE the global permit and
+    /// held through dispatch: a tenant occupies at most ONE global permit at
+    /// a time, so N slow same-tenant jobs serialize on their own mutex while
+    /// other tenants keep getting permits (no head-of-line starvation).
+    /// Entries are never removed — one `Arc<Mutex>` per tenant ever seen,
+    /// bounded by tenant count (same growth shape as `in_flight`).
+    pub tenant_gate: dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
     /// Global dispatch-concurrency bound (`Semaphore::new(cfg.concurrency)`,
-    /// see `DRUST_CRON_CONCURRENCY`). Acquired per fire AFTER the overlap
-    /// gate — overlap skips only write a run row and never need a permit.
+    /// see `DRUST_CRON_CONCURRENCY`). Acquired per fire AFTER the overlap and
+    /// tenant gates — overlap skips only write a run row and never need a
+    /// permit; the tenant-gate ordering (mutex → permit, never the reverse)
+    /// is what keeps one tenant from holding several permits, and is
+    /// cycle-free because a permit holder already owns its tenant mutex.
     pub permits: Arc<tokio::sync::Semaphore>,
     pub cfg: CronConfig,
 }
@@ -94,6 +104,9 @@ impl Drop for InFlightGuard {
 /// Execute one due fire. Order is load-bearing:
 /// 1. overlap gate (previous fire of the SAME job still running →
 ///    `skipped_overlap` run row, no dispatch — recorded WITHOUT a permit);
+/// 1a. per-tenant single-flight mutex (`tenant_gate`), held to the end — a
+///    tenant's fires serialize among themselves BEFORE competing for global
+///    permits, so one tenant can occupy at most one permit at a time;
 /// 1b. global dispatch permit (`DRUST_CRON_CONCURRENCY`), held to the end;
 /// 2. fire-time re-assert against the fresh DB row (fail-closed: row gone /
 ///    recreated under a new id / inactive / schedule changed → return
@@ -159,15 +172,26 @@ pub async fn run_due_job(
         key,
     };
 
+    // ── 1a. Per-tenant single-flight (head-of-line-blocking guard): acquired
+    //    BEFORE the global permit so a tenant with several slow jobs holds at
+    //    most ONE permit — its other fires wait HERE, permit-less, and every
+    //    other tenant keeps dispatching. The dashmap entry guard is dropped
+    //    at the end of the statement (never held across the `lock().await`);
+    //    the in-flight marker held across this wait means a same-job re-fire
+    //    still records `skipped_overlap`. Lock order is always tenant mutex →
+    //    permit, and a fire only ever takes its OWN tenant's mutex, so no
+    //    cycle is possible.
+    let gate = deps.tenant_gate.entry(tenant.clone()).or_default().clone();
+    let _tenant_lock = gate.lock().await;
+
     // ── 1b. Global dispatch bound (DRUST_CRON_CONCURRENCY): N tenants × 10
     //    jobs all due at :00 must not thundering-herd the pools — function
     //    targets are bounded downstream by run_one's DRUST_FN_CONCURRENCY
     //    semaphore, but RPC targets have no other global bound. Acquired
-    //    AFTER the overlap gate (a skipped fire only writes a run row and
-    //    never needs a permit; the in-flight marker held across this wait
-    //    means a same-job re-fire still skips) and held through dispatch +
-    //    outcome record (released on drop). `acquire` only errors if the
-    //    semaphore is closed, which never happens — treat as shutdown.
+    //    AFTER the overlap + tenant gates (a skipped fire only writes a run
+    //    row and never needs a permit) and held through dispatch + outcome
+    //    record (released on drop). `acquire` only errors if the semaphore is
+    //    closed, which never happens — treat as shutdown.
     let _permit = match deps.permits.acquire().await {
         Ok(p) => p,
         Err(_) => return,
