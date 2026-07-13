@@ -70,6 +70,21 @@ pub fn should_fire(last_fired: Option<DateTime<Utc>>, minute: DateTime<Utc>) -> 
     last_fired.is_none_or(|l| minute > l)
 }
 
+/// The scheduler loop's per-iteration decision, extracted verbatim so the
+/// state transition is testable: if `minute` should fire (per `should_fire`),
+/// record it in `last_fired` and return `true`; otherwise leave `last_fired`
+/// untouched and return `false`. `spawn_scheduler` calls EXACTLY this — the
+/// dispatch branch is `if tick_decision(..) { spawn fires }` — so the
+/// no-re-dispatch-after-backward-clock-step claim is pinned here, not in
+/// untested loop glue.
+pub(crate) fn tick_decision(last_fired: &mut Option<DateTime<Utc>>, minute: DateTime<Utc>) -> bool {
+    if !should_fire(*last_fired, minute) {
+        return false;
+    }
+    *last_fired = Some(minute);
+    true
+}
+
 /// Filter an index snapshot down to the jobs whose schedule fires at exactly
 /// `minute`. Parse errors are silently not-due (`schedule::is_due` fails
 /// closed; create-time validation is the loud gate).
@@ -402,12 +417,12 @@ pub async fn spawn_scheduler(deps: Arc<CronDeps>) {
                 .unwrap_or(std::time::Duration::from_secs(1)),
         )
         .await;
-        if !should_fire(last_fired, minute) {
-            continue; // backward wall-clock step — this minute already fired
-        }
-        last_fired = Some(minute);
-        for (tenant, job) in collect_due(&deps.index.snapshot(), minute) {
-            tokio::spawn(run_due_job(deps.clone(), tenant, job, minute));
+        // tick_decision is false on a backward wall-clock step — the minute
+        // already fired and last_fired stays untouched.
+        if tick_decision(&mut last_fired, minute) {
+            for (tenant, job) in collect_due(&deps.index.snapshot(), minute) {
+                tokio::spawn(run_due_job(deps.clone(), tenant, job, minute));
+            }
         }
     }
 }
@@ -469,6 +484,36 @@ mod tests {
         let last = chrono::Utc.with_ymd_and_hms(2026, 7, 13, 8, 31, 0).unwrap();
         let m = chrono::Utc.with_ymd_and_hms(2026, 7, 13, 8, 30, 0).unwrap();
         assert!(!should_fire(Some(last), m));
+    }
+
+    /// Drives `tick_decision` exactly as the `spawn_scheduler` loop does,
+    /// across a backward wall-clock step: the loop must never re-dispatch a
+    /// minute it already fired, and a skipped tick must leave `last_fired`
+    /// untouched so the recovery minute (08:06) still fires.
+    #[test]
+    fn tick_decision_sequence_survives_backward_clock_step() {
+        let m = |h, min| {
+            chrono::Utc
+                .with_ymd_and_hms(2026, 7, 13, h, min, 0)
+                .unwrap()
+        };
+        let mut last: Option<DateTime<Utc>> = None;
+
+        // First tick ever: fires and records the minute.
+        assert!(tick_decision(&mut last, m(8, 5)));
+        assert_eq!(last, Some(m(8, 5)));
+
+        // Clock stepped back — earlier minute must not fire, state untouched.
+        assert!(!tick_decision(&mut last, m(8, 4)));
+        assert_eq!(last, Some(m(8, 5)));
+
+        // Same minute comes around again after the step — still no re-fire.
+        assert!(!tick_decision(&mut last, m(8, 5)));
+        assert_eq!(last, Some(m(8, 5)));
+
+        // Clock catches up past the last fired minute — fires again.
+        assert!(tick_decision(&mut last, m(8, 6)));
+        assert_eq!(last, Some(m(8, 6)));
     }
 
     #[test]
