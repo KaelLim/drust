@@ -335,6 +335,7 @@ async fn main() -> anyhow::Result<()> {
             index: cron_state.index.clone(),
             executor: fn_executor.clone(),
             in_flight: Arc::new(dashmap::DashMap::new()),
+            tenant_gate: dashmap::DashMap::new(),
             permits: Arc::new(tokio::sync::Semaphore::new(cron_state.cfg.concurrency)),
             cfg: cron_state.cfg.clone(),
         });
