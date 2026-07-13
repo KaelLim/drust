@@ -1,5 +1,5 @@
 use crate::storage::schema_cache::SchemaCache;
-use crate::storage::tenant_db::{open_read, open_write};
+use crate::storage::tenant_db::{open_read, open_write, open_write_existing, tenant_data_path};
 use rusqlite::{Connection, Transaction};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,6 +34,32 @@ pub struct TenantPool {
 impl TenantPool {
     pub fn new(data_root: PathBuf, tenant_id: &str, read_pool_size: usize) -> anyhow::Result<Self> {
         let writer = open_write(&data_root, tenant_id)?;
+        Self::from_writer(data_root, tenant_id, read_pool_size, writer)
+    }
+
+    /// Like [`TenantPool::new`], but opens the writer via
+    /// `open_write_existing` — never creates the tenant directory, the
+    /// database file, or schema. Fails if `data.sqlite` is gone, which is the
+    /// atomic (no check-then-act) guarantee `TenantRegistry::get_if_live`
+    /// builds on.
+    pub fn open_existing(
+        data_root: PathBuf,
+        tenant_id: &str,
+        read_pool_size: usize,
+    ) -> anyhow::Result<Self> {
+        let writer = open_write_existing(&data_root, tenant_id)?;
+        Self::from_writer(data_root, tenant_id, read_pool_size, writer)
+    }
+
+    /// Shared tail of [`TenantPool::new`] / [`TenantPool::open_existing`]:
+    /// everything after the writer open is identical, so live-tenant pools
+    /// are byte-identical regardless of which constructor built them.
+    fn from_writer(
+        data_root: PathBuf,
+        tenant_id: &str,
+        read_pool_size: usize,
+        writer: Connection,
+    ) -> anyhow::Result<Self> {
         let mut readers = Vec::with_capacity(read_pool_size);
         for _ in 0..read_pool_size {
             readers.push(Mutex::new(open_read(&data_root, tenant_id)?));
@@ -175,6 +201,35 @@ impl TenantRegistry {
         )?);
         self.pools.insert(tenant_id.to_string(), pool.clone());
         Ok(pool)
+    }
+
+    /// Liveness-guarded pool lookup for background dispatch paths (the
+    /// functions executor): returns the cached pool if present; otherwise
+    /// opens WITHOUT creating anything (`open_write_existing` — no
+    /// `create_dir_all`, no `SQLITE_OPEN_CREATE`, no schema apply), so a
+    /// tenant soft-deleted mid-flight can never have its `data.sqlite`
+    /// resurrected outside `_trash`. `None` = tenant gone. Live tenants
+    /// cache on success exactly like `get_or_open`.
+    pub fn get_if_live(&self, tenant_id: &str) -> Option<SharedTenantPool> {
+        if let Some(p) = self.pools.get(tenant_id) {
+            return Some(p.clone());
+        }
+        if !tenant_data_path(&self.data_root, tenant_id).exists() {
+            return None; // expected miss (soft-deleted) — no warn noise
+        }
+        match TenantPool::open_existing(self.data_root.clone(), tenant_id, self.read_pool_size) {
+            Ok(pool) => {
+                let pool = Arc::new(pool);
+                self.pools.insert(tenant_id.to_string(), pool.clone());
+                Some(pool)
+            }
+            Err(e) => {
+                // The exists() probe passed but the create-free open lost the
+                // race (or the file is unreadable) — fail closed as gone.
+                tracing::warn!(tenant = %tenant_id, err = ?e, "get_if_live: open failed; treating tenant as gone");
+                None
+            }
+        }
     }
 
     pub fn evict(&self, tenant_id: &str) {
