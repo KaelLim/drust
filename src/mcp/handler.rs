@@ -282,6 +282,11 @@ pub struct CreateRpcParams {
     pub description: Option<String>,
     #[serde(default)]
     pub anon_callable: Option<bool>,
+    /// "read" (default) or "write". Write bodies may contain multi-statement
+    /// INSERT/UPDATE/DELETE; DDL, transactions and _system_* writes are
+    /// refused at create time.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, schemars::JsonSchema, Deserialize)]
@@ -296,6 +301,26 @@ pub struct UpdateRpcParams {
     pub description: Option<Option<String>>,
     #[serde(default)]
     pub anon_callable: Option<bool>,
+    /// "read" or "write". Omit to keep the stored mode. A new sql body is
+    /// validated under the effective mode (this param if given, else the
+    /// stored row's).
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+/// Parse the optional `mode` param shared by create_rpc / update_rpc.
+/// `None` means "not supplied" — create defaults to Read, update preserves
+/// the stored value.
+fn parse_rpc_mode(raw: Option<&str>) -> Result<Option<crate::rpc::registry::RpcMode>, McpError> {
+    match raw {
+        None => Ok(None),
+        Some("read") => Ok(Some(crate::rpc::registry::RpcMode::Read)),
+        Some("write") => Ok(Some(crate::rpc::registry::RpcMode::Write)),
+        Some(_) => Err(McpError::invalid_params(
+            "mode must be \"read\" or \"write\"",
+            None,
+        )),
+    }
 }
 
 #[derive(Debug, Clone, schemars::JsonSchema, Deserialize)]
@@ -1305,13 +1330,19 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Create a new stored RPC (named SELECT-only function). \
-        Required: name (snake_case), sql (a SELECT body using :name placeholders), \
+    #[tool(description = "Create a new stored RPC (named SQL function). \
+        Required: name (snake_case), sql (a body using :name placeholders), \
         params (array of {name, type, required, default}). \
-        Optional: description, anon_callable (default false). \
-        SQL is validated at create time via the read-only authorizer — \
-        non-SELECT actions, ATTACH, sqlite_master references, and unknown \
-        tables are refused before storage.")]
+        Optional: description, anon_callable (default false), \
+        mode (\"read\", the default, or \"write\"). \
+        SQL is validated at create time under the mode-matched authorizer: \
+        read bodies are SELECT-only (non-SELECT actions, ATTACH, \
+        sqlite_master references, and unknown tables are refused before \
+        storage); write bodies may contain multi-statement \
+        INSERT/UPDATE/DELETE, while DDL, transaction control, and \
+        _system_* writes are refused. MCP call_rpc always executes on the \
+        read-only connection regardless of mode — write RPCs run via REST \
+        POST /t/<tenant>/rpc/<name>, the admin playground, or cron.")]
     async fn create_rpc(
         &self,
         Parameters(p): Parameters<CreateRpcParams>,
@@ -1324,17 +1355,13 @@ impl DrustMcpService {
         let description = p.description.clone();
         let anon_callable = p.anon_callable.unwrap_or(false);
         let params_for_guard = p.params.clone();
+        let mode =
+            parse_rpc_mode(p.mode.as_deref())?.unwrap_or(crate::rpc::registry::RpcMode::Read);
 
         pool.with_writer(move |c| {
-            // C5: mode = Read until create_rpc accepts a `mode` param
-            // (queued follow-up). Same default as the admin form.
-            crate::rpc::prepare::validate_rpc_sql(c, &sql, crate::rpc::registry::RpcMode::Read)
-                .map_err(|e| {
-                    rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(1),
-                        Some(e.to_string()),
-                    )
-                })?;
+            crate::rpc::prepare::validate_rpc_sql(c, &sql, mode).map_err(|e| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            })?;
             // v1.41.3: refuse an anon-callable read RPC that reads an
             // owner-scoped collection without binding :user_id — drust does not
             // rewrite stored-RPC SQL, so it would return every user's rows.
@@ -1343,7 +1370,7 @@ impl DrustMcpService {
                 &sql,
                 &params_for_guard,
                 anon_callable,
-                crate::rpc::registry::RpcMode::Read,
+                mode,
             )
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
@@ -1355,7 +1382,7 @@ impl DrustMcpService {
                 &params_json,
                 description.as_deref(),
                 anon_callable,
-                crate::rpc::registry::RpcMode::Read,
+                mode,
             )
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
@@ -1372,8 +1399,12 @@ impl DrustMcpService {
     }
 
     #[tool(description = "Update an existing RPC. All fields except `name` are \
-        optional — pass only the fields you want to change. Same SQL validation \
-        as create_rpc applies if you provide a new sql body.")]
+        optional — pass only the fields you want to change. \
+        mode (\"read\" or \"write\") switches the dispatch mode; omit to keep \
+        the stored value. Same SQL validation as create_rpc applies if you \
+        provide a new sql body, under the EFFECTIVE mode (the mode param if \
+        given, else the stored row's) — so downgrading a write RPC to read \
+        requires swapping the sql to a SELECT body in the same call.")]
     async fn update_rpc(
         &self,
         Parameters(p): Parameters<UpdateRpcParams>,
@@ -1391,18 +1422,28 @@ impl DrustMcpService {
             ),
             None => None,
         };
+        let mode_param = parse_rpc_mode(p.mode.as_deref())?;
 
         pool.with_writer(move |c| {
             if let Some(s) = sql.as_deref() {
-                // C5: mode = Read for update_rpc until the tool accepts
-                // an explicit mode param. Matches create_rpc.
-                crate::rpc::prepare::validate_rpc_sql(c, s, crate::rpc::registry::RpcMode::Read)
-                    .map_err(|e| {
-                        rusqlite::Error::SqliteFailure(
-                            rusqlite::ffi::Error::new(1),
-                            Some(e.to_string()),
-                        )
-                    })?;
+                // Validate under the EFFECTIVE mode: the explicit param wins,
+                // else the stored row's mode — a write RPC's new write body
+                // must not be rejected by the read-only authorizer.
+                let effective = match mode_param {
+                    Some(m) => m,
+                    None => match crate::rpc::registry::lookup(c, &name) {
+                        Ok(Some(row)) => row.mode,
+                        // Fail-closed: a missing row will 404 in
+                        // registry::update below anyway.
+                        Ok(None) | Err(_) => crate::rpc::registry::RpcMode::Read,
+                    },
+                };
+                crate::rpc::prepare::validate_rpc_sql(c, s, effective).map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(1),
+                        Some(e.to_string()),
+                    )
+                })?;
             }
             // v1.41.3: re-run the owner-scoped guard on the EFFECTIVE post-update
             // values (a partial update — flag-flip or sql-swap — must be checked
@@ -1424,7 +1465,7 @@ impl DrustMcpService {
                 params_json.as_deref(),
                 description.as_ref().map(|d| d.as_deref()),
                 anon_callable,
-                None,
+                mode_param,
             )
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))

@@ -608,3 +608,364 @@ fn scan_unsafe_flags_user_id_rpc_over_policy_collection() {
         "scan must flag a :user_id anon RPC over a policy-protected collection, got: {names:?}"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// v1.48.1 — MCP create_rpc `mode` param (spec 測試 cases 1-4, 7).
+//
+// Dispatched through the real per-tenant MCP endpoint (JSON-RPC tools/call via
+// app.oneshot, mirroring tests/mcp_merged_tools.rs) so param deserialization +
+// the handler's mode thread-through are exercised end-to-end.
+// ──────────────────────────────────────────────────────────────────────────────
+
+mod helpers;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use serde_json::json;
+use tower::ServiceExt;
+
+fn mcp_req_with_session(
+    tid: &str,
+    token: &str,
+    sid: &str,
+    body: serde_json::Value,
+) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/t/{tid}/mcp"))
+        .header(header::HOST, "127.0.0.1")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header("mcp-session-id", sid)
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::Value> {
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.strip_prefix("data:").unwrap_or(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
+    let init = Request::builder()
+        .method("POST")
+        .uri(format!("/t/{tid}/mcp"))
+        .header(header::HOST, "127.0.0.1")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .body(Body::from(
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize",
+                "params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let r = app.clone().oneshot(init).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK, "initialize failed");
+    let sid = r
+        .headers()
+        .get("mcp-session-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let _ = parse_mcp_response(r).await;
+    let ack = mcp_req_with_session(
+        tid,
+        token,
+        &sid,
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    );
+    let _ = app.clone().oneshot(ack).await.unwrap();
+    sid
+}
+
+async fn mcp_call_tool(
+    app: &axum::Router,
+    tid: &str,
+    token: &str,
+    sid: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> String {
+    let call = mcp_req_with_session(
+        tid,
+        token,
+        sid,
+        json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}
+        }),
+    );
+    let resp = app.clone().oneshot(call).await.unwrap();
+    assert!(
+        resp.status().is_success(),
+        "tools/call {name} status {}",
+        resp.status()
+    );
+    let msgs = parse_mcp_response(resp).await;
+    msgs.iter()
+        .find_map(|m| {
+            m["result"]["content"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|c| c["text"].as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| serde_json::to_string(&msgs).unwrap())
+}
+
+fn rest_req(
+    method: &str,
+    tid: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+    token: &str,
+) -> Request<Body> {
+    let mut b = Request::builder()
+        .method(method)
+        .uri(format!("/t/{tid}{path}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    if body.is_some() {
+        b = b.header(header::CONTENT_TYPE, "application/json");
+    }
+    b.body(
+        body.map(|v| Body::from(v.to_string()))
+            .unwrap_or(Body::empty()),
+    )
+    .unwrap()
+}
+
+async fn rpc_row_count(pool: &drust::storage::pool::SharedTenantPool, name: &str) -> i64 {
+    let name = name.to_string();
+    pool.with_reader(move |c| {
+        c.query_row(
+            "SELECT COUNT(*) FROM _system_rpc WHERE name = ?1",
+            rusqlite::params![name],
+            |r| r.get(0),
+        )
+    })
+    .await
+    .unwrap()
+}
+
+async fn stored_rpc_mode(pool: &drust::storage::pool::SharedTenantPool, name: &str) -> String {
+    let name = name.to_string();
+    pool.with_reader(move |c| {
+        c.query_row(
+            "SELECT COALESCE(mode, 'read') FROM _system_rpc WHERE name = ?1",
+            rusqlite::params![name],
+            |r| r.get(0),
+        )
+    })
+    .await
+    .unwrap()
+}
+
+// Spec case 1 — mode:"write" with an INSERT body creates; the stored row
+// carries mode='write'; a REST POST then really inserts a row.
+#[tokio::test]
+async fn mcp_create_rpc_mode_write_then_rest_executes() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-mcpmode-1").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, qty INTEGER);")
+    })
+    .await
+    .unwrap();
+    let sid = mcp_init(&app, &tid, &svc).await;
+
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "create_rpc",
+        json!({
+            "name": "add_order",
+            "sql": "INSERT INTO orders (qty) VALUES (:q)",
+            "params": [{"name":"q","type":"integer","required":true}],
+            "mode": "write"
+        }),
+    )
+    .await;
+    assert!(out.contains("created"), "create_rpc mode=write: {out}");
+    assert_eq!(stored_rpc_mode(&pool, "add_order").await, "write");
+
+    // End-to-end: the write RPC executes via REST and lands a row.
+    let r = app
+        .oneshot(rest_req(
+            "POST",
+            &tid,
+            "/rpc/add_order",
+            Some(json!({"q": 5})),
+            &svc,
+        ))
+        .await
+        .unwrap();
+    assert!(
+        r.status().is_success(),
+        "REST write-RPC call failed: {}",
+        r.status()
+    );
+    let n: i64 = pool
+        .with_reader(|c| c.query_row("SELECT COUNT(*) FROM orders", [], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "write RPC must have inserted one row");
+}
+
+// Spec case 2 — mode:"write" with DDL is refused at create time by the
+// writable authorizer; no catalog row lands.
+#[tokio::test]
+async fn mcp_create_rpc_mode_write_ddl_rejected_at_create() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-mcpmode-2").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    let sid = mcp_init(&app, &tid, &svc).await;
+
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "create_rpc",
+        json!({
+            "name": "evil_ddl",
+            "sql": "CREATE TABLE hax (id INTEGER)",
+            "params": [],
+            "mode": "write"
+        }),
+    )
+    .await;
+    let lc = out.to_lowercase();
+    assert!(
+        lc.contains("authoriz") || lc.contains("prohibited"),
+        "DDL under write mode must be refused at create: {out}"
+    );
+    assert_eq!(rpc_row_count(&pool, "evil_ddl").await, 0);
+}
+
+// Spec case 3 — a garbage mode string is invalid_params; nothing is stored.
+#[tokio::test]
+async fn mcp_create_rpc_garbage_mode_invalid_params() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-mcpmode-3").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    let sid = mcp_init(&app, &tid, &svc).await;
+
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "create_rpc",
+        json!({
+            "name": "whatever",
+            "sql": "SELECT 1",
+            "params": [],
+            "mode": "exec"
+        }),
+    )
+    .await;
+    assert!(
+        out.contains("mode must be"),
+        "garbage mode must reject with invalid_params: {out}"
+    );
+    assert_eq!(rpc_row_count(&pool, "whatever").await, 0);
+}
+
+// Spec case 4 — omitted mode defaults to read: an INSERT body is still
+// rejected by the read-only authorizer (byte-identical regression guard).
+#[tokio::test]
+async fn mcp_create_rpc_omitted_mode_stays_read_only() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-mcpmode-4").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, qty INTEGER);")
+    })
+    .await
+    .unwrap();
+    let sid = mcp_init(&app, &tid, &svc).await;
+
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "create_rpc",
+        json!({
+            "name": "sneak_write",
+            "sql": "INSERT INTO orders (qty) VALUES (1)",
+            "params": []
+        }),
+    )
+    .await;
+    let lc = out.to_lowercase();
+    assert!(
+        lc.contains("authoriz") || lc.contains("prohibited"),
+        "omitted mode must stay read-only and reject the INSERT: {out}"
+    );
+    assert_eq!(rpc_row_count(&pool, "sneak_write").await, 0);
+}
+
+// Spec case 7 — anon_callable + mode:"write" over an owner-scoped collection
+// is refused by the anon guard on the MCP face too.
+#[tokio::test]
+async fn mcp_create_rpc_write_anon_callable_over_owner_scoped_rejected() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-mcpmode-7").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+             user_id TEXT REFERENCES _system_users(id), qty INTEGER);",
+        )
+    })
+    .await
+    .unwrap();
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let set = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "set_owner_field",
+        json!({"collection":"orders","field":"user_id","read_scope":"own"}),
+    )
+    .await;
+    assert!(set.contains("owner_field"), "owner-scope setup: {set}");
+
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "create_rpc",
+        json!({
+            "name": "anon_bump",
+            "sql": "UPDATE orders SET qty = qty + 1",
+            "params": [],
+            "anon_callable": true,
+            "mode": "write"
+        }),
+    )
+    .await;
+    assert!(
+        out.contains(RPC_ANON_OWNER_SCOPED),
+        "anon write RPC over owner-scoped collection must be refused: {out}"
+    );
+    assert_eq!(rpc_row_count(&pool, "anon_bump").await, 0);
+}
