@@ -204,6 +204,32 @@ pub async fn create_handler(
     if let Err(r) = validate_events(&body.events) {
         return r;
     }
+    // Egress allowlist third gate (v1.49): after check_url passes, the target
+    // origin must be present as a `system=webhook` entry on this tenant's
+    // allowlist, else reject. ADDED alongside check_url (above) + the
+    // dispatch-time PinnedPublicResolver; never a replacement. Loopback dev
+    // targets keep check_url's carve-out (already resolver-exempt), so a
+    // release build with no opt-in still gates loopback here and at dispatch.
+    if !crate::tenant::webhook_dispatcher::is_loopback_dev_url(&body.url) {
+        let allowlist = {
+            let conn = state.meta.lock().await;
+            crate::tenant::egress::read_egress_allowlist(&conn, &tid)
+                .unwrap_or_else(|_| "[]".to_string())
+        };
+        if !crate::tenant::egress::check_egress(
+            &allowlist,
+            crate::tenant::egress::EgressSystem::Webhook,
+            &body.url,
+        ) {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "EGRESS_NOT_ALLOWLISTED",
+                "target origin is not on this tenant's egress allowlist \
+                 (system=webhook); add it via PUT /t/<id>/egress-allowlist \
+                 or the settings page before registering",
+            );
+        }
+    }
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
