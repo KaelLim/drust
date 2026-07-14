@@ -15,6 +15,18 @@ impl Guest for EdgeFn {
         host::log("info", &format!("trigger = {}", ev["trigger"]));
         // Example: write a derived row.
         // host::insert_record("derived", r#"{"src":"hello"}"#)?;
+        //
+        // Example: outbound HTTP, gated by the tenant's egress allowlist. The
+        // origin (scheme://host[:port]) must be allowlisted with system=function
+        // by the service key first; a 3xx is returned to you un-followed.
+        //   let resp = host::http_fetch(
+        //       "https://api.github.com",
+        //       "/repos/rust-lang/rust",
+        //       "GET",
+        //       &[],                       // request body
+        //       &[("accept".into(), "application/json".into())],
+        //   )?;
+        //   host::log("info", &format!("status = {}", resp.status));
         Ok(r#"{"ok":true}"#.to_string())
     }
 }

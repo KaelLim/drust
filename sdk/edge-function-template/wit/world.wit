@@ -11,6 +11,20 @@ world edge-function {
     get-file-bytes: func(key: string) -> result<list<u8>, string>;
     put-file:      func(key: string, bytes: list<u8>, content-type: string, visibility: string) -> result<string, string>;
     log:           func(level: string, msg: string);
+
+    /// Outbound HTTP, gated by the tenant's egress allowlist (system=function)
+    /// + the private-IP block (PinnedPublicResolver). No automatic redirect
+    /// following: a 3xx is returned to the guest, which may re-fetch through
+    /// this same gated call. origin = scheme://host[:port] (must be allowlisted);
+    /// path = path + query; method one of GET|POST|PUT|PATCH|DELETE|HEAD.
+    http-fetch: func(origin: string, path: string, method: string, body: list<u8>, headers: list<tuple<string, string>>) -> result<http-response, string>;
+
+    record http-response {
+      status: u16,
+      headers: list<tuple<string, string>>,
+      body: list<u8>,
+    }
   }
+
   export handle: func(event-json: string) -> result<string, string>;
 }

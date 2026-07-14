@@ -3,7 +3,7 @@ type: sdk-template
 name: edge-function-template
 target: wasm32-wasip2
 status: wip
-updated: 2026-06-10
+updated: 2026-07-14
 ---
 
 # drust edge-function template
@@ -18,5 +18,8 @@ curl -X POST https://drust.example.com/drust/t/<tenant>/functions \
   -F 'triggers=[{"collection":"posts","events":["created"]}]' -F 'description=…'
 ```
 
-Host API surface: see `wit/world.wit`. No outbound network, no filesystem —
-only the imported host functions, scoped to your own tenant.
+Host API surface: see `wit/world.wit`. No filesystem — only the imported host
+functions, scoped to your own tenant. Outbound HTTP is available via
+`host::http_fetch`, but ONLY to origins the tenant's service key has added to
+the egress allowlist (`system=function`); every fetch also passes the private-IP
+block, and redirects are returned to you un-followed.
