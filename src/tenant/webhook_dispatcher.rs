@@ -98,6 +98,63 @@ pub(crate) fn build_payload(
     })
 }
 
+/// True iff `url`'s host is a dev-loopback host (`127.0.0.1` / `localhost` /
+/// `::1`) AND loopback is allowed for this build/env. This is the shared
+/// predicate behind the resolver bypass in `deliver_inner` and the egress
+/// dispatch gate below — kept in one place so the two never diverge. In a
+/// release build with no `DRUST_WEBHOOK_ALLOW_LOOPBACK` this is always false,
+/// so loopback is treated like any other host (egress-denied AND
+/// resolver-denied). reqwest returns `[::1]` (bracketed) for IPv6 literals —
+/// accept both forms, same as `check_url`.
+pub(crate) fn is_loopback_dev_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]")
+        && crate::tenant::webhook_resolver::webhook_loopback_allowed(
+            cfg!(debug_assertions),
+            std::env::var("DRUST_WEBHOOK_ALLOW_LOOPBACK").is_ok(),
+        )
+}
+
+/// The webhook DISPATCH egress gate (v1.49) — the THIRD gate, ADDED alongside
+/// `check_url` (registration) and the `PinnedPublicResolver` (per-attempt DNS
+/// filter); never a replacement. Returns true iff the subscriber `url` may
+/// receive a delivery:
+///   * a dev-loopback target bypasses the allowlist (the SAME carve-out the
+///     resolver applies — Caddy / test scaffolds live on loopback; a release
+///     build with no opt-in falls through to the allowlist below), OR
+///   * the tenant's `system=webhook` allowlist contains its normalized origin.
+/// Fail-closed: an empty allowlist, or an unparsable / non-origin URL, denies.
+pub(crate) fn dispatch_egress_allowed(allowlist_json: &str, url: &str) -> bool {
+    if is_loopback_dev_url(url) {
+        return true;
+    }
+    crate::tenant::egress::check_egress(
+        allowlist_json,
+        crate::tenant::egress::EgressSystem::Webhook,
+        url,
+    )
+}
+
+/// Read a tenant's egress allowlist JSON from `meta.sqlite` for the dispatch
+/// gate. Opens a short-lived READ-ONLY connection (dispatch runs on a spawned,
+/// off-hot-path task, so a per-event open is acceptable). Fail-CLOSED: any
+/// open/read failure yields the deny-all `"[]"`, so a transient meta hiccup
+/// denies delivery to non-loopback hosts rather than opening egress.
+fn read_tenant_egress_allowlist(registry: &TenantRegistry, tenant: &str) -> String {
+    let meta_path = registry.data_root().join("meta.sqlite");
+    match rusqlite::Connection::open_with_flags(
+        &meta_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(conn) => crate::tenant::egress::read_egress_allowlist(&conn, tenant)
+            .unwrap_or_else(|_| "[]".to_string()),
+        Err(_) => "[]".to_string(),
+    }
+}
+
 #[derive(Clone)]
 pub struct WebhookDispatcher {
     pool: Arc<TenantRegistry>,
@@ -191,9 +248,26 @@ impl WebhookDispatcher {
                     return;
                 }
             };
+            // v1.49 egress third gate — read the tenant's allowlist ONCE per
+            // event (fresh from meta, so a just-removed origin is honored).
+            let allowlist_json = read_tenant_egress_allowlist(&pool, &tenant);
             let event_name = event.name();
             for sub in subs {
                 if !events_contains(&sub.events, event_name) {
+                    continue;
+                }
+                // Egress third gate: deny delivery to any origin not on the
+                // tenant's system=webhook allowlist (loopback dev targets keep
+                // the resolver's carve-out). A denial records a failure and
+                // skips — no POST, no retry. check_url (registration) + the
+                // PinnedPublicResolver (per attempt) remain; this is an ADDED
+                // gate, never a replacement.
+                if !dispatch_egress_allowed(&allowlist_json, &sub.url) {
+                    let id = sub.id;
+                    let reason = format!("egress_not_allowlisted: {}", sub.url);
+                    let _ = tenant_pool
+                        .with_writer(move |c| record_failure(c, id, &reason))
+                        .await;
                     continue;
                 }
                 let delivery_id = uuid::Uuid::new_v4().to_string();

@@ -344,10 +344,38 @@ async fn create_webhook(
     (status, v)
 }
 
+/// v1.49 — seed the tenant's egress allowlist so a REST `create_webhook`
+/// registration to `origin` clears the third (egress) gate. Registration is
+/// deny-all by default post-v1.49; a service caller must allowlist the origin
+/// first (the real new workflow). Exercised via the service-only REST PUT.
+async fn allowlist_webhook_origin(app: &axum::Router, tid: &str, svc: &str, origin: &str) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/t/{tid}/egress-allowlist"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::from(
+                    serde_json::json!({"entries":[{"system":"webhook","uri":origin}]}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "egress allowlist PUT must succeed"
+    );
+}
+
 #[tokio::test]
 async fn rest_create_returns_secret_once_and_lists_with_redacted_secret() {
     let tid = "t-rest1";
     let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    allowlist_webhook_origin(&app, tid, &svc, "https://example.com").await;
     let body = serde_json::json!({
         "collection": "notes",
         "events": ["created"],
@@ -416,6 +444,7 @@ async fn rest_create_allows_http_localhost_for_dev() {
 async fn rest_patch_can_toggle_active_and_update_events_but_not_secret() {
     let tid = "t-rest4";
     let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    allowlist_webhook_origin(&app, tid, &svc, "https://example.com").await;
     let (status, v) = create_webhook(
         &app,
         tid,
@@ -928,6 +957,7 @@ async fn webhook_does_not_fire_for_other_tenants() {
 async fn rest_get_one_redacts_secret() {
     let tid = "t-redact";
     let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    allowlist_webhook_origin(&app, tid, &svc, "https://example.com").await;
     let (status, v) = create_webhook(
         &app,
         tid,
