@@ -206,6 +206,54 @@ async fn origin_not_allowlisted_is_denied() {
 /// dialed host must never disagree. Reverting the path-shape / re-derive guard
 /// in `http_fetch` re-opens this. (A rooted `//host/x` is NOT an injection: it
 /// dials the allowlisted host with `//host/x` as the path, so it is allowed.)
+/// (1c) Parser-differential guard: the re-derive check compares
+/// `egress::normalize_origin(&url)` (a hand-rolled splitter) against the origin,
+/// but the ACTUAL dial uses reqwest's WHATWG `Url` parser. If the two parsers
+/// ever disagreed on the host of `origin + rooted_path`, `dialed == origin`
+/// could pass while reqwest dials a different host — a full bypass. This pins
+/// that they AGREE: for adversarial rooted paths, normalize_origin(origin+path)
+/// stays == origin AND reqwest::Url::parse(origin+path).host_str() == the origin
+/// host. A future parser change that breaks the agreement fails here.
+#[test]
+fn normalize_origin_and_reqwest_agree_on_host_for_rooted_paths() {
+    let origin = "https://allowed.com";
+    for path in [
+        "/",
+        "/normal/path?q=1",
+        "/\\evil.com",     // backslash (WHATWG maps \ → / in path)
+        "/%2F%2Fevil.com", // percent-encoded slashes
+        "/%40evil.com",    // percent-encoded @
+        "/..//@evil.com",  // dot-segments + @ in path position
+        "/\t/evil.com",    // embedded tab
+        "//evil.com/x",    // protocol-relative-looking, but rooted
+    ] {
+        let url = format!("{origin}{path}");
+        // Our guard's re-derive: normalize_origin must keep the origin intact.
+        let dialed = drust::tenant::egress::normalize_origin(&url);
+        // reqwest's real parser: the host it would actually dial.
+        let reqwest_host = reqwest::Url::parse(&url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string));
+        // Either both agree the host is allowed.com, or normalize_origin
+        // rejected the URL outright (also safe — the fetch errors). What must
+        // NEVER happen: normalize_origin says allowed.com while reqwest dials
+        // something else.
+        match (dialed, reqwest_host) {
+            (Ok(d), Some(h)) => {
+                assert_eq!(d, origin, "normalize_origin drifted for path {path:?}");
+                assert_eq!(
+                    h, "allowed.com",
+                    "reqwest dials a different host for path {path:?}"
+                );
+            }
+            (Err(_), _) => { /* normalize_origin rejected → fetch fails, safe */ }
+            (Ok(d), None) => {
+                panic!("normalize_origin accepted {d} but reqwest could not parse {url:?}")
+            }
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn guest_path_cannot_alter_the_request_host() {
     let (mcp, _tmp) = mcp_for("t-fetch-pathinj").await;
