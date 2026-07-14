@@ -124,10 +124,20 @@ pub struct HostState {
 /// is resolved BEFORE the guest runs so a guest cannot influence the egress
 /// decision at call time.
 pub struct HttpFetchState {
-    /// The tenant's `egress_allowlist_json`, read once at build time via
-    /// `egress::read_egress_allowlist`. Deny-all `"[]"` when meta is absent.
-    /// Only the `system=function` entries gate `http-fetch`.
+    /// The tenant's `egress_allowlist_json`. Resolved LAZILY on the first
+    /// `http-fetch` call (not at build time) so a function that never fetches
+    /// pays no meta read — the common Privileged (event/cron) path. Still
+    /// race-free: read once, cached for the invocation, before any dial.
+    /// Deny-all `"[]"` when meta is absent (test ctors) or unreadable. Only the
+    /// `system=function` entries gate `http-fetch`.
     pub allowlist_json: String,
+    /// Meta handle for the lazy allowlist read; `None` in test ctors (which
+    /// pre-set `allowlist_json` directly and skip the read).
+    pub meta: Option<Arc<tokio::sync::Mutex<rusqlite::Connection>>>,
+    /// Tenant id for the lazy allowlist read.
+    pub tenant_id: String,
+    /// Whether `allowlist_json` has been resolved from meta this invocation.
+    pub resolved: bool,
     /// `DRUST_FN_HTTP_TIMEOUT_SECS` — per-request reqwest timeout.
     pub timeout_secs: u64,
     /// `DRUST_FN_HTTP_MAX_RESPONSE_BYTES` — streaming response-body cap.
@@ -144,14 +154,20 @@ pub struct HttpFetchState {
 
 impl HttpFetchState {
     /// Build the production per-invocation state from the shared limiter + cfg.
+    /// The allowlist is resolved lazily (see `allowlist`), so `new` takes the
+    /// meta handle + tenant id rather than a pre-read JSON string.
     pub fn new(
-        allowlist_json: String,
+        meta: Option<Arc<tokio::sync::Mutex<rusqlite::Connection>>>,
+        tenant_id: String,
         timeout_secs: u64,
         max_response_bytes: u64,
         rate_limiter: Arc<crate::safety::rate_limit::RateLimiter>,
     ) -> Self {
         Self {
-            allowlist_json,
+            allowlist_json: "[]".to_string(),
+            meta,
+            tenant_id,
+            resolved: false,
             timeout_secs,
             max_response_bytes,
             rate_limiter,
@@ -159,12 +175,33 @@ impl HttpFetchState {
         }
     }
 
-    /// Test defaults — deny-all allowlist, generous caps, a fresh limiter, no
-    /// resolver override. Callers spread `..HttpFetchState::test_default()`.
+    /// Lazily resolve (and cache) the tenant's egress allowlist. With `meta`
+    /// present it reads `egress_allowlist_json` under the meta lock exactly
+    /// once per invocation, fail-closed to deny-all. With `meta` absent (test
+    /// ctors) it returns the pre-set `allowlist_json` unchanged.
+    pub async fn allowlist(&mut self) -> &str {
+        if let Some(meta) = &self.meta
+            && !self.resolved
+        {
+            let conn = meta.lock().await;
+            self.allowlist_json =
+                crate::tenant::egress::read_egress_allowlist(&conn, &self.tenant_id)
+                    .unwrap_or_else(|_| "[]".to_string());
+            self.resolved = true;
+        }
+        &self.allowlist_json
+    }
+
+    /// Test defaults — deny-all allowlist, no meta (pre-set allowlist wins),
+    /// generous caps, a fresh limiter, no resolver override. Callers spread
+    /// `..HttpFetchState::test_default()`.
     #[cfg(any(test, debug_assertions))]
     pub fn test_default() -> Self {
         Self {
             allowlist_json: "[]".to_string(),
+            meta: None,
+            tenant_id: "test".to_string(),
+            resolved: false,
             timeout_secs: 10,
             max_response_bytes: 5 * 1024 * 1024,
             rate_limiter: Arc::new(crate::safety::rate_limit::RateLimiter::new(
@@ -483,11 +520,8 @@ impl host::Host for StoreData {
         //    Fail-closed: an un-normalizable origin or an origin absent from the
         //    tenant's `system=function` allowlist denies before any network I/O.
         let origin = normalize_origin(&origin).map_err(|e| format!("bad origin: {e}"))?;
-        if !check_egress(
-            &self.host.http.allowlist_json,
-            EgressSystem::Function,
-            &origin,
-        ) {
+        let allowlist = self.host.http.allowlist().await.to_string();
+        if !check_egress(&allowlist, EgressSystem::Function, &origin) {
             return Err("origin not allowlisted".to_string());
         }
 
@@ -531,9 +565,25 @@ impl host::Host for StoreData {
             .build()
             .map_err(|e| format!("client build: {e}"))?;
 
-        // 5. Assemble the request. Guest-supplied headers are filtered: no
-        //    hop-by-hop and no `Host`/`Content-Length` spoofing.
+        // 5. Assemble the request. The guest-supplied `path` must be empty or
+        //    rooted (`/...`): a bare `@host`, `.host`, or `//host` would rewrite
+        //    the authority and dial a host the allowlist never checked (SSRF —
+        //    gate 1 saw only `origin`). Reject non-rooted paths, then RE-DERIVE
+        //    the origin the assembled URL actually dials and require it to equal
+        //    the gated origin — DiD belt-and-suspenders: `normalize_origin`
+        //    rejects userinfo (`@`) and strips the path, so any residual
+        //    authority-injection fails closed here even if the leading-`/` check
+        //    is ever loosened.
+        if !path.is_empty() && !path.starts_with('/') {
+            return Err("path must be empty or start with '/'".to_string());
+        }
         let url = format!("{origin}{path}");
+        let dialed = normalize_origin(&url).map_err(|e| format!("bad url: {e}"))?;
+        if dialed != origin {
+            return Err("path must not alter the request host".to_string());
+        }
+        // Guest-supplied headers are filtered: no hop-by-hop, no `Host`/
+        // `Content-Length` spoofing.
         let mut req = client.request(reqwest_method, &url);
         for (k, v) in &headers {
             if is_forbidden_fetch_header(&k.to_ascii_lowercase()) {
@@ -828,19 +878,12 @@ impl FunctionRunner for WasmRunner {
             _ => self.seed.load_file_caps(tenant_id).await,
         };
 
-        // Resolve the tenant's egress allowlist ONCE, up front, so the guest
-        // cannot race a config change mid-run. Fail-CLOSED to deny-all `"[]"`
-        // when meta is absent (test ctors) or unreadable.
-        let allowlist_json = match &self.seed.meta {
-            Some(meta) => {
-                let conn = meta.lock().await;
-                crate::tenant::egress::read_egress_allowlist(&conn, tenant_id)
-                    .unwrap_or_else(|_| "[]".to_string())
-            }
-            None => "[]".to_string(),
-        };
+        // The egress allowlist is resolved LAZILY on the first `http-fetch`
+        // call (see `HttpFetchState::allowlist`) — a function that never
+        // fetches (the common event/cron path) does no meta read here.
         let http = HttpFetchState::new(
-            allowlist_json,
+            self.seed.meta.clone(),
+            tenant_id.to_string(),
             self.cfg.http_timeout_secs,
             self.cfg.http_max_response_bytes,
             self.http_rl.clone(),

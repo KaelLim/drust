@@ -89,3 +89,57 @@ fn backfill_seeds_deduped_webhook_origins_once_and_never_resurrects() {
         "a removed origin must never be resurrected by a second boot"
     );
 }
+
+/// A tenant created AFTER the v1.49 upgrade is born with
+/// `egress_backfill_done = 1` (crud.rs `make_tenant_inner`) — it lives under
+/// the deny-all regime with no legacy webhooks to backfill, so the run-once
+/// boot backfill must SKIP it. If it were born with the column default 0, the
+/// next boot would seed its webhook origins and resurrect an admin-removed one.
+#[test]
+fn new_tenant_born_with_marker_is_skipped_by_backfill() {
+    let dir = TempDir::new().unwrap();
+    let meta = Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    meta.execute_batch(
+        "CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT);
+         CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, \
+             password_hash TEXT NOT NULL, email TEXT, \
+             created_at TEXT NOT NULL DEFAULT (datetime('now')));",
+    )
+    .unwrap();
+    // First boot adds the egress columns (no tenants yet → nothing to backfill).
+    run_migrations(&meta, dir.path()).unwrap();
+
+    // A tenant created post-upgrade, exactly as make_tenant_inner does it:
+    // egress_backfill_done = 1 at INSERT time.
+    meta.execute(
+        "INSERT INTO tenants (id, name, egress_backfill_done) VALUES ('t2', 'New', 1)",
+        [],
+    )
+    .unwrap();
+    let tdir = dir.path().join("tenants").join("t2");
+    std::fs::create_dir_all(&tdir).unwrap();
+    {
+        let c = Connection::open(tdir.join("data.sqlite")).unwrap();
+        c.execute_batch(
+            "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, \
+                 anon_caps_json TEXT, updated_at TEXT);
+             CREATE TABLE _system_webhooks (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 collection TEXT NOT NULL, events TEXT NOT NULL,
+                 url TEXT NOT NULL, secret TEXT NOT NULL,
+                 active INTEGER NOT NULL DEFAULT 1,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')));
+             INSERT INTO _system_webhooks (collection, events, url, secret) VALUES
+                 ('c', 'record.created', 'https://c.com/hook', 's1');",
+        )
+        .unwrap();
+    }
+
+    // Next boot: the marker is already set → the tenant's webhook origin is
+    // NOT backfilled; its allowlist stays deny-all empty.
+    run_migrations(&meta, dir.path()).unwrap();
+    assert!(
+        allowlist_pairs(&meta, "t2").is_empty(),
+        "a post-upgrade tenant (marker=1) must not be backfilled"
+    );
+}

@@ -213,8 +213,14 @@ fn make_tenant_inner(
             }
         }
     }
+    // egress_backfill_done = 1: a tenant born after the v1.49 upgrade is
+    // already under the deny-all regime with no legacy webhooks to backfill,
+    // so the run-once boot backfill must NEVER touch it — otherwise it would
+    // resurrect an admin-removed origin every boot (the v1.41.5 idempotency
+    // invariant). Existing tenants keep the column default 0 and backfill once.
     conn.execute(
-        "INSERT INTO tenants (id, name, quota_db_mb, quota_rows) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO tenants (id, name, quota_db_mb, quota_rows, egress_backfill_done) \
+         VALUES (?1, ?2, ?3, ?4, 1)",
         rusqlite::params![id, name, quota_mb, quota_rows],
     )?;
     // Create directory + data.sqlite file
