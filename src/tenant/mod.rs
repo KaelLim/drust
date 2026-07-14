@@ -1,6 +1,7 @@
 pub mod admin_user_routes;
 pub mod auth_routes;
 pub mod collections;
+pub mod egress;
 pub mod events;
 pub mod webhook_dispatcher;
 pub mod webhook_resolver;
