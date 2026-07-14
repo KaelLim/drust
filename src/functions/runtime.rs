@@ -113,6 +113,87 @@ pub struct HostState {
     /// `bearer_auth_layer`). Consulted only on the Anon/User file branches; the
     /// Privileged/service path ignores it (service is unrestricted).
     file_caps: crate::tenant::file_caps::TenantFileCaps,
+    /// v1.49 — the gated `http-fetch` state: the tenant's egress allowlist
+    /// (resolved ONCE at invocation build time so the guest can't race a config
+    /// change), the response/timeout caps, the per-tenant rate limiter, and an
+    /// optional resolver override (production is `None` → `PinnedPublicResolver`).
+    http: HttpFetchState,
+}
+
+/// Per-invocation state for the `http-fetch` host import (v1.49). Every field
+/// is resolved BEFORE the guest runs so a guest cannot influence the egress
+/// decision at call time.
+pub struct HttpFetchState {
+    /// The tenant's `egress_allowlist_json`, read once at build time via
+    /// `egress::read_egress_allowlist`. Deny-all `"[]"` when meta is absent.
+    /// Only the `system=function` entries gate `http-fetch`.
+    pub allowlist_json: String,
+    /// `DRUST_FN_HTTP_TIMEOUT_SECS` — per-request reqwest timeout.
+    pub timeout_secs: u64,
+    /// `DRUST_FN_HTTP_MAX_RESPONSE_BYTES` — streaming response-body cap.
+    pub max_response_bytes: u64,
+    /// Per-tenant token-bucket limiter (`DRUST_FN_HTTP_RATE_PER_MIN` / 60 s),
+    /// shared across invocations via `WasmRunner`. Keyed by tenant id.
+    pub rate_limiter: Arc<crate::safety::rate_limit::RateLimiter>,
+    /// Test-only reqwest resolver override. Production leaves this `None`, so
+    /// the client is ALWAYS pinned to `PinnedPublicResolver` — the second DiD
+    /// gate. Tests inject a loopback-pinning resolver to reach a local server;
+    /// there is NO loopback carve-out on the production `http-fetch` path.
+    pub resolver_override: Option<Arc<dyn reqwest::dns::Resolve + Send + Sync>>,
+}
+
+impl HttpFetchState {
+    /// Build the production per-invocation state from the shared limiter + cfg.
+    pub fn new(
+        allowlist_json: String,
+        timeout_secs: u64,
+        max_response_bytes: u64,
+        rate_limiter: Arc<crate::safety::rate_limit::RateLimiter>,
+    ) -> Self {
+        Self {
+            allowlist_json,
+            timeout_secs,
+            max_response_bytes,
+            rate_limiter,
+            resolver_override: None,
+        }
+    }
+
+    /// Test defaults — deny-all allowlist, generous caps, a fresh limiter, no
+    /// resolver override. Callers spread `..HttpFetchState::test_default()`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn test_default() -> Self {
+        Self {
+            allowlist_json: "[]".to_string(),
+            timeout_secs: 10,
+            max_response_bytes: 5 * 1024 * 1024,
+            rate_limiter: Arc::new(crate::safety::rate_limit::RateLimiter::new(
+                60,
+                std::time::Duration::from_secs(60),
+            )),
+            resolver_override: None,
+        }
+    }
+}
+
+/// Hop-by-hop headers (RFC 7230 §6.1) plus `host`/`content-length` — never
+/// forwarded from a guest-supplied header list. `host` in particular must not
+/// be guest-settable or a function could spoof the SNI/vhost of an allowlisted
+/// origin; the length is reqwest's to compute.
+fn is_forbidden_fetch_header(name_lower: &str) -> bool {
+    matches!(
+        name_lower,
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+            | "content-length"
+    )
 }
 
 const LOG_CAP_BYTES: usize = 64 * 1024;
@@ -377,6 +458,190 @@ impl host::Host for StoreData {
             }
         }
     }
+
+    /// The gated outbound-HTTP host import (v1.49). Enforcement is caller-blind
+    /// by design: egress is a HOST-outbound authorization surface, not a
+    /// tenant-DATA one, so a `Privileged` (service/event/cron) caller is NOT
+    /// exempt — every fetch passes BOTH `check_egress` (the tenant's
+    /// `system=function` allowlist) AND `PinnedPublicResolver` (private-IP
+    /// block). Each failure returns `Err(String)` to the guest; never panics.
+    async fn http_fetch(
+        &mut self,
+        origin: String,
+        path: String,
+        method: String,
+        body: Vec<u8>,
+        headers: Vec<(String, String)>,
+    ) -> Result<host::HttpResponse, String> {
+        use crate::tenant::egress::{EgressSystem, check_egress, normalize_origin};
+        use std::time::Duration;
+
+        let started = std::time::Instant::now();
+        let tenant = self.host.mcp.tenant_id().to_string();
+
+        // 1. Normalize the requested origin, then the allowlist gate (gate 1/2).
+        //    Fail-closed: an un-normalizable origin or an origin absent from the
+        //    tenant's `system=function` allowlist denies before any network I/O.
+        let origin = normalize_origin(&origin).map_err(|e| format!("bad origin: {e}"))?;
+        if !check_egress(
+            &self.host.http.allowlist_json,
+            EgressSystem::Function,
+            &origin,
+        ) {
+            return Err("origin not allowlisted".to_string());
+        }
+
+        // 2. Method allowlist — reject anything outside the safe verb set.
+        let method_uc = method.to_ascii_uppercase();
+        let reqwest_method = match method_uc.as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "PATCH" => reqwest::Method::PATCH,
+            "DELETE" => reqwest::Method::DELETE,
+            "HEAD" => reqwest::Method::HEAD,
+            other => return Err(format!("method not allowed: {other}")),
+        };
+
+        // 3. Per-tenant rate limit — BEFORE the dial so a denied call costs no
+        //    outbound socket. Over budget → Err.
+        if self.host.http.rate_limiter.try_acquire(&tenant).is_err() {
+            return Err("rate limited".to_string());
+        }
+
+        // 4. Build a per-call client pinned to the resolver (gate 2/2). Production
+        //    uses `PinnedPublicResolver` (drops private/loopback/link-local before
+        //    the dial); tests inject a loopback-pinning override. No redirect
+        //    following — a 3xx is returned to the guest verbatim so a redirect
+        //    can never bounce the request out of the allowlist.
+        let resolver: Arc<dyn reqwest::dns::Resolve + Send + Sync> = self
+            .host
+            .http
+            .resolver_override
+            .clone()
+            .unwrap_or_else(|| Arc::new(crate::tenant::webhook_resolver::PinnedPublicResolver));
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(self.host.http.timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(0)
+            .dns_resolver(Arc::new(crate::tenant::webhook_resolver::ResolverHandle(
+                resolver,
+            )))
+            .build()
+            .map_err(|e| format!("client build: {e}"))?;
+
+        // 5. Assemble the request. Guest-supplied headers are filtered: no
+        //    hop-by-hop and no `Host`/`Content-Length` spoofing.
+        let url = format!("{origin}{path}");
+        let mut req = client.request(reqwest_method, &url);
+        for (k, v) in &headers {
+            if is_forbidden_fetch_header(&k.to_ascii_lowercase()) {
+                continue;
+            }
+            req = req.header(k, v);
+        }
+        if !body.is_empty() {
+            req = req.body(body);
+        }
+
+        // 6. Send + read the body with a streaming cap: abort as soon as the
+        //    accumulated bytes exceed `max_response_bytes` (OOM guard).
+        let mut resp = req
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
+        let status = resp.status().as_u16();
+        let resp_headers: Vec<(String, String)> = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_string(),
+                    String::from_utf8_lossy(v.as_bytes()).into_owned(),
+                )
+            })
+            .collect();
+        let cap = self.host.http.max_response_bytes as usize;
+        let mut body_buf: Vec<u8> = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("read body: {e}"))? {
+            if body_buf.len().saturating_add(chunk.len()) > cap {
+                return Err(format!("response exceeds size cap of {cap} bytes"));
+            }
+            body_buf.extend_from_slice(&chunk);
+        }
+
+        // 7. Audit a completed fetch (op `function.http_fetch`).
+        crate::safety::audit_db::try_send(
+            &crate::safety::audit::AuditEntry::success(
+                &tenant,
+                "function",
+                "function.http_fetch",
+                started.elapsed().as_millis() as u64,
+            )
+            .with_extra(serde_json::json!({
+                "origin": origin,
+                "method": method_uc,
+                "status": status,
+            })),
+        );
+
+        Ok(host::HttpResponse {
+            status,
+            headers: resp_headers,
+            body: body_buf,
+        })
+    }
+}
+
+/// Test-gated constructor + wrapper so the integration suite
+/// (`tests/egress_http_fetch.rs`) can drive `http_fetch` directly — the
+/// `HostState` fields are private, so an external test cannot build a
+/// `StoreData` literal.
+#[cfg(any(test, debug_assertions))]
+impl StoreData {
+    /// Build a `StoreData` over a pre-constructed `DrustMcp` + caller + the
+    /// `http-fetch` state (allowlist / caps / resolver). File caps default to
+    /// all-off; `http-fetch` never consults them.
+    pub fn new_for_test(
+        mcp: DrustMcp,
+        caller: crate::functions::caller::CallerCtx,
+        http: HttpFetchState,
+    ) -> Self {
+        StoreData {
+            wasi: wasmtime_wasi::WasiCtxBuilder::new().build(),
+            table: wasmtime::component::ResourceTable::new(),
+            limits: MemLimiter {
+                cap: 64 * 1024 * 1024,
+                oom_hit: false,
+            },
+            host: HostState {
+                mcp,
+                file_read_max: 4 * 1024 * 1024,
+                disk_min_free_pct: 0,
+                log_buf: String::new(),
+                caller,
+                file_caps: crate::tenant::file_caps::TenantFileCaps::default(),
+                http,
+            },
+        }
+    }
+
+    /// Call the production `http_fetch` and flatten the generated
+    /// `host::HttpResponse` into a plain tuple so the test needn't touch the
+    /// bindgen module.
+    pub async fn http_fetch_for_test(
+        &mut self,
+        origin: String,
+        path: String,
+        method: String,
+        body: Vec<u8>,
+        headers: Vec<(String, String)>,
+    ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
+        host::Host::http_fetch(self, origin, path, method, body, headers)
+            .await
+            .map(|r| (r.status, r.headers, r.body))
+    }
 }
 
 /// Production runner.
@@ -386,6 +651,10 @@ pub struct WasmRunner {
     linker: OnceLock<Linker<StoreData>>,
     /// Builds the per-tenant DrustMcp with functions: None.
     seed: HostStateSeed,
+    /// v1.49 — per-tenant `http-fetch` rate limiter, shared across every
+    /// invocation (keyed by tenant id). Built once here so the budget survives
+    /// across the fresh `StoreData` each invocation constructs.
+    http_rl: Arc<crate::safety::rate_limit::RateLimiter>,
 }
 
 /// Everything needed to construct a per-tenant `DrustMcp` for host calls —
@@ -475,6 +744,10 @@ impl HostStateSeed {
 
 impl WasmRunner {
     pub fn new(cfg: FnConfig, seed: HostStateSeed) -> Arc<Self> {
+        let http_rl = Arc::new(crate::safety::rate_limit::RateLimiter::new(
+            cfg.http_rate_per_min,
+            std::time::Duration::from_secs(60),
+        ));
         Arc::new(Self {
             cache: PreCache {
                 cap: cfg.module_cache,
@@ -483,6 +756,7 @@ impl WasmRunner {
             cfg,
             linker: OnceLock::new(),
             seed,
+            http_rl,
         })
     }
 
@@ -554,6 +828,24 @@ impl FunctionRunner for WasmRunner {
             _ => self.seed.load_file_caps(tenant_id).await,
         };
 
+        // Resolve the tenant's egress allowlist ONCE, up front, so the guest
+        // cannot race a config change mid-run. Fail-CLOSED to deny-all `"[]"`
+        // when meta is absent (test ctors) or unreadable.
+        let allowlist_json = match &self.seed.meta {
+            Some(meta) => {
+                let conn = meta.lock().await;
+                crate::tenant::egress::read_egress_allowlist(&conn, tenant_id)
+                    .unwrap_or_else(|_| "[]".to_string())
+            }
+            None => "[]".to_string(),
+        };
+        let http = HttpFetchState::new(
+            allowlist_json,
+            self.cfg.http_timeout_secs,
+            self.cfg.http_max_response_bytes,
+            self.http_rl.clone(),
+        );
+
         // Locked-down WASI: no preopens, no allowed socket addrs, discarded stdio.
         let wasi = wasmtime_wasi::WasiCtxBuilder::new().build();
         let data = StoreData {
@@ -570,6 +862,7 @@ impl FunctionRunner for WasmRunner {
                 log_buf: String::new(),
                 caller,
                 file_caps,
+                http,
             },
         };
         let mut store = Store::new(engine(), data);
@@ -814,6 +1107,7 @@ mod tests {
                 log_buf: String::new(),
                 caller: crate::functions::caller::CallerCtx::Privileged,
                 file_caps: crate::tenant::file_caps::TenantFileCaps::default(),
+                http: HttpFetchState::test_default(),
             },
         };
         (store, pool, tmp)
@@ -892,6 +1186,7 @@ mod tests {
                 log_buf: String::new(),
                 caller,
                 file_caps,
+                http: HttpFetchState::test_default(),
             },
         }
     }

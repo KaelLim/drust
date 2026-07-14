@@ -31,6 +31,15 @@ pub struct FnConfig {
     pub file_read_max_bytes: u64,
     /// DRUST_FN_MODULE_CACHE — compiled-component LRU entries (default 32).
     pub module_cache: usize,
+    /// DRUST_FN_HTTP_TIMEOUT_SECS — per-request timeout for the gated
+    /// `http-fetch` host import (default 10; sits inside the epoch deadline).
+    pub http_timeout_secs: u64,
+    /// DRUST_FN_HTTP_MAX_RESPONSE_BYTES — streaming response-body cap for
+    /// `http-fetch` (default 5 MiB; over → Err, an in-process OOM guard).
+    pub http_max_response_bytes: u64,
+    /// DRUST_FN_HTTP_RATE_PER_MIN — per-tenant `http-fetch` budget over a
+    /// 60 s window (default 60; over → `Err("rate limited")`).
+    pub http_rate_per_min: u32,
 }
 
 impl FnConfig {
@@ -50,6 +59,9 @@ impl FnConfig {
             concurrency: env_or("DRUST_FN_CONCURRENCY", 2),
             file_read_max_bytes: env_or("DRUST_FN_FILE_READ_MAX_BYTES", 32 * 1024 * 1024),
             module_cache: env_or("DRUST_FN_MODULE_CACHE", 32),
+            http_timeout_secs: env_or("DRUST_FN_HTTP_TIMEOUT_SECS", 10),
+            http_max_response_bytes: env_or("DRUST_FN_HTTP_MAX_RESPONSE_BYTES", 5_242_880),
+            http_rate_per_min: env_or("DRUST_FN_HTTP_RATE_PER_MIN", 60),
         }
     }
 
@@ -65,6 +77,9 @@ impl FnConfig {
             concurrency: 2,
             file_read_max_bytes: 4 * 1024 * 1024,
             module_cache: 4,
+            http_timeout_secs: 10,
+            http_max_response_bytes: 5_242_880,
+            http_rate_per_min: 60,
         }
     }
 }
