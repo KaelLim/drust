@@ -1,3 +1,65 @@
+## v1.49.0 — 2026-07-14
+
+### Added
+
+- Per-tenant **egress allowlist** (`src/tenant/egress.rs`): a deny-all-default,
+  origin-level outbound allowlist that gates BOTH webhook delivery and a new
+  `http-fetch` edge-function host import through one shared enforcement helper.
+  Entries are tagged `{system, uri}` where `system ∈ {webhook, function}`
+  (unknown system → deny; empty allowlist → deny both systems) and `uri` is an
+  **origin** — `scheme://host[:port]`, lowercased host, no path/query/trailing
+  slash, default port dropped. The pure `check_egress(json, system, origin)`
+  dispatches on system and matches the EXACT normalized origin (no subdomain or
+  scheme confusion), fail-closed. Config-time `normalize_origin` loudly rejects
+  a non-origin shape; dispatch-time parsing is lenient (bad entries skipped).
+- Storage: idempotent `ADD COLUMN tenants.egress_allowlist_json TEXT NOT NULL
+  DEFAULT '[]'` (guarded on `pragma_table_info`, mirrors `file_anon_caps_json`)
+  + the CREATE TABLE column + `read_egress_allowlist` (returns `'[]'` when the
+  column/row is absent — fail-safe). Read fresh per host-outbound attempt, never
+  cached on the auth hot path.
+- **Webhook third gate**: registration and every dispatch attempt now check the
+  allowlist (`system=webhook`) IN ADDITION TO the existing `check_url` gate and
+  `PinnedPublicResolver` — three independent gates. Registration of a
+  non-allowlisted origin is rejected `EGRESS_NOT_ALLOWLISTED` (400); an origin
+  removed after a subscription exists makes the next dispatch record a delivery
+  failure with no POST.
+- **`http-fetch` host import** (8th WIT host function, `src/functions/runtime.rs`):
+  outbound HTTP for edge functions, the ONLY host op that reaches the public
+  network. Enforcement order per call: `normalize_origin` → `check_egress`
+  (`system=function`) → reqwest client with `.dns_resolver(PinnedPublicResolver)`
+  + `.redirect(none())` + timeout → method allowlist
+  (`GET|POST|PUT|PATCH|DELETE|HEAD`, others rejected) → streamed response with a
+  size cap → per-tenant rate limit → `function.http_fetch` audit row. A 3xx is
+  returned to the guest un-followed (the guest may re-fetch through the same
+  gated call). The tenant allowlist is resolved at HostState build time so the
+  guest cannot race it.
+- One-time, **run-once-per-tenant idempotent** backfill migration seeds each
+  tenant's allowlist from its existing `_system_webhooks` origins (union,
+  deduped) so deny-all doesn't break live webhooks. Guarded by a per-tenant
+  marker — a removed entry is NEVER resurrected on the next boot (the v1.41.5
+  `run_migrations`-idempotency invariant).
+- Config on three faces, **all service-only**, each mutation audited
+  (op `tenant.egress.set`): MCP `set_egress_allowlist` / `get_egress_allowlist`
+  (**MCP tool count 65 → 67**); REST `PUT/GET /t/<id>/egress-allowlist` on the
+  service router group (`require_service_layer` inner + `bearer_auth_layer`
+  outer); admin `⚙ _settings` block listing current entries + add/remove, which
+  also renders the tenant's OAuth redirect URIs read-only alongside (a
+  display-only merge — one glance at every trusted external URI). Whole-list
+  replace (mirrors `set_file_caps`); validation rejects `EGRESS_BAD_ORIGIN`
+  (400), `EGRESS_BAD_SYSTEM` (400) and `EGRESS_TOO_MANY`/`EGRESS_MAX_ENTRIES`
+  (400, count > cap).
+- Env knobs: `DRUST_EGRESS_MAX_ENTRIES` (default 50); `http-fetch` envelope
+  `DRUST_FN_HTTP_TIMEOUT_SECS` (10), `DRUST_FN_HTTP_MAX_RESPONSE_BYTES`
+  (5 MiB / 5_242_880), `DRUST_FN_HTTP_RATE_PER_MIN` (60).
+
+### Invariant
+
+- **Every host-outbound HTTP path MUST pass BOTH `check_egress` AND
+  `PinnedPublicResolver`** — the two are orthogonal SSRF gates (allowlist vs
+  private-IP block) and dropping either reopens the hole. Both current sinks
+  (webhook dispatch, `http-fetch`) wire both per-attempt, fail-closed. Any new
+  host-outbound path MUST route through both.
+
 ## v1.48.1 — 2026-07-14
 
 ### Added
