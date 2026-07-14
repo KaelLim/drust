@@ -429,6 +429,17 @@ pub struct SetFileCapsArgs {
     pub user: Option<Vec<crate::storage::schema::FileVerb>>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetEgressAllowlistArgs {
+    /// Full desired egress allowlist (REPLACE, not merge). Each entry is
+    /// `{system, uri}` where `system` is `"webhook"` or `"function"` and
+    /// `uri` is an origin (`scheme://host[:port]`, no path). An empty list
+    /// denies EVERY outbound path (deny-all default). Bad origin shape →
+    /// EGRESS_BAD_ORIGIN; unknown system → EGRESS_BAD_SYSTEM; over the
+    /// per-tenant limit → EGRESS_TOO_MANY.
+    pub entries: Vec<crate::tenant::egress_config::RawEgressEntry>,
+}
+
 // --- v1.12: Per-tenant OAuth-provider admin parameter types ----------------
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1870,6 +1881,68 @@ impl DrustMcpService {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
+    }
+
+    #[tool(description = "v1.49 — REPLACE this tenant's egress allowlist (whole \
+        list, not merge). Service-only. The allowlist is origin-level \
+        (`scheme://host[:port]`, no path) and tagged by `system`: \
+        `webhook` entries gate outbound webhook delivery, `function` entries \
+        gate the edge-function `http-fetch` host import. Deny-all default — an \
+        empty list denies EVERY outbound path; each subsystem sees only its own \
+        tagged entries. Enforcement is defense-in-depth: this allowlist AND the \
+        `PinnedPublicResolver` (private-IP block) both apply on every outbound \
+        request. Validation: bad origin → EGRESS_BAD_ORIGIN, unknown system \
+        (want webhook|function) → EGRESS_BAD_SYSTEM, over the per-tenant limit \
+        → EGRESS_TOO_MANY. Returns {entries:[{system,uri}]} normalized.")]
+    async fn set_egress_allowlist(
+        &self,
+        Parameters(SetEgressAllowlistArgs { entries }): Parameters<SetEgressAllowlistArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let meta = match self.state.meta() {
+            Some(m) => m.clone(),
+            None => {
+                return Err(McpError::internal_error(
+                    "meta connection not available in this context".to_string(),
+                    None,
+                ));
+            }
+        };
+        let tenant_id = self.state.tenant_id().to_string();
+        match crate::tenant::egress_config::set_allowlist(&meta, &tenant_id, entries, "service")
+            .await
+        {
+            Ok(Ok(stored)) => {
+                let entries: Value =
+                    serde_json::from_str(&stored).unwrap_or_else(|_| serde_json::json!([]));
+                json_content(serde_json::json!({ "entries": entries }))
+            }
+            Ok(Err(e)) => Err(McpError::invalid_params(e.to_string(), None)),
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
+    }
+
+    #[tool(description = "v1.49 — Read this tenant's egress allowlist (the \
+        outbound origins gating webhook delivery and the function `http-fetch` \
+        host import). Service-only. Returns {entries:[{system,uri}]}; an empty \
+        list means deny-all (no outbound path is permitted).")]
+    async fn get_egress_allowlist(
+        &self,
+        Parameters(_): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let meta = match self.state.meta() {
+            Some(m) => m.clone(),
+            None => {
+                return Err(McpError::internal_error(
+                    "meta connection not available in this context".to_string(),
+                    None,
+                ));
+            }
+        };
+        let tenant_id = self.state.tenant_id().to_string();
+        let stored = crate::tenant::egress_config::get_allowlist(&meta, &tenant_id).await;
+        let entries: Value =
+            serde_json::from_str(&stored).unwrap_or_else(|_| serde_json::json!([]));
+        json_content(serde_json::json!({ "entries": entries }))
     }
 
     // ── v1.12: Per-tenant OAuth-provider admin tools ──────────────────────

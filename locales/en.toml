@@ -1133,6 +1133,22 @@ sub = "Record history captures a full old/new row snapshot inside every write tr
 title = "Record history"
 update_failed_title = "Update failed"
 
+[tenant_settings.egress]
+add_button = "Add origin"
+empty = "No origins allowlisted — every outbound webhook and function fetch is denied (deny-all default)."
+oauth_empty = "No OAuth redirect URIs configured for this tenant."
+oauth_sub = "Read-only. Where end-user sign-in returns after Google/GitHub — configured on the OAuth providers page."
+oauth_title = "OAuth redirect URIs"
+remove = "Remove"
+save_failed_title = "Egress update failed"
+sub = "Origins this tenant may call out to. webhook entries gate outbound webhook delivery; function entries gate the edge-function http-fetch. Origin-level (scheme://host[:port]), deny-all by default; the private-IP resolver block applies on top."
+system_function = "function"
+system_label = "System"
+system_webhook = "webhook"
+title = "Egress allowlist"
+uri_label = "Origin"
+uri_placeholder = "https://api.example.com"
+
 [tenant_settings.head]
 sub = "Tenant-level settings: display name and the record-history audit default. Everything else stays on its own page — see Related settings below."
 title = "Settings"

@@ -170,14 +170,15 @@ async fn mcp_set_function_invoke_acl_happy_path() {
 }
 
 #[test]
-fn mcp_exposes_sixty_five_tools() {
-    // v1.48 adds the four cron tools (create_cron_job, list_cron_jobs,
-    // set_cron_job_active, delete_cron_job), bumping the documented MCP tool
-    // count from 61 to 65. `tool_count()` is derived from the macro-generated
-    // router, so this pins router reality to the spec'd number.
+fn mcp_exposes_sixty_seven_tools() {
+    // v1.48 added the four cron tools (61 → 65). v1.49 adds the two egress
+    // tools (set_egress_allowlist, get_egress_allowlist), bumping the
+    // documented MCP tool count from 65 to 67. `tool_count()` is derived from
+    // the macro-generated router, so this pins router reality to the spec'd
+    // number.
     assert_eq!(
         drust::mcp::handler::DrustMcpService::tool_count(),
-        65,
-        "MCP tool count must be 65 after adding the four cron tools"
+        67,
+        "MCP tool count must be 67 after adding the two egress tools"
     );
 }
