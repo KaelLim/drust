@@ -526,6 +526,17 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         "file_user_caps_json",
         "TEXT NOT NULL DEFAULT '[]'",
     )?;
+    // v1.49 — per-tenant egress allowlist. Tagged {system,uri} JSON, origin
+    // level, deny-all default. '[]' denies every outbound path (webhook +
+    // function http-fetch); the run-once backfill (T5) seeds existing webhook
+    // origins so deny-all does not break live webhooks. add_column_if_missing
+    // is the idempotency guard (run_migrations runs every boot — never rewrite).
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "egress_allowlist_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
     // v1.15.0 — denormalized dashboard stats sampled in background.
     add_column_if_missing(meta, "tenants", "db_bytes", "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(meta, "tenants", "files_bytes", "INTEGER NOT NULL DEFAULT 0")?;

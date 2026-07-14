@@ -8,6 +8,7 @@
 //! it holds NO I/O and NO network. Fail-closed everywhere: unknown system,
 //! bad JSON, bad origin shape, or empty list all deny.
 
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 /// Which outbound subsystem an allowlist entry grants. Serialized as its
@@ -130,6 +131,22 @@ pub fn check_egress(allowlist_json: &str, system: EgressSystem, origin: &str) ->
                 .map(|o| o == target)
                 .unwrap_or(false)
     })
+}
+
+/// Read a tenant's stored egress allowlist JSON from `meta.sqlite`. Returns the
+/// deny-all `'[]'` when the row or the column is absent, or on ANY read error —
+/// fail-CLOSED, since an empty allowlist denies every outbound path. The
+/// `Result` is retained for signature symmetry with the rest of the read path
+/// but this helper never surfaces an `Err`; every failure collapses to deny-all.
+pub fn read_egress_allowlist(meta: &Connection, tenant_id: &str) -> rusqlite::Result<String> {
+    let stored = meta
+        .query_row(
+            "SELECT COALESCE(egress_allowlist_json, '[]') FROM tenants WHERE id = ?1",
+            [tenant_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
+    Ok(stored)
 }
 
 #[cfg(test)]
