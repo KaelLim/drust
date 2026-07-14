@@ -93,7 +93,10 @@ async fn happy_fixture_writes_through_host_api() {
 async fn loop_fixture_hits_epoch_timeout() {
     let mut cfg = FnConfig::test_default();
     cfg.timeout_secs = 1;
-    let (runner, _tenants, _tmp) = real_runner(cfg).await;
+    let (runner, tenants, _tmp) = real_runner(cfg).await;
+    // The runner resolves tenants create-free (get_if_live): the tenant DB
+    // must exist first, as production guarantees for every invocation source.
+    tenants.get_or_open("t-w").unwrap();
     let started = std::time::Instant::now();
     let out = runner
         .run(
@@ -114,7 +117,10 @@ async fn loop_fixture_hits_epoch_timeout() {
 async fn membomb_fixture_hits_oom() {
     let mut cfg = FnConfig::test_default();
     cfg.memory_max_bytes = 32 * 1024 * 1024;
-    let (runner, _tenants, _tmp) = real_runner(cfg).await;
+    let (runner, tenants, _tmp) = real_runner(cfg).await;
+    // The runner resolves tenants create-free (get_if_live): the tenant DB
+    // must exist first, as production guarantees for every invocation source.
+    tenants.get_or_open("t-w").unwrap();
     let out = runner
         .run(
             "t-w",
