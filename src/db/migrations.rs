@@ -328,6 +328,95 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
 /// original `sqlite_master.sql` is faithful where `codegen/ir.rs` is lossy.
 /// Returns `None` if the SQL doesn't match the expected drust shape (a single
 /// CREATE TABLE) — caller skips + warns rather than risk corrupting a table.
+/// v1.49 (T5) — one-time, per-tenant backfill of live webhook target origins
+/// into the tenant's egress allowlist. The deny-all `'[]'` default would sever
+/// every existing webhook on upgrade, so on the FIRST boot after v1.49 we scan
+/// each tenant's `_system_webhooks` URLs, normalize them to origins, and merge
+/// them as `{system:"webhook"}` entries (union, deduped) into the allowlist.
+///
+/// Run-once by the `tenants.egress_backfill_done` marker: a tenant whose marker
+/// is already set is skipped entirely, so a subsequent boot NEVER re-adds an
+/// origin an admin deliberately removed (v1.41.5 idempotency invariant). Only
+/// the `system=webhook` slice is seeded — the `function` slice stays deny-all,
+/// since http-fetch is new in v1.49 and has no legacy deployment to preserve.
+/// Best-effort: on any read/parse error the marker is left unset and the boot
+/// proceeds (retried next boot), never propagated as a serving-blocking failure.
+fn backfill_egress_allowlist(
+    meta: &Connection,
+    tenants_dir: &Path,
+    tid: &str,
+) -> rusqlite::Result<()> {
+    // Run-once guard: skip a tenant already backfilled. An absent row / read
+    // error resolves to "done" so we never loop on a vanished tenant.
+    let done: i64 = meta
+        .query_row(
+            "SELECT COALESCE(egress_backfill_done, 0) FROM tenants WHERE id = ?1",
+            [tid],
+            |r| r.get(0),
+        )
+        .unwrap_or(1);
+    if done != 0 {
+        return Ok(());
+    }
+
+    // Collect the tenant's live webhook target origins (may be empty: a tenant
+    // with no data.sqlite or no _system_webhooks table simply backfills nothing
+    // and sets its marker, so this stays a one-time pass for it too).
+    let path = tenants_dir.join("tenants").join(tid).join("data.sqlite");
+    let mut discovered: Vec<String> = Vec::new();
+    if path.exists() {
+        let conn = Connection::open(&path)?;
+        let has_webhooks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='table' AND name='_system_webhooks'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if has_webhooks > 0 {
+            let mut stmt = conn.prepare("SELECT url FROM _system_webhooks")?;
+            let urls: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for url in urls {
+                if let Ok(origin) = crate::tenant::egress::normalize_origin(&url) {
+                    discovered.push(origin);
+                }
+            }
+        }
+    }
+
+    // Merge (union, dedup) the discovered origins into the existing allowlist,
+    // comparing on normalized origin so a stored entry already covering an
+    // origin is never duplicated.
+    let existing = crate::tenant::egress::read_egress_allowlist(meta, tid)?;
+    let mut entries = crate::tenant::egress::parse_allowlist(&existing);
+    for origin in discovered {
+        let already = entries.iter().any(|e| {
+            e.system == crate::tenant::egress::EgressSystem::Webhook
+                && crate::tenant::egress::normalize_origin(&e.uri)
+                    .map(|o| o == origin)
+                    .unwrap_or(false)
+        });
+        if !already {
+            entries.push(crate::tenant::egress::EgressEntry {
+                system: crate::tenant::egress::EgressSystem::Webhook,
+                uri: origin,
+            });
+        }
+    }
+    let merged = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
+
+    // Persist the merged list AND flip the run-once marker in one statement, so
+    // the very next boot short-circuits at the guard above.
+    meta.execute(
+        "UPDATE tenants SET egress_allowlist_json = ?1, egress_backfill_done = 1 WHERE id = ?2",
+        rusqlite::params![merged, tid],
+    )?;
+    Ok(())
+}
+
 fn make_strict_ddl(original_sql: &str, tmp: &str) -> Option<String> {
     let open = original_sql.find('(')?;
     let close = original_sql.rfind(')')?;
@@ -536,6 +625,18 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         "tenants",
         "egress_allowlist_json",
         "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    // v1.49 (T5) — per-tenant run-once marker for the webhook-origin backfill
+    // below. Default 0 = not yet backfilled; the per-tenant loop flips it to 1
+    // once it has merged the tenant's live `_system_webhooks` origins into the
+    // allowlist. run_migrations runs on EVERY boot, so this marker is what keeps
+    // the backfill from resurrecting an origin an admin deliberately removed
+    // (the v1.41.5 idempotency invariant). add_column_if_missing is the guard.
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "egress_backfill_done",
+        "INTEGER NOT NULL DEFAULT 0",
     )?;
     // v1.15.0 — denormalized dashboard stats sampled in background.
     add_column_if_missing(meta, "tenants", "db_bytes", "INTEGER NOT NULL DEFAULT 0")?;
@@ -765,6 +866,14 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
                 // migration failed — the schema may be in an unexpected state.
                 continue;
             }
+        }
+        // v1.49 (T5) — one-time egress backfill: seed this tenant's live webhook
+        // origins into its allowlist so deny-all doesn't sever existing webhooks
+        // on upgrade. Run-once by the egress_backfill_done marker (see fn doc).
+        // Best-effort: a failure leaves the marker unset (retried next boot) and
+        // is logged, NOT added to tenants_failed (which gates the 503 path).
+        if let Err(e) = backfill_egress_allowlist(meta, tenants_root, &tid) {
+            tracing::error!(tenant = %tid, error = ?e, "egress allowlist backfill failed (tenant still serves; retries next boot)");
         }
         // v1.43 — boot-time STRICT rebuild of pre-STRICT tenant collections.
         // Runs AFTER migrate_tenant_db, on a dedicated bare connection (the
