@@ -200,6 +200,43 @@ async fn origin_not_allowlisted_is_denied() {
     assert!(err.contains("not allowlisted"), "got: {err}");
 }
 
+/// (1b) SSRF regression: an ALLOWLISTED origin with a guest `path` that would
+/// rewrite the authority (any non-rooted path — `@host`, `.host`, an IP-literal
+/// userinfo) is denied BEFORE any network I/O — the checked origin and the
+/// dialed host must never disagree. Reverting the path-shape / re-derive guard
+/// in `http_fetch` re-opens this. (A rooted `//host/x` is NOT an injection: it
+/// dials the allowlisted host with `//host/x` as the path, so it is allowed.)
+#[tokio::test(flavor = "multi_thread")]
+async fn guest_path_cannot_alter_the_request_host() {
+    let (mcp, _tmp) = mcp_for("t-fetch-pathinj").await;
+    let allow = r#"[{"system":"function","uri":"https://allowed.com"}]"#;
+    for evil in [
+        "@attacker.com/collect",   // userinfo trick → host=attacker.com
+        ".attacker.com/x",         // label-append → host=allowed.com.attacker.com
+        "@169.254.169.254/latest", // cloud-metadata via IP literal in userinfo
+    ] {
+        let mut store = StoreData::new_for_test(
+            mcp.clone(),
+            CallerCtx::Privileged,
+            http_state(allow, None, 5 * 1024 * 1024),
+        );
+        let err = store
+            .http_fetch_for_test(
+                "https://allowed.com".into(),
+                evil.into(),
+                "POST".into(),
+                b"secret".to_vec(),
+                vec![],
+            )
+            .await
+            .expect_err("path-authority injection must be denied");
+        assert!(
+            err.contains("path must") || err.contains("not allowlisted"),
+            "evil path {evil:?} not rejected: {err}"
+        );
+    }
+}
+
 /// (2) An allowlisted origin whose host is a private IP is dropped by
 /// `PinnedPublicResolver` (default, no override) — the request never completes.
 /// It passes the allowlist gate (so the error is NOT "not allowlisted"),
