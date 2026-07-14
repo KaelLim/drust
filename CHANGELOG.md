@@ -1,3 +1,20 @@
+## v1.48.1 — 2026-07-14
+
+### Added
+
+- MCP `create_rpc` / `update_rpc` accept an optional `mode: "read"|"write"`
+  param (closing the v1.48.0 C5 follow-up — MCP could previously only
+  create/keep read-mode RPCs). Omitting it preserves today's behavior:
+  create defaults to `read`, update keeps the stored mode
+  (`registry::update` receives `None`); an invalid string is refused with
+  `invalid_params` before any DB work. As part of this, `update_rpc` now
+  validates a new `sql` body under the EFFECTIVE mode (the explicit param,
+  else the stored row's) instead of always the read-only authorizer, so a
+  write RPC's replacement write body is no longer spuriously rejected.
+  `call_rpc` stays on the read-only executor regardless of mode — REST,
+  the admin playground and cron fires remain the only write-RPC execution
+  surfaces. MCP tool count stays 65 (param addition only).
+
 ## v1.48.0 — 2026-07-13
 
 ### Added
