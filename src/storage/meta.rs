@@ -27,15 +27,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
 CREATE TABLE IF NOT EXISTS tenants (
-  id               TEXT PRIMARY KEY,
-  name             TEXT NOT NULL,
-  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-  deleted_at       TEXT,
-  quota_db_mb      INTEGER NOT NULL DEFAULT 500,
-  quota_rows       INTEGER NOT NULL DEFAULT 1000000,
-  db_bytes         INTEGER NOT NULL DEFAULT 0,
-  files_bytes      INTEGER NOT NULL DEFAULT 0,
-  stats_updated_at TEXT
+  id                    TEXT PRIMARY KEY,
+  name                  TEXT NOT NULL,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  deleted_at            TEXT,
+  quota_db_mb           INTEGER NOT NULL DEFAULT 500,
+  quota_rows            INTEGER NOT NULL DEFAULT 1000000,
+  db_bytes              INTEGER NOT NULL DEFAULT 0,
+  files_bytes           INTEGER NOT NULL DEFAULT 0,
+  stats_updated_at      TEXT,
+  -- v1.49 — per-tenant egress allowlist ({system,uri} tagged JSON, origin
+  -- level, deny-all default). '[]' denies every outbound path; run_migrations
+  -- adds this idempotently on upgraded DBs. See src/tenant/egress.rs.
+  egress_allowlist_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_tenants_deleted ON tenants(deleted_at);
 
