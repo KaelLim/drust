@@ -2,6 +2,7 @@ pub mod admin_user_routes;
 pub mod auth_routes;
 pub mod collections;
 pub mod egress;
+pub mod egress_config;
 pub mod events;
 pub mod webhook_dispatcher;
 pub mod webhook_resolver;
@@ -638,6 +639,23 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         ))
         .with_state(state.cron.clone());
 
+    // v1.49 — egress-allowlist REST config surface. Service-only: same layer
+    // stack as the functions/cron config routers (`require_service_layer` inner
+    // to `bearer_auth_layer`), so anon/user bearers get `403 WRITE_DENIED`
+    // before the handler runs. State is `auth_state` (TenantAuthState) for its
+    // `meta` handle — the whole-list-replace core writes `tenants` in meta.
+    let egress_router = Router::new()
+        .route(
+            "/t/{tenant}/egress-allowlist",
+            get(egress_config::get_egress_allowlist).put(egress_config::put_egress_allowlist),
+        )
+        .layer(axum::middleware::from_fn(router::require_service_layer))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            router::bearer_auth_layer,
+        ))
+        .with_state(auth_state.clone());
+
     // Auth routes: no bearer token required (register/login are public entry points).
     // State is TenantAuthState (for meta db + registry + rate limiters), but
     // these routes are NOT wrapped in bearer_auth_layer.
@@ -699,6 +717,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .merge(files_router)
         .merge(functions_router)
         .merge(cron_router)
+        .merge(egress_router)
         .merge(auth_router)
         .merge(ws_router);
     // CORS layer goes OUTSIDE bearer_auth_layer (= applied last) so OPTIONS

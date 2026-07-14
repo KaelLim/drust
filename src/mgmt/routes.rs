@@ -893,6 +893,12 @@ impl MgmtState {
                 "/admin/tenants/{id}/audit/apply-all",
                 post(super::tenant_settings::apply_audit_default_all),
             )
+            // v1.49 — egress-allowlist admin face (`⚙ _settings` block).
+            // Whole-list replace via the shared egress_config core.
+            .route(
+                "/admin/tenants/{id}/egress",
+                post(super::tenant_settings::post_egress_allowlist),
+            )
             // v1.46 — `⚙ _settings` virtual sidebar entry: rename form +
             // audit default toggle + apply-to-all, and links to the pages
             // that already host related settings (nothing relocated).

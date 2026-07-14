@@ -74,7 +74,62 @@
           </div>
         </div>
 
-        <!-- 3. Related settings — links only, nothing relocated (spec D8). -->
+        <!-- 3. Egress allowlist — outbound origins for webhooks + function http-fetch. -->
+        <div class="card" style="margin-top:22px;">
+          <div class="card-head">
+            <div>
+              <div class="card-title">{{ t.s("tenant_settings.egress.title") }}</div>
+              <div class="card-sub">{{ t.s("tenant_settings.egress.sub") }}</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <ul id="egress-list" style="list-style:none;padding:0;margin:0 0 14px 0;display:flex;flex-direction:column;gap:8px;">
+              {% for e in egress_entries %}
+              <li class="egress-row" data-system="{{ e.system }}" data-uri="{{ e.uri }}"
+                  style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                <code style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);min-width:66px;">{{ e.system }}</code>
+                <code style="font-family:var(--font-mono);font-size:12px;word-break:break-all;">{{ e.uri }}</code>
+                <button type="button" class="btn egress-remove" style="margin-left:auto;">{{ t.s("tenant_settings.egress.remove") }}</button>
+              </li>
+              {% endfor %}
+            </ul>
+            {% if egress_entries.is_empty() %}
+            <div style="color:var(--muted-2);font-size:11px;margin-bottom:14px;">{{ t.s("tenant_settings.egress.empty") }}</div>
+            {% endif %}
+            <form id="egress-add-form" onsubmit="return false;" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+              <div class="field" style="min-width:120px;">
+                <label for="egress-system">{{ t.s("tenant_settings.egress.system_label") }}</label>
+                <select class="input" id="egress-system">
+                  <option value="webhook">{{ t.s("tenant_settings.egress.system_webhook") }}</option>
+                  <option value="function">{{ t.s("tenant_settings.egress.system_function") }}</option>
+                </select>
+              </div>
+              <div class="field" style="flex:1;min-width:240px;max-width:420px;">
+                <label for="egress-uri">{{ t.s("tenant_settings.egress.uri_label") }}</label>
+                <input class="input" id="egress-uri" autocomplete="off" spellcheck="false"
+                       placeholder="{{ t.s("tenant_settings.egress.uri_placeholder") }}">
+              </div>
+              <button type="submit" class="btn primary" id="egress-add">{{ t.s("tenant_settings.egress.add_button") }}</button>
+            </form>
+
+            <!-- Read-only OAuth redirect URIs alongside (display-only merge, spec §Config). -->
+            <div style="margin-top:20px;">
+              <div class="card-title" style="font-size:13px;">{{ t.s("tenant_settings.egress.oauth_title") }}</div>
+              <div class="card-sub" style="margin-bottom:8px;">{{ t.s("tenant_settings.egress.oauth_sub") }}</div>
+              {% if oauth_redirect_uris.is_empty() %}
+              <div style="color:var(--muted-2);font-size:11px;">{{ t.s("tenant_settings.egress.oauth_empty") }}</div>
+              {% else %}
+              <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px;">
+                {% for u in oauth_redirect_uris %}
+                <li><code style="font-family:var(--font-mono);font-size:12px;word-break:break-all;">{{ u }}</code></li>
+                {% endfor %}
+              </ul>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Related settings — links only, nothing relocated (spec D8). -->
         <div class="card" style="margin-top:22px;">
           <div class="card-head">
             <div>
@@ -169,6 +224,59 @@
         tile.classList.toggle('on', !newVal);
         drustUI.alert({title: '{{ t.s("tenant_settings.audit.update_failed_title") }}', body: ''});
       });
+    });
+  })();
+
+  // Egress allowlist — whole-list replace. Add appends to the current DOM
+  // rows and POSTs the full list; remove filters one out and POSTs. On success
+  // reload so the server re-renders the normalized list. Same core validates
+  // as REST/MCP (server may 400 with a typed EGRESS_* code).
+  (function () {
+    var list = document.getElementById('egress-list');
+    var addForm = document.getElementById('egress-add-form');
+    if (!list || !addForm) return;
+    function collect() {
+      return Array.prototype.map.call(list.querySelectorAll('.egress-row'), function (li) {
+        return { system: li.getAttribute('data-system'), uri: li.getAttribute('data-uri') };
+      });
+    }
+    function save(entries) {
+      fetch('{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/egress', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({entries: entries})
+      }).then(function (r) {
+        if (r.ok) { location.reload(); return; }
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          drustUI.alert({
+            title: '{{ t.s("tenant_settings.egress.save_failed_title") }}',
+            body: (b && (b.message || b.error_code)) || ''
+          });
+        });
+      }).catch(function () {
+        drustUI.alert({title: '{{ t.s("tenant_settings.egress.save_failed_title") }}', body: ''});
+      });
+    }
+    addForm.addEventListener('submit', function () {
+      var sys = document.getElementById('egress-system').value;
+      var input = document.getElementById('egress-uri');
+      var uri = (input.value || '').trim();
+      if (!uri) { input.focus(); return; }
+      var entries = collect();
+      entries.push({system: sys, uri: uri});
+      save(entries);
+    });
+    list.addEventListener('click', function (e) {
+      var btn = e.target.closest ? e.target.closest('.egress-remove') : null;
+      if (!btn) return;
+      var row = btn.closest('.egress-row');
+      if (!row) return;
+      var keepUri = row.getAttribute('data-uri');
+      var keepSys = row.getAttribute('data-system');
+      var entries = collect().filter(function (en) {
+        return !(en.uri === keepUri && en.system === keepSys);
+      });
+      save(entries);
     });
   })();
 

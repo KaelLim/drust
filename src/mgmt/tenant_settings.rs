@@ -226,6 +226,58 @@ pub async fn apply_audit_default_all(
     .into_response()
 }
 
+/// Body for `POST /admin/tenants/{id}/egress` — the admin block submits the
+/// FULL desired allowlist (whole-list replace, same as REST/MCP).
+#[derive(serde::Deserialize)]
+pub struct EgressPost {
+    #[serde(default)]
+    pub entries: Vec<crate::tenant::egress_config::RawEgressEntry>,
+}
+
+/// `POST /admin/tenants/{id}/egress`
+///
+/// v1.49 — admin face of the egress-allowlist config (spec §Config three
+/// faces). Delegates to the SAME transport-agnostic core as the REST/MCP
+/// surfaces (`egress_config::set_allowlist`, actor `"admin-ui"`), so
+/// validation + audit are identical across all three ("同拒同納"). Whole-list
+/// replace. Returns `{ok, entries}` on success, a typed 400
+/// (EGRESS_BAD_ORIGIN / EGRESS_BAD_SYSTEM / EGRESS_TOO_MANY) on validation
+/// failure.
+pub async fn post_egress_allowlist(
+    State(state): State<TenantsState>,
+    Path(tid): Path<String>,
+    axum::Extension(_admin): axum::Extension<crate::auth::middleware::AdminId>,
+    axum::Json(body): axum::Json<EgressPost>,
+) -> Response {
+    match crate::tenant::egress_config::set_allowlist(
+        &state.session.meta,
+        &tid,
+        body.entries,
+        "admin-ui",
+    )
+    .await
+    {
+        Ok(Ok(stored)) => {
+            let entries: serde_json::Value =
+                serde_json::from_str(&stored).unwrap_or_else(|_| json!([]));
+            Json(json!({ "ok": true, "entries": entries })).into_response()
+        }
+        Ok(Err(e)) => json_error(StatusCode::BAD_REQUEST, e.code(), &e.message()),
+        Err(e) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DB_ERROR",
+            &e.to_string(),
+        ),
+    }
+}
+
+/// Display row for the admin egress block (askama-friendly — plain strings,
+/// no enum method calls in the template).
+pub struct EgressEntryView {
+    pub system: String,
+    pub uri: String,
+}
+
 /// The `⚙ _settings` virtual page (spec §5.7). Three sections: Rename
 /// (→ `PATCH /admin/tenants/{id}`), Audit (tenant-default toggle + read-only
 /// retention-days display + apply-to-all), Related settings (links only —
@@ -245,6 +297,12 @@ struct TenantSettingsPage {
     retention_days: u64,
     /// Driver list for `_collection_sidebar.html`.
     collections: Vec<crate::storage::schema::Collection>,
+    /// v1.49 — current egress allowlist entries (normalized) for the block.
+    egress_entries: Vec<EgressEntryView>,
+    /// v1.49 — the tenant's OAuth redirect URIs, rendered READ-ONLY alongside
+    /// the egress block ("one glance at every trusted external URI" — a
+    /// display-only merge, NOT a merged store).
+    oauth_redirect_uris: Vec<String>,
     /// Always `"_settings"` here — sidebar `.on` matching.
     active_coll: String,
     t: Translator,
@@ -280,13 +338,42 @@ pub async fn tenant_settings_page(
         None => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
     };
 
-    // Collections list for the sidebar. Failure (fresh tenant without
-    // data.sqlite yet) is non-fatal — the sidebar still renders the
-    // virtual entries.
-    let collections = crate::storage::tenant_db::open_read(&state.data_dir, &tenant_id)
-        .ok()
-        .and_then(|c| crate::storage::schema::list_collections(&c).ok())
+    // Collections list for the sidebar + OAuth redirect URIs for the egress
+    // block are both read off the tenant db (one open_read). Failure (fresh
+    // tenant without data.sqlite yet) is non-fatal — the sidebar still renders
+    // the virtual entries.
+    let tconn = crate::storage::tenant_db::open_read(&state.data_dir, &tenant_id).ok();
+    let collections = tconn
+        .as_ref()
+        .and_then(|c| crate::storage::schema::list_collections(c).ok())
         .unwrap_or_default();
+    let mut oauth_redirect_uris: Vec<String> = tconn
+        .as_ref()
+        .and_then(|c| crate::tenant::oauth_config::list(c).ok())
+        .map(|provs| {
+            provs
+                .into_iter()
+                .flat_map(|p| p.allowed_redirect_uris)
+                .collect()
+        })
+        .unwrap_or_default();
+    oauth_redirect_uris.sort();
+    oauth_redirect_uris.dedup();
+
+    // v1.49 — current egress allowlist entries (read off meta, normalized on
+    // store so this render is display-ready).
+    let egress_entries: Vec<EgressEntryView> = {
+        let conn = state.session.meta.lock().await;
+        let stored = crate::tenant::egress::read_egress_allowlist(&conn, &tenant_id)
+            .unwrap_or_else(|_| "[]".to_string());
+        crate::tenant::egress::parse_allowlist(&stored)
+            .into_iter()
+            .map(|e| EgressEntryView {
+                system: e.system.as_str().to_string(),
+                uri: e.uri,
+            })
+            .collect()
+    };
 
     let trc = ThemeRenderCtx::build(theme);
     let page = TenantSettingsPage {
@@ -296,6 +383,8 @@ pub async fn tenant_settings_page(
         audit_default,
         retention_days: crate::storage::record_history::retention_days_from_env(),
         collections,
+        egress_entries,
+        oauth_redirect_uris,
         active_coll: "_settings".to_string(),
         t: Translator::new(locale),
         admin,
