@@ -422,6 +422,9 @@ edit_field_desc_aria = "編輯欄位描述"
 indexed = "已建索引"
 primary_key = "主鍵"
 title = "結構"
+
+[collection_rows.system_users]
+title = "使用者"
 [collection_sidebar.api_keys]
 title = "anon · service · MCP 金鑰"
 
@@ -974,6 +977,9 @@ title = "最近活動"
 [tenant_overview.collections_card]
 empty_body = "使用 MCP create_collection 工具或 REST API 來新增一個。"
 empty_title = "尚無使用者資料表"
+
+[tenant_overview.head]
+title = "總覽"
 
 [tenant_overview.header]
 eyebrow = "租戶 · 首頁"
