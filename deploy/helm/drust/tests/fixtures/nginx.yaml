@@ -1,0 +1,4 @@
+createNamespace: true
+ingress: { host: nx.example.test, controller: nginx, className: nginx }
+storage: { enabled: false }
+secrets: { create: true, adminPassword: pw }

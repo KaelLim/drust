@@ -57,5 +57,15 @@ assert_contains full.yaml "anonymous set download"              "public bucket a
 assert_absent   minimal.yaml "name: minio-init"                 "no init job when storage off"
 assert_absent storage-noPublic.yaml "anonymous set download" "no anon policy when publicFiles off"
 
+# --- Task 6 assertions ---
+assert_contains minimal.yaml "kind: Ingress"                          "ingress rendered"
+assert_contains minimal.yaml "127.0.0.1:47826"                        "host rewrite value present"
+assert_contains minimal.yaml "kind: Middleware"                       "traefik middleware for host rewrite"
+assert_contains full.yaml    "cert-manager.io/cluster-issuer: letsencrypt" "cert-manager issuer when tls.enabled"
+assert_contains full.yaml    "path: /public"                          "public path when publicFiles on"
+assert_absent   minimal.yaml "path: /public"                          "no public path when publicFiles off"
+assert_contains nginx.yaml "nginx.ingress.kubernetes.io/upstream-vhost: 127.0.0.1:47826" "nginx upstream-vhost host rewrite"
+assert_absent   nginx.yaml "kind: Middleware" "no traefik middleware for nginx controller"
+
 echo "== $FAILS failure(s) =="
 exit $((FAILS>0))
