@@ -43,5 +43,11 @@ assert_contains full.yaml    "name: GARAGE_ADMIN_ENDPOINT"    "admin endpoint pl
 assert_contains full.yaml    "name: GARAGE_S3_ACCESS_KEY"     "s3 access key env present when storage on"
 assert_absent   minimal.yaml "name: GARAGE_ADMIN_ENDPOINT"    "no admin endpoint env when storage off"
 
+# --- Task 4 assertions ---
+assert_contains full.yaml    "minio/minio"          "minio image when storage on"
+assert_contains full.yaml    "MINIO_ROOT_USER"      "minio root user env"
+assert_contains full.yaml    "port: 9000"           "minio service port"
+assert_absent   minimal.yaml "minio/minio"          "no minio when storage off"
+
 echo "== $FAILS failure(s) =="
 exit $((FAILS>0))

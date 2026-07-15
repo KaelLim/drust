@@ -1,0 +1,58 @@
+{{- if .Values.storage.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "minio.svcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "minio.svcName" . }}
+  replicas: 1                       # single-writer store — NEVER > 1
+  selector:
+    matchLabels:
+      {{- include "minio.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "minio.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: minio
+          image: {{ .Values.storage.minio.image | quote }}
+          args: ["server", "/data", "--address", ":9000"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-access-key } }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-secret-key } }
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet: { path: /minio/health/ready, port: 9000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources.minio | nindent 12 }}
+          volumeMounts:
+            - { name: minio-data, mountPath: /data }
+  volumeClaimTemplates:
+    - metadata:
+        name: minio-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.persistence.storageClassName }}
+        storageClassName: {{ .Values.persistence.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.minio.pvcSize }}
+{{- end }}
