@@ -412,3 +412,39 @@ async fn method_not_allowed_is_denied() {
         .expect_err("TRACE is not in the method allowlist");
     assert!(err.contains("method not allowed"), "got: {err}");
 }
+
+/// (7) Rate-limit ordering (v1.49.1 review fix): a malformed `path` is rejected
+/// by the path-shape guard BEFORE the rate limiter is charged, so it never
+/// burns quota. With a budget of 1, two malformed-path calls both return the
+/// path error; if the guard ran AFTER the limiter, the first call would consume
+/// the sole token and the second would wrongly return "rate limited".
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_path_does_not_consume_rate_limit_quota() {
+    let (mcp, _tmp) = mcp_for("t-fetch-rl-order").await;
+    let allow = r#"[{"system":"function","uri":"https://allowed.com"}]"#;
+    let http = HttpFetchState {
+        allowlist_json: allow.to_string(),
+        rate_limiter: Arc::new(drust::safety::rate_limit::RateLimiter::new(
+            1,
+            std::time::Duration::from_secs(60),
+        )),
+        ..HttpFetchState::test_default()
+    };
+    let mut store = StoreData::new_for_test(mcp, CallerCtx::Privileged, http);
+    for _ in 0..2 {
+        let err = store
+            .http_fetch_for_test(
+                "https://allowed.com".into(),
+                "bad-nonrooted".into(),
+                "GET".into(),
+                vec![],
+                vec![],
+            )
+            .await
+            .expect_err("malformed path must error");
+        assert!(
+            err.contains("path must"),
+            "expected path error (not rate limited): {err}"
+        );
+    }
+}

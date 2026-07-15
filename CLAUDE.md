@@ -5,8 +5,8 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-07-14
-version: 1.49.0
+updated: 2026-07-15
+version: 1.49.1
 ---
 
 # drust — Rust multi-tenant SQLite BaaS

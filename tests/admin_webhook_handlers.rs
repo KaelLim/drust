@@ -170,7 +170,18 @@ async fn empty_state_renders_with_add_form() {
 #[tokio::test]
 async fn create_then_list_shows_row_and_surfaces_secret_once() {
     let tid = "00000000-0000-4000-8000-000000000003";
-    let (app, _data_dir, _td) = build_app(tid).await;
+    let (app, data_dir, _td) = build_app(tid).await;
+
+    // v1.49 egress gate: the admin create path now requires the target origin
+    // to be allowlisted (system=webhook). Allowlist example.com first.
+    {
+        let c = open_meta(&data_dir.join("meta.sqlite")).unwrap();
+        c.execute(
+            "UPDATE tenants SET egress_allowlist_json = ?1 WHERE id = ?2",
+            rusqlite::params![r#"[{"system":"webhook","uri":"https://example.com"}]"#, tid],
+        )
+        .unwrap();
+    }
 
     // POST create
     let form_body = "collection=notes&events=created&url=https%3A%2F%2Fexample.com%2Fone";

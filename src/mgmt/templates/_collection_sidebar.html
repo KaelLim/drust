@@ -95,7 +95,7 @@
     </a>
     <a class="nav-item{% if active_coll == "_cron" %} on{% endif %}"
        href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_cron" title="{{ t.s("collection_sidebar.cron.title") }}">
-      <span class="nav-icon" style="font:600 13px/1 var(--mono);display:grid;place-items:center;">⏰</span>
+      <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
       {{ t.s("collection_sidebar.nav.cron") }}
     </a>
     <a class="nav-item{% if active_coll == "_logs" %} on{% endif %}"

@@ -233,3 +233,59 @@ async fn dispatch_denied_when_origin_removed_records_failure_no_delivery() {
         "failure reason should name the egress gate (not the resolver), got: {reason}"
     );
 }
+
+// ─── (d) PATCH url-change is gated too (v1.49.1 review fix) ──────────────────
+
+/// A `PATCH` that changes a webhook's `url` to a non-allowlisted origin must be
+/// rejected `400 EGRESS_NOT_ALLOWLISTED` — parity with create. Without the gate
+/// a PATCH could persist an unallowlisted target that goes live the moment an
+/// admin allowlists that origin for an unrelated reason.
+#[tokio::test]
+async fn patch_url_denied_when_new_origin_not_allowlisted() {
+    let tid = "t-egress-patch-deny";
+    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+
+    // Allowlist ORIGIN, register a webhook there (201) to get an id.
+    assert_eq!(
+        put_allowlist(
+            &app,
+            tid,
+            &svc,
+            serde_json::json!([{ "system": "webhook", "uri": ORIGIN }]),
+        )
+        .await,
+        200
+    );
+    let (status, v) = create_webhook(&app, tid, &svc, URL).await;
+    assert_eq!(status, 201, "setup create should succeed: {v}");
+    let id = v["id"].as_i64().expect("created webhook id");
+
+    // PATCH the url to a DIFFERENT, non-allowlisted origin → denied.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/t/{tid}/admin/webhooks/{id}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::from(
+                    serde_json::json!({ "url": "https://198.51.100.7/other" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let st = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        st, 400,
+        "PATCH to unallowlisted origin must be denied: {body}"
+    );
+    assert_eq!(
+        body["error_code"].as_str(),
+        Some("EGRESS_NOT_ALLOWLISTED"),
+        "wrong error_code: {body}"
+    );
+}
