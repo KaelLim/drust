@@ -34,7 +34,8 @@ storage:
     rootUser: drustkey
     rootPassword: ""             # set per-group (or via secrets.existingSecret)
     pvcSize: 20Gi
-    publicBucket: public         # GARAGE_PUBLIC_BUCKET; "private" bucket name is fixed
+    # NOTE: bucket names are NOT configurable — drust's write path hardcodes
+    # "public"/"private" (src/storage/files.rs). minio-init always creates exactly those.
   # Placeholders satisfy the mandatory GARAGE_ADMIN_* config (MinIO has no admin API; never dialed).
   adminEndpointPlaceholder: "http://127.0.0.1:1"
   adminTokenPlaceholder: "unused"
@@ -65,8 +66,16 @@ backup:
 
 networkPolicy:
   enabled: true
-  ingressControllerNamespace: kube-system   # where Traefik/nginx runs (k3s: kube-system)
-  clusterCIDRs:                  # denied for egress (blocks cross-group pod/svc reach)
+  # Namespace of the ingress controller. k3s Traefik = kube-system;
+  # nginx-ingress usually = ingress-nginx (set it when controller: nginx).
+  ingressControllerNamespace: kube-system
+  dnsNamespace: kube-system      # namespace running cluster DNS (coredns)
+  # WARNING: cross-group egress isolation depends on these matching the cluster's
+  # REAL pod+service CIDRs. Defaults are k3s-only (10.42/16 pod, 10.43/16 svc). On
+  # Calico/GKE/EKS/custom you MUST set the actual CIDRs or the `except` fails to
+  # cover other groups' pod IPs (fail-open). The destination group's ingress policy
+  # is the fail-closed backstop, but only if every group enables networkPolicy.
+  clusterCIDRs:
     - 10.42.0.0/16               # k3s default pod CIDR
     - 10.43.0.0/16               # k3s default service CIDR
   allowInternetEgress: true      # OAuth / webhooks / http-fetch to public IPs
