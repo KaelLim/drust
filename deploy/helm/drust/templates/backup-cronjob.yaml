@@ -1,0 +1,86 @@
+{{- if .Values.backup.volumeSnapshotClassName }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-backup
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["create", "get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-backup
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-backup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-backup
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: {{ .Release.Name }}-backup
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: snapshot
+              image: {{ .Values.backup.kubectlImage | quote }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  TS=$(date -u +%Y%m%d-%H%M%S)
+                  cat <<EOF | kubectl apply -f -
+                  apiVersion: snapshot.storage.k8s.io/v1
+                  kind: VolumeSnapshot
+                  metadata:
+                    name: drust-data-$TS
+                    namespace: {{ .Release.Namespace }}
+                    labels:
+                      app.kubernetes.io/instance: {{ .Release.Name }}
+                      drust.backup: "true"
+                  spec:
+                    volumeSnapshotClassName: {{ .Values.backup.volumeSnapshotClassName }}
+                    source:
+                      persistentVolumeClaimName: data-{{ include "drust.svcName" . }}-0
+                  EOF
+                  # prune: keep newest {{ .Values.backup.retain }}
+                  kubectl -n {{ .Release.Namespace }} get volumesnapshot \
+                    -l drust.backup=true,app.kubernetes.io/instance={{ .Release.Name }} \
+                    --sort-by=.metadata.creationTimestamp -o name \
+                    | head -n -{{ .Values.backup.retain }} | xargs -r kubectl -n {{ .Release.Namespace }} delete
+{{- end }}
