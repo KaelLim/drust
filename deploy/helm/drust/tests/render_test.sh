@@ -49,5 +49,13 @@ assert_contains full.yaml    "MINIO_ROOT_USER"      "minio root user env"
 assert_contains full.yaml    "port: 9000"           "minio service port"
 assert_absent   minimal.yaml "minio/minio"          "no minio when storage off"
 
+# --- Task 5 assertions ---
+assert_contains full.yaml "name: minio-init"                    "minio-init job rendered"
+assert_contains full.yaml "helm.sh/hook: post-install,post-upgrade" "job is a post hook"
+assert_contains full.yaml "mc mb --ignore-existing"             "buckets created idempotently"
+assert_contains full.yaml "anonymous set download"              "public bucket anon read when publicFiles on"
+assert_absent   minimal.yaml "name: minio-init"                 "no init job when storage off"
+assert_absent storage-noPublic.yaml "anonymous set download" "no anon policy when publicFiles off"
+
 echo "== $FAILS failure(s) =="
 exit $((FAILS>0))

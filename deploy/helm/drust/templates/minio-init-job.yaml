@@ -1,0 +1,49 @@
+{{- if .Values.storage.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        {{- include "drust.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: mc
+          image: {{ .Values.storage.minio.mcImage | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          env:
+            - name: MC_HOST_drust
+              value: "http://$(AK):$(SK)@minio.{{ .Release.Namespace }}.svc:9000"
+            - name: AK
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-access-key } }
+            - name: SK
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-secret-key } }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              until mc ls drust >/dev/null 2>&1; do echo "waiting for minio..."; sleep 2; done
+              mc mb --ignore-existing drust/{{ .Values.storage.minio.publicBucket }}
+              mc mb --ignore-existing drust/private
+              {{- if .Values.publicFiles.enabled }}
+              mc anonymous set download drust/{{ .Values.storage.minio.publicBucket }}
+              {{- end }}
+              echo "minio-init done"
+{{- end }}

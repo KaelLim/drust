@@ -1,0 +1,7 @@
+createNamespace: true
+ingress: { host: sp.example.test, controller: traefik }
+storage:
+  enabled: true
+  minio: { rootUser: u, rootPassword: p }
+publicFiles: { enabled: false }
+secrets: { create: true, adminPassword: pw }
