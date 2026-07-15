@@ -21,5 +21,19 @@ assert_contains minimal.yaml "kind: Namespace" "namespace rendered when createNa
 assert_absent   full.yaml    "kind: Namespace" "namespace absent when createNamespace=false"
 assert_kubeconform minimal.yaml
 
+# --- Task 2 assertions ---
+assert_contains minimal.yaml "kind: StatefulSet"        "drust StatefulSet rendered"
+assert_contains minimal.yaml "replicas: 1"              "replicas pinned to 1"
+assert_contains minimal.yaml "runAsUser: 10001"         "runAsUser 10001"
+assert_contains minimal.yaml "readOnlyRootFilesystem: true" "readOnlyRootFilesystem"
+assert_contains minimal.yaml "seccompProfile"           "seccomp profile set"
+assert_contains minimal.yaml "path: /health"            "health probe path"
+assert_contains minimal.yaml "name: DRUST_DATA_DIR"     "DRUST_DATA_DIR env"
+assert_contains minimal.yaml 'value: /data'             "DRUST_DATA_DIR=/data"
+assert_contains minimal.yaml "name: DRUST_BASE_PATH"    "DRUST_BASE_PATH env present"
+assert_contains full.yaml    "name: GARAGE_S3_ENDPOINT" "storage endpoint when enabled"
+assert_absent   minimal.yaml "name: GARAGE_S3_ENDPOINT" "no storage endpoint when disabled"
+assert_contains minimal.yaml "port: 47826"              "drust service port"
+
 echo "== $FAILS failure(s) =="
 exit $((FAILS>0))

@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "drust.svcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "drust.svcName" . }}
+  replicas: 1                       # single-writer invariant — NEVER > 1
+  selector:
+    matchLabels:
+      {{- include "drust.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "drust.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: drust
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 47826
+          env:
+            - { name: DRUST_DATA_DIR, value: /data }
+            - { name: DRUST_LOG_DIR, value: /logs }
+            - { name: DRUST_BIND, value: "0.0.0.0:47826" }
+            - { name: DRUST_BASE_PATH, value: "" }
+            {{- if .Values.hideVersion }}
+            - { name: DRUST_HIDE_VERSION, value: "1" }
+            {{- end }}
+            - { name: RUST_LOG, value: {{ .Values.logLevel | quote }} }
+            {{- if .Values.publicUrl }}
+            - { name: DRUST_PUBLIC_URL, value: {{ .Values.publicUrl | quote }} }
+            {{- end }}
+            {{- if .Values.storage.enabled }}
+            - { name: GARAGE_S3_ENDPOINT, value: {{ include "minio.endpoint" . | quote }} }
+            - { name: GARAGE_PUBLIC_BUCKET, value: {{ .Values.storage.minio.publicBucket | quote }} }
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /health, port: 47826 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 47826 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources.drust | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: logs, mountPath: /logs }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.persistence.storageClassName }}
+        storageClassName: {{ .Values.persistence.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.data }}
+    - metadata:
+        name: logs
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.persistence.storageClassName }}
+        storageClassName: {{ .Values.persistence.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.logs }}

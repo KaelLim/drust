@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "drust.svcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "drust.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 47826
+      targetPort: 47826
