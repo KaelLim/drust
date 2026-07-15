@@ -78,5 +78,12 @@ assert_contains full.yaml    "name: maintenance"        "maintenance sidecar ren
 assert_contains full.yaml    "drust_session_janitor"    "sidecar runs session janitor"
 assert_absent no-sidecar.yaml "name: maintenance" "no sidecar when disabled"
 
+# --- Task 9 assertions ---
+assert_contains full.yaml    "kind: CronJob"                    "backup cronjob when snapshot class set"
+assert_contains full.yaml    "kind: VolumeSnapshot"             "cronjob creates a VolumeSnapshot manifest"
+assert_contains full.yaml    "csi-hostpath-snapclass"           "snapshot class wired"
+assert_contains full.yaml    'schedule: "0 3 * * *"'            "backup schedule wired"
+assert_absent   minimal.yaml "kind: CronJob"                    "no backup cronjob when class empty"
+
 echo "== $FAILS failure(s) =="
 exit $((FAILS>0))
