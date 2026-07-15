@@ -85,5 +85,10 @@ assert_contains full.yaml    "csi-hostpath-snapclass"           "snapshot class 
 assert_contains full.yaml    'schedule: "0 3 * * *"'            "backup schedule wired"
 assert_absent   minimal.yaml "kind: CronJob"                    "no backup cronjob when class empty"
 
+# --- Task 10: full-matrix kubeconform ---
+for f in minimal full nginx storage-noPublic no-sidecar; do assert_kubeconform "$f.yaml"; done
+# README exists
+[ -f "$CHART/README.md" ] && echo "ok: README present" || { echo "FAIL: README missing"; FAILS=$((FAILS+1)); }
+
 echo "== $FAILS failure(s) =="
 exit $((FAILS>0))
