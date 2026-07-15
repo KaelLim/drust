@@ -1,3 +1,16 @@
+## v1.49.2 — 2026-07-15
+
+### Changed
+
+- Admin per-tenant pages now share one eyebrow format — `TENANT · <tenant name>`
+  — across all 11 pages (previously four different conventions). Page titles
+  (`h1.view-title`) no longer embed emoji/glyph prefixes (Cron `⏰`, Functions
+  `ƒ`). The `_overview` page title is now "Overview" (the tenant name moved to
+  the shared eyebrow).
+- The `_system_users` (End Users) page — which renders through the generic
+  collection editor — now shows a friendly "End Users" title with the standard
+  `view-title` styling instead of the raw `_system_users` table name.
+
 ## v1.49.1 — 2026-07-15
 
 ### Fixed

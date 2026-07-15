@@ -9,8 +9,8 @@
 
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">{{ t.s("tenant_overview.header.eyebrow") }}</div>
-            <h1 class="view-title">{{ tenant_name }}</h1>
+            <div class="eyebrow">{{ t.s("common.label.tenant") }} · {{ tenant_name }}</div>
+            <h1 class="view-title">{{ t.s("tenant_overview.head.title") }}</h1>
             <p class="view-sub">{{ t.fmt2("tenant_overview.header.subtitle", "tenant_id", tenant_id, "created_at", created_at) }}</p>
           </div>
           <span class="pill mint"><span class="dot"></span>{{ t.s("tenant_overview.header.health_pill") }}</span>

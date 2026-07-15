@@ -407,6 +407,9 @@ edit_field_desc_aria = "edit field description"
 indexed = "indexed"
 primary_key = "primary key"
 title = "Schema"
+
+[collection_rows.system_users]
+title = "End Users"
 [collection_sidebar.api_keys]
 title = "anon · service · MCP keys"
 
@@ -956,6 +959,9 @@ title = "Recent activity"
 [tenant_overview.collections_card]
 empty_body = "Use the MCP create_collection tool or the REST API to add one."
 empty_title = "No user collections yet"
+
+[tenant_overview.head]
+title = "Overview"
 
 [tenant_overview.header]
 eyebrow = "Tenant · home"
