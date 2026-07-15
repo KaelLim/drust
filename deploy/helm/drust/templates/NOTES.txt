@@ -1,0 +1,17 @@
+drust "{{ .Release.Name }}" installed in namespace {{ .Release.Namespace }}.
+
+Admin UI:  https://{{ .Values.ingress.host }}/login
+Health:    kubectl -n {{ .Release.Namespace }} exec sts/drust -- curl -s localhost:47826/health
+
+VERIFY (only a live request catches these):
+  1. MCP Host rewrite — `curl -H "Host: {{ .Values.ingress.host }}" https://{{ .Values.ingress.host }}/t/<tenant>/mcp`
+     must NOT return 403/421. The ingress rewrites upstream Host to {{ .Values.ingress.hostRewrite }}.
+{{- if .Values.storage.enabled }}
+  2. Buckets — the minio-init Job created `{{ .Values.storage.minio.publicBucket }}` + `private`.
+     kubectl -n {{ .Release.Namespace }} logs job/minio-init
+{{- end }}
+{{- if not .Values.backup.volumeSnapshotClassName }}
+
+NOTE: backup.volumeSnapshotClassName is empty — NO automatic backup is scheduled.
+Set it to your cluster's VolumeSnapshotClass to enable daily CSI snapshots.
+{{- end }}

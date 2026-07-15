@@ -1,0 +1,80 @@
+# One helm release = one group = one namespace. See README.md.
+createNamespace: true
+
+image:
+  repository: ghcr.io/kaellim/drust
+  tag: "1.49.2"
+  pullPolicy: IfNotPresent
+
+# External hostname for this group's drust. base_path is ALWAYS root ("").
+ingress:
+  host: drust.example.tw
+  controller: traefik            # traefik | nginx
+  # rmcp DNS-rebinding guard: upstream Host MUST be loopback form. Do NOT change.
+  hostRewrite: "127.0.0.1:47826"
+  className: ""                  # optional ingressClassName (nginx); empty = default
+  tls:
+    enabled: true
+    issuer: letsencrypt          # cert-manager ClusterIssuer name (annotation)
+    secretName: ""               # empty => "<release>-tls"
+
+# DRUST_PUBLIC_URL — required for OAuth redirect round-trips; empty disables OAuth.
+publicUrl: ""                    # e.g. https://drust.example.tw
+logLevel: "info,drust=info"      # RUST_LOG
+hideVersion: true                # DRUST_HIDE_VERSION
+
+publicFiles:
+  enabled: false                 # true => extra ingress path /public/* -> MinIO public bucket (anon read)
+
+storage:
+  enabled: true
+  minio:
+    image: "minio/minio:RELEASE.2024-10-13T13-34-11Z"
+    mcImage: "minio/mc:RELEASE.2024-10-08T09-37-26Z"
+    rootUser: drustkey
+    rootPassword: ""             # set per-group (or via secrets.existingSecret)
+    pvcSize: 20Gi
+    publicBucket: public         # GARAGE_PUBLIC_BUCKET; "private" bucket name is fixed
+  # Placeholders satisfy the mandatory GARAGE_ADMIN_* config (MinIO has no admin API; never dialed).
+  adminEndpointPlaceholder: "http://127.0.0.1:1"
+  adminTokenPlaceholder: "unused"
+
+resources:
+  drust:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: "1", memory: 256Mi }
+  minio:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+persistence:
+  storageClassName: ""           # empty => cluster default
+  data: 10Gi                     # /data (SQLite + backups)
+  logs: 1Gi                      # /logs (audit JSONL dir)
+
+maintenance:
+  sidecar:
+    enabled: true                # daily drust_session_janitor loop (shares /data)
+
+backup:
+  # CSI VolumeSnapshot of the /data PVC. Empty class => backup CronJob NOT rendered.
+  volumeSnapshotClassName: ""
+  schedule: "0 3 * * *"          # UTC
+  retain: 7                      # keep newest N snapshots (janitor in the same CronJob)
+  kubectlImage: "bitnami/kubectl:1.30"
+
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: kube-system   # where Traefik/nginx runs (k3s: kube-system)
+  clusterCIDRs:                  # denied for egress (blocks cross-group pod/svc reach)
+    - 10.42.0.0/16               # k3s default pod CIDR
+    - 10.43.0.0/16               # k3s default service CIDR
+  allowInternetEgress: true      # OAuth / webhooks / http-fetch to public IPs
+
+secrets:
+  create: true                   # false => reference existingSecret for all sensitive env
+  existingSecret: ""
+  adminUser: admin               # DRUST_INIT_ADMIN_USERNAME (first boot only)
+  adminPassword: ""              # DRUST_INIT_ADMIN_PASSWORD (first boot only)
+
+extraEnv: []                     # arbitrary DRUST_*/GARAGE_* overrides: [{name, value}]

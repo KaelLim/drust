@@ -1,0 +1,25 @@
+createNamespace: false
+ingress:
+  host: full.example.test
+  controller: traefik
+  tls:
+    enabled: true
+    issuer: letsencrypt
+publicUrl: https://full.example.test
+publicFiles:
+  enabled: true
+storage:
+  enabled: true
+  minio:
+    rootUser: fulluser
+    rootPassword: fullpw
+    pvcSize: 20Gi
+backup:
+  volumeSnapshotClassName: csi-hostpath-snapclass
+  schedule: "0 3 * * *"
+maintenance:
+  sidecar:
+    enabled: true
+secrets:
+  create: true
+  adminPassword: fullpw

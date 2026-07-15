@@ -1,0 +1,9 @@
+createNamespace: true
+ingress:
+  host: min.example.test
+  controller: traefik
+storage:
+  enabled: false
+secrets:
+  create: true
+  adminPassword: testpw
