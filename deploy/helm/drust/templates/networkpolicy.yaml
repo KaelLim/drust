@@ -1,0 +1,77 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-drust
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "drust.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressControllerNamespace }}
+      ports:
+        - { protocol: TCP, port: 47826 }
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    {{- if .Values.storage.enabled }}
+    # drust -> own MinIO (same namespace)
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "minio.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 9000 }
+    {{- end }}
+    {{- if .Values.networkPolicy.allowInternetEgress }}
+    # Internet (OAuth / webhooks / http-fetch) — everything EXCEPT cluster CIDRs,
+    # so other groups' pods/services stay unreachable. drust's PinnedPublicResolver
+    # is the second SSRF layer.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range .Values.networkPolicy.clusterCIDRs }}
+              - {{ . }}
+              {{- end }}
+    {{- end }}
+{{- if .Values.storage.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-minio
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "minio.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "drust.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 9000 }
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+{{- end }}
+{{- end }}

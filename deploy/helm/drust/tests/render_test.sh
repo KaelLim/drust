@@ -67,5 +67,11 @@ assert_absent   minimal.yaml "path: /public"                          "no public
 assert_contains nginx.yaml "nginx.ingress.kubernetes.io/upstream-vhost: 127.0.0.1:47826" "nginx upstream-vhost host rewrite"
 assert_absent   nginx.yaml "kind: Middleware" "no traefik middleware for nginx controller"
 
+# --- Task 7 assertions ---
+assert_contains minimal.yaml "kind: NetworkPolicy"      "networkpolicy rendered"
+assert_contains minimal.yaml "port: 53"                 "DNS egress allowed"
+assert_contains full.yaml    "10.42.0.0/16"             "cluster pod CIDR in egress except"
+assert_contains full.yaml    "port: 9000"               "drust->minio egress allowed when storage on"
+
 echo "== $FAILS failure(s) =="
 exit $((FAILS>0))
