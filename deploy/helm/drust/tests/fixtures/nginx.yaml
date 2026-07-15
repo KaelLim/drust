@@ -1,4 +1,6 @@
 createNamespace: true
 ingress: { host: nx.example.test, controller: nginx, className: nginx }
 storage: { enabled: false }
+# nginx-ingress typically runs in its own namespace, not kube-system.
+networkPolicy: { ingressControllerNamespace: ingress-nginx }
 secrets: { create: true, adminPassword: pw }

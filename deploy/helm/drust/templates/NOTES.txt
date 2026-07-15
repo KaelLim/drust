@@ -7,8 +7,13 @@ VERIFY (only a live request catches these):
   1. MCP Host rewrite — `curl -H "Host: {{ .Values.ingress.host }}" https://{{ .Values.ingress.host }}/t/<tenant>/mcp`
      must NOT return 403/421. The ingress rewrites upstream Host to {{ .Values.ingress.hostRewrite }}.
 {{- if .Values.storage.enabled }}
-  2. Buckets — the minio-init Job created `{{ .Values.storage.minio.publicBucket }}` + `private`.
+  2. Buckets — the minio-init Job created `public` + `private`.
      kubectl -n {{ .Release.Namespace }} logs job/minio-init
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+  3. NetworkPolicy — cross-group isolation assumes networkPolicy.clusterCIDRs matches
+     THIS cluster's real pod+service CIDRs (defaults are k3s-only). Confirm before trusting
+     isolation on Calico/GKE/EKS/custom. nginx controllers need networkPolicy.ingressControllerNamespace.
 {{- end }}
 {{- if not .Values.backup.volumeSnapshotClassName }}
 

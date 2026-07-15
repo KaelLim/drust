@@ -29,6 +29,10 @@ spec:
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
           env:
+            # mc's default HOME (/root) is unwritable for a non-root uid; point its
+            # config dir at the writable /tmp so `mc` can init under runAsNonRoot.
+            - { name: HOME, value: /tmp }
+            - { name: MC_CONFIG_DIR, value: /tmp/.mc }
             - name: MC_HOST_drust
               value: "http://$(AK):$(SK)@minio.{{ .Release.Namespace }}.svc:9000"
             - name: AK
@@ -40,10 +44,13 @@ spec:
             - |
               set -e
               until mc ls drust >/dev/null 2>&1; do echo "waiting for minio..."; sleep 2; done
-              mc mb --ignore-existing drust/{{ .Values.storage.minio.publicBucket }}
+              # Bucket names are FIXED: drust's write path hardcodes "public"/"private"
+              # (src/storage/files.rs bucket_for) — GARAGE_PUBLIC_BUCKET only affects the
+              # boot ping, so these must not be parameterized.
+              mc mb --ignore-existing drust/public
               mc mb --ignore-existing drust/private
               {{- if .Values.publicFiles.enabled }}
-              mc anonymous set download drust/{{ .Values.storage.minio.publicBucket }}
+              mc anonymous set download drust/public
               {{- end }}
               echo "minio-init done"
 {{- end }}

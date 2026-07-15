@@ -62,7 +62,8 @@ spec:
             {{- end }}
             {{- if .Values.storage.enabled }}
             - { name: GARAGE_S3_ENDPOINT, value: {{ include "minio.endpoint" . | quote }} }
-            - { name: GARAGE_PUBLIC_BUCKET, value: {{ .Values.storage.minio.publicBucket | quote }} }
+            # FIXED literal: drust's write path hardcodes bucket "public" (files.rs).
+            - { name: GARAGE_PUBLIC_BUCKET, value: "public" }
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -101,6 +102,10 @@ spec:
                 sleep $(( tgt - now ))
                 echo "[maintenance] running drust_session_janitor"
                 drust_session_janitor || echo "[maintenance] janitor exited non-zero"
+                # reclaim soft-deleted tenant dirs (spec §9 trash sweep). Non-fatal:
+                # if the slim image lacks `find`, the loop keeps running the janitor.
+                find /data/_trash -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null \
+                  || echo "[maintenance] trash sweep skipped"
               done
           volumeMounts:
             - { name: data, mountPath: /data }

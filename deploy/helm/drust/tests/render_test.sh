@@ -85,6 +85,17 @@ assert_contains full.yaml    "csi-hostpath-snapclass"           "snapshot class 
 assert_contains full.yaml    'schedule: "0 3 * * *"'            "backup schedule wired"
 assert_absent   minimal.yaml "kind: CronJob"                    "no backup cronjob when class empty"
 
+# --- Review-fix regression guards ---
+# HIGH: backup RoleBinding subject must carry a namespace (else RBAC never matches the SA)
+if _render full.yaml | awk '/kind: RoleBinding/{r=1} r&&/kind: ServiceAccount/{s=1} r&&s&&/^[[:space:]]*namespace:/{print "OK"; exit}' | grep -q OK; then
+  echo "ok: backup RoleBinding subject has namespace"; else echo "FAIL: backup RoleBinding subject missing namespace"; FAILS=$((FAILS+1)); fi
+assert_contains full.yaml "MC_CONFIG_DIR"          "minio-init mc has a writable config dir"
+assert_contains full.yaml "runAsGroup: 1000"       "minio runAsGroup pinned"
+assert_contains full.yaml "public-file GETs arrive" "minio NetworkPolicy admits ingress-controller when publicFiles on"
+assert_absent storage-noPublic.yaml "public-file GETs arrive" "no ingress-controller MinIO rule when publicFiles off"
+assert_contains full.yaml "/data/_trash"           "maintenance sidecar sweeps trash"
+assert_contains full.yaml "mc mb --ignore-existing drust/public" "minio-init creates the literal public bucket"
+
 # --- Task 10: full-matrix kubeconform ---
 for f in minimal full nginx storage-noPublic no-sidecar; do assert_kubeconform "$f.yaml"; done
 # README exists

@@ -71,8 +71,7 @@ storage:
   minio:
     rootUser: group-a-key
     rootPassword: "CHANGE-ME"     # required when storage.enabled
-    pvcSize: 20Gi
-    publicBucket: public          # GARAGE_PUBLIC_BUCKET; the "private" bucket name is fixed
+    pvcSize: 20Gi                 # bucket names are fixed ("public"/"private"), not configurable
 maintenance:
   sidecar:
     enabled: true                 # daily drust_session_janitor
@@ -150,23 +149,20 @@ promoting.
 > same filesystem/RBAC controls you would to the bootstrap Secret; never copy a
 > snapshot off-cluster unencrypted; reroll tokens after any suspected leak.
 
-## Manual trash cleanup (optional)
+## Trash cleanup
 
-drust soft-deletes tenants into `/data/_trash/<dir>`. The maintenance sidecar
-runs **only** the session janitor (`drust_session_janitor`) — it does not reap
-trash, because the slim runtime image is not guaranteed to ship `find`. To
-reclaim soft-deleted tenant directories, either exec in and remove them
-explicitly:
+drust soft-deletes tenants into `/data/_trash/<dir>`. The maintenance sidecar's
+daily loop runs the session janitor (`drust_session_janitor`) **and** attempts a
+trash sweep (`find /data/_trash -mtime +7 -exec rm -rf`). The sweep is
+**non-fatal**: the slim runtime image is not guaranteed to ship `find`, so if
+`find` is missing the sidecar logs `trash sweep skipped` and keeps running the
+janitor. If your image lacks `find`, reclaim trash manually:
 
 ```bash
-kubectl -n group-a exec sts/drust -- sh -c 'rm -rf /data/_trash/<dir>'
+kubectl -n group-a exec sts/drust -c drust -- sh -c 'rm -rf /data/_trash/<dir>'
 ```
 
-or schedule your own busybox CronJob mounting the same PVC:
-
-```sh
-find /data/_trash -mtime +7 -delete
-```
+or schedule your own busybox CronJob mounting the same PVC (`find /data/_trash -mtime +7 -delete`).
 
 ## Known caveats
 
@@ -177,7 +173,18 @@ find /data/_trash -mtime +7 -delete
 - **`networkPolicy.clusterCIDRs` must match your cluster's real pod/service
   CIDRs.** The defaults (`10.42.0.0/16` / `10.43.0.0/16`) are the k3s defaults;
   if your cluster differs, the internet-egress `except` block will either leak
-  cross-group reachability or over-block. Confirm your CNI's CIDRs.
+  cross-group reachability or over-block. Confirm your CNI's CIDRs. The
+  destination group's ingress policy is the fail-closed backstop — but only if
+  **every** group deploys with `networkPolicy.enabled`.
+- **nginx-ingress needs `networkPolicy.ingressControllerNamespace`.** It defaults
+  to `kube-system` (correct for k3s Traefik); nginx-ingress usually runs in
+  `ingress-nginx`. If it is wrong, the NetworkPolicy black-holes the controller's
+  traffic to drust (and to MinIO when `publicFiles.enabled`). `networkPolicy.dnsNamespace`
+  likewise assumes cluster DNS runs in `kube-system`.
+- **MinIO runs with `readOnlyRootFilesystem: true`.** MinIO persists under `/data`
+  and uses `HOME=/tmp` (emptyDir), so a read-only root is expected to work — but
+  confirm MinIO reaches `/minio/health/ready` on your image tag after first
+  install; if it crash-loops on a read-only root, that is the place to look.
 - **`GARAGE_ADMIN_ENDPOINT` / `GARAGE_ADMIN_TOKEN` are unused placeholders.**
   drust's config requires them to be present whenever `GARAGE_S3_ENDPOINT` is
   set, but MinIO has no Garage admin API and they are never dialed. The chart

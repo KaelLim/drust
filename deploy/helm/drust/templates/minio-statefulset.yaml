@@ -20,6 +20,7 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
+        runAsGroup: 1000
         fsGroup: 1000
         seccompProfile: { type: RuntimeDefault }
       containers:
@@ -28,8 +29,12 @@ spec:
           args: ["server", "/data", "--address", ":9000"]
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
           env:
+            # MinIO persists everything under /data (.minio.sys); HOME->/tmp keeps any
+            # $HOME scratch off the read-only root. Live-verify MinIO starts read-only.
+            - { name: HOME, value: /tmp }
             - name: MINIO_ROOT_USER
               valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-access-key } }
             - name: MINIO_ROOT_PASSWORD
@@ -44,6 +49,10 @@ spec:
             {{- toYaml .Values.resources.minio | nindent 12 }}
           volumeMounts:
             - { name: minio-data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
   volumeClaimTemplates:
     - metadata:
         name: minio-data

@@ -19,9 +19,12 @@ spec:
       ports:
         - { protocol: TCP, port: 47826 }
   egress:
-    # DNS
+    # DNS — scoped to the cluster DNS namespace (not every namespace) so port-53
+    # can't be a covert channel to a co-tenant pod.
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -67,9 +70,21 @@ spec:
               {{- include "drust.selectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 9000 }
+    {{- if .Values.publicFiles.enabled }}
+    # public-file GETs arrive from the ingress controller via the /public path,
+    # not from drust — allow that source too when public serving is on.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressControllerNamespace }}
+      ports:
+        - { protocol: TCP, port: 9000 }
+    {{- end }}
   egress:
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
