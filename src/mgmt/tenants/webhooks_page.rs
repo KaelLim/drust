@@ -305,6 +305,35 @@ pub async fn tenant_webhook_create_form(
         )
         .await;
     }
+    // Egress registration gate (v1.49) — parity with the REST/MCP create paths.
+    if !crate::tenant::webhook_dispatcher::registration_egress_allowed(
+        &state.session.meta,
+        &tenant_id,
+        &form.url,
+    )
+    .await
+    {
+        return render_webhooks_page(
+            &state,
+            tenant_id,
+            WebhookPageContext {
+                error: Some(
+                    "target origin is not on this tenant's egress allowlist \
+                     (system=webhook); add it in the Settings page first"
+                        .to_string(),
+                ),
+                form_collection: form.collection,
+                form_events: form.events,
+                form_url: form.url,
+                secret_once: None,
+            },
+            None,
+            locale,
+            theme,
+            admin.clone(),
+        )
+        .await;
+    }
     let collection_trim = form.collection.trim().to_string();
     if collection_trim.is_empty() {
         return render_webhooks_page(

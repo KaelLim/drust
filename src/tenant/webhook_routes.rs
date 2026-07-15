@@ -205,30 +205,21 @@ pub async fn create_handler(
         return r;
     }
     // Egress allowlist third gate (v1.49): after check_url passes, the target
-    // origin must be present as a `system=webhook` entry on this tenant's
-    // allowlist, else reject. ADDED alongside check_url (above) + the
-    // dispatch-time PinnedPublicResolver; never a replacement. Loopback dev
-    // targets keep check_url's carve-out (already resolver-exempt), so a
-    // release build with no opt-in still gates loopback here and at dispatch.
-    if !crate::tenant::webhook_dispatcher::is_loopback_dev_url(&body.url) {
-        let allowlist = {
-            let conn = state.meta.lock().await;
-            crate::tenant::egress::read_egress_allowlist(&conn, &tid)
-                .unwrap_or_else(|_| "[]".to_string())
-        };
-        if !crate::tenant::egress::check_egress(
-            &allowlist,
-            crate::tenant::egress::EgressSystem::Webhook,
-            &body.url,
-        ) {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "EGRESS_NOT_ALLOWLISTED",
-                "target origin is not on this tenant's egress allowlist \
-                 (system=webhook); add it via PUT /t/<id>/egress-allowlist \
-                 or the settings page before registering",
-            );
-        }
+    // origin must be a `system=webhook` entry on this tenant's allowlist, else
+    // reject. ADDED alongside check_url (above) + the dispatch-time
+    // PinnedPublicResolver; never a replacement. Shared with the patch / MCP /
+    // admin registration surfaces via `registration_egress_allowed` so all
+    // register-time gates are identical (loopback carve-out included).
+    if !crate::tenant::webhook_dispatcher::registration_egress_allowed(&state.meta, &tid, &body.url)
+        .await
+    {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "EGRESS_NOT_ALLOWLISTED",
+            "target origin is not on this tenant's egress allowlist \
+             (system=webhook); add it via PUT /t/<id>/egress-allowlist \
+             or the settings page before registering",
+        );
     }
     let pool = match state.registry.get_or_open(&tid) {
         Ok(p) => p,
@@ -383,6 +374,21 @@ pub async fn patch_handler(
         && let Err(r) = validate_url(u)
     {
         return r;
+    }
+    // Egress gate on a URL change — same policy as create_handler, else a
+    // PATCH could persist an unallowlisted target that goes live the moment
+    // an admin allowlists that origin for another reason.
+    if let Some(ref u) = body.url
+        && !crate::tenant::webhook_dispatcher::registration_egress_allowed(&state.meta, &tid, u)
+            .await
+    {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "EGRESS_NOT_ALLOWLISTED",
+            "target origin is not on this tenant's egress allowlist \
+             (system=webhook); add it via PUT /t/<id>/egress-allowlist \
+             or the settings page before updating",
+        );
     }
     if let Some(ref evs) = body.events
         && let Err(r) = validate_events(evs)

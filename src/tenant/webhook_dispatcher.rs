@@ -138,6 +138,29 @@ pub(crate) fn dispatch_egress_allowed(allowlist_json: &str, url: &str) -> bool {
     )
 }
 
+/// Registration-side webhook egress gate (v1.49) — the SAME policy as
+/// `dispatch_egress_allowed`, but reads the allowlist from a live meta handle
+/// (registration paths hold `Arc<Mutex<Connection>>`; dispatch opens its own
+/// read-only conn). Returns true iff `url` may be REGISTERED as a webhook
+/// target for `tenant`. Wired into EVERY registration surface (REST
+/// create/patch, MCP create/update, admin UI) so the register-time gate is
+/// consistent: a non-allowlisted origin is rejected at registration, never
+/// merely at delivery — which also prevents a persisted non-allowlisted row
+/// from silently going live if an admin later allowlists that origin for an
+/// unrelated reason. Fail-closed (empty/unreadable allowlist denies).
+pub(crate) async fn registration_egress_allowed(
+    meta: &Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    tenant: &str,
+    url: &str,
+) -> bool {
+    let allowlist = {
+        let conn = meta.lock().await;
+        crate::tenant::egress::read_egress_allowlist(&conn, tenant)
+            .unwrap_or_else(|_| "[]".to_string())
+    };
+    dispatch_egress_allowed(&allowlist, url)
+}
+
 /// Read a tenant's egress allowlist JSON from `meta.sqlite` for the dispatch
 /// gate. Opens a short-lived READ-ONLY connection (dispatch runs on a spawned,
 /// off-hot-path task, so a per-event open is acceptable). Fail-CLOSED: any

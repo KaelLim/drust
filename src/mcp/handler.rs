@@ -2060,6 +2060,22 @@ impl DrustMcpService {
             url,
         }): Parameters<CreateWebhookArgs>,
     ) -> Result<CallToolResult, McpError> {
+        // Egress registration gate (v1.49) — parity with the REST/admin
+        // create paths. In prod `meta()` is always Some; test ctors pass None
+        // (they exercise the SQL body, not egress policy) and skip the gate.
+        if let Some(meta) = self.state.meta()
+            && !crate::tenant::webhook_dispatcher::registration_egress_allowed(
+                meta,
+                self.state.tenant_id(),
+                &url,
+            )
+            .await
+        {
+            return bail_mcp(anyhow::anyhow!(
+                "EGRESS_NOT_ALLOWLISTED: target origin is not on this tenant's \
+                 egress allowlist (system=webhook); add it via set_egress_allowlist first"
+            ));
+        }
         match webhook_tools::create_webhook(&self.state.inner().pool, collection, events, url).await
         {
             Ok(v) => json_content(v),
@@ -2095,6 +2111,21 @@ impl DrustMcpService {
             url,
         }): Parameters<UpdateWebhookArgs>,
     ) -> Result<CallToolResult, McpError> {
+        // Egress registration gate on a URL change (v1.49) — parity with the
+        // REST PATCH path. Only gates when a new url is supplied.
+        if let (Some(meta), Some(u)) = (self.state.meta(), url.as_ref())
+            && !crate::tenant::webhook_dispatcher::registration_egress_allowed(
+                meta,
+                self.state.tenant_id(),
+                u,
+            )
+            .await
+        {
+            return bail_mcp(anyhow::anyhow!(
+                "EGRESS_NOT_ALLOWLISTED: target origin is not on this tenant's \
+                 egress allowlist (system=webhook); add it via set_egress_allowlist first"
+            ));
+        }
         match webhook_tools::update_webhook(&self.state.inner().pool, id, active, events, url).await
         {
             Ok(v) => json_content(v),

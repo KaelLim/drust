@@ -537,13 +537,32 @@ impl host::Host for StoreData {
             other => return Err(format!("method not allowed: {other}")),
         };
 
-        // 3. Per-tenant rate limit — BEFORE the dial so a denied call costs no
+        // 3. Path-shape guard (pure, cheap — BEFORE the rate limit so a
+        //    malformed path never burns quota). The guest-supplied `path` must
+        //    be empty or rooted (`/...`): a bare `@host`, `.host`, or `//host`
+        //    would rewrite the authority and dial a host the allowlist never
+        //    checked (SSRF — gate 1 saw only `origin`). Reject non-rooted paths,
+        //    then RE-DERIVE the origin the assembled URL actually dials and
+        //    require it to equal the gated origin — DiD belt-and-suspenders:
+        //    `normalize_origin` rejects userinfo (`@`) and strips the path, so
+        //    any residual authority-injection fails closed even if the
+        //    leading-`/` check is ever loosened.
+        if !path.is_empty() && !path.starts_with('/') {
+            return Err("path must be empty or start with '/'".to_string());
+        }
+        let url = format!("{origin}{path}");
+        let dialed = normalize_origin(&url).map_err(|e| format!("bad url: {e}"))?;
+        if dialed != origin {
+            return Err("path must not alter the request host".to_string());
+        }
+
+        // 4. Per-tenant rate limit — BEFORE the dial so a denied call costs no
         //    outbound socket. Over budget → Err.
         if self.host.http.rate_limiter.try_acquire(&tenant).is_err() {
             return Err("rate limited".to_string());
         }
 
-        // 4. Build a per-call client pinned to the resolver (gate 2/2). Production
+        // 5. Build a per-call client pinned to the resolver (gate 2/2). Production
         //    uses `PinnedPublicResolver` (drops private/loopback/link-local before
         //    the dial); tests inject a loopback-pinning override. No redirect
         //    following — a 3xx is returned to the guest verbatim so a redirect
@@ -565,25 +584,9 @@ impl host::Host for StoreData {
             .build()
             .map_err(|e| format!("client build: {e}"))?;
 
-        // 5. Assemble the request. The guest-supplied `path` must be empty or
-        //    rooted (`/...`): a bare `@host`, `.host`, or `//host` would rewrite
-        //    the authority and dial a host the allowlist never checked (SSRF —
-        //    gate 1 saw only `origin`). Reject non-rooted paths, then RE-DERIVE
-        //    the origin the assembled URL actually dials and require it to equal
-        //    the gated origin — DiD belt-and-suspenders: `normalize_origin`
-        //    rejects userinfo (`@`) and strips the path, so any residual
-        //    authority-injection fails closed here even if the leading-`/` check
-        //    is ever loosened.
-        if !path.is_empty() && !path.starts_with('/') {
-            return Err("path must be empty or start with '/'".to_string());
-        }
-        let url = format!("{origin}{path}");
-        let dialed = normalize_origin(&url).map_err(|e| format!("bad url: {e}"))?;
-        if dialed != origin {
-            return Err("path must not alter the request host".to_string());
-        }
-        // Guest-supplied headers are filtered: no hop-by-hop, no `Host`/
-        // `Content-Length` spoofing.
+        // 6. Assemble the request. Guest-supplied headers are filtered: no
+        //    hop-by-hop, no `Host`/`Content-Length` spoofing. `url`/`dialed`
+        //    were validated in step 3, before the rate limit.
         let mut req = client.request(reqwest_method, &url);
         for (k, v) in &headers {
             if is_forbidden_fetch_header(&k.to_ascii_lowercase()) {

@@ -1,3 +1,22 @@
+## v1.49.1 — 2026-07-15
+
+### Fixed
+
+- Webhook egress allowlist gate is now applied consistently at EVERY
+  registration surface (codex review). v1.49.0 gated only the REST create
+  route; the REST `PATCH` (url change), the MCP `create_webhook`/`update_webhook`
+  tools, and the admin-UI create form persisted to `_system_webhooks` without
+  the `system=webhook` allowlist check. The dispatch-time gate still blocked
+  actual delivery, so no data left the host, but a persisted non-allowlisted
+  webhook would silently go live if an admin later allowlisted that origin for
+  an unrelated reason. All four surfaces now share one
+  `registration_egress_allowed` helper (loopback carve-out included).
+- `http-fetch` no longer charges the per-tenant rate limiter for a malformed
+  `path`: the path-shape guard runs before the rate-limit acquire, so a call
+  that cannot dial never burns quota.
+- Admin sidebar `_cron` entry now uses a line-art clock SVG matching the other
+  entries instead of the `⏰` emoji.
+
 ## v1.49.0 — 2026-07-14
 
 ### Added
