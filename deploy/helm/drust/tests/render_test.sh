@@ -35,5 +35,13 @@ assert_contains full.yaml    "name: GARAGE_S3_ENDPOINT" "storage endpoint when e
 assert_absent   minimal.yaml "name: GARAGE_S3_ENDPOINT" "no storage endpoint when disabled"
 assert_contains minimal.yaml "port: 47826"              "drust service port"
 
+# --- Task 3 assertions ---
+assert_contains minimal.yaml "kind: Secret"                  "Secret rendered when create=true"
+assert_contains minimal.yaml "name: DRUST_INIT_ADMIN_PASSWORD" "admin password env wired"
+assert_contains minimal.yaml "secretKeyRef"                   "admin password via secretKeyRef"
+assert_contains full.yaml    "name: GARAGE_ADMIN_ENDPOINT"    "admin endpoint placeholder env present when storage on"
+assert_contains full.yaml    "name: GARAGE_S3_ACCESS_KEY"     "s3 access key env present when storage on"
+assert_absent   minimal.yaml "name: GARAGE_ADMIN_ENDPOINT"    "no admin endpoint env when storage off"
+
 echo "== $FAILS failure(s) =="
 exit $((FAILS>0))
