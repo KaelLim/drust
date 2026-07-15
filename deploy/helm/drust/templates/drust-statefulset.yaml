@@ -81,6 +81,31 @@ spec:
             - { name: data, mountPath: /data }
             - { name: logs, mountPath: /logs }
             - { name: tmp, mountPath: /tmp }
+        {{- if .Values.maintenance.sidecar.enabled }}
+        - name: maintenance
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          env:
+            - { name: DRUST_DATA_DIR, value: /data }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                # run at ~04:00 UTC: sleep the remaining seconds of the day past 04:00
+                now=$(date -u +%s); mid=$(( (now/86400)*86400 )); tgt=$(( mid + 14400 ))
+                [ "$now" -ge "$tgt" ] && tgt=$(( tgt + 86400 ))
+                sleep $(( tgt - now ))
+                echo "[maintenance] running drust_session_janitor"
+                drust_session_janitor || echo "[maintenance] janitor exited non-zero"
+              done
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+        {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}

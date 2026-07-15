@@ -1,0 +1,5 @@
+createNamespace: true
+ingress: { host: ns.example.test, controller: traefik }
+storage: { enabled: false }
+maintenance: { sidecar: { enabled: false } }
+secrets: { create: true, adminPassword: pw }

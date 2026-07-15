@@ -73,5 +73,10 @@ assert_contains minimal.yaml "port: 53"                 "DNS egress allowed"
 assert_contains full.yaml    "10.42.0.0/16"             "cluster pod CIDR in egress except"
 assert_contains full.yaml    "port: 9000"               "drust->minio egress allowed when storage on"
 
+# --- Task 8 assertions ---
+assert_contains full.yaml    "name: maintenance"        "maintenance sidecar rendered when enabled"
+assert_contains full.yaml    "drust_session_janitor"    "sidecar runs session janitor"
+assert_absent no-sidecar.yaml "name: maintenance" "no sidecar when disabled"
+
 echo "== $FAILS failure(s) =="
 exit $((FAILS>0))
