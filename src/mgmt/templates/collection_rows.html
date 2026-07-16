@@ -165,7 +165,7 @@
               {% endfor %}
               {% if indices.is_empty() %}
               <tr>
-                <td colspan="5" style="text-align:center;color:var(--muted-2);padding:24px;font:400 14px/1 var(--sans);">
+                <td colspan="5" style="text-align:center;color:var(--muted-2);padding:24px;font:400 14px/1 var(--font-sans);">
                   {{ t.s("collection_rows.indexes.empty") }}
                 </td>
               </tr>
@@ -173,13 +173,13 @@
             </tbody>
           </table>
           <div class="card-body-tight" style="border-top:1px solid var(--border-mid);">
-            <div style="font:600 11px/1 var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">{{ t.s("collection_rows.indexes.create_heading") }}</div>
-            <div style="font:400 12px/1.5 var(--sans);color:var(--muted);margin-bottom:12px;">
+            <div style="font:600 11px/1 var(--font-sans);color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">{{ t.s("collection_rows.indexes.create_heading") }}</div>
+            <div style="font:400 12px/1.5 var(--font-sans);color:var(--muted);margin-bottom:12px;">
               Row order is the index column order (matters for composite indexes).
             </div>
             <div id="idx-rows" style="display:flex;flex-direction:column;gap:8px;">
               <div class="idx-row" style="display:flex;gap:8px;align-items:center;">
-                <span class="idx-num muted" style="font-family:var(--mono);font-size:13px;width:24px;text-align:right;">1.</span>
+                <span class="idx-num muted" style="font-family:var(--font-mono);font-size:13px;width:24px;text-align:right;">1.</span>
                 <select class="select idx-field" style="flex:1;min-width:0;">
                   <option value="">{{ t.s("collection_rows.indexes.select_field_placeholder") }}</option>
                   {% for f in fields %}
@@ -191,7 +191,7 @@
             </div>
             <div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap;">
               <button type="button" id="idx-add" class="btn btn-sm">{{ t.s("collection_rows.indexes.add_field_btn") }}</button>
-              <span id="idx-preview" class="muted" style="font-family:var(--mono);font-size:13px;flex:1;min-width:0;"></span>
+              <span id="idx-preview" class="muted" style="font-family:var(--font-mono);font-size:13px;flex:1;min-width:0;"></span>
             </div>
             <div style="display:flex;gap:18px;align-items:center;margin-top:14px;flex-wrap:wrap;">
               <label class="check">
@@ -325,7 +325,7 @@
         </script>
 
         {# --- Stats footer (new in v1.28) --- #}
-        <div style="padding:14px 18px;border-top:1px solid var(--border-strong);font:400 12px/1.4 var(--sans);color:var(--muted);">
+        <div style="padding:14px 18px;border-top:1px solid var(--border-strong);font:400 12px/1.4 var(--font-sans);color:var(--muted);">
           {{ fields.len() }} {{ t.s("collection_page.definition.fields_heading") }} ·
           {{ indices.len() }} {{ t.s("collection_page.definition.indexes_heading") }} ·
           <span id="def-row-count">…</span> rows
@@ -385,11 +385,11 @@
               </label>
             </form>
             <details style="margin-top:8px;">
-              <summary style="cursor:pointer;color:var(--muted);font:400 12px/1.4 var(--sans);">SSE quickstart (curl / Node / Browser)</summary>
-              <div style="font:400 12px/1.5 var(--mono);color:var(--muted);margin-top:6px;">
+              <summary style="cursor:pointer;color:var(--muted);font:400 12px/1.4 var(--font-sans);">SSE quickstart (curl / Node / Browser)</summary>
+              <div style="font:400 12px/1.5 var(--font-mono);color:var(--muted);margin-top:6px;">
                 <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px;">
                   <span class="pill accent"><span class="dot"></span>curl</span>
-                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">works with anon (needs <code>select</code> cap) or service token</span>
+                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--font-sans);">works with anon (needs <code>select</code> cap) or service token</span>
                 </div>
 <pre class="code">curl -N \
   -H "Authorization: Bearer drust_service_…" \
@@ -397,7 +397,7 @@
 
                 <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
                   <span class="pill lilac"><span class="dot"></span>Node.js</span>
-                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">native <code>EventSource</code> can't send headers — use the <code>eventsource</code> npm package</span>
+                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--font-sans);">native <code>EventSource</code> can't send headers — use the <code>eventsource</code> npm package</span>
                 </div>
 <pre class="code">import EventSource from 'eventsource'; // npm i eventsource
 
@@ -412,7 +412,7 @@ es.addEventListener('deleted', e =&gt; console.log('-', JSON.parse(e.data).id));
 
                 <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
                   <span class="pill warn"><span class="dot"></span>Browser</span>
-                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--sans);">native <code>EventSource</code> can't send <code>Authorization</code> — proxy through a BFF, or use <code>fetch</code> + <code>ReadableStream</code></span>
+                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--font-sans);">native <code>EventSource</code> can't send <code>Authorization</code> — proxy through a BFF, or use <code>fetch</code> + <code>ReadableStream</code></span>
                 </div>
 <pre class="code">// Anon tokens in URLs are unsafe — keep the bearer server-side and proxy the
 // stream from your BFF. Direct fetch shown here for completeness.
@@ -457,21 +457,21 @@ for (;;) {
                 <span>{{ t.s("collection_page.audit.toggle_label") }}</span>
               </label>
             </form>
-            <p style="font:400 12px/1.5 var(--sans);color:var(--muted);margin:8px 0 0;">{{ t.s("collection_page.audit.hint") }}</p>
+            <p style="font:400 12px/1.5 var(--font-sans);color:var(--muted);margin:8px 0 0;">{{ t.s("collection_page.audit.hint") }}</p>
           </section>
           <section>
             <h3>{{ t.s("collection_page.settings.section.policies") }}</h3>
-            <p style="font:400 12px/1.5 var(--sans);color:var(--muted);margin:0 0 8px;">{{ t.s("collection_page.policies.intro") }}</p>
+            <p style="font:400 12px/1.5 var(--font-sans);color:var(--muted);margin:0 0 8px;">{{ t.s("collection_page.policies.intro") }}</p>
             {% if owner_field.is_some() %}
-            <p class="pill warn" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 10px;font:400 11.5px/1.4 var(--sans);"><span class="dot"></span>{{ t.s("collection_page.policies.owner_note") }}</p>
+            <p class="pill warn" style="display:inline-flex;align-items:center;gap:6px;margin:0 0 10px;font:400 11.5px/1.4 var(--font-sans);"><span class="dot"></span>{{ t.s("collection_page.policies.owner_note") }}</p>
             {% endif %}
             <div id="policy-builders"></div>
             <div style="display:flex;align-items:center;gap:10px;margin-top:10px;">
               <button type="button" id="policy-save" class="btn btn-sm btn-primary">{{ t.s("collection_page.policies.save") }}</button>
-              <span id="policy-save-msg" style="font:400 12px/1.4 var(--sans);color:var(--muted);"></span>
+              <span id="policy-save-msg" style="font:400 12px/1.4 var(--font-sans);color:var(--muted);"></span>
             </div>
             <details style="margin-top:10px;">
-              <summary style="cursor:pointer;color:var(--muted);font:400 12px/1.4 var(--sans);">{{ t.s("collection_page.policies.view_json") }}</summary>
+              <summary style="cursor:pointer;color:var(--muted);font:400 12px/1.4 var(--font-sans);">{{ t.s("collection_page.policies.view_json") }}</summary>
               <pre id="policy-json-view" class="code" style="margin-top:6px;max-height:240px;overflow:auto;"></pre>
             </details>
           </section>
@@ -484,8 +484,8 @@ for (;;) {
         {# ============================== Explain modal ============================== #}
         <div id="explain-modal" class="coll-modal" hidden>
           <div class="coll-modal-body">
-            <h2 style="font:600 16px/1 var(--sans);margin:0 0 12px;">{{ t.s("collection_rows.explain.title") }}</h2>
-            <textarea id="explain-sql" rows="4" style="width:100%;padding:8px;font-family:var(--mono);font-size:13px;" placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
+            <h2 style="font:600 16px/1 var(--font-sans);margin:0 0 12px;">{{ t.s("collection_rows.explain.title") }}</h2>
+            <textarea id="explain-sql" rows="4" style="width:100%;padding:8px;font-family:var(--font-mono);font-size:13px;" placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
             <div style="margin-top:8px;display:flex;gap:8px;">
               <button type="button" id="explain-run" class="btn btn-sm btn-primary">{{ t.s("collection_rows.explain.run_btn") }}</button>
               <button type="button" id="explain-close" class="btn btn-sm btn-ghost">Close</button>
@@ -497,7 +497,7 @@ for (;;) {
         {# ============================== History modal (v1.46) ============================== #}
         <div id="history-modal" class="coll-modal" hidden>
           <div class="coll-modal-body" style="max-width:760px;">
-            <h2 style="font:600 16px/1 var(--sans);margin:0 0 12px;">{{ t.s("collection_page.history.title") }} <span id="history-rec-label" style="color:var(--muted);font-family:var(--mono);font-weight:400;"></span></h2>
+            <h2 style="font:600 16px/1 var(--font-sans);margin:0 0 12px;">{{ t.s("collection_page.history.title") }} <span id="history-rec-label" style="color:var(--muted);font-family:var(--font-mono);font-weight:400;"></span></h2>
             <div id="history-timeline" style="max-height:60vh;overflow:auto;"></div>
             <div style="margin-top:10px;display:flex;gap:8px;">
               <button type="button" id="history-close" class="btn btn-sm btn-ghost">Close</button>
@@ -994,9 +994,9 @@ for (;;) {
       }).join('');
       if (!body) body = '<tr><td colspan="3" style="color:var(--muted-2,currentColor);">{{ t.s("collection_page.history.no_field_changes") }}</td></tr>';
       return '<div style="margin:0 0 14px;border:1px solid var(--border-mid);border-radius:8px;overflow:hidden;">'
-        + '<div style="display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border-mid);font:400 12px/1.4 var(--sans);color:var(--muted);">'
+        + '<div style="display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border-mid);font:400 12px/1.4 var(--font-sans);color:var(--muted);">'
         +   '<span class="pill ' + (op === 'insert' ? 'mint' : op === 'delete' ? 'warn' : 'accent') + '"><span class="dot"></span>' + escapeHtml(op) + '</span>'
-        +   '<span style="font-family:var(--mono);">#' + escapeHtml(String(row[col.id])) + '</span>'
+        +   '<span style="font-family:var(--font-mono);">#' + escapeHtml(String(row[col.id])) + '</span>'
         +   '<span>' + escapeHtml(String(row[col.ts])) + ' UTC</span>'
         +   '<span>' + escapeHtml(actor) + '</span>'
         + '</div>'
@@ -1173,13 +1173,13 @@ for (;;) {
       const block = document.createElement('div');
       block.style.cssText = 'margin:6px 0;';
       const lbl = document.createElement('div');
-      lbl.style.cssText = 'font:600 11px/1.4 var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.04em;';
+      lbl.style.cssText = 'font:600 11px/1.4 var(--font-mono);color:var(--muted);text-transform:uppercase;letter-spacing:.04em;';
       lbl.textContent = labelKey;
       block.appendChild(lbl);
       const adv = (advanced[op] || {})[dir];
       if (adv) {
         const note = document.createElement('div');
-        note.style.cssText = 'font:400 12px/1.4 var(--sans);color:var(--muted);';
+        note.style.cssText = 'font:400 12px/1.4 var(--font-sans);color:var(--muted);';
         note.textContent = 'advanced expression — edit via PUT …/policies';
         block.appendChild(note);
         return block;
@@ -1208,7 +1208,7 @@ for (;;) {
         const det = document.createElement('details');
         det.style.cssText = 'margin:4px 0;border:1px solid var(--border-mid,currentColor);border-radius:6px;padding:6px 8px;';
         const sum = document.createElement('summary');
-        sum.style.cssText = 'cursor:pointer;font:600 12px/1.4 var(--sans);';
+        sum.style.cssText = 'cursor:pointer;font:600 12px/1.4 var(--font-sans);';
         const hasAny = (model[op].using.length || model[op].check.length || (advanced[op] && (advanced[op].using||advanced[op].check)));
         sum.textContent = op + (hasAny ? ' •' : '');
         det.appendChild(sum);
@@ -1235,7 +1235,7 @@ for (;;) {
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error((j.error_code ? j.error_code + ': ' : '') + (j.message || r.statusText));
-        msg.style.color = 'var(--ok, currentColor)';
+        msg.style.color = 'var(--mint, currentColor)';
         msg.textContent = '{{ t.s("collection_page.policies.saved") }}';
       } catch (e) {
         msg.style.color = 'var(--danger, currentColor)';

@@ -23,10 +23,10 @@
               <span class="pill {% if o.status == "ok" %}mint{% else %}danger{% endif %}"><span class="dot"></span>{{ o.status }}</span>
               <span class="pill muted">{{ o.duration_ms }} ms</span>
             </div>
-            <pre style="margin-top:10px;background:var(--bg-2);padding:10px 12px;border-radius:6px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.5 var(--mono);color:var(--text);white-space:pre-wrap;word-break:break-word;">{{ o.result }}</pre>
+            <pre style="margin-top:10px;background:var(--surface-2);padding:10px 12px;border-radius:6px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.5 var(--font-mono);color:var(--fg);white-space:pre-wrap;word-break:break-word;">{{ o.result }}</pre>
             {% if o.logs.len() > 0 %}
-            <div style="margin-top:8px;font:600 11px/1 var(--mono);color:var(--muted);">{{ t.s("tenant_functions.logs_heading") }}</div>
-            <pre style="margin-top:4px;background:var(--bg-2);padding:10px 12px;border-radius:6px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.5 var(--mono);color:var(--muted);white-space:pre-wrap;word-break:break-word;">{{ o.logs }}</pre>
+            <div style="margin-top:8px;font:600 11px/1 var(--font-mono);color:var(--muted);">{{ t.s("tenant_functions.logs_heading") }}</div>
+            <pre style="margin-top:4px;background:var(--surface-2);padding:10px 12px;border-radius:6px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.5 var(--font-mono);color:var(--muted);white-space:pre-wrap;word-break:break-word;">{{ o.logs }}</pre>
             {% endif %}
           </div>
         </div>
@@ -59,17 +59,17 @@
               <tr>
                 <td>
                   <b>{{ f.name }}</b>
-                  <div style="font:500 11px/1 var(--mono);color:var(--muted);margin-top:3px;">{{ f.sha_short }}</div>
+                  <div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-top:3px;">{{ f.sha_short }}</div>
                 </td>
-                <td><span style="font:500 12px/1.4 var(--mono);color:var(--muted);">{{ f.triggers_summary }}</span></td>
-                <td style="text-align:right;font:500 12px/1 var(--mono);">{{ f.size_bytes }}</td>
+                <td><span style="font:500 12px/1.4 var(--font-mono);color:var(--muted);">{{ f.triggers_summary }}</span></td>
+                <td style="text-align:right;font:500 12px/1 var(--font-mono);">{{ f.size_bytes }}</td>
                 <td style="text-align:center;">
                   {% if f.active %}<span class="pill mint"><span class="dot"></span>{{ t.s("tenant_functions.active_on") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_functions.active_off") }}</span>{% endif %}
                 </td>
                 <td>
                   {% if f.last_status.len() > 0 %}
                     <span class="pill {% if f.last_status == "ok" %}mint{% else %}danger{% endif %}">{{ f.last_status }}</span>
-                    <div style="font:500 11px/1 var(--mono);color:var(--muted);margin-top:3px;">{{ f.last_run_at }}</div>
+                    <div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-top:3px;">{{ f.last_run_at }}</div>
                   {% else %}
                     <span class="pill muted">{{ t.s("tenant_functions.never_run") }}</span>
                   {% endif %}
@@ -85,11 +85,11 @@
                   </form>
                   <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/invoke-acl"
                         style="margin:8px 0 0;display:flex;gap:12px;align-items:center;justify-content:flex-end;flex-wrap:wrap;">
-                    <span style="font:600 11px/1 var(--mono);color:var(--muted);">{{ t.s("tenant_functions.invoke_acl_label") }}</span>
-                    <label style="display:inline-flex;gap:5px;align-items:center;font:500 12px/1 var(--mono);color:var(--text);">
+                    <span style="font:600 11px/1 var(--font-mono);color:var(--muted);">{{ t.s("tenant_functions.invoke_acl_label") }}</span>
+                    <label style="display:inline-flex;gap:5px;align-items:center;font:500 12px/1 var(--font-mono);color:var(--fg);">
                       <input type="checkbox" name="invoke_anon" value="true"{% if f.invoke_anon %} checked{% endif %}>{{ t.s("tenant_functions.invoke_acl_anon") }}
                     </label>
-                    <label style="display:inline-flex;gap:5px;align-items:center;font:500 12px/1 var(--mono);color:var(--text);">
+                    <label style="display:inline-flex;gap:5px;align-items:center;font:500 12px/1 var(--font-mono);color:var(--fg);">
                       <input type="checkbox" name="invoke_user" value="true"{% if f.invoke_user %} checked{% endif %}>{{ t.s("tenant_functions.invoke_acl_user") }}
                     </label>
                     <button type="submit" class="btn sm">{{ t.s("tenant_functions.invoke_acl_save") }}</button>
@@ -99,26 +99,26 @@
               <tr>
                 <td colspan="6" style="padding:0 12px 12px;">
                   <details>
-                    <summary style="cursor:pointer;font:600 12px/1 var(--mono);color:var(--muted);">{{ t.s("tenant_functions.logs_heading") }}</summary>
+                    <summary style="cursor:pointer;font:600 12px/1 var(--font-mono);color:var(--muted);">{{ t.s("tenant_functions.logs_heading") }}</summary>
                     {% if f.logs.is_empty() %}
-                    <p style="font:500 12px/1 var(--mono);color:var(--muted);margin:8px 0 0;">{{ t.s("tenant_functions.never_run") }}</p>
+                    <p style="font:500 12px/1 var(--font-mono);color:var(--muted);margin:8px 0 0;">{{ t.s("tenant_functions.never_run") }}</p>
                     {% else %}
                     {% for l in f.logs %}
                     <div style="margin-top:8px;border-left:2px solid var(--border-mid);padding-left:10px;">
-                      <div style="font:500 11px/1.4 var(--mono);color:var(--muted);">
+                      <div style="font:500 11px/1.4 var(--font-mono);color:var(--muted);">
                         <span class="pill {% if l.status == "ok" %}mint{% else %}danger{% endif %}">{{ l.status }}</span>
                         {{ l.trigger }} · {{ l.duration_ms }} ms · {{ l.created_at }}
                       </div>
-                      {% if l.log_text.len() > 0 %}<pre style="margin:4px 0 0;background:var(--bg-2);padding:8px 10px;border-radius:6px;font:500 11px/1.5 var(--mono);color:var(--text);overflow-x:auto;white-space:pre-wrap;word-break:break-word;">{{ l.log_text }}</pre>{% endif %}
+                      {% if l.log_text.len() > 0 %}<pre style="margin:4px 0 0;background:var(--surface-2);padding:8px 10px;border-radius:6px;font:500 11px/1.5 var(--font-mono);color:var(--fg);overflow-x:auto;white-space:pre-wrap;word-break:break-word;">{{ l.log_text }}</pre>{% endif %}
                     </div>
                     {% endfor %}
                     {% endif %}
                   </details>
                   <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/invoke"
                         style="margin:10px 0 0;display:grid;gap:8px;">
-                    <label style="font:600 12px/1 var(--mono);color:var(--muted);">{{ t.s("tenant_functions.invoke_label") }}</label>
+                    <label style="font:600 12px/1 var(--font-mono);color:var(--muted);">{{ t.s("tenant_functions.invoke_label") }}</label>
                     <textarea name="event" rows="3" spellcheck="false"
-                              style="width:100%;font:500 12px/1.5 var(--mono);background:var(--bg-2);color:var(--text);border:1px solid var(--border-mid);border-radius:6px;padding:8px 10px;"
+                              style="width:100%;font:500 12px/1.5 var(--font-mono);background:var(--surface-2);color:var(--fg);border:1px solid var(--border-mid);border-radius:6px;padding:8px 10px;"
                               placeholder='{&quot;hello&quot;:&quot;world&quot;}'>{}</textarea>
                     <div><button type="submit" class="btn sm primary">{{ t.s("tenant_functions.btn_invoke") }}</button></div>
                   </form>
@@ -138,7 +138,7 @@
             </div>
           </div>
           <div class="card-body">
-            <pre style="background:var(--bg-2);padding:12px 14px;border-radius:8px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.6 var(--mono);color:var(--text);white-space:pre-wrap;word-break:break-all;">curl -X POST {{ public_base_url }}{{ crate::base_path::base_path() }}/t/{{ tenant_id }}/functions \
+            <pre style="background:var(--surface-2);padding:12px 14px;border-radius:8px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.6 var(--font-mono);color:var(--fg);white-space:pre-wrap;word-break:break-all;">curl -X POST {{ public_base_url }}{{ crate::base_path::base_path() }}/t/{{ tenant_id }}/functions \
   -H "Authorization: Bearer &lt;SERVICE_TOKEN&gt;" \
   -F name=my_function \
   -F triggers='[{"collection":"posts","events":["created"]}]' \

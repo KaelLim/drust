@@ -276,7 +276,7 @@
 {% endif %}
 
 {% if parse_errors > 0 || !archive_errors.is_empty() %}
-<div class="muted" style="margin-top:14px;font:500 11px/1.4 var(--mono);letter-spacing:0.04em;">
+<div class="muted" style="margin-top:14px;font:500 11px/1.4 var(--font-mono);letter-spacing:0.04em;">
   {% if parse_errors > 0 %}{{ t.fmt1("audit_body.diag.unparseable_skipped", "count", parse_errors) }} {% endif %}
   {% if !archive_errors.is_empty() %}{{ t.fmt1("audit_body.diag.corrupt_archives_skipped", "count", archive_errors.len()) }} {{ archive_errors|join(", ") }}.{% endif %}
 </div>

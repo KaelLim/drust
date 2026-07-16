@@ -46,7 +46,7 @@
         <input id="room-input" class="input" type="text"
                placeholder="{{ t.s("broadcast_inspector.connect.placeholder") }}"
                pattern="^[a-zA-Z][a-zA-Z0-9_:.\-]{0,127}$"
-               style="font-family:var(--mono);margin-top:4px;"
+               style="font-family:var(--font-mono);margin-top:4px;"
                {% if bearer_missing %}disabled{% endif %}>
       </label>
       <button id="btn-connect" type="button" class="btn btn-primary"
@@ -72,7 +72,7 @@
         </label>
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:10px;">
           <div id="pub-payload-msg" class="muted" style="font-size:12px;flex:1;min-width:120px;min-height:18px;"></div>
-          <div id="pub-counter" class="muted" style="font-size:11px;font-family:var(--mono);"></div>
+          <div id="pub-counter" class="muted" style="font-size:11px;font-family:var(--font-mono);"></div>
           <button id="btn-send" type="button" class="btn btn-primary" disabled>
             {{ t.s("broadcast_inspector.publish.btn_send") }}
           </button>
@@ -117,7 +117,7 @@
       <div id="tail-new-pill" hidden
            style="position:sticky;bottom:6px;margin:0 auto;width:fit-content;
                   background:var(--accent);color:#fff;padding:4px 10px;border-radius:999px;
-                  cursor:pointer;font-size:11px;font-family:var(--mono);"></div>
+                  cursor:pointer;font-size:11px;font-family:var(--font-mono);"></div>
     </div>
   </div>
 </div>

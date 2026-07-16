@@ -26,7 +26,7 @@
             <div class="b-title">{{ t.fmt1("tenant_webhooks_admin.secret_banner.title", "id", s.id) }}</div>
             <p>{{ t.s("tenant_webhooks_admin.secret_banner.body") }}</p>
             <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
-              <code id="webhook-secret-once" style="flex:1;min-width:0;overflow-x:auto;background:var(--bg-2);padding:8px 10px;border-radius:6px;border:1px solid var(--border-mid);font:500 13px/1 var(--mono);color:var(--text);user-select:all;letter-spacing:0.03em;">{{ s.secret }}</code>
+              <code id="webhook-secret-once" style="flex:1;min-width:0;overflow-x:auto;background:var(--surface-2);padding:8px 10px;border-radius:6px;border:1px solid var(--border-mid);font:500 13px/1 var(--font-mono);color:var(--fg);user-select:all;letter-spacing:0.03em;">{{ s.secret }}</code>
               <button type="button" class="btn sm" onclick="(function(){var t=document.getElementById('webhook-secret-once').innerText;navigator.clipboard.writeText(t);})();">{{ t.s("common.actions.copy") }}</button>
             </div>
           </div>
@@ -88,7 +88,7 @@
               {% for ev in r.events %}<span class="pill accent">{{ ev }}</span>{% endfor %}
               <span class="pill muted">id {{ r.id }}</span>
             </div>
-            {% if let Some(reason) = r.last_failure_reason %}<div style="margin-top:6px;font:500 11px/1.4 var(--mono);color:var(--danger);max-width:60ch;word-break:break-word;">{{ reason }}</div>{% endif %}
+            {% if let Some(reason) = r.last_failure_reason %}<div style="margin-top:6px;font:500 11px/1.4 var(--font-mono);color:var(--danger);max-width:60ch;word-break:break-word;">{{ reason }}</div>{% endif %}
           </div>
           <div class="hk-rate">
             <div class="meta">{{ r.created_at }}</div>

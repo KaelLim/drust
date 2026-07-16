@@ -65,8 +65,8 @@
         {# v1.31 — broadcast rooms snapshot + evict-all action. #}
         <div class="card" style="margin-bottom:18px;padding:14px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
           <div style="flex:1 1 auto;min-width:0;">
-            <div style="font:600 12.5px/1.2 var(--sans);color:var(--text);margin-bottom:4px;">{{ t.s("tenant_overview.broadcast.title") }}</div>
-            <div style="font:500 12px/1.4 var(--mono);color:var(--muted-2);">
+            <div style="font:600 12.5px/1.2 var(--font-sans);color:var(--fg);margin-bottom:4px;">{{ t.s("tenant_overview.broadcast.title") }}</div>
+            <div style="font:500 12px/1.4 var(--font-mono);color:var(--muted-2);">
               {{ t.fmt2("tenant_overview.broadcast.summary", "rooms", broadcast_room_count, "subs", broadcast_subscriber_count) }}
             </div>
           </div>
@@ -89,12 +89,12 @@
             <p>{{ t.s("tenant_overview.webhook_failures.body") }}</p>
             <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
               {% for f in webhook_failures %}
-              <div style="background:var(--surface);border:1px solid var(--border-mid);border-radius:8px;padding:10px 12px;font:500 11.5px/1.4 var(--mono);color:var(--text-soft);">
+              <div style="background:var(--surface);border:1px solid var(--border-mid);border-radius:8px;padding:10px 12px;font:500 11.5px/1.4 var(--font-mono);color:var(--muted);">
                 <div style="display:flex;justify-content:space-between;gap:14px;align-items:start;">
-                  <div style="word-break:break-all;color:var(--text);">{{ f.url }}</div>
+                  <div style="word-break:break-all;color:var(--fg);">{{ f.url }}</div>
                   <div style="white-space:nowrap;color:var(--muted-2);font-size:10.5px;">{{ f.last_failure_at }}</div>
                 </div>
-                <div style="margin-top:4px;color:var(--muted);font:400 12px/1.4 var(--sans);"><b style="color:var(--text-soft);">{{ f.collection }}</b> · {{ f.events }}</div>
+                <div style="margin-top:4px;color:var(--muted);font:400 12px/1.4 var(--font-sans);"><b style="color:var(--muted);">{{ f.collection }}</b> · {{ f.events }}</div>
                 <div style="margin-top:6px;color:var(--danger);word-break:break-word;">{{ f.last_failure_reason }}</div>
               </div>
               {% endfor %}

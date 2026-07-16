@@ -8,24 +8,24 @@
      _styles.html under a more generic name. */
   .ds-page { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 32px; }
   .ds-toc { position: sticky; top: 24px; align-self: start; }
-  .ds-toc-head { font: 600 11px/1 var(--mono); color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.10em; padding: 0 8px 10px; }
-  .ds-toc a { display: block; padding: 6px 10px; font: 500 13px/1.4 var(--sans); color: var(--text-soft); text-decoration: none; border-left: 2px solid transparent; border-radius: 3px; }
-  .ds-toc a:hover { color: var(--text); background: var(--bg-2); border-left-color: var(--muted-2); }
+  .ds-toc-head { font: 600 11px/1 var(--font-mono); color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.10em; padding: 0 8px 10px; }
+  .ds-toc a { display: block; padding: 6px 10px; font: 500 13px/1.4 var(--font-sans); color: var(--muted); text-decoration: none; border-left: 2px solid transparent; border-radius: 3px; }
+  .ds-toc a:hover { color: var(--fg); background: var(--surface-2); border-left-color: var(--muted-2); }
 
   .ds-section { margin-bottom: 56px; scroll-margin-top: 32px; }
-  .ds-section > h2 { font: 500 22px/1.25 var(--serif); margin: 0 0 6px; color: var(--text); letter-spacing: -0.005em; }
-  .ds-section > .ds-section-desc { font: 400 14px/1.5 var(--sans); color: var(--muted); margin: 0 0 18px; max-width: 64ch; }
+  .ds-section > h2 { font: 500 22px/1.25 var(--font-display); margin: 0 0 6px; color: var(--fg); letter-spacing: -0.005em; }
+  .ds-section > .ds-section-desc { font: 400 14px/1.5 var(--font-sans); color: var(--muted); margin: 0 0 18px; max-width: 64ch; }
 
   .swatch-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;
   }
   .swatch {
-    background: var(--surface); border: 1px solid var(--border-mid); border-radius: var(--radius);
+    background: var(--surface); border: 1px solid var(--border-mid); border-radius: var(--r-md);
     overflow: hidden; display: flex; flex-direction: column;
   }
   .swatch-chip { height: 56px; display: block; }
-  .swatch-meta { padding: 8px 10px 10px; font: 500 11px/1.3 var(--mono); color: var(--text-soft); }
-  .swatch-meta .name { color: var(--text); }
+  .swatch-meta { padding: 8px 10px 10px; font: 500 11px/1.3 var(--font-mono); color: var(--muted); }
+  .swatch-meta .name { color: var(--fg); }
   .swatch-meta .val  { color: var(--muted-2); margin-top: 2px; word-break: break-all; }
 
   .ds-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
@@ -40,7 +40,7 @@
   /* tenant-sidebar demo box — mirror real .app-shell grid + height. */
   .ds-sidebar-demo {
     border: 1px solid var(--border-mid);
-    border-radius: var(--radius-lg);
+    border-radius: var(--r-lg);
     overflow: hidden;
     height: 560px;
     background: var(--bg);
@@ -52,7 +52,7 @@
   .ds-sidebar-demo .tenant-sidebar { height: 100%; }
   .ds-sidebar-demo .placeholder {
     display: grid; place-items: center;
-    color: var(--muted-2); font: 500 14px/1.4 var(--sans);
+    color: var(--muted-2); font: 500 14px/1.4 var(--font-sans);
     padding: 20px;
   }
 </style>
@@ -85,9 +85,9 @@
         <div>
           <header style="margin-bottom: 36px">
             <h1 class="display-serif-h1">{{ t.s("design.page.h1") }}</h1>
-            <p style="font:400 16px/1.5 var(--sans); color: var(--muted); margin: 8px 0 0; max-width: 64ch;">
+            <p style="font:400 16px/1.5 var(--font-sans); color: var(--muted); margin: 8px 0 0; max-width: 64ch;">
               Cozy-dark palette · apricot accent (hue 50) · Newsreader / Inter / JetBrains Mono.
-              All tokens defined in <code style="font-family: var(--mono); color: var(--accent);">_styles.html</code>.
+              All tokens defined in <code style="font-family: var(--font-mono); color: var(--accent);">_styles.html</code>.
               New components are additive — existing pages re-theme automatically through token swap.
             </p>
           </header>
@@ -97,27 +97,27 @@
             <h2>{{ t.s("design.tokens.heading") }}</h2>
             <p class="ds-section-desc">Surfaces, ink, and status families. All values are OKLCH, so chroma and lightness move predictably under hue shift. Background hue is ~50 (warm apricot family); accents hold their own hues.</p>
 
-            <h3 style="font:500 13px/1 var(--mono); color: var(--muted); margin: 0 0 10px; text-transform: lowercase; letter-spacing: 0.04em;">surface &amp; ink</h3>
+            <h3 style="font:500 13px/1 var(--font-mono); color: var(--muted); margin: 0 0 10px; text-transform: lowercase; letter-spacing: 0.04em;">surface &amp; ink</h3>
             <div class="swatch-grid" style="margin-bottom: 24px;">
-              <div class="swatch"><span class="swatch-chip" style="background: var(--desktop)"></span><div class="swatch-meta"><div class="name">--desktop</div><div class="val">oklch(0.18 .012 50)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--bg-deep)"></span><div class="swatch-meta"><div class="name">--bg-deep</div><div class="val">oklch(0.18 .012 50)</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--bg)"></span><div class="swatch-meta"><div class="name">--bg</div><div class="val">oklch(0.22 .010 50)</div></div></div>
-              <div class="swatch"><span class="swatch-chip" style="background: var(--bg-2)"></span><div class="swatch-meta"><div class="name">--bg-2</div><div class="val">oklch(0.26 .012 55)</div></div></div>
-              <div class="swatch"><span class="swatch-chip" style="background: var(--bg-3)"></span><div class="swatch-meta"><div class="name">--bg-3</div><div class="val">oklch(0.30 .013 55)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--surface-2)"></span><div class="swatch-meta"><div class="name">--surface-2</div><div class="val">oklch(0.26 .012 55)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--surface-3)"></span><div class="swatch-meta"><div class="name">--surface-3</div><div class="val">oklch(0.30 .013 55)</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--surface)"></span><div class="swatch-meta"><div class="name">--surface</div><div class="val">oklch(0.235 .011 50)</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--border-mid)"></span><div class="swatch-meta"><div class="name">--border-mid</div><div class="val">themes/&lt;code&gt;.toml [ui]</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--border-strong)"></span><div class="swatch-meta"><div class="name">--border-strong</div><div class="val">themes/&lt;code&gt;.toml [ui]</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--muted)"></span><div class="swatch-meta"><div class="name">--muted</div><div class="val">oklch(0.58 .014 55)</div></div></div>
-              <div class="swatch"><span class="swatch-chip" style="background: var(--text-dim)"></span><div class="swatch-meta"><div class="name">--text-dim</div><div class="val">oklch(0.65 .022 65)</div></div></div>
-              <div class="swatch"><span class="swatch-chip" style="background: var(--text-soft)"></span><div class="swatch-meta"><div class="name">--text-soft</div><div class="val">oklch(0.82 .022 65)</div></div></div>
-              <div class="swatch"><span class="swatch-chip" style="background: var(--text)"></span><div class="swatch-meta"><div class="name">--text</div><div class="val">oklch(0.93 .020 65)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--muted-2)"></span><div class="swatch-meta"><div class="name">--muted-2</div><div class="val">oklch(0.65 .022 65)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--fg-2)"></span><div class="swatch-meta"><div class="name">--fg-2</div><div class="val">oklch(0.82 .022 65)</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--fg)"></span><div class="swatch-meta"><div class="name">--fg</div><div class="val">oklch(0.93 .020 65)</div></div></div>
             </div>
 
-            <h3 style="font:500 13px/1 var(--mono); color: var(--muted); margin: 0 0 10px;">accent &amp; status</h3>
+            <h3 style="font:500 13px/1 var(--font-mono); color: var(--muted); margin: 0 0 10px;">accent &amp; status</h3>
             <div class="swatch-grid">
               <div class="swatch"><span class="swatch-chip" style="background: var(--accent)"></span><div class="swatch-meta"><div class="name">--accent</div><div class="val">apricot · hue 50</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--accent-2)"></span><div class="swatch-meta"><div class="name">--accent-2</div><div class="val">peach hover</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--accent-soft)"></span><div class="swatch-meta"><div class="name">--accent-soft</div><div class="val">tinted bg</div></div></div>
-              <div class="swatch"><span class="swatch-chip" style="background: var(--ok)"></span><div class="swatch-meta"><div class="name">--ok</div><div class="val">sage · hue 130</div></div></div>
+              <div class="swatch"><span class="swatch-chip" style="background: var(--mint)"></span><div class="swatch-meta"><div class="name">--mint</div><div class="val">sage · hue 130</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--warn)"></span><div class="swatch-meta"><div class="name">--warn</div><div class="val">mustard · hue 85</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--danger)"></span><div class="swatch-meta"><div class="name">--danger</div><div class="val">terra · hue 30</div></div></div>
               <div class="swatch"><span class="swatch-chip" style="background: var(--info)"></span><div class="swatch-meta"><div class="name">--info</div><div class="val">dusty blue · 230</div></div></div>
@@ -128,19 +128,19 @@
           <!-- ============================== -->
           <section id="type" class="ds-section">
             <h2>{{ t.s("design.type.heading") }}</h2>
-            <p class="ds-section-desc">Three families: serif for display headings, sans for UI chrome, mono for data &amp; code. Existing pages still use mono everywhere; new pages can opt into <code style="font-family:var(--mono);color:var(--accent);">var(--serif)</code> / <code style="font-family:var(--mono);color:var(--accent);">var(--sans)</code> directly.</p>
+            <p class="ds-section-desc">Three families: serif for display headings, sans for UI chrome, mono for data &amp; code. Existing pages still use mono everywhere; new pages can opt into <code style="font-family:var(--font-mono);color:var(--accent);">var(--font-display)</code> / <code style="font-family:var(--font-mono);color:var(--accent);">var(--font-sans)</code> directly.</p>
             <div class="card" style="background: var(--surface); padding: 28px 32px;">
               <div class="display-serif-h1">Newsreader · 36/1.15</div>
               <div class="display-serif-h2" style="margin-top: 16px;">Newsreader · 26/1.25</div>
-              <div style="font:500 22px/1.3 var(--serif); margin-top: 14px; color: var(--text);">Newsreader · 22/1.3</div>
-              <div style="font:500 22px/1.3 var(--serif); font-style: italic; color: var(--text-soft); margin-top: 4px;">Newsreader italic · 22/1.3</div>
+              <div style="font:500 22px/1.3 var(--font-display); margin-top: 14px; color: var(--fg);">Newsreader · 22/1.3</div>
+              <div style="font:500 22px/1.3 var(--font-display); font-style: italic; color: var(--muted); margin-top: 4px;">Newsreader italic · 22/1.3</div>
               <hr style="border:0; border-top: 1px solid var(--border-mid); margin: 22px 0;">
-              <div style="font:600 18px/1.4 var(--sans); color: var(--text);">Inter Semibold · 18/1.4 — UI labels</div>
-              <div style="font:500 14px/1.4 var(--sans); color: var(--text-soft); margin-top: 4px;">Inter Medium · 14/1.4 — body</div>
-              <div style="font:400 14px/1.5 var(--sans); color: var(--muted); margin-top: 4px;">Inter Regular · 14/1.5 — secondary</div>
+              <div style="font:600 18px/1.4 var(--font-sans); color: var(--fg);">Inter Semibold · 18/1.4 — UI labels</div>
+              <div style="font:500 14px/1.4 var(--font-sans); color: var(--muted); margin-top: 4px;">Inter Medium · 14/1.4 — body</div>
+              <div style="font:400 14px/1.5 var(--font-sans); color: var(--muted); margin-top: 4px;">Inter Regular · 14/1.5 — secondary</div>
               <hr style="border:0; border-top: 1px solid var(--border-mid); margin: 22px 0;">
-              <div style="font:500 14px/1.4 var(--mono); color: var(--text);">JetBrains Mono · 14/1.4 — code &amp; data</div>
-              <div style="font:400 13px/1.5 var(--mono); color: var(--text-soft); margin-top: 4px;">SELECT * FROM tenants WHERE active = 1 ORDER BY created_at DESC;</div>
+              <div style="font:500 14px/1.4 var(--font-mono); color: var(--fg);">JetBrains Mono · 14/1.4 — code &amp; data</div>
+              <div style="font:400 13px/1.5 var(--font-mono); color: var(--muted); margin-top: 4px;">SELECT * FROM tenants WHERE active = 1 ORDER BY created_at DESC;</div>
             </div>
           </section>
 
@@ -206,7 +206,7 @@
           <!-- ============================== -->
           <section id="cards-tables" class="ds-section">
             <h2>{{ t.s("design.cards_tables.heading") }}</h2>
-            <p class="ds-section-desc">Card has its own head, body, and tight-body variants. Tables under <code style="font-family:var(--mono);color:var(--accent);">table.data</code> have sticky thead and ellipsis-truncation by default.</p>
+            <p class="ds-section-desc">Card has its own head, body, and tight-body variants. Tables under <code style="font-family:var(--font-mono);color:var(--accent);">table.data</code> have sticky thead and ellipsis-truncation by default.</p>
             <div class="card">
               <div class="card-head">
                 <span>recent tenants <span class="count">3</span></span>
@@ -306,10 +306,10 @@
             <h2>Meter bars</h2>
             <p class="ds-section-desc">Thin progress / fill indicators for dashboards.</p>
             <div style="max-width: 480px; display: flex; flex-direction: column; gap: 12px;">
-              <div><div style="font:500 12px/1 var(--mono); color: var(--muted); margin-bottom: 6px;">disk usage · 64%</div><div class="meter"><i style="width: 64%"></i></div></div>
-              <div><div style="font:500 12px/1 var(--mono); color: var(--muted); margin-bottom: 6px;">queries today · 28%</div><div class="meter ok"><i style="width: 28%"></i></div></div>
-              <div><div style="font:500 12px/1 var(--mono); color: var(--muted); margin-bottom: 6px;">webhook errors · 82%</div><div class="meter warn"><i style="width: 82%"></i></div></div>
-              <div><div style="font:500 12px/1 var(--mono); color: var(--muted); margin-bottom: 6px;">free space · 8%</div><div class="meter danger"><i style="width: 8%"></i></div></div>
+              <div><div style="font:500 12px/1 var(--font-mono); color: var(--muted); margin-bottom: 6px;">disk usage · 64%</div><div class="meter"><i style="width: 64%"></i></div></div>
+              <div><div style="font:500 12px/1 var(--font-mono); color: var(--muted); margin-bottom: 6px;">queries today · 28%</div><div class="meter ok"><i style="width: 28%"></i></div></div>
+              <div><div style="font:500 12px/1 var(--font-mono); color: var(--muted); margin-bottom: 6px;">webhook errors · 82%</div><div class="meter warn"><i style="width: 82%"></i></div></div>
+              <div><div style="font:500 12px/1 var(--font-mono); color: var(--muted); margin-bottom: 6px;">free space · 8%</div><div class="meter danger"><i style="width: 8%"></i></div></div>
             </div>
           </section>
 
@@ -354,8 +354,8 @@
           <!-- ============================== -->
           <section id="modal" class="ds-section">
             <h2>{{ t.s("design.modal.heading") }}</h2>
-            <p class="ds-section-desc">Used for confirmations and "secret-once" reveals. Inline preview below — wiring lives in <code style="font-family:var(--mono);color:var(--accent);">_modal.html</code>.</p>
-            <div class="modal-overlay" style="position: relative; inset: auto; padding: 24px; background: oklch(0 0 0 / 0.25); border-radius: var(--radius-lg); border: 1px solid var(--border-mid); place-items: center; min-height: 280px;">
+            <p class="ds-section-desc">Used for confirmations and "secret-once" reveals. Inline preview below — wiring lives in <code style="font-family:var(--font-mono);color:var(--accent);">_modal.html</code>.</p>
+            <div class="modal-overlay" style="position: relative; inset: auto; padding: 24px; background: oklch(0 0 0 / 0.25); border-radius: var(--r-lg); border: 1px solid var(--border-mid); place-items: center; min-height: 280px;">
               <div class="modal">
                 <h3 class="modal-title">Rotate service token?</h3>
                 <p class="modal-body">The current service token will be invalidated immediately. Any clients using it must be reconfigured with the new value. This action cannot be undone.</p>
@@ -370,7 +370,7 @@
           <!-- ============================== -->
           <section id="sidebar" class="ds-section">
             <h2>{{ t.s("design.sidebar.heading") }}</h2>
-            <p class="ds-section-desc">Per-tenant nav. Markup is a drop-in copy of <code style="font-family:var(--mono);color:var(--accent);">_collection_sidebar.html</code> — brand block, back-strip, plane pill, sectioned nav (Home / Connect / Backend / Collections), and a sticky <code style="font-family:var(--mono);color:var(--accent);">.sidebar-foot</code>. The nav itself scrolls when content overflows; the strip + foot stay pinned.</p>
+            <p class="ds-section-desc">Per-tenant nav. Markup is a drop-in copy of <code style="font-family:var(--font-mono);color:var(--accent);">_collection_sidebar.html</code> — brand block, back-strip, plane pill, sectioned nav (Home / Connect / Backend / Collections), and a sticky <code style="font-family:var(--font-mono);color:var(--accent);">.sidebar-foot</code>. The nav itself scrolls when content overflows; the strip + foot stay pinned.</p>
             <div class="ds-sidebar-demo">
               <aside class="tenant-sidebar" style="position:static;height:auto">
                 <div class="brand">
@@ -465,11 +465,11 @@
             <h2>{{ t.s("design.mascot.heading") }}</h2>
             <p class="ds-section-desc">Apricot pixel cat. Sizes by usage: 18 in topbar · 32 in sidebar header · 48 on login · 96 on empty states. Moods: awake (tracks mouse) · happy · sleep · working · curious · error.</p>
             <div class="ds-row" style="align-items: flex-end; gap: 32px;">
-              <div style="text-align: center;"><canvas class="pix" data-chonk="awake" data-size="18"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">18 · topbar</div></div>
-              <div style="text-align: center;"><canvas class="pix" data-chonk="happy" data-size="32"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">32 · sidebar</div></div>
-              <div style="text-align: center;"><canvas class="pix" data-chonk="awake" data-size="48"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">48 · login</div></div>
-              <div style="text-align: center;"><canvas class="pix" data-chonk="curious" data-size="56"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">56 · error</div></div>
-              <div style="text-align: center;"><canvas class="pix" data-chonk="sleep" data-size="96"></canvas><div style="font:500 11px/1 var(--mono); color: var(--muted); margin-top: 6px;">96 · empty</div></div>
+              <div style="text-align: center;"><canvas class="pix" data-chonk="awake" data-size="18"></canvas><div style="font:500 11px/1 var(--font-mono); color: var(--muted); margin-top: 6px;">18 · topbar</div></div>
+              <div style="text-align: center;"><canvas class="pix" data-chonk="happy" data-size="32"></canvas><div style="font:500 11px/1 var(--font-mono); color: var(--muted); margin-top: 6px;">32 · sidebar</div></div>
+              <div style="text-align: center;"><canvas class="pix" data-chonk="awake" data-size="48"></canvas><div style="font:500 11px/1 var(--font-mono); color: var(--muted); margin-top: 6px;">48 · login</div></div>
+              <div style="text-align: center;"><canvas class="pix" data-chonk="curious" data-size="56"></canvas><div style="font:500 11px/1 var(--font-mono); color: var(--muted); margin-top: 6px;">56 · error</div></div>
+              <div style="text-align: center;"><canvas class="pix" data-chonk="sleep" data-size="96"></canvas><div style="font:500 11px/1 var(--font-mono); color: var(--muted); margin-top: 6px;">96 · empty</div></div>
             </div>
           </section>
         </div>
@@ -521,7 +521,7 @@
       var on = ix === dsCmdkSelIx ? ' on' : '';
       html += '<a class="cmdk-item' + on + '" href="#"><span class="cmdk-icon">' + it.icon + '</span><span class="cmdk-label">' + it.label + '</span><span class="cmdk-hint">' + it.hint + '</span></a>';
     });
-    list.innerHTML = html || '<div style="padding:18px;color:var(--muted-2);font:400 14px/1 var(--sans);">{{ t.s("cmdk.empty.no_matches") }}</div>';
+    list.innerHTML = html || '<div style="padding:18px;color:var(--muted-2);font:400 14px/1 var(--font-sans);">{{ t.s("cmdk.empty.no_matches") }}</div>';
   }
   document.addEventListener('keydown', function (e) {
     var open = !document.getElementById('ds-cmdk').hidden;
