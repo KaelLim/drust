@@ -263,11 +263,14 @@ fn main() {
 fn scan_template_keys(dir: &Path) -> BTreeMap<String, Vec<(String, usize)>> {
     let mut out: BTreeMap<String, Vec<(String, usize)>> = BTreeMap::new();
     // Translator surface: `t.s(...)`, `t.fmt(...)`, `t.fmt1(...)`,
-    // `t.fmt2(...)`, `t.fmt3(...)`. Earlier regex only matched `s|fmt`
-    // and missed every numbered `fmtN` variant — keys consumed only via
-    // `t.fmt1` etc. surfaced as false-positive orphan warnings.
-    let re = regex_lite::Regex::new(r#"t\s*\.\s*(?:s|fmt[0-9]*)\s*\(\s*"([A-Za-z0-9_.]+)""#)
-        .expect("compile i18n scan regex");
+    // `t.fmt2(...)`, `t.fmt3(...)`, and the HTML-escaping `t.fmt1_html(...)` /
+    // `t.fmt3_html(...)` variants (feed `|safe` sinks). Earlier regex only
+    // matched `s|fmt` and missed every numbered `fmtN` variant; the optional
+    // `_html` suffix was then missed the same way — keys consumed only via an
+    // `_html` variant surfaced as false-positive orphan warnings.
+    let re =
+        regex_lite::Regex::new(r#"t\s*\.\s*(?:s|fmt[0-9]*(?:_html)?)\s*\(\s*"([A-Za-z0-9_.]+)""#)
+            .expect("compile i18n scan regex");
 
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,

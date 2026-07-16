@@ -389,6 +389,10 @@ placeholder = "跳至租戶…"
 [collection_rows.anon]
 apply_btn = "套用變更"
 
+[collection_rows.save]
+failed_title = "儲存失敗"
+failed_body = "變更未儲存 — 請確認權限與連線後再試一次。"
+
 [collection_rows.explain]
 run_btn = "▶ 解析"
 title = "執行 EXPLAIN QUERY PLAN"

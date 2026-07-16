@@ -62,7 +62,7 @@
           <div class="grow">
             <div class="eyebrow">{{ t.s("common.label.tenant") }} · {{ tenant_name }}</div>
             <h1 class="view-title">{{ t.s("tenant_api_keys.head.title") }}</h1>
-            <p class="view-sub">{{ t.fmt3("tenant_api_keys.head.intro", "tenant_name", tenant_name, "tenant_id", tenant_id, "created_at", created_at)|safe }}</p>
+            <p class="view-sub">{{ t.fmt3_html("tenant_api_keys.head.intro", "tenant_name", tenant_name, "tenant_id", tenant_id, "created_at", created_at)|safe }}</p>
           </div>
         </div>
 

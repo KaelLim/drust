@@ -196,6 +196,43 @@ impl Translator {
             &[(n1, s1.as_str()), (n2, s2.as_str()), (n3, s3.as_str())],
         )
     }
+
+    /// HTML-escaping sibling of `fmt1` for a `|safe`-rendered sink. The
+    /// template text is our own TOML (trusted — may carry intentional `<b>`/
+    /// `<code>` markup, which is why the call site opts out of Askama
+    /// autoescape via `|safe`), but the interpolated VALUE is caller-supplied
+    /// (e.g. `tenant_id`) and is HTML-escaped so it cannot inject markup. See
+    /// `escape_html_min`. Plain `fmt1` must NOT escape — its call sites are
+    /// Askama-autoescaped, so escaping there would double-encode.
+    pub fn fmt1_html(&self, key: &str, name: &str, value: impl std::fmt::Display) -> String {
+        let template = self.s(key).into_owned();
+        let esc = escape_html_min(&value.to_string()).into_owned();
+        substitute_placeholders(&template, &[(name, esc.as_str())])
+    }
+
+    /// HTML-escaping sibling of `fmt3` for a `|safe`-rendered sink — each
+    /// interpolated value is HTML-escaped (e.g. a tenant whose display name is
+    /// `<img src=x onerror=…>` renders as inert text, not executable markup),
+    /// while the template's own markup is preserved. See `fmt1_html`.
+    pub fn fmt3_html(
+        &self,
+        key: &str,
+        n1: &str,
+        v1: impl std::fmt::Display,
+        n2: &str,
+        v2: impl std::fmt::Display,
+        n3: &str,
+        v3: impl std::fmt::Display,
+    ) -> String {
+        let template = self.s(key).into_owned();
+        let s1 = escape_html_min(&v1.to_string()).into_owned();
+        let s2 = escape_html_min(&v2.to_string()).into_owned();
+        let s3 = escape_html_min(&v3.to_string()).into_owned();
+        substitute_placeholders(
+            &template,
+            &[(n1, s1.as_str()), (n2, s2.as_str()), (n3, s3.as_str())],
+        )
+    }
 }
 
 fn substitute_placeholders(template: &str, args: &[(&str, &str)]) -> String {
@@ -237,6 +274,34 @@ fn substitute_placeholders(template: &str, args: &[(&str, &str)]) -> String {
         out.push(c);
     }
     out
+}
+
+/// Minimal HTML escaping for interpolating an untrusted VALUE into a trusted,
+/// `|safe`-rendered i18n template (the api-keys / files head intros, whose
+/// TOML carries intentional `<b>`/`<code>` markup). Escapes the five
+/// HTML-significant characters so a value cannot break out of text/attribute
+/// context. The fast path borrows when nothing needs escaping. Only the
+/// `fmt*_html` variants call this — plain `fmt*` feed Askama-autoescaped (non
+/// `|safe`) sinks where escaping here would double-encode.
+fn escape_html_min(s: &str) -> Cow<'_, str> {
+    if !s
+        .bytes()
+        .any(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\''))
+    {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 16);
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// Axum extractor that picks `Locale` out of request extensions (placed by
@@ -421,5 +486,62 @@ mod tests {
     fn substitute_placeholders_unterminated_brace_passes_through() {
         let out = substitute_placeholders("oops {name no close", &[("name", "x")]);
         assert_eq!(out, "oops {name no close");
+    }
+
+    #[test]
+    fn escape_html_min_covers_all_five_and_borrows_clean() {
+        assert_eq!(
+            escape_html_min("a&b<c>d\"e'f").as_ref(),
+            "a&amp;b&lt;c&gt;d&quot;e&#39;f"
+        );
+        // no-escape fast path returns a borrow (zero alloc)
+        assert!(matches!(escape_html_min("clean text 你好"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn fmt_html_escapes_values_while_plain_fmt_leaves_them_raw() {
+        // This pins the XSS fix: the api-keys head intro renders via `|safe`
+        // (its TOML carries intentional <b>/<code> markup), and `tenant_name`
+        // is operator-controlled. `fmt3_html` must escape the value; plain
+        // `fmt3` must NOT (its only callers are Askama-autoescaped).
+        init_bundles();
+        let t = Translator::new(Locale::En);
+        let evil = "<img src=x onerror=alert(1)>";
+
+        // Plain fmt3 is the autoescape-context variant — leaves the value raw.
+        let raw = t.fmt3(
+            "tenant_api_keys.head.intro",
+            "tenant_name",
+            evil,
+            "tenant_id",
+            "id",
+            "created_at",
+            "now",
+        );
+        assert!(
+            raw.contains("<img"),
+            "plain fmt3 is meant for autoescaped sinks; got: {raw}"
+        );
+
+        // _html variant escapes the interpolated value …
+        let safe = t.fmt3_html(
+            "tenant_api_keys.head.intro",
+            "tenant_name",
+            evil,
+            "tenant_id",
+            "id",
+            "created_at",
+            "now",
+        );
+        assert!(
+            safe.contains("&lt;img src=x onerror=alert(1)&gt;"),
+            "value not escaped: {safe}"
+        );
+        assert!(!safe.contains("<img"), "raw tag leaked through |safe: {safe}");
+        // … while preserving the template's own intentional markup.
+        assert!(
+            safe.contains("<b>") && safe.contains("<code"),
+            "template markup must survive: {safe}"
+        );
     }
 }
