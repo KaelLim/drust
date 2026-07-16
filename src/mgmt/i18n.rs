@@ -495,7 +495,10 @@ mod tests {
             "a&amp;b&lt;c&gt;d&quot;e&#39;f"
         );
         // no-escape fast path returns a borrow (zero alloc)
-        assert!(matches!(escape_html_min("clean text 你好"), Cow::Borrowed(_)));
+        assert!(matches!(
+            escape_html_min("clean text 你好"),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -537,7 +540,10 @@ mod tests {
             safe.contains("&lt;img src=x onerror=alert(1)&gt;"),
             "value not escaped: {safe}"
         );
-        assert!(!safe.contains("<img"), "raw tag leaked through |safe: {safe}");
+        assert!(
+            !safe.contains("<img"),
+            "raw tag leaked through |safe: {safe}"
+        );
         // … while preserving the template's own intentional markup.
         assert!(
             safe.contains("<b>") && safe.contains("<code"),
