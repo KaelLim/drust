@@ -75,11 +75,11 @@
         <table class="data">
           <thead>
             <tr>
-              <th>Tenant</th>
-              <th style="width:180px;">created</th>
-              <th class="num" style="width:100px;" title="data.sqlite file size">db</th>
-              <th class="num" style="width:100px;" title="_system_files SUM(size_bytes)">files</th>
-              <th class="num" style="width:100px;" title="db + files combined">total</th>
+              <th>{{ t.s("tenants_list.table.tenant") }}</th>
+              <th style="width:180px;">{{ t.s("tenants_list.table.created") }}</th>
+              <th class="num" style="width:100px;" title="data.sqlite file size">{{ t.s("tenants_list.table.db") }}</th>
+              <th class="num" style="width:100px;" title="_system_files SUM(size_bytes)">{{ t.s("tenants_list.table.files") }}</th>
+              <th class="num" style="width:100px;" title="db + files combined">{{ t.s("tenants_list.table.total") }}</th>
               <th class="actions" style="width:170px;"></th>
             </tr>
           </thead>

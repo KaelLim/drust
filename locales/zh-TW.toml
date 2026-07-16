@@ -1399,3 +1399,25 @@ codex = "Codex CLI"
 cursor = "Cursor"
 claude_desktop = "Claude Desktop"
 gemini = "Gemini CLI"
+
+[tenants_list.table]
+created = "建立時間"
+db = "資料庫"
+files = "檔案"
+tenant = "租戶"
+total = "合計"
+
+[files.table]
+actions = "操作"
+name = "原始檔名"
+size = "大小"
+type = "類型"
+uploaded = "上傳時間"
+visibility = "可見性"
+
+[files.form]
+attachment = "附件"
+inline = "內嵌"
+private = "私有"
+public = "公開"
+visibility = "可見性"
