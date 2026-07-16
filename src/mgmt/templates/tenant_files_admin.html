@@ -170,7 +170,7 @@
           <div class="page-of">page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_files }}</b> total</div>
           <div class="pager-group">
             {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.prev") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.prev") }}</span>{% endif %}
-            <span style="color:var(--muted);">page <b style="color:var(--text);">{{ page }}</b> / {{ total_pages }}</span>
+            <span style="color:var(--muted);">page <b style="color:var(--fg);">{{ page }}</b> / {{ total_pages }}</span>
             {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.next") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.next") }}</span>{% endif %}
           </div>
         </div>

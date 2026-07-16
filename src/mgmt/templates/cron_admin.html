@@ -19,7 +19,7 @@
         <div class="banner danger" style="margin-bottom:18px;">
           <div class="b-body">
             <div class="b-title"><b>{{ t.s("cron_admin.create_failed_title") }}</b></div>
-            <pre style="margin-top:10px;background:var(--bg-2);padding:10px 12px;border-radius:6px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.5 var(--mono);color:var(--text);white-space:pre-wrap;word-break:break-word;">{{ e }}</pre>
+            <pre style="margin-top:10px;background:var(--surface-2);padding:10px 12px;border-radius:6px;border:1px solid var(--border-mid);overflow-x:auto;font:500 12px/1.5 var(--font-mono);color:var(--fg);white-space:pre-wrap;word-break:break-word;">{{ e }}</pre>
           </div>
         </div>
         {% endif %}
@@ -51,11 +51,11 @@
             {% for j in jobs %}
               <tr>
                 <td><b>{{ j.name }}</b></td>
-                <td><code style="font:500 12px/1 var(--mono);">{{ j.schedule }}</code></td>
-                <td><span style="font:500 12px/1.4 var(--mono);color:var(--muted);">{{ j.target }}</span></td>
+                <td><code style="font:500 12px/1 var(--font-mono);">{{ j.schedule }}</code></td>
+                <td><span style="font:500 12px/1.4 var(--font-mono);color:var(--muted);">{{ j.target }}</span></td>
                 <td>
                   {% if let Some(nf) = j.next_fire %}
-                  <span style="font:500 12px/1 var(--mono);">{{ nf }}</span>
+                  <span style="font:500 12px/1 var(--font-mono);">{{ nf }}</span>
                   {% else %}
                   <span class="pill muted">—</span>
                   {% endif %}
@@ -64,7 +64,7 @@
                   {% if let Some(ls) = j.last_status %}
                     <span class="pill {% if ls == "ok" %}mint{% else %}danger{% endif %}">{{ ls }}</span>
                     {% if let Some(lr) = j.last_run_at %}
-                    <div style="font:500 11px/1 var(--mono);color:var(--muted);margin-top:3px;">{{ lr }}</div>
+                    <div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-top:3px;">{{ lr }}</div>
                     {% endif %}
                   {% else %}
                     <span class="pill muted">{{ t.s("tenant_functions.never_run") }}</span>
@@ -87,17 +87,17 @@
               <tr>
                 <td colspan="7" style="padding:0 12px 12px;">
                   <details>
-                    <summary style="cursor:pointer;font:600 12px/1 var(--mono);color:var(--muted);">{{ t.s("cron_admin.runs_title") }}</summary>
+                    <summary style="cursor:pointer;font:600 12px/1 var(--font-mono);color:var(--muted);">{{ t.s("cron_admin.runs_title") }}</summary>
                     {% if j.runs.is_empty() %}
-                    <p style="font:500 12px/1 var(--mono);color:var(--muted);margin:8px 0 0;">{{ t.s("tenant_functions.never_run") }}</p>
+                    <p style="font:500 12px/1 var(--font-mono);color:var(--muted);margin:8px 0 0;">{{ t.s("tenant_functions.never_run") }}</p>
                     {% else %}
                     {% for r in j.runs %}
                     <div style="margin-top:8px;border-left:2px solid var(--border-mid);padding-left:10px;">
-                      <div style="font:500 11px/1.4 var(--mono);color:var(--muted);">
+                      <div style="font:500 11px/1.4 var(--font-mono);color:var(--muted);">
                         <span class="pill {% if r.status == "ok" %}mint{% else %}danger{% endif %}">{{ r.status }}</span>
                         {{ r.fired_at }}{% if let Some(d) = r.duration_ms %} · {{ d }} ms{% endif %}
                       </div>
-                      {% if let Some(err) = r.error %}<pre style="margin:4px 0 0;background:var(--bg-2);padding:8px 10px;border-radius:6px;font:500 11px/1.5 var(--mono);color:var(--text);overflow-x:auto;white-space:pre-wrap;word-break:break-word;">{{ err }}</pre>{% endif %}
+                      {% if let Some(err) = r.error %}<pre style="margin:4px 0 0;background:var(--surface-2);padding:8px 10px;border-radius:6px;font:500 11px/1.5 var(--font-mono);color:var(--fg);overflow-x:auto;white-space:pre-wrap;word-break:break-word;">{{ err }}</pre>{% endif %}
                     </div>
                     {% endfor %}
                     {% endif %}
@@ -125,7 +125,7 @@
               </div>
               <div class="field">
                 <label for="cron-schedule">{{ t.s("cron_admin.schedule_label") }}</label>
-                <input class="input" id="cron-schedule" name="schedule" required autocomplete="off" spellcheck="false" placeholder="*/15 * * * *" style="font-family:var(--mono);">
+                <input class="input" id="cron-schedule" name="schedule" required autocomplete="off" spellcheck="false" placeholder="*/15 * * * *" style="font-family:var(--font-mono);">
               </div>
               <div style="display:flex;gap:10px;flex-wrap:wrap;">
                 <div class="field" style="min-width:140px;">
@@ -143,7 +143,7 @@
               <div class="field">
                 <label for="cron-payload">{{ t.s("cron_admin.payload_label") }}</label>
                 <textarea id="cron-payload" name="payload" rows="3" spellcheck="false"
-                          style="width:100%;font:500 12px/1.5 var(--mono);background:var(--bg-2);color:var(--text);border:1px solid var(--border-mid);border-radius:6px;padding:8px 10px;"
+                          style="width:100%;font:500 12px/1.5 var(--font-mono);background:var(--surface-2);color:var(--fg);border:1px solid var(--border-mid);border-radius:6px;padding:8px 10px;"
                           placeholder='{&quot;key&quot;:&quot;value&quot;}'></textarea>
               </div>
               <div><button type="submit" class="btn primary">{{ t.s("cron_admin.create_button") }}</button></div>

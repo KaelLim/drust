@@ -48,7 +48,7 @@
               <div class="muted" style="font-size:12px;">{{ t.s("tenant_rpc_test.params_col.type") }}</div>
               <div class="muted" style="font-size:12px;">{{ t.s("tenant_rpc_test.params_col.value") }}{% if !params.is_empty() %} <span class="muted-cell" style="font-size:11px;margin-left:8px;">empty → null/default</span>{% endif %}</div>
               {% for p in params %}
-              <label for="p_{{ p.name }}" style="font-family:var(--mono);">
+              <label for="p_{{ p.name }}" style="font-family:var(--font-mono);">
                 {{ p.name }}{% if p.required %} <span style="color:var(--danger);">*</span>{% endif %}
               </label>
               <span class="pill muted" style="font-size:10px;">{{ p.ty }}</span>
@@ -85,14 +85,14 @@
           {% if let Some(err) = o.error %}
           <div class="banner danger" style="margin:14px 18px;">
             <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
-            <div class="b-body"><div class="b-title">{{ t.s("tenant_rpc_test.result.error_title") }}</div><p style="white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:13px;">{{ err }}</p></div>
+            <div class="b-body"><div class="b-title">{{ t.s("tenant_rpc_test.result.error_title") }}</div><p style="white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);font-size:13px;">{{ err }}</p></div>
           </div>
           {% endif %}
 
           {% if let Some(r) = o.result %}
-          <div style="padding:0 18px 14px;display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--muted);">
-            <span><b style="color:var(--text);">{{ r.row_count }}</b> {{ t.s("tenant_rpc_test.result.rows_unit") }}</span>
-            <span><b style="color:var(--text);">{{ r.column_names.len() }}</b> {{ t.s("tenant_rpc_test.result.columns_unit") }}</span>
+          <div style="padding:0 18px 14px;display:flex;gap:14px;flex-wrap:wrap;font-family:var(--font-mono);font-size:13px;color:var(--muted);">
+            <span><b style="color:var(--fg);">{{ r.row_count }}</b> {{ t.s("tenant_rpc_test.result.rows_unit") }}</span>
+            <span><b style="color:var(--fg);">{{ r.column_names.len() }}</b> {{ t.s("tenant_rpc_test.result.columns_unit") }}</span>
             {% if r.truncated %}<span class="pill warn"><span class="dot"></span>{{ t.s("tenant_rpc_test.result.truncated") }}</span>{% endif %}
           </div>
           <div class="records-scroll" style="max-height:480px;">

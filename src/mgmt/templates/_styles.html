@@ -1218,16 +1218,16 @@
   }
   .coll-sticky-top .gear-btn:hover{background:var(--surface-2)}
   .coll-desc-inline{
-    font:400 13px/1.5 var(--sans);color:var(--muted);
+    font:400 13px/1.5 var(--font-sans);color:var(--muted);
     display:flex;align-items:baseline;gap:6px;
   }
   .coll-desc-inline .desc-text{flex:1;min-width:0;white-space:pre-wrap}
   .coll-desc-inline .desc-add{
     display:inline-flex;align-items:center;gap:4px;
     color:var(--muted-2);cursor:pointer;background:none;border:0;padding:0;
-    font:400 13px/1.5 var(--sans);
+    font:400 13px/1.5 var(--font-sans);
   }
-  .coll-desc-inline .desc-add:hover{color:var(--text)}
+  .coll-desc-inline .desc-add:hover{color:var(--fg)}
 
   .coll-toolbar{padding:12px 0;display:flex;flex-direction:column;gap:8px}
   .coll-toolbar .row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
@@ -1235,14 +1235,14 @@
     display:inline-flex;align-items:center;gap:6px;
     padding:4px 8px;border-radius:14px;
     background:var(--surface-2);border:1px solid var(--border-mid);
-    font:400 12px/1 var(--mono);
+    font:400 12px/1 var(--font-mono);
   }
   .coll-chip .chip-x{
     display:inline-flex;align-items:center;justify-content:center;
     width:16px;height:16px;border-radius:50%;
     background:transparent;border:0;cursor:pointer;color:var(--muted-2);
   }
-  .coll-chip .chip-x:hover{background:var(--border-mid);color:var(--text)}
+  .coll-chip .chip-x:hover{background:var(--border-mid);color:var(--fg)}
 
   /* v1.32.9 — natural column widths + horizontal scroll. v1.28.5's
      fixed-layout + width:100% pinned the table to its container and
@@ -1291,7 +1291,7 @@
     background:var(--bg-deep);
     border-top:1px solid var(--border-mid);
     display:flex; align-items:center; gap:14px;
-    font:400 12px/1 var(--sans);
+    font:400 12px/1 var(--font-sans);
     color:var(--muted);
   }
   .coll-sticky-bottom .pager-info{
@@ -1313,7 +1313,7 @@
   .coll-sticky-bottom .view-tabs button{
     padding:0 10px; height:26px;
     background:transparent; border:0; cursor:pointer;
-    font:500 12px/1 var(--sans); color:var(--muted);
+    font:500 12px/1 var(--font-sans); color:var(--muted);
     border-radius:5px;
     transition:background .12s, color .12s;
   }
@@ -1340,7 +1340,7 @@
   }
   .settings-popover.is-open{transform:translateX(0);}
   .settings-popover[hidden]{display:none;}
-  .settings-popover h3{font:600 11px/1 var(--sans);text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin:0 0 8px}
+  .settings-popover h3{font:600 11px/1 var(--font-sans);text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);margin:0 0 8px}
   .settings-popover section + section{margin-top:14px;padding-top:14px;border-top:1px solid var(--border-strong)}
   .settings-popover .drawer-close{
     position:absolute; top:10px; right:10px;
@@ -1374,7 +1374,7 @@
     padding:6px 8px;
     background:var(--bg-deep); color:var(--fg);
     border:1px solid var(--border-mid); border-radius:6px;
-    font:400 13px/1.4 var(--sans); outline:0;
+    font:400 13px/1.4 var(--font-sans); outline:0;
     transition:border-color .12s, box-shadow .12s;
   }
   .filter-popover select:focus,

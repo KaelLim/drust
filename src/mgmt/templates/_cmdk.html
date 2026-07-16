@@ -12,7 +12,7 @@
   <div class="cmdk">
     <input class="cmdk-input" id="cmdk-input" placeholder="{{ t.s("cmdk.input.placeholder") }}" autocomplete="off">
     <div class="cmdk-list" id="cmdk-list"></div>
-    <div style="padding:8px 16px;border-top:1px solid var(--border-mid);font:500 10.5px/1 var(--mono);color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;display:flex;gap:14px;align-items:center;">
+    <div style="padding:8px 16px;border-top:1px solid var(--border-mid);font:500 10.5px/1 var(--font-mono);color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;display:flex;gap:14px;align-items:center;">
       <span><span class="kbd" style="height:18px;min-width:0;padding:0 5px;font-size:10.5px;">↑↓</span> {{ t.s("cmdk.hint.navigate") }}</span>
       <span><span class="kbd" style="height:18px;min-width:0;padding:0 5px;font-size:10.5px;">↵</span> {{ t.s("cmdk.hint.open") }}</span>
       <span style="margin-left:auto;">{{ t.s("cmdk.hint.shortcut") }}</span>
@@ -62,7 +62,7 @@
   function render() {
     var list = $('cmdk-list');
     if (filtered.length === 0) {
-      list.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center;font:400 13px/1 var(--sans);">{{ t.s("cmdk.empty.no_matches") }}</div>';
+      list.innerHTML = '<div style="padding:24px;color:var(--muted);text-align:center;font:400 13px/1 var(--font-sans);">{{ t.s("cmdk.empty.no_matches") }}</div>';
       return;
     }
     var html = '';
@@ -72,8 +72,8 @@
       html += '<a class="cmdk-item' + on + '" href="' + it.href + '" data-ix="' + ix + '">'
         + '<span class="ten-avatar av-' + it.av + '" style="width:24px;height:24px;border-radius:7px;font-size:11px;">' + esc(initial) + '</span>'
         + '<span class="cmdk-label" style="display:flex;flex-direction:column;gap:1px;min-width:0;">'
-          + '<span style="font:500 13px/1.2 var(--sans);color:var(--text);">' + esc(it.name) + '</span>'
-          + '<span style="font:500 10.5px/1 var(--mono);color:var(--muted);letter-spacing:0.04em;">' + esc(it.id) + '</span>'
+          + '<span style="font:500 13px/1.2 var(--font-sans);color:var(--fg);">' + esc(it.name) + '</span>'
+          + '<span style="font:500 10.5px/1 var(--font-mono);color:var(--muted);letter-spacing:0.04em;">' + esc(it.id) + '</span>'
         + '</span>'
         + '<span class="cmdk-hint">↵</span></a>';
     });
