@@ -7,7 +7,7 @@
     <div class="page page-wide">
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">{{ t.s("tenant_rpc_test.eyebrow.view") }}</div>
+            {% include "_tenant_eyebrow.html" %}
             <h1 class="view-title">{{ existing_name }}</h1>
             <p class="view-sub">
               {% if mode == "write" %}<span class="pill warn"><span class="dot"></span>{{ t.s("tenant_rpc.row_pill.mode_write") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_rpc.row_pill.mode_read") }}</span>{% endif %}

@@ -1078,10 +1078,6 @@ title = "允許匿名呼叫者？"
 [tenant_rpc_form.error]
 save_failed = "儲存失敗"
 
-[tenant_rpc_form.eyebrow]
-edit = "租戶 · 預存函式 · 編輯"
-new = "租戶 · 預存函式 · 新增"
-
 [tenant_rpc_form.field]
 anon_callable = "允許匿名呼叫者"
 description = "描述（選填）"
@@ -1106,9 +1102,6 @@ heading = "綁定參數（JSON）"
 
 [tenant_rpc_test.explain]
 heading = "查詢計畫（EXPLAIN QUERY PLAN）"
-
-[tenant_rpc_test.eyebrow]
-view = "租戶 · 預存函式 · 測試場"
 
 [tenant_rpc_test.page]
 title = "drust 管理 — {tenant_name} / _rpc / {name} / 測試"

@@ -8,7 +8,7 @@
     <div class="page page-wide">
 
         <div class="coll-sticky-top">
-          <div class="eyebrow">{{ t.s("common.label.tenant") }} · {{ tenant_name }}</div>
+          {% include "_tenant_eyebrow.html" %}
           <div class="row1">
             <h1 class="view-title">{% if coll_name == "_system_users" %}{{ t.s("collection_rows.system_users.title") }}{% else %}{{ coll_name }}{% endif %}</h1>
             <button type="button" class="gear-btn" id="coll-gear" aria-label="{{ t.s("collection_page.settings.title") }}" title="{{ t.s("collection_page.settings.title") }}">

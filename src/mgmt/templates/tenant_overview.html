@@ -9,7 +9,7 @@
 
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">{{ t.s("common.label.tenant") }} · {{ tenant_name }}</div>
+            {% include "_tenant_eyebrow.html" %}
             <h1 class="view-title">{{ t.s("tenant_overview.head.title") }}</h1>
             <p class="view-sub">{{ t.fmt2("tenant_overview.header.subtitle", "tenant_id", tenant_id, "created_at", created_at) }}</p>
           </div>
