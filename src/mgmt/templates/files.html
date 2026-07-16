@@ -66,21 +66,21 @@
 
             <div class="upload-fields">
               <div class="field">
-                <span class="field-label">visibility</span>
+                <span class="field-label">{{ t.s("files.form.visibility") }}</span>
                 <div class="pill-toggle" role="radiogroup" aria-label="Visibility">
                   <input type="radio" id="adm-vis-public" name="visibility" value="public" checked>
-                  <label for="adm-vis-public">public</label>
+                  <label for="adm-vis-public">{{ t.s("files.form.public") }}</label>
                   <input type="radio" id="adm-vis-private" name="visibility" value="private">
-                  <label for="adm-vis-private">private</label>
+                  <label for="adm-vis-private">{{ t.s("files.form.private") }}</label>
                 </div>
               </div>
               <div class="field">
                 <span class="field-label">disposition</span>
                 <div class="pill-toggle" role="radiogroup" aria-label="Disposition">
                   <input type="radio" id="adm-disp-inline" name="disposition" value="inline" checked>
-                  <label for="adm-disp-inline">inline</label>
+                  <label for="adm-disp-inline">{{ t.s("files.form.inline") }}</label>
                   <input type="radio" id="adm-disp-attachment" name="disposition" value="attachment">
-                  <label for="adm-disp-attachment">attachment</label>
+                  <label for="adm-disp-attachment">{{ t.s("files.form.attachment") }}</label>
                 </div>
               </div>
             </div>
@@ -132,12 +132,12 @@
             </colgroup>
             <thead>
               <tr>
-                <th>original name</th>
-                <th>visibility</th>
-                <th>type</th>
-                <th>size</th>
-                <th>uploaded</th>
-                <th>actions</th>
+                <th>{{ t.s("files.table.name") }}</th>
+                <th>{{ t.s("files.table.visibility") }}</th>
+                <th>{{ t.s("files.table.type") }}</th>
+                <th>{{ t.s("files.table.size") }}</th>
+                <th>{{ t.s("files.table.uploaded") }}</th>
+                <th>{{ t.s("files.table.actions") }}</th>
               </tr>
             </thead>
             <tbody>

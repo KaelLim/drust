@@ -1378,3 +1378,25 @@ codex = "Codex CLI"
 cursor = "Cursor"
 claude_desktop = "Claude Desktop"
 gemini = "Gemini CLI"
+
+[tenants_list.table]
+created = "created"
+db = "db"
+files = "files"
+tenant = "Tenant"
+total = "total"
+
+[files.table]
+actions = "actions"
+name = "original name"
+size = "size"
+type = "type"
+uploaded = "uploaded"
+visibility = "visibility"
+
+[files.form]
+attachment = "attachment"
+inline = "inline"
+private = "private"
+public = "public"
+visibility = "visibility"
