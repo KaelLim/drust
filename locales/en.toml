@@ -1056,10 +1056,6 @@ title = "allow anon callers?"
 [tenant_rpc_form.error]
 save_failed = "Save failed"
 
-[tenant_rpc_form.eyebrow]
-edit = "Tenant · stored functions · edit"
-new = "Tenant · stored functions · new"
-
 [tenant_rpc_form.field]
 anon_callable = "allow anon callers"
 description = "description (optional)"
@@ -1084,9 +1080,6 @@ heading = "bound params (JSON)"
 
 [tenant_rpc_test.explain]
 heading = "EXPLAIN QUERY PLAN"
-
-[tenant_rpc_test.eyebrow]
-view = "Tenant · stored functions · playground"
 
 [tenant_rpc_test.page]
 title = "drust admin — {tenant_name} / _rpc / {name} / test"

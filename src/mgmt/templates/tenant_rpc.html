@@ -8,7 +8,7 @@
 
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">{{ t.s("common.label.tenant") }} · {{ tenant_name }}</div>
+            {% include "_tenant_eyebrow.html" %}
             <h1 class="view-title">{{ t.s("tenant_rpc.head.title") }}</h1>
             <p class="view-sub">{{ t.s("tenant_rpc.head.sub") }}</p>
           </div>

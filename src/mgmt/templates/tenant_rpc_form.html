@@ -7,7 +7,7 @@
     <div class="page">
         <div class="view-head">
           <div class="grow">
-            <div class="eyebrow">{% if editing %}{{ t.s("tenant_rpc_form.eyebrow.edit") }}{% else %}{{ t.s("tenant_rpc_form.eyebrow.new") }}{% endif %}</div>
+            {% include "_tenant_eyebrow.html" %}
             <h1 class="view-title">{% if editing %}{{ existing_name }}{% else %}{{ t.s("tenant_rpc_form.title.new") }}{% endif %}</h1>
             <p class="view-sub">{% if editing %}Edit a stored SELECT function. Service-only authoring; persisted in <code>_system_rpc</code>.{% else %}Create a stored SELECT function callable by REST + MCP. Service-only authoring; optional anon access via the <code>allow_anon_callers</code> flag.{% endif %}</p>
           </div>

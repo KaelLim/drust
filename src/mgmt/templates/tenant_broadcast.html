@@ -7,7 +7,7 @@
 <div class="page page-wide">
   <div class="view-head">
     <div class="grow">
-      <div class="eyebrow">{{ t.s("common.label.tenant") }} · {{ tenant_name }}</div>
+      {% include "_tenant_eyebrow.html" %}
       <h1 class="view-title">{{ t.s("broadcast_inspector.page_title") }}</h1>
       <p class="view-sub">{{ t.s("broadcast_inspector.view_sub") }}</p>
     </div>
