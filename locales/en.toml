@@ -85,8 +85,6 @@ none = "None"
 [common.error]
 fallback = "ERROR"
 
-[common.eyebrow]
-tenant_backend = "Tenant · backend"
 
 [common.field]
 password = "Password"
@@ -189,6 +187,7 @@ email = "Email"
 name = "Name"
 role = "Role"
 [admin_team.head]
+eyebrow = "admin console"
 add = "Add admin"
 subtitle = "Manage admins and roles"
 title = "Team"
@@ -285,7 +284,6 @@ meta_description = "drust admin — audit log viewer (host scope, all tenants)."
 title = "drust admin — audit"
 
 [audit_tenant.head]
-eyebrow = "Tenant · governance"
 subtitle = "Scoped to {tenant_name} — every REST, MCP, and SSE request, plus all denials. Host-wide events live in Admin · audit."
 
 [audit_tenant.page]
@@ -771,7 +769,6 @@ reroll_text = "Rerolling immediately invalidates the current {role} key. Every w
 reroll_title = "Reroll key"
 
 [tenant_api_keys.head]
-eyebrow = "Tenant · connect"
 title = "API keys"
 intro = "Two personalities for this tenant — pick whichever matches the surface you're integrating with. Reroll clears the previous bearer immediately. Tenant <b>{tenant_name}</b> <code style=\"opacity:0.6;font-size:11px;\">{tenant_id}</code> · created {created_at}."
 
@@ -833,7 +830,6 @@ body = "Upload the first one with the form above."
 title = "No files yet"
 
 [tenant_files_admin.head]
-eyebrow = "Tenant · backend"
 title = "Storage"
 intro = "Two Garage buckets per tenant — <code>tenant-{tenant_id}-pub</code> served at <code>/public/&lt;key&gt;</code>, <code>tenant-{tenant_id}-prv</code> requires signed URLs."
 
@@ -968,7 +964,6 @@ empty_title = "No user collections yet"
 title = "Overview"
 
 [tenant_overview.header]
-eyebrow = "Tenant · home"
 health_pill = "healthy"
 subtitle = "A snapshot of every surface this tenant has — collections, traffic, auth, storage, backups. Tenant id {tenant_id} · created {created_at}."
 
@@ -1019,7 +1014,6 @@ body = "Stored RPCs are named SELECT queries that frontends and MCP clients call
 title = "No functions yet"
 
 [tenant_rpc.head]
-eyebrow = "Tenant · stored functions"
 sub = "Named SELECT-only functions, callable by service tokens — and by anon if anon_callable=1. Open one to test in the playground."
 title = "Stored RPC"
 
@@ -1254,7 +1248,6 @@ subscriptions = "Subscriptions"
 with_failure = "With failure"
 
 [tenant_webhooks_admin.view]
-eyebrow = "Tenant · backend"
 subtitle = "Outbound notifications on record created / updated / deleted. Signed with HMAC-SHA256 in the X-Drust-Signature header. Retried up to 4× inline (0s / 1s / 5s / 30s)."
 title = "Webhooks"
 
@@ -1318,7 +1311,6 @@ table = "Table"
 
 [broadcast_inspector]
 page_title = "Broadcast Inspector"
-view_eyebrow = "BROADCAST"
 view_sub = "WebSocket multiplex over /realtime — subscribe to rooms, watch the live tail, publish JSON. Inspector does not enumerate rooms; type the name you want to watch."
 
 [broadcast_inspector.bearer_missing]
