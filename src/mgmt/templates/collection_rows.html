@@ -884,18 +884,40 @@ for (;;) {
     if (settingsPop.hidden) openDrawer(); else closeDrawer();
   });
   closeBtn.addEventListener('click', closeDrawer);
+  // These two saves are access-control relevant (anon caps + realtime gate),
+  // so a rejected/failed POST must surface — never silently close as if saved.
+  function reportSaveFailed() {
+    window.drustUI.alert({
+      title: '{{ t.s("collection_rows.save.failed_title") }}',
+      body: '{{ t.s("collection_rows.save.failed_body") }}',
+    });
+  }
   // Intercept anon form to use fetch.
   document.getElementById('anon-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    await fetch(e.target.action, { method: 'POST', body: new URLSearchParams(fd) });
-    closeDrawer();
+    try {
+      const r = await fetch(e.target.action, { method: 'POST', body: new URLSearchParams(fd) });
+      if (!r.ok) throw new Error('http ' + r.status);
+      closeDrawer();
+      if (window.chonkReact) window.chonkReact('happy', 600);
+    } catch (_) {
+      reportSaveFailed();  // keep the drawer open so the unsaved state is visible
+    }
   });
   // Realtime toggle: submit on change.
   document.getElementById('realtime-form').querySelector('input[type=checkbox]').addEventListener('change', async (e) => {
-    const fd = new FormData(e.target.form);
-    if (!e.target.checked) fd.delete('enabled');
-    await fetch(e.target.form.action, { method: 'POST', body: new URLSearchParams(fd) });
+    const cb = e.target;
+    const fd = new FormData(cb.form);
+    if (!cb.checked) fd.delete('enabled');
+    try {
+      const r = await fetch(cb.form.action, { method: 'POST', body: new URLSearchParams(fd) });
+      if (!r.ok) throw new Error('http ' + r.status);
+      if (window.chonkReact) window.chonkReact('happy', 600);
+    } catch (_) {
+      cb.checked = !cb.checked;  // roll back the optimistic flip
+      reportSaveFailed();
+    }
   });
   // Audit (record-history) toggle: submit on change — same pattern as
   // realtime. Posts to the admin-plane wrapper (the browser holds the

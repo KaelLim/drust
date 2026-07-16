@@ -10,7 +10,7 @@
         <div class="grow">
           <div class="eyebrow">{{ t.s("common.label.tenant") }} · {{ tenant_name }}</div>
           <h1 class="view-title">{{ t.s("tenant_files_admin.head.title") }}</h1>
-          <p class="view-sub">{{ t.fmt1("tenant_files_admin.head.intro", "tenant_id", tenant_id)|safe }}</p>
+          <p class="view-sub">{{ t.fmt1_html("tenant_files_admin.head.intro", "tenant_id", tenant_id)|safe }}</p>
         </div>
       </div>
 

@@ -374,6 +374,10 @@ placeholder = "Jump to tenant…"
 [collection_rows.anon]
 apply_btn = "apply changes"
 
+[collection_rows.save]
+failed_title = "Save failed"
+failed_body = "The change was not saved — check your permissions and connection, then try again."
+
 [collection_rows.explain]
 run_btn = "▶ Explain"
 title = "Run EXPLAIN QUERY PLAN"
