@@ -1,3 +1,41 @@
+## v1.49.3 — 2026-07-16
+
+### Security
+
+- Admin-console stored-XSS hardening: the per-tenant `_api_keys` and Files
+  head-intro lines interpolated `tenant_name` / `tenant_id` through a raw
+  `fmt*|safe` sink (no HTML escaping). New `fmt*_html` variants escape the
+  interpolated values, so a malicious tenant display name can no longer execute
+  script in the operator's admin session.
+
+### Fixed
+
+- Renamed 11 undefined ("ghost") CSS custom properties to their canonical tokens
+  (`--mono`→`--font-mono`, `--text`→`--fg`, `--bg-2`→`--surface-2`, …) across 16
+  templates. The old aliases had no definition, so `var()` with no fallback was
+  invalid-at-computed-value-time (collapsed font shorthands, transparent panel
+  backgrounds) — worst on the Cron page.
+- Deleted the orphaned `<style>` block in `login.html` that shadowed the canonical
+  `.login-*` classes (dark-on-dark inputs under the soft-light theme).
+- Anon-caps and realtime saves in the collection editor now check the response,
+  roll back the optimistic UI flip, and surface a failure instead of closing silently.
+
+### Changed
+
+- Consolidated the per-tenant eyebrow into a single `_tenant_eyebrow.html` partial
+  (was duplicated verbatim across 12 templates); `tenant_rpc_form`/`tenant_rpc_test`
+  now show the tenant-identity eyebrow like every other per-tenant page.
+- Removed 8 orphan eyebrow i18n keys left by v1.49.2; routed `admin_team`'s
+  hardcoded eyebrow and the host tenants-list / Files table headers +
+  visibility/disposition labels through the translator (were English-only).
+
+### Deploy
+
+- Ships a generic multi-instance Helm chart at `deploy/helm/drust/` — one isolated
+  drust + MinIO per group on k3s, hardened securityContext, mandatory rmcp Host
+  rewrite, default-deny NetworkPolicy, opt-in CSI-snapshot backup. Additive; the
+  systemd and Docker-Compose deploys are unchanged.
+
 ## v1.49.2 — 2026-07-15
 
 ### Changed
