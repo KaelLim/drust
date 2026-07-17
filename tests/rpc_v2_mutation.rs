@@ -1081,8 +1081,7 @@ async fn cte_prefixed_returning_dml_reports_full_affected_rows() {
     // codex full-scan F4 (robustness): a CTE-prefixed `WITH … UPDATE … RETURNING`
     // is NOT caught by a keyword-prefix DML check, but the total_changes() probe
     // still reports the true mutated count (not the 1000-row response cap).
-    let (app, tid, svc, _anon, dir) =
-        helpers::spin_up_dual_role_self_register("t-rpc-cte1k").await;
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-cte1k").await;
     let pool = helpers::grab_pool(&tid, &dir).await;
     create_orders_table(&pool).await;
     pool.with_writer(|c| {
@@ -1117,5 +1116,9 @@ async fn cte_prefixed_returning_dml_reports_full_affected_rows() {
         Some(1500),
         "CTE-prefixed RETURNING must report the true count via total_changes: {v}"
     );
-    assert_eq!(orders_qty_sum(&pool).await, 1500, "all rows must be updated");
+    assert_eq!(
+        orders_qty_sum(&pool).await,
+        1500,
+        "all rows must be updated"
+    );
 }

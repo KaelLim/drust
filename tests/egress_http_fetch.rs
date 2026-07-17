@@ -305,8 +305,8 @@ async fn allowlisted_private_ip_literal_rejected_before_dial() {
         "http://192.168.1.1",
         // alternate encodings the url crate canonicalizes to the SAME private IPs;
         // these must be blocked too (parser-differential SSRF, F2).
-        "http://2130706433",  // = 127.0.0.1
-        "http://2852039166",  // = 169.254.169.254
+        "http://2130706433", // = 127.0.0.1
+        "http://2852039166", // = 169.254.169.254
     ] {
         let (mcp, _tmp) = mcp_for("t-fetch-priv").await;
         let list = format!(r#"[{{"system":"function","uri":"{ip_origin}"}}]"#);
