@@ -208,11 +208,11 @@ mod tests {
             // alternate IPv4 encodings the `url` crate canonicalizes to a private
             // IP but std::net::IpAddr::parse REJECTS — the parser-differential the
             // fix must close (F2 BROKEN → fixed).
-            "http://2130706433",  // = 127.0.0.1
-            "http://0x7f000001",  // = 127.0.0.1
-            "http://127.1",       // = 127.0.0.1
-            "http://2852039166",  // = 169.254.169.254
-            "http://0",           // = 0.0.0.0
+            "http://2130706433", // = 127.0.0.1
+            "http://0x7f000001", // = 127.0.0.1
+            "http://127.1",      // = 127.0.0.1
+            "http://2852039166", // = 169.254.169.254
+            "http://0",          // = 0.0.0.0
         ] {
             assert!(
                 origin_host_is_private_ip(o),
