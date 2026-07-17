@@ -1,3 +1,51 @@
+## v1.49.4 — 2026-07-17
+
+Fixes for four findings from a full-codebase codex audit, each verified against the
+source (and adversarially self-verified, which caught the `http-fetch` SSRF as a
+parser differential before it shipped). No new MCP tools, no new migration, no new
+env knobs.
+
+### Security
+
+- **Edge-function `http-fetch` SSRF hardening (parser-differential fix).** The
+  private-IP block for outbound `http-fetch` relied on `PinnedPublicResolver`, which
+  hyper skips for IP-literal hosts — and the explicit private-IP-literal check used
+  `std::net::IpAddr`, which rejects alternate IPv4 encodings (`http://2130706433`,
+  `http://0x7f000001`, `http://127.1`, `http://0`) that the `url` crate — the parser
+  reqwest actually dials with — canonicalizes to the private address. A tenant could
+  allowlist such an origin for `system=function` and SSRF to cloud metadata / host
+  loopback / RFC1918. The check now derives the host through `reqwest::Url` (the dial's
+  own parser), so every encoding the dial canonicalizes to a private IP is blocked — at
+  both the runtime `http-fetch` gate and the config-time allowlist validator
+  (`system=function`, DiD gate ≥ 2). Webhook egress was unaffected (it already validates
+  through the same `reqwest::Url` parser at registration).
+- **Anon/user-callable stored RPCs over an owner-scoped collection must now actually
+  bind `:user_id`.** The config-time guard treated the mere *declaration* of a `:user_id`
+  param as the owner-filter escape hatch; a body that declared it but did not filter by
+  it (`WHERE :user_id IS NOT NULL`, a forgotten `WHERE`) still returned every user's rows
+  to a logged-in caller. The guard now requires the SQL to textually bind
+  `<owner_col> = :user_id` at every config-time site (create, update, owner-scope-change).
+  This is a heuristic safety-net consistent with the "drust does not rewrite stored-RPC
+  SQL" design — it catches honest footguns but, by construction, cannot prove semantics:
+  a service author (who already holds full tenant access) can still defeat it via a JOIN
+  over two same-named owner columns or a non-filtering predicate, so it is not a
+  substitute for correct RPC authoring.
+
+### Fixed
+
+- Admin caps/realtime toggles (`update_user_caps` / `update_anon_caps` /
+  `update_realtime`) now check collection existence *inside* the writer transaction
+  (TOCTOU-safe), mirroring the MCP tools — setting a cap or realtime flag on a
+  not-yet-existent collection name no longer seeds a phantom `_system_collection_meta`
+  row that a later same-name create would inherit as stale write caps. Returns `404
+  COLLECTION_NOT_FOUND`.
+- Write-mode stored RPCs now report `affected_rows` as the true mutated count
+  (`conn.changes()`, detected via a `total_changes()` delta so CTE- and comment-prefixed
+  `RETURNING` DML are covered) instead of the 1000-row `RETURNING` response cap. A
+  `UPDATE … RETURNING` over >1000 rows previously reported `affected_rows: 1000` in the
+  response and audit row though all rows were mutated. Record-history capture was always
+  complete (independent preupdate hook); only the reported count was off.
+
 ## v1.49.3 — 2026-07-16
 
 ### Security
