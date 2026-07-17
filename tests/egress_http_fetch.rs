@@ -285,33 +285,57 @@ async fn guest_path_cannot_alter_the_request_host() {
     }
 }
 
-/// (2) An allowlisted origin whose host is a private IP is dropped by
-/// `PinnedPublicResolver` (default, no override) — the request never completes.
-/// It passes the allowlist gate (so the error is NOT "not allowlisted"),
-/// then fails at the resolver, proving the second DiD gate is wired.
+/// (2) An allowlisted origin whose host is a PRIVATE IP LITERAL is rejected
+/// explicitly BEFORE any dial. hyper's connector skips the custom
+/// `PinnedPublicResolver` when the host is already an IP literal (`try_parse`
+/// short-circuits DNS — the resolver only runs for DNS names), so relying on the
+/// resolver alone silently lets an allowlisted `http://169.254.169.254` /
+/// `http://127.0.0.1` SSRF straight through to cloud metadata / host loopback
+/// (codex full-scan F2). The block must be an explicit `is_private_ip` check on
+/// the origin host. This test proves the block is (a) hit for several private
+/// ranges, (b) NOT the allowlist gate (the origin IS allowlisted), and (c) fast —
+/// a spurious pass on the 5s connect timeout (the old bug) is caught by the
+/// elapsed assertion.
 #[tokio::test(flavor = "multi_thread")]
-async fn allowlisted_private_ip_blocked_by_resolver() {
-    let (mcp, _tmp) = mcp_for("t-fetch-priv").await;
-    let list = r#"[{"system":"function","uri":"http://10.0.0.1"}]"#;
-    let mut store = StoreData::new_for_test(
-        mcp,
-        CallerCtx::Privileged,
-        http_state(list, None, 5 * 1024 * 1024),
-    );
-    let err = store
-        .http_fetch_for_test(
-            "http://10.0.0.1".into(),
-            "/".into(),
-            "GET".into(),
-            vec![],
-            vec![],
-        )
-        .await
-        .expect_err("private-IP origin must be blocked by the resolver");
-    assert!(
-        !err.contains("not allowlisted"),
-        "must pass the allowlist gate then fail at the resolver, got: {err}"
-    );
+async fn allowlisted_private_ip_literal_rejected_before_dial() {
+    for ip_origin in [
+        "http://10.0.0.1",
+        "http://127.0.0.1",
+        "http://169.254.169.254",
+        "http://192.168.1.1",
+        // alternate encodings the url crate canonicalizes to the SAME private IPs;
+        // these must be blocked too (parser-differential SSRF, F2).
+        "http://2130706433",  // = 127.0.0.1
+        "http://2852039166",  // = 169.254.169.254
+    ] {
+        let (mcp, _tmp) = mcp_for("t-fetch-priv").await;
+        let list = format!(r#"[{{"system":"function","uri":"{ip_origin}"}}]"#);
+        let mut store = StoreData::new_for_test(
+            mcp,
+            CallerCtx::Privileged,
+            http_state(&list, None, 5 * 1024 * 1024),
+        );
+        let started = std::time::Instant::now();
+        let err = store
+            .http_fetch_for_test(ip_origin.into(), "/".into(), "GET".into(), vec![], vec![])
+            .await
+            .expect_err("private-IP literal origin must be rejected before dial");
+        // Rejected by our explicit IP-literal gate, NOT the allowlist gate (the
+        // origin IS allowlisted) and NOT a slow connect timeout.
+        assert!(
+            err.contains("private"),
+            "want explicit private-IP block for {ip_origin}, got: {err}"
+        );
+        assert!(
+            !err.contains("not allowlisted"),
+            "must pass the allowlist gate for {ip_origin}, got: {err}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "must fail fast before any dial for {ip_origin}, took {:?}",
+            started.elapsed()
+        );
+    }
 }
 
 /// (3) A response larger than `max_response_bytes` aborts with an Err (the
@@ -319,7 +343,10 @@ async fn allowlisted_private_ip_blocked_by_resolver() {
 #[tokio::test(flavor = "multi_thread")]
 async fn response_over_size_cap_errs() {
     let (port, _server) = start_server().await;
-    let origin = format!("http://127.0.0.1:{port}");
+    // A DNS-name origin (not an IP literal) so the request routes through the
+    // PinTo127 resolver seam — production `PinnedPublicResolver` gets the same
+    // shape. An IP-literal origin is now rejected pre-dial (F2 fix).
+    let origin = "http://fetch.test".to_string();
     let list = format!(r#"[{{"system":"function","uri":"{origin}"}}]"#);
     let (mcp, _tmp) = mcp_for("t-fetch-big").await;
     let mut store = StoreData::new_for_test(
@@ -343,7 +370,10 @@ async fn response_over_size_cap_errs() {
 #[tokio::test(flavor = "multi_thread")]
 async fn redirect_is_returned_unfollowed() {
     let (port, _server) = start_server().await;
-    let origin = format!("http://127.0.0.1:{port}");
+    // A DNS-name origin (not an IP literal) so the request routes through the
+    // PinTo127 resolver seam — production `PinnedPublicResolver` gets the same
+    // shape. An IP-literal origin is now rejected pre-dial (F2 fix).
+    let origin = "http://fetch.test".to_string();
     let list = format!(r#"[{{"system":"function","uri":"{origin}"}}]"#);
     let (mcp, _tmp) = mcp_for("t-fetch-redir").await;
     let mut store = StoreData::new_for_test(
@@ -367,7 +397,10 @@ async fn redirect_is_returned_unfollowed() {
 async fn successful_fetch_emits_audit_row() {
     ensure_global_audit_writer();
     let (port, _server) = start_server().await;
-    let origin = format!("http://127.0.0.1:{port}");
+    // A DNS-name origin (not an IP literal) so the request routes through the
+    // PinTo127 resolver seam — production `PinnedPublicResolver` gets the same
+    // shape. An IP-literal origin is now rejected pre-dial (F2 fix).
+    let origin = "http://fetch.test".to_string();
     let list = format!(r#"[{{"system":"function","uri":"{origin}"}}]"#);
     let tenant = "t-fetch-audit";
     let (mcp, _tmp) = mcp_for(tenant).await;

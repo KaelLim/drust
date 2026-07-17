@@ -172,6 +172,47 @@ fn anon_callable_read_over_owner_scoped_with_user_id_param_accepts() {
 }
 
 #[test]
+fn anon_callable_read_over_owner_scoped_with_unused_user_id_rejected() {
+    // codex full-scan F1: declaring a :user_id param is NOT enough — the SQL must
+    // actually bind the owner column to it. A body that declares :user_id but does
+    // not filter by it still returns EVERY user's rows, so the guard must reject.
+    let (_d, conn) = seed_owner_scoped("anon_owner_unused_uid");
+    for sql in [
+        "SELECT id, qty FROM orders WHERE :user_id IS NOT NULL", // always-true predicate
+        "SELECT id, qty FROM orders",                            // param declared, never referenced
+        "SELECT id, qty FROM orders WHERE qty > 0",              // filters, but not by owner
+    ] {
+        let err = guard_anon_owner_scoped_rpc(&conn, sql, &user_id_param(), true, RpcMode::Read)
+            .unwrap_err();
+        let PrepareError::Rejected(msg) = err;
+        assert!(
+            msg.contains(RPC_ANON_OWNER_SCOPED),
+            "declared-but-unused :user_id must be rejected for {sql:?}, got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn anon_callable_write_over_owner_scoped_with_unused_user_id_rejected() {
+    // Write variant of F1: a declared-but-unused :user_id lets anon/user MUTATE
+    // every user's rows — strictly worse than the read leak.
+    let (_d, conn) = seed_owner_scoped("anon_write_owner_unused_uid");
+    let err = guard_anon_owner_scoped_rpc(
+        &conn,
+        "UPDATE orders SET qty = 0 WHERE :user_id IS NOT NULL",
+        &user_id_param(),
+        true,
+        RpcMode::Write,
+    )
+    .unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED),
+        "declared-but-unused :user_id write must be rejected, got: {msg}"
+    );
+}
+
+#[test]
 fn service_only_read_over_owner_scoped_accepts() {
     let (_d, conn) = seed_owner_scoped("svc_only_owner");
     // anon_callable=false → service-only → no leak → must create fine.
@@ -366,7 +407,7 @@ fn owner_scope_change_blocked_by_existing_anon_rpc() {
     )
     .unwrap();
     // Attempting to make `orders` owner-scoped must be refused, naming the RPC.
-    let err = guard_owner_scope_change_against_anon_rpcs(&conn, "orders").unwrap_err();
+    let err = guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id").unwrap_err();
     let PrepareError::Rejected(msg) = err;
     assert!(
         msg.contains(RPC_ANON_OWNER_SCOPED) && msg.contains("list_orders"),
@@ -387,7 +428,7 @@ fn owner_scope_change_allowed_when_anon_rpc_binds_user_id() {
         RpcMode::Read,
     )
     .unwrap();
-    guard_owner_scope_change_against_anon_rpcs(&conn, "orders")
+    guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id")
         .expect(":user_id-bound anon RPC must not block the owner-scope change");
 }
 
@@ -418,8 +459,33 @@ fn owner_scope_change_allowed_for_service_only_or_unrelated_rpc() {
         RpcMode::Read,
     )
     .unwrap();
-    guard_owner_scope_change_against_anon_rpcs(&conn, "orders")
+    guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id")
         .expect("service-only + unrelated anon RPC must not block the change");
+}
+
+#[test]
+fn owner_scope_change_blocked_by_anon_rpc_with_unused_user_id() {
+    // codex full-scan F1: the owner-scope-change guard has its OWN bound-check
+    // branch (not delegated to the create guard). An anon RPC that DECLARES
+    // :user_id but does not actually bind the owner column to it must NOT exempt
+    // making the collection owner-scoped — else the toggle silently opens the leak.
+    let (_d, conn) = seed("osc_unused_uid");
+    registry::create(
+        &conn,
+        "leaky",
+        "SELECT id, qty FROM orders WHERE :user_id IS NOT NULL",
+        USER_ID_PARAMS_JSON,
+        None,
+        true,
+        RpcMode::Read,
+    )
+    .unwrap();
+    let err = guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id").unwrap_err();
+    let PrepareError::Rejected(msg) = err;
+    assert!(
+        msg.contains(RPC_ANON_OWNER_SCOPED) && msg.contains("leaky"),
+        "declared-but-unused :user_id must not exempt the owner-scope change, got: {msg}"
+    );
 }
 
 // ── v1.41.3 (review): legacy one-time unsafe-RPC scan ──

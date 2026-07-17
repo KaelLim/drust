@@ -510,7 +510,9 @@ impl host::Host for StoreData {
         body: Vec<u8>,
         headers: Vec<(String, String)>,
     ) -> Result<host::HttpResponse, String> {
-        use crate::tenant::egress::{EgressSystem, check_egress, normalize_origin};
+        use crate::tenant::egress::{
+            EgressSystem, check_egress, normalize_origin, origin_host_is_private_ip,
+        };
         use std::time::Duration;
 
         let started = std::time::Instant::now();
@@ -520,6 +522,15 @@ impl host::Host for StoreData {
         //    Fail-closed: an un-normalizable origin or an origin absent from the
         //    tenant's `system=function` allowlist denies before any network I/O.
         let origin = normalize_origin(&origin).map_err(|e| format!("bad origin: {e}"))?;
+        // DiD gate 2 for IP-LITERAL hosts: `PinnedPublicResolver` (below) only
+        // filters resolved DNS names — hyper dials an IP-literal host directly
+        // without polling the resolver, so an allowlisted `http://169.254.169.254`
+        // / `http://127.0.0.1` would SSRF straight through to cloud metadata / host
+        // loopback. Reject private/loopback/link-local IP literals explicitly here;
+        // DNS-name hosts fall through to the resolver as before (codex full-scan F2).
+        if origin_host_is_private_ip(&origin) {
+            return Err("origin host is a private/loopback address".to_string());
+        }
         let allowlist = self.host.http.allowlist().await.to_string();
         if !check_egress(&allowlist, EgressSystem::Function, &origin) {
             return Err("origin not allowlisted".to_string());

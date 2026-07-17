@@ -172,11 +172,34 @@ pub fn execute_one(
         let mut rows_iter = stmt
             .query(refs.as_slice())
             .map_err(|e| classify(e, statement_index))?;
+        // codex full-scan F4: report `affected_rows` as the TRUE mutated count for a
+        // rows-returning DML statement (`INSERT/UPDATE/DELETE ... RETURNING`), not
+        // the capped returned-row count. Detection is EMPIRICAL — a delta in
+        // `total_changes()` across the statement — so it is robust to CTE-prefixed
+        // (`WITH … UPDATE … RETURNING`) and comment-prefixed DML that a keyword
+        // prefix match would miss. A plain SELECT (no delta) keeps the old
+        // cap-and-count behavior. `changes_before` is captured BEFORE the first
+        // step (mutations run on `step`, not on `query()`).
+        let upper = sql.trim_start().to_ascii_uppercase();
+        let is_dml_prefix = upper.starts_with("INSERT")
+            || upper.starts_with("UPDATE")
+            || upper.starts_with("DELETE");
+        let changes_before = conn.total_changes();
         let mut truncated = false;
         while let Some(r) = rows_iter.next().map_err(|e| classify(e, statement_index))? {
             if rows.len() >= 1_000 {
                 truncated = true;
-                break;
+                // A likely-DML statement drains past the cap so every matching row
+                // mutates (forward-defense: SQLite today applies all mutations on
+                // the first step, but a future streaming impl must not lose rows);
+                // a SELECT honors the response cap and stops reading. Over-draining
+                // a CTE/comment-prefixed DML that this prefix misses is only a
+                // missed forward-defense, never a wrong count (below is empirical).
+                if is_dml_prefix {
+                    continue;
+                } else {
+                    break;
+                }
             }
             let mut row = Vec::with_capacity(col_count);
             for (i, col_type) in types.iter_mut().enumerate() {
@@ -188,8 +211,19 @@ pub fn execute_one(
             }
             rows.push(row);
         }
-        let affected_rows = rows.len() as i64;
-        let last_id = if sql.trim_start().to_ascii_uppercase().starts_with("INSERT") {
+        // Drop the row iterator before reading connection-level counters.
+        drop(rows_iter);
+        // A statement that changed rows (total_changes advanced) reports the true
+        // mutated count. The convergent `<coll>_updated_at` AFTER trigger's rows
+        // ARE counted by total_changes but NOT by changes(), so changes() stays the
+        // user-visible top-level count while total_changes only serves as the
+        // did-it-mutate probe. A pure SELECT (no delta) reports the returned count.
+        let affected_rows = if conn.total_changes() != changes_before {
+            conn.changes() as i64
+        } else {
+            rows.len() as i64
+        };
+        let last_id = if upper.starts_with("INSERT") {
             Some(conn.last_insert_rowid())
         } else {
             None

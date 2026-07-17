@@ -492,9 +492,25 @@ pub async fn update_anon_caps(
     let coll_for_writer = coll_name.clone();
     let caps_for_writer = caps.clone();
     if let Err(e) = pool
-        .with_writer(move |c| write_anon_caps(c, &coll_for_writer, &caps_for_writer))
+        .with_writer(move |c| {
+            // codex full-scan F3: fold the existence check INSIDE the writer
+            // (TOCTOU-safe, mirrors MCP set_anon_caps) so caps cannot be seeded
+            // onto a not-yet-existent collection — a later same-name create would
+            // otherwise inherit these stale caps instead of the default.
+            if !crate::storage::schema::collection_exists(c, &coll_for_writer)? {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(format!("COLLECTION_NOT_FOUND: {coll_for_writer}")),
+                ));
+            }
+            write_anon_caps(c, &coll_for_writer, &caps_for_writer)
+        })
         .await
     {
+        let msg = e.to_string();
+        if msg.contains("COLLECTION_NOT_FOUND") {
+            return (StatusCode::NOT_FOUND, msg).into_response();
+        }
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
 
@@ -572,9 +588,25 @@ pub async fn update_user_caps(
     let coll_for_writer = coll_name.clone();
     let caps_for_writer = caps.clone();
     if let Err(e) = pool
-        .with_writer(move |c| write_user_caps(c, &coll_for_writer, &caps_for_writer))
+        .with_writer(move |c| {
+            // codex full-scan F3: fold the existence check INSIDE the writer
+            // (TOCTOU-safe, mirrors MCP set_user_caps) so caps cannot be seeded
+            // onto a not-yet-existent collection — a later same-name create would
+            // otherwise inherit these stale write caps instead of the default.
+            if !crate::storage::schema::collection_exists(c, &coll_for_writer)? {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(format!("COLLECTION_NOT_FOUND: {coll_for_writer}")),
+                ));
+            }
+            write_user_caps(c, &coll_for_writer, &caps_for_writer)
+        })
         .await
     {
+        let msg = e.to_string();
+        if msg.contains("COLLECTION_NOT_FOUND") {
+            return (StatusCode::NOT_FOUND, msg).into_response();
+        }
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
 
@@ -624,10 +656,25 @@ pub async fn update_realtime(
     let coll_for_writer = coll_name.clone();
     if let Err(e) = pool
         .with_writer(move |c| {
+            // codex full-scan F3 (completeness): existence check INSIDE the writer
+            // (TOCTOU-safe) so the realtime toggle cannot seed a phantom meta row
+            // for a non-existent collection — the same guard update_anon_caps /
+            // update_user_caps / update_audit already carry (this was the lone
+            // admin holdout in the family).
+            if !crate::storage::schema::collection_exists(c, &coll_for_writer)? {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(format!("COLLECTION_NOT_FOUND: {coll_for_writer}")),
+                ));
+            }
             crate::storage::schema::write_realtime_enabled(c, &coll_for_writer, enabled)
         })
         .await
     {
+        let msg = e.to_string();
+        if msg.contains("COLLECTION_NOT_FOUND") {
+            return (StatusCode::NOT_FOUND, msg).into_response();
+        }
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
 
