@@ -1020,3 +1020,102 @@ async fn mode6_update_rpc_downgrade_to_read_requires_select_body() {
     assert!(out.contains("updated"), "read downgrade + SELECT: {out}");
     assert_eq!(stored_rpc_mode(&pool, "add_one").await, "read");
 }
+
+// ────────────────────────────────────────────────────────────────────
+// codex full-scan F4 — a write RPC whose body is `UPDATE ... RETURNING`
+// over >1000 rows must mutate ALL rows AND report the true changed count.
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn returning_dml_reports_full_affected_rows_past_1000_cap() {
+    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-ret1k").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    // Seed 1500 rows with qty=0 (over the 1000-row RETURNING response cap).
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < 1500) \
+             INSERT INTO orders (qty) SELECT 0 FROM seq;",
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(orders_count(&pool).await, 1500);
+
+    create_rpc(
+        &pool,
+        "bump_all",
+        "UPDATE orders SET qty = 1 RETURNING id",
+        "[]",
+        false,
+        "write",
+    )
+    .await;
+
+    let r = app
+        .clone()
+        .oneshot(req("POST", &tid, "/rpc/bump_all", Some(json!({})), &svc))
+        .await
+        .unwrap();
+    let status = r.status();
+    let v = read_json(r).await;
+    assert_eq!(status, StatusCode::OK, "write RPC must succeed: {v}");
+    // (b) affected_rows is the TRUE mutated count (conn.changes()), not the
+    // 1000-row RETURNING response cap.
+    assert_eq!(
+        v["affected_rows"].as_i64(),
+        Some(1500),
+        "affected_rows must be the full changed count, not the response cap: {v}"
+    );
+    // (a) every row was actually mutated (qty 0 -> 1) even though the returned
+    // rows array is capped at 1000.
+    assert_eq!(
+        orders_qty_sum(&pool).await,
+        1500,
+        "all 1500 rows must be updated despite the RETURNING response cap"
+    );
+}
+
+#[tokio::test]
+async fn cte_prefixed_returning_dml_reports_full_affected_rows() {
+    // codex full-scan F4 (robustness): a CTE-prefixed `WITH … UPDATE … RETURNING`
+    // is NOT caught by a keyword-prefix DML check, but the total_changes() probe
+    // still reports the true mutated count (not the 1000-row response cap).
+    let (app, tid, svc, _anon, dir) =
+        helpers::spin_up_dual_role_self_register("t-rpc-cte1k").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < 1500) \
+             INSERT INTO orders (qty) SELECT 0 FROM seq;",
+        )
+    })
+    .await
+    .unwrap();
+
+    create_rpc(
+        &pool,
+        "cte_bump",
+        "WITH x(n) AS (SELECT 1) UPDATE orders SET qty = 1 WHERE qty = 0 RETURNING id",
+        "[]",
+        false,
+        "write",
+    )
+    .await;
+
+    let r = app
+        .clone()
+        .oneshot(req("POST", &tid, "/rpc/cte_bump", Some(json!({})), &svc))
+        .await
+        .unwrap();
+    let status = r.status();
+    let v = read_json(r).await;
+    assert_eq!(status, StatusCode::OK, "CTE write RPC must succeed: {v}");
+    assert_eq!(
+        v["affected_rows"].as_i64(),
+        Some(1500),
+        "CTE-prefixed RETURNING must report the true count via total_changes: {v}"
+    );
+    assert_eq!(orders_qty_sum(&pool).await, 1500, "all rows must be updated");
+}

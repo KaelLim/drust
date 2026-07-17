@@ -7,7 +7,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use axum::routing::post;
-use drust::mgmt::browse::update_user_caps;
+use drust::mgmt::browse::{update_realtime, update_user_caps};
 use drust::mgmt::tenants::TenantsState;
 use drust::storage::meta::open_meta;
 use drust::storage::schema::{DmlVerb, describe_collection};
@@ -45,6 +45,10 @@ async fn build_app(tenant_id: &str) -> (Router, std::path::PathBuf, tempfile::Te
         .route(
             "/admin/tenants/{id}/collections/{coll}/user-caps",
             post(update_user_caps),
+        )
+        .route(
+            "/admin/tenants/{id}/collections/{coll}/realtime",
+            post(update_realtime),
         )
         .with_state(state);
     (app, data_dir, dir)
@@ -131,6 +135,72 @@ async fn admin_update_user_caps_round_trip() {
     let mut anon_want: BTreeSet<DmlVerb> = BTreeSet::new();
     anon_want.insert(DmlVerb::Select);
     assert_eq!(schema.anon_caps, anon_want, "anon_caps must NOT change");
+}
+
+#[tokio::test]
+async fn admin_update_user_caps_on_missing_collection_404s_and_seeds_no_meta() {
+    // codex full-scan F3: setting user_caps on a collection NAME that has no table
+    // yet must NOT create a _system_collection_meta row — otherwise a later
+    // same-name create would inherit these stale write caps instead of the default
+    // {select}. The admin handler must 404 (mirroring the MCP set_user_caps guard),
+    // not 303-redirect after seeding a row.
+    let tid = "admin-user-caps-missing";
+    let (app, data_dir, _d) = build_app(tid).await;
+    // No seed_posts — collection "future" does not exist.
+    let resp = post_form(
+        &app,
+        &format!("/admin/tenants/{tid}/collections/future/user-caps"),
+        "caps=select&caps=insert&caps=update&caps=delete",
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "setting caps on a non-existent collection must 404, not seed a stale meta row"
+    );
+    // Prove no stale meta row was seeded (writer conn bypasses the read-only
+    // authorizer that denies _system_* reads).
+    let wconn = drust::storage::tenant_db::open_write(&data_dir, tid).unwrap();
+    let meta_rows: i64 = wconn
+        .query_row(
+            "SELECT COUNT(*) FROM _system_collection_meta WHERE collection_name = 'future'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        meta_rows, 0,
+        "no stale _system_collection_meta row may be seeded for a never-created collection"
+    );
+}
+
+#[tokio::test]
+async fn admin_update_realtime_on_missing_collection_404s_and_seeds_no_meta() {
+    // codex full-scan F3 (completeness): the realtime toggle is the same handler
+    // family as user/anon caps — it must also reject a non-existent collection
+    // rather than seed a phantom _system_collection_meta row.
+    let tid = "admin-realtime-missing";
+    let (app, data_dir, _d) = build_app(tid).await;
+    let resp = post_form(
+        &app,
+        &format!("/admin/tenants/{tid}/collections/ghost/realtime"),
+        "enabled=1",
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "realtime toggle on a non-existent collection must 404, not seed a phantom row"
+    );
+    let wconn = drust::storage::tenant_db::open_write(&data_dir, tid).unwrap();
+    let meta_rows: i64 = wconn
+        .query_row(
+            "SELECT COUNT(*) FROM _system_collection_meta WHERE collection_name = 'ghost'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(meta_rows, 0, "no phantom meta row may be seeded");
 }
 
 #[tokio::test]

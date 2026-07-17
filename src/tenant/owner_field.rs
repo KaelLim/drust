@@ -66,13 +66,14 @@ pub async fn set_owner_field_handler(
             // owner-scoped while an existing anon-callable RPC reads it without
             // :user_id (the create/update guard never re-runs on this config
             // change). Runs before the write — this path is autocommit.
-            crate::rpc::prepare::guard_owner_scope_change_against_anon_rpcs(c, &coll_for_set)
-                .map_err(|e| {
-                    rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(1),
-                        Some(e.to_string()),
-                    )
-                })?;
+            crate::rpc::prepare::guard_owner_scope_change_against_anon_rpcs(
+                c,
+                &coll_for_set,
+                &field_for_set,
+            )
+            .map_err(|e| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            })?;
             crate::storage::schema::set_owner_field(
                 c,
                 &coll_for_set,

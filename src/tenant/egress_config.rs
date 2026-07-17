@@ -113,6 +113,18 @@ pub fn validate_entries(entries: &[RawEgressEntry]) -> Result<Vec<EgressEntry>, 
             .ok_or_else(|| EgressConfigError::BadSystem(e.system.clone()))?;
         let origin =
             normalize_origin(&e.uri).map_err(|_| EgressConfigError::BadOrigin(e.uri.clone()))?;
+        // DiD (codex full-scan F2): a `function` origin whose host is a private-IP
+        // literal must never enter the allowlist — `http-fetch` would otherwise
+        // dial it directly (hyper skips the resolver for IP literals). Rejected at
+        // config time so the deny is loud, not a silent dispatch-time failure. The
+        // `http-fetch` handler re-checks per attempt (belt-and-suspenders). Webhook
+        // origins keep their own registration-time `is_private_ip` gate + the dev
+        // loopback carve-out, so this reject is scoped to `function`.
+        if system == EgressSystem::Function
+            && crate::tenant::egress::origin_host_is_private_ip(&origin)
+        {
+            return Err(EgressConfigError::BadOrigin(e.uri.clone()));
+        }
         out.push(EgressEntry {
             system,
             uri: origin,
@@ -240,6 +252,39 @@ mod tests {
                 .code(),
             "EGRESS_BAD_SYSTEM"
         );
+    }
+
+    #[test]
+    fn validate_rejects_function_private_ip_including_alternate_encodings() {
+        // F2 DiD: a `function` origin whose host is a private-IP literal — in ANY
+        // encoding the dial parser canonicalizes — must be rejected at config time
+        // so http-fetch can never dial it.
+        for uri in [
+            "http://127.0.0.1",
+            "http://169.254.169.254",
+            "http://10.0.0.1",
+            "http://2130706433", // = 127.0.0.1
+            "http://2852039166", // = 169.254.169.254
+            "http://0x7f000001", // = 127.0.0.1
+            "http://0",          // = 0.0.0.0
+        ] {
+            assert_eq!(
+                validate_entries(&[raw("function", uri)])
+                    .unwrap_err()
+                    .code(),
+                "EGRESS_BAD_ORIGIN",
+                "function private-IP origin {uri} must be rejected"
+            );
+        }
+        // Scoped to `function`: webhook keeps its own registration-time gate + the
+        // dev loopback carve-out, so this config gate does NOT reject webhook
+        // private IPs.
+        assert!(
+            validate_entries(&[raw("webhook", "http://10.0.0.1")]).is_ok(),
+            "webhook private IP is not rejected by the function-scoped config gate"
+        );
+        // A public function origin still validates.
+        assert!(validate_entries(&[raw("function", "https://api.github.com")]).is_ok());
     }
 
     #[test]

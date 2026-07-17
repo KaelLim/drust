@@ -152,16 +152,30 @@ pub fn guard_anon_owner_scoped_rpc(
                  would expose the rows the policy hides; set anon_callable=false on this RPC"
             )));
         }
-        // Owner-scoped without :user_id: returns/mutates every user's rows. The
-        // declared :user_id param is the sanctioned owner-filter escape hatch.
-        if !has_user_id {
-            let (owner_field, _scope) = crate::storage::schema::read_owner_field(conn, table)
-                .map_err(|e| PrepareError::Rejected(format!("owner_field probe failed: {e}")))?;
-            if owner_field.is_some() {
+        // Owner-scoped collection: an anon/user caller must be constrained to
+        // their own rows, but drust does not rewrite stored-RPC SQL. The declared
+        // :user_id param is the sanctioned escape hatch — but merely DECLARING it
+        // is not enough (codex full-scan F1): the body must ALSO bind the owner
+        // column to :user_id (e.g. `WHERE user_id = :user_id`), else a body like
+        // `WHERE :user_id IS NOT NULL` (declares the param, references it, yet
+        // filters nothing) still returns/mutates every user's rows.
+        let (owner_field, _scope) = crate::storage::schema::read_owner_field(conn, table)
+            .map_err(|e| PrepareError::Rejected(format!("owner_field probe failed: {e}")))?;
+        if let Some(owner_col) = owner_field {
+            if !has_user_id {
                 return Err(PrepareError::Rejected(format!(
                     "{RPC_ANON_OWNER_SCOPED}: an anon-callable RPC over owner-scoped \
                      collection '{table}' must bind :user_id, else it exposes every user's rows; \
-                     declare a :user_id param or set anon_callable=false"
+                     declare a :user_id param and filter `{owner_col} = :user_id`, or set \
+                     anon_callable=false"
+                )));
+            }
+            if !sql_binds_owner_to_user_id(sql, &owner_col) {
+                return Err(PrepareError::Rejected(format!(
+                    "{RPC_ANON_OWNER_SCOPED}: an anon-callable RPC over owner-scoped \
+                     collection '{table}' declares :user_id but its SQL does not constrain \
+                     `{owner_col} = :user_id`, so it still exposes every user's rows; add that \
+                     predicate on every path over '{table}', or set anon_callable=false"
                 )));
             }
         }
@@ -238,6 +252,64 @@ fn referenced_user_tables(
     Ok(snapshot)
 }
 
+/// Heuristic textual check (codex full-scan F1): does `sql` contain a predicate
+/// that binds the owner column to the auto-bound `:user_id` param — i.e.
+/// `<owner_col> = :user_id` or `:user_id = <owner_col>` (case-insensitive,
+/// whitespace-tolerant, an optional `<qualifier>.` prefix on the column allowed)?
+///
+/// drust does NOT parse stored-RPC SQL (a deliberate invariant), so this is a
+/// SAFETY-NET against the accidental footgun where an anon/user-callable RPC over
+/// an owner-scoped collection declares a `:user_id` param but forgets to filter by
+/// it (e.g. `WHERE :user_id IS NOT NULL`), which would still expose every user's
+/// rows. It is NOT a semantic proof: it cannot see through a multi-table JOIN that
+/// leaves a second owner-scoped table unfiltered, and a determined SERVICE author
+/// (who already holds full tenant access) could defeat it with a comment/string.
+/// That is an accepted limit of the "no SQL rewrite" design; the check exists to
+/// catch honest mistakes and to stop the guard's own remediation advice ("declare
+/// a :user_id param") from being a silent bypass.
+fn sql_binds_owner_to_user_id(sql: &str, owner_col: &str) -> bool {
+    let owner = owner_col.to_ascii_lowercase();
+    let lc = sql.to_ascii_lowercase();
+    // Tokenize: a "word" is a maximal run of [a-z0-9_.] (identifiers + qualified
+    // `t.col` names); ':' + word is a named param; '=' is its own token; every
+    // other byte is a separator. This preserves token boundaries (so "where
+    // user_id" never merges) without a regex dependency.
+    let bytes = lc.as_bytes();
+    let mut tokens: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'=' {
+            tokens.push("=");
+            i += 1;
+        } else if b == b':' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            tokens.push(&lc[start..i]);
+        } else if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+            let start = i;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
+            {
+                i += 1;
+            }
+            tokens.push(&lc[start..i]);
+        } else {
+            i += 1;
+        }
+    }
+    let is_owner_ref = |t: &str| t == owner || t.rsplit('.').next() == Some(owner.as_str());
+    let is_user_id_param = |t: &str| t == ":user_id";
+    tokens.windows(3).any(|w| {
+        w[1] == "="
+            && ((is_owner_ref(w[0]) && is_user_id_param(w[2]))
+                || (is_user_id_param(w[0]) && is_owner_ref(w[2])))
+    })
+}
+
 /// Config-time defense-in-depth (v1.41.3): refuse to make `collection`
 /// owner-scoped while an existing `anon_callable` RPC reads or writes it without
 /// binding `:user_id`. The create/update guard never re-runs when a collection's
@@ -253,22 +325,33 @@ fn referenced_user_tables(
 pub fn guard_owner_scope_change_against_anon_rpcs(
     conn: &Connection,
     collection: &str,
+    new_owner_field: &str,
 ) -> Result<(), PrepareError> {
     let rpcs = crate::rpc::registry::list(conn)
         .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
     for rpc in rpcs {
-        if !rpc.anon_callable || rpc.params.iter().any(|p| p.name == "user_id") {
+        if !rpc.anon_callable {
             continue;
         }
         let tables = referenced_user_tables(conn, &rpc.sql, rpc.mode)?;
-        if tables.contains(collection) {
-            return Err(PrepareError::Rejected(format!(
-                "{RPC_ANON_OWNER_SCOPED}: cannot make collection '{collection}' owner-scoped while \
-                 anon-callable RPC '{}' reads it without binding :user_id; add a :user_id param or \
-                 set anon_callable=false on that RPC first",
-                rpc.name
-            )));
+        if !tables.contains(collection) {
+            continue;
         }
+        // The RPC references the collection being made owner-scoped. Safe ONLY if
+        // it declares :user_id AND its SQL actually binds the (new) owner column
+        // to :user_id — a declared-but-unused :user_id no longer exempts it
+        // (codex full-scan F1), mirroring the tightened create-time guard.
+        let bound = rpc.params.iter().any(|p| p.name == "user_id")
+            && sql_binds_owner_to_user_id(&rpc.sql, new_owner_field);
+        if bound {
+            continue;
+        }
+        return Err(PrepareError::Rejected(format!(
+            "{RPC_ANON_OWNER_SCOPED}: cannot make collection '{collection}' owner-scoped while \
+             anon-callable RPC '{}' references it without binding `{new_owner_field} = :user_id`; \
+             add that predicate + a :user_id param, or set anon_callable=false on that RPC first",
+            rpc.name
+        )));
     }
     Ok(())
 }
@@ -371,6 +454,45 @@ mod tests {
     use super::*;
     use crate::storage::tenant_db::open_write;
     use tempfile::TempDir;
+
+    #[test]
+    fn sql_binds_owner_to_user_id_matches_real_predicates_only() {
+        // positive: the owner column is bound to :user_id (various shapes)
+        for sql in [
+            "SELECT * FROM orders WHERE user_id = :user_id",
+            "select * from orders where USER_ID=:user_id",
+            "SELECT * FROM orders WHERE :user_id = user_id",
+            "SELECT * FROM orders o WHERE o.user_id = :user_id",
+            "SELECT * FROM orders WHERE qty>0 AND user_id  =  :user_id",
+        ] {
+            assert!(
+                sql_binds_owner_to_user_id(sql, "user_id"),
+                "should match: {sql}"
+            );
+        }
+        // negative: declared/referenced :user_id but no owner binding
+        for sql in [
+            "SELECT * FROM orders WHERE :user_id IS NOT NULL",
+            "SELECT * FROM orders",
+            "SELECT * FROM orders WHERE qty > 0",
+            "SELECT * FROM orders WHERE id = :user_id", // binds id, not owner
+            "SELECT * FROM orders WHERE user_idx = :user_id", // different column
+        ] {
+            assert!(
+                !sql_binds_owner_to_user_id(sql, "user_id"),
+                "should NOT match: {sql}"
+            );
+        }
+        // a differently-named owner column
+        assert!(sql_binds_owner_to_user_id(
+            "SELECT * FROM t WHERE owner = :user_id",
+            "owner"
+        ));
+        assert!(!sql_binds_owner_to_user_id(
+            "SELECT * FROM t WHERE user_id = :user_id",
+            "owner"
+        ));
+    }
 
     fn fresh() -> (TempDir, Connection) {
         let tmp = TempDir::new().unwrap();

@@ -97,6 +97,46 @@ pub fn normalize_origin(raw: &str) -> Result<String, String> {
     Ok(origin)
 }
 
+/// True iff `origin`'s host is an IP LITERAL in a private/loopback/link-local/
+/// CGNAT/ULA/documentation range. `origin` is expected to be a `normalize_origin`
+/// output (`scheme://host[:port]`).
+///
+/// The `PinnedPublicResolver` DiD gate only filters *resolved DNS names* — hyper's
+/// connector short-circuits DNS for a host that is already an IP literal and dials
+/// it directly, never polling the custom resolver. So an IP-literal origin
+/// (`http://169.254.169.254`, `http://127.0.0.1`) silently bypasses the private-IP
+/// block unless it is checked explicitly.
+///
+/// CRITICAL: this check MUST use the SAME parser reqwest dials with. `reqwest::Url`
+/// is the `url` crate's WHATWG parser, which CANONICALIZES alternate IPv4 encodings
+/// — `http://2130706433` / `http://0x7f000001` / `http://127.1` → `127.0.0.1`,
+/// `http://2851995374` → `169.254.169.254`, `http://0` → `0.0.0.0`. A naive
+/// substring + `std::net::IpAddr` parse (which REJECTS those encodings) would let an
+/// allowlisted `http://2851995374` dial cloud metadata — the classic
+/// parser-differential SSRF (codex full-scan F2; the same lesson as the v1.49 egress
+/// review). By deriving the host through the dial's own parser and re-reading its
+/// canonicalized `host_str`, this gate sees exactly what reqwest will dial. DNS-name
+/// hosts return `false` and stay covered by `PinnedPublicResolver`.
+pub fn origin_host_is_private_ip(origin: &str) -> bool {
+    let url = match reqwest::Url::parse(origin) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    // `url` brackets IPv6 (`[::1]`); std's `IpAddr` parser wants it unbracketed.
+    // For canonicalized IPv4 (`127.0.0.1`) and DNS names it is returned verbatim.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => crate::tenant::webhook_resolver::is_private_ip(ip),
+        Err(_) => false,
+    }
+}
+
 /// Parse the stored allowlist JSON leniently: bad JSON yields an empty list,
 /// and any individual entry with a missing/invalid `system` or `uri` is
 /// skipped. Loud validation is the config-time gate; here we fail closed.
@@ -152,6 +192,43 @@ pub fn read_egress_allowlist(meta: &Connection, tenant_id: &str) -> rusqlite::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn origin_host_private_ip_flags_literals_and_ignores_dns() {
+        // private / loopback / link-local / CGNAT IP literals → true
+        for o in [
+            "http://10.0.0.1",
+            "http://127.0.0.1",
+            "http://127.0.0.1:8080",
+            "http://169.254.169.254",
+            "http://192.168.1.1",
+            "http://172.16.0.1",
+            "http://100.64.0.1",
+            "http://[::1]",
+            // alternate IPv4 encodings the `url` crate canonicalizes to a private
+            // IP but std::net::IpAddr::parse REJECTS — the parser-differential the
+            // fix must close (F2 BROKEN → fixed).
+            "http://2130706433",  // = 127.0.0.1
+            "http://0x7f000001",  // = 127.0.0.1
+            "http://127.1",       // = 127.0.0.1
+            "http://2852039166",  // = 169.254.169.254
+            "http://0",           // = 0.0.0.0
+        ] {
+            assert!(
+                origin_host_is_private_ip(o),
+                "should flag private literal {o}"
+            );
+        }
+        // public IP literals + DNS names → false (the resolver covers DNS names)
+        for o in [
+            "http://8.8.8.8",
+            "https://93.184.216.34",
+            "https://example.com",
+            "https://api.github.com:443",
+        ] {
+            assert!(!origin_host_is_private_ip(o), "should NOT flag {o}");
+        }
+    }
 
     #[test]
     fn normalize_strips_path_and_lowercases_and_drops_default_port() {
