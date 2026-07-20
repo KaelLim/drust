@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.s("files.page.title") }}{% endblock %}
 {% block meta_description %}<meta name="description" content="{{ t.s("files.page.meta_description") }}">{% endblock %}
@@ -6,14 +7,12 @@
 
 {% block content %}
     <div class="page">
-      <div class="view-head">
-        <div class="grow">
-          <div class="eyebrow">{{ t.s("files.head.eyebrow") }}</div>
-          <h1 class="view-title">{{ t.s("files.head.title") }}</h1>
-          <p class="view-sub">{% if storage_available %}Host-level Garage bucket — anonymous read at <code>/public/&lt;key&gt;</code>. Per-tenant buckets live inside each tenant's Files page.{% else %}Garage S3 not configured. Set <code>GARAGE_S3_ENDPOINT</code> in <code>.env</code> and restart drust.{% endif %}</p>
-        </div>
+      {% call ui::view_head(t.s("files.head.eyebrow"), t.s("files.head.title"), "") %}
         {% if storage_available %}<span class="pill mint"><span class="dot"></span>{{ total_files }} {{ t.s("files.head.pill_files_unit") }} · {{ total_bytes_human }}</span>{% else %}<span class="pill warn"><span class="dot"></span>{{ t.s("files.head.pill_not_configured") }}</span>{% endif %}
-      </div>
+      {% endcall %}
+      {# Rich subtitle: the macro's `sub` argument is a plain value, so a
+         conditional subtitle carrying markup stays a sibling of the header. #}
+      <p class="view-sub">{% if storage_available %}Host-level Garage bucket — anonymous read at <code>/public/&lt;key&gt;</code>. Per-tenant buckets live inside each tenant's Files page.{% else %}Garage S3 not configured. Set <code>GARAGE_S3_ENDPOINT</code> in <code>.env</code> and restart drust.{% endif %}</p>
 
       {% if disk.free_pct < 20.0 %}
       <div class="banner danger" style="margin-bottom:18px;">

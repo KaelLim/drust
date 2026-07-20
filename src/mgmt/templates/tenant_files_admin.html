@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.s("tenant_files_admin.page.title") }} — {{ tenant_name }}{% endblock %}
 {% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
@@ -6,13 +7,11 @@
 {% block content %}
     <div class="page page-wide">
 
-      <div class="view-head">
-        <div class="grow">
-          {% include "_tenant_eyebrow.html" %}
-          <h1 class="view-title">{{ t.s("tenant_files_admin.head.title") }}</h1>
-          <p class="view-sub">{{ t.fmt1_html("tenant_files_admin.head.intro", "tenant_id", tenant_id)|safe }}</p>
-        </div>
-      </div>
+      {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), t.s("tenant_files_admin.head.title"), "") %}{% endcall %}
+      {# Rich subtitle: the macro's `sub` argument is escaped by design, and
+         gate 5 rejects a safe-filtered operand inside a call tag, so a
+         subtitle carrying markup stays a sibling of the header block. #}
+      <p class="view-sub">{{ t.fmt1_html("tenant_files_admin.head.intro", "tenant_id", tenant_id)|safe }}</p>
 
       {% if disk.free_pct < 20.0 %}
       <div class="banner danger" style="margin-bottom:14px;">

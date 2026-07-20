@@ -1,24 +1,23 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.fmt2("tenant_rpc_test.page.title", "tenant_name", tenant_name, "name", existing_name) }}{% endblock %}
 {% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
 
 {% block content %}
     <div class="page page-wide">
-        <div class="view-head">
-          <div class="grow">
-            {% include "_tenant_eyebrow.html" %}
-            <h1 class="view-title">{{ existing_name }}</h1>
-            <p class="view-sub">
-              {% if mode == "write" %}<span class="pill warn"><span class="dot"></span>{{ t.s("tenant_rpc.row_pill.mode_write") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_rpc.row_pill.mode_read") }}</span>{% endif %}
-              {% if anon_callable %}<span class="pill accent"><span class="dot"></span>{{ t.s("common.rpc.pill_anon_callable") }}</span>{% else %}<span class="pill muted">{{ t.s("common.rpc.pill_service_only") }}</span>{% endif %}
-              {% if let Some(d) = description %} · {{ d }}{% endif %}
-            </p>
-          </div>
+        {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), existing_name, "") %}
           <div style="display:flex;gap:8px;">
             <a class="btn ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/edit">{{ t.s("tenant_rpc_test.actions.edit") }}</a>
           </div>
-        </div>
+        {% endcall %}
+        {# Rich subtitle: the macro's `sub` argument is a plain value, so a
+           subtitle built from conditional pills stays a sibling of the header. #}
+        <p class="view-sub">
+          {% if mode == "write" %}<span class="pill warn"><span class="dot"></span>{{ t.s("tenant_rpc.row_pill.mode_write") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_rpc.row_pill.mode_read") }}</span>{% endif %}
+          {% if anon_callable %}<span class="pill accent"><span class="dot"></span>{{ t.s("common.rpc.pill_anon_callable") }}</span>{% else %}<span class="pill muted">{{ t.s("common.rpc.pill_service_only") }}</span>{% endif %}
+          {% if let Some(d) = description %} · {{ d }}{% endif %}
+        </p>
 
         <div class="card" style="margin-bottom:14px;">
           <div class="card-head">{{ t.s("tenant_rpc_test.sql.heading") }}</div>

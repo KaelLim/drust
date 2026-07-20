@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.s("backup_inspect.page.title") }} — {{ filename }}{% endblock %}
 {% block body_attrs %} data-section="backups"{% endblock %}
@@ -6,17 +7,15 @@
 {% block content %}
     <div class="page">
 
-      <div class="view-head">
-        <div class="grow">
-          <div class="eyebrow">{{ t.s("backup_inspect.head.eyebrow") }}</div>
-          <h1 class="view-title">{{ filename }}</h1>
-          <p class="view-sub"><b>{{ snapshot_size_human }}</b> · {{ snapshot_ts }} {{ t.s("backup_inspect.head.sub_suffix") }}</p>
-        </div>
+      {% call ui::view_head(t.s("backup_inspect.head.eyebrow"), filename, "") %}
         <div style="display:flex;gap:8px;">
           <a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/backups">{{ t.s("backup_inspect.head.back_all") }}</a>
           <a class="btn sm" href="{{ crate::base_path::base_path() }}/admin/backups/{{ filename }}/download" download="{{ filename }}">{{ t.s("backup_inspect.head.download") }}</a>
         </div>
-      </div>
+      {% endcall %}
+      {# Rich subtitle: the macro's `sub` argument is escaped by design, so a
+         subtitle carrying markup stays a sibling of the header block. #}
+      <p class="view-sub"><b>{{ snapshot_size_human }}</b> · {{ snapshot_ts }} {{ t.s("backup_inspect.head.sub_suffix") }}</p>
 
       {% if let Some(f) = flash %}
       <div class="banner success" style="margin-bottom:18px;">

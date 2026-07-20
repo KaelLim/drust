@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.s("audit_host.page.title") }}{% endblock %}
 {% block meta_description %}<meta name="description" content="{{ t.s("audit_host.page.meta_description") }}">{% endblock %}
@@ -6,13 +7,7 @@
 
 {% block content %}
     <div class="page page-wide">
-      <div class="view-head">
-        <div class="grow">
-          <div class="eyebrow">{{ t.s("audit_host.header.eyebrow") }}</div>
-          <h1 class="view-title">{{ t.s("audit_host.header.title") }}</h1>
-          <p class="view-sub">{{ t.s("audit_host.header.subtitle") }}</p>
-        </div>
-      </div>
+      {% call ui::view_head(t.s("audit_host.header.eyebrow"), t.s("audit_host.header.title"), t.s("audit_host.header.subtitle")) %}{% endcall %}
       {% include "_audit_body.html" %}
     </div>
 {% endblock %}

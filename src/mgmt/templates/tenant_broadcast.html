@@ -1,20 +1,16 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.s("broadcast_inspector.page_title") }} · {{ tenant_name }}{% endblock %}
 {% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
 
 {% block content %}
 <div class="page page-wide">
-  <div class="view-head">
-    <div class="grow">
-      {% include "_tenant_eyebrow.html" %}
-      <h1 class="view-title">{{ t.s("broadcast_inspector.page_title") }}</h1>
-      <p class="view-sub">{{ t.s("broadcast_inspector.view_sub") }}</p>
-    </div>
+  {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), t.s("broadcast_inspector.page_title"), t.s("broadcast_inspector.view_sub")) %}
     <span id="conn-pill" class="pill muted" data-state="disconnected">
       <span class="dot"></span>{{ t.s("broadcast_inspector.conn.state_disconnected") }}
     </span>
-  </div>
+  {% endcall %}
 
   {% if bearer_missing %}
   <div class="banner danger" style="margin-bottom:14px;" data-state="bearer-missing">

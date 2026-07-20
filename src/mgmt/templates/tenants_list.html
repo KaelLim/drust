@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.s("tenants_list.page.title") }}{% endblock %}
 {% block meta_description %}<meta name="description" content="{{ t.s("tenants_list.page.meta_description") }}">{% endblock %}
@@ -7,17 +8,12 @@
 {% block content %}
     <div class="page">
 
-      <div class="view-head">
-        <div class="grow">
-          <div class="eyebrow">{{ t.s("tenants_list.head.eyebrow") }}</div>
-          <h1 class="view-title">{{ t.s("tenants_list.head.title") }}</h1>
-          <p class="view-sub">{{ t.s("tenants_list.head.subtitle") }}</p>
-        </div>
+      {% call ui::view_head(t.s("tenants_list.head.eyebrow"), t.s("tenants_list.head.title"), t.s("tenants_list.head.subtitle")) %}
         <button type="button" class="btn primary" id="new-tenant-btn">
           <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
           {{ t.s("tenants_list.actions.new_tenant") }}
         </button>
-      </div>
+      {% endcall %}
 
       {% if disk.free_pct < 20.0 %}
       <div class="banner danger" style="margin-bottom:16px;">

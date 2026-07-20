@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% macro api_key_card(role, label, scopes, info, tenant_id) %}
 <div class="key-row" id="key-row-{{ role }}">
@@ -58,13 +59,11 @@
 {% block content %}
     <div class="page page-wide">
 
-        <div class="view-head">
-          <div class="grow">
-            {% include "_tenant_eyebrow.html" %}
-            <h1 class="view-title">{{ t.s("tenant_api_keys.head.title") }}</h1>
-            <p class="view-sub">{{ t.fmt3_html("tenant_api_keys.head.intro", "tenant_name", tenant_name, "tenant_id", tenant_id, "created_at", created_at)|safe }}</p>
-          </div>
-        </div>
+        {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), t.s("tenant_api_keys.head.title"), "") %}{% endcall %}
+        {# Rich subtitle: the macro's `sub` argument is escaped by design, and
+           gate 5 rejects a safe-filtered operand inside a call tag, so a
+           subtitle carrying markup stays a sibling of the header block. #}
+        <p class="view-sub">{{ t.fmt3_html("tenant_api_keys.head.intro", "tenant_name", tenant_name, "tenant_id", tenant_id, "created_at", created_at)|safe }}</p>
 
         <div class="banner danger" style="margin-bottom:18px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>

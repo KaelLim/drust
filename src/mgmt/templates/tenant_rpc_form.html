@@ -1,18 +1,25 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}drust admin — {{ tenant_name }} / _rpc / {% if editing %}{{ existing_name }}{% else %}new{% endif %}{% endblock %}
 {% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
 
 {% block content %}
     <div class="page">
-        <div class="view-head">
-          <div class="grow">
-            {% include "_tenant_eyebrow.html" %}
-            <h1 class="view-title">{% if editing %}{{ existing_name }}{% else %}{{ t.s("tenant_rpc_form.title.new") }}{% endif %}</h1>
-            <p class="view-sub">{% if editing %}Edit a stored SELECT function. Service-only authoring; persisted in <code>_system_rpc</code>.{% else %}Create a stored SELECT function callable by REST + MCP. Service-only authoring; optional anon access via the <code>allow_anon_callers</code> flag.{% endif %}</p>
-          </div>
+        {# The title is conditional and askama has no if-EXPRESSION, so the
+           branch wraps the whole call rather than the title argument. #}
+        {% if editing %}
+        {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), existing_name, "") %}
           <a class="btn ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("tenant_rpc_form.actions.back") }}</a>
-        </div>
+        {% endcall %}
+        {% else %}
+        {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), t.s("tenant_rpc_form.title.new"), "") %}
+          <a class="btn ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("tenant_rpc_form.actions.back") }}</a>
+        {% endcall %}
+        {% endif %}
+        {# Rich subtitle: the macro's `sub` argument is a plain value, so a
+           conditional subtitle carrying markup stays a sibling of the header. #}
+        <p class="view-sub">{% if editing %}Edit a stored SELECT function. Service-only authoring; persisted in <code>_system_rpc</code>.{% else %}Create a stored SELECT function callable by REST + MCP. Service-only authoring; optional anon access via the <code>allow_anon_callers</code> flag.{% endif %}</p>
         {% if let Some(err) = error %}
         <div class="banner danger" style="margin-bottom:14px;"{% if let Some(code) = error_code %} data-error-code="{{ code }}"{% endif %}>
           <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>

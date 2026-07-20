@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.fmt1("tenant_rpc.page.title", "tenant", tenant_name) }}{% endblock %}
 {% block sidebar %}{% include "_collection_sidebar.html" %}{% endblock %}
@@ -6,17 +7,12 @@
 {% block content %}
     <div class="page">
 
-        <div class="view-head">
-          <div class="grow">
-            {% include "_tenant_eyebrow.html" %}
-            <h1 class="view-title">{{ t.s("tenant_rpc.head.title") }}</h1>
-            <p class="view-sub">{{ t.s("tenant_rpc.head.sub") }}</p>
-          </div>
+        {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), t.s("tenant_rpc.head.title"), t.s("tenant_rpc.head.sub")) %}
           <a class="btn primary" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/new">
             <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             {{ t.s("tenant_rpc.actions.new") }}
           </a>
-        </div>
+        {% endcall %}
 
         {% if total_rpcs > 0 %}
         <div class="stat-grid" style="margin-bottom:24px;">

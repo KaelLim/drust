@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.s("settings.page.title") }}{% endblock %}
 {% block meta_description %}<meta name="description" content="{{ t.s("settings.page.meta_description") }}">{% endblock %}
@@ -7,13 +8,7 @@
 {% block content %}
     <div class="page">
 
-      <div class="view-head">
-        <div class="grow">
-          <div class="eyebrow">{{ t.s("settings.head.eyebrow") }}</div>
-          <h1 class="view-title">{{ t.s("settings.head.title") }}</h1>
-          <p class="view-sub">{{ t.s("settings.head.subtitle") }}</p>
-        </div>
-      </div>
+      {% call ui::view_head(t.s("settings.head.eyebrow"), t.s("settings.head.title"), t.s("settings.head.subtitle")) %}{% endcall %}
 
       <form id="settings-form" method="post" action="{{ crate::base_path::base_path() }}/admin/settings">
         <div class="card">
