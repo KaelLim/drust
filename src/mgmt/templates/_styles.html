@@ -33,6 +33,11 @@
     --accent-2:{{ p.accent["accent-2"] }};
     --accent-soft:{{ p.accent["accent-soft"] }};
     --accent-border:{{ p.accent["accent-border"] }};
+    /* Ink for text/icons ON an --accent background. Dark in BOTH themes:
+       --bg-deep is near-white in soft-light (#f3ebda -> 2.63:1 on accent),
+       so it must never be used here. 4.90:1 on soft-light accent, 7.15:1
+       on cozy-dark accent -- both clear WCAG AA for small text. */
+    --on-accent:#3a1e10;
     --rust:{{ p.accent["rust"] }};
 
     --warn:{{ p.accent["warn"] }};          --warn-soft:rgba(241,194,122,0.13);   --warn-border:rgba(241,194,122,0.34);
@@ -60,6 +65,7 @@
     --accent-2:{{ sys.light.accent["accent-2"] }};
     --accent-soft:{{ sys.light.accent["accent-soft"] }};
     --accent-border:{{ sys.light.accent["accent-border"] }};
+    --on-accent:#3a1e10;
     --rust:{{ sys.light.accent["rust"] }};
 
     --warn:{{ sys.light.accent["warn"] }};      --warn-soft:rgba(241,194,122,0.13);   --warn-border:rgba(241,194,122,0.34);
@@ -87,6 +93,7 @@
       --accent-2:{{ sys.dark.accent["accent-2"] }};
       --accent-soft:{{ sys.dark.accent["accent-soft"] }};
       --accent-border:{{ sys.dark.accent["accent-border"] }};
+      --on-accent:#3a1e10;
       --rust:{{ sys.dark.accent["rust"] }};
 
       --warn:{{ sys.dark.accent["warn"] }};       --warn-soft:rgba(241,194,122,0.13);   --warn-border:rgba(241,194,122,0.34);
@@ -289,7 +296,7 @@
   .btn:hover{background:var(--surface-2);border-color:var(--border-strong)}
   .btn:active{transform:translateY(1px)}
   .btn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7}
-  .btn.primary,.btn-primary{background:var(--accent);color:#3a1e10;border-color:transparent;font-weight:600}
+  .btn.primary,.btn-primary{background:var(--accent);color:var(--on-accent);border-color:transparent;font-weight:600}
   .btn.primary:hover,.btn-primary:hover{background:var(--accent-2)}
   .btn.ghost,.btn-ghost{background:transparent;border-color:transparent;color:var(--fg-2)}
   .btn.ghost:hover,.btn-ghost:hover{background:var(--surface);color:var(--fg)}
