@@ -1,0 +1,27 @@
+{# Admin UI component library (spec 2026-07-20).
+
+   Usage:  {% import "_ui.html" as ui %}
+           {% call ui::view_head(eyebrow, title, sub) %}<button …>{% endcall %}
+
+   Every macro takes plain values and relies on askama's automatic HTML
+   escaping -- never use the safe filter inside this file (gate 5). The
+   caller body,
+   where a macro accepts one, is template-authored markup and is rendered
+   via `caller()`.
+
+   See drust/CLAUDE.md "Admin 頁面解剖學" for the canonical page shape. #}
+
+{# Page header: eyebrow + title + subtitle on the left, caller body (action
+   buttons) on the right. Replaces the 12 hand-rolled headers and the 12
+   `_tenant_eyebrow.html` includes with one shape. Pass an empty string for
+   `sub` to omit the subtitle line. #}
+{% macro view_head(eyebrow, title, sub) %}
+<div class="view-head">
+  <div class="grow">
+    <div class="eyebrow">{{ eyebrow }}</div>
+    <h1 class="view-title">{{ title }}</h1>
+    {% if sub != "" %}<p class="view-sub">{{ sub }}</p>{% endif %}
+  </div>
+  {{ caller() }}
+</div>
+{% endmacro %}

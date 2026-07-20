@@ -144,7 +144,7 @@ pub fn check_raw_hex(file: &str, content: &str) -> Vec<Violation> {
 /// A rule leaves this list in the SAME commit that fixes its last violation.
 /// The list is expected to be empty in steady state.
 #[allow(dead_code)]
-pub const WARN_ONLY_RULES: &[&str] = &["unsafe-safe-filter"];
+pub const WARN_ONLY_RULES: &[&str] = &["missing-view-head"];
 
 /// The four BEM-style button classes retired in favour of the modifier form.
 /// `.btn.icon` never had a BEM alias, so `btn-icon` is not listed.
@@ -527,6 +527,222 @@ fn is_allowlisted_safe_producer(expr: &str) -> bool {
     false
 }
 
+/// The in-template declaration that exempts a page from gate 2.
+///
+/// It is an askama COMMENT, deliberately — NOT a `{% block %}`. `login.html`
+/// is the one page template that does not `{% extends "_base.html" %}`, and in
+/// askama 0.16 a `{% block %}` in a ROOT (non-extending) template renders its
+/// body inline: `{% block page_kind %}standalone{% endblock %}<p>hi</p>`
+/// renders as `standalone<p>hi</p>`, i.e. the marker would ship the literal
+/// word "standalone" onto the login screen. (In a CHILD template an unmatched
+/// block is silently dropped, which is why the hazard is easy to miss.) A
+/// comment is inert in every template, extending or not — see
+/// `standalone_marker_is_inert_in_a_root_template`.
+pub const STANDALONE_MARKER: &str = "{# page-kind: standalone #}";
+
+/// The ONE macro path that satisfies gate 2. Matched exactly, never by
+/// substring or prefix. If a variant head macro is ever legitimate, add it to
+/// a named list here — a `view_head*` prefix rule would let any future sibling
+/// ungovern every page that adopts it, without the gate ever going red.
+const VIEW_HEAD_MACRO: &str = "ui::view_head";
+
+/// Blank out every region askama and the browser both ignore: HTML comments
+/// and the BODIES of `<script>` / `<style>` elements. Blanked bytes become
+/// spaces, so byte offsets and line numbers are preserved.
+///
+/// Askama comments are deliberately left intact — `STANDALONE_MARKER` is one,
+/// and the view_head scan blanks them separately after the marker test.
+fn blank_non_executing(content: &str) -> String {
+    let mut out = content.as_bytes().to_vec();
+    let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
+        for b in &mut out[from..to] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    };
+    let mut i = 0usize;
+    while i < content.len() {
+        let rest = &content[i..];
+        if let Some(after) = rest.strip_prefix("<!--") {
+            let end = after
+                .find("-->")
+                .map(|p| i + 4 + p + 3)
+                .unwrap_or(content.len());
+            blank(&mut out, i, end);
+            i = end;
+            continue;
+        }
+        let mut matched = None;
+        for (open, close) in [("<script", "</script>"), ("<style", "</style>")] {
+            if !rest.starts_with(open) {
+                continue;
+            }
+            // `<scriptish>` is not a `<script>`; require a tag-name boundary.
+            let next = rest.as_bytes().get(open.len());
+            if next.is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'-') {
+                continue;
+            }
+            matched = Some(close);
+            break;
+        }
+        if let Some(close) = matched {
+            // Body starts after the open tag's `>`; if either delimiter is
+            // missing the file is malformed — blank to EOF and stop.
+            let body_start = match rest.find('>') {
+                Some(gt) => i + gt + 1,
+                None => {
+                    blank(&mut out, i, content.len());
+                    break;
+                }
+            };
+            let body_end = content[body_start..]
+                .find(close)
+                .map(|p| body_start + p)
+                .unwrap_or(content.len());
+            blank(&mut out, body_start, body_end);
+            i = body_end;
+            continue;
+        }
+        // Advance a whole char so multi-byte text can never split a boundary.
+        i += rest.chars().next().map(char::len_utf8).unwrap_or(1);
+    }
+    String::from_utf8(out).expect("blanking replaces whole regions with ASCII")
+}
+
+/// Every `{#delim … delim#}`-style span in `content` as `(start, end)` byte
+/// offsets covering the delimiters, given the opening/closing delimiter pair.
+fn delimited_spans(content: &str, open: &str, close: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while let Some(p) = content[i..].find(open) {
+        let start = i + p;
+        let after = start + open.len();
+        let end = match content[after..].find(close) {
+            Some(q) => after + q + close.len(),
+            None => break,
+        };
+        out.push((start, end));
+        i = end;
+    }
+    out
+}
+
+/// Strip a span's delimiters and askama's optional `-` whitespace-control
+/// markers, returning the trimmed inner text.
+fn span_inner<'a>(span: &'a str, open: &str, close: &str) -> &'a str {
+    let s = span
+        .strip_prefix(open)
+        .unwrap_or(span)
+        .strip_suffix(close)
+        .unwrap_or(span);
+    s.trim()
+        .trim_start_matches('-')
+        .trim_end_matches('-')
+        .trim()
+}
+
+/// True iff an askama comment's inner text declares the standalone page kind.
+///
+/// Tolerant of whitespace and of askama's `{#-` / `-#}` whitespace-control
+/// spelling (house style — `tenant_settings.html` uses the `{%-` form), so a
+/// developer following the existing convention is not blocked by spacing.
+fn is_standalone_declaration(inner: &str) -> bool {
+    match inner.split_once(':') {
+        Some((k, v)) => k.trim() == "page-kind" && v.trim() == "standalone",
+        None => false,
+    }
+}
+
+/// Extract the TARGET of an askama `{% call … %}` tag: the path between the
+/// `call` keyword and the argument list's `(`, with all whitespace removed so
+/// `ui :: view_head` normalises onto `ui::view_head`.
+///
+/// Returns `None` for a tag that is not a `call`, or for a `call` with no
+/// argument list. The caller must compare the result EXACTLY — a `contains`
+/// test would accept both `ui::note("see ui::view_head …")` (the token buried
+/// in a string argument) and a future `ui::view_head_compact` sibling by
+/// prefix, silently ungoverning the page in either case.
+fn call_target(inner: &str) -> Option<String> {
+    let rest = inner.strip_prefix("call")?;
+    if !rest.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    let (path, _) = rest.split_once('(')?;
+    Some(path.split_whitespace().collect())
+}
+
+/// Gate 2 — every PAGE template must render the canonical header via
+/// `{% call ui::view_head(…) %}`. A page that legitimately has no header
+/// (the login screen, the design showcase) declares so IN ITSELF with
+/// `STANDALONE_MARKER`.
+///
+/// The exemption deliberately lives in the template rather than a list in
+/// build.rs: a list grows as "just add it to the list" becomes habit, whereas
+/// a template that forgets to declare stays governed — fail-closed.
+///
+/// BOTH probes are syntax-aware, not `contains` over raw text. A bare
+/// substring test counts every non-executing occurrence — a commented-out
+/// call left over from debugging, a JS string, an HTML attribute, a CSS
+/// comment, or plain prose naming the macro — and `design.html` /
+/// `tenant_docs.html` are exactly the templates that would mention it in
+/// prose and thereby silently ungovern themselves. So: HTML comments and
+/// `<script>` / `<style>` bodies are blanked first; the marker must then be a
+/// real askama comment, and the call must sit inside a real `{% … %}` tag
+/// whose TARGET is exactly `ui::view_head` — not merely a tag whose body
+/// mentions the token, which `{% call ui::code_sample("… ui::view_head …") %}`
+/// on the showcase page would satisfy, and not a `view_head*` prefix, which a
+/// future `ui::view_head_compact` sibling would satisfy.
+///
+/// Files whose name starts with `_` are partials, not pages, and are skipped.
+pub fn check_view_head(file: &str, content: &str) -> Vec<Violation> {
+    if file.starts_with('_') {
+        return Vec::new();
+    }
+    let live = blank_non_executing(content);
+
+    // Exemption: a genuine askama comment declaring the page kind. Quoting
+    // the marker inside an HTML comment or a script body no longer counts —
+    // those regions are already blanked.
+    let comments = delimited_spans(&live, "{#", "#}");
+    for &(s, e) in &comments {
+        if is_standalone_declaration(span_inner(&live[s..e], "{#", "#}")) {
+            return Vec::new();
+        }
+    }
+
+    // The call must be executed, so blank askama comments too, then require
+    // the token inside a `{% call … %}` tag rather than anywhere in the file.
+    let mut exec = live.clone().into_bytes();
+    for &(s, e) in &comments {
+        for b in &mut exec[s..e] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    }
+    let exec = String::from_utf8(exec).expect("blanking replaces whole spans with ASCII");
+    for (s, e) in delimited_spans(&exec, "{%", "%}") {
+        let inner = span_inner(&exec[s..e], "{%", "%}");
+        if call_target(inner).as_deref() == Some(VIEW_HEAD_MACRO) {
+            return Vec::new();
+        }
+    }
+
+    vec![Violation::new(
+        file,
+        1,
+        "missing-view-head",
+        format!(
+            "page template does not render `{{% call ui::view_head(eyebrow, title, sub) %}}`. \
+             Import the library with `{{% import \"_ui.html\" as ui %}}` and call it, or — if \
+             this page genuinely has no header — declare `{STANDALONE_MARKER}` \
+             (an askama comment, so it renders nothing even on a page that does not \
+             `{{% extends %}}`)."
+        ),
+    )]
+}
+
 /// Run every gate. `templates` is `(file_name, content)` for every
 /// `src/mgmt/templates/*.html`; `css` is the concatenated CSS source (see
 /// `extract_style_blocks`) used by the cross-file class gate. Returns every
@@ -538,6 +754,7 @@ pub fn scan_all(templates: &[(String, String)], css: &str) -> Vec<Violation> {
         out.extend(check_raw_hex(file, body));
         out.extend(check_button_convention(file, body));
         out.extend(check_safe_filter(file, body));
+        out.extend(check_view_head(file, body));
     }
     out
 }
@@ -548,7 +765,12 @@ mod tests {
 
     #[test]
     fn scan_all_on_clean_input_is_empty() {
-        let templates = vec![("page.html".to_string(), "<div>ok</div>".to_string())];
+        // A clean PAGE must satisfy every gate, gate 2 included — so the
+        // fixture renders the canonical header. Dropping the `{% call %}`
+        // here would make the fixture a gate-2 violation rather than the
+        // "no rule fires" baseline this test exists to pin.
+        let clean = "{% call ui::view_head(a, b, c) %}{% endcall %}\n<div>ok</div>";
+        let templates = vec![("page.html".to_string(), clean.to_string())];
         assert!(scan_all(&templates, ".btn{}").is_empty());
     }
 
@@ -945,6 +1167,166 @@ mod tests {
             assert!(
                 check_button_convention("page.html", ok).is_empty(),
                 "must not over-match: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn page_without_view_head_is_flagged() {
+        let page = "{% extends \"_base.html\" %}\n<div>content</div>\n";
+        let v = check_view_head("tenants_list.html", page);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].rule, "missing-view-head");
+    }
+
+    #[test]
+    fn page_calling_view_head_is_clean() {
+        let page = "{% import \"_ui.html\" as ui %}\n\
+                    {% call ui::view_head(a, b, c) %}{% endcall %}\n";
+        assert!(check_view_head("tenants_list.html", page).is_empty());
+    }
+
+    #[test]
+    fn standalone_declaration_exempts_a_page() {
+        // login.html / design.html legitimately have no view head. The
+        // exemption is DECLARED IN THE TEMPLATE, never in a build.rs list --
+        // a new page that forgets to declare is governed (fail-closed).
+        let page = format!("{STANDALONE_MARKER}\n<div>x</div>\n");
+        assert!(check_view_head("login.html", &page).is_empty());
+    }
+
+    /// The marker must render NOTHING on `login.html`, which is the one page
+    /// template that does not `{% extends "_base.html" %}`. A `{% block %}`
+    /// would render its body inline there and ship the literal word
+    /// "standalone" onto the login screen; an askama comment cannot.
+    #[test]
+    fn standalone_marker_is_inert_in_a_root_template() {
+        use askama::Template;
+
+        #[derive(Template)]
+        #[template(source = "{# page-kind: standalone #}<p>hello</p>", ext = "html")]
+        struct RootProbe;
+
+        assert_eq!(RootProbe.render().expect("render probe"), "<p>hello</p>");
+    }
+
+    #[test]
+    fn standalone_declaration_tolerates_askama_spellings() {
+        // Whitespace-control markers are house style in this repo
+        // (tenant_settings.html uses `{%- if -%}`), so a developer writing the
+        // exemption that way must not be blocked over spacing.
+        for spelling in [
+            "{#- page-kind: standalone -#}",
+            "{#page-kind:standalone#}",
+            "{#   page-kind :  standalone   #}",
+        ] {
+            let page = format!("{spelling}\n<div>x</div>\n");
+            assert!(
+                check_view_head("login.html", &page).is_empty(),
+                "must accept: {spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_executing_mentions_do_not_satisfy_the_gate() {
+        // A bare `content.contains("ui::view_head(")` counts every one of
+        // these, exempting a page that renders NO header. design.html and
+        // tenant_docs.html are exactly the templates that mention the macro
+        // in prose.
+        for page in [
+            "{% extends \"_base.html\" %}\n\
+             <!-- TODO restore {% call ui::view_head(a, b, c) %}{% endcall %} -->\n",
+            "{% extends \"_base.html\" %}\n\
+             {# {% call ui::view_head(a, b, c) %}{% endcall %} #}\n",
+            "{% extends \"_base.html\" %}\n\
+             <script>const HINT = \"ui::view_head(\";</script>\n",
+            "{% extends \"_base.html\" %}\n<div data-doc=\"ui::view_head(\">x</div>\n",
+            "{% extends \"_base.html\" %}\n\
+             <style>/* header comes from ui::view_head( */ .a{}</style>\n",
+            "{% extends \"_base.html\" %}\n\
+             <p>Every page should call ui::view_head(eyebrow, title).</p>\n",
+        ] {
+            let v = check_view_head("design.html", page);
+            assert_eq!(v.len(), 1, "must stay governed: {page}");
+            assert_eq!(v[0].rule, "missing-view-head");
+        }
+    }
+
+    #[test]
+    fn a_different_macro_quoting_the_token_does_not_satisfy_the_gate() {
+        // design.html is the component-library showcase -- the page most
+        // likely to render a worked example OF view_head through some other
+        // macro. Matching the tag BODY rather than the call TARGET would ship
+        // that page with no header at all.
+        for page in [
+            "{% extends \"_base.html\" %}\n\
+             {% call ui::note(\"see ui::view_head for the header\") %}{% endcall %}\n",
+            "{% extends \"_base.html\" %}\n\
+             {% call ui::code_sample(\"{% call ui::view_head(a, b, c) %}\") %}{% endcall %}\n",
+        ] {
+            let v = check_view_head("design.html", page);
+            assert_eq!(v.len(), 1, "must stay governed: {page}");
+            assert_eq!(v[0].rule, "missing-view-head");
+        }
+    }
+
+    #[test]
+    fn a_sibling_macro_sharing_the_name_prefix_does_not_satisfy_the_gate() {
+        // `_ui.html` has one macro today; `view_head_compact` / `view_head_v2`
+        // are the obvious next move. A prefix match would stop governing every
+        // page that adopts one, while still reporting green.
+        for page in [
+            "{% extends \"_base.html\" %}\n{% call ui::view_head_compact(a, b) %}{% endcall %}\n",
+            "{% extends \"_base.html\" %}\n{% call ui::view_head_v2(a, b, c) %}{% endcall %}\n",
+        ] {
+            let v = check_view_head("tenants_list.html", page);
+            assert_eq!(v.len(), 1, "must stay governed: {page}");
+            assert_eq!(v[0].rule, "missing-view-head");
+        }
+    }
+
+    #[test]
+    fn call_target_is_whitespace_normalised() {
+        // House style uses whitespace-control markers and developers space
+        // paths inconsistently; neither must fail a page that DOES render the
+        // canonical header.
+        for page in [
+            "{%- call ui::view_head(a, b, c) -%}{% endcall %}\n",
+            "{% call  ui :: view_head (a, b, c) %}{% endcall %}\n",
+        ] {
+            assert!(
+                check_view_head("tenants_list.html", page).is_empty(),
+                "must accept: {page}"
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_standalone_marker_does_not_exempt() {
+        // Documenting the exemption must not silently ungovern the page that
+        // documents it -- the "just add it to the list" failure mode the
+        // in-template design exists to avoid.
+        for page in [
+            format!("{{% extends \"_base.html\" %}}\n<!-- {STANDALONE_MARKER} -->\n"),
+            format!(
+                "{{% extends \"_base.html\" %}}\n<script>x = \"{STANDALONE_MARKER}\";</script>\n"
+            ),
+            format!(
+                "{{% extends \"_base.html\" %}}\n<style>/* {STANDALONE_MARKER} */ .a{{}}</style>\n"
+            ),
+        ] {
+            let v = check_view_head("tenant_docs.html", &page);
+            assert_eq!(v.len(), 1, "must stay governed: {page}");
+        }
+    }
+
+    #[test]
+    fn partials_and_the_library_itself_are_not_pages() {
+        for f in ["_modal.html", "_ui.html", "_admin_sidebar.html"] {
+            assert!(
+                check_view_head(f, "<div>x</div>").is_empty(),
+                "{f} is a partial, not a page"
             );
         }
     }
