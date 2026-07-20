@@ -35,9 +35,9 @@
         <div id="view-table" class="view-pane">
           <div class="coll-toolbar">
             <div class="row">
-              <button type="button" class="btn btn-sm" id="add-filter-btn">{{ t.s("collection_page.toolbar.add_filter") }}</button>
+              <button type="button" class="btn sm" id="add-filter-btn">{{ t.s("collection_page.toolbar.add_filter") }}</button>
               <div style="position:relative;">
-                <button type="button" class="btn btn-sm btn-ghost" id="sort-btn">
+                <button type="button" class="btn sm ghost" id="sort-btn">
                   {{ t.s("collection_page.toolbar.sort") }}: <span id="sort-current">id ↓</span>
                 </button>
               </div>
@@ -186,11 +186,11 @@
                   <option value="{{ f.name }}">{{ f.name }}</option>
                   {% endfor %}
                 </select>
-                <button type="button" class="btn btn-sm btn-ghost idx-remove" title="{{ t.s("collection_rows.indexes.remove_field_title") }}" aria-label="remove">×</button>
+                <button type="button" class="btn sm ghost idx-remove" title="{{ t.s("collection_rows.indexes.remove_field_title") }}" aria-label="remove">×</button>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap;">
-              <button type="button" id="idx-add" class="btn btn-sm">{{ t.s("collection_rows.indexes.add_field_btn") }}</button>
+              <button type="button" id="idx-add" class="btn sm">{{ t.s("collection_rows.indexes.add_field_btn") }}</button>
               <span id="idx-preview" class="muted" style="font-family:var(--font-mono);font-size:13px;flex:1;min-width:0;"></span>
             </div>
             <div style="display:flex;gap:18px;align-items:center;margin-top:14px;flex-wrap:wrap;">
@@ -203,7 +203,7 @@
                 <span>{{ t.s("collection_rows.indexes.force_check") }}</span>
               </label>
               <span style="flex:1;"></span>
-              <button id="idx-submit" type="button" class="btn btn-primary btn-sm">{{ t.s("collection_rows.indexes.create_heading") }}</button>
+              <button id="idx-submit" type="button" class="btn sm primary">{{ t.s("collection_rows.indexes.create_heading") }}</button>
             </div>
             <pre id="create-idx-output" class="output is-error" hidden style="margin-top:10px;"></pre>
           </div>
@@ -344,8 +344,8 @@
           </div>
           <div class="pager-info" id="pager-info">
             <span id="pager-page-of"></span>
-            <button type="button" class="btn btn-sm btn-ghost" id="pager-prev" disabled>{{ t.s("collection_page.footer.prev") }}</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="pager-next" disabled>{{ t.s("collection_page.footer.next") }}</button>
+            <button type="button" class="btn sm ghost" id="pager-prev" disabled>{{ t.s("collection_page.footer.prev") }}</button>
+            <button type="button" class="btn sm ghost" id="pager-next" disabled>{{ t.s("collection_page.footer.next") }}</button>
           </div>
         </div>
       </div>
@@ -362,7 +362,7 @@
                 <label class="check"><input type="checkbox" name="caps" value="{{ verb.0 }}"{% if verb.1 %} checked{% endif %}> {{ verb.0 }}</label>
                 {% endfor %}
               </div>
-              <div style="margin-top:8px;"><button class="btn btn-sm btn-primary" type="submit">{{ t.s("collection_rows.anon.apply_btn") }}</button></div>
+              <div style="margin-top:8px;"><button class="btn sm primary" type="submit">{{ t.s("collection_rows.anon.apply_btn") }}</button></div>
             </form>
           </section>
           <section>
@@ -373,7 +373,7 @@
                 <label class="check"><input type="checkbox" name="caps" value="{{ verb.0 }}"{% if verb.1 %} checked{% endif %}> {{ verb.0 }}</label>
                 {% endfor %}
               </div>
-              <div style="margin-top:8px;"><button class="btn btn-sm btn-primary" type="submit">{{ t.s("collection_rows.anon.apply_btn") }}</button></div>
+              <div style="margin-top:8px;"><button class="btn sm primary" type="submit">{{ t.s("collection_rows.anon.apply_btn") }}</button></div>
             </form>
           </section>
           <section>
@@ -467,7 +467,7 @@ for (;;) {
             {% endif %}
             <div id="policy-builders"></div>
             <div style="display:flex;align-items:center;gap:10px;margin-top:10px;">
-              <button type="button" id="policy-save" class="btn btn-sm btn-primary">{{ t.s("collection_page.policies.save") }}</button>
+              <button type="button" id="policy-save" class="btn sm primary">{{ t.s("collection_page.policies.save") }}</button>
               <span id="policy-save-msg" style="font:400 12px/1.4 var(--font-sans);color:var(--muted);"></span>
             </div>
             <details style="margin-top:10px;">
@@ -477,7 +477,7 @@ for (;;) {
           </section>
           <section>
             <h3>{{ t.s("collection_page.settings.section.developer") }}</h3>
-            <button type="button" id="open-explain-modal" class="btn btn-sm">{{ t.s("collection_page.settings.run_explain") }}</button>
+            <button type="button" id="open-explain-modal" class="btn sm">{{ t.s("collection_page.settings.run_explain") }}</button>
           </section>
         </div>
 
@@ -487,8 +487,8 @@ for (;;) {
             <h2 style="font:600 16px/1 var(--font-sans);margin:0 0 12px;">{{ t.s("collection_rows.explain.title") }}</h2>
             <textarea id="explain-sql" rows="4" style="width:100%;padding:8px;font-family:var(--font-mono);font-size:13px;" placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
             <div style="margin-top:8px;display:flex;gap:8px;">
-              <button type="button" id="explain-run" class="btn btn-sm btn-primary">{{ t.s("collection_rows.explain.run_btn") }}</button>
-              <button type="button" id="explain-close" class="btn btn-sm btn-ghost">Close</button>
+              <button type="button" id="explain-run" class="btn sm primary">{{ t.s("collection_rows.explain.run_btn") }}</button>
+              <button type="button" id="explain-close" class="btn sm ghost">Close</button>
             </div>
             <pre id="explain-output" class="explain" hidden style="margin-top:10px;max-height:300px;overflow:auto;"></pre>
           </div>
@@ -500,7 +500,7 @@ for (;;) {
             <h2 style="font:600 16px/1 var(--font-sans);margin:0 0 12px;">{{ t.s("collection_page.history.title") }} <span id="history-rec-label" style="color:var(--muted);font-family:var(--font-mono);font-weight:400;"></span></h2>
             <div id="history-timeline" style="max-height:60vh;overflow:auto;"></div>
             <div style="margin-top:10px;display:flex;gap:8px;">
-              <button type="button" id="history-close" class="btn btn-sm btn-ghost">Close</button>
+              <button type="button" id="history-close" class="btn sm ghost">Close</button>
             </div>
           </div>
         </div>
@@ -591,7 +591,7 @@ for (;;) {
           var cls = cell === null ? ' class="null"' : '';
           return '<td' + cls + ' data-r="' + r + '" data-c="' + c + '">' + escapeHtml(v) + '</td>';
         }).join('')
-        + (idIdx === -1 ? '' : '<td style="white-space:nowrap;"><button type="button" class="btn btn-sm btn-ghost row-history-btn" data-record-id="' + escapeHtml(String(row[idIdx])) + '">{{ t.s("collection_page.history.btn") }}</button></td>')
+        + (idIdx === -1 ? '' : '<td style="white-space:nowrap;"><button type="button" class="btn sm ghost row-history-btn" data-record-id="' + escapeHtml(String(row[idIdx])) + '">{{ t.s("collection_page.history.btn") }}</button></td>')
         + '</tr>';
       }).join('');
     }
@@ -738,8 +738,8 @@ for (;;) {
       </div>
       <div class="row" id="f-value-wrap"><input id="f-value" type="text" placeholder="value" style="flex:1;"></div>
       <div class="row" style="justify-content:flex-end;">
-        <button class="btn btn-sm btn-ghost" id="f-cancel">Cancel</button>
-        <button class="btn btn-sm btn-primary" id="f-add">Add</button>
+        <button class="btn sm ghost" id="f-cancel">Cancel</button>
+        <button class="btn sm primary" id="f-add">Add</button>
       </div>`;
     document.body.appendChild(pop);
 
@@ -824,7 +824,7 @@ for (;;) {
       `<option value="${escapeHtml(f.name)}|desc">${escapeHtml(f.name)} ↓</option>`,
     ]).join('');
     pop.innerHTML = `<div class="row"><select id="sort-sel">${opts}</select></div>
-      <div class="row" style="justify-content:flex-end;"><button class="btn btn-sm btn-primary" id="sort-apply">Apply</button></div>`;
+      <div class="row" style="justify-content:flex-end;"><button class="btn sm primary" id="sort-apply">Apply</button></div>`;
     document.body.appendChild(pop);
     pop.querySelector('#sort-sel').value = `${state.sort.field}|${state.sort.dir}`;
     pop.querySelector('#sort-apply').addEventListener('click', () => {
@@ -1186,7 +1186,7 @@ for (;;) {
       }
       model[op][dir].forEach((rule, idx) => block.appendChild(ruleRow(op, dir, idx, rule)));
       const add = document.createElement('button');
-      add.type = 'button'; add.className = 'btn btn-sm btn-ghost'; add.textContent = '{{ t.s("collection_page.policies.add_rule") }}';
+      add.type = 'button'; add.className = 'btn sm ghost'; add.textContent = '{{ t.s("collection_page.policies.add_rule") }}';
       add.style.cssText = 'margin-top:2px;';
       add.addEventListener('click', () => {
         model[op][dir].push({ field: policyFields[0], op:'eq', operandKind:'literal', value:'' });
@@ -1195,7 +1195,7 @@ for (;;) {
       block.appendChild(add);
       // For USING, also offer the @authenticated standalone rule.
       const addAuth = document.createElement('button');
-      addAuth.type = 'button'; addAuth.className = 'btn btn-sm btn-ghost'; addAuth.textContent = '+ @authenticated';
+      addAuth.type = 'button'; addAuth.className = 'btn sm ghost'; addAuth.textContent = '+ @authenticated';
       addAuth.style.cssText = 'margin-top:2px;margin-left:6px;';
       addAuth.addEventListener('click', () => { model[op][dir].push({ kind:'authenticated', value:true }); render(); });
       block.appendChild(addAuth);

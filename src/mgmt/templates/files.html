@@ -87,7 +87,7 @@
 
             <div class="upload-row">
               <span class="upload-hint" id="upload-hint"></span>
-              <button type="submit" class="btn btn-primary" id="upload-submit" disabled>Upload <span class="kbd">↵</span></button>
+              <button type="submit" class="btn primary" id="upload-submit" disabled>Upload <span class="kbd">↵</span></button>
             </div>
           </form>
         </div>
@@ -97,7 +97,7 @@
         <div class="card-head">
           <span>Files</span>
           <span class="card-head-actions">
-            <a href="{{ crate::base_path::base_path() }}/admin/files/reconcile" class="btn btn-sm btn-ghost"
+            <a href="{{ crate::base_path::base_path() }}/admin/files/reconcile" class="btn sm ghost"
                title="Compare Garage bucket contents with drust's metadata — find orphan objects (in Garage, not tracked) and dangling rows (tracked but missing). Usually empty; run after network glitches or manual S3 edits.">
               <svg class="icon" aria-hidden="true" style="width:0.9em;height:0.9em;vertical-align:-2px;margin-right:4px;"><use href="#i-refresh"/></svg>
               sync audit ⋯
@@ -152,12 +152,12 @@
                 <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
                 <td class="cell-actions">
                   {% if f.visibility == "public" %}
-                  <button type="button" class="btn btn-sm btn-ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">copy URL</button>
+                  <button type="button" class="btn sm ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">copy URL</button>
                   {% else %}
-                  <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">Sign URL</button>
+                  <button type="button" class="btn sm ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">Sign URL</button>
                   {% endif %}
                   <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/{{ f.id }}/delete" class="delete-form" style="display:inline;" data-name="{{ f.original_name }}">
-                    <button type="submit" class="btn btn-sm btn-ghost" style="color:var(--danger);">delete</button>
+                    <button type="submit" class="btn sm ghost" style="color:var(--danger);">delete</button>
                   </form>
                 </td>
               </tr>
@@ -173,7 +173,7 @@
             page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_files }}</b> total
           </div>
           <div class="pager-group">
-            {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
+            {% if let Some(url) = prev_url %}<a class="btn sm ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
             <form method="get" class="pager-form">
               <input type="hidden" name="vis" value="{{ filter }}">
               <span class="pager-label">per page</span>
@@ -183,7 +183,7 @@
                 {% endfor %}
               </select>
             </form>
-            {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">next →</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+            {% if let Some(url) = next_url %}<a class="btn sm ghost" href="{{ url }}">next →</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
           </div>
         </div>
         {% endif %}

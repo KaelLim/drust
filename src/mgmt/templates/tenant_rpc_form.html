@@ -55,8 +55,8 @@
             <label><input type="checkbox" name="anon_callable" value="1"{% if form_anon_callable %} checked{% endif %}> {{ t.s("tenant_rpc_form.field.anon_callable") }}</label>
           </div>
           <div style="display:flex;gap:8px;">
-            <button class="btn btn-primary" type="submit">{% if editing %}<svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>{{ t.s("common.action.save") }}{% else %}<svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>create{% endif %}</button>
-            <a class="btn btn-ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("common.action.cancel") }}</a>
+            <button class="btn primary" type="submit">{% if editing %}<svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>{{ t.s("common.action.save") }}{% else %}<svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>create{% endif %}</button>
+            <a class="btn ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("common.action.cancel") }}</a>
           </div>
         </form>
       </div>
