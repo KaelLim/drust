@@ -123,10 +123,7 @@
             </div>
             {% else %}
             <div class="card-body">
-              <div class="empty" style="padding:32px 12px;">
-                <h3>{{ t.s("tenant_overview.collections_card.empty_title") }}</h3>
-                <p>{{ t.s("tenant_overview.collections_card.empty_body") }}</p>
-              </div>
+              {% call ui::empty_state("", t.s("tenant_overview.collections_card.empty_title"), t.s("tenant_overview.collections_card.empty_body")) %}{% endcall %}
             </div>
             {% endif %}
           </div>
@@ -160,10 +157,7 @@
             </div>
             {% else %}
             <div class="card-body">
-              <div class="empty" style="padding:32px 12px;">
-                <h3>{{ t.s("tenant_overview.activity_card.empty_title") }}</h3>
-                <p>{{ t.s("tenant_overview.activity_card.empty_body") }}</p>
-              </div>
+              {% call ui::empty_state("", t.s("tenant_overview.activity_card.empty_title"), t.s("tenant_overview.activity_card.empty_body")) %}{% endcall %}
             </div>
             {% endif %}
           </div>

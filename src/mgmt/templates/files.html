@@ -112,13 +112,13 @@
 
         <div class="pub-scroll">
           {% if files.is_empty() %}
-          <div class="empty" style="padding:56px 24px;">
-            <div style="margin-bottom:18px;display:grid;place-items:center;">
-              <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
-            </div>
-            <h3>{% if counts.total == 0 %}No files yet{% else %}Nothing on this page{% endif %}</h3>
-            <p>{% if counts.total == 0 %}Upload the first one with the form above.{% else %}Try page 1 or <a href="{{ crate::base_path::base_path() }}/admin/files">reset</a>.{% endif %}</p>
-          </div>
+          {% if counts.total == 0 %}
+          {% call ui::empty_state("sleep", "No files yet", "Upload the first one with the form above.") %}{% endcall %}
+          {% else %}
+          {% call ui::empty_state("sleep", "Nothing on this page", "") %}
+            <p>Try page 1 or <a href="{{ crate::base_path::base_path() }}/admin/files">reset</a>.</p>
+          {% endcall %}
+          {% endif %}
           {% else %}
           <table class="data pub-files">
             <colgroup>
@@ -190,13 +190,9 @@
       {% else %}
       <div class="card">
         <div class="card-body">
-          <div class="empty" style="padding:72px 24px;">
-            <div style="margin-bottom:22px;display:grid;place-items:center;">
-              <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
-            </div>
-            <h3>Storage not configured</h3>
+          {% call ui::empty_state("curious", "Storage not configured", "") %}
             <p>Set <code>GARAGE_S3_ENDPOINT</code> (and the full key set) in drust's <code>.env</code> and restart. See <code>docs/superpowers/specs/2026-04-21-garage-object-store-integration.md</code>.</p>
-          </div>
+          {% endcall %}
         </div>
       </div>
       {% endif %}

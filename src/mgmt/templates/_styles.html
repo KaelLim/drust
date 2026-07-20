@@ -552,7 +552,7 @@
   .login-foot{margin-top:22px;padding-top:16px;border-top:1px solid var(--border);text-align:center;color:var(--muted-2);font-size:11.5px;display:flex;align-items:center;justify-content:center;gap:8px}
 
   /* ---------------- toolbar / segmented control ---------------- */
-  .toolbar,.toolbar-v2{
+  .toolbar{
     display:flex;align-items:center;gap:10px;margin-bottom:14px;
     padding:10px 12px;
     background:var(--surface);border:1px solid var(--border-mid);
@@ -1184,9 +1184,9 @@
   .tl-row:hover{background:var(--surface)}
   .tl-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;background:var(--surface)}
 
-  /* v1.17.1 — toolbar-v2 inline field-group (label above input) */
-  .toolbar-v2 .field-group{display:inline-flex;flex-direction:column;gap:4px}
-  .toolbar-v2 .field-group .field-label{margin-bottom:0}
+  /* v1.17.1 — toolbar inline field-group (label above input) */
+  .toolbar .field-group{display:inline-flex;flex-direction:column;gap:4px}
+  .toolbar .field-group .field-label{margin-bottom:0}
 
   /* ---------------- v1.28 collection page (Supabase shell) ----------------
      v1.28.6 — padding alignment fix. The .page wrapper provides 28/32/80

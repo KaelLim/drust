@@ -36,16 +36,10 @@
 
         {% if total_rpcs == 0 %}
         <div class="card">
-          <div class="empty" style="padding:64px 24px;text-align:center;">
-            <div style="margin-bottom:18px;display:grid;place-items:center;">
-              <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
-            </div>
-            <h3>{{ t.s("tenant_rpc.empty.title") }}</h3>
-            <p>{{ t.s("tenant_rpc.empty.body") }}</p>
-          </div>
+          {% call ui::empty_state("curious", t.s("tenant_rpc.empty.title"), t.s("tenant_rpc.empty.body")) %}{% endcall %}
         </div>
         {% else %}
-        <form method="get" class="toolbar-v2">
+        <form method="get" class="toolbar">
           <span class="mono">{{ t.s("collection_rows.rows.per_page_label") }}</span>
           <select class="input" name="per_page" onchange="this.form.submit()" style="min-width:0;width:90px;">
             {% for opt in per_page_options %}

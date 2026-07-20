@@ -53,10 +53,11 @@
           </div>
         </div>
         {% if tenants.is_empty() %}
-        <div class="empty" style="padding:48px 24px;">
-          <h3>{% if let Some(_) = error %}{{ t.s("backup_inspect.empty.error_title") }}{% else %}{{ t.s("backup_inspect.empty.title") }}{% endif %}</h3>
-          <p>{% if let Some(_) = error %}{{ t.s("backup_inspect.empty.error_body") }}{% else %}{{ t.s("backup_inspect.empty.body") }}{% endif %}</p>
-        </div>
+        {% if let Some(_) = error %}
+        {% call ui::empty_state("", t.s("backup_inspect.empty.error_title"), t.s("backup_inspect.empty.error_body")) %}{% endcall %}
+        {% else %}
+        {% call ui::empty_state("", t.s("backup_inspect.empty.title"), t.s("backup_inspect.empty.body")) %}{% endcall %}
+        {% endif %}
         {% else %}
         <table class="data">
           <thead>

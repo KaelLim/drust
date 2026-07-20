@@ -29,16 +29,11 @@
 
         {% if functions.is_empty() %}
         <div class="card">
-          <div class="empty" style="padding:42px 24px 28px;">
-            <div style="margin-bottom:14px;display:grid;place-items:center;">
-              <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
-            </div>
-            <h3>{{ t.s("tenant_functions.empty") }}</h3>
-          </div>
+          {% call ui::empty_state("sleep", t.s("tenant_functions.empty"), "") %}{% endcall %}
         </div>
         {% else %}
         <div class="card" style="margin-bottom:24px;overflow:hidden;">
-          <table class="grid-table" style="width:100%;border-collapse:collapse;">
+          {% call ui::data_table("") %}
             <thead>
               <tr>
                 <th style="text-align:left;">{{ t.s("tenant_functions.col_name") }}</th>
@@ -121,7 +116,7 @@
               </tr>
             {% endfor %}
             </tbody>
-          </table>
+          {% endcall %}
         </div>
         {% endif %}
 

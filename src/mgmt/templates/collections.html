@@ -13,16 +13,11 @@
       <p class="view-sub">Auto-discovered from <code>sqlite_master</code> — collections appear automatically once your client writes the first record. Or use the MCP <code>create_collection</code> tool.</p>
 
       <div class="card">
-        <div class="empty" style="padding:72px 24px 56px;">
-          <div style="margin-bottom:22px;display:grid;place-items:center;">
-            <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
-          </div>
-          <h3>{{ t.s("collections.empty.title") }}</h3>
-          <p>{{ t.s("collections.empty.body") }}</p>
-          <p style="color:var(--muted);margin-top:14px;">
+        {% call ui::empty_state("sleep", t.s("collections.empty.title"), t.s("collections.empty.body")) %}
+          <p style="margin-top:14px;">
             Write via the REST <code>/v1/records</code> endpoint or via the per-tenant MCP server (service key required).
           </p>
-        </div>
+        {% endcall %}
       </div>
     </div>
 {% endblock %}
