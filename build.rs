@@ -25,6 +25,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+include!("build_support/ui_gates.rs");
+
 fn main() {
     println!("cargo:rerun-if-changed=src/mgmt/templates");
     println!("cargo:rerun-if-changed=src");
@@ -256,6 +258,12 @@ fn main() {
             missing, extra,
         );
     }
+
+    // ── Admin-UI consistency gates (spec 2026-07-20) ────────────────────
+    // Pure scanners live in build_support/ui_gates.rs so the test suite can
+    // cover them; this block does the I/O and turns violations into a build
+    // failure. Fail-closed: any violation stops the build.
+    run_ui_gates(template_dir);
 }
 
 /// Returns map: key → [(file, line), ...] for every literal `t.s("key")`
@@ -415,4 +423,52 @@ fn levenshtein(a: &str, b: &str) -> usize {
         std::mem::swap(&mut prev, &mut curr);
     }
     prev[b.len()]
+}
+
+/// Read every template + the CSS source, run all UI gates, and fail the build
+/// on any violation with a file:line report.
+fn run_ui_gates(template_dir: &Path) {
+    let mut templates: Vec<(String, String)> = Vec::new();
+    let mut entries: Vec<_> = fs::read_dir(template_dir)
+        .expect("read templates dir")
+        .map(|e| e.expect("template entry").path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("html"))
+        .collect();
+    entries.sort();
+    for path in entries {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .expect("template file_name utf-8")
+            .to_string();
+        let body =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        templates.push((name, body));
+    }
+    // The CSS gate compares against every style source, not just _styles.html:
+    // page-scoped <style> blocks legitimately define page-local classes.
+    //
+    // Extract ONLY <style> block contents. Feeding whole templates in would
+    // let JS property access masquerade as a class definition — `el.classList`
+    // would register "classList" as defined — which weakens the gate and can
+    // mask a real ghost class.
+    let css: String = templates
+        .iter()
+        .map(|(_, body)| extract_style_blocks(body))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let violations = scan_all(&templates, &css);
+    if !violations.is_empty() {
+        let mut report = String::from("\n\nAdmin-UI consistency gate failed:\n\n");
+        for v in &violations {
+            report.push_str(&format!(
+                "  {}:{}  [{}]\n      {}\n",
+                v.file, v.line, v.rule, v.message
+            ));
+        }
+        report
+            .push_str("\nSee drust/CLAUDE.md \"Admin 頁面解剖學\" for the canonical page shape.\n");
+        panic!("{report}");
+    }
 }

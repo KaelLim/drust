@@ -34,3 +34,10 @@ pub mod rpc;
 pub mod safety;
 pub mod storage;
 pub mod tenant;
+
+/// Compile-time UI consistency gates. The logic lives in `build_support/` so
+/// `build.rs` can `include!` it; mirrored here under `cfg(test)` so the suite
+/// exercises the pure scanners — `build.rs` is never covered by `cargo test`.
+#[cfg(test)]
+#[path = "../build_support/ui_gates.rs"]
+mod ui_gates;
