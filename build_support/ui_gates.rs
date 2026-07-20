@@ -743,12 +743,506 @@ pub fn check_view_head(file: &str, content: &str) -> Vec<Violation> {
     )]
 }
 
+/// Class-name prefixes whose full names are built by askama interpolation
+/// (`class="op-method op-{{ e.method|lower }}"`,
+///  `class="ten-avatar av-{{ loop.index0 % 6 + 1 }}"`) and therefore never
+/// appear literally in the CSS. Allowlisted BY PREFIX only, and every entry
+/// must name its interpolation site — adding one is a deliberate act, not a
+/// convenient escape hatch.
+const INTERPOLATED_CLASS_PREFIXES: &[&str] = &[
+    "op-",   // _audit_body.html: op-{{ e.method|lower }}
+    "av-",   // tenants_list.html: av-{{ loop.index0 % 6 + 1 }}
+    "path-", // tenant_api_keys.html: className = 'mcp-client-path path-' + os
+];
+
+/// Blank every `/* … */` comment span, preserving byte offsets and newlines.
+///
+/// A class name MENTIONED in a comment is not a definition and not a use.
+/// Both sides of the gate must agree on this: without it, `.page-wide is
+/// retained as a no-op alias` (prose in `_styles.html`) registers `page-wide`
+/// as defined and hides a genuine ghost applied by 14 templates — an
+/// exemption that silently evaporates the day someone rewords the sentence.
+/// Symmetrically, `<header class="topbar">` quoted inside a CSS comment must
+/// not count as a USE, or removing the definition-by-mention turns the
+/// comment itself into a violation.
+///
+/// An unterminated `/*` is left alone rather than blanked to EOF: swallowing
+/// the rest of the file would hide real classes, and the gate must never
+/// under-report because of a malformed comment.
+fn blank_block_comments(s: &str) -> String {
+    let mut out = s.as_bytes().to_vec();
+    for (start, end) in delimited_spans(s, "/*", "*/") {
+        for b in &mut out[start..end] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    }
+    String::from_utf8(out).expect("blanking replaces whole spans with ASCII")
+}
+
+/// Collect every class name the CSS defines, from any `.name` selector.
+fn defined_classes(css: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    // Comments are prose, not selectors — see `blank_block_comments`.
+    let css = blank_block_comments(css);
+    let css = css.as_str();
+    let bytes = css.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if *b != b'.' {
+            continue;
+        }
+        // A class selector's `.` is not preceded by an identifier char
+        // (that would be `a.b` chaining, still a class) but IS followed by an
+        // alphabetic char (rules out `0.5rem`).
+        match bytes.get(i + 1) {
+            Some(c) if c.is_ascii_alphabetic() => {}
+            _ => continue,
+        }
+        let mut end = i + 1;
+        while let Some(c) = bytes.get(end) {
+            if c.is_ascii_alphanumeric() || *c == b'-' || *c == b'_' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        out.insert(css[i + 1..end].to_string());
+    }
+    out
+}
+
+/// Byte length of the askama construct starting at `at` — `{{ … }}` or
+/// `{% … %}` — or `None` if none starts there (or it is not closed on this
+/// line; the scanner is line-based, so an unclosed construct is left alone).
+fn askama_construct_len(s: &str, at: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let close: &str = match (b.get(at), b.get(at + 1)) {
+        (Some(b'{'), Some(b'{')) => "}}",
+        (Some(b'{'), Some(b'%')) => "%}",
+        _ => return None,
+    };
+    let rel = s[at + 2..].find(close)?;
+    Some(2 + rel + close.len())
+}
+
+/// Byte offset of the `quote` that closes an attribute value beginning at
+/// `s[0]`, skipping any quote that sits INSIDE an askama construct.
+///
+/// `class="{% if tab == "browse" %}active{% endif %}"` is a single attribute:
+/// the quotes around `browse` belong to a Rust string literal in the askama
+/// tag, not to the HTML. Stopping at the first `"` would cut the value in
+/// half and spray the tag's operators over the class list.
+///
+/// `quote` is the delimiter the attribute actually opened with — HTML allows
+/// `'` as well as `"`, and the closing delimiter must match the opening one.
+fn attr_value_end(s: &str, quote: char) -> Option<usize> {
+    let mut i = 0;
+    while i < s.len() {
+        if let Some(len) = askama_construct_len(s, i) {
+            i += len;
+            continue;
+        }
+        let ch = s[i..].chars().next().expect("char boundary");
+        if ch == quote {
+            return Some(i);
+        }
+        i += ch.len_utf8();
+    }
+    None
+}
+
+/// The value of a `class` attribute starting at `s[0]` (the byte right after
+/// the attribute NAME): `(value, delimiter, byte offset just past the value)`.
+/// `delimiter` is `None` for an unquoted value.
+///
+/// Accepts every spelling HTML5 permits after the name: optional whitespace
+/// around `=`, and a `"`-, `'`-, or unquoted-delimited value. House style is
+/// uniformly `class="…"`, but a hand- or model-written template using any
+/// other legal spelling must not slip past the gate in silence.
+fn class_attr_value(s: &str) -> Option<(&str, Option<char>, usize)> {
+    let rest = s.trim_start_matches([' ', '\t']);
+    let mut i = s.len() - rest.len();
+    let rest = rest.strip_prefix('=')?;
+    i += 1;
+    let trimmed = rest.trim_start_matches([' ', '\t']);
+    i += rest.len() - trimmed.len();
+    match trimmed.chars().next() {
+        Some(q @ ('"' | '\'')) => {
+            let body = &trimmed[q.len_utf8()..];
+            let end = attr_value_end(body, q)?;
+            Some((&body[..end], Some(q), i + 2 * q.len_utf8() + end))
+        }
+        // Unquoted: HTML5 terminates the value at whitespace or `>`.
+        Some(_) => {
+            let end = trimmed
+                .find(|c: char| c.is_ascii_whitespace() || c == '>')
+                .unwrap_or(trimmed.len());
+            Some((&trimmed[..end], None, i + end))
+        }
+        None => None,
+    }
+}
+
+/// The quoted string literals of a call whose `(` has just been consumed,
+/// with the byte offset just past the last argument inspected.
+///
+/// `max_args` bounds how many argument POSITIONS are read.
+/// `classList.add`/`remove` are varargs — every argument is a class name, and
+/// reading only the first drops `add('a', 'b', 'c')` down to `a`.
+/// `classList.toggle` is NOT: its second argument is a boolean force flag, so
+/// it is capped at one and a `toggle('x', someFlag)` never invents a class.
+/// Non-literal arguments (variables, expressions) occupy a position and yield
+/// nothing — they cannot be checked statically.
+///
+/// A backtick counts as a quote: `` classList.add(`chip`) `` is the modern
+/// default spelling for a class string and must not read as a non-literal.
+fn quoted_call_args(s: &str, max_args: usize) -> (Vec<&str>, usize) {
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let skip_ws = |bytes: &[u8], mut i: usize| {
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        i
+    };
+    for _ in 0..max_args {
+        i = skip_ws(bytes, i);
+        match bytes.get(i) {
+            Some(q @ (b'\'' | b'"' | b'`')) => {
+                let quote = *q as char;
+                let start = i + 1;
+                let Some(rel) = s[start..].find(quote) else {
+                    return (out, s.len());
+                };
+                out.push(&s[start..start + rel]);
+                i = start + rel + 1;
+            }
+            // `)` closes the call; end of line ends the scan.
+            Some(b')') | None => break,
+            _ => {
+                while let Some(b) = bytes.get(i) {
+                    if *b == b',' || *b == b')' {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+        }
+        i = skip_ws(bytes, i);
+        if bytes.get(i) == Some(&b',') {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    (out, i)
+}
+
+/// Replace every askama construct with a single space.
+///
+/// A space, not the empty string: `class="nav-item{% if on %} on{% endif %}"`
+/// applies `nav-item` and `on`, two independent classes that must each be
+/// checked. Splicing the tag out without a separator would fuse them into the
+/// nonexistent `nav-itemon`. A trailing fragment left by interpolation
+/// (`av-{{ i }}` → `av-`) keeps its prefix, which is what
+/// `INTERPOLATED_CLASS_PREFIXES` matches on.
+fn strip_askama(s: &str) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < s.len() {
+        if let Some(len) = askama_construct_len(s, i) {
+            out.push(' ');
+            i += len;
+            continue;
+        }
+        let ch = s[i..].chars().next().expect("char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// True iff `name` has the shape `defined_classes` can ever recognise: a
+/// leading ASCII letter then `[A-Za-z0-9_-]*`.
+///
+/// This is a precision filter on the EXTRACTOR, not a relaxation of the rule.
+/// Tokens of any other shape (`+`, `(x?`, `'mint'`, `===`) are debris from
+/// class-building JS expressions; no author could have defined them in CSS
+/// under any spelling, so flagging them would be noise, never a finding. A
+/// genuine ghost class is always a well-formed identifier and still reported.
+fn is_class_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Byte offset just past the `(` of a call whose identifier ends at `at`.
+///
+/// The `(` is allowed to sit behind whitespace: `classList.add ('x')` is the
+/// same call, and folding the paren into the marker string means one space
+/// defeats the whole scan.
+fn call_open_paren(s: &str, at: usize) -> Option<usize> {
+    let rest = &s[at..];
+    let trimmed = rest.trim_start();
+    trimmed.strip_prefix('(')?;
+    Some(at + (rest.len() - trimmed.len()) + 1)
+}
+
+/// Every quoted string literal in a JS expression, as `(byte offset, contents)`.
+///
+/// A class-setting expression is not always a bare literal: `on ? 'a' : 'b'`
+/// and `` `chip` `` both put the class name somewhere other than the first
+/// byte, and a scan that only reads a leading quote skips both. Backticks
+/// count — a template literal is the modern default for a class string.
+fn quoted_literals(s: &str) -> Vec<(usize, &str)> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let q = bytes[i];
+        if q == b'\'' || q == b'"' || q == b'`' {
+            let start = i + 1;
+            let Some(rel) = s[start..].find(q as char) else {
+                break;
+            };
+            out.push((start, &s[start..start + rel]));
+            i = start + rel + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Byte offset of `sub` within `s`. Both are slices of the same allocation —
+/// `sub` was produced by a scan over `s` — so the addresses subtract exactly.
+fn offset_within(s: &str, sub: &str) -> usize {
+    sub.as_ptr() as usize - s.as_ptr() as usize
+}
+
+/// Collect every class name a template USES: from `class="…"` attributes and
+/// from JS string literals passed to `classList.add/remove/toggle`,
+/// `setAttribute('class', …)`, or assigned to `className`.
+///
+/// Every scan runs over the WHOLE body, never line by line. Each construct it
+/// reads may legally wrap across lines — a long class list split for width, an
+/// argument list broken after the `(` — and a per-line scan drops everything
+/// after the first newline. That failure mode is the worst kind: coverage
+/// REGRESSES on a purely cosmetic re-wrap, and the build stays green.
+fn used_classes(content: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    // A class name quoted inside a `/* … */` comment is documentation, not a
+    // use — and the CSS side does not count it as a definition either.
+    let content = blank_block_comments(content);
+    let body = content.as_str();
+    // Line numbers come from counting newlines up to a match offset, since the
+    // scans below run over the whole body rather than per line.
+    let newlines: Vec<usize> = body.match_indices('\n').map(|(i, _)| i).collect();
+    let line_of = |off: usize| newlines.partition_point(|&n| n < off) + 1;
+    // `base` is the line the VALUE starts on; a value spanning lines reports
+    // each name against the line it actually sits on, so the message points at
+    // the right row of a wrapped class list.
+    let push_names = |base: usize, value: &str, out: &mut Vec<(usize, String)>| {
+        let stripped = strip_askama(value);
+        let bytes = stripped.as_bytes();
+        let mut line = base;
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_whitespace() {
+                if bytes[i] == b'\n' {
+                    line += 1;
+                }
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let name = &stripped[start..i];
+            if is_class_name(name) {
+                out.push((line, name.to_string()));
+            }
+        }
+    };
+    {
+        // `class="a b c"` — askama constructs are stripped to whitespace so
+        // the literal fragments around them stay separate class names; what
+        // interpolation leaves behind is covered by the prefix allowlist.
+        // Matched case-insensitively at an identifier boundary, because HTML
+        // attribute names are case-insensitive and `superclass=` is not one.
+        let lower = body.to_ascii_lowercase();
+        let mut from = 0;
+        while let Some(rel) = lower[from..].find("class") {
+            let at = from + rel;
+            let after_name = at + "class".len();
+            from = after_name;
+            let prev_is_name_char = at > 0
+                && matches!(body.as_bytes()[at - 1],
+                    b if b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+            if prev_is_name_char {
+                continue;
+            }
+            let Some((raw, delim, consumed)) = class_attr_value(&body[after_name..]) else {
+                continue;
+            };
+            from = after_name + consumed;
+            // Where the value itself begins: past the `=`, the padding, and
+            // the opening delimiter.
+            let value_at = after_name + consumed - raw.len() - delim.map_or(0, char::len_utf8);
+            // A `'` can never appear in a DOUBLE-quoted HTML class value.
+            // Where one shows up, the attribute is being assembled inside a
+            // single-quoted JS string (`'<span class="pill ' + tone + '">'`)
+            // and everything from that quote on is expression text, not class
+            // names. Cutting there keeps the literal prefix under the gate —
+            // which is MORE than the naive split gets, since `cmdk-item' + on
+            // + '` would otherwise be one unparseable token and escape
+            // checking entirely. A single-quoted value ends AT its own `'`,
+            // so the heuristic must not be applied to that form.
+            let literal = match (delim, raw.find('\'')) {
+                (Some('"'), Some(q)) => &raw[..q],
+                _ => raw,
+            };
+            push_names(line_of(value_at), literal, &mut out);
+        }
+    }
+    // JS: classList.add('x', 'y') / classList.toggle('x', cond). The `(` is
+    // matched separately from the identifier so `add ('x')` still reads, and
+    // the arguments are read off the whole body so a wrapped argument list
+    // (`add(\n  'x'\n)`) still reads.
+    for (marker, max_args) in [
+        ("classList.add", usize::MAX),
+        ("classList.remove", usize::MAX),
+        // The second argument of `toggle` is a boolean force flag.
+        ("classList.toggle", 1),
+    ] {
+        let mut from = 0;
+        while let Some(rel) = body[from..].find(marker) {
+            let after = from + rel + marker.len();
+            from = after;
+            let Some(open) = call_open_paren(body, after) else {
+                continue;
+            };
+            let args = &body[open..];
+            let (literals, _) = quoted_call_args(args, max_args);
+            for literal in literals {
+                push_names(
+                    line_of(open + offset_within(args, literal)),
+                    literal,
+                    &mut out,
+                );
+            }
+        }
+    }
+    // JS: `setAttribute('class', 'x')` — the standard way to set a class on an
+    // SVG element, where `className` is read-only.
+    let mut from = 0;
+    while let Some(rel) = body[from..].find("setAttribute") {
+        let after = from + rel + "setAttribute".len();
+        from = after;
+        let Some(open) = call_open_paren(body, after) else {
+            continue;
+        };
+        let (first, past_first) = quoted_call_args(&body[open..], 1);
+        // A non-literal attribute name yields nothing and occupies the slot;
+        // any attribute other than `class` is none of this gate's business.
+        let Some(attr) = first.first() else {
+            continue;
+        };
+        if !attr.eq_ignore_ascii_case("class") {
+            continue;
+        }
+        let value_at = open + past_first;
+        let args = &body[value_at..];
+        let (literals, _) = quoted_call_args(args, 1);
+        for literal in literals {
+            push_names(
+                line_of(value_at + offset_within(args, literal)),
+                literal,
+                &mut out,
+            );
+        }
+    }
+    // JS: `className = 'x'`, the equally common no-space `className='x'`, and
+    // the append form `className += ' x'`.
+    let mut from = 0;
+    while let Some(rel) = body[from..].find("className") {
+        let after = from + rel + "className".len();
+        from = after;
+        let rest = &body[after..];
+        let trimmed = rest.trim_start();
+        let mut pad = rest.len() - trimmed.len();
+        // `+=` appends to the class list — as much an assignment as `=`, and a
+        // standard JS idiom. `==` / `===` only READ the property.
+        let expr = if let Some(r) = trimmed.strip_prefix("+=") {
+            pad += 2;
+            r
+        } else if let Some(r) = trimmed.strip_prefix('=').filter(|r| !r.starts_with('=')) {
+            pad += 1;
+            r
+        } else {
+            continue;
+        };
+        // Read every quoted literal in the assignment expression rather than
+        // requiring the value to BEGIN with a quote: the branches of
+        // `on ? 'a' : 'b'` are exactly the class names the gate wants. The
+        // statement ends at the first `;` or newline, so an unquoted tail
+        // (`= cls`) contributes nothing instead of swallowing the file.
+        let end = expr.find([';', '\n']).unwrap_or(expr.len());
+        let expr = &expr[..end];
+        let expr_at = after + pad;
+        for (off, literal) in quoted_literals(expr) {
+            push_names(line_of(expr_at + off), literal, &mut out);
+        }
+    }
+    out
+}
+
+/// Gate 3 — every class a template uses must be defined somewhere in the CSS.
+/// A class with no definition is a ghost: it renders unstyled, and the author
+/// typically papers over that with an inline `style=` (this is precisely how
+/// `grid-table` entered the codebase and then got copied to a second page).
+/// Cross-file by nature — it needs every template and the whole CSS at once.
+pub fn check_ghost_classes(templates: &[(String, String)], css: &str) -> Vec<Violation> {
+    let defined = defined_classes(css);
+    let mut out = Vec::new();
+    for (file, body) in templates {
+        for (line, name) in used_classes(body) {
+            if defined.contains(&name) {
+                continue;
+            }
+            if INTERPOLATED_CLASS_PREFIXES
+                .iter()
+                .any(|p| name.starts_with(p))
+            {
+                continue;
+            }
+            out.push(Violation::new(
+                file,
+                line,
+                "ghost-class",
+                format!(
+                    "class `{name}` has no CSS definition — it will render unstyled. \
+                     Define it in _styles.html, use an existing class, or (if it is \
+                     built by interpolation) add its PREFIX to \
+                     INTERPOLATED_CLASS_PREFIXES with a comment naming the site."
+                ),
+            ));
+        }
+    }
+    out
+}
+
 /// Run every gate. `templates` is `(file_name, content)` for every
 /// `src/mgmt/templates/*.html`; `css` is the concatenated CSS source (see
 /// `extract_style_blocks`) used by the cross-file class gate. Returns every
 /// violation found, in file order.
 pub fn scan_all(templates: &[(String, String)], css: &str) -> Vec<Violation> {
-    let _ = css;
     let mut out = Vec::new();
     for (file, body) in templates {
         out.extend(check_raw_hex(file, body));
@@ -756,6 +1250,7 @@ pub fn scan_all(templates: &[(String, String)], css: &str) -> Vec<Violation> {
         out.extend(check_safe_filter(file, body));
         out.extend(check_view_head(file, body));
     }
+    out.extend(check_ghost_classes(templates, css));
     out
 }
 
@@ -1329,5 +1824,206 @@ mod tests {
                 "{f} is a partial, not a page"
             );
         }
+    }
+
+    #[test]
+    fn ghost_class_flagged_when_css_has_no_definition() {
+        let templates = vec![(
+            "page.html".to_string(),
+            r#"<table class="grid-table">x</table>"#.to_string(),
+        )];
+        let css = ".data{border:0}";
+        let v = check_ghost_classes(&templates, css);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].rule, "ghost-class");
+        assert!(v[0].message.contains("grid-table"));
+    }
+
+    #[test]
+    fn defined_classes_pass_and_interpolated_prefixes_are_allowlisted() {
+        let templates = vec![(
+            "page.html".to_string(),
+            r#"<table class="data"><td class="op-method op-get"><i class="av-3">"#.to_string(),
+        )];
+        // `op-*` and `av-*` are built by askama interpolation
+        // (`op-{{ e.method|lower }}`, `av-{{ loop.index0 % 6 + 1 }}`) so their
+        // full names never appear literally in the CSS.
+        assert!(check_ghost_classes(&templates, ".data{border:0}").is_empty());
+    }
+
+    #[test]
+    fn js_literal_classes_are_checked_too() {
+        let templates = vec![(
+            "page.html".to_string(),
+            "el.classList.add('is-totally-undefined');".to_string(),
+        )];
+        let v = check_ghost_classes(&templates, ".data{border:0}");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("is-totally-undefined"));
+    }
+
+    #[test]
+    fn a_name_only_mentioned_in_a_css_comment_is_not_a_definition() {
+        // The exact shape that hid `page-wide`: prose naming the class, with
+        // no rule anywhere. Counting the mention makes the gate under-match on
+        // precisely the bug it exists to catch, and the exemption evaporates
+        // the moment someone rewords the sentence.
+        let css = "/* .page-wide is retained as a no-op alias */\n.data{border:0}";
+        assert!(
+            !defined_classes(css).contains("page-wide"),
+            "a comment is prose, not a selector"
+        );
+        let templates = vec![(
+            "page.html".to_string(),
+            r#"<div class="data page-wide">x</div>"#.to_string(),
+        )];
+        let v = check_ghost_classes(&templates, css);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].message.contains("page-wide"));
+        // An empty rule IS a definition — that is how a no-op alias is
+        // registered deliberately.
+        assert!(check_ghost_classes(&templates, ".data{border:0}\n.page-wide{}").is_empty());
+    }
+
+    #[test]
+    fn a_class_quoted_in_a_css_comment_is_not_a_use() {
+        // `_styles.html` documents the retired topbar by quoting the markup it
+        // removed. Both sides of the gate must ignore comments, or the
+        // definition-side fix turns this comment into a false positive.
+        let templates = vec![(
+            "_styles.html".to_string(),
+            "/* the entire <header class=\"topbar\"> was retired */\n".to_string(),
+        )];
+        assert!(check_ghost_classes(&templates, ".data{border:0}").is_empty());
+    }
+
+    #[test]
+    fn class_name_assignment_without_a_space_is_flagged() {
+        // `className='x'` is at least as common as `className = 'x'`; matching
+        // the literal marker "className =" let the whole no-space spelling
+        // through.
+        for js in [
+            "el.className='ghosty';",
+            "el.className = 'ghosty';",
+            "el.className\t=\t'ghosty';",
+            "el.className =\"ghosty\";",
+            // `+=` appends to the class list -- as much an assignment as `=`,
+            // and the idiom a developer or model reaches for by default.
+            "el.className += ' ghosty';",
+            "el.className+=' ghosty';",
+            // A template literal is the modern default for a class string.
+            "el.className = `ghosty`;",
+            // A ternary's branches are exactly the class names the gate
+            // wants; requiring the value to BEGIN with a quote skipped both.
+            "el.className = on ? 'ghosty' : 'data';",
+        ] {
+            let templates = vec![("page.html".to_string(), js.to_string())];
+            let v = check_ghost_classes(&templates, ".data{border:0}");
+            assert_eq!(v.len(), 1, "{js} should be flagged");
+            assert!(v[0].message.contains("ghosty"), "{js}");
+        }
+        // A comparison reads the property, it does not assign to it.
+        let cmp = vec![(
+            "page.html".to_string(),
+            "if (el.className === 'ghosty') return;".to_string(),
+        )];
+        assert!(check_ghost_classes(&cmp, ".data{border:0}").is_empty());
+    }
+
+    #[test]
+    fn class_list_varargs_are_all_checked() {
+        // `classList.add` is varargs — reading only the first argument dropped
+        // every class after it.
+        let templates = vec![(
+            "page.html".to_string(),
+            "n.classList.add('data', 'ghost-a', 'ghost-b');\nn.classList.remove('data','ghost-c');"
+                .to_string(),
+        )];
+        let names: Vec<_> = check_ghost_classes(&templates, ".data{border:0}")
+            .iter()
+            .map(|v| {
+                v.message
+                    .split('`')
+                    .nth(1)
+                    .expect("message quotes the class")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(names, vec!["ghost-a", "ghost-b", "ghost-c"]);
+        // `toggle`'s second argument is a boolean force flag, not a class.
+        let toggle = vec![(
+            "page.html".to_string(),
+            "n.classList.toggle('data', isOn);".to_string(),
+        )];
+        assert!(check_ghost_classes(&toggle, ".data{border:0}").is_empty());
+    }
+
+    #[test]
+    fn a_class_attribute_wrapped_across_lines_is_fully_scanned() {
+        // The worst failure shape a line-based scan has: an author wraps an
+        // already-checked long class list for width and the tail silently
+        // drops out of the gate, build still green. Coverage must not regress
+        // on a purely cosmetic edit.
+        let templates = vec![(
+            "page.html".to_string(),
+            "<div class=\"data\n     ghosty\">x</div>".to_string(),
+        )];
+        let v = check_ghost_classes(&templates, ".data{border:0}");
+        assert_eq!(v.len(), 1, "the wrapped tail must still be read");
+        assert!(v[0].message.contains("ghosty"));
+        assert_eq!(v[0].line, 2, "reported against the line it sits on");
+    }
+
+    #[test]
+    fn class_list_calls_are_scanned_through_every_spelling() {
+        for js in [
+            // A template literal is the modern default for a class string.
+            "el.classList.add(`ghosty`);",
+            // The `(` is part of the call, not of the method name.
+            "el.classList.add ('ghosty');",
+            // A wrapped argument list puts the arguments on lines that carry
+            // no marker at all.
+            "el.classList.add(\n  'ghosty'\n);",
+            // `className` is read-only on an SVG element, so this is the
+            // standard way to set a class there.
+            "el.setAttribute('class', 'ghosty');",
+            "el.setAttribute(\"class\", \"ghosty\");",
+        ] {
+            let templates = vec![("page.html".to_string(), js.to_string())];
+            let v = check_ghost_classes(&templates, ".data{border:0}");
+            assert_eq!(v.len(), 1, "{js} should be flagged");
+            assert!(v[0].message.contains("ghosty"), "{js}");
+        }
+        // Any other attribute is none of this gate's business.
+        let other = vec![(
+            "page.html".to_string(),
+            "el.setAttribute('data-role', 'ghosty');".to_string(),
+        )];
+        assert!(check_ghost_classes(&other, ".data{border:0}").is_empty());
+    }
+
+    #[test]
+    fn every_legal_class_attribute_spelling_is_scanned() {
+        // House style is uniformly `class="…"`, but any other spelling HTML5
+        // permits must not slip past in silence.
+        for html in [
+            r#"<div class="ghosty">x</div>"#,
+            r#"<div class='ghosty'>x</div>"#,
+            r#"<div class = "ghosty">x</div>"#,
+            "<div class\t=\"ghosty\">x</div>",
+            r#"<div class=ghosty>x</div>"#,
+            r#"<div CLASS="ghosty">x</div>"#,
+        ] {
+            let templates = vec![("page.html".to_string(), html.to_string())];
+            let v = check_ghost_classes(&templates, ".data{border:0}");
+            assert_eq!(v.len(), 1, "{html} should be flagged");
+            assert!(v[0].message.contains("ghosty"), "{html}");
+        }
+        // An attribute NAME merely ending in `class` is a different attribute.
+        let other = vec![(
+            "page.html".to_string(),
+            r#"<div data-class="ghosty" superclass="ghosty">x</div>"#.to_string(),
+        )];
+        assert!(check_ghost_classes(&other, ".data{border:0}").is_empty());
     }
 }

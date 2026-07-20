@@ -146,7 +146,7 @@
                   <div class="trunc-inner"><a href="{{ f.public_url }}" target="_blank" rel="noopener">{{ f.original_name }}</a></div>
                 </td>
                 <td class="cell-vis"><span class="pill {% if f.visibility == "public" %}mint{% else %}warn{% endif %}"><span class="dot"></span>{{ f.visibility }}</span></td>
-                <td class="cell-type type" title="{{ f.content_type }}"><div class="trunc-inner">{{ f.content_type }}</div></td>
+                <td class="cell-type" title="{{ f.content_type }}"><div class="trunc-inner">{{ f.content_type }}</div></td>
                 <td class="cell-size">{{ f.size_human }}</td>
                 <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
                 <td class="cell-actions">
@@ -269,7 +269,7 @@
       dropzone.addEventListener(ev, function (e) {
         e.preventDefault();
         e.stopPropagation();
-        dropzone.classList.add('is-dragover');
+        dropzone.classList.add('is-over');
       });
     });
     ['dragleave', 'dragend'].forEach(function (ev) {
@@ -277,13 +277,13 @@
         e.preventDefault();
         e.stopPropagation();
         if (ev === 'dragleave' && dropzone.contains(e.relatedTarget)) return;
-        dropzone.classList.remove('is-dragover');
+        dropzone.classList.remove('is-over');
       });
     });
     dropzone.addEventListener('drop', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      dropzone.classList.remove('is-dragover');
+      dropzone.classList.remove('is-over');
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
         inp.files = e.dataTransfer.files;
         setState(inp.files[0]);
