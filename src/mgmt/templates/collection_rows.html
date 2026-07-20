@@ -66,7 +66,7 @@
         {# ============================== Definition view ============================== #}
         <div id="view-definition" class="view-pane" hidden>
         {% if let Some(err) = desc_error %}
-        <div style="margin:0 0 12px 0;padding:10px 14px;background:#fde7e7;border:1px solid #f5a3a3;border-radius:6px;color:#7d1f1f;font-size:13px;">
+        <div style="margin:0 0 12px 0;padding:10px 14px;background:var(--danger-soft);border:1px solid var(--danger-border);border-radius:6px;color:var(--danger);font-size:13px;">
           {% if err == "DESCRIPTION_TOO_LONG" %}
             {{ t.s("common.desc.err_too_long") }}
           {% else if err == "DESCRIPTION_INVALID" %}
@@ -1283,7 +1283,7 @@ function editDesc(kind, tenant, coll, extra) {
     var n = new Blob([ta.value]).size;     // UTF-8 byte count
     bytesEl.textContent = n + ' / 2048 {{ t.s("common.desc.bytes_unit") }}';
     if (n > 2048) {
-      bytesEl.style.color = 'var(--danger, #d33)';
+      bytesEl.style.color = 'var(--danger)';
       saveBtn.disabled = true;
     } else {
       bytesEl.style.color = '';
