@@ -114,7 +114,7 @@
       var name = f.getAttribute('data-rpc-name') || 'this RPC';
       var ok = await drustUI.confirm({
         title:'{{ t.s("tenant_rpc.delete.title") }}',
-        body:'{{ t.fmt1("tenant_rpc.delete.body", "name", "__NAME__")|safe }}'.replace('__NAME__', name),
+        body:'{{ t.fmt1_html("tenant_rpc.delete.body", "name", "__NAME__")|safe }}'.replace('__NAME__', name),
         okText:'{{ t.s("common.button.delete") }}', danger:true,
       });
       if (ok) f.submit();

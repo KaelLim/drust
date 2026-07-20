@@ -354,8 +354,8 @@ fn find_safe_filter(line: &str, from: usize) -> Option<(usize, usize)> {
 ///
 ///   * `rfind` happily latches onto an unrelated EARLIER expression when the
 ///     pipe lives in a `{% … %}` tag later on the same line. The span
-///     `t.s("hdr") }}{% call card(body_html` starts with `t.s(` and would be
-///     allowlisted while `body_html` renders raw — and `{% call %}` with
+///     `t.s("hdr") }}{% call card(user_supplied_markup` starts with `t.s(` and would be
+///     allowlisted while `user_supplied_markup` renders raw — and `{% call %}` with
 ///     expression arguments is a live idiom here (`tenant_api_keys.html:77`).
 ///     Any `}}`, `{%` or `%}` INSIDE the span proves the pipe belongs to a
 ///     different construct, so the span is rejected.
@@ -387,8 +387,8 @@ fn extract_producer_expr(line: &str, at: usize) -> Option<&str> {
 /// 0.16 `expr.rs:447` layers `addsub -> concat -> muldivmod -> … -> filtered`,
 /// so in `a ~ b|safe` the `|safe` applies to `b` ALONE and `a` is escaped
 /// normally. Validating the whole `{{`-to-pipe span therefore lets a safe
-/// PREFIX launder an unsafe operand — `{{ t.s("a") ~ body_html|safe }}` matches
-/// the `t.s(` arm while rendering `body_html` raw.
+/// PREFIX launder an unsafe operand — `{{ t.s("a") ~ user_supplied_markup|safe }}` matches
+/// the `t.s(` arm while rendering `user_supplied_markup` raw.
 ///
 /// Splitting tracks bracket depth and string literals so an operator inside a
 /// call argument (`t.s("a-b")`) is not a split point.
@@ -511,6 +511,18 @@ fn is_allowlisted_safe_producer(expr: &str) -> bool {
             Some(open) => expr[..open].ends_with("_html") && call_closes_at_end(expr, open),
             None => false,
         };
+    }
+    // 4. `body_html` — the CHANGELOG viewer's rendered markdown
+    //    (`src/mgmt/docs.rs::changelog_page`). The source is the repo's own
+    //    `CHANGELOG.md`, read from the process CWD and shipped with the
+    //    binary; it is operator-controlled, never tenant input, and the route
+    //    (`/admin/_docs/changelog`) sits behind the admin-session layer.
+    //    pulldown-cmark passes raw HTML through, so this MUST stay a single
+    //    named exception tied to that one handler — never a `_html` shape
+    //    rule, which would admit any variable a later handler happens to name
+    //    that way. Adding a fifth entry here is a deliberate, reviewed act.
+    if expr == "body_html" {
+        return true;
     }
     false
 }
@@ -693,8 +705,32 @@ mod tests {
 
     #[test]
     fn safe_filter_rejects_arbitrary_expressions() {
-        let bad = r#"<div>{{ body_html|safe }}</div>"#;
+        let bad = r#"<div>{{ user_supplied_markup|safe }}</div>"#;
         assert_eq!(check_safe_filter("page.html", bad).len(), 1);
+    }
+
+    #[test]
+    fn safe_filter_allows_the_named_body_html_exception_only_exactly() {
+        // `body_html` (tenant_docs.html) renders CHANGELOG.md markdown from
+        // the repo, not tenant input -- a named exception, allowlisted whole.
+        assert!(
+            check_safe_filter("page.html", r#"<div>{{ body_html|safe }}</div>"#).is_empty(),
+            "the named exception must pass"
+        );
+        // It is a NAME match, never a shape rule: a look-alike variable that
+        // merely ends in `_html` is a different value from a different
+        // handler and stays flagged.
+        for bad in [
+            r#"<div>{{ other_body_html|safe }}</div>"#,
+            r#"<div>{{ body_html_extra|safe }}</div>"#,
+            r#"<div>{{ notes_html|safe }}</div>"#,
+            // ...and it cannot launder a raw right-hand operand either.
+            r#"<div>{{ body_html ~ evil_raw|safe }}</div>"#,
+        ] {
+            let v = check_safe_filter("page.html", bad);
+            assert_eq!(v.len(), 1, "must stay flagged: {bad}");
+            assert_eq!(v[0].rule, "unsafe-safe-filter");
+        }
     }
 
     #[test]
@@ -705,11 +741,11 @@ mod tests {
         // from a reformat would carry the v1.49.3 stored-XSS straight through a
         // gate reporting green.
         for bad in [
-            r#"<div>{{ body_html | safe }}</div>"#,
-            r#"<div>{{ body_html| safe }}</div>"#,
-            r#"<div>{{ body_html |safe }}</div>"#,
-            "<div>{{ body_html|\tsafe }}</div>",
-            r#"<div>{{ body_html |  safe }}</div>"#,
+            r#"<div>{{ user_supplied_markup | safe }}</div>"#,
+            r#"<div>{{ user_supplied_markup| safe }}</div>"#,
+            r#"<div>{{ user_supplied_markup |safe }}</div>"#,
+            "<div>{{ user_supplied_markup|\tsafe }}</div>",
+            r#"<div>{{ user_supplied_markup |  safe }}</div>"#,
             // The non-escaping fmt sibling -- the exact v1.49.3 shape -- must
             // stay flagged when spaced too.
             r#"<p>{{ t.fmt1("k", "name", n) | safe }}</p>"#,
@@ -788,10 +824,10 @@ mod tests {
         // launder an unsafe operand: the span matches the `t.s(` / `t.fmt` arm
         // while the right operand renders raw.
         for bad in [
-            r#"<p>{{ t.s("a") ~ body_html|safe }}</p>"#,
+            r#"<p>{{ t.s("a") ~ user_supplied_markup|safe }}</p>"#,
             r#"<p>{{ t.fmt1_html("k", "n", v) ~ evil_raw|safe }}</p>"#,
-            r#"<p>{{ fields_json ~ body_html|safe }}</p>"#,
-            r#"<p>{{ t.s("a") + body_html|safe }}</p>"#,
+            r#"<p>{{ fields_json ~ user_supplied_markup|safe }}</p>"#,
+            r#"<p>{{ t.s("a") + user_supplied_markup|safe }}</p>"#,
         ] {
             let v = check_safe_filter("page.html", bad);
             assert_eq!(v.len(), 1, "right operand of a concat is raw: {bad}");
@@ -824,7 +860,7 @@ mod tests {
             r#"<p>{{ t.fmt1_html("k","n",v).replace("&amp;","&")|safe }}</p>"#,
             r#"<p>{{ t.s("k").replace("&amp;","&")|safe }}</p>"#,
             r#"<p>{{ t.fmt1_html("k","n",v) + evil|safe }}</p>"#,
-            r#"<p>{{ t.s("k") + body_html|safe }}</p>"#,
+            r#"<p>{{ t.s("k") + user_supplied_markup|safe }}</p>"#,
         ] {
             let v = check_safe_filter("page.html", bad);
             assert_eq!(v.len(), 1, "trailing chain must be flagged: {bad}");
@@ -852,12 +888,12 @@ mod tests {
     fn safe_filter_does_not_borrow_an_earlier_expression_on_the_same_line() {
         // `rfind("{{")` latches onto an unrelated EARLIER expression when the
         // pipe lives in a `{% … %}` tag later on the line, so the span becomes
-        // `t.s("hdr") }}{% call card(body_html` and passes the `t.s(` arm.
+        // `t.s("hdr") }}{% call card(user_supplied_markup` and passes the `t.s(` arm.
         // `{% call %}` with expression arguments is a live idiom here
         // (tenant_api_keys.html:77-78).
         for bad in [
-            r#"{{ t.s("hdr") }}{% call card(body_html|safe) %}{% endcall %}"#,
-            r#"{{ t.s("hdr") }}{% let m = body_html|safe %}"#,
+            r#"{{ t.s("hdr") }}{% call card(user_supplied_markup|safe) %}{% endcall %}"#,
+            r#"{{ t.s("hdr") }}{% let m = user_supplied_markup|safe %}"#,
             r#"{{ fields_json|safe }} {{ t.s("x") }}{% let m = evil|safe %}"#,
         ] {
             let v = check_safe_filter("page.html", bad);
@@ -887,8 +923,8 @@ mod tests {
         // ...and the marker must not hide an UNSAFE producer either. A `-}}`
         // with no space still terminates the filter name.
         for bad in [
-            r#"{{- body_html|safe -}}"#,
-            r#"{{ body_html|safe-}}"#,
+            r#"{{- user_supplied_markup|safe -}}"#,
+            r#"{{ user_supplied_markup|safe-}}"#,
             r#"{{~ t.fmt1("k","n",v)|safe ~}}"#,
         ] {
             let v = check_safe_filter("page.html", bad);
