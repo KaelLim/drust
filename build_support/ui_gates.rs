@@ -144,7 +144,7 @@ pub fn check_raw_hex(file: &str, content: &str) -> Vec<Violation> {
 /// A rule leaves this list in the SAME commit that fixes its last violation.
 /// The list is expected to be empty in steady state.
 #[allow(dead_code)]
-pub const WARN_ONLY_RULES: &[&str] = &[];
+pub const WARN_ONLY_RULES: &[&str] = &["unsafe-safe-filter"];
 
 /// The four BEM-style button classes retired in favour of the modifier form.
 /// `.btn.icon` never had a BEM alias, so `btn-icon` is not listed.
@@ -244,6 +244,277 @@ pub fn check_button_convention(file: &str, content: &str) -> Vec<Violation> {
     out
 }
 
+/// Gate 5 — `|safe` disables askama's automatic HTML escaping, so every use
+/// is an XSS surface. Only three producers are provably safe:
+///
+///   1. a variable whose name carries the `json` segment — produced by the
+///      canonical escaper in `src/mgmt/script_json.rs` (plus the one
+///      historically-named `i18n_js`, same escaper, see below)
+///   2. `t.s("...")` — the i18n bundle is an `include_str!` compile-time
+///      constant with no user input
+///   3. `t.fmt<N>_html(...)` — HTML-escapes every interpolated argument
+///      (`src/mgmt/i18n.rs:207`)
+///
+/// Everything else fails the build. In particular `t.fmt<N>(...)|safe`
+/// (no `_html` suffix) does NOT escape its arguments; that one-character
+/// difference reintroduces the v1.49.3 HIGH stored-XSS, and no runtime test
+/// catches it.
+///
+/// NOTE: this scans the template source for the `safe` FILTER. It is
+/// unrelated to askama's internal `filters::Safe` wrapping of `{% call %}`
+/// caller bodies, which never appears in template source.
+pub fn check_safe_filter(file: &str, content: &str) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        let mut from = 0;
+        while let Some((at, end)) = find_safe_filter(line, from) {
+            let expr = extract_producer_expr(line, at);
+            if !expr.is_some_and(is_allowlisted_safe_producer) {
+                // On a rejected span (`None`) the pipe did not belong to a
+                // well-formed `{{ … }}` at all; show the raw pre-pipe text so
+                // the message still points at the offending site.
+                let expr = expr.unwrap_or_else(|| line[..at].trim());
+                out.push(Violation::new(
+                    file,
+                    idx + 1,
+                    "unsafe-safe-filter",
+                    format!(
+                        "`{expr}|safe` is not an allowlisted safe producer. Allowed: \
+                         a `json`-segment variable (script_json.rs escaper), `t.s(\"…\")` \
+                         (compile-time bundle), or `t.fmt<N>_html(…)` (escapes every \
+                         argument). Note `t.fmt<N>(…)` WITHOUT the `_html` suffix does \
+                         not escape and must never be piped to `|safe`."
+                    ),
+                ));
+            }
+            from = end;
+        }
+    }
+    out
+}
+
+/// Locate the next `safe`-filter site in `line` at or after `from`, returning
+/// `(pipe_index, end_index)` — the byte offset of the `|` and the offset just
+/// past the `safe` identifier.
+///
+/// This must NOT be a `find("|safe")` literal scan. askama accepts arbitrary
+/// whitespace around the filter pipe — `Expr::filtered` wraps it in
+/// `opt(ws(filter))` and `Filter::parse` opens with `ws(path_or_identifier)`
+/// (askama_parser 0.16) — so `{{ x | safe }}`, `{{ x| safe }}` and
+/// `{{ x |safe }}` all disable escaping while being invisible to a literal
+/// match. That is an under-match of exactly the construct this gate exists to
+/// block, and it is worse than no gate: once the migration lands, a zero
+/// violation count could mean "clean" or "not looking", and a single space
+/// introduced by a reformat silently reopens the v1.49.3 stored-XSS surface.
+///
+/// The trailing boundary keeps `|safely` / `|safe_thing` from matching, and
+/// `||` (JS logical-or) / `|=` are skipped — neither opens a filter.
+fn find_safe_filter(line: &str, from: usize) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut i = from;
+    while i < bytes.len() {
+        if bytes[i] != b'|' {
+            i += 1;
+            continue;
+        }
+        if matches!(bytes.get(i + 1), Some(b'|') | Some(b'=')) {
+            i += 2;
+            continue;
+        }
+        let mut q = i + 1;
+        while matches!(bytes.get(q), Some(b) if b.is_ascii_whitespace()) {
+            q += 1;
+        }
+        if line[q..].starts_with("safe") {
+            let end = q + "safe".len();
+            // `-` is NOT a name continuation: askama filter names are Rust
+            // identifiers, so a `-` right after `safe` is the closing
+            // whitespace-control marker (`{{ x|safe-}}`) — a real safe filter
+            // that must stay visible to the gate.
+            let terminated = match bytes.get(end) {
+                None => true,
+                Some(b) => !(b.is_ascii_alphanumeric() || *b == b'_'),
+            };
+            if terminated {
+                return Some((i, end));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Extract the producer expression that the `|safe` at byte offset `at` filters
+/// — the text between the enclosing `{{` and the pipe.
+///
+/// Returns `None` when the pipe does not belong to a well-formed `{{ … }}`
+/// expression, which the caller treats as NOT allowlisted (fail closed).
+///
+/// Two shapes make the naive `rfind("{{")` wrong:
+///
+///   * `rfind` happily latches onto an unrelated EARLIER expression when the
+///     pipe lives in a `{% … %}` tag later on the same line. The span
+///     `t.s("hdr") }}{% call card(body_html` starts with `t.s(` and would be
+///     allowlisted while `body_html` renders raw — and `{% call %}` with
+///     expression arguments is a live idiom here (`tenant_api_keys.html:77`).
+///     Any `}}`, `{%` or `%}` INSIDE the span proves the pipe belongs to a
+///     different construct, so the span is rejected.
+///   * askama's whitespace-control markers `-` / `+` / `~` are all valid
+///     immediately after `{{` (askama_parser 0.16 `node.rs:509-511` →
+///     Suppress / Preserve / Minimize). Left in the span the marker breaks the
+///     identifier test and turns every legitimate safe producer red. Exactly
+///     one leading marker byte is skipped; the trailing marker sits after the
+///     filter name and is handled by `find_safe_filter`'s terminator.
+fn extract_producer_expr(line: &str, at: usize) -> Option<&str> {
+    let open = line[..at].rfind("{{")?;
+    let span = &line[open + 2..at];
+    if span.contains("}}") || span.contains("{%") || span.contains("%}") {
+        return None;
+    }
+    // Skip a single whitespace-control marker, which is only a marker when it
+    // sits flush against the `{{`.
+    let span = match span.as_bytes().first() {
+        Some(b'-') | Some(b'+') | Some(b'~') => &span[1..],
+        _ => span,
+    };
+    Some(span.trim())
+}
+
+/// The IMMEDIATE left operand of the filter pipe — the only thing `|safe`
+/// actually wraps.
+///
+/// askama binds the filter TIGHTER than the binary operators: askama_parser
+/// 0.16 `expr.rs:447` layers `addsub -> concat -> muldivmod -> … -> filtered`,
+/// so in `a ~ b|safe` the `|safe` applies to `b` ALONE and `a` is escaped
+/// normally. Validating the whole `{{`-to-pipe span therefore lets a safe
+/// PREFIX launder an unsafe operand — `{{ t.s("a") ~ body_html|safe }}` matches
+/// the `t.s(` arm while rendering `body_html` raw.
+///
+/// Splitting tracks bracket depth and string literals so an operator inside a
+/// call argument (`t.s("a-b")`) is not a split point.
+fn pipe_left_operand(expr: &str) -> &str {
+    let bytes = expr.as_bytes();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(q) => {
+                if b == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => quote = Some(b),
+                b'(' | b'[' => depth += 1,
+                b')' | b']' => depth = depth.saturating_sub(1),
+                b'~' | b'+' | b'-' | b'*' | b'/' | b'%' if depth == 0 => start = i + 1,
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    expr[start..].trim()
+}
+
+/// True when the parenthesis opened at `open` closes at the very END of `expr`
+/// — i.e. `expr` is exactly one call and nothing is appended to it.
+///
+/// The allowlist arms must match the WHOLE operand. A prefix-only test ignores
+/// everything after the first `(`, so a trailing method chain or operator is
+/// invisible — and it is precisely the appended part that renders raw:
+/// `t.fmt1_html("k","n",v).replace("&amp;","&")|safe` un-escapes the very
+/// output the `_html` variant escaped.
+fn call_closes_at_end(expr: &str, open: usize) -> bool {
+    let bytes = expr.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(q) => {
+                if b == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => quote = Some(b),
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i + 1 == bytes.len();
+                    }
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    false
+}
+
+/// True when the first non-whitespace byte after the paren at `open` is a
+/// double quote — i.e. the call's first argument is a compile-time literal.
+fn first_arg_is_literal(expr: &str, open: usize) -> bool {
+    expr[open + 1..].trim_start().starts_with('"')
+}
+
+/// The provably-safe `|safe` producers. See `check_safe_filter`.
+fn is_allowlisted_safe_producer(expr: &str) -> bool {
+    // `|safe` wraps only the pipe's immediate left operand, never the whole
+    // expression -- see `pipe_left_operand`.
+    let expr = pipe_left_operand(expr);
+    // 1. A variable carrying the `json` segment — the canonical
+    //    script_json.rs escaper. The marker must be a whole
+    //    underscore-delimited segment, not a mere suffix: `mascot_json_static`
+    //    / `mascot_json_light` / `mascot_json_dark` (theme.rs) put the
+    //    variant AFTER the marker, and a suffix-only rule flags all three.
+    //    Segment matching also keeps `jsonish_markup` out.
+    if !expr.is_empty()
+        && expr.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && expr.split('_').any(|seg| seg == "json")
+    {
+        return true;
+    }
+    // 1b. `i18n_js` — the SAME escaper (`script_json::escape_json_for_script`
+    //     in tenant_broadcast.rs) under a name that predates the convention.
+    //     Recorded as a named exception rather than widening the shape rule to
+    //     `_js`, which would admit any script-shaped variable.
+    if expr == "i18n_js" {
+        return true;
+    }
+    // 2. `t.s("…")` — compile-time i18n bundle, no user input. The key MUST be
+    //    a literal: `Translator::s` echoes an unknown key back verbatim as
+    //    `!!{key}!!` (`src/mgmt/i18n.rs:146`), so a runtime-valued key like
+    //    `t.s(user_key)` reflects caller-controlled bytes unescaped.
+    if expr.starts_with("t.s(") {
+        let open = "t.s".len();
+        return first_arg_is_literal(expr, open) && call_closes_at_end(expr, open);
+    }
+    // 3. `t.fmt<N>_html(…)` — escapes every interpolated argument. The
+    //    `_html(` suffix check is what separates it from the unescaping
+    //    `t.fmt<N>(…)` sibling.
+    if expr.starts_with("t.fmt") {
+        return match expr.find('(') {
+            Some(open) => expr[..open].ends_with("_html") && call_closes_at_end(expr, open),
+            None => false,
+        };
+    }
+    false
+}
+
 /// Run every gate. `templates` is `(file_name, content)` for every
 /// `src/mgmt/templates/*.html`; `css` is the concatenated CSS source (see
 /// `extract_style_blocks`) used by the cross-file class gate. Returns every
@@ -254,6 +525,7 @@ pub fn scan_all(templates: &[(String, String)], css: &str) -> Vec<Violation> {
     for (file, body) in templates {
         out.extend(check_raw_hex(file, body));
         out.extend(check_button_convention(file, body));
+        out.extend(check_safe_filter(file, body));
     }
     out
 }
@@ -388,6 +660,240 @@ mod tests {
         // the prefix rule must not double-count it.
         let v = check_button_convention("_modal.html", "x = 'btn-ghost';");
         assert_eq!(v.len(), 1, "literal form must not be double-reported");
+    }
+
+    #[test]
+    fn safe_filter_allows_only_the_three_safe_producers() {
+        for ok in [
+            r#"const f = {{ fields_json|safe }};"#,
+            r#"<p>{{ t.s("some.key")|safe }}</p>"#,
+            r#"<p>{{ t.fmt1_html("k", "n", v)|safe }}</p>"#,
+            r#"<p>{{ t.fmt3_html("k", "a", x, "b", y, "c", z)|safe }}</p>"#,
+        ] {
+            assert!(
+                check_safe_filter("page.html", ok).is_empty(),
+                "allowlisted safe producer must pass: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_filter_rejects_the_non_escaping_fmt_variants() {
+        // fmt<N> does NOT escape its interpolated args; fmt<N>_html does.
+        // Confusing the two reintroduces the v1.49.3 stored-XSS.
+        let bad = r#"<p>{{ t.fmt1("k", "name", tenant_name)|safe }}</p>"#;
+        let v = check_safe_filter("page.html", bad);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].rule, "unsafe-safe-filter");
+        assert!(
+            v[0].message.contains("_html"),
+            "message must point at the fix"
+        );
+    }
+
+    #[test]
+    fn safe_filter_rejects_arbitrary_expressions() {
+        let bad = r#"<div>{{ body_html|safe }}</div>"#;
+        assert_eq!(check_safe_filter("page.html", bad).len(), 1);
+    }
+
+    #[test]
+    fn safe_filter_sees_through_whitespace_around_the_pipe() {
+        // askama accepts whitespace on BOTH sides of the filter pipe, and every
+        // spaced form renders the producer unescaped exactly like `|safe`. A
+        // literal `find("|safe")` scan misses all of them -- one stray space
+        // from a reformat would carry the v1.49.3 stored-XSS straight through a
+        // gate reporting green.
+        for bad in [
+            r#"<div>{{ body_html | safe }}</div>"#,
+            r#"<div>{{ body_html| safe }}</div>"#,
+            r#"<div>{{ body_html |safe }}</div>"#,
+            "<div>{{ body_html|\tsafe }}</div>",
+            r#"<div>{{ body_html |  safe }}</div>"#,
+            // The non-escaping fmt sibling -- the exact v1.49.3 shape -- must
+            // stay flagged when spaced too.
+            r#"<p>{{ t.fmt1("k", "name", n) | safe }}</p>"#,
+        ] {
+            let v = check_safe_filter("page.html", bad);
+            assert_eq!(v.len(), 1, "spaced safe filter must be flagged: {bad}");
+            assert_eq!(v[0].rule, "unsafe-safe-filter");
+        }
+
+        // ...and the allowlist is applied to the spaced form identically, so
+        // closing the under-match does not turn the safe producers red.
+        for ok in [
+            r#"const f = {{ fields_json | safe }};"#,
+            r#"<p>{{ t.s("some.key") | safe }}</p>"#,
+            r#"<p>{{ t.fmt1_html("k", "n", v) | safe }}</p>"#,
+        ] {
+            assert!(
+                check_safe_filter("page.html", ok).is_empty(),
+                "allowlisted producer must still pass when spaced: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_filter_does_not_match_other_filters_or_operators() {
+        // `safe` must be a WHOLE filter name, and `||` / `|=` are JS operators
+        // inside <script> blocks, not askama filter pipes.
+        for ok in [
+            r#"<div>{{ x|safelike }}</div>"#,
+            r#"<div>{{ x | safely }}</div>"#,
+            r#"<div>{{ x|safe_html }}</div>"#,
+            "  var v = a.variant || safe;",
+            "  mask |= safe;",
+        ] {
+            assert!(
+                check_safe_filter("page.html", ok).is_empty(),
+                "must not over-match: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_filter_accepts_the_escapers_real_output_names() {
+        // The escaper's output is not always named `*_json`. `mascot_json_*`
+        // (theme.rs, compile-time palette TOML) carries a suffix after the
+        // marker, and `i18n_js` (tenant_broadcast.rs) is escaped by
+        // `script_json::escape_json_for_script` but named `_js`. A rule that
+        // only accepts a `_json` SUFFIX flags four live, provably-safe sites
+        // and would leave gate 5 red after its migration task cleans the two
+        // genuine ones.
+        for ok in [
+            r#"window.P = {{ mascot_json_static|safe }};"#,
+            r#"  ? {{ mascot_json_dark|safe }}"#,
+            r#"  : {{ mascot_json_light|safe }};"#,
+            r#"  const I18N = {{ i18n_js|safe }};"#,
+        ] {
+            assert!(
+                check_safe_filter("page.html", ok).is_empty(),
+                "real escaper output must pass: {ok}"
+            );
+        }
+        // ...but the marker must be a whole segment, not a substring: a
+        // variable merely CONTAINING the letters is not the escaper's output.
+        assert_eq!(
+            check_safe_filter("page.html", "{{ jsonish_markup|safe }}").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn safe_filter_validates_only_the_pipes_immediate_left_operand() {
+        // askama binds the filter TIGHTER than the binary operators
+        // (askama_parser 0.16 expr.rs: addsub -> concat -> muldivmod -> …
+        // -> filtered), so in `a ~ b|safe` the `|safe` wraps `b` ALONE. Handing
+        // the whole `{{`-to-pipe span to the allowlist lets a safe PREFIX
+        // launder an unsafe operand: the span matches the `t.s(` / `t.fmt` arm
+        // while the right operand renders raw.
+        for bad in [
+            r#"<p>{{ t.s("a") ~ body_html|safe }}</p>"#,
+            r#"<p>{{ t.fmt1_html("k", "n", v) ~ evil_raw|safe }}</p>"#,
+            r#"<p>{{ fields_json ~ body_html|safe }}</p>"#,
+            r#"<p>{{ t.s("a") + body_html|safe }}</p>"#,
+        ] {
+            let v = check_safe_filter("page.html", bad);
+            assert_eq!(v.len(), 1, "right operand of a concat is raw: {bad}");
+            assert_eq!(v[0].rule, "unsafe-safe-filter");
+        }
+
+        // ...and a safe producer sitting as the RIGHT operand still passes --
+        // that operand is the one `|safe` actually wraps.
+        for ok in [
+            r#"<p>{{ prefix ~ t.s("a.b")|safe }}</p>"#,
+            r#"<p>{{ a ~ fields_json|safe }}</p>"#,
+            // An operator INSIDE a string argument is not a split point.
+            r#"<p>{{ t.s("a-b.c")|safe }}</p>"#,
+            r#"<p>{{ t.fmt1_html("a-b", "n", v)|safe }}</p>"#,
+        ] {
+            assert!(
+                check_safe_filter("page.html", ok).is_empty(),
+                "operand-level allowlist must still pass: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_filter_rejects_trailing_chains_after_an_allowlisted_call() {
+        // The allowlist arms must match the WHOLE operand. A prefix-only test
+        // ignores everything after the first `(`, so any chain or operator
+        // appended to a safe call is invisible -- and the appended part is
+        // exactly what renders raw.
+        for bad in [
+            r#"<p>{{ t.fmt1_html("k","n",v).replace("&amp;","&")|safe }}</p>"#,
+            r#"<p>{{ t.s("k").replace("&amp;","&")|safe }}</p>"#,
+            r#"<p>{{ t.fmt1_html("k","n",v) + evil|safe }}</p>"#,
+            r#"<p>{{ t.s("k") + body_html|safe }}</p>"#,
+        ] {
+            let v = check_safe_filter("page.html", bad);
+            assert_eq!(v.len(), 1, "trailing chain must be flagged: {bad}");
+            assert_eq!(v[0].rule, "unsafe-safe-filter");
+        }
+    }
+
+    #[test]
+    fn safe_filter_requires_a_literal_key_for_the_t_s_arm() {
+        // `t.s` echoes an unknown key back verbatim -- `!!{key}!!`
+        // (src/mgmt/i18n.rs:146) -- so a RUNTIME-valued key is reflected
+        // unescaped. Only the compile-time literal form the doc comment
+        // declares is provably safe.
+        for bad in [
+            r#"<p>{{ t.s(user_key)|safe }}</p>"#,
+            r#"<p>{{ t.s(row.key)|safe }}</p>"#,
+        ] {
+            let v = check_safe_filter("page.html", bad);
+            assert_eq!(v.len(), 1, "non-literal i18n key must be flagged: {bad}");
+            assert_eq!(v[0].rule, "unsafe-safe-filter");
+        }
+    }
+
+    #[test]
+    fn safe_filter_does_not_borrow_an_earlier_expression_on_the_same_line() {
+        // `rfind("{{")` latches onto an unrelated EARLIER expression when the
+        // pipe lives in a `{% … %}` tag later on the line, so the span becomes
+        // `t.s("hdr") }}{% call card(body_html` and passes the `t.s(` arm.
+        // `{% call %}` with expression arguments is a live idiom here
+        // (tenant_api_keys.html:77-78).
+        for bad in [
+            r#"{{ t.s("hdr") }}{% call card(body_html|safe) %}{% endcall %}"#,
+            r#"{{ t.s("hdr") }}{% let m = body_html|safe %}"#,
+            r#"{{ fields_json|safe }} {{ t.s("x") }}{% let m = evil|safe %}"#,
+        ] {
+            let v = check_safe_filter("page.html", bad);
+            assert_eq!(v.len(), 1, "cross-construct span must be flagged: {bad}");
+            assert_eq!(v[0].rule, "unsafe-safe-filter");
+        }
+    }
+
+    #[test]
+    fn safe_filter_tolerates_askama_whitespace_control_markers() {
+        // `-` / `+` / `~` are all valid immediately after `{{`
+        // (askama_parser 0.16 node.rs:509-511 -> Suppress / Preserve /
+        // Minimize). Left in the extracted expression they break the
+        // identifier test and turn every legitimate safe producer red.
+        for ok in [
+            r#"{{- fields_json|safe -}}"#,
+            r#"{{~ fields_json|safe ~}}"#,
+            r#"{{+ t.s("a.b")|safe +}}"#,
+            r#"{{- t.fmt1_html("k","n",v)|safe }}"#,
+        ] {
+            assert!(
+                check_safe_filter("page.html", ok).is_empty(),
+                "whitespace-control marker must not turn a safe producer red: {ok}"
+            );
+        }
+
+        // ...and the marker must not hide an UNSAFE producer either. A `-}}`
+        // with no space still terminates the filter name.
+        for bad in [
+            r#"{{- body_html|safe -}}"#,
+            r#"{{ body_html|safe-}}"#,
+            r#"{{~ t.fmt1("k","n",v)|safe ~}}"#,
+        ] {
+            let v = check_safe_filter("page.html", bad);
+            assert_eq!(v.len(), 1, "marker must not hide a violation: {bad}");
+        }
     }
 
     #[test]
