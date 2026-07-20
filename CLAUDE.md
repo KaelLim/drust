@@ -159,10 +159,10 @@ Two pages (v1.5.1+): `/admin/tenants` (search-able list) and `/admin/tenants/{id
 | `missing-view-head` | 頁面必須呼叫 `ui::view_head` | 接上 macro,或宣告 `{# page-kind: standalone #}`(askama 註解,非 `{% block %}`) |
 | `ghost-class` | 用到的 class 必須有 CSS 定義 | 在 `_styles.html` 補定義,或改用既有 class |
 | `button-convention` | 禁用 BEM 按鈕 class | 改修飾詞形式 |
-| `unsafe-safe-filter` | `\|safe` 只允許三種來源 | 見下 |
+| `unsafe-safe-filter` | `\|safe` 只允許白名單來源 | 見下 |
 
 > [!CAUTION]
-> **`t.fmt<N>(…)` 與 `t.fmt<N>_html(…)` 只差一個尾綴,但只有後者跳脫插值參數。** 把前者接上 `|safe` 會重現 v1.49.3 修掉的 HIGH stored-XSS,而且**執行期測試抓不到**。閘 5 因此只允許三種 `|safe` 來源:帶 `json` 底線區段的變數(`script_json.rs` 正典跳脫器;外加一條具名例外 `i18n_js`,同一個跳脫器、名字早於慣例)、`t.s("…")`(編譯期 bundle,key 必須是字面值)、`t.fmt<N>_html(…)`。新增第四種必須是經審查的刻意行為。
+> **`t.fmt<N>(…)` 與 `t.fmt<N>_html(…)` 只差一個尾綴,但只有後者跳脫插值參數。** 把前者接上 `|safe` 會重現 v1.49.3 修掉的 HIGH stored-XSS,而且**執行期測試抓不到**。閘 5 因此只允許以下 `|safe` 來源 —— 三種形狀規則:帶 `json` 底線區段的變數(`script_json.rs` 正典跳脫器)、`t.s("…")`(編譯期 bundle,key 必須是字面值)、`t.fmt<N>_html(…)`;外加兩條具名例外:`i18n_js`(同一個 `script_json` 跳脫器,名字早於 `_json` 慣例)與 `body_html`(CHANGELOG viewer 專屬,operator 控制的 markdown,綁定 `src/mgmt/docs.rs` 一個 handler)。新增任何一條都必須是經審查的刻意行為,且在 `is_allowlisted_safe_producer` 就地附註來源。
 
 **豁免一律走宣告制。** 不得在 `build.rs` 或 `ui_gates.rs` 建立檔名豁免清單 —— 清單會腐化(「先加進清單」很快變成習慣),而模板內的宣告不會:新頁忘記宣告的後果是被閘擋下,fail-closed。
 
