@@ -1519,11 +1519,11 @@
      script site named — so gate 3 can tell a deliberate hook from a ghost.
      An undeclared class is the bug the gate exists to catch, so a NEW hook
      must be added here too; this is a register, not an escape hatch. */
-  .reroll-form{}          /* tenant_api_keys.html: form.reroll-form confirm */
-  .pat-reroll-form{}      /* settings.html: form.pat-reroll-form confirm */
+  .reroll-form{}          /* tenant_api_keys.html: reroll confirm hook */
+  .pat-reroll-form{}      /* settings.html: PAT reroll confirm hook */
   .cli-revoke-form{}      /* settings.html: CLI token self-revoke form */
-  .restore-form{}         /* backup_inspect.html: form.restore-form confirm */
-  .tenant-delete-form{}   /* tenants_list.html: form.tenant-delete-form confirm */
+  .restore-form{}         /* backup_inspect.html: restore confirm hook */
+  .tenant-delete-form{}   /* tenants_list.html: tenant-delete confirm hook */
   .tenant-row{}           /* tenants_list.html: tr.tenant-row client-side filter */
   .egress-row{}           /* tenant_settings.html: egress allowlist row */
   .egress-remove{}        /* tenant_settings.html: egress row remove button */
