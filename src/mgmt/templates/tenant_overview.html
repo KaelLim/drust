@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.fmt1("tenant_overview.page.title", "tenant_name", tenant_name) }}{% endblock %}
 {% block meta_description %}<meta name="description" content="{{ t.fmt1("tenant_overview.page.meta_description", "tenant_name", tenant_name) }}">{% endblock %}
@@ -7,14 +8,9 @@
 {% block content %}
     <div class="page">
 
-        <div class="view-head">
-          <div class="grow">
-            {% include "_tenant_eyebrow.html" %}
-            <h1 class="view-title">{{ t.s("tenant_overview.head.title") }}</h1>
-            <p class="view-sub">{{ t.fmt2("tenant_overview.header.subtitle", "tenant_id", tenant_id, "created_at", created_at) }}</p>
-          </div>
+        {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), t.s("tenant_overview.head.title"), t.fmt2("tenant_overview.header.subtitle", "tenant_id", tenant_id, "created_at", created_at)) %}
           <span class="pill mint"><span class="dot"></span>{{ t.s("tenant_overview.header.health_pill") }}</span>
-        </div>
+        {% endcall %}
 
         <div class="stat-grid" style="margin-bottom:18px;">
           <div class="stat accent-edge">

@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.s("admin_team.head.title") }} · drust{% endblock %}
 {% block meta_description %}<meta name="description" content="{{ t.s("admin_team.head.subtitle") }}">{% endblock %}
@@ -7,19 +8,14 @@
 {% block content %}
 <div class="page">
 
-  <div class="view-head">
-    <div class="grow">
-      <div class="eyebrow">{{ t.s("admin_team.head.eyebrow") }}</div>
-      <h1 class="view-title">{{ t.s("admin_team.head.title") }}</h1>
-      <p class="view-sub">{{ t.s("admin_team.head.subtitle") }}</p>
-    </div>
+  {% call ui::view_head(t.s("admin_team.head.eyebrow"), t.s("admin_team.head.title"), t.s("admin_team.head.subtitle")) %}
     {% if admin.is_owner %}
     <button type="button" class="btn primary" id="btn-invite">
       <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
       {{ t.s("admin_team.head.add") }}
     </button>
     {% endif %}
-  </div>
+  {% endcall %}
 
   <div class="card" style="overflow:hidden;">
     <table class="data">

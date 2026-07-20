@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.s("files_reconcile.page.title") }}{% endblock %}
 {% block meta_description %}<meta name="description" content="{{ t.s("files_reconcile.page.meta_description") }}">{% endblock %}
@@ -6,13 +7,7 @@
 
 {% block content %}
     <div class="page">
-      <div class="view-head">
-        <div class="grow">
-          <div class="eyebrow">{{ t.s("files_reconcile.header.eyebrow") }}</div>
-          <h1 class="view-title">{{ t.s("files_reconcile.header.title") }}</h1>
-          <p class="view-sub">{{ t.s("files_reconcile.header.sub") }}</p>
-        </div>
-      </div>
+      {% call ui::view_head(t.s("files_reconcile.header.eyebrow"), t.s("files_reconcile.header.title"), t.s("files_reconcile.header.sub")) %}{% endcall %}
 
       <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/reconcile">
         <div class="card">

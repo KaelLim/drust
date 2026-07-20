@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% import "_icons.html" as icons %}
 
 {% block title %}{{ t.s("common.app.title") }} — {{ tenant_name }} / _oauth_providers{% endblock %}
@@ -8,13 +9,7 @@
 {% block content %}
     <div class="page page-wide">
 
-        <div class="view-head">
-          <div class="grow">
-            {% include "_tenant_eyebrow.html" %}
-            <h1 class="view-title">{{ t.s("tenant_oauth_providers.head.title") }}</h1>
-            <p class="view-sub">{{ t.s("tenant_oauth_providers.head.sub") }}</p>
-          </div>
-        </div>
+        {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), t.s("tenant_oauth_providers.head.title"), t.s("tenant_oauth_providers.head.sub")) %}{% endcall %}
 
         <div class="banner info" style="margin-bottom:18px;">
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>

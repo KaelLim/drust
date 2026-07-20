@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.fmt1("tenant_docs.page.title", "active", active) }}{% endblock %}
 {% block meta_description %}<meta name="description" content="{{ t.fmt1("tenant_docs.page.meta_description", "active", active) }}">{% endblock %}
@@ -15,13 +16,10 @@
           </nav>
         </aside>
         <div class="docs-content">
-          <div class="view-head">
-            <div class="grow">
-              <div class="eyebrow">{{ t.s("tenant_docs.head.eyebrow") }}</div>
-              <h1 class="view-title">{{ title }}</h1>
-              <p class="view-sub">{{ t.s("tenant_docs.head.source_label") }} <code>{{ source_path }}</code></p>
-            </div>
-          </div>
+          {% call ui::view_head(t.s("tenant_docs.head.eyebrow"), title, "") %}{% endcall %}
+          {# Rich subtitle: the macro's `sub` argument is escaped by design, so
+             a subtitle carrying markup stays a sibling of the header block. #}
+          <p class="view-sub">{{ t.s("tenant_docs.head.source_label") }} <code>{{ source_path }}</code></p>
 
           <div class="card">
             <div class="card-body" style="padding:24px;">

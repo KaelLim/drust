@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 
 {% block title %}{{ t.fmt1("tenant_webhooks_admin.page.title", "tenant_name", tenant_name) }}{% endblock %}
 {% block meta_description %}<meta name="description" content="{{ t.fmt1("tenant_webhooks_admin.page.meta_description", "tenant_name", tenant_name) }}">{% endblock %}
@@ -7,17 +8,12 @@
 {% block content %}
     <div class="page page-wide">
 
-        <div class="view-head">
-          <div class="grow">
-            {% include "_tenant_eyebrow.html" %}
-            <h1 class="view-title">{{ t.s("tenant_webhooks_admin.view.title") }}</h1>
-            <p class="view-sub">{{ t.s("tenant_webhooks_admin.view.subtitle") }}</p>
-          </div>
+        {% call ui::view_head("{} · {}"|format(t.s("common.label.tenant"), tenant_name), t.s("tenant_webhooks_admin.view.title"), t.s("tenant_webhooks_admin.view.subtitle")) %}
           <a class="btn primary" href="#new-webhook">
             <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             {{ t.s("tenant_webhooks_admin.actions.new_subscription") }}
           </a>
-        </div>
+        {% endcall %}
 
         {% if let Some(s) = secret_once %}
         <div class="banner warn" style="margin-bottom:18px;">

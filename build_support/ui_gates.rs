@@ -144,7 +144,7 @@ pub fn check_raw_hex(file: &str, content: &str) -> Vec<Violation> {
 /// A rule leaves this list in the SAME commit that fixes its last violation.
 /// The list is expected to be empty in steady state.
 #[allow(dead_code)]
-pub const WARN_ONLY_RULES: &[&str] = &["missing-view-head"];
+pub const WARN_ONLY_RULES: &[&str] = &[];
 
 /// The four BEM-style button classes retired in favour of the modifier form.
 /// `.btn.icon` never had a BEM alias, so `btn-icon` is not listed.
