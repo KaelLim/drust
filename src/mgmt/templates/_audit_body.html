@@ -1,8 +1,9 @@
 {# _audit_body.html — audit viewer body. Parent template owns shell. #}
+{% import "_ui.html" as ui %}
 
 {% if auto_refresh %}<meta http-equiv="refresh" content="30">{% endif %}
 
-<div class="toolbar-v2" style="margin-bottom:14px;">
+{% call ui::toolbar() %}
   <div class="seg">
     <a class="{% if tab == "overview" %}active{% endif %}" href="{{ overview_link }}">{{ t.s("audit_body.tab.overview") }}</a>
     <a class="{% if tab == "browse" %}active{% endif %}" href="{{ browse_link }}">{{ t.s("audit_body.tab.browse") }}</a>
@@ -19,7 +20,7 @@
       {% if auto_refresh %}{{ t.s("audit_body.button.stop_auto_refresh") }}{% else %}{{ t.s("audit_body.button.auto_30s") }}{% endif %}
     </a>
   </span>
-</div>
+{% endcall %}
 
 {% if tab == "overview" %}
 {% if let Some(ov) = overview %}
@@ -62,7 +63,7 @@
       <div class="card-sub">{{ t.s("audit_body.card.top_tenants_sub") }}</div>
     </div>
   </div>
-  {% if ov.top_tenants.is_empty() %}<div class="empty" style="padding:36px 24px;">{{ t.s("common.empty.no_data") }}</div>{% else %}
+  {% if ov.top_tenants.is_empty() %}{% call ui::empty_state("", t.s("common.empty.no_data"), "") %}{% endcall %}{% else %}
   <table class="data">
     <thead><tr><th>{{ t.s("backup_inspect.table.col_tenant") }}</th><th class="num">{{ t.s("common.label.count") }}</th><th class="num">{{ t.s("audit_body.table.err_pct") }}</th></tr></thead>
     <tbody>
@@ -86,7 +87,7 @@
       <div class="card-sub">{{ t.s("audit_body.card.top_slowest_ops_sub") }}</div>
     </div>
   </div>
-  {% if top_slow_ops_view.is_empty() %}<div class="empty" style="padding:36px 24px;">{{ t.s("common.empty.no_data") }}</div>{% else %}
+  {% if top_slow_ops_view.is_empty() %}{% call ui::empty_state("", t.s("common.empty.no_data"), "") %}{% endcall %}{% else %}
   <table class="data">
     <thead><tr>
       <th>{{ t.s("common.label.timestamp") }}</th>
@@ -110,7 +111,7 @@
 {% endif %}
 
 {% else %}
-<form method="get" class="toolbar-v2" style="margin-bottom:18px;">
+<form method="get" class="toolbar" style="margin-bottom:18px;">
   <input type="hidden" name="tab" value="browse">
   <input type="hidden" name="window" value="{{ window_str }}">
 
@@ -158,7 +159,7 @@
     </div>
   </div>
   {% if entries.is_empty() %}
-  <div class="empty" style="padding:48px 24px;">{{ t.s("audit_body.empty.no_entries_match") }}</div>
+  {% call ui::empty_state("", t.s("audit_body.empty.no_entries_match"), "") %}{% endcall %}
   {% else %}
   <div class="card-body" style="padding:6px 18px;">
     <div class="tl">

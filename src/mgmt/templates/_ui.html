@@ -27,8 +27,8 @@
 {% endmacro %}
 
 {# Data table shell. The ONLY canonical table class is `data`; a page that
-   invents its own (`grid-table`) both loses the styling and needs inline
-   style rescue -- which is exactly how cron_admin and tenant_functions
+   invents its own name both loses the styling and needs inline style
+   rescue -- which is exactly how cron_admin and tenant_functions
    drifted. Caller body supplies <thead> and <tbody>: column widths and
    headings are legitimately per-page. #}
 {% macro data_table(caption) %}
@@ -54,7 +54,7 @@
 {% endmacro %}
 
 {# Toolbar row above a table: filter chips, sort, per-page. Canonical class
-   is `toolbar`; `toolbar-v2` is a retired alias. #}
+   is `toolbar`; the old versioned alias is retired. #}
 {% macro toolbar() %}
 <div class="toolbar">
   {{ caller() }}

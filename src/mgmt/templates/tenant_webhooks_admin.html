@@ -61,13 +61,7 @@
 
         {% if webhooks.is_empty() %}
         <div class="card">
-          <div class="empty" style="padding:42px 24px 28px;">
-            <div style="margin-bottom:14px;display:grid;place-items:center;">
-              <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
-            </div>
-            <h3>{{ t.s("tenant_webhooks_admin.empty.title") }}</h3>
-            <p>{{ t.s("tenant_webhooks_admin.empty.body") }}</p>
-          </div>
+          {% call ui::empty_state("sleep", t.s("tenant_webhooks_admin.empty.title"), t.s("tenant_webhooks_admin.empty.body")) %}{% endcall %}
         </div>
         {% else %}
         {% for r in webhooks %}

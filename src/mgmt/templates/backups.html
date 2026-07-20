@@ -43,13 +43,9 @@
 
       {% if backups.is_empty() %}
       <div class="card">
-        <div class="empty" style="padding:56px 24px 40px;">
-          <div style="margin-bottom:18px;display:grid;place-items:center;">
-            <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
-          </div>
-          <h3>{{ t.s("backups.empty.title") }}</h3>
+        {% call ui::empty_state("curious", t.s("backups.empty.title"), "") %}
           <p>The first run of <code>drust-backup.timer</code> will populate this list.</p>
-        </div>
+        {% endcall %}
       </div>
       {% else %}
       {% for b in backups %}

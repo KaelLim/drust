@@ -47,7 +47,7 @@
         <input type="text" name="name" id="new-tenant-name" required>
       </form>
 
-      <div class="toolbar-v2">
+      {% call ui::toolbar() %}
         <div class="input-with-icon" style="flex:1;max-width:280px;">
           <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
           <input class="input" id="tenants-search" type="search"
@@ -56,17 +56,13 @@
                  autocomplete="off" spellcheck="false">
         </div>
         <span class="right mono" id="tenants-count">{{ t.fmt1("tenants_list.count.total", "n", tenants.len()) }}</span>
-      </div>
+      {% endcall %}
 
       <div class="card" style="overflow:hidden;">
         {% if tenants.is_empty() %}
-        <div class="empty" style="padding:56px 24px 40px;">
-          <div style="margin-bottom:18px;display:grid;place-items:center;">
-            <canvas class="pix" data-chonk="working" data-size="96"></canvas>
-          </div>
-          <h3>No tenants yet</h3>
+        {% call ui::empty_state("working", "No tenants yet", "") %}
           <p>Click <b>New tenant</b> above to create one.</p>
-        </div>
+        {% endcall %}
         {% else %}
         <table class="data">
           <thead>

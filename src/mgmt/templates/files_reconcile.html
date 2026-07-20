@@ -14,7 +14,7 @@
           <div class="card-head"><span>{{ t.s("files_reconcile.orphan_objects.title") }}</span><span class="card-head-actions">{{ t.s("files_reconcile.orphan_objects.subtitle") }}</span></div>
           <div class="records-scroll">
             {% if orphan_objects.is_empty() %}
-            <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
+            {% call ui::empty_state("", t.s("common.empty.none"), "") %}{% endcall %}
             {% else %}
             <table class="data"><thead><tr><th style="width:40px;">✓</th><th>{{ t.s("files_reconcile.col.key") }}</th><th>{{ t.s("common.col.size") }}</th></tr></thead><tbody>
               {% for item in orphan_objects %}
@@ -29,7 +29,7 @@
           <div class="card-head"><span>{{ t.s("files_reconcile.dangling_rows.title") }}</span><span class="card-head-actions">{{ t.s("files_reconcile.dangling_rows.subtitle") }}</span></div>
           <div class="records-scroll">
             {% if dangling_rows.is_empty() %}
-            <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
+            {% call ui::empty_state("", t.s("common.empty.none"), "") %}{% endcall %}
             {% else %}
             <table class="data"><thead><tr><th style="width:40px;">✓</th><th>{{ t.s("files_reconcile.col.original_name") }}</th><th>{{ t.s("files_reconcile.col.key") }}</th></tr></thead><tbody>
               {% for item in dangling_rows %}
@@ -49,7 +49,7 @@
       <div class="card" style="margin-top:24px;">
         <div class="card-head"><span>{{ t.s("files_reconcile.pending_revokes.title") }} ({{ pending_revokes.len() }})</span><span class="card-head-actions">{{ t.s("files_reconcile.pending_revokes.subtitle") }}</span></div>
         {% if pending_revokes.is_empty() %}
-        <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
+        {% call ui::empty_state("", t.s("common.empty.none"), "") %}{% endcall %}
         {% else %}
         <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/reconcile">
           <div class="records-scroll">
@@ -67,7 +67,7 @@
       <div class="card" style="margin-top:24px;">
         <div class="card-head"><span>{{ t.s("files_reconcile.orphan_buckets.title") }} ({{ orphan_buckets.len() }})</span><span class="card-head-actions">{{ t.s("files_reconcile.orphan_buckets.subtitle") }}</span></div>
         {% if orphan_buckets.is_empty() %}
-        <div class="empty" style="padding:32px;"><h3>{{ t.s("common.empty.none") }}</h3></div>
+        {% call ui::empty_state("", t.s("common.empty.none"), "") %}{% endcall %}
         {% else %}
         <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/reconcile">
           <div class="records-scroll">

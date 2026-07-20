@@ -105,13 +105,7 @@
         </div>
 
         {% if files.is_empty() %}
-        <div class="empty" style="padding:56px 24px 40px;">
-          <div style="margin-bottom:18px;display:grid;place-items:center;">
-            <canvas class="pix" data-chonk="sleep" data-size="96"></canvas>
-          </div>
-          <h3>{{ t.s("tenant_files_admin.empty.title") }}</h3>
-          <p>{{ t.s("tenant_files_admin.empty.body") }}</p>
-        </div>
+        {% call ui::empty_state("sleep", t.s("tenant_files_admin.empty.title"), t.s("tenant_files_admin.empty.body")) %}{% endcall %}
         {% else %}
         <div class="pub-scroll">
           <table class="data pub-files">
@@ -178,13 +172,9 @@
       {% else %}
       <div class="card">
         <div class="card-body">
-          <div class="empty" style="padding:72px 24px;">
-            <div style="margin-bottom:22px;display:grid;place-items:center;">
-              <canvas class="pix" data-chonk="curious" data-size="96"></canvas>
-            </div>
-            <h3>{{ t.s("tenant_files_admin.unconfigured.title") }}</h3>
+          {% call ui::empty_state("curious", t.s("tenant_files_admin.unconfigured.title"), "") %}
             <p>Set <code>GARAGE_S3_ENDPOINT</code> in drust's <code>.env</code> and restart.</p>
-          </div>
+          {% endcall %}
         </div>
       </div>
       {% endif %}
