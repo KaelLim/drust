@@ -459,9 +459,25 @@ fn run_ui_gates(template_dir: &Path) {
         .join("\n");
 
     let violations = scan_all(&templates, &css);
-    if !violations.is_empty() {
+
+    // Split off the rules still staged as warn-only (see WARN_ONLY_RULES).
+    // A newly-added gate must be wired and reporting from the commit that
+    // introduces it, but must not panic until its migration task has cleaned
+    // the call sites — panicking first blocks `cargo build`/`cargo test`
+    // outright, including the verification the migration itself needs to run.
+    let (staged, hard): (Vec<Violation>, Vec<Violation>) = violations
+        .into_iter()
+        .partition(|v| WARN_ONLY_RULES.contains(&v.rule));
+    for v in &staged {
+        println!(
+            "cargo:warning={}:{}  [{}] (staged, not yet enforced)  {}",
+            v.file, v.line, v.rule, v.message
+        );
+    }
+
+    if !hard.is_empty() {
         let mut report = String::from("\n\nAdmin-UI consistency gate failed:\n\n");
-        for v in &violations {
+        for v in &hard {
             report.push_str(&format!(
                 "  {}:{}  [{}]\n      {}\n",
                 v.file, v.line, v.rule, v.message

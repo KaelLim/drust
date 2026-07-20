@@ -131,6 +131,119 @@ pub fn check_raw_hex(file: &str, content: &str) -> Vec<Violation> {
     out
 }
 
+/// Rules that REPORT but do not fail the build yet — the declared staging
+/// list for a gate whose migration task has not landed.
+///
+/// The plan's hard ordering rule is "implement + test the scanner, migrate
+/// the violations, THEN enforce": a gate that panics before its call sites
+/// are clean deadlocks the repo — `cargo build`, `cargo test` and the
+/// migration's own verification command all stop working. Staging the rule
+/// here keeps it wired and printing every violation (so the migration has
+/// its worklist) while the build stays green.
+///
+/// A rule leaves this list in the SAME commit that fixes its last violation.
+/// The list is expected to be empty in steady state.
+#[allow(dead_code)]
+pub const WARN_ONLY_RULES: &[&str] = &["button-convention"];
+
+/// The four BEM-style button classes retired in favour of the modifier form.
+/// `.btn.icon` never had a BEM alias, so `btn-icon` is not listed.
+const RETIRED_BUTTON_CLASSES: &[&str] = &["btn-sm", "btn-ghost", "btn-primary", "btn-danger"];
+
+/// True iff the byte at `at` starts a whole identifier token — i.e. the
+/// preceding byte is not part of a CSS identifier. Together with the trailing
+/// check this stops `btn-sm` from matching inside `filepick-btn-smart`.
+fn is_ident_boundary(bytes: &[u8], at: usize) -> bool {
+    match at.checked_sub(1).and_then(|i| bytes.get(i)) {
+        None => true,
+        Some(b) => !(b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_'),
+    }
+}
+
+/// Gate 4 — the canonical button form is the modifier style
+/// (`class="btn sm ghost"`). The BEM aliases are retired; using one is a
+/// build failure. Scans the WHOLE file including `<script>` blocks, because
+/// `el.className = 'btn btn-sm'` puts the retired class back into the DOM at
+/// runtime — migrating markup alone is not enough. Modifier ORDER is not
+/// enforced; only the retired names are banned.
+///
+/// Two shapes are rejected. The literal one (`btn-ghost` appearing verbatim)
+/// and the CONCATENATED one — a `btn-` token whose next byte cannot continue
+/// a CSS identifier, i.e. the prefix half of a name completed elsewhere. The
+/// retired class never appears whole in that source, so the literal scan
+/// alone reports green while the DOM still receives `btn btn-ghost` at
+/// runtime (`_modal.html`'s action builder was exactly this). A gate that
+/// misses the dynamic builder is worse than no gate: it certifies a migration
+/// that silently dropped styling.
+///
+/// The terminator test is "not an identifier character" rather than a quote
+/// list, because the completion can be spliced in by anything: `'btn-' +
+/// variant` (quote), `` `btn-${variant}` `` (JS template literal), and
+/// `class="btn-{{ variant }}"` (Askama) are all live shapes in these
+/// templates, and only the first ends in a quote. The unchanged leading
+/// `is_ident_boundary` check keeps `filepick-btn-` and `--btn-radius` quiet.
+pub fn check_button_convention(file: &str, content: &str) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        let bytes = line.as_bytes();
+
+        // Concatenation prefix: `btn-` whose very next byte cannot continue a
+        // CSS identifier — a quote, `$`, `{`, `+`, whitespace, end-of-line.
+        // `'btn-ghost'` is NOT matched here (the next byte is `g`) — that
+        // shape is the literal scan's job, so no double-reporting.
+        let mut from = 0;
+        while let Some(rel) = line[from..].find("btn-") {
+            let at = from + rel;
+            let end = at + "btn-".len();
+            let terminated_by_non_ident = match bytes.get(end) {
+                None => true,
+                Some(b) => !(b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_'),
+            };
+            if is_ident_boundary(bytes, at) && terminated_by_non_ident {
+                out.push(Violation::new(
+                    file,
+                    idx + 1,
+                    "button-convention",
+                    "retired button class built by concatenation or interpolation \
+                     (`'btn-' + …`, `` `btn-${…}` ``, `btn-{{ … }}`) — splice the \
+                     modifier alone (`a.variant || 'ghost'`) and let the `btn` base \
+                     class carry it. The retired name never appears whole in the \
+                     source, so nothing else in this gate can see it."
+                        .to_string(),
+                ));
+            }
+            from = end;
+        }
+
+        for retired in RETIRED_BUTTON_CLASSES {
+            let mut from = 0;
+            while let Some(rel) = line[from..].find(retired) {
+                let at = from + rel;
+                let end = at + retired.len();
+                let leading_ok = is_ident_boundary(bytes, at);
+                let trailing_ok = match bytes.get(end) {
+                    None => true,
+                    Some(b) => !(b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_'),
+                };
+                if leading_ok && trailing_ok {
+                    out.push(Violation::new(
+                        file,
+                        idx + 1,
+                        "button-convention",
+                        format!(
+                            "retired button class `{retired}` — use the modifier form \
+                             (`btn sm`, `btn ghost`, `btn primary`, `btn danger`). \
+                             This applies inside <script> string literals too."
+                        ),
+                    ));
+                }
+                from = end;
+            }
+        }
+    }
+    out
+}
+
 /// Run every gate. `templates` is `(file_name, content)` for every
 /// `src/mgmt/templates/*.html`; `css` is the concatenated CSS source (see
 /// `extract_style_blocks`) used by the cross-file class gate. Returns every
@@ -140,6 +253,7 @@ pub fn scan_all(templates: &[(String, String)], css: &str) -> Vec<Violation> {
     let mut out = Vec::new();
     for (file, body) in templates {
         out.extend(check_raw_hex(file, body));
+        out.extend(check_button_convention(file, body));
     }
     out
 }
@@ -211,5 +325,85 @@ mod tests {
         }
         // ...while a genuine literal at the same shape still trips.
         assert_eq!(check_raw_hex("design.html", "color:#bad;").len(), 1);
+    }
+
+    #[test]
+    fn bem_button_classes_flagged_everywhere_including_js() {
+        let html = r#"<button class="btn btn-sm btn-ghost">x</button>"#;
+        let v = check_button_convention("page.html", html);
+        assert_eq!(v.len(), 2, "btn-sm and btn-ghost are both violations");
+        assert_eq!(v[0].rule, "button-convention");
+
+        // JS string literals reassign className at runtime -- migrating the
+        // markup without the script would let the old class back into the DOM.
+        let js = "  el.className = 'btn btn-sm btn-ghost';";
+        assert_eq!(check_button_convention("page.html", js).len(), 2);
+    }
+
+    #[test]
+    fn canonical_modifier_buttons_are_clean() {
+        for ok in [
+            r#"<button class="btn sm ghost">x</button>"#,
+            r#"<button class="btn primary">x</button>"#,
+            r#"<a class="btn sm icon danger">x</a>"#,
+            "el.className = 'btn sm ghost';",
+            // The concatenated builder, migrated: the modifier alone is
+            // joined, the `btn` base class carries it.
+            "var variant = a.variant || 'ghost';",
+            "b.className = 'btn ' + (variant || 'ghost');",
+        ] {
+            assert!(
+                check_button_convention("page.html", ok).is_empty(),
+                "canonical form must pass: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn retired_button_class_built_by_concatenation_is_flagged() {
+        // `_modal.html`'s action builder: the retired class never appears
+        // whole in the source, so a literal-only scan reports green while the
+        // DOM still gets `btn btn-ghost`. Flagging the `'btn-'` prefix is what
+        // closes the gap by construction rather than by memory.
+        for bad in [
+            "var variant = 'btn-' + (a.variant || 'ghost');",
+            r#"el.className = "btn-" + variant;"#,
+            "el.className = `btn-` + variant;",
+            // JS template-literal interpolation: the byte after `btn-` is `$`,
+            // not a quote. `collection_rows.html` builds `class="…"` markup
+            // exactly this way, so a quote-only terminator misses it.
+            "el.className = `btn-${variant}`;",
+            "el.className = `btn-${a.variant || 'ghost'}`;",
+            // Askama expression interpolation inside a class attribute --
+            // `av-{{ … }}` / `op-{{ … }}` are established idioms in these
+            // templates, so the button equivalent must not build green.
+            "<button class=\"btn btn-{{ variant }}\">x</button>",
+        ] {
+            let v = check_button_convention("_modal.html", bad);
+            assert_eq!(v.len(), 1, "concatenation prefix must be flagged: {bad}");
+            assert_eq!(v[0].rule, "button-convention");
+        }
+
+        // A whole retired literal is reported ONCE, by the literal scan --
+        // the prefix rule must not double-count it.
+        let v = check_button_convention("_modal.html", "x = 'btn-ghost';");
+        assert_eq!(v.len(), 1, "literal form must not be double-reported");
+    }
+
+    #[test]
+    fn button_gate_does_not_match_unrelated_identifiers() {
+        // `.btn-sm` as a substring of a longer identifier is not a button class.
+        for ok in [
+            r#"<div class="filepick-btn-label">x</div>"#,
+            r#"<div class="btn-smart-thing">x</div>"#,
+            // Quote-terminated, but `btn` is the tail of a longer identifier
+            // -- not a button class being built.
+            r#"<div class="filepick-btn-">x</div>"#,
+        ] {
+            assert!(
+                check_button_convention("page.html", ok).is_empty(),
+                "must not over-match: {ok}"
+            );
+        }
     }
 }
