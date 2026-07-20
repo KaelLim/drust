@@ -86,7 +86,7 @@
 
             <div class="upload-row">
               <span class="upload-hint" id="upload-hint"></span>
-              <button type="submit" class="btn btn-primary" id="upload-submit" disabled>{{ t.s("tenant_files_admin.upload.card_title") }} <span class="kbd">↵</span></button>
+              <button type="submit" class="btn primary" id="upload-submit" disabled>{{ t.s("tenant_files_admin.upload.card_title") }} <span class="kbd">↵</span></button>
             </div>
           </form>
         </div>
@@ -146,20 +146,20 @@
                 <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
                 <td class="cell-actions">
                   {% if f.visibility == "public" %}
-                  <button type="button" class="btn btn-sm btn-ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">{{ t.s("tenant_files_admin.row.copy_url") }}</button>
+                  <button type="button" class="btn sm ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">{{ t.s("tenant_files_admin.row.copy_url") }}</button>
                   {% else %}
-                  <button type="button" class="btn btn-sm btn-ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">{{ t.s("tenant_files_admin.row.sign_url") }}</button>
+                  <button type="button" class="btn sm ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">{{ t.s("tenant_files_admin.row.sign_url") }}</button>
                   {% endif %}
                   <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/files/{{ f.key }}/visibility" style="display:inline">
                     {% if f.visibility == "public" %}
                     <input type="hidden" name="visibility" value="private">
-                    <button type="submit" class="btn btn-sm btn-ghost">{{ t.s("tenant_files_admin.row.make_private") }}</button>
+                    <button type="submit" class="btn sm ghost">{{ t.s("tenant_files_admin.row.make_private") }}</button>
                     {% else %}
                     <input type="hidden" name="visibility" value="public">
-                    <button type="submit" class="btn btn-sm btn-ghost">{{ t.s("tenant_files_admin.row.make_public") }}</button>
+                    <button type="submit" class="btn sm ghost">{{ t.s("tenant_files_admin.row.make_public") }}</button>
                     {% endif %}
                   </form>
-                  <button type="button" class="btn btn-sm btn-ghost" data-delete-key="{{ f.key }}" data-delete-name="{{ f.original_name }}" style="color:var(--danger);">{{ t.s("tenant_files_admin.row.delete") }}</button>
+                  <button type="button" class="btn sm ghost" data-delete-key="{{ f.key }}" data-delete-name="{{ f.original_name }}" style="color:var(--danger);">{{ t.s("tenant_files_admin.row.delete") }}</button>
                 </td>
               </tr>
               {% endfor %}
@@ -169,9 +169,9 @@
         <div class="pager">
           <div class="page-of">page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_files }}</b> total</div>
           <div class="pager-group">
-            {% if let Some(url) = prev_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.prev") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.prev") }}</span>{% endif %}
+            {% if let Some(url) = prev_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("common.pager.prev") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.prev") }}</span>{% endif %}
             <span style="color:var(--muted);">page <b style="color:var(--fg);">{{ page }}</b> / {{ total_pages }}</span>
-            {% if let Some(url) = next_url %}<a class="btn btn-sm btn-ghost" href="{{ url }}">{{ t.s("common.pager.next") }}</a>{% else %}<span class="btn btn-sm btn-ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.next") }}</span>{% endif %}
+            {% if let Some(url) = next_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("common.pager.next") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.next") }}</span>{% endif %}
           </div>
         </div>
         {% endif %}

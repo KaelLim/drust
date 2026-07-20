@@ -46,8 +46,8 @@
         </div>
 
         <div style="margin-top:24px;display:flex;gap:12px;">
-          <button type="submit" class="btn btn-primary">{{ t.s("files_reconcile.action.apply_selected") }}</button>
-          <a href="{{ crate::base_path::base_path() }}/admin/files" class="btn btn-ghost">{{ t.s("common.action.cancel") }}</a>
+          <button type="submit" class="btn primary">{{ t.s("files_reconcile.action.apply_selected") }}</button>
+          <a href="{{ crate::base_path::base_path() }}/admin/files" class="btn ghost">{{ t.s("common.action.cancel") }}</a>
         </div>
       </form>
 
@@ -64,7 +64,7 @@
               {% endfor %}
             </tbody></table>
           </div>
-          <div class="card-body-tight"><button type="submit" class="btn btn-primary">{{ t.s("files_reconcile.action.retry_selected") }}</button></div>
+          <div class="card-body-tight"><button type="submit" class="btn primary">{{ t.s("files_reconcile.action.retry_selected") }}</button></div>
         </form>
         {% endif %}
       </div>
@@ -82,7 +82,7 @@
               {% endfor %}
             </tbody></table>
           </div>
-          <div class="card-body-tight"><button type="submit" class="btn btn-primary">{{ t.s("files_reconcile.action.delete_selected") }}</button></div>
+          <div class="card-body-tight"><button type="submit" class="btn primary">{{ t.s("files_reconcile.action.delete_selected") }}</button></div>
         </form>
         {% endif %}
       </div>

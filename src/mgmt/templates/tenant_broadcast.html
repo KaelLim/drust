@@ -22,7 +22,7 @@
     <div class="b-body">
       <div class="b-title">{{ t.s("broadcast_inspector.bearer_missing.title") }}</div>
       <p>{{ t.s("broadcast_inspector.bearer_missing.body") }}</p>
-      <a class="btn ghost btn-sm" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_api_keys">
+      <a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_api_keys">
         {{ t.s("broadcast_inspector.bearer_missing.cta") }}
       </a>
     </div>
@@ -49,7 +49,7 @@
                style="font-family:var(--font-mono);margin-top:4px;"
                {% if bearer_missing %}disabled{% endif %}>
       </label>
-      <button id="btn-connect" type="button" class="btn btn-primary"
+      <button id="btn-connect" type="button" class="btn primary"
               style="height:34px;min-width:110px;"
               {% if bearer_missing %}disabled{% endif %}>
         {{ t.s("broadcast_inspector.conn.btn_connect") }}
@@ -73,7 +73,7 @@
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:10px;">
           <div id="pub-payload-msg" class="muted" style="font-size:12px;flex:1;min-width:120px;min-height:18px;"></div>
           <div id="pub-counter" class="muted" style="font-size:11px;font-family:var(--font-mono);"></div>
-          <button id="btn-send" type="button" class="btn btn-primary" disabled>
+          <button id="btn-send" type="button" class="btn primary" disabled>
             {{ t.s("broadcast_inspector.publish.btn_send") }}
           </button>
         </div>
@@ -87,10 +87,10 @@
       <div class="card-head">
         <span>{{ t.s("broadcast_inspector.tail.heading") }}</span>
         <span class="card-head-actions" style="display:flex;gap:6px;">
-          <button id="btn-pause" type="button" class="btn ghost btn-sm">
+          <button id="btn-pause" type="button" class="btn sm ghost">
             {{ t.s("broadcast_inspector.tail.btn_pause") }}
           </button>
-          <button id="btn-clear" type="button" class="btn ghost btn-sm">
+          <button id="btn-clear" type="button" class="btn sm ghost">
             {{ t.s("broadcast_inspector.tail.btn_clear") }}
           </button>
         </span>

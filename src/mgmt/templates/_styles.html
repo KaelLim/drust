@@ -4,8 +4,9 @@
      Source-of-truth: 2026-05-17 open-design mockup `shared.css`.
      Web fonts loaded from Google Fonts. The trailing
      "drust compat" block maps legacy class names that templates
-     still emit (.btn-primary, .data, .field, .alert, …) onto
-     mockup equivalents so we don't have to sweep every template.
+     still emit (.data, .field, .alert, …) onto mockup equivalents
+     so we don't have to sweep every template. The BEM button
+     aliases are gone -- gate 4 enforces the modifier form.
      ============================================================ */
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap');
 
@@ -296,14 +297,14 @@
   .btn:hover{background:var(--surface-2);border-color:var(--border-strong)}
   .btn:active{transform:translateY(1px)}
   .btn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7}
-  .btn.primary,.btn-primary{background:var(--accent);color:var(--on-accent);border-color:transparent;font-weight:600}
-  .btn.primary:hover,.btn-primary:hover{background:var(--accent-2)}
-  .btn.ghost,.btn-ghost{background:transparent;border-color:transparent;color:var(--fg-2)}
-  .btn.ghost:hover,.btn-ghost:hover{background:var(--surface);color:var(--fg)}
-  .btn.danger,.btn-danger{color:var(--danger);border-color:var(--danger-border);background:transparent}
-  .btn.danger:hover,.btn-danger:hover{background:var(--danger-soft)}
-  .btn.sm,.btn-sm{height:28px;padding:0 10px;font-size:12px;border-radius:8px}
-  .btn.sm svg,.btn-sm svg{width:12px;height:12px}
+  .btn.primary{background:var(--accent);color:var(--on-accent);border-color:transparent;font-weight:600}
+  .btn.primary:hover{background:var(--accent-2)}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--fg-2)}
+  .btn.ghost:hover{background:var(--surface);color:var(--fg)}
+  .btn.danger{color:var(--danger);border-color:var(--danger-border);background:transparent}
+  .btn.danger:hover{background:var(--danger-soft)}
+  .btn.sm{height:28px;padding:0 10px;font-size:12px;border-radius:8px}
+  .btn.sm svg{width:12px;height:12px}
   .btn.icon{width:32px;padding:0}
   .icon-only{width:28px;height:28px;display:inline-grid;place-items:center;border-radius:7px;color:var(--muted);cursor:pointer}
   .icon-only:hover{background:var(--surface);color:var(--fg)}

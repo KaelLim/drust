@@ -28,7 +28,7 @@
         <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/test/run" class="card">
           <div class="card-head">
             <span>{{ t.s("tenant_rpc_test.params.heading") }} <span class="count">· {{ params.len() }} declared</span></span>
-            <button class="btn btn-primary btn-sm" type="submit">{{ t.s("tenant_rpc_test.actions.run") }}</button>
+            <button class="btn sm primary" type="submit">{{ t.s("tenant_rpc_test.actions.run") }}</button>
           </div>
           {% if mode == "write" %}
           <div class="banner danger" style="margin:14px 18px 0;">

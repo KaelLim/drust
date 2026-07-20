@@ -149,16 +149,16 @@
             <h2>{{ t.s("design.buttons.heading") }}</h2>
             <p class="ds-section-desc">Primary, default, ghost, and danger × default / sm. The focus ring is the apricot accent at 25% chroma — tab-able from any input.</p>
             <div class="ds-row" style="margin-bottom: 14px;">
-              <button class="btn btn-primary" type="button">{{ t.s("common.button.save_changes") }}</button>
+              <button class="btn primary" type="button">{{ t.s("common.button.save_changes") }}</button>
               <button class="btn" type="button">{{ t.s("common.button.cancel") }}</button>
-              <button class="btn btn-ghost" type="button">{{ t.s("common.button.cancel") }}</button>
-              <button class="btn btn-danger" type="button">{{ t.s("common.button.delete_tenant") }}</button>
+              <button class="btn ghost" type="button">{{ t.s("common.button.cancel") }}</button>
+              <button class="btn danger" type="button">{{ t.s("common.button.delete_tenant") }}</button>
             </div>
             <div class="ds-row">
-              <button class="btn btn-primary btn-sm" type="button">{{ t.s("common.button.save") }}</button>
-              <button class="btn btn-sm" type="button">{{ t.s("common.button.reset") }}</button>
-              <button class="btn btn-ghost btn-sm" type="button">{{ t.s("common.button.cancel") }}</button>
-              <button class="btn btn-danger btn-sm" type="button">{{ t.s("common.button.drop") }}</button>
+              <button class="btn sm primary" type="button">{{ t.s("common.button.save") }}</button>
+              <button class="btn sm" type="button">{{ t.s("common.button.reset") }}</button>
+              <button class="btn sm ghost" type="button">{{ t.s("common.button.cancel") }}</button>
+              <button class="btn sm danger" type="button">{{ t.s("common.button.drop") }}</button>
             </div>
           </section>
 
@@ -330,10 +330,10 @@
             <h2>{{ t.s("design.toasts.heading") }}</h2>
             <p class="ds-section-desc">Ephemeral bottom-right notifications. Four tones — neutral, ok, warn, danger, info.</p>
             <div class="ds-row">
-              <button class="btn btn-sm" onclick="dsToast('ok','Tenant saved.')">{{ t.s("design.toasts.btn_show_ok") }}</button>
-              <button class="btn btn-sm" onclick="dsToast('warn','Disk above 80%.')">{{ t.s("design.toasts.btn_show_warn") }}</button>
-              <button class="btn btn-sm" onclick="dsToast('danger','DB_ERROR — write rejected.')">{{ t.s("design.toasts.btn_show_danger") }}</button>
-              <button class="btn btn-sm" onclick="dsToast('info','Snapshot scheduled for 02:00 UTC.')">{{ t.s("design.toasts.btn_show_info") }}</button>
+              <button class="btn sm" onclick="dsToast('ok','Tenant saved.')">{{ t.s("design.toasts.btn_show_ok") }}</button>
+              <button class="btn sm" onclick="dsToast('warn','Disk above 80%.')">{{ t.s("design.toasts.btn_show_warn") }}</button>
+              <button class="btn sm" onclick="dsToast('danger','DB_ERROR — write rejected.')">{{ t.s("design.toasts.btn_show_danger") }}</button>
+              <button class="btn sm" onclick="dsToast('info','Snapshot scheduled for 02:00 UTC.')">{{ t.s("design.toasts.btn_show_info") }}</button>
             </div>
             <div class="toast-stack" id="ds-toasts"></div>
           </section>
@@ -361,7 +361,7 @@
                 <p class="modal-body">The current service token will be invalidated immediately. Any clients using it must be reconfigured with the new value. This action cannot be undone.</p>
                 <div class="modal-actions">
                   <button type="button" class="btn">Cancel</button>
-                  <button type="button" class="btn btn-danger">Rotate</button>
+                  <button type="button" class="btn danger">Rotate</button>
                 </div>
               </div>
             </div>
