@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-07-17
+updated: 2026-07-20
 version: 1.49.4
 ---
 
@@ -120,6 +120,51 @@ Two pages (v1.5.1+): `/admin/tenants` (search-able list) and `/admin/tenants/{id
 - **i18n** (v1.22+): `drust_locale` cookie → `Accept-Language` → `en`. `src/mgmt/i18n.rs` (`Locale` + `Translator`) and `src/mgmt/locale_layer.rs` (outermost middleware on admin router). 20+ admin Templates carry `pub t: Translator`. Bundles compiled in via `include_str!`; `build.rs` panics on missing keys at compile time. ~690 keys.
 - **Theming** (v1.23+, v1.25 hardened, v1.28.1 cookie unified): three themes `system` / `cozy-dark` / `soft-light`. `drust_theme` cookie + `admins.theme` DB column. `src/mgmt/theme.rs` + `src/mgmt/theme_layer.rs` registered TWICE — outer cookie-only layer covers unauthenticated routes (`/login`, OAuth callback); inner DB-aware layer inside `protected` (after `admin_session_layer`) reads `admins.theme` when cookie is absent. Both share one resolver via `ThemeLayerState.allow_db_fallback: bool`. Palettes in `themes/<code>.toml`, embedded via `include_str!`; `build.rs` enforces drift vs `EXPECTED_THEMES`. Cookie attrs `Path=/drust + Secure` (dev override `DRUST_DEV_NO_SECURE_COOKIES=1`); login + `/admin/settings` both route through `build_theme_cookie` / `build_locale_cookie` so attributes match (otherwise duplicate-Path cookies shadow saves — v1.28.1 fix).
 - **CORS** (v1.5.1+) on tenant routes only, applied OUTSIDE `bearer_auth_layer` so OPTIONS preflight short-circuits before auth. Allow-list from `DRUST_CORS_ORIGINS` (exact origins or single-`*` patterns like `https://*.example.org` or `http://localhost:*`; multi-`*` rejected at parse). Wildcard tests in `tenant::origin_matches` cover suffix-injection + hyphen-confusion. Mgmt UI routes have no CORS layer.
+
+### Admin 頁面解剖學(v1.50+)
+
+新增或修改 admin 頁面前先讀這節。五道 build.rs 閘會強制其中每一條 —— 違反的後果是 `cargo build` 失敗,不是 review 時才被發現。
+
+**頁面骨架**(每個非 `_` 開頭的模板):
+
+```jinja
+{% extends "_base.html" %}
+{% import "_ui.html" as ui %}
+...
+{% call ui::view_head(eyebrow, title, sub) %}
+  <button class="btn primary">動作</button>
+{% endcall %}
+```
+
+**元件庫 `_ui.html`** — 六個 macro,全部接受 caller body:
+
+| Macro | 簽章 | caller body 內容 |
+|---|---|---|
+| `view_head` | `(eyebrow, title, sub)` | 標題右側的動作按鈕 |
+| `data_table` | `(caption)` | `<thead>` + `<tbody>` |
+| `empty_state` | `(chonk, title, sub)` | 補充說明 / CTA |
+| `toolbar` | `()` | 篩選、排序、每頁筆數控制項 |
+| `card` | `(title, sub)` | 卡片內容(自行決定是否包 `.card-body`) |
+| `form_row` | `(label, hint)` | `<input>` / `<select>` / `<textarea>` |
+
+不需要的文字參數傳 `""` 即省略該行。**含 markup 的說明文字放 caller body,不要傳進參數** —— 參數走自動跳脫,markup 會變成字面文字。
+
+**按鈕正典**:`class="btn"` 加修飾詞 —— `sm`(小)、`icon`(方形圖示鈕)、`primary` / `ghost` / `danger`(變體)。例:`class="btn sm ghost"`。BEM 形式(`btn-sm`、`btn-ghost`、`btn-primary`、`btn-danger`)**已淘汰**,模板與 JS 字串皆不得使用。
+
+**五道閘**(`build_support/ui_gates.rs`,由 `build.rs` 執行):
+
+| 閘 | 規則 | 觸發時的修法 |
+|---|---|---|
+| `raw-hex` | 頁面模板禁生 hex 色 | 改用 `var(--token)`;品牌 logo SVG 移進 `_icons.html` |
+| `missing-view-head` | 頁面必須呼叫 `ui::view_head` | 接上 macro,或宣告 `{# page-kind: standalone #}`(askama 註解,非 `{% block %}`) |
+| `ghost-class` | 用到的 class 必須有 CSS 定義 | 在 `_styles.html` 補定義,或改用既有 class |
+| `button-convention` | 禁用 BEM 按鈕 class | 改修飾詞形式 |
+| `unsafe-safe-filter` | `\|safe` 只允許三種來源 | 見下 |
+
+> [!CAUTION]
+> **`t.fmt<N>(…)` 與 `t.fmt<N>_html(…)` 只差一個尾綴,但只有後者跳脫插值參數。** 把前者接上 `|safe` 會重現 v1.49.3 修掉的 HIGH stored-XSS,而且**執行期測試抓不到**。閘 5 因此只允許三種 `|safe` 來源:帶 `json` 底線區段的變數(`script_json.rs` 正典跳脫器;外加一條具名例外 `i18n_js`,同一個跳脫器、名字早於慣例)、`t.s("…")`(編譯期 bundle,key 必須是字面值)、`t.fmt<N>_html(…)`。新增第四種必須是經審查的刻意行為。
+
+**豁免一律走宣告制。** 不得在 `build.rs` 或 `ui_gates.rs` 建立檔名豁免清單 —— 清單會腐化(「先加進清單」很快變成習慣),而模板內的宣告不會:新頁忘記宣告的後果是被閘擋下,fail-closed。
 
 ## Storage integration (Garage client, v1.4.0+)
 
