@@ -25,3 +25,63 @@
   {{ caller() }}
 </div>
 {% endmacro %}
+
+{# Data table shell. The ONLY canonical table class is `data`; a page that
+   invents its own (`grid-table`) both loses the styling and needs inline
+   style rescue -- which is exactly how cron_admin and tenant_functions
+   drifted. Caller body supplies <thead> and <tbody>: column widths and
+   headings are legitimately per-page. #}
+{% macro data_table(caption) %}
+<table class="data">
+  {% if caption != "" %}<caption>{{ caption }}</caption>{% endif %}
+  {{ caller() }}
+</table>
+{% endmacro %}
+
+{# Empty state. `chonk` selects the LiveChonk mascot pose (see _mascot.html);
+   pass "" to omit the mascot. Caller body renders any call-to-action. #}
+{% macro empty_state(chonk, title, sub) %}
+<div class="empty empty-pad">
+  {% if chonk != "" %}
+  <div class="empty-figure">
+    <canvas class="pix" data-chonk="{{ chonk }}" data-size="96"></canvas>
+  </div>
+  {% endif %}
+  <h3>{{ title }}</h3>
+  {% if sub != "" %}<p>{{ sub }}</p>{% endif %}
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{# Toolbar row above a table: filter chips, sort, per-page. Canonical class
+   is `toolbar`; `toolbar-v2` is a retired alias. #}
+{% macro toolbar() %}
+<div class="toolbar">
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{# Panel container. Pass "" for `sub` to omit the subtitle. Caller body is
+   the card body -- wrap it in `.card-body` yourself when you want padding,
+   or supply a bare <table> for a flush table card. #}
+{% macro card(title, sub) %}
+<div class="card">
+  <div class="card-head">
+    <div>
+      <div class="card-title">{{ title }}</div>
+      {% if sub != "" %}<div class="card-sub">{{ sub }}</div>{% endif %}
+    </div>
+  </div>
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{# One labelled form control. Caller body is the <input>/<select>/<textarea>.
+   Pass "" for `hint` to omit the helper line. #}
+{% macro form_row(label, hint) %}
+<div class="field">
+  <label>{{ label }}</label>
+  {{ caller() }}
+  {% if hint != "" %}<div class="hint">{{ hint }}</div>{% endif %}
+</div>
+{% endmacro %}
