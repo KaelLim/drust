@@ -95,6 +95,14 @@ assert_contains full.yaml "public-file GETs arrive" "minio NetworkPolicy admits 
 assert_absent storage-noPublic.yaml "public-file GETs arrive" "no ingress-controller MinIO rule when publicFiles off"
 assert_contains full.yaml "/data/_trash"           "maintenance sidecar sweeps trash"
 assert_contains full.yaml "mc mb --ignore-existing drust/public" "minio-init creates the literal public bucket"
+# K8s $(VAR) expansion only sees env entries EARLIER in the list — AK/SK must
+# precede MC_HOST_drust or mc gets the literal "$(AK):$(SK)" as credentials.
+if _render full.yaml | awk '/name: AK$/{a=NR} /name: MC_HOST_drust$/{m=NR} END{exit !(a && m && a<m)}'; then
+  echo "ok: AK defined before MC_HOST_drust"; else echo "FAIL: MC_HOST_drust precedes AK/SK (literal creds)"; FAILS=$((FAILS+1)); fi
+# The init Job pod must NOT wear drust.selectorLabels — the drust Service selects
+# on them and a probeless Job pod counts as Ready, joining the endpoints.
+if _render full.yaml | awk '/^kind: Job/{j=1} /^---$/{j=0;t=0} j && /^  template:$/{t=1} j && t && /app.kubernetes.io\/name: drust$/{bad=1} END{exit bad}'; then
+  echo "ok: init Job does not wear drust selector labels"; else echo "FAIL: Job pod template carries drust.selectorLabels"; FAILS=$((FAILS+1)); fi
 
 # --- Task 10: full-matrix kubeconform ---
 for f in minimal full nginx storage-noPublic no-sidecar; do assert_kubeconform "$f.yaml"; done

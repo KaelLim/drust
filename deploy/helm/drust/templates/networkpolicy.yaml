@@ -68,6 +68,12 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "drust.selectorLabels" . | nindent 14 }}
+        # minio-init hook Job carries its own labels (NOT drust's — see the
+        # Job template) and needs to reach MinIO to create buckets.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio-init
+              app.kubernetes.io/instance: {{ .Release.Name }}
       ports:
         - { protocol: TCP, port: 9000 }
     {{- if .Values.publicFiles.enabled }}
