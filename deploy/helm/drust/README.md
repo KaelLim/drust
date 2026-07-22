@@ -38,6 +38,14 @@ through Helm values.
   (and `storage.minio.pvcSize`) or leave `storageClassName` empty to use the
   cluster default.
 
+> [!CAUTION]
+> Leave `createNamespace: false` (the default) and create namespaces with
+> `helm install --create-namespace`. Setting `createNamespace: true` makes the
+> release OWN the Namespace object, so `helm uninstall` deletes the namespace —
+> which reaps **all three PVCs** (every tenant's SQLite database, the logs, and
+> the MinIO objects; permanent on a `reclaimPolicy: Delete` StorageClass). With
+> the default, uninstall leaves the PVCs `Bound` and a reinstall re-binds them.
+
 ## Install a group
 
 ```bash

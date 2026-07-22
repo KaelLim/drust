@@ -1,5 +1,11 @@
 # One helm release = one group = one namespace. See README.md.
-createNamespace: true
+# DANGER when true: the release then OWNS the Namespace object, so
+# `helm uninstall` deletes the namespace — reaping ALL PVCs (every tenant's
+# SQLite database + MinIO objects; permanent on reclaimPolicy=Delete).
+# Keep false and create the namespace with `helm install --create-namespace`
+# (true also cannot bootstrap an install on its own — Helm refuses to install
+# into a namespace that does not exist yet).
+createNamespace: false
 
 image:
   repository: ghcr.io/kaellim/drust

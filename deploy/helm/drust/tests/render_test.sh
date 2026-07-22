@@ -19,6 +19,11 @@ echo "== lint =="; helm lint "$CHART" || FAILS=$((FAILS+1))
 # --- Task 1 assertions ---
 assert_contains minimal.yaml "kind: Namespace" "namespace rendered when createNamespace=true"
 assert_absent   full.yaml    "kind: Namespace" "namespace absent when createNamespace=false"
+# Default MUST stay false: a release-owned Namespace makes `helm uninstall`
+# delete the namespace and reap every PVC (all tenant SQLite data).
+if helm template testrel "$CHART" --namespace testns 2>/dev/null | grep -qF "kind: Namespace"; then
+  echo "FAIL: default values render a release-owned Namespace"; FAILS=$((FAILS+1));
+else echo "ok: default values render no Namespace"; fi
 assert_kubeconform minimal.yaml
 
 # --- Task 2 assertions ---
