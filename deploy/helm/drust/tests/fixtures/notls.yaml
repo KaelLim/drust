@@ -1,8 +1,10 @@
 ingress:
-  host: min.example.test
+  host: notls.example.test
   controller: traefik
+  tls:
+    enabled: false
 storage:
   enabled: false
 secrets:
   create: true
-  adminPassword: testpw
+  adminPassword: pw

@@ -16,9 +16,11 @@ assert_kubeconform() { # <fixture>
 
 echo "== lint =="; helm lint "$CHART" || FAILS=$((FAILS+1))
 
-# --- Task 1 assertions ---
-assert_contains minimal.yaml "kind: Namespace" "namespace rendered when createNamespace=true"
-assert_absent   full.yaml    "kind: Namespace" "namespace absent when createNamespace=false"
+# --- Task 1 / Issue #2: namespace lifecycle (default OFF; opt-in Namespace is deletion-protected) ---
+assert_absent   minimal.yaml "kind: Namespace" "no Namespace by default (createNamespace omitted => false)"
+assert_absent   full.yaml    "kind: Namespace" "no Namespace when createNamespace=false"
+assert_contains nginx.yaml   "kind: Namespace" "Namespace rendered when createNamespace=true (opt-in)"
+assert_contains nginx.yaml   "helm.sh/resource-policy: keep" "opt-in Namespace is deletion-protected (uninstall won't reap PVCs)"
 assert_kubeconform minimal.yaml
 
 # --- Task 2 assertions ---
@@ -96,8 +98,38 @@ assert_absent storage-noPublic.yaml "public-file GETs arrive" "no ingress-contro
 assert_contains full.yaml "/data/_trash"           "maintenance sidecar sweeps trash"
 assert_contains full.yaml "mc mb --ignore-existing drust/public" "minio-init creates the literal public bucket"
 
+# --- Issue #1: minio-init Job must not break install (env order) or eat live traffic (labels) ---
+# defect 1 — kubelet $(VAR) expansion is order-sensitive: BOTH AK AND SK must precede
+# MC_HOST_drust, else the container sees a literal "$(AK)"/"$(SK)" and mc auth loops forever.
+if _render full.yaml | awk '/name: AK$/{a=NR} /name: SK$/{s=NR} /name: MC_HOST_drust$/{m=NR} END{exit (a&&s&&m&&a<m&&s<m)?0:1}'; then
+  echo "ok: minio-init defines AK and SK before MC_HOST_drust"; else echo "FAIL: AK/SK do not both precede MC_HOST_drust — kubelet leaves a literal \$(AK)/\$(SK) in the URL"; FAILS=$((FAILS+1)); fi
+# defect 2 — the Job POD TEMPLATE must not wear drust.selectorLabels (the top-level Job
+# metadata legitimately carries them; only the pod-template copy adopts it into the Service).
+if _render full.yaml | awk '/^kind: Job$/{j=1} j&&/^  template:/{t=1} t&&/app.kubernetes.io\/name: drust/{bad=1} /^---$/{j=0;t=0} END{exit (bad)?1:0}'; then
+  echo "ok: minio-init pod template does not wear drust selector labels"; else echo "FAIL: minio-init pod template carries drust.selectorLabels — it joins the drust Service endpoints"; FAILS=$((FAILS+1)); fi
+assert_contains full.yaml "app.kubernetes.io/name: minio-init"   "minio-init pod carries dedicated labels"
+# the MinIO ingress NP must admit the EXACT minio-init label — scope to the minio NP doc, not a
+# whole-file grep of a comment/label that also appears on the Job pod template (a podSelector typo
+# like minio-init-x would otherwise still pass).
+if _render full.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-minio\n/{print}' | grep -qE '^[[:space:]]+app\.kubernetes\.io/name: minio-init$'; then
+  echo "ok: minio NetworkPolicy admits the exact minio-init label to port 9000"; else echo "FAIL: minio NP ingress does not admit the exact minio-init podSelector"; FAILS=$((FAILS+1)); fi
+# the minio-init pod is itself NP-governed (dedicated egress-only policy), not left unrestricted.
+assert_contains full.yaml    "testrel-minio-init" "minio-init pod has its own NetworkPolicy (scoped egress)"
+assert_absent   minimal.yaml "minio-init"         "no minio-init Job/NP when storage off"
+
+# --- Issue #3: file URLs + non-TLS admin login must actually work on k8s ---
+assert_contains full.yaml   "name: DRUST_PUBLIC_BASE_URL"       "public base URL wired (file URLs use the ingress host, not localhost:8793)"
+# scope the scheme check to the DRUST_PUBLIC_BASE_URL VALUE — full.yaml's https://full.example.test
+# also appears as DRUST_PUBLIC_URL, so a whole-file grep would miss a scheme regression on this env.
+if _render full.yaml | awk '/name: DRUST_PUBLIC_BASE_URL$/{getline; if($0 ~ /https:\/\/full\.example\.test/) ok=1} END{exit ok?0:1}'; then
+  echo "ok: DRUST_PUBLIC_BASE_URL uses https when TLS on"; else echo "FAIL: DRUST_PUBLIC_BASE_URL is not https on a TLS deployment"; FAILS=$((FAILS+1)); fi
+assert_contains notls.yaml  "name: DRUST_DEV_NO_SECURE_COOKIES" "secure-cookie escape hatch wired when tls.enabled=false"
+if _render notls.yaml | awk '/name: DRUST_PUBLIC_BASE_URL$/{getline; if($0 ~ /"http:\/\/notls\.example\.test"$/) ok=1} END{exit ok?0:1}'; then
+  echo "ok: DRUST_PUBLIC_BASE_URL uses http (exact value) when TLS off"; else echo "FAIL: DRUST_PUBLIC_BASE_URL wrong value/scheme when TLS off"; FAILS=$((FAILS+1)); fi
+assert_absent   full.yaml   "name: DRUST_DEV_NO_SECURE_COOKIES" "no dev-cookie env when TLS on"
+
 # --- Task 10: full-matrix kubeconform ---
-for f in minimal full nginx storage-noPublic no-sidecar; do assert_kubeconform "$f.yaml"; done
+for f in minimal full nginx storage-noPublic no-sidecar notls; do assert_kubeconform "$f.yaml"; done
 # README exists
 [ -f "$CHART/README.md" ] && echo "ok: README present" || { echo "FAIL: README missing"; FAILS=$((FAILS+1)); }
 

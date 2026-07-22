@@ -1,9 +1,13 @@
 # One helm release = one group = one namespace. See README.md.
-createNamespace: true
+# Default OFF: install with `helm install --create-namespace` instead. A release-owned
+# Namespace couples `helm uninstall` to full data loss (namespace termination reaps every
+# PVC). If you do set this true, the Namespace is annotated helm.sh/resource-policy=keep so
+# uninstall cannot reap the PVCs — but --create-namespace is still the recommended path.
+createNamespace: false
 
 image:
   repository: ghcr.io/kaellim/drust
-  tag: "1.49.2"
+  tag: "1.49.4"
   pullPolicy: IfNotPresent
 
 # External hostname for this group's drust. base_path is ALWAYS root ("").

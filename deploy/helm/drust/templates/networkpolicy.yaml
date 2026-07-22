@@ -68,6 +68,13 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "drust.selectorLabels" . | nindent 14 }}
+        # minio-init hook Job needs to reach MinIO to create the public/private
+        # buckets. It carries its OWN labels (not drust.selectorLabels — see the Job
+        # template), so admit them explicitly or the bucket-init is black-holed.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio-init
+              app.kubernetes.io/instance: {{ .Release.Name }}
       ports:
         - { protocol: TCP, port: 9000 }
     {{- if .Values.publicFiles.enabled }}
@@ -88,5 +95,36 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-minio-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  # The minio-init hook Job wears its OWN labels (not drust's — so it stays out of the
+  # drust Service endpoints), which also means no other NetworkPolicy selects it. Govern
+  # it explicitly so it is not left with unrestricted egress: cluster DNS + own MinIO only.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio-init
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "minio.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 9000 }
 {{- end }}
 {{- end }}
