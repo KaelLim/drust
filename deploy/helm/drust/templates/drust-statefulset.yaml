@@ -64,6 +64,17 @@ spec:
             - { name: GARAGE_S3_ENDPOINT, value: {{ include "minio.endpoint" . | quote }} }
             # FIXED literal: drust's write path hardcodes bucket "public" (files.rs).
             - { name: GARAGE_PUBLIC_BUCKET, value: "public" }
+            # Without this drust falls back to http://localhost:8793 (the
+            # systemd/Caddy deploy's local port) and every file-upload response
+            # advertises a dead URL (config.rs: DRUST_PUBLIC_BASE_URL).
+            - name: DRUST_PUBLIC_BASE_URL
+              value: "{{ ternary "https" "http" .Values.ingress.tls.enabled }}://{{ .Values.ingress.host }}"
+            {{- end }}
+            {{- if not .Values.ingress.tls.enabled }}
+            # No TLS => browsers refuse to store the admin session cookie
+            # (drust always sets `Secure` unless this escape hatch is present),
+            # so login silently never sticks. Evaluation/no-TLS installs only.
+            - { name: DRUST_DEV_NO_SECURE_COOKIES, value: "1" }
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

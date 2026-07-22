@@ -2,6 +2,8 @@ createNamespace: true
 ingress:
   host: min.example.test
   controller: traefik
+  tls:
+    enabled: false   # minimal eval install — no cert-manager prerequisite
 storage:
   enabled: false
 secrets:

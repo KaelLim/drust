@@ -95,6 +95,11 @@ assert_contains full.yaml "public-file GETs arrive" "minio NetworkPolicy admits 
 assert_absent storage-noPublic.yaml "public-file GETs arrive" "no ingress-controller MinIO rule when publicFiles off"
 assert_contains full.yaml "/data/_trash"           "maintenance sidecar sweeps trash"
 assert_contains full.yaml "mc mb --ignore-existing drust/public" "minio-init creates the literal public bucket"
+assert_contains full.yaml    "name: DRUST_PUBLIC_BASE_URL"       "public base URL wired when storage on"
+assert_contains full.yaml    "https://full.example.test"         "public base URL uses https when tls on"
+assert_absent   minimal.yaml "name: DRUST_PUBLIC_BASE_URL"       "no public base URL when storage off"
+assert_contains minimal.yaml "DRUST_DEV_NO_SECURE_COOKIES"       "secure-cookie escape hatch when TLS off"
+assert_absent   full.yaml    "DRUST_DEV_NO_SECURE_COOKIES"       "no dev cookie env when TLS on"
 
 # --- Task 10: full-matrix kubeconform ---
 for f in minimal full nginx storage-noPublic no-sidecar; do assert_kubeconform "$f.yaml"; done
