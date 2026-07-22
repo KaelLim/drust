@@ -24,8 +24,9 @@ through Helm values.
 ## Prerequisites
 
 - A **k3s / Sealos** (or any conformant Kubernetes) cluster where you have
-  **cluster-admin** (the chart creates a Namespace, NetworkPolicies, and — when
-  backup is enabled — a Role/RoleBinding).
+  **cluster-admin** (the chart creates NetworkPolicies, and — when backup is
+  enabled — a Role/RoleBinding). You create the namespace yourself with
+  `helm install --create-namespace`; `createNamespace` defaults to false.
 - An **ingress controller**: **Traefik** (the k3s default, and this chart's
   default) or **nginx-ingress**. Select with `ingress.controller`.
 - **cert-manager** with a `ClusterIssuer`, only if you enable TLS
@@ -116,6 +117,22 @@ back to nginx-ingress (`ingress.controller: nginx`), or use a Traefik
 
 ## Upgrade
 
+> **Upgrading from chart 0.1.0? READ THIS FIRST — it prevents data loss.** Chart
+> 0.1.0 defaulted `createNamespace: true`, making the namespace **release-owned**.
+> Chart 0.1.1 defaults it **false**, so on the first `helm upgrade` Helm sees the
+> Namespace drop out of the rendered manifest and **prunes it — reaping every PVC
+> (all tenant SQLite databases + MinIO objects), irreversibly on a `reclaimPolicy:
+> Delete` StorageClass.** If your 0.1.0 install used `createNamespace: true` (or
+> relied on that old default), annotate the live namespace **before** upgrading so
+> Helm's prune skips it:
+>
+> ```bash
+> kubectl annotate namespace group-a helm.sh/resource-policy=keep --overwrite
+> ```
+>
+> Installs that already set `createNamespace: false` (the README example always
+> did) own no namespace and are unaffected.
+
 Upgrade a group in place:
 
 ```bash
@@ -128,6 +145,30 @@ Because the drust StatefulSet is a single writer on a RWO volume, a rolling
 upgrade terminates the old pod before the new one binds the volume — expect a
 **brief downtime window** per group during the pod swap. Upgrades are per group
 and independent; upgrading one group never touches another.
+
+## Uninstall
+
+```bash
+helm uninstall group-a --namespace group-a
+```
+
+**PVCs are intentionally retained.** `helm uninstall` removes the release's
+workloads but **not** the StatefulSet/MinIO PVCs — reinstalling the same release
+re-binds the existing `data-drust-0` / `logs-drust-0` / `minio-data-minio-0`
+volumes, so tenant data survives. This is deliberate: the PVC *is* the database.
+Because `createNamespace` defaults to **false**, the namespace you created with
+`--create-namespace` also survives. To reclaim everything for a group:
+
+```bash
+kubectl delete namespace group-a   # deletes the PVCs (and their backing data) too
+```
+
+> **Never** rely on `createNamespace: true` to "clean up on uninstall". A
+> release-owned Namespace would let `helm uninstall` reap every PVC in it —
+> silent, irreversible data loss on a `reclaimPolicy: Delete` StorageClass. If
+> you set it true anyway, the chart annotates the Namespace
+> `helm.sh/resource-policy: keep` so uninstall cannot delete it; reclaim
+> deliberately with `kubectl delete namespace` when you actually mean to.
 
 ## Backup
 
@@ -189,6 +230,16 @@ or schedule your own busybox CronJob mounting the same PVC (`find /data/_trash -
   drust's config requires them to be present whenever `GARAGE_S3_ENDPOINT` is
   set, but MinIO has no Garage admin API and they are never dialed. The chart
   injects harmless placeholder values so boot does not fail.
+- **`ingress.tls.enabled: false` is evaluation-only.** Over plain HTTP the chart
+  sets `DRUST_DEV_NO_SECURE_COOKIES=1`, so the admin session cookie ships without
+  the `Secure` flag — otherwise user agents drop it (RFC 6265bis) and admin login
+  silently never sticks (the POST 303s but every `/admin` request bounces back to
+  `/login`). This weakens session security; use it only for local evaluation. The
+  client-facing file-URL host, `DRUST_PUBLIC_BASE_URL`, is derived automatically
+  from `ingress.host` + the TLS toggle (you do **not** set it in values) instead of
+  `localhost:8793`. Note **public**-visibility file URLs (`/public/<id>/<key>`) are
+  only actually served when `publicFiles.enabled=true` — that flag is what routes
+  `/public` to MinIO; private and pre-signed URLs are served through drust regardless.
 
 ## Test the chart
 

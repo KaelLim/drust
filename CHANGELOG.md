@@ -1,3 +1,36 @@
+## Unreleased
+
+### Deploy
+
+- **Helm chart 0.1.1 — fixes three defects reported against the v1.49.3 chart**
+  (GitHub #1–#3, all reproduced live by the reporter; render-only tests could not
+  catch runtime/lifecycle behaviour, so every fix ships with a new `render_test.sh`
+  regression guard, and the whole change was adversarially self-reviewed — which
+  caught a data-loss migration hazard and a NetworkPolicy regression before ship).
+  - **#1 — the default install could not succeed.** In `minio-init-job.yaml`,
+    `MC_HOST_drust` referenced `$(AK)`/`$(SK)` *before* they were defined in the env
+    list, so kubelet left the literal `$(AK):$(SK)` in the URL and `mc` auth-looped
+    until the post-install hook timed out (`helm install` → `context deadline
+    exceeded`). Separately, the Job's pod template wore `drust.selectorLabels`, so the
+    probeless pod joined the drust Service endpoints and served ~50% of requests as
+    502. Fixed by ordering AK/SK before `MC_HOST_drust`, giving the Job dedicated
+    `minio-init` pod labels, admitting those labels in the MinIO NetworkPolicy, and
+    adding a scoped egress-only NetworkPolicy so the relabeled hook pod stays
+    network-governed (DNS + own MinIO only) instead of unrestricted.
+  - **#2 — `helm uninstall` was a data-loss footgun.** `createNamespace` defaulted
+    `true`, making the Namespace release-owned, so `helm uninstall` deleted it and
+    reaped every PVC (all tenant SQLite DBs + MinIO objects). Default is now `false`
+    (install with `--create-namespace`); the opt-in Namespace carries
+    `helm.sh/resource-policy: keep`. README gains an Uninstall section and a prominent
+    "Upgrading from chart 0.1.0" migration warning (annotate the live namespace before
+    upgrading, or the default flip prunes it).
+  - **#3 — two unwired envs.** `DRUST_PUBLIC_BASE_URL` is now derived from
+    `ingress.host` + the TLS toggle (file-upload URLs previously advertised
+    `localhost:8793`), and `DRUST_DEV_NO_SECURE_COOKIES=1` is set when
+    `ingress.tls.enabled=false` (admin login silently never stuck over plain HTTP
+    because browsers drop the `Secure` cookie).
+  - Chart `appVersion` and the default image tag advanced 1.49.2 → 1.49.4 (were stale).
+
 ## v1.49.4 — 2026-07-17
 
 Fixes for four findings from a full-codebase codex audit, each verified against the

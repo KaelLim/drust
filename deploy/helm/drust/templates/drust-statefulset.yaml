@@ -60,6 +60,16 @@ spec:
             {{- if .Values.publicUrl }}
             - { name: DRUST_PUBLIC_URL, value: {{ .Values.publicUrl | quote }} }
             {{- end }}
+            # File/object URLs (and the MCP upload hint) are built from this; without it
+            # drust falls back to the systemd-deploy default http://localhost:8793, which
+            # is dead for any real client. base_path is root (""), so no path suffix.
+            - name: DRUST_PUBLIC_BASE_URL
+              value: "{{ ternary "https" "http" .Values.ingress.tls.enabled }}://{{ .Values.ingress.host }}"
+            {{- if not .Values.ingress.tls.enabled }}
+            # No TLS => user agents drop the `Secure` session cookie (RFC 6265bis), so the
+            # admin login POST 303s but the session never sticks. Evaluation / non-TLS only.
+            - { name: DRUST_DEV_NO_SECURE_COOKIES, value: "1" }
+            {{- end }}
             {{- if .Values.storage.enabled }}
             - { name: GARAGE_S3_ENDPOINT, value: {{ include "minio.endpoint" . | quote }} }
             # FIXED literal: drust's write path hardcodes bucket "public" (files.rs).

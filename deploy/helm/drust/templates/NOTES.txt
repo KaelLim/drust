@@ -20,3 +20,10 @@ VERIFY (only a live request catches these):
 NOTE: backup.volumeSnapshotClassName is empty — NO automatic backup is scheduled.
 Set it to your cluster's VolumeSnapshotClass to enable daily CSI snapshots.
 {{- end }}
+
+UNINSTALL: `helm uninstall {{ .Release.Name }}` retains the PVCs and the namespace
+(the PVC IS the database). To wipe a group for good: `kubectl delete namespace {{ .Release.Namespace }}`.
+{{- if .Values.createNamespace }}
+NOTE: createNamespace=true — the Namespace is annotated helm.sh/resource-policy=keep,
+so uninstall will NOT reap it (or its PVCs). Prefer --create-namespace + createNamespace=false.
+{{- end }}

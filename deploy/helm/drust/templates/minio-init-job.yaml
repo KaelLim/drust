@@ -15,7 +15,12 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "drust.selectorLabels" . | nindent 8 }}
+        # Dedicated labels — MUST NOT reuse drust.selectorLabels: the drust Service
+        # selects on those, and this probeless Job pod counts as Ready the moment it
+        # runs, so it would be added to the drust endpoints and eat ~50% of live
+        # traffic (200/502 alternation). The MinIO NetworkPolicy admits these labels.
+        app.kubernetes.io/name: minio-init
+        app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       restartPolicy: OnFailure
       securityContext:
@@ -33,12 +38,15 @@ spec:
             # config dir at the writable /tmp so `mc` can init under runAsNonRoot.
             - { name: HOME, value: /tmp }
             - { name: MC_CONFIG_DIR, value: /tmp/.mc }
-            - name: MC_HOST_drust
-              value: "http://$(AK):$(SK)@minio.{{ .Release.Namespace }}.svc:9000"
+            # AK/SK MUST be defined BEFORE MC_HOST_drust: kubelet $(VAR) expansion only
+            # sees variables listed EARLIER, so the reverse order leaves the literal
+            # string "$(AK):$(SK)" in the URL and `mc` auth-loops until the hook times out.
             - name: AK
               valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-access-key } }
             - name: SK
               valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-secret-key } }
+            - name: MC_HOST_drust
+              value: "http://$(AK):$(SK)@minio.{{ .Release.Namespace }}.svc:9000"
           command: ["/bin/sh", "-c"]
           args:
             - |
