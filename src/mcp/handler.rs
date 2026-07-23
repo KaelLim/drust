@@ -627,7 +627,10 @@ impl DrustMcpService {
         *COUNT.get_or_init(|| Self::tool_router().list_all().len())
     }
 
-    #[tool(description = "List all collections in this tenant's database, with their row counts.")]
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "List all collections in this tenant's database, with their row counts."
+    )]
     async fn list_collections(&self) -> Result<CallToolResult, McpError> {
         match exploration::list_collections(&self.state).await {
             Ok(v) => json_content(v),
@@ -635,13 +638,16 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Return this tenant's identity, both bearer tokens \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Return this tenant's identity, both bearer tokens \
         (anon + service, plaintext), the relative REST/MCP/files/rpc \
         endpoint paths, and the configured `max_upload_bytes`. Use this \
         to surface credentials needed for surfaces with no MCP tool — \
         most importantly the multipart file upload endpoint. Tokens \
         minted before v1.1c only stored the hash; their `plaintext` \
-        field is null and require an admin reroll to recover.")]
+        field is null and require an admin reroll to recover."
+    )]
     async fn whoami(
         &self,
         Parameters(_): Parameters<EmptyParams>,
@@ -652,9 +658,12 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Return the full schema for one collection: all fields \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Return the full schema for one collection: all fields \
         (name, sql_type, nullable, pk, default, foreign_key), all indices, and row count. \
-        Returns {\"error_code\": \"COLLECTION_NOT_FOUND\"} if the collection does not exist.")]
+        Returns {\"error_code\": \"COLLECTION_NOT_FOUND\"} if the collection does not exist."
+    )]
     async fn describe_collection(
         &self,
         Parameters(DescribeCollectionArgs { collection }): Parameters<DescribeCollectionArgs>,
@@ -666,6 +675,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "One-shot schema bootstrap for the tenant — your FIRST call on \
         connect. Returns every collection's full schema plus its access state \
         (anon_caps, owner_field + read_scope ALWAYS present — null when not owner-scoped, \
@@ -687,6 +697,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Raw read-only SELECT across this tenant's non-system tables. \
         USE WHEN: an ad-hoc analytic shape a FilterAst cannot express (GROUP BY, \
         JOIN-free aggregates, expressions). NOT WHEN: you just want filtered/\
@@ -709,6 +720,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "Return `EXPLAIN QUERY PLAN` output for a read-only SQL statement. \
         Use this to diagnose slow queries before running them. `analyze` is accepted for \
         forward-compatibility but currently ignored."
@@ -723,7 +735,9 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Create a new collection (SQLite table). \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
+        description = "Create a new collection (SQLite table). \
         USE WHEN: defining a brand-new entity for this tenant. NOT WHEN: adding \
         one column to an existing collection — use `add_field` (same FieldSpec \
         shape). Every collection implicitly gets id INTEGER PRIMARY KEY \
@@ -740,7 +754,8 @@ impl DrustMcpService {
         \"default_value\": {\"sql\": \"datetime('now')\"}}, \
         {\"name\": \"author_id\", \"sql_type\": \"integer\", \
         \"foreign_key\": \"users\"}, {\"name\": \"embedding\", \
-        \"sql_type\": \"vector\", \"dim\": 384}]}")]
+        \"sql_type\": \"vector\", \"dim\": 384}]}"
+    )]
     async fn create_collection(
         &self,
         Parameters(CreateCollectionArgs {
@@ -763,6 +778,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
         description = "Add a new field (column) to an existing collection via ALTER TABLE. \
         `field` has the same shape as entries in `create_collection.fields` \
         (sql_type must be lowercase: text, integer, real, boolean, datetime, json)."
@@ -777,12 +793,15 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Drop a field (column) from a collection via \
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "Drop a field (column) from a collection via \
         `ALTER TABLE … DROP COLUMN`. Cannot drop the system columns `id`, \
         `created_at`, `updated_at` (drust maintains them automatically). \
         SQLite will also reject the drop if the column is part of an \
         index, UNIQUE, foreign key, CHECK, trigger, or view — fix those \
-        first. Irreversible.")]
+        first. Irreversible."
+    )]
     async fn drop_field(
         &self,
         Parameters(DropFieldArgs { collection, field }): Parameters<DropFieldArgs>,
@@ -794,6 +813,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = true),
         description = "Drop an entire collection (DROP TABLE + _updated_at trigger). \
         Irreversible. Rejected if other collections still FK-reference this one. \
         v1.26: pass `dry_run: true` to preview row_count + indexes + RPCs + \
@@ -846,6 +866,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
         description = "Create a non-unique or unique index on one or more fields of a \
         collection. Speeds up `WHERE field = ?` and `ORDER BY field` queries. \
         `fields` is a non-empty list of column names (order matters for composite indices). \
@@ -879,10 +900,13 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Drop an index by name or by field set. \
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "Drop an index by name or by field set. \
         Removes the lookup structure but does NOT touch row data. \
         v1.26: pass `dry_run: true` to confirm the index exists and \
-        receive its name without dropping.")]
+        receive its name without dropping."
+    )]
     async fn drop_index(
         &self,
         Parameters(DropIndexArgs {
@@ -927,10 +951,13 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Replace the anon-role DML capability set for one \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "Replace the anon-role DML capability set for one \
         collection. `caps` is a subset of [\"select\",\"insert\",\"update\",\"delete\"]; \
         empty locks anon out entirely. Service tokens are unrestricted and \
-        not affected. Refuses `_system_*` collections.")]
+        not affected. Refuses `_system_*` collections."
+    )]
     async fn set_anon_caps(
         &self,
         Parameters(SetAnonCapsArgs { collection, caps }): Parameters<SetAnonCapsArgs>,
@@ -941,11 +968,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Replace the logged-in User-role DML capability set \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "Replace the logged-in User-role DML capability set \
         for one collection. `caps` is a subset of \
         [\"select\",\"insert\",\"update\",\"delete\"], independent of anon_caps; \
         empty locks the User role out entirely. Service tokens are \
-        unrestricted and not affected. Refuses `_system_*` collections.")]
+        unrestricted and not affected. Refuses `_system_*` collections."
+    )]
     async fn set_user_caps(
         &self,
         Parameters(SetUserCapsArgs { collection, caps }): Parameters<SetUserCapsArgs>,
@@ -956,11 +986,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Toggle SSE realtime broadcast for one collection. \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "Toggle SSE realtime broadcast for one collection. \
         When enabled, clients can subscribe to GET /records/<coll>/subscribe; \
         anon callers additionally need anon_caps containing 'select'. When \
         disabled, existing in-flight SSE connections are dropped within ~1s. \
-        Refuses `_system_*` collections.")]
+        Refuses `_system_*` collections."
+    )]
     async fn set_realtime(
         &self,
         Parameters(SetRealtimeArgs {
@@ -974,14 +1007,17 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.46 — Toggle record-history capture for one \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "v1.46 — Toggle record-history capture for one \
         collection. When enabled (the default), every insert/update/delete \
         writes a full old/new row snapshot into the tenant's \
         _system_record_history trail, atomically with the mutation; when \
         disabled, new writes leave no trail (rows already captured are kept \
         until retention prunes them, default 7 days). Does NOT affect SSE or \
         row visibility. Read the trail back with `get_record_history`. \
-        Refuses `_system_*` collections.")]
+        Refuses `_system_*` collections."
+    )]
     async fn set_audit_enabled(
         &self,
         Parameters(SetAuditEnabledArgs {
@@ -995,14 +1031,17 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.46 — Read one collection's record-history trail \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "v1.46 — Read one collection's record-history trail \
         (newest first): rows {id, op: insert|update|delete, old, new, \
         actor_kind, actor_id, ts} carrying full old/new row snapshots \
         captured atomically with each write. Pass `record_id` to follow one \
         record's timeline; `limit` is 1..=200 (default 50), `total` reports \
         the full match count. Service-only — history aggregates every user's \
         row values. Rows older than the retention window (default 7 days) \
-        are pruned.")]
+        are pruned."
+    )]
     async fn get_record_history(
         &self,
         Parameters(GetRecordHistoryArgs {
@@ -1025,6 +1064,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
         description = "Set (replace) one operation's row-level-security policy on a \
         collection. `op` is select|insert|update|delete. `using` is a FilterAst \
         (and/or/not tree of eq/ne/gt/.../like/in leaves) selecting WHICH existing \
@@ -1055,10 +1095,13 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Read the stored row-level-security policy set for a \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Read the stored row-level-security policy set for a \
         collection (all four ops). Returns `{collection, stored:{select?,insert?,\
         update?,delete?}}`; an op key is absent when that op has no policy. See \
-        `set_policy` for the policy shape.")]
+        `set_policy` for the policy shape."
+    )]
     async fn get_policies(
         &self,
         Parameters(GetPoliciesArgs { collection }): Parameters<GetPoliciesArgs>,
@@ -1070,6 +1113,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = true),
         description = "Clear (remove) one operation's row-level-security policy \
         on a collection, reverting that op to owner_field + cap-gate rules only. \
         `op` is select|insert|update|delete. Refuses `_system_*` collections."
@@ -1085,6 +1129,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
         description = "Set or clear a plain-text description on a tenant collection, \
         one of its fields, or one of its indexes. `target` selects which: \
         \"collection\" (needs `collection`), \"field\" (needs `collection` + `field`), \
@@ -1150,7 +1195,9 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Nearest-neighbour search over a `vector` field. \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Nearest-neighbour search over a `vector` field. \
         USE WHEN: you have a query vector and want the `k` most-similar rows \
         (semantic/embedding search). NOT WHEN: you can express the match as a \
         scalar filter — use `list_records` (vector fields are excluded from its \
@@ -1164,7 +1211,8 @@ impl DrustMcpService {
         lists projected columns (default: all non-vector columns). \
         EXAMPLE call: {\"collection\": \"posts\", \"field\": \"embedding\", \
         \"vector\": [0.1, 0.1, 0.1, 0.1], \"k\": 5, \"metric\": \"cosine\", \
-        \"where\": {\"status\": \"published\"}, \"select\": [\"id\", \"title\"]}")]
+        \"where\": {\"status\": \"published\"}, \"select\": [\"id\", \"title\"]}"
+    )]
     async fn search_collection(
         &self,
         Parameters(input): Parameters<vector_tools::SearchInput>,
@@ -1176,6 +1224,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "THE DEFAULT READ TOOL: structured filter + sort + pagination \
         over ONE collection. USE WHEN: you want rows of a collection by some \
         condition, a sorted/paged slice, just a count (read `total` in the \
@@ -1208,6 +1257,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
         description = "Insert one record into a collection. `data` is a JSON object whose keys \
         must be known fields of the collection (unknown fields are rejected). \
         Returns the inserted row including the auto-generated id and timestamps."
@@ -1224,6 +1274,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
         description = "Partially update one record. `data` is a JSON object of fields to set; \
         omitted fields are left unchanged. `updated_at` is bumped automatically."
     )]
@@ -1242,11 +1293,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Delete a record from a collection by primary key. \
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "Delete a record from a collection by primary key. \
         Returns RECORD_NOT_FOUND if the row does not exist; FK_RESTRICT if \
         another collection still references it. \
         v1.26: pass `dry_run: true` to receive blast radius (which collections \
-        would block the delete) without actually deleting.")]
+        would block the delete) without actually deleting."
+    )]
     async fn delete_record(
         &self,
         Parameters(DeleteRecordArgs {
@@ -1279,11 +1333,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "List files stored by this tenant in Garage. \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "List files stored by this tenant in Garage. \
         Optional `visibility` filter (\"public\" | \"private\"); anything else returns all. \
         Paginate with `limit` (1–500, default 50) and `offset`. \
         Returns {files, total_count} where each file has id, original_name, size_bytes, \
-        content_type, visibility, content_disposition, uploaded_at.")]
+        content_type, visibility, content_disposition, uploaded_at."
+    )]
     async fn list_files(
         &self,
         Parameters(args): Parameters<file_tools::ListFilesArgs>,
@@ -1294,10 +1351,13 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Delete a file by its id (the UUID key). \
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "Delete a file by its id (the UUID key). \
         Removes the S3 object from the tenant's bucket first (idempotent on 404) \
         then deletes the metadata row. Returns {\"ok\": true} on success or \
-        {\"error_code\": \"NOT_FOUND\" | \"STORAGE_UNAVAILABLE\"}.")]
+        {\"error_code\": \"NOT_FOUND\" | \"STORAGE_UNAVAILABLE\"}."
+    )]
     async fn delete_file(
         &self,
         Parameters(args): Parameters<file_tools::DeleteFileArgs>,
@@ -1309,6 +1369,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
         description = "Change a file's visibility between public and private by \
         its id (the UUID key). Moves the S3 object to the target bucket and updates \
         the metadata row (cache_control is reset to the target's default). Returns \
@@ -1326,11 +1387,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Get a URL to download a file by its id. \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Get a URL to download a file by its id. \
         Public files → stable public URL (expires_at is null). \
         Private files → pre-signed URL with TTL (1..=604800s, default 3600); \
         pass `download: true` to inject Content-Disposition=attachment so \
-        browsers download instead of previewing.")]
+        browsers download instead of previewing."
+    )]
     async fn get_file_url(
         &self,
         Parameters(args): Parameters<file_tools::GetFileUrlArgs>,
@@ -1341,7 +1405,9 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Create a new stored RPC (named SQL function). \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
+        description = "Create a new stored RPC (named SQL function). \
         Required: name (snake_case), sql (a body using :name placeholders), \
         params (array of {name, type, required, default}). \
         Optional: description, anon_callable (default false), \
@@ -1353,7 +1419,8 @@ impl DrustMcpService {
         INSERT/UPDATE/DELETE, while DDL, transaction control, and \
         _system_* writes are refused. MCP call_rpc always executes on the \
         read-only connection regardless of mode — write RPCs run via REST \
-        POST /t/<tenant>/rpc/<name>, the admin playground, or cron.")]
+        POST /t/<tenant>/rpc/<name>, the admin playground, or cron."
+    )]
     async fn create_rpc(
         &self,
         Parameters(p): Parameters<CreateRpcParams>,
@@ -1409,13 +1476,16 @@ impl DrustMcpService {
         ))]))
     }
 
-    #[tool(description = "Update an existing RPC. All fields except `name` are \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "Update an existing RPC. All fields except `name` are \
         optional — pass only the fields you want to change. \
         mode (\"read\" or \"write\") switches the dispatch mode; omit to keep \
         the stored value. Same SQL validation as create_rpc applies if you \
         provide a new sql body, under the EFFECTIVE mode (the mode param if \
         given, else the stored row's) — so downgrading a write RPC to read \
-        requires swapping the sql to a SELECT body in the same call.")]
+        requires swapping the sql to a SELECT body in the same call."
+    )]
     async fn update_rpc(
         &self,
         Parameters(p): Parameters<UpdateRpcParams>,
@@ -1492,7 +1562,10 @@ impl DrustMcpService {
         ))]))
     }
 
-    #[tool(description = "Delete an RPC by name. Errors if no RPC with that name exists.")]
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "Delete an RPC by name. Errors if no RPC with that name exists."
+    )]
     async fn delete_rpc(
         &self,
         Parameters(p): Parameters<NameOnly>,
@@ -1513,9 +1586,12 @@ impl DrustMcpService {
         ))]))
     }
 
-    #[tool(description = "List every stored RPC for this tenant, including \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "List every stored RPC for this tenant, including \
         the SQL body, params, anon_callable flag, call counters, and last-called \
-        timestamp.")]
+        timestamp."
+    )]
     async fn list_rpc(
         &self,
         Parameters(_): Parameters<EmptyParams>,
@@ -1538,10 +1614,13 @@ impl DrustMcpService {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    #[tool(description = "Invoke a stored RPC by name with named params. \
+    #[tool(
+        annotations(read_only_hint = false, open_world_hint = false),
+        description = "Invoke a stored RPC by name with named params. \
         Returns the same envelope as the query tool: {column_names, rows, \
         row_count, truncated}. MCP is service-only, so anon_callable is not \
-        consulted on this surface — a service-key holder may call any RPC.")]
+        consulted on this surface — a service-key holder may call any RPC."
+    )]
     async fn call_rpc(
         &self,
         Parameters(p): Parameters<CallRpcParams>,
@@ -1619,6 +1698,7 @@ impl DrustMcpService {
     // ── T24: User-management tools ─────────────────────────────────────────
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
         description = "Create a new user in this tenant's _system_users table. \
         Required: email (unique, case-insensitive), password (hashed server-side). \
         Optional: profile (JSON object), verified (boolean, default false). \
@@ -1643,6 +1723,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
         description = "List users in this tenant. Optional: q (email substring filter), \
         limit (1–500, default 50), offset. \
         Returns {users: [...], total}."
@@ -1657,9 +1738,12 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Get a single user by user_id. \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Get a single user by user_id. \
         Returns {id, email, verified, profile, created_at, updated_at} (no password_hash). \
-        Errors with NOT_FOUND if the user does not exist.")]
+        Errors with NOT_FOUND if the user does not exist."
+    )]
     async fn get_user(
         &self,
         Parameters(UserIdArgs { user_id }): Parameters<UserIdArgs>,
@@ -1671,6 +1755,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
         description = "Update one or more fields of a user. All fields except user_id \
         are optional — only supplied fields are changed. password is re-hashed server-side. \
         Returns the updated row. Errors: NOT_FOUND, EMAIL_EXISTS, HASH_FAILED."
@@ -1701,6 +1786,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = true),
         description = "Delete a user and cascade: removes the user's records from every \
         collection that has owner_field set, revokes all sessions, then deletes the user row. \
         Returns {deleted_records: {<collection>: <count>, ...}, revoked_sessions: <n>}. \
@@ -1720,6 +1806,7 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(destructive_hint = true),
         description = "Revoke all active sessions for a user (forces re-login on all devices). \
         Returns {revoked: <n>}. Safe to call on a non-existent user (returns revoked: 0)."
     )]
@@ -1741,6 +1828,7 @@ impl DrustMcpService {
     // ── T25: Owner-field + self-register tools ─────────────────────────────
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
         description = "Declare that a column in `collection` is the owner-field — \
         a foreign key to _system_users(id) that links rows to their creator. \
         `field` must already exist on the table and carry a FK to _system_users(id). \
@@ -1774,11 +1862,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Enable or disable self-registration for this tenant. \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "Enable or disable self-registration for this tenant. \
         When enabled (true), unauthenticated users may POST /auth/register to create an account. \
         When disabled (false, the default), /auth/register returns 403. \
         Returns {allow_self_register: <bool>}. \
-        Requires meta.sqlite access — errors with NOT_FOUND if the tenant row is missing.")]
+        Requires meta.sqlite access — errors with NOT_FOUND if the tenant row is missing."
+    )]
     async fn set_self_register(
         &self,
         Parameters(SetSelfRegisterArgs { enabled }): Parameters<SetSelfRegisterArgs>,
@@ -1799,7 +1890,9 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.32.5 — Set this tenant's broadcast publish policy. \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "v1.32.5 — Set this tenant's broadcast publish policy. \
         Two opt-in flags (both default false) gate `op:publish` (WS) and \
         POST /t/{tenant}/rooms/{room} (REST) for non-service tokens. Either \
         arg may be omitted to leave that flag unchanged. \
@@ -1808,7 +1901,8 @@ impl DrustMcpService {
           as public-write; per-tenant rate-limit still applies. \
         MCP `broadcast` is service-only regardless of these flags (MCP \
         dispatch enforces). Returns {allow_user_publish, allow_anon_publish} \
-        with the post-update state. NOT_FOUND if the tenant is missing.")]
+        with the post-update state. NOT_FOUND if the tenant is missing."
+    )]
     async fn set_publish_policy(
         &self,
         Parameters(SetPublishPolicyArgs {
@@ -1843,7 +1937,9 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.42 — Set this tenant's opt-in file-storage \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "v1.42 — Set this tenant's opt-in file-storage \
         capabilities for non-service bearers. Two cap sets (both default empty = \
         service-only): `anon` gates the public anon bearer, `user` gates \
         logged-in end-users (drust_user_*); each is a subset of \
@@ -1851,7 +1947,8 @@ impl DrustMcpService {
         per-owner). Each arg REPLACES that role's set; omit to leave it \
         unchanged. make-public (set-visibility) stays service-only and is not a \
         cap. upload/delete are per-IP rate-limited. Returns \
-        {file_anon_caps, file_user_caps}. NOT_FOUND if the tenant is missing.")]
+        {file_anon_caps, file_user_caps}. NOT_FOUND if the tenant is missing."
+    )]
     async fn set_file_caps(
         &self,
         Parameters(SetFileCapsArgs { anon, user }): Parameters<SetFileCapsArgs>,
@@ -1883,7 +1980,9 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.49 — REPLACE this tenant's egress allowlist (whole \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "v1.49 — REPLACE this tenant's egress allowlist (whole \
         list, not merge). Service-only. The allowlist is origin-level \
         (`scheme://host[:port]`, no path) and tagged by `system`: \
         `webhook` entries gate outbound webhook delivery, `function` entries \
@@ -1893,7 +1992,8 @@ impl DrustMcpService {
         `PinnedPublicResolver` (private-IP block) both apply on every outbound \
         request. Validation: bad origin → EGRESS_BAD_ORIGIN, unknown system \
         (want webhook|function) → EGRESS_BAD_SYSTEM, over the per-tenant limit \
-        → EGRESS_TOO_MANY. Returns {entries:[{system,uri}]} normalized.")]
+        → EGRESS_TOO_MANY. Returns {entries:[{system,uri}]} normalized."
+    )]
     async fn set_egress_allowlist(
         &self,
         Parameters(SetEgressAllowlistArgs { entries }): Parameters<SetEgressAllowlistArgs>,
@@ -1921,10 +2021,13 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.49 — Read this tenant's egress allowlist (the \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "v1.49 — Read this tenant's egress allowlist (the \
         outbound origins gating webhook delivery and the function `http-fetch` \
         host import). Service-only. Returns {entries:[{system,uri}]}; an empty \
-        list means deny-all (no outbound path is permitted).")]
+        list means deny-all (no outbound path is permitted)."
+    )]
     async fn get_egress_allowlist(
         &self,
         Parameters(_): Parameters<EmptyParams>,
@@ -1947,13 +2050,16 @@ impl DrustMcpService {
 
     // ── v1.12: Per-tenant OAuth-provider admin tools ──────────────────────
 
-    #[tool(description = "List the OAuth providers configured for this tenant's \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "List the OAuth providers configured for this tenant's \
         end-user login flow (the `_system_oauth_providers` table). \
         Returns {providers: [{provider, client_id, client_secret, \
         allowed_redirect_uris, created_at, updated_at}]}. \
         `client_secret` is always returned as the literal '●●●●' — real \
         secrets never leave the writer. Service-key-only; anon callers \
-        cannot reach MCP.")]
+        cannot reach MCP."
+    )]
     async fn list_oauth_providers(
         &self,
         Parameters(_): Parameters<EmptyParams>,
@@ -1964,7 +2070,9 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Upsert an OAuth provider config for this tenant's \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "Upsert an OAuth provider config for this tenant's \
         end-user login flow. `provider` must be 'google' or 'github'. \
         `client_id` / `client_secret` are the OAuth app credentials from \
         the provider's console. `allowed_redirect_uris` is a non-empty list \
@@ -1974,7 +2082,8 @@ impl DrustMcpService {
         Returns {ok: true, provider}. \
         Errors with a granular code on validation failure: \
         INVALID_PROVIDER, INVALID_CLIENT_ID, INVALID_CLIENT_SECRET, \
-        EMPTY_REDIRECT_URIS, or INVALID_REDIRECT_URI.")]
+        EMPTY_REDIRECT_URIS, or INVALID_REDIRECT_URI."
+    )]
     async fn set_oauth_provider(
         &self,
         Parameters(SetOauthProviderArgs {
@@ -1998,12 +2107,15 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Delete the OAuth provider config for this tenant. \
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "Delete the OAuth provider config for this tenant. \
         `provider` must be 'google' or 'github'. Removes the row from \
         `_system_oauth_providers`; in-flight OAuth callbacks for this \
         provider will fail with PROVIDER_NOT_CONFIGURED. \
         Returns {ok: true, provider, deleted: true}. \
-        Errors with NOT_FOUND if the provider was not configured.")]
+        Errors with NOT_FOUND if the provider was not configured."
+    )]
     async fn delete_oauth_provider(
         &self,
         Parameters(ProviderOnlyArgs { provider }): Parameters<ProviderOnlyArgs>,
@@ -2014,7 +2126,9 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Replace ONLY the allowed_redirect_uris list for an \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "Replace ONLY the allowed_redirect_uris list for an \
         already-configured OAuth provider. Does NOT touch client_id / \
         client_secret (use set_oauth_provider to change credentials). \
         `provider` must be an existing 'google' or 'github' config. \
@@ -2022,7 +2136,8 @@ impl DrustMcpService {
         https:// or a localhost/127.0.0.1 URL. \
         Returns {ok: true, provider, redirect_uris_count}. \
         Errors: NOT_FOUND (provider not configured), EMPTY_REDIRECT_URIS, \
-        INVALID_REDIRECT_URI.")]
+        INVALID_REDIRECT_URI."
+    )]
     async fn set_redirect_uris(
         &self,
         Parameters(SetRedirectUrisArgs {
@@ -2045,6 +2160,7 @@ impl DrustMcpService {
     // ── v1.13: Webhook subscription tools (service-only) ───────────────────
 
     #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
         description = "Create an outbound webhook subscription for this tenant. \
         `events` is a non-empty subset of {created, updated, deleted}. \
         `url` must be https:// or http:// with a loopback host (127.0.0.1/localhost/::1). \
@@ -2083,10 +2199,13 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "List all webhook subscriptions for this tenant. \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "List all webhook subscriptions for this tenant. \
         Returns {webhooks: [{id, collection, events, url, secret, active, \
         last_failure_at, last_failure_reason, created_at}]}. \
-        Secrets are always redacted to '●●●●'.")]
+        Secrets are always redacted to '●●●●'."
+    )]
     async fn list_webhooks(
         &self,
         Parameters(_): Parameters<EmptyParams>,
@@ -2097,11 +2216,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Update one or more fields of a webhook subscription. \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "Update one or more fields of a webhook subscription. \
         All fields except `id` are optional — only supplied fields are changed. \
         `secret` cannot be rotated through this tool; delete + recreate instead. \
         Returns {updated: true, id}. \
-        Errors: NOT_FOUND, INVALID_URL, INVALID_EVENTS.")]
+        Errors: NOT_FOUND, INVALID_URL, INVALID_EVENTS."
+    )]
     async fn update_webhook(
         &self,
         Parameters(UpdateWebhookArgs {
@@ -2133,9 +2255,12 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Delete a webhook subscription. \
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "Delete a webhook subscription. \
         Returns {deleted: true, id}. \
-        Errors with NOT_FOUND if the id does not exist.")]
+        Errors with NOT_FOUND if the id does not exist."
+    )]
     async fn delete_webhook(
         &self,
         Parameters(WebhookIdArgs { id }): Parameters<WebhookIdArgs>,
@@ -2146,12 +2271,15 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.26 — Recent write events for this tenant. \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "v1.26 — Recent write events for this tenant. \
         Returns ts/op/collection/status/error_code for the latest \
         insert/update/delete/DDL operations. Use this to replan after \
         errors or to confirm what the previous tool calls actually \
         changed. Service-key + MCP only (anon and user tokens are \
-        rejected by the MCP layer).")]
+        rejected by the MCP layer)."
+    )]
     async fn recent_writes(
         &self,
         Parameters(RecentWritesArgs {
@@ -2175,13 +2303,16 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.31 — Publish a JSON payload to a broadcast room. \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
+        description = "v1.31 — Publish a JSON payload to a broadcast room. \
         Service-key only (MCP dispatch already gates this). Fans out to every \
         WebSocket subscriber currently connected to /t/<tenant>/realtime on the \
         same room name. Fire-and-forget: messages are not persisted; subscribers \
         connected later receive nothing. Returns `{room, delivered_to, byte_count}`. \
         Errors: ROOM_NAME_INVALID, PROTECTED_ROOM (`_system_` prefix), PAYLOAD_TOO_LARGE, \
-        RATE_LIMITED.")]
+        RATE_LIMITED."
+    )]
     async fn broadcast(
         &self,
         Parameters(BroadcastArgs { room, payload }): Parameters<BroadcastArgs>,
@@ -2251,11 +2382,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.36 — List this tenant's edge functions: name, \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "v1.36 — List this tenant's edge functions: name, \
         wasm sha256, size, trigger bindings, active flag, description. \
         There is NO MCP upload tool by design — POST the .wasm to \
         /t/<tenant>/functions (multipart: name, wasm, triggers, description) \
-        with the service bearer; call whoami for the exact URL.")]
+        with the service bearer; call whoami for the exact URL."
+    )]
     async fn list_functions(&self) -> Result<CallToolResult, McpError> {
         match crate::mcp::tools::functions::list_functions(&self.state).await {
             Ok(v) => json_content(v),
@@ -2263,9 +2397,12 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.36 — Delete an edge function by name. The wasm \
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "v1.36 — Delete an edge function by name. The wasm \
         artifact is garbage-collected when no other function references it. \
-        Irreversible; re-upload to restore.")]
+        Irreversible; re-upload to restore."
+    )]
     async fn delete_function(
         &self,
         Parameters(DeleteFunctionArgs { name }): Parameters<DeleteFunctionArgs>,
@@ -2276,8 +2413,11 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.36 — Enable/disable an edge function without \
-        deleting it. Disabled functions keep their logs and bindings.")]
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "v1.36 — Enable/disable an edge function without \
+        deleting it. Disabled functions keep their logs and bindings."
+    )]
     async fn set_function_active(
         &self,
         Parameters(SetFunctionActiveArgs { name, active }): Parameters<SetFunctionActiveArgs>,
@@ -2288,11 +2428,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "Service-only — set who may invoke an edge function \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "Service-only — set who may invoke an edge function \
         under their own identity: anon and/or end-user (drust_user_*). Both \
         flags default-deny; an anon/user invocation runs capability-gated \
         (anon_caps/user_caps + owner_field + RLS), never god-mode. Grant AND \
-        revoke both flow through here (config is service-only).")]
+        revoke both flow through here (config is service-only)."
+    )]
     async fn set_function_invoke_acl(
         &self,
         Parameters(SetFunctionInvokeAclArgs { name, anon, user }): Parameters<
@@ -2307,11 +2450,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.36 — Enqueue a manual invocation of an edge \
+    #[tool(
+        annotations(read_only_hint = false, open_world_hint = true),
+        description = "v1.36 — Enqueue a manual invocation of an edge \
         function with an arbitrary event JSON. ASYNC: returns the enqueue \
         ack immediately; read the outcome via get_function_logs \
         (trigger=manual). For synchronous test runs use REST \
-        POST /t/<tenant>/functions/<name>/invoke.")]
+        POST /t/<tenant>/functions/<name>/invoke."
+    )]
     async fn invoke_function(
         &self,
         Parameters(InvokeFunctionArgs { name, event }): Parameters<InvokeFunctionArgs>,
@@ -2322,9 +2468,12 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.36 — Recent invocation log rows for one edge \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "v1.36 — Recent invocation log rows for one edge \
         function (newest first): status ok|error|trap|timeout|oom|dropped, \
-        duration_ms, captured guest log() text, result/error JSON.")]
+        duration_ms, captured guest log() text, result/error JSON."
+    )]
     async fn get_function_logs(
         &self,
         Parameters(GetFunctionLogsArgs { name, limit }): Parameters<GetFunctionLogsArgs>,
@@ -2335,7 +2484,9 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.48 — Create a cron job: run one edge function \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
+        description = "v1.48 — Create a cron job: run one edge function \
         or stored RPC on a 5-field cron schedule (minute hour day month \
         weekday), UTC, minute resolution — no seconds field, no @aliases. \
         Service-only. Jobs run at service (Privileged) identity; an RPC \
@@ -2345,7 +2496,8 @@ impl DrustMcpService {
         event.payload, RPCs bind it as named params; omitted means a null \
         payload / no binds. Errors: CRON_INVALID_NAME, \
         CRON_INVALID_SCHEDULE, CRON_TARGET_NOT_FOUND, CRON_DUPLICATE, \
-        CRON_JOB_LIMIT, CRON_PAYLOAD_TOO_LARGE, CRON_RPC_USER_ID.")]
+        CRON_JOB_LIMIT, CRON_PAYLOAD_TOO_LARGE, CRON_RPC_USER_ID."
+    )]
     async fn create_cron_job(
         &self,
         Parameters(CreateCronJobArgs {
@@ -2373,11 +2525,14 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.48 — List this tenant's cron jobs (service-only): \
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "v1.48 — List this tenant's cron jobs (service-only): \
         name, schedule (5-field, UTC), target, payload, active flag, \
         last_run_at/last_status/last_error, and the computed next_fire. \
         Per-job run history has no MCP tool — read the last 20 outcomes via \
-        REST GET /t/<tenant>/cron/<name>/runs with the service bearer.")]
+        REST GET /t/<tenant>/cron/<name>/runs with the service bearer."
+    )]
     async fn list_cron_jobs(&self) -> Result<CallToolResult, McpError> {
         match crate::mcp::tools::cron::list_cron_jobs(&self.state).await {
             Ok(v) => json_content(v),
@@ -2385,9 +2540,12 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.48 — Enable/disable a cron job without deleting \
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "v1.48 — Enable/disable a cron job without deleting \
         it (service-only). Disabled jobs keep their config and run history \
-        and stop firing within the current minute. Errors: CRON_NOT_FOUND.")]
+        and stop firing within the current minute. Errors: CRON_NOT_FOUND."
+    )]
     async fn set_cron_job_active(
         &self,
         Parameters(SetCronJobActiveArgs { name, active }): Parameters<SetCronJobActiveArgs>,
@@ -2398,10 +2556,13 @@ impl DrustMcpService {
         }
     }
 
-    #[tool(description = "v1.48 — Delete a cron job and its run history \
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "v1.48 — Delete a cron job and its run history \
         (service-only, irreversible). Changing a job's target is delete + \
         create — the target is immutable on PATCH/update surfaces. \
-        Errors: CRON_NOT_FOUND.")]
+        Errors: CRON_NOT_FOUND."
+    )]
     async fn delete_cron_job(
         &self,
         Parameters(DeleteCronJobArgs { name }): Parameters<DeleteCronJobArgs>,
@@ -2940,6 +3101,199 @@ mod instructions_tests {
                 !s.contains(removed),
                 "instructions still reference removed/merged tool: {removed}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod annotation_tests {
+    use super::*;
+
+    // Wire name == fn name (no `name=` overrides). Buckets sum to 65; call_rpc &
+    // invoke_function are special-cased below. Total must equal tool_count() (67).
+    const READONLY: &[&str] = &[
+        "list_collections",
+        "whoami",
+        "describe_collection",
+        "get_schema_overview",
+        "query",
+        "explain",
+        "get_record_history",
+        "get_policies",
+        "search_collection",
+        "list_records",
+        "list_files",
+        "get_file_url",
+        "list_rpc",
+        "list_users",
+        "get_user",
+        "get_egress_allowlist",
+        "list_oauth_providers",
+        "list_webhooks",
+        "recent_writes",
+        "list_functions",
+        "get_function_logs",
+        "list_cron_jobs",
+    ];
+    const DESTRUCTIVE: &[&str] = &[
+        "drop_field",
+        "drop_collection",
+        "drop_index",
+        "delete_record",
+        "delete_file",
+        "delete_rpc",
+        "delete_user",
+        "revoke_user_sessions",
+        "clear_policy",
+        "delete_oauth_provider",
+        "delete_webhook",
+        "delete_function",
+        "delete_cron_job",
+    ];
+    const IDEMPOTENT: &[&str] = &[
+        "set_anon_caps",
+        "set_user_caps",
+        "set_realtime",
+        "set_audit_enabled",
+        "set_policy",
+        "set_description",
+        "set_file_visibility",
+        "set_owner_field",
+        "set_self_register",
+        "set_publish_policy",
+        "set_file_caps",
+        "set_egress_allowlist",
+        "set_oauth_provider",
+        "set_redirect_uris",
+        "set_function_active",
+        "set_function_invoke_acl",
+        "set_cron_job_active",
+        "update_record",
+        "update_rpc",
+        "update_user",
+        "update_webhook",
+    ];
+    const ADDITIVE: &[&str] = &[
+        "insert_record",
+        "create_collection",
+        "add_field",
+        "create_index",
+        "create_rpc",
+        "create_user",
+        "create_webhook",
+        "create_cron_job",
+        "broadcast",
+    ];
+
+    fn tools() -> Vec<rmcp::model::Tool> {
+        DrustMcpService::tool_router().list_all()
+    }
+    fn ann(name: &str) -> rmcp::model::ToolAnnotations {
+        tools()
+            .into_iter()
+            .find(|t| t.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("tool {name} not found"))
+            .annotations
+            .unwrap_or_else(|| panic!("tool {name} has no annotations"))
+    }
+
+    /// Completeness anchor: proves wire name == fn name, the count is 67, and the
+    /// classification below covers EXACTLY the real tool set (catches renames/adds/typos).
+    #[test]
+    fn wire_names_match_classification_and_count_is_67() {
+        let names: Vec<String> = tools().iter().map(|t| t.name.to_string()).collect();
+        assert_eq!(
+            names.len(),
+            67,
+            "tool count changed — update tool_count assertions too"
+        );
+        let mut covered: Vec<&str> = READONLY
+            .iter()
+            .chain(DESTRUCTIVE)
+            .chain(IDEMPOTENT)
+            .chain(ADDITIVE)
+            .copied()
+            .chain(["call_rpc", "invoke_function"])
+            .collect();
+        covered.sort_unstable();
+        let mut actual: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        actual.sort_unstable();
+        assert_eq!(
+            covered, actual,
+            "classification set != actual tool wire names"
+        );
+    }
+
+    #[test]
+    fn every_tool_is_annotated() {
+        for t in tools() {
+            assert!(
+                t.annotations.is_some(),
+                "tool {} has no annotations",
+                t.name
+            );
+        }
+    }
+
+    #[test]
+    fn readonly_tools_marked() {
+        for &n in READONLY {
+            assert_eq!(ann(n).read_only_hint, Some(true), "{n} should be read_only");
+        }
+    }
+
+    #[test]
+    fn destructive_tools_marked() {
+        for &n in DESTRUCTIVE {
+            let a = ann(n);
+            assert_eq!(a.destructive_hint, Some(true), "{n} should be destructive");
+            assert_ne!(
+                a.read_only_hint,
+                Some(true),
+                "{n} destructive must not be read_only"
+            );
+        }
+    }
+
+    #[test]
+    fn idempotent_tools_marked() {
+        for &n in IDEMPOTENT {
+            let a = ann(n);
+            assert_eq!(a.idempotent_hint, Some(true), "{n} should be idempotent");
+            assert_eq!(
+                a.destructive_hint,
+                Some(false),
+                "{n} should be non-destructive"
+            );
+        }
+    }
+
+    #[test]
+    fn additive_tools_marked() {
+        for &n in ADDITIVE {
+            let a = ann(n);
+            assert_eq!(
+                a.destructive_hint,
+                Some(false),
+                "{n} additive should be non-destructive"
+            );
+            assert_eq!(
+                a.idempotent_hint,
+                Some(false),
+                "{n} additive should be non-idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn open_world_only_invoke_function() {
+        for t in tools() {
+            let ow = t.annotations.as_ref().and_then(|a| a.open_world_hint);
+            if t.name.as_ref() == "invoke_function" {
+                assert_eq!(ow, Some(true), "invoke_function must be open_world");
+            } else {
+                assert_ne!(ow, Some(true), "{} must not be open_world", t.name);
+            }
         }
     }
 }
