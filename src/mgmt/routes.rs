@@ -1238,11 +1238,6 @@ impl MgmtState {
         // exposes operational counters for ISO/IEC 27001 A.8.16 compliance.
         let metrics_router = Router::new()
             .route("/admin/_metrics", get(super::metrics::handler))
-            // v1.50 — host-wide Prometheus metrics carry per-tenant labels;
-            // owner-only, same host-wide posture as backups/host-audit.
-            .layer(axum::middleware::from_fn(
-                crate::mgmt::tenant_authz::require_owner_layer,
-            ))
             .with_state(self.clone());
 
         // Per-admin preferences hub. First section: locale switch (was on

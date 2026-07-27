@@ -118,7 +118,11 @@ async fn status_of(app: &axum::Router, cookie: &str, uri: &str) -> StatusCode {
         .status()
 }
 
-const HOST_WIDE: &[&str] = &["/admin/api/backups", "/admin/api/audit", "/admin/_metrics"];
+// Backups (all tenants' data + plaintext tokens) and the host audit view
+// (row-level cross-tenant activity) are owner-only. `/admin/_metrics` is NOT
+// gated — Prometheus counters carry no tenant content/roster and the
+// adversarial review did not flag it, so any authenticated admin may read it.
+const HOST_WIDE: &[&str] = &["/admin/api/backups", "/admin/api/audit"];
 
 #[tokio::test]
 async fn member_admin_is_forbidden_on_host_wide_surfaces() {

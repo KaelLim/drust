@@ -33,8 +33,6 @@ pub fn visibility_where(is_owner: bool) -> &'static str {
 
 // ─── route-layer guard middleware ────────────────────────────────────────────
 
-use axum::response::IntoResponse;
-
 /// State for `tenant_ownership_layer` — mirrors
 /// `admin_profile::AdminProfileLayerState` (meta handle only).
 #[derive(Clone)]
