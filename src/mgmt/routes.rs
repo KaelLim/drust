@@ -867,6 +867,14 @@ impl MgmtState {
             )
             .with_state(signed_bytes_state);
 
+        // v1.50 — route-level ownership guard state, shared by the two
+        // tenant-scoped sub-routers below. The layer itself is mounted per
+        // sub-router (innermost, so admin_session_layer + admin_profile_layer
+        // have populated AdminId / AdminProfileExt by the time it runs).
+        let ownership_guard_state = crate::mgmt::tenant_authz::TenantOwnershipLayerState {
+            meta: self.meta.clone(),
+        };
+
         // Tenant admin sub-router (existing behaviour).
         let tenants_router = Router::new()
             .route("/admin/tenants", get(list_page_axum))
@@ -1127,6 +1135,12 @@ impl MgmtState {
                 "/admin/tenants/{id}/_cron/{name}/delete",
                 post(super::cron_admin::delete),
             )
+            // v1.50 — ownership guard: member admins 404 on tenants they do
+            // not own; routes without an `{id}` param pass through.
+            .layer(axum::middleware::from_fn_with_state(
+                ownership_guard_state.clone(),
+                crate::mgmt::tenant_authz::tenant_ownership_layer,
+            ))
             .with_state(tenants_state);
 
         // Backups sub-router — list + download snapshots produced by
@@ -1191,6 +1205,12 @@ impl MgmtState {
                 "/admin/tenants/{id}/files/{key}/visibility",
                 post(tfiles_set_vis),
             )
+            // v1.50 — same ownership guard as tenants_router: every route
+            // here is tenant-scoped via `{id}`.
+            .layer(axum::middleware::from_fn_with_state(
+                ownership_guard_state,
+                crate::mgmt::tenant_authz::tenant_ownership_layer,
+            ))
             .with_state(tenant_files_state);
 
         // Internal design-system showcase. Renders every component class

@@ -31,6 +31,71 @@ pub fn visibility_where(is_owner: bool) -> &'static str {
     }
 }
 
+// ─── route-layer guard middleware ────────────────────────────────────────────
+
+use axum::response::IntoResponse;
+
+/// State for `tenant_ownership_layer` — mirrors
+/// `admin_profile::AdminProfileLayerState` (meta handle only).
+#[derive(Clone)]
+pub struct TenantOwnershipLayerState {
+    pub meta: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+}
+
+/// v1.50 — route-level ownership guard for the tenant-scoped admin
+/// sub-routers (`tenants_router` + `admin_tenant_files_router`). Reads the
+/// `{id}` path param; routes on the same router without one (host-wide
+/// listings, `/admin/audit`, …) pass through untouched. Denies — and missing
+/// tenants — get the SAME 404 "no such tenant" so a member cannot probe for
+/// a foreign tenant's existence. Independent second line of defense next to
+/// the `ensure_tenant_visible` handler choke point (DiD ≥ 2).
+///
+/// Layer order: mounted on the sub-router, so it runs AFTER (inner to)
+/// `admin_session_layer` + `admin_profile_layer` — both extensions are
+/// already populated. Missing extensions fail closed (treated as member /
+/// denied).
+pub async fn tenant_ownership_layer(
+    axum::extract::State(state): axum::extract::State<TenantOwnershipLayerState>,
+    params: axum::extract::RawPathParams,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let tenant_id = params
+        .iter()
+        .find(|(k, _)| *k == "id")
+        .map(|(_, v)| v.to_string());
+    let Some(tenant_id) = tenant_id else {
+        return next.run(req).await; // non-tenant-scoped route
+    };
+    let is_owner = req
+        .extensions()
+        .get::<crate::mgmt::admin_profile::AdminProfileExt>()
+        .map(|p| p.is_owner)
+        .unwrap_or(false); // no profile → treat as member, fail-closed
+    let caller = req
+        .extensions()
+        .get::<crate::auth::middleware::AdminId>()
+        .map(|a| a.0);
+    let Some(caller) = caller else {
+        return (axum::http::StatusCode::NOT_FOUND, "no such tenant").into_response();
+    };
+    let owner: Result<Option<i64>, _> = {
+        let conn = state.meta.lock().await;
+        conn.query_row(
+            "SELECT owner_admin_id FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tenant_id],
+            |r| r.get(0),
+        )
+    };
+    match owner {
+        Ok(o) if tenant_access_for(is_owner, caller, o) == TenantAccess::Allow => {
+            next.run(req).await
+        }
+        // Missing tenant, soft-deleted, or member-not-owned: same 404.
+        _ => (axum::http::StatusCode::NOT_FOUND, "no such tenant").into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
