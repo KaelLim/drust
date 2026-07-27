@@ -194,6 +194,74 @@
         });
       }
       ,
+      // Type-to-confirm modal (Cloudflare-style destructive action). Shows a
+      // copyable `phrase` chip + a text input; the OK button stays disabled
+      // until the typed value exactly matches `phrase`. Resolves true on
+      // confirm, null on cancel/Escape/backdrop.
+      confirmTyped: function (opts) {
+        opts = opts || {};
+        return new Promise(function (resolve) {
+          closeCb = resolve;
+          var phrase = opts.phrase || '';
+          titleEl.textContent = opts.title || '{{ t.s("common.modal.title_confirm") }}';
+          bodyEl.innerHTML = '';
+          if (opts.body) {
+            var p = document.createElement('p');
+            p.className = 'modal-form-hint';
+            p.textContent = opts.body;
+            bodyEl.appendChild(p);
+          }
+          // Copyable phrase chip (same affordance as the codeBlock copy button).
+          var wrap = document.createElement('div');
+          wrap.className = 'modal-code-wrap';
+          var code = document.createElement('code');
+          code.textContent = phrase;
+          var copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.className = 'modal-code-copy';
+          copyBtn.setAttribute('aria-label', '{{ t.s("common.button.copy_to_clipboard") }}');
+          copyBtn.title = '{{ t.s("common.button.copy_to_clipboard") }}';
+          copyBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>';
+          copyBtn.addEventListener('click', function () {
+            navigator.clipboard.writeText(phrase).then(function () {
+              copyBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>';
+              copyBtn.classList.add('is-ok');
+              setTimeout(function () {
+                copyBtn.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>';
+                copyBtn.classList.remove('is-ok');
+              }, 1200);
+            });
+          });
+          wrap.appendChild(code);
+          wrap.appendChild(copyBtn);
+          bodyEl.appendChild(wrap);
+          // Confirmation input — OK is enabled only on an exact match.
+          var field = document.createElement('input');
+          field.type = 'text';
+          field.className = 'modal-input';
+          field.placeholder = phrase;
+          field.autocomplete = 'off';
+          field.spellcheck = false;
+          field.style.marginTop = '10px';
+          bodyEl.appendChild(field);
+          inputEl.hidden = true;
+          actionsEl.innerHTML = '';
+          actionsEl.appendChild(btn('{{ t.s("common.button.cancel") }}', 'ghost', function () { close(null); }));
+          var okBtn = btn(opts.okText || '{{ t.s("common.button.ok") }}', opts.danger ? 'danger' : 'primary', function () {
+            if (field.value.trim() === phrase) close(true);
+          });
+          okBtn.disabled = true;
+          actionsEl.appendChild(okBtn);
+          if (opts.danger) box.classList.add('modal-variant-danger');
+          field.addEventListener('input', function () { okBtn.disabled = field.value.trim() !== phrase; });
+          field.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && field.value.trim() === phrase) { e.preventDefault(); close(true); }
+          });
+          overlay.hidden = false;
+          setTimeout(function () { field.focus(); }, 20);
+        });
+      }
+      ,
       detail: function (opts) {
         opts = opts || {};
         // Optional `opts.onClose` fires on ANY dismissal (OK button, Escape, or

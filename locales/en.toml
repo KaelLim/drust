@@ -114,6 +114,7 @@ title_input = "Input"
 title_notice = "Notice"
 [common.pager]
 next = "next →"
+page_fmt = "Page {cur} of {total}"
 prev = "← prev"
 
 [common.pill]
@@ -1250,6 +1251,10 @@ new_tenant = "New tenant"
 total = "{n} tenants"
 [tenants_list.disk]
 banner_title = "Disk at {pct}% free — uploads paused"
+[tenants_list.delete]
+body = "This permanently removes the tenant's database, tokens, and any stored files. Type the name to confirm."
+confirm = "Delete"
+
 [tenants_list.head]
 eyebrow = "Admin · platform"
 subtitle = "Each tenant gets its own SQLite database, S3 bucket pair, OAuth registrations, anon & service keys, and MCP endpoint. Click a row to enter the tenant studio."

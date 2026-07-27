@@ -112,6 +112,11 @@
             </tr>
           </tbody>
         </table>
+        <div class="ten-pager" id="tenants-pager" hidden>
+          <button type="button" class="btn sm ghost" id="ten-prev">{{ t.s("common.pager.prev") }}</button>
+          <span class="mono" id="ten-pageinfo"></span>
+          <button type="button" class="btn sm ghost" id="ten-next">{{ t.s("common.pager.next") }}</button>
+        </div>
         <div class="card-foot mono" style="justify-content:flex-end;gap:14px;">
           {% if !stats_age_display.is_empty() %}<span>stats sampled {{ stats_age_display }}</span>{% endif %}
           <span>refresh every {{ stats_interval_min }} min</span>
@@ -139,7 +144,13 @@
             f.addEventListener('submit', async function (e) {
               e.preventDefault();
               var name = f.getAttribute('data-name') || 'this tenant';
-              var ok = await drustUI.confirm({title:'Delete tenant', body:'Delete "' + name + '"? This removes its database, tokens, and any stored files.', okText:'Delete', danger:true});
+              var ok = await drustUI.confirmTyped({
+                title:  '{{ t.s("common.button.delete_tenant") }}',
+                body:   '{{ t.s("tenants_list.delete.body") }}',
+                phrase: name,
+                okText: '{{ t.s("tenants_list.delete.confirm") }}',
+                danger: true
+              });
               if (ok) f.submit();
             });
           });
@@ -149,37 +160,61 @@
             var emptyRow = document.getElementById('tenants-empty-row');
             var emptyQ = document.getElementById('tenants-empty-q');
             var countEl = document.getElementById('tenants-count');
+            var pager = document.getElementById('tenants-pager');
+            var prevBtn = document.getElementById('ten-prev');
+            var nextBtn = document.getElementById('ten-next');
+            var pageInfo = document.getElementById('ten-pageinfo');
+            var pageFmt = '{{ t.s("common.pager.page_fmt") }}';
+            var PER_PAGE = 20;
             var totalRows = rows.length;
-            if (!input || !rows.length) return;
-            function applyFilter() {
-              var q = input.value.trim().toLowerCase();
-              var visible = 0;
-              rows.forEach(function (tr) {
-                if (!q) { tr.hidden = false; visible++; return; }
+            var page = 1;
+            if (!rows.length) return;
+            function render() {
+              var q = input ? input.value.trim().toLowerCase() : '';
+              var matched = rows.filter(function (tr) {
+                if (!q) return true;
                 var name = (tr.getAttribute('data-name') || '').toLowerCase();
                 var id = (tr.getAttribute('data-id') || '').toLowerCase();
-                var hit = name.indexOf(q) !== -1 || id.indexOf(q) !== -1;
-                tr.hidden = !hit;
-                if (hit) visible++;
+                return name.indexOf(q) !== -1 || id.indexOf(q) !== -1;
               });
-              if (visible === 0 && q) { emptyRow.hidden = false; emptyQ.textContent = q; }
+              var totalPages = Math.max(1, Math.ceil(matched.length / PER_PAGE));
+              if (page > totalPages) page = totalPages;
+              if (page < 1) page = 1;
+              var start = (page - 1) * PER_PAGE;
+              rows.forEach(function (tr) { tr.hidden = true; });
+              matched.slice(start, start + PER_PAGE).forEach(function (tr) { tr.hidden = false; });
+              if (matched.length === 0 && q) { emptyRow.hidden = false; emptyQ.textContent = q; }
               else { emptyRow.hidden = true; }
               if (countEl) {
                 countEl.textContent = q
-                  ? visible + ' / ' + totalRows + ' tenants'
+                  ? matched.length + ' / ' + totalRows + ' tenants'
                   : totalRows + ' tenants';
               }
+              if (pager) {
+                if (totalPages <= 1) { pager.hidden = true; }
+                else {
+                  pager.hidden = false;
+                  if (pageInfo) pageInfo.textContent = pageFmt.replace('{cur}', page).replace('{total}', totalPages);
+                  if (prevBtn) prevBtn.disabled = (page <= 1);
+                  if (nextBtn) nextBtn.disabled = (page >= totalPages);
+                }
+              }
             }
-            input.addEventListener('input', applyFilter);
-            input.addEventListener('keydown', function (e) {
-              if (e.key === 'Escape') { input.value = ''; applyFilter(); input.blur(); }
-            });
-            document.addEventListener('keydown', function (e) {
-              if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
-              var t = e.target; var tag = t && t.tagName;
-              if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
-              e.preventDefault(); input.focus(); input.select();
-            });
+            if (input) {
+              input.addEventListener('input', function () { page = 1; render(); });
+              input.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape') { input.value = ''; page = 1; render(); input.blur(); }
+              });
+              document.addEventListener('keydown', function (e) {
+                if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+                var t = e.target; var tag = t && t.tagName;
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+                e.preventDefault(); input.focus(); input.select();
+              });
+            }
+            if (prevBtn) prevBtn.addEventListener('click', function () { if (page > 1) { page--; render(); } });
+            if (nextBtn) nextBtn.addEventListener('click', function () { page++; render(); });
+            render();
           })();
         </script>
         {% endif %}
