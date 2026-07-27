@@ -65,6 +65,9 @@ pub async fn call_rpc(
     // raw `serde_json::Value` and require it to be a JSON object (or null /
     // missing → empty).
     body: Option<Json<serde_json::Value>>,
+    // v1.50 (Spec B §5.2) — meta handle threaded from the route closure so the
+    // write arm can resolve the tenant's quota tier before run_write_rpc.
+    meta: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
 ) -> Response {
     let raw_body = match body {
         Some(Json(v)) => v,
@@ -268,6 +271,9 @@ pub async fn call_rpc(
                     );
                 }
 
+                // v1.50 — resolve the tenant's quota tier (transitional
+                // `read_tier`; single meta lock on the low-frequency RPC path).
+                let tier = crate::storage::quota::read_tier(&meta, &t.tenant_id).await;
                 let outcome = match crate::rpc::exec_write::run_write_rpc(
                     &pool,
                     stored.sql.clone(),
@@ -275,6 +281,7 @@ pub async fn call_rpc(
                     dry_run,
                     crate::storage::record_history::AuditActor::from_auth_ctx(&ctx_for_lookup),
                     crate::storage::record_history::CaptureLimits::from_env(),
+                    tier,
                 )
                 .await
                 {
@@ -460,20 +467,27 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
             // disable audit) and the savepoint WAS resolved cleanly —
             // 409 (LARGE_TABLE precedent for config-remediable
             // conflicts), never the 500 TX_COMMIT_FAILED class.
-            let code = if e.capture_limit_exceeded {
+            // v1.50 (Spec B §5.2): a quota refusal happened BEFORE the SAVEPOINT
+            // (nothing written) — surface it as the 507 TENANT_QUOTA_EXCEEDED
+            // disk-guard family, not a per-statement 4xx.
+            let code = if e.quota_exceeded {
+                "TENANT_QUOTA_EXCEEDED"
+            } else if e.capture_limit_exceeded {
                 "CAPTURE_LIMIT_EXCEEDED"
             } else if e.authorizer_denied {
                 "INVALID_SQL_FOR_MODE"
             } else {
                 "RPC_STATEMENT_FAILED"
             };
+            // The quota + capture-limit messages are standalone (no
+            // statement_index framing); only true per-statement failures carry
+            // the "statement N failed" prefix + index.
+            let standalone = e.quota_exceeded || e.capture_limit_exceeded;
             let mut body = serde_json::Map::new();
             body.insert("error_code".into(), json!(code));
             body.insert(
                 "message".into(),
-                if e.capture_limit_exceeded {
-                    // Not a per-statement failure — the actionable cap
-                    // message stands alone (names the knob + remediations).
+                if standalone {
                     json!(e.message)
                 } else {
                     json!(format!(
@@ -482,14 +496,16 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
                     ))
                 },
             );
-            if !e.capture_limit_exceeded {
+            if !standalone {
                 body.insert("statement_index".into(), json!(e.statement_index));
             }
             if let Some(fix) = crate::safety::error_fixes::lookup(code) {
                 body.insert("suggested_fix".into(), json!(fix));
             }
             let mut resp = Json(serde_json::Value::Object(body)).into_response();
-            *resp.status_mut() = if e.capture_limit_exceeded {
+            *resp.status_mut() = if e.quota_exceeded {
+                StatusCode::INSUFFICIENT_STORAGE
+            } else if e.capture_limit_exceeded {
                 StatusCode::CONFLICT
             } else {
                 StatusCode::BAD_REQUEST

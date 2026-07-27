@@ -242,7 +242,7 @@ pub async fn run_due_job(
     let started = std::time::Instant::now();
     let (status, error) = match job.target_kind.as_str() {
         "function" => dispatch_function(&deps, &tenant, &job, &fired).await,
-        "rpc" => dispatch_rpc(&pool, &job).await,
+        "rpc" => dispatch_rpc(&deps, &tenant, &pool, &job).await,
         other => ("error", Some(format!("unknown target_kind '{other}'"))),
     };
     let duration_ms = started.elapsed().as_millis() as i64;
@@ -302,10 +302,33 @@ async fn dispatch_function(
     }
 }
 
+/// v1.50 (Spec B §5.2) — resolve a tenant's quota tier for a cron write-RPC
+/// fire. Cron has no long-lived meta handle, so open meta.sqlite READ-ONLY off
+/// the registry's data root (never creates; a missing/unreadable DB fail-safes
+/// to tier 1, matching `quota::read_tier`). Low frequency (minute tick), so the
+/// throwaway connection is acceptable.
+fn cron_read_tier(deps: &CronDeps, tenant: &str) -> i64 {
+    let meta_path = deps.registry.data_root().join("meta.sqlite");
+    rusqlite::Connection::open_with_flags(&meta_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .and_then(|c| {
+            c.query_row(
+                "SELECT COALESCE(quota_tier, 1) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+                rusqlite::params![tenant],
+                |r| r.get::<_, i64>(0),
+            )
+        })
+        .unwrap_or(1)
+}
+
 /// RPC target: fresh registry lookup (mode/params may have changed since the
 /// job was created), then the existing read/write executors at service
 /// identity. Record-history capture rides `run_write_rpc` unchanged.
-async fn dispatch_rpc(pool: &SharedTenantPool, job: &IndexedJob) -> (&'static str, Option<String>) {
+async fn dispatch_rpc(
+    deps: &CronDeps,
+    tenant: &str,
+    pool: &SharedTenantPool,
+    job: &IndexedJob,
+) -> (&'static str, Option<String>) {
     let target = job.target_name.clone();
     let stored = match pool
         .with_reader(move |c| Ok(crate::rpc::registry::lookup(c, &target)))
@@ -370,6 +393,7 @@ async fn dispatch_rpc(pool: &SharedTenantPool, job: &IndexedJob) -> (&'static st
                     )),
                 );
             }
+            let tier = cron_read_tier(deps, tenant);
             let res = crate::rpc::exec_write::run_write_rpc(
                 pool,
                 stored.sql.clone(),
@@ -379,6 +403,7 @@ async fn dispatch_rpc(pool: &SharedTenantPool, job: &IndexedJob) -> (&'static st
                     &crate::auth::middleware::AuthCtx::Service { admin_id: None },
                 ),
                 crate::storage::record_history::CaptureLimits::from_env(),
+                tier,
             )
             .await;
             match res {

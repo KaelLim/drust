@@ -239,6 +239,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     let bus = state.bus.clone();
     let webhooks = state.webhooks.clone();
     let functions = state.functions.clone();
+    // v1.50 (Spec B, Task 3) — meta handle threaded into the record-write +
+    // write-RPC route closures for the transitional `quota::read_tier` lookup
+    // (Task 5 will move REST onto a bearer-CTE request extension).
+    let quota_meta = auth_state.meta.clone();
     let mcp = state.mcp.clone();
     let cors = build_cors_layer(&state.cors_origins);
     let rec_body_limit = max_record_body_bytes();
@@ -355,6 +359,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     let b = bus.clone();
                     let wh = webhooks.clone();
                     let fns = functions.clone();
+                    let m = quota_meta.clone();
                     move |ext, ctx, p, body| {
                         records::create_handler(
                             ext,
@@ -364,6 +369,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                             b.clone(),
                             wh.clone(),
                             fns.clone(),
+                            m.clone(),
                         )
                     }
                 })
@@ -376,6 +382,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     let b = bus.clone();
                     let wh = webhooks.clone();
                     let fns = functions.clone();
+                    let m = quota_meta.clone();
                     move |ext, ctx, p, body| {
                         records::update_handler(
                             ext,
@@ -385,6 +392,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                             b.clone(),
                             wh.clone(),
                             fns.clone(),
+                            m.clone(),
                         )
                     }
                 })
@@ -434,7 +442,14 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .route("/t/{tenant}/me/password", post(me_password_handler))
         .route(
             "/t/{tenant}/rpc/{name}",
-            post(crate::rpc::handler::call_rpc),
+            post({
+                // v1.50 (Spec B, Task 3) — thread meta so call_rpc can read the
+                // tenant's quota tier before entering run_write_rpc.
+                let m = quota_meta.clone();
+                move |ext, ctx, path, qs, body| {
+                    crate::rpc::handler::call_rpc(ext, ctx, path, qs, body, m.clone())
+                }
+            }),
         )
         // ── Admin user-management (service-only) ──────────────────────────
         .route(

@@ -26,6 +26,30 @@ pub fn is_check_violation(e: &rusqlite::Error) -> bool {
     )
 }
 
+/// v1.50 (Spec B, Task 3) — build the sentinel `rusqlite::Error` a DB write
+/// choke point returns from INSIDE its writer transaction when the tenant's
+/// hard quota is exceeded. The message is prefixed `TENANT_QUOTA_EXCEEDED: …`
+/// so BOTH surfaces map it uniformly: REST via `is_quota_exceeded` → 507, and
+/// MCP via `bail_mcp`'s `<CODE>: <message>` convention. Same shape as the
+/// module-local `policy_check_sentinel` / `invalid_input` helpers.
+pub fn quota_exceeded_error(e: crate::storage::quota::QuotaError) -> rusqlite::Error {
+    let crate::storage::quota::QuotaError::TenantQuotaExceeded { usage, limit, .. } = e;
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(1),
+        Some(format!(
+            "TENANT_QUOTA_EXCEEDED: tenant storage usage {usage}B would exceed the {limit}B limit"
+        )),
+    )
+}
+
+/// v1.50 — true when a rusqlite error is the tenant-quota sentinel produced by
+/// `quota_exceeded_error`. The REST create/update handlers use this to map the
+/// closure's `Err` onto a 507 `TENANT_QUOTA_EXCEEDED`. Substring match on the
+/// code prefix, mirroring `policy::is_policy_check_failure`.
+pub fn is_quota_exceeded(e: &rusqlite::Error) -> bool {
+    e.to_string().contains("TENANT_QUOTA_EXCEEDED")
+}
+
 /// Canonical JSON error response. v1.26: auto-attaches `suggested_fix`
 /// from the static catalog when the code is known. Unknown codes
 /// produce a body without the field (omitted via JSON `Option` shape —

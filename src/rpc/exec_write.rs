@@ -61,6 +61,11 @@ pub struct RpcStatementError {
     /// cleanly, so callers map it to HTTP 409 `CAPTURE_LIMIT_EXCEEDED`,
     /// never the 500 `TX_COMMIT_FAILED` class.
     pub capture_limit_exceeded: bool,
+    /// v1.50 (Spec B §5.2): true when the RPC was refused because the tenant is
+    /// at/over its storage quota. Checked BEFORE the SAVEPOINT, so nothing was
+    /// written and there is nothing to roll back. Callers map it to HTTP 507
+    /// `TENANT_QUOTA_EXCEEDED` (the disk-guard 507 family), never a 4xx/5xx.
+    pub quota_exceeded: bool,
 }
 
 /// Split `sql` on `;` and validate each chunk with `sqlite3_complete`.
@@ -81,6 +86,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
                 message: format!("statement contains NUL byte: {e}"),
                 authorizer_denied: false,
                 capture_limit_exceeded: false,
+                quota_exceeded: false,
             })?;
             // SAFETY: sqlite3_complete reads the NUL-terminated string we own.
             let complete = unsafe { rusqlite::ffi::sqlite3_complete(cstr.as_ptr()) };
@@ -108,6 +114,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
             message: format!("statement contains NUL byte: {e}"),
             authorizer_denied: false,
             capture_limit_exceeded: false,
+            quota_exceeded: false,
         })?;
         let complete = unsafe { rusqlite::ffi::sqlite3_complete(cstr.as_ptr()) };
         if complete == 0 {
@@ -116,6 +123,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
                 message: format!("incomplete statement at end of body: {tail}"),
                 authorizer_denied: false,
                 capture_limit_exceeded: false,
+                quota_exceeded: false,
             });
         }
         out.push(tail.to_string());
@@ -255,6 +263,7 @@ fn classify(err: rusqlite::Error, statement_index: usize) -> RpcStatementError {
         message: msg,
         authorizer_denied: denied,
         capture_limit_exceeded: false,
+        quota_exceeded: false,
     }
 }
 
@@ -327,6 +336,12 @@ pub async fn run_write_rpc(
     dry_run: bool,
     actor: crate::storage::record_history::AuditActor,
     limits: crate::storage::record_history::CaptureLimits,
+    // v1.50 (Spec B §5.2) — the tenant's quota tier (default 1 → 10 GiB),
+    // resolved by the caller from meta (REST: `read_tier`; admin playground:
+    // `state.session.meta`; cron: its own read). The in-conn `usage_on_conn`
+    // probe below is what gates; a write-mode RPC can fan out many statements,
+    // so at/over the cap we refuse it wholesale before the SAVEPOINT opens.
+    tier: i64,
 ) -> Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError> {
     let res: rusqlite::Result<Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError>> =
         pool.with_writer(move |conn| {
@@ -335,6 +350,39 @@ pub async fn run_write_rpc(
             //    closure left an authorizer attached it would
             //    prevent step 2 (Savepoint is Denied).
             crate::query::authorizer::detach_authorizer(conn);
+
+            // ── STEP 1a (v1.50, Spec B §5.2): per-tenant hard quota, checked
+            //    BEFORE the SAVEPOINT so nothing is written when refused. The
+            //    authorizer is detached (STEP 1) so the PRAGMA + `_system_files`
+            //    reads in `usage_on_conn` are permitted. `usage_on_conn` errors
+            //    are genuine DB failures → TxCommitError. Over quota → the
+            //    `quota_exceeded` statement-error channel → HTTP 507.
+            match crate::storage::quota::usage_on_conn(conn) {
+                Ok(usage) => {
+                    if let Err(qe) = crate::storage::quota::check_tenant_quota(usage, 0, tier) {
+                        let crate::storage::quota::QuotaError::TenantQuotaExceeded {
+                            usage,
+                            limit,
+                            ..
+                        } = qe;
+                        return Ok(Ok(Err(RpcStatementError {
+                            statement_index: 0,
+                            message: format!(
+                                "TENANT_QUOTA_EXCEEDED: tenant storage usage {usage}B \
+                                 would exceed the {limit}B limit"
+                            ),
+                            authorizer_denied: false,
+                            capture_limit_exceeded: false,
+                            quota_exceeded: true,
+                        })));
+                    }
+                }
+                Err(e) => {
+                    return Ok(Err(TxCommitError(format!(
+                        "tenant-quota usage probe failed: {e}"
+                    ))));
+                }
+            }
 
             // ── STEP 1b (v1.46 R2): precompute the audited table set
             //    while the connection is unrestricted (the writable
@@ -509,6 +557,7 @@ pub async fn run_write_rpc(
                         message: msg,
                         authorizer_denied: false,
                         capture_limit_exceeded: true,
+                        quota_exceeded: false,
                     }))),
                     FlushError::Db(db) => Ok(Err(TxCommitError(format!(
                         "record-history flush failed: {db}"

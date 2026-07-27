@@ -970,6 +970,10 @@ pub async fn rpc_test_run(
                 None => crate::storage::record_history::AuditActor::service(),
             };
 
+            // v1.50 (Spec B §5.2) — the admin playground shares run_write_rpc
+            // with REST/cron, so it too enforces the tenant quota. Tier from
+            // the admin-plane meta handle.
+            let tier = crate::storage::quota::read_tier(&state.session.meta, &tenant_id).await;
             let started = std::time::Instant::now();
             let run_res = crate::rpc::exec_write::run_write_rpc(
                 &pool,
@@ -978,6 +982,7 @@ pub async fn rpc_test_run(
                 dry_run,
                 actor,
                 crate::storage::record_history::CaptureLimits::from_env(),
+                tier,
             )
             .await;
             let duration_ms = started.elapsed().as_millis();

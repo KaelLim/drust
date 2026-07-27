@@ -172,6 +172,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Tenant id is not registered or has been deleted. Check the tenant id in the URL path.",
     ),
     (
+        "TENANT_QUOTA_EXCEEDED",
+        "This tenant has reached its storage quota (db + files share one cap of quota_tier × 10 GiB). Deletes and reads still work; free space by deleting rows/files, or contact the tenant owner to request a quota tier upgrade.",
+    ),
+    (
         "TX_COMMIT_FAILED",
         "drust failed to RELEASE the per-RPC SAVEPOINT. Usually indicates disk full or fsync error on the tenant's data.sqlite. Check disk free space and dmesg.",
     ),

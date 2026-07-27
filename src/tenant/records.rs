@@ -706,6 +706,7 @@ pub struct DataBody {
     pub data: serde_json::Value,
 }
 
+#[allow(clippy::too_many_arguments)] // +meta (v1.50 quota) pushes to 8 params
 pub async fn create_handler(
     Extension(t): Extension<TenantRef>,
     Extension(ctx): Extension<AuthCtx>,
@@ -714,11 +715,18 @@ pub async fn create_handler(
     bus: EventBus,
     webhooks: Arc<WebhookDispatcher>,
     functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
+    // v1.50 (Spec B, Task 3) — meta handle for the transitional `read_tier`
+    // quota lookup. Threaded from the route closure (Task 5 swaps this for a
+    // bearer-CTE request extension; the helper stays for MCP/edge/RPC).
+    meta: Arc<tokio::sync::Mutex<rusqlite::Connection>>,
 ) -> Response {
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Insert).await {
         Ok(s) => s,
         Err(r) => return r,
     };
+    // Per-tenant hard quota tier (default 1 → 10 GiB). Read once before the
+    // writer tx; the in-tx `usage_on_conn` probe below is what actually gates.
+    let quota_tier = crate::storage::quota::read_tier(&meta, &t.tenant_id).await;
 
     // Owner-field policy checks for Service/User (anon already blocked by require_write_cap):
     if let Some(ref owner_field) = schema.owner_field {
@@ -858,6 +866,17 @@ pub async fn create_handler(
     let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<(i64, serde_json::Value)> {
+            // v1.50 (Spec B §5.1) — per-tenant hard quota, measured on THIS
+            // writer conn inside the tx so the check serializes with the INSERT
+            // it guards (single-writer invariant, no TOCTOU). A growth-shaped
+            // write passes incoming=0: already at/over the cap rejects the next
+            // growth. Reject → sentinel rusqlite::Error → 507 in the match below.
+            crate::storage::quota::check_tenant_quota(
+                crate::storage::quota::usage_on_conn(tx)?,
+                0,
+                quota_tier,
+            )
+            .map_err(crate::error::quota_exceeded_error)?;
             // Validate against schema
             let schema = match describe_collection(tx, &coll_clone)? {
                 Some(s) => s,
@@ -955,6 +974,11 @@ pub async fn create_handler(
             webhooks.dispatch(&tenant_id, &coll, ev);
             r
         }
+        Err(ref e) if crate::error::is_quota_exceeded(e) => json_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "TENANT_QUOTA_EXCEEDED",
+            &e.to_string(),
+        ),
         Err(ref e) if crate::query::policy::is_policy_check_failure(e) => json_error(
             StatusCode::FORBIDDEN,
             "POLICY_CHECK_FAILED",
@@ -990,6 +1014,7 @@ pub async fn create_handler(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // +meta (v1.50 quota) pushes to 8 params
 pub async fn update_handler(
     Extension(t): Extension<TenantRef>,
     Extension(ctx): Extension<AuthCtx>,
@@ -998,11 +1023,15 @@ pub async fn update_handler(
     bus: EventBus,
     webhooks: Arc<WebhookDispatcher>,
     functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
+    // v1.50 (Spec B, Task 3) — meta handle for the transitional `read_tier`
+    // quota lookup (see `create_handler`).
+    meta: Arc<tokio::sync::Mutex<rusqlite::Connection>>,
 ) -> Response {
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Update).await {
         Ok(s) => s,
         Err(r) => return r,
     };
+    let quota_tier = crate::storage::quota::read_tier(&meta, &t.tenant_id).await;
     // WRITE owner clause: always owner-scoped for User regardless of read_scope
     // (audit3 F1) — read_scope only widens reads, never write scope.
     let owner_filter = compute_owner_write_filter(&ctx, &schema);
@@ -1112,6 +1141,15 @@ pub async fn update_handler(
     let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
+            // v1.50 (Spec B §5.1) — per-tenant hard quota (see create_handler).
+            // A growth-shaped UPDATE passes incoming=0; delete / shrink is not
+            // gated (only ever lowers usage). Reject → sentinel → 507 below.
+            crate::storage::quota::check_tenant_quota(
+                crate::storage::quota::usage_on_conn(tx)?,
+                0,
+                quota_tier,
+            )
+            .map_err(crate::error::quota_exceeded_error)?;
             let schema = match describe_collection(tx, &coll_clone)? {
                 Some(s) => s,
                 None => return Err(rusqlite::Error::InvalidQuery),
@@ -1262,6 +1300,11 @@ pub async fn update_handler(
             webhooks.dispatch(&tenant_id, &coll, ev);
             r
         }
+        Err(ref e) if crate::error::is_quota_exceeded(e) => json_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "TENANT_QUOTA_EXCEEDED",
+            &e.to_string(),
+        ),
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             (StatusCode::NOT_FOUND, "no such record").into_response()
         }

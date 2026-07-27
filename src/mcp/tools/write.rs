@@ -288,8 +288,25 @@ pub async fn insert_record_checked(
         .collect();
 
     let webhooks = s.inner().webhooks.clone();
+    // v1.50 (Spec B §5.1) — per-tenant quota tier. `meta` is Some on the prod
+    // MCP + edge host state; test-only ctors pass None → fail-safe tier 1 (the
+    // check never fires on the tiny test DBs). Read once before the writer tx.
+    let inner = s.inner();
+    let quota_tier = match inner.meta.as_ref() {
+        Some(m) => crate::storage::quota::read_tier(m, &inner.tenant_id).await,
+        None => 1,
+    };
     let (id, record) = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<(i64, serde_json::Value)> {
+            // Per-tenant hard quota, measured on THIS writer conn inside the tx
+            // (single-writer invariant, no TOCTOU). Reject → sentinel rusqlite
+            // error whose message the MCP surface maps to TENANT_QUOTA_EXCEEDED.
+            crate::storage::quota::check_tenant_quota(
+                crate::storage::quota::usage_on_conn(tx)?,
+                0,
+                quota_tier,
+            )
+            .map_err(crate::error::quota_exceeded_error)?;
             let schema = describe_collection(tx, &coll)?
                 .ok_or_else(|| invalid_input(format!("unknown collection: '{}'", coll)))?;
             let allowed: std::collections::HashSet<&str> =
@@ -450,8 +467,21 @@ pub async fn update_record_checked(
         .map(|v| v.name.clone())
         .collect();
 
+    // v1.50 (Spec B §5.1) — per-tenant quota tier (see insert_record_checked).
+    let inner = s.inner();
+    let quota_tier = match inner.meta.as_ref() {
+        Some(m) => crate::storage::quota::read_tier(m, &inner.tenant_id).await,
+        None => 1,
+    };
     let record = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
+            // Per-tenant hard quota (growth-shaped UPDATE passes incoming=0).
+            crate::storage::quota::check_tenant_quota(
+                crate::storage::quota::usage_on_conn(tx)?,
+                0,
+                quota_tier,
+            )
+            .map_err(crate::error::quota_exceeded_error)?;
             let schema = describe_collection(tx, &coll)?
                 .ok_or_else(|| invalid_input(format!("unknown collection: '{}'", coll)))?;
             let allowed: std::collections::HashSet<&str> =
