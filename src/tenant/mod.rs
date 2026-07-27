@@ -359,17 +359,19 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     let b = bus.clone();
                     let wh = webhooks.clone();
                     let fns = functions.clone();
-                    let m = quota_meta.clone();
-                    move |ext, ctx, p, body| {
+                    // v1.50 (Spec B, Task 5) — quota tier now rides the bearer
+                    // CTE as a request extension; `create_handler` extracts it,
+                    // so this route no longer threads `quota_meta`.
+                    move |ext, ctx, quota, p, body| {
                         records::create_handler(
                             ext,
                             ctx,
+                            quota,
                             p,
                             body,
                             b.clone(),
                             wh.clone(),
                             fns.clone(),
-                            m.clone(),
                         )
                     }
                 })
@@ -382,17 +384,18 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     let b = bus.clone();
                     let wh = webhooks.clone();
                     let fns = functions.clone();
-                    let m = quota_meta.clone();
-                    move |ext, ctx, p, body| {
+                    // v1.50 (Spec B, Task 5) — quota tier from the bearer CTE
+                    // request extension; `update_handler` extracts it.
+                    move |ext, ctx, quota, p, body| {
                         records::update_handler(
                             ext,
                             ctx,
+                            quota,
                             p,
                             body,
                             b.clone(),
                             wh.clone(),
                             fns.clone(),
-                            m.clone(),
                         )
                     }
                 })

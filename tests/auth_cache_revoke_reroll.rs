@@ -20,6 +20,7 @@ async fn reroll_clears_cached_service_bearer() {
             email_snapshot: None,
             file_caps: Default::default(),
             expires_at: None,
+            quota_tier: 1,
         },
     );
     assert_eq!(cache.len(), 1);

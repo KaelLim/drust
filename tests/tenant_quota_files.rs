@@ -25,6 +25,8 @@ use object_store::memory::InMemory;
 use std::sync::Arc;
 use tower::ServiceExt;
 
+mod helpers;
+
 /// 11 GiB — comfortably over the tier-1 (10 GiB) cap once the tiny db page
 /// bytes are added on top.
 const OVER_LIMIT_BYTES: i64 = 11 * 1024 * 1024 * 1024;
@@ -470,5 +472,112 @@ async fn edge_put_file_over_quota_denied() {
         file_row_count(&pool).await,
         1,
         "edge put-file must not add a row"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Task 5 — quota_tier rides the bearer CTE + auth cache. Two properties
+// this pins:
+//   1. A cache HIT serves the tier captured at fill time (it does NOT
+//      re-read meta), so an out-of-band tier bump is INVISIBLE until the
+//      tenant's cache entry is evicted.
+//   2. Evicting the tenant entry (the hook the T6 approve/PATCH handlers
+//      call) makes the raised tier take effect on the very NEXT request —
+//      no waiting for the safety TTL.
+// The over-quota tenant sits at ~11 GiB; tier 1 caps at 10 GiB (deny),
+// tier 2 at 20 GiB (allow), so the same insert flips 507 → 201 exactly
+// when the fresh tier is read.
+// ────────────────────────────────────────────────────────────────────
+
+/// Create an `items` collection (bare table — inserts accepted) and inflate
+/// `_system_files` past the tier-1 cap on `tenant`.
+async fn seed_items_over_quota(pool: &SharedTenantPool) {
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );",
+        )?;
+        c.execute(
+            "INSERT INTO \"_system_files\" (key, original_name, size_bytes, uploader) \
+             VALUES ('quota-filler', 'filler', ?1, 'service')",
+            rusqlite::params![OVER_LIMIT_BYTES],
+        )
+        .map(|_| ())
+    })
+    .await
+    .unwrap();
+}
+
+/// Out-of-band `quota_tier` change via a second meta connection — mirrors a
+/// raw column flip with NO production handler running, so no invalidation
+/// hook fires (the test drives eviction itself).
+fn set_tier_out_of_band(dir: &tempfile::TempDir, tenant: &str, tier: i64) {
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.execute(
+        "UPDATE tenants SET quota_tier = ?2 WHERE id = ?1",
+        rusqlite::params![tenant, tier],
+    )
+    .unwrap();
+}
+
+async fn insert_item(app: &axum::Router, tenant: &str, tok: &str) -> StatusCode {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tenant}/records/items"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"data":{"name":"x"}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn quota_tier_rides_cache_and_eviction_makes_change_immediate() {
+    let (app, tok, cache, dir) = helpers::spin_up_tenant_with_role_cached("blog", "service").await;
+    let pool = helpers::grab_pool("blog", &dir).await;
+    seed_items_over_quota(&pool).await;
+
+    // Request 1 — cache MISS: the CTE reads tier=1 → over the 10 GiB cap → 507.
+    // This also WARMS the cache entry (with the tier captured on the CTE).
+    assert_eq!(
+        insert_item(&app, "blog", &tok).await,
+        StatusCode::INSUFFICIENT_STORAGE,
+        "tier-1 over-quota insert must 507"
+    );
+    assert_eq!(cache.misses(), 1, "first request is a cache miss");
+    assert_eq!(cache.hits(), 0);
+
+    // Bump the tenant to tier 2 (20 GiB) OUT OF BAND. No handler ran, so no
+    // eviction hook fired: the warm cache entry still carries tier=1.
+    set_tier_out_of_band(&dir, "blog", 2);
+
+    // Request 2 — cache HIT serves the STALE tier=1 → still 507. Pins that
+    // quota_tier rides the cache (a hit does NOT re-read meta for the tier).
+    assert_eq!(
+        insert_item(&app, "blog", &tok).await,
+        StatusCode::INSUFFICIENT_STORAGE,
+        "a stale tier-1 cache hit must still 507 (tier rides the cache)"
+    );
+    assert_eq!(cache.hits(), 1, "second request must be a cache hit");
+
+    // Evict the tenant's cache entry — exactly what the T6 approve/PATCH tier
+    // change will do (per-tenant scan-clear, no waiting for the safety TTL).
+    cache.clear_tenant("blog");
+
+    // Request 3 — cache MISS: the CTE re-reads tier=2 → 11 GiB < 20 GiB → the
+    // insert now succeeds. The raised tier took effect on the next request.
+    assert_eq!(
+        insert_item(&app, "blog", &tok).await,
+        StatusCode::CREATED,
+        "after eviction the raised tier takes effect immediately"
     );
 }

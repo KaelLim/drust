@@ -71,6 +71,12 @@ pub enum CachedAuth {
         /// variant, else an expired CLI PAT keeps resolving for up to
         /// `safety_ttl` after it expires.
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        /// v1.50 (Spec B) — the tenant's `quota_tier` captured at fill time
+        /// (CTE col 13). A hit reconstructs the `TenantQuotaTier` extension
+        /// from it so REST write handlers see the same tier the DB path
+        /// produces. A tier change (approve / PATCH) MUST evict the tenant's
+        /// entry (`clear_tenant`) or the stale tier survives up to `safety_ttl`.
+        quota_tier: i64,
     },
     /// `drust_user_*` session bearer. `expires_at` is the cached source of
     /// truth → self-check, no `_system_sessions` read on a hit. The
@@ -86,6 +92,8 @@ pub enum CachedAuth {
         publish_anon_allowed: bool,
         /// v1.42 — see `Bearer::file_caps`.
         file_caps: crate::tenant::file_caps::TenantFileCaps,
+        /// v1.50 (Spec B) — see `Bearer::quota_tier`.
+        quota_tier: i64,
     },
 }
 
@@ -250,6 +258,7 @@ mod tests {
                 email_snapshot: Some("admin@x".to_string()),
                 file_caps: Default::default(),
                 expires_at: None,
+                quota_tier: 1,
             },
         );
         assert_eq!(c.len(), 1);
@@ -281,6 +290,7 @@ mod tests {
                 email_snapshot: None,
                 file_caps: Default::default(),
                 expires_at: None,
+                quota_tier: 1,
             },
         );
         // Fresh: hit.
@@ -307,6 +317,7 @@ mod tests {
                 email_snapshot: None,
                 file_caps: Default::default(),
                 expires_at: Some(past),
+                quota_tier: 1,
             },
         );
         // The cache itself still returns it (freshness only); the router hit path

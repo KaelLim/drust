@@ -22,6 +22,7 @@ fn user_entry(tenant: &str, uid: &str) -> CachedAuth {
         publish_user_allowed: false,
         publish_anon_allowed: false,
         file_caps: Default::default(),
+        quota_tier: 1,
     }
 }
 

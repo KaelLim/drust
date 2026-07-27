@@ -53,6 +53,7 @@ async fn expired_user_entry_rejected_from_cache_without_db_read() {
             publish_user_allowed: false,
             publish_anon_allowed: false,
             file_caps: Default::default(),
+            quota_tier: 1,
         },
     );
 

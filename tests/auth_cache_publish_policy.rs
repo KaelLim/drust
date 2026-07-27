@@ -19,6 +19,7 @@ async fn publish_policy_change_clears_tenant_entries() {
             email_snapshot: None,
             file_caps: Default::default(),
             expires_at: None,
+            quota_tier: 1,
         },
     );
 

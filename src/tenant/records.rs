@@ -9,7 +9,7 @@ use crate::storage::schema::{
 };
 use crate::tenant::WebhookDispatcher;
 use crate::tenant::events::{Event, EventBus};
-use crate::tenant::router::{TenantRef, TokenRole};
+use crate::tenant::router::{TenantQuotaTier, TenantRef, TokenRole};
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -706,27 +706,27 @@ pub struct DataBody {
     pub data: serde_json::Value,
 }
 
-#[allow(clippy::too_many_arguments)] // +meta (v1.50 quota) pushes to 8 params
+#[allow(clippy::too_many_arguments)] // +Extension(quota_tier) keeps this at 8 params
 pub async fn create_handler(
     Extension(t): Extension<TenantRef>,
     Extension(ctx): Extension<AuthCtx>,
+    // v1.50 (Spec B, Task 5) — the tenant's quota tier, delivered on the
+    // bearer-auth CTE (col 13) as a request extension: zero extra meta lock on
+    // the REST hot path. MCP/edge/write-RPC keep `quota::read_tier` (they never
+    // see this extension).
+    Extension(TenantQuotaTier(quota_tier)): Extension<TenantQuotaTier>,
     Path((_tenant, coll)): Path<(String, String)>,
     Json(body): Json<DataBody>,
     bus: EventBus,
     webhooks: Arc<WebhookDispatcher>,
     functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
-    // v1.50 (Spec B, Task 3) — meta handle for the transitional `read_tier`
-    // quota lookup. Threaded from the route closure (Task 5 swaps this for a
-    // bearer-CTE request extension; the helper stays for MCP/edge/RPC).
-    meta: Arc<tokio::sync::Mutex<rusqlite::Connection>>,
 ) -> Response {
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Insert).await {
         Ok(s) => s,
         Err(r) => return r,
     };
-    // Per-tenant hard quota tier (default 1 → 10 GiB). Read once before the
-    // writer tx; the in-tx `usage_on_conn` probe below is what actually gates.
-    let quota_tier = crate::storage::quota::read_tier(&meta, &t.tenant_id).await;
+    // Per-tenant hard quota tier (default 1 → 10 GiB) — from the bearer CTE.
+    // The in-tx `usage_on_conn` probe below is what actually gates.
 
     // Owner-field policy checks for Service/User (anon already blocked by require_write_cap):
     if let Some(ref owner_field) = schema.owner_field {
@@ -1014,24 +1014,22 @@ pub async fn create_handler(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // +meta (v1.50 quota) pushes to 8 params
+#[allow(clippy::too_many_arguments)] // +Extension(quota_tier) keeps this at 8 params
 pub async fn update_handler(
     Extension(t): Extension<TenantRef>,
     Extension(ctx): Extension<AuthCtx>,
+    // v1.50 (Spec B, Task 5) — quota tier from the bearer CTE (see create_handler).
+    Extension(TenantQuotaTier(quota_tier)): Extension<TenantQuotaTier>,
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
     Json(body): Json<DataBody>,
     bus: EventBus,
     webhooks: Arc<WebhookDispatcher>,
     functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
-    // v1.50 (Spec B, Task 3) — meta handle for the transitional `read_tier`
-    // quota lookup (see `create_handler`).
-    meta: Arc<tokio::sync::Mutex<rusqlite::Connection>>,
 ) -> Response {
     let schema = match require_write_cap(&t, &ctx, &coll, DmlVerb::Update).await {
         Ok(s) => s,
         Err(r) => return r,
     };
-    let quota_tier = crate::storage::quota::read_tier(&meta, &t.tenant_id).await;
     // WRITE owner clause: always owner-scoped for User regardless of read_scope
     // (audit3 F1) — read_scope only widens reads, never write scope.
     let owner_filter = compute_owner_write_filter(&ctx, &schema);

@@ -152,6 +152,18 @@ pub struct TenantRef {
     pub role: TokenRole,
 }
 
+/// v1.50 (Spec B, Task 5) — the tenant's `quota_tier` (limit = tier × 10 GiB),
+/// rides the bearer-auth CTE (col 13) so REST write handlers read it from a
+/// request extension with zero extra `meta` lock. Filled on BOTH the DB path
+/// (from the CTE) and a cache hit (from the cached tier). A tier change
+/// (approve / PATCH) evicts the tenant's cache entry so the next request
+/// re-reads the fresh tier; the safety TTL bounds any missed eviction.
+/// Low-frequency enforcement points (MCP write / edge enforce / write-RPC /
+/// tus finalize) keep `quota::read_tier` instead — they never see this
+/// extension.
+#[derive(Clone, Copy, Debug)]
+pub struct TenantQuotaTier(pub i64);
+
 pub async fn bearer_auth_layer(
     State(state): State<TenantAuthState>,
     Path(params): Path<std::collections::HashMap<String, String>>,
@@ -234,6 +246,7 @@ pub async fn bearer_auth_layer(
                     email_snapshot,
                     file_caps,
                     expires_at,
+                    quota_tier,
                 } => {
                     // Cross-tenant guard: the cached entry is bound to one
                     // tenant; a request for a different tenant in the path
@@ -302,6 +315,7 @@ pub async fn bearer_auth_layer(
                         });
                         req.extensions_mut().insert(publish_policy);
                         req.extensions_mut().insert(file_caps);
+                        req.extensions_mut().insert(TenantQuotaTier(quota_tier));
                         return next.run(req).await;
                     }
                 }
@@ -312,6 +326,7 @@ pub async fn bearer_auth_layer(
                     publish_user_allowed,
                     publish_anon_allowed,
                     file_caps,
+                    quota_tier,
                 } => {
                     if cached_tid != tenant_id {
                         // Cross-tenant: do not serve from cache; fall through.
@@ -351,6 +366,7 @@ pub async fn bearer_auth_layer(
                         });
                         req.extensions_mut().insert(publish_policy);
                         req.extensions_mut().insert(file_caps);
+                        req.extensions_mut().insert(TenantQuotaTier(quota_tier));
                         return next.run(req).await;
                     } else {
                         // Expired per the cached source of truth: reject WITHOUT
@@ -403,6 +419,10 @@ pub async fn bearer_auth_layer(
         // `owner_admin_id` (col 12) so the PAT branch can deny a member
         // admin's PAT on tenants that admin does not own. Both NULL on
         // non-PAT bearers / missing tenant.
+        // v1.50 (Spec B) — appended the tenant's `quota_tier` (col 13,
+        // COALESCE→1) so REST write handlers read the per-tenant hard-quota
+        // tier from a request extension with no extra meta lock. NULL only
+        // when the tenant is missing (short-circuited to TENANT_NOT_FOUND).
         const SQL_BEARER_AUTH_CTE: &str = "\
 WITH bearer_match AS ( \
     SELECT 'admin_pat' AS kind, p.id AS token_id, p.admin_id, \
@@ -430,7 +450,8 @@ SELECT \
     (SELECT COALESCE(file_user_caps_json, '[]') FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
     (SELECT expires_at FROM bearer_match LIMIT 1), \
     (SELECT role FROM admins WHERE id = (SELECT admin_id FROM bearer_match LIMIT 1)), \
-    (SELECT owner_admin_id FROM tenants WHERE id = ?1 AND deleted_at IS NULL)";
+    (SELECT owner_admin_id FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
+    (SELECT COALESCE(quota_tier, 1) FROM tenants WHERE id = ?1 AND deleted_at IS NULL)";
 
         let pat_hash = bearer
             .starts_with(crate::auth::admin_token::TOKEN_PREFIX)
@@ -450,6 +471,7 @@ SELECT \
             Option<String>, // pat_expires_at (v1.45.1 F3)
             Option<String>, // pat_admin_role (v1.50)
             Option<i64>,    // tenant_owner_admin_id (v1.50)
+            Option<i64>,    // tenant_quota_tier (v1.50 Spec B — COALESCE→1; NULL only if tenant missing)
         )> = {
             let conn = state.meta.lock().await;
             conn.query_row(
@@ -473,11 +495,12 @@ SELECT \
                     r.get::<_, Option<String>>(10)?,
                     r.get::<_, Option<String>>(11)?,
                     r.get::<_, Option<i64>>(12)?,
+                    r.get::<_, Option<i64>>(13)?,
                 )),
             )
             .ok()
         };
-        // 13-tuple: no `Default` impl (std stops at 12) — explicit fallback,
+        // 14-tuple: no `Default` impl (std stops at 12) — explicit fallback,
         // semantically identical to the previous `unwrap_or_default()`
         // (tenant_ok=false short-circuits to TENANT_NOT_FOUND below).
         let (
@@ -494,6 +517,7 @@ SELECT \
             pat_expires_raw,
             pat_admin_role,
             tenant_owner_admin_id,
+            tenant_quota_tier,
         ) = meta_row.unwrap_or((
             false,
             None,
@@ -508,7 +532,12 @@ SELECT \
             None,
             None,
             None,
+            None,
         ));
+        // Per-tenant hard-quota tier (limit = tier × 10 GiB). COALESCE in the
+        // CTE already maps a NULL column → 1; a missing tenant row (None) is
+        // gated out below by `tenant_ok`, so the default-1 is belt-and-braces.
+        let quota_tier = tenant_quota_tier.unwrap_or(1);
         let publish_policy = crate::tenant::rooms::policy::TenantPublishPolicy {
             allow_user: allow_user_publish != 0,
             allow_anon: allow_anon_publish != 0,
@@ -597,10 +626,12 @@ SELECT \
                     publish_user_allowed: publish_policy.allow_user,
                     publish_anon_allowed: publish_policy.allow_anon,
                     file_caps: file_caps.clone(),
+                    quota_tier,
                 },
             );
             req.extensions_mut().insert(publish_policy);
             req.extensions_mut().insert(file_caps.clone());
+            req.extensions_mut().insert(TenantQuotaTier(quota_tier));
             return next.run(req).await;
         }
         // Apply the kind resolved by the CTE.
@@ -674,6 +705,7 @@ SELECT \
                 });
                 req.extensions_mut().insert(publish_policy);
                 req.extensions_mut().insert(file_caps.clone());
+                req.extensions_mut().insert(TenantQuotaTier(quota_tier));
                 // v1.45.1 (F3) — carry PAT expiry into the cache so a HIT can
                 // reject an expired CLI PAT. If the DB gave a non-NULL expiry we
                 // cannot parse, skip caching entirely (the DB CTE still enforces
@@ -698,6 +730,7 @@ SELECT \
                             email_snapshot: resolved_email_snapshot.clone(),
                             file_caps: file_caps.clone(),
                             expires_at: cached_exp,
+                            quota_tier,
                         },
                     );
                 }
@@ -738,6 +771,7 @@ SELECT \
                 });
                 req.extensions_mut().insert(publish_policy);
                 req.extensions_mut().insert(file_caps.clone());
+                req.extensions_mut().insert(TenantQuotaTier(quota_tier));
                 let cached_role = match role {
                     TokenRole::Anon => crate::tenant::auth_cache::CachedRole::Anon,
                     TokenRole::Service => crate::tenant::auth_cache::CachedRole::Service,
@@ -757,6 +791,7 @@ SELECT \
                         file_caps: file_caps.clone(),
                         // Service/anon tokens never expire.
                         expires_at: None,
+                        quota_tier,
                     },
                 );
             }

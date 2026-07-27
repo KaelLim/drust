@@ -19,6 +19,7 @@ async fn soft_delete_clears_tenant_scoped_entries() {
             email_snapshot: None,
             file_caps: Default::default(),
             expires_at: None,
+            quota_tier: 1,
         },
     );
     cache.insert(
@@ -30,6 +31,7 @@ async fn soft_delete_clears_tenant_scoped_entries() {
             publish_user_allowed: false,
             publish_anon_allowed: false,
             file_caps: Default::default(),
+            quota_tier: 1,
         },
     );
     // An unrelated tenant's entry must survive.
@@ -43,6 +45,7 @@ async fn soft_delete_clears_tenant_scoped_entries() {
             email_snapshot: None,
             file_caps: Default::default(),
             expires_at: None,
+            quota_tier: 1,
         },
     );
 
@@ -67,6 +70,7 @@ async fn create_recycling_id_clears_stale_entries() {
             email_snapshot: None,
             file_caps: Default::default(),
             expires_at: None,
+            quota_tier: 1,
         },
     );
     let (state, _dir) = helpers::tenants_state_with_cache("recy", cache.clone()).await;
@@ -85,6 +89,7 @@ async fn create_recycling_id_clears_stale_entries() {
             email_snapshot: None,
             file_caps: Default::default(),
             expires_at: None,
+            quota_tier: 1,
         },
     );
     // CreateTenantJson derives only Deserialize (NOT Default), so every field

@@ -21,6 +21,7 @@ async fn revoke_all_sessions_clears_user_entries() {
                 publish_user_allowed: false,
                 publish_anon_allowed: false,
                 file_caps: Default::default(),
+                quota_tier: 1,
             },
         );
     }
@@ -34,6 +35,7 @@ async fn revoke_all_sessions_clears_user_entries() {
             publish_user_allowed: false,
             publish_anon_allowed: false,
             file_caps: Default::default(),
+            quota_tier: 1,
         },
     );
 

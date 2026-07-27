@@ -23,6 +23,7 @@ fn bearer_entry(tenant: &str) -> CachedAuth {
         email_snapshot: None,
         file_caps: Default::default(),
         expires_at: None,
+        quota_tier: 1,
     }
 }
 

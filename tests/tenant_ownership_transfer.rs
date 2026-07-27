@@ -353,6 +353,7 @@ fn pat_entry(tenant: &str, admin_id: i64) -> CachedAuth {
         email_snapshot: None,
         file_caps: Default::default(),
         expires_at: None,
+        quota_tier: 1,
     }
 }
 

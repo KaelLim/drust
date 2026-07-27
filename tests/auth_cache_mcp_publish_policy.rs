@@ -24,6 +24,7 @@ fn bearer_entry(tenant: &str) -> CachedAuth {
         email_snapshot: None,
         file_caps: Default::default(),
         expires_at: None,
+        quota_tier: 1,
     }
 }
 
@@ -35,6 +36,7 @@ fn user_entry(tenant: &str) -> CachedAuth {
         publish_user_allowed: false,
         publish_anon_allowed: false,
         file_caps: Default::default(),
+        quota_tier: 1,
     }
 }
 
