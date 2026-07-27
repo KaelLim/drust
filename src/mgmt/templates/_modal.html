@@ -125,6 +125,75 @@
         });
       }
       ,
+      // Generic multi-field form modal. `fields` is an array of
+      // {type:'textarea'|'text'|'select', name, label?, placeholder?, rows?,
+      //  value?, options?:[{value,label}]}. Resolves {name: value} on OK, or
+      // null on cancel. Reuses the same overlay/close/escape machinery.
+      form: function (opts) {
+        opts = opts || {};
+        return new Promise(function (resolve) {
+          closeCb = resolve;
+          titleEl.textContent = opts.title || '';
+          bodyEl.innerHTML = '';
+          if (opts.body) {
+            var hint = document.createElement('p');
+            hint.className = 'modal-form-hint';
+            hint.textContent = opts.body;
+            bodyEl.appendChild(hint);
+          }
+          var controls = {};
+          (opts.fields || []).forEach(function (f) {
+            var row = document.createElement('div');
+            row.className = 'modal-form-row';
+            if (f.label) {
+              var lab = document.createElement('label');
+              lab.className = 'modal-form-label';
+              lab.textContent = f.label;
+              row.appendChild(lab);
+            }
+            var ctl;
+            if (f.type === 'textarea') {
+              ctl = document.createElement('textarea');
+              ctl.className = 'modal-form-textarea';
+              ctl.rows = f.rows || 5;
+            } else if (f.type === 'select') {
+              ctl = document.createElement('select');
+              ctl.className = 'modal-form-select';
+              (f.options || []).forEach(function (o) {
+                var opt = document.createElement('option');
+                opt.value = o.value;
+                opt.textContent = o.label;
+                if (o.value === f.value) opt.selected = true;
+                ctl.appendChild(opt);
+              });
+            } else {
+              ctl = document.createElement('input');
+              ctl.type = 'text';
+              ctl.className = 'modal-form-input';
+              if (f.value != null) ctl.value = f.value;
+            }
+            if (f.placeholder) ctl.placeholder = f.placeholder;
+            controls[f.name] = ctl;
+            row.appendChild(ctl);
+            bodyEl.appendChild(row);
+          });
+          inputEl.hidden = true;
+          actionsEl.innerHTML = '';
+          actionsEl.appendChild(btn('{{ t.s("common.button.cancel") }}', 'ghost', function () { close(null); }));
+          actionsEl.appendChild(btn(opts.okText || '{{ t.s("common.button.ok") }}', 'primary', function () {
+            var out = {};
+            Object.keys(controls).forEach(function (k) { out[k] = controls[k].value; });
+            close(out);
+          }));
+          if (opts.wide) box.classList.add('modal-wide');
+          overlay.hidden = false;
+          setTimeout(function () {
+            var first = bodyEl.querySelector('textarea, input, select');
+            if (first) first.focus();
+          }, 20);
+        });
+      }
+      ,
       detail: function (opts) {
         opts = opts || {};
         titleEl.textContent = opts.title || '{{ t.s("common.modal.title_details") }}';

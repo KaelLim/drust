@@ -78,25 +78,81 @@
     });
   }
 
-  // Invite admin.
+  // Invite admins — bulk paste + role select.
+  var REASON_TEXT = {
+    invalid:   '{{ t.s("admin_team.invite.reason_invalid") }}',
+    exists:    '{{ t.s("admin_team.invite.reason_exists") }}',
+    duplicate: '{{ t.s("admin_team.invite.reason_duplicate") }}'
+  };
+
+  function showInviteResult(data) {
+    var created = (data.created || []).map(function (c) { return c.email; });
+    var skipped = (data.skipped || []).map(function (s) {
+      return s.email + ' — ' + (REASON_TEXT[s.reason] || s.reason);
+    });
+    var noneTxt = '{{ t.s("admin_team.invite.result_none") }}';
+    drustUI.detail({
+      title: '{{ t.s("admin_team.invite.result_title") }}',
+      wide:  true,
+      fields: [
+        {
+          label: '{{ t.s("admin_team.invite.result_created") }} (' + created.length + ')',
+          value: created.length ? created.join('\n') : noneTxt,
+          textarea: created.length > 4
+        },
+        {
+          label: '{{ t.s("admin_team.invite.result_skipped") }} (' + skipped.length + ')',
+          value: skipped.length ? skipped.join('\n') : noneTxt,
+          textarea: skipped.length > 4
+        }
+      ],
+      actions: [
+        { label: '{{ t.s("common.button.ok") }}', variant: 'primary', onClick: function () { window.location.reload(); } }
+      ]
+    });
+  }
+
   var btnInvite = document.getElementById('btn-invite');
   if (btnInvite) {
     btnInvite.addEventListener('click', async function () {
-      var email = await drustUI.prompt({
-        title:       '{{ t.s("admin_team.head.add") }}',
-        body:        '{{ t.s("admin_team.head.subtitle") }}',
-        placeholder: 'name@example.com',
-        okText:      '{{ t.s("admin_team.head.add") }}'
+      var out = await drustUI.form({
+        title:  '{{ t.s("admin_team.invite.title") }}',
+        body:   '{{ t.s("admin_team.invite.hint") }}',
+        wide:   true,
+        okText: '{{ t.s("admin_team.invite.submit") }}',
+        fields: [
+          {
+            type: 'textarea', name: 'emails',
+            label: '{{ t.s("admin_team.invite.emails_label") }}',
+            placeholder: '{{ t.s("admin_team.invite.emails_placeholder") }}',
+            rows: 6
+          },
+          {
+            type: 'select', name: 'role', value: 'member',
+            label: '{{ t.s("admin_team.invite.role_label") }}',
+            options: [
+              { value: 'member', label: '{{ t.s("admin_team.invite.role_member") }}' },
+              { value: 'owner',  label: '{{ t.s("admin_team.invite.role_owner") }}' }
+            ]
+          }
+        ]
       });
-      if (!email) return;
-      email = email.trim();
-      if (!email) return;
-      var res = await fetch('{{ crate::base_path::base_path() }}/admin/team', {
+      if (!out) return;
+      var emails = (out.emails || '')
+        .split(/[\s,;]+/)
+        .map(function (e) { return e.trim(); })
+        .filter(function (e) { return e.length > 0; });
+      if (!emails.length) return;
+      var res = await fetch('{{ crate::base_path::base_path() }}/admin/team/batch', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body:    JSON.stringify({ email: email, role: 'member' })
+        body:    JSON.stringify({ emails: emails, role: out.role || 'member' })
       });
-      if (res.ok) { window.location.reload(); return; }
+      if (res.ok) {
+        var data = await res.json().catch(function () { return {}; });
+        showInviteResult(data);
+        return;
+      }
       alertError(res);
     });
   }

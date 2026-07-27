@@ -191,6 +191,23 @@ eyebrow = "admin console"
 add = "Add admin"
 subtitle = "Manage admins and roles"
 title = "Team"
+
+[admin_team.invite]
+title = "Invite admins"
+hint = "Paste one or more email addresses. Each becomes an admin who signs in via OAuth."
+emails_label = "Email addresses"
+emails_placeholder = "alice@example.com, bob@example.com"
+role_label = "Role"
+role_member = "Member — sees only tenants they own"
+role_owner = "Owner — full access to every tenant"
+submit = "Send invites"
+result_title = "Invite results"
+result_created = "Created"
+result_skipped = "Skipped"
+result_none = "none"
+reason_invalid = "invalid email"
+reason_exists = "already an admin"
+reason_duplicate = "duplicate in list"
 [audit_body.aria]
 show_details_for = "show details for {op}"
 

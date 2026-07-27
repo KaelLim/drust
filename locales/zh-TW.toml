@@ -197,6 +197,23 @@ eyebrow = "管理主控台"
 add = "新增 admin"
 subtitle = "管理 admin 與角色"
 title = "團隊"
+
+[admin_team.invite]
+title = "邀請 admin"
+hint = "貼上一個或多個 email;每個都會成為透過 OAuth 登入的 admin。"
+emails_label = "Email 地址"
+emails_placeholder = "alice@example.com, bob@example.com"
+role_label = "角色"
+role_member = "Member — 只看得到自己擁有的租戶"
+role_owner = "Owner — 可存取所有租戶"
+submit = "送出邀請"
+result_title = "邀請結果"
+result_created = "已建立"
+result_skipped = "已略過"
+result_none = "無"
+reason_invalid = "email 格式錯誤"
+reason_exists = "已是 admin"
+reason_duplicate = "清單內重複"
 [audit_body.aria]
 # REVIEW (low confidence): aria-label with template var, please verify wording
 show_details_for = "顯示 {op} 的詳細資訊"
