@@ -104,7 +104,11 @@ pub async fn tenant_ownership_layer(
         .get::<crate::auth::middleware::AdminId>()
         .map(|a| a.0);
     let Some(caller) = caller else {
-        return (axum::http::StatusCode::NOT_FOUND, "no such tenant").into_response();
+        return crate::error::json_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "TENANT_NOT_FOUND",
+            "no such tenant",
+        );
     };
     let owner: Result<Option<i64>, _> = {
         let conn = state.meta.lock().await;
@@ -118,8 +122,14 @@ pub async fn tenant_ownership_layer(
         Ok(o) if tenant_access_for(is_owner, caller, o) == TenantAccess::Allow => {
             next.run(req).await
         }
-        // Missing tenant, soft-deleted, or member-not-owned: same 404.
-        _ => (axum::http::StatusCode::NOT_FOUND, "no such tenant").into_response(),
+        // Missing tenant, soft-deleted, or member-not-owned: same 404 JSON
+        // envelope (TENANT_NOT_FOUND) — no existence oracle, and matches the
+        // canonical error shape the fronted handlers used to return.
+        _ => crate::error::json_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "TENANT_NOT_FOUND",
+            "no such tenant",
+        ),
     }
 }
 
