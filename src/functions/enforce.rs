@@ -520,7 +520,22 @@ pub async fn put_file_raw(
     let ct_w = content_type.to_string();
     let vis_w = visibility.to_string();
     let cc_w = cc.to_string();
+    // v1.50 (Spec B §5.3) — the edge-function `put-file` host op is a file
+    // upload choke point too, so it rides the same per-tenant hard quota. Tier
+    // from meta (fail-safe to 1 → 10 GiB when absent); measured on the writer
+    // conn inside the same serialized write as the INSERT (no TOCTOU). Over
+    // quota → the string-code error the host surface already returns.
+    let quota_tier = match inner.meta.as_ref() {
+        Some(m) => crate::storage::quota::read_tier(m, &inner.tenant_id).await,
+        None => 1,
+    };
     pool.with_writer(move |c| {
+        crate::storage::quota::check_tenant_quota(
+            crate::storage::quota::usage_on_conn(c)?,
+            size as u64,
+            quota_tier,
+        )
+        .map_err(crate::error::quota_exceeded_error)?;
         c.execute(
             "INSERT INTO _system_files
              (key, original_name, content_type, size_bytes, content_disposition,
@@ -531,7 +546,13 @@ pub async fn put_file_raw(
         .map(|_| ())
     })
     .await
-    .map_err(|e| format!("DB_INSERT_FAILED: {e}"))?;
+    .map_err(|e| {
+        if crate::error::is_quota_exceeded(&e) {
+            format!("TENANT_QUOTA_EXCEEDED: {e}")
+        } else {
+            format!("DB_INSERT_FAILED: {e}")
+        }
+    })?;
 
     let bucket = crate::storage::files::bucket_for(vis_from_str(visibility));
     let object_key = format!("{}/{}", inner.tenant_id, key);

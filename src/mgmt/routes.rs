@@ -799,6 +799,8 @@ impl MgmtState {
             large_upload_max_sessions_per_tenant: self.large_upload_max_sessions_per_tenant,
             large_upload_session_ttl_secs: self.large_upload_session_ttl_secs,
             functions: self.functions.clone(),
+            // v1.50 (Spec B, Task 4) — meta for the upload-path quota tier lookup.
+            meta: Some(self.meta.clone()),
         };
         let signed_bytes_state = crate::mgmt::signed_bytes::SignedBytesState {
             meta: self.meta.clone(),

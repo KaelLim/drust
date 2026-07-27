@@ -497,6 +497,8 @@ async fn main() -> anyhow::Result<()> {
         large_upload_max_sessions_per_tenant: lu_sessions,
         large_upload_session_ttl_secs: lu_ttl,
         functions: functions.clone(),
+        // v1.50 (Spec B, Task 4) — meta for the upload-path quota tier lookup.
+        meta: Some(meta.clone()),
     });
 
     // v1.33 — Mode B abandoned-upload janitor. Hourly sweep of expired

@@ -162,6 +162,36 @@ pub async fn create(
         );
     }
 
+    // v1.50 (Spec B §5.3) — per-tenant quota pre-check. Soft gate: reject a
+    // session whose declared Upload-Length already can't fit under the cap. The
+    // hard guarantees are the per-chunk PATCH check and the finalize re-check;
+    // this measures on a reader (no writer serialization needed for a hint).
+    let quota_tier = crate::mgmt::tenant_files::resolve_quota_tier(&state, &tenant).await;
+    match t
+        .pool
+        .with_reader(crate::storage::quota::usage_on_conn)
+        .await
+    {
+        Ok(usage) => {
+            if crate::storage::quota::check_tenant_quota(usage, total_length as u64, quota_tier)
+                .is_err()
+            {
+                return json_error(
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    "TENANT_QUOTA_EXCEEDED",
+                    "declared Upload-Length would exceed the tenant storage quota",
+                );
+            }
+        }
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
+    }
+
     // Per-tenant concurrent-session cap.
     match count_in_flight(&t.pool).await {
         Ok(n) if n >= state.large_upload_max_sessions_per_tenant as i64 => {
@@ -380,6 +410,43 @@ pub async fn patch(
         );
     }
 
+    // v1.50 (Spec B §5.3) — hard quota point: current tenant usage + bytes
+    // already spooled (`cur`) + this chunk must fit under the cap. The spooled
+    // bytes are NOT in `_system_files` yet (finalize charges them), so they
+    // ride in `incoming`. Measured on a reader here; finalize re-checks on the
+    // writer as the atomic accounting guarantee.
+    {
+        let quota_tier = crate::mgmt::tenant_files::resolve_quota_tier(&state, &tenant).await;
+        match t
+            .pool
+            .with_reader(crate::storage::quota::usage_on_conn)
+            .await
+        {
+            Ok(usage) => {
+                if crate::storage::quota::check_tenant_quota(
+                    usage,
+                    (cur + body.len() as i64) as u64,
+                    quota_tier,
+                )
+                .is_err()
+                {
+                    return json_error(
+                        StatusCode::INSUFFICIENT_STORAGE,
+                        "TENANT_QUOTA_EXCEEDED",
+                        "appending this chunk would exceed the tenant storage quota",
+                    );
+                }
+            }
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DB_ERROR",
+                    &e.to_string(),
+                );
+            }
+        }
+    }
+
     // Disk guard on the spool filesystem (data_root).
     if let Ok(stats) = crate::storage::disk::disk_stats(&state.data_root)
         && (stats.free_pct as u8) < state.disk_min_free_pct
@@ -397,6 +464,20 @@ pub async fn patch(
         Err(_) => return (StatusCode::NOT_FOUND, tus_headers()).into_response(),
     };
     if let Err(e) = f.write_all(&body).await {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "SPOOL_ERROR",
+            &e.to_string(),
+        );
+    }
+    // v1.50 (Spec B, Task 4) — flush before the handle drops. A tokio `File`
+    // `write_all` returns once the bytes are BUFFERED and a background write is
+    // scheduled, NOT once the syscall completed, so a subsequent fresh-open
+    // `metadata().len()` can momentarily read a short size. The tus offset model
+    // AND the per-chunk quota accounting both treat the spool byte-count as the
+    // offset source of truth (see CLAUDE.md Mode B), so make that count durable
+    // on return.
+    if let Err(e) = f.flush().await {
         return json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "SPOOL_ERROR",
@@ -445,6 +526,11 @@ async fn finalize_and_respond(
     .to_string();
     let disp_mode = "inline";
 
+    // v1.50 (Spec B §5.3) — finalize is the accounting point: re-check the hard
+    // quota on the writer conn, inside the same tx as the row INSERT (the
+    // atomic guarantee the PATCH reader-probe can't give).
+    let quota_tier = crate::mgmt::tenant_files::resolve_quota_tier(state, tenant).await;
+
     // 1. SQLite-first: INSERT OR IGNORE (idempotent across retries).
     {
         let key = sess.key.clone();
@@ -457,6 +543,23 @@ async fn finalize_and_respond(
         if let Err(e) = t
             .pool
             .with_writer(move |c| {
+                // Existence-aware `incoming`: on a Garage-failure retry the row
+                // already exists (INSERT OR IGNORE no-ops) and is already
+                // counted in `usage`, so charge 0 — otherwise the retry would
+                // double-count `total` and falsely 507 a legitimate finalize.
+                // A fresh finalize charges the full declared length.
+                let already: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM _system_files WHERE key = ?1)",
+                    rusqlite::params![key],
+                    |r| r.get(0),
+                )?;
+                let incoming = if already { 0 } else { total as u64 };
+                crate::storage::quota::check_tenant_quota(
+                    crate::storage::quota::usage_on_conn(c)?,
+                    incoming,
+                    quota_tier,
+                )
+                .map_err(crate::error::quota_exceeded_error)?;
                 c.execute(
                     "INSERT OR IGNORE INTO _system_files
                    (key, original_name, content_type, size_bytes, content_disposition,
@@ -468,6 +571,13 @@ async fn finalize_and_respond(
             })
             .await
         {
+            if crate::error::is_quota_exceeded(&e) {
+                return json_error(
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    "TENANT_QUOTA_EXCEEDED",
+                    &e.to_string(),
+                );
+            }
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "DB_ERROR",

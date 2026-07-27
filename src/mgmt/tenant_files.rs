@@ -52,6 +52,12 @@ pub struct TenantFilesState {
     pub large_upload_session_ttl_secs: u64,
     /// v1.36 — file.uploaded function dispatch (Mode A + Mode B completion).
     pub functions: std::sync::Arc<crate::functions::dispatcher::FunctionDispatcher>,
+    /// v1.50 (Spec B, Task 4) — meta.sqlite handle for the low-frequency
+    /// `quota::read_tier` lookup on the file-upload choke points (Mode A + tus).
+    /// `None` in test ctors → the quota tier falls back to 1 (10 GiB); every
+    /// prod construction site threads the real meta so upgraded tenants get
+    /// their higher cap. Same fail-safe-to-1 shape as the MCP write core.
+    pub meta: Option<std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>>,
 }
 
 /// Test-only constructor available in debug builds.
@@ -85,7 +91,20 @@ impl TenantFilesState {
             large_upload_max_sessions_per_tenant: 5,
             large_upload_session_ttl_secs: 86_400,
             functions,
+            // Tests exercise the tier-1 (10 GiB) default; prod threads real meta.
+            meta: None,
         }
+    }
+}
+
+/// v1.50 (Spec B, Task 4) — resolve the tenant's quota tier for the file-upload
+/// choke points. `meta` present → `quota::read_tier` (single low-freq meta
+/// lock, fail-safe to 1); absent (test ctors) → 1. Kept here so Mode A + the
+/// tus handlers resolve the tier identically.
+pub(crate) async fn resolve_quota_tier(state: &TenantFilesState, tenant_id: &str) -> i64 {
+    match state.meta.as_ref() {
+        Some(m) => crate::storage::quota::read_tier(m, tenant_id).await,
+        None => 1,
     }
 }
 
@@ -374,6 +393,11 @@ pub async fn upload(
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("tenant db: {e}")).into_response();
         }
     };
+    // v1.50 (Spec B §5.3) — per-tenant hard quota tier (default 1 → 10 GiB).
+    // Read once before the writer tx; the in-tx `usage_on_conn` probe below is
+    // what actually gates, measured on the same writer conn as the INSERT
+    // (single-writer invariant, no TOCTOU).
+    let quota_tier = resolve_quota_tier(&state, &tenant_id).await;
     {
         let key_w = key.clone();
         let original_name_w = original_name.clone();
@@ -384,6 +408,14 @@ pub async fn upload(
         let vis_str_w = vis_str;
         if let Err(e) = pool
             .with_writer(move |c| {
+                // Reject when this upload's `size` bytes would push the tenant
+                // over its cap. Sentinel error → 507 in the match below.
+                crate::storage::quota::check_tenant_quota(
+                    crate::storage::quota::usage_on_conn(c)?,
+                    size as u64,
+                    quota_tier,
+                )
+                .map_err(crate::error::quota_exceeded_error)?;
                 c.execute(
                     "INSERT INTO _system_files
                      (key, original_name, content_type, size_bytes, content_disposition,
@@ -405,6 +437,13 @@ pub async fn upload(
             })
             .await
         {
+            if crate::error::is_quota_exceeded(&e) {
+                return crate::error::json_error(
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    "TENANT_QUOTA_EXCEEDED",
+                    &e.to_string(),
+                );
+            }
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("db insert: {e}")).into_response();
         }
     }
