@@ -65,19 +65,29 @@ pub async fn list_page_axum(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
 ) -> Response {
     // v1.15.0 — reads denormalized stats columns. Zero per-tenant SQLite
     // opens on the request path; the background sampler keeps them fresh.
+    // v1.50 — ownership-scoped: member admins only see tenants they own.
+    let clause = crate::mgmt::tenant_authz::visibility_where(admin.is_owner);
+    let binds: Vec<i64> = if admin.is_owner {
+        vec![]
+    } else {
+        vec![caller_id]
+    };
     let mut latest_sample: Option<String> = None;
     let rows: Vec<TenantRow> = {
         let conn = state.session.meta.lock().await;
         let mut stmt = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT id, name, created_at, db_bytes, files_bytes, stats_updated_at \
-                 FROM tenants WHERE deleted_at IS NULL ORDER BY id",
-            )
+                 FROM tenants WHERE deleted_at IS NULL{clause} ORDER BY id"
+            ))
             .unwrap();
-        stmt.query_map([], |r| {
+        stmt.query_map(rusqlite::params_from_iter(binds), |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -590,13 +600,26 @@ struct TenantApiRow {
 
 /// `GET /admin/api/tenants` — richer-than-cmdk JSON list (quota + denormalized
 /// stats from the meta `tenants` row). Excludes soft-deleted. Admin-session gated.
-pub async fn tenants_json(State(state): State<TenantsState>) -> Response {
+/// v1.50 — ownership-scoped: member admins only see tenants they own.
+pub async fn tenants_json(
+    State(state): State<TenantsState>,
+    axum::Extension(profile): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+) -> Response {
+    let clause = crate::mgmt::tenant_authz::visibility_where(profile.is_owner);
+    let binds: Vec<i64> = if profile.is_owner {
+        vec![]
+    } else {
+        vec![caller_id]
+    };
     let conn = state.session.meta.lock().await;
     let mut out: Vec<TenantApiRow> = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
+    if let Ok(mut stmt) = conn.prepare(&format!(
         "SELECT id, name, created_at, quota_db_mb, quota_rows, db_bytes, files_bytes, stats_updated_at \
-         FROM tenants WHERE deleted_at IS NULL ORDER BY id",
-    ) && let Ok(rows) = stmt.query_map([], |r| {
+         FROM tenants WHERE deleted_at IS NULL{clause} ORDER BY id",
+    )) && let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(binds), |r| {
         Ok(TenantApiRow {
             id: r.get(0)?,
             name: r.get(1)?,
@@ -629,13 +652,26 @@ struct CmdkTenant {
 /// `GET /admin/api/cmdk/tenants` — JSON `[{id, name}, ...]` used by the
 /// cmd-K overlay to populate the tenant picker. Sorted by name (case-
 /// insensitive). Excludes soft-deleted tenants.
-pub async fn cmdk_tenants_json(State(state): State<TenantsState>) -> Response {
+/// v1.50 — ownership-scoped: member admins only see tenants they own.
+pub async fn cmdk_tenants_json(
+    State(state): State<TenantsState>,
+    axum::Extension(profile): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+) -> Response {
+    let clause = crate::mgmt::tenant_authz::visibility_where(profile.is_owner);
+    let binds: Vec<i64> = if profile.is_owner {
+        vec![]
+    } else {
+        vec![caller_id]
+    };
     let conn = state.session.meta.lock().await;
     let mut out: Vec<CmdkTenant> = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT id, name FROM tenants WHERE deleted_at IS NULL \
+    if let Ok(mut stmt) = conn.prepare(&format!(
+        "SELECT id, name FROM tenants WHERE deleted_at IS NULL{clause} \
          ORDER BY name COLLATE NOCASE",
-    ) && let Ok(rows) = stmt.query_map([], |r| {
+    )) && let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(binds), |r| {
         Ok(CmdkTenant {
             id: r.get(0)?,
             name: r.get(1)?,
