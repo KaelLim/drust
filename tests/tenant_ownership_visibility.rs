@@ -352,3 +352,66 @@ async fn choke_point_still_404s_missing_tenant() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.contains("no such tenant"));
 }
+
+// ─── Task 9: admin UI — owner column + transfer control ──────────────────────
+// The tenants list grows an "Owner" column (owner-view only: members already
+// only see their own tenants, so the column is noise AND would leak admin
+// emails). The `⚙ _settings` page grows an owner-only ownership-transfer
+// dropdown wired to `PATCH /admin/tenants/{id}/owner` (Task 7).
+
+#[tokio::test]
+async fn owner_list_page_shows_owner_column_with_emails() {
+    let (app, _dir, owner_cookie, _member_cookie) = seed_three_tenants().await;
+    let (status, html) = get_body(&app, &owner_cookie, "/admin/tenants").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("data-col=\"owner\""),
+        "owner view must render the Owner column"
+    );
+    assert!(
+        html.contains("alice@example.com"),
+        "owner view must show each tenant's owner email"
+    );
+}
+
+#[tokio::test]
+async fn member_list_page_has_no_owner_column() {
+    let (app, _dir, _owner_cookie, member_cookie) = seed_three_tenants().await;
+    let (status, html) = get_body(&app, &member_cookie, "/admin/tenants").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !html.contains("data-col=\"owner\""),
+        "member view must not render the Owner column"
+    );
+}
+
+#[tokio::test]
+async fn owner_settings_page_shows_transfer_control() {
+    let (app, _dir, owner_cookie, _member_cookie) = seed_three_tenants().await;
+    let (status, html) = get_body(&app, &owner_cookie, "/admin/tenants/t-member-b/_settings").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("owner-transfer-form"),
+        "owner view must render the ownership-transfer control"
+    );
+    assert!(
+        html.contains("alice@example.com"),
+        "transfer dropdown must list admins (email or username)"
+    );
+}
+
+#[tokio::test]
+async fn member_settings_page_hides_transfer_control() {
+    let (app, _dir, _owner_cookie, member_cookie) = seed_three_tenants().await;
+    let (status, html) =
+        get_body(&app, &member_cookie, "/admin/tenants/t-member-b/_settings").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "member must reach the settings page of their own tenant"
+    );
+    assert!(
+        !html.contains("owner-transfer-form"),
+        "member view must not render the ownership-transfer control"
+    );
+}

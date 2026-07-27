@@ -393,6 +393,15 @@ pub struct EgressEntryView {
     pub uri: String,
 }
 
+/// v1.50 — one admin row for the owner-only ownership-transfer dropdown.
+pub struct AdminOption {
+    pub id: i64,
+    /// Email when set, else username — same display rule as the list column.
+    pub display: String,
+    /// True when this admin is the tenant's current owner.
+    pub selected: bool,
+}
+
 /// The `⚙ _settings` virtual page (spec §5.7). Three sections: Rename
 /// (→ `PATCH /admin/tenants/{id}`), Audit (tenant-default toggle + read-only
 /// retention-days display + apply-to-all), Related settings (links only —
@@ -418,6 +427,10 @@ struct TenantSettingsPage {
     /// the egress block ("one glance at every trusted external URI" — a
     /// display-only merge, NOT a merged store).
     oauth_redirect_uris: Vec<String>,
+    /// v1.50 — ownership-transfer dropdown rows. Populated ONLY for
+    /// owner-role viewers; empty for members so the control is not rendered
+    /// and other admins' emails never reach member HTML.
+    admin_options: Vec<AdminOption>,
     /// Always `"_settings"` here — sidebar `.on` matching.
     active_coll: String,
     t: Translator,
@@ -436,21 +449,51 @@ pub async fn tenant_settings_page(
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    // Name + audit_default in one meta read; 404 when missing/soft-deleted.
-    let row: Option<(String, i64)> = {
+    // Name + audit_default + current owner in one meta read; 404 when
+    // missing/soft-deleted.
+    let row: Option<(String, i64, Option<i64>)> = {
         let conn = state.session.meta.lock().await;
         conn.query_row(
-            "SELECT name, COALESCE(audit_default, 1) FROM tenants \
+            "SELECT name, COALESCE(audit_default, 1), owner_admin_id FROM tenants \
              WHERE id = ?1 AND deleted_at IS NULL",
             rusqlite::params![tenant_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                ))
+            },
         )
         .optional()
         .unwrap_or(None)
     };
-    let (tenant_name, audit_default) = match row {
-        Some((n, d)) => (n, d != 0),
+    let (tenant_name, audit_default, owner_admin_id) = match row {
+        Some((n, d, o)) => (n, d != 0, o),
         None => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+    };
+
+    // v1.50 — transfer dropdown rows, owner-role viewers only (the control is
+    // owner-only; members must not receive the admin roster in their HTML).
+    let admin_options: Vec<AdminOption> = if admin.is_owner {
+        let conn = state.session.meta.lock().await;
+        conn.prepare("SELECT id, COALESCE(email, username) FROM admins ORDER BY id")
+            .and_then(|mut s| {
+                s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|(id, display)| AdminOption {
+                        id,
+                        display,
+                        selected: owner_admin_id == Some(id),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
     };
 
     // Collections list for the sidebar + OAuth redirect URIs for the egress
@@ -500,6 +543,7 @@ pub async fn tenant_settings_page(
         collections,
         egress_entries,
         oauth_redirect_uris,
+        admin_options,
         active_coll: "_settings".to_string(),
         t: Translator::new(locale),
         admin,

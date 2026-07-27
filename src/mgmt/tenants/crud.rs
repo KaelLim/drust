@@ -51,6 +51,11 @@ struct TenantRow {
     files_display: String,
     /// Humanised db + files combined — at-a-glance "who's eating disk" signal.
     total_display: String,
+    /// v1.50 — owning admin's email (username fallback), "—" when orphaned.
+    /// Rendered ONLY for owner-role viewers (template-gated on
+    /// `admin.is_owner`): members already see just their own tenants, and
+    /// the column would leak other admins' emails.
+    owner_display: String,
 }
 
 fn short_id(id: &str) -> String {
@@ -83,7 +88,9 @@ pub async fn list_page_axum(
         let conn = state.session.meta.lock().await;
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT id, name, created_at, db_bytes, files_bytes, stats_updated_at \
+                "SELECT id, name, created_at, db_bytes, files_bytes, stats_updated_at, \
+                 (SELECT COALESCE(a.email, a.username) FROM admins a \
+                  WHERE a.id = tenants.owner_admin_id) \
                  FROM tenants WHERE deleted_at IS NULL{clause} ORDER BY id"
             ))
             .unwrap();
@@ -95,36 +102,40 @@ pub async fn list_page_axum(
                 r.get::<_, i64>(3)?,
                 r.get::<_, i64>(4)?,
                 r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
             ))
         })
         .unwrap()
         .filter_map(Result::ok)
-        .map(|(id, name, created_at, db_bytes, files_bytes, stats_at)| {
-            // Track the freshest sample timestamp across the batch for the
-            // footer; sampler updates each row at slightly different instants.
-            if let Some(ref s) = stats_at
-                && latest_sample.as_deref().is_none_or(|cur| s.as_str() > cur)
-            {
-                latest_sample = Some(s.clone());
-            }
-            let initial = name
-                .chars()
-                .next()
-                .map(|c| c.to_uppercase().to_string())
-                .unwrap_or_else(|| "?".to_string());
-            let db = db_bytes.max(0) as u64;
-            let files = files_bytes.max(0) as u64;
-            TenantRow {
-                id_short: short_id(&id),
-                id,
-                initial,
-                name,
-                created_at,
-                db_display: humanize_bytes(db),
-                files_display: humanize_bytes(files),
-                total_display: humanize_bytes(db + files),
-            }
-        })
+        .map(
+            |(id, name, created_at, db_bytes, files_bytes, stats_at, owner)| {
+                // Track the freshest sample timestamp across the batch for the
+                // footer; sampler updates each row at slightly different instants.
+                if let Some(ref s) = stats_at
+                    && latest_sample.as_deref().is_none_or(|cur| s.as_str() > cur)
+                {
+                    latest_sample = Some(s.clone());
+                }
+                let initial = name
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let db = db_bytes.max(0) as u64;
+                let files = files_bytes.max(0) as u64;
+                TenantRow {
+                    id_short: short_id(&id),
+                    id,
+                    initial,
+                    name,
+                    created_at,
+                    db_display: humanize_bytes(db),
+                    files_display: humanize_bytes(files),
+                    total_display: humanize_bytes(db + files),
+                    owner_display: owner.unwrap_or_else(|| "—".to_string()),
+                }
+            },
+        )
         .collect()
     };
     let disk = crate::mgmt::public_files::build_disk_view();

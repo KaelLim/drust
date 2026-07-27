@@ -30,6 +30,34 @@
           </div>
         </div>
 
+        <!-- 1b. Ownership (v1.50) — owner-role admins only: reassign
+             tenants.owner_admin_id via PATCH /admin/tenants/{id}/owner.
+             admin_options is empty for members, and the whole card is
+             render-gated so the admin roster never reaches member HTML. -->
+        {% if admin.is_owner %}
+        <div class="card" style="margin-top:22px;">
+          <div class="card-head">
+            <div>
+              <div class="card-title">{{ t.s("tenant_settings.transfer.title") }}</div>
+              <div class="card-sub">{{ t.s("tenant_settings.transfer.sub") }}</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <form id="owner-transfer-form" onsubmit="return false;" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+              {% call ui::form_row(t.s("tenant_settings.transfer.label"), t.s("tenant_settings.transfer.hint")) %}
+                <select class="input" id="owner-transfer-select">
+                  <option value="">{{ t.s("tenant_settings.transfer.orphan_option") }}</option>
+                  {% for a in admin_options %}
+                  <option value="{{ a.id }}"{% if a.selected %} selected{% endif %}>{{ a.display }}</option>
+                  {% endfor %}
+                </select>
+              {% endcall %}
+              <button type="submit" class="btn primary" id="owner-transfer-save">{{ t.s("tenant_settings.transfer.submit") }}</button>
+            </form>
+          </div>
+        </div>
+        {% endif %}
+
         <!-- 2. Record-history audit — tenant default + retention + apply-to-all. -->
         <div class="card" style="margin-top:22px;">
           <div class="card-head">
@@ -185,6 +213,36 @@
       });
     });
   })();
+
+  {% if admin.is_owner %}
+  // Ownership transfer (v1.50) — owner-only control; the whole script is
+  // render-gated alongside its card so member HTML carries no trace of it.
+  // PATCH {owner_admin_id: id|null}; reload on success so the page
+  // re-renders under the new owner.
+  (function () {
+    var form = document.getElementById('owner-transfer-form');
+    if (!form) return;
+    form.addEventListener('submit', function () {
+      var sel = document.getElementById('owner-transfer-select');
+      var v = sel ? sel.value : '';
+      fetch('{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/owner', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({owner_admin_id: v === '' ? null : Number(v)})
+      }).then(function (r) {
+        if (r.ok) { location.reload(); return; }
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          drustUI.alert({
+            title: '{{ t.s("tenant_settings.transfer.failed_title") }}',
+            body: (b && (b.message || b.error_code)) || ''
+          });
+        });
+      }).catch(function () {
+        drustUI.alert({title: '{{ t.s("tenant_settings.transfer.failed_title") }}', body: ''});
+      });
+    });
+  })();
+  {% endif %}
 
   // Audit-default toggle — optimistic flip, PATCH partial-update, roll back
   // on failure. Same tile pattern as the publish-policy checkboxes.

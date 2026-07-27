@@ -1190,6 +1190,15 @@ sub = "這些設定仍在各自頁面 — 此處僅提供連結，未搬移。"
 title = "相關設定"
 webhooks_desc = "對外 webhook 訂閱"
 
+[tenant_settings.transfer]
+failed_title = "轉移失敗"
+hint = "member 只看得到並管理自己擁有的租戶；轉移立即生效，包含該 admin PAT 在資料面的觸及範圍。"
+label = "擁有者 admin"
+orphan_option = "（無擁有者 — 僅 owner 角色可見）"
+sub = "重新指派此租戶的擁有者。owner 角色一律看得到所有租戶。"
+submit = "轉移"
+title = "擁有權"
+
 [tenants_list.actions]
 new_tenant = "新增租戶"
 
@@ -1404,6 +1413,7 @@ gemini = "Gemini CLI"
 created = "建立時間"
 db = "資料庫"
 files = "檔案"
+owner = "擁有者"
 tenant = "租戶"
 total = "合計"
 

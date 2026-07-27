@@ -68,6 +68,7 @@
           <thead>
             <tr>
               <th>{{ t.s("tenants_list.table.tenant") }}</th>
+              {% if admin.is_owner %}<th style="width:200px;" data-col="owner" title="owning admin (email)">{{ t.s("tenants_list.table.owner") }}</th>{% endif %}
               <th style="width:180px;">{{ t.s("tenants_list.table.created") }}</th>
               <th class="num" style="width:100px;" title="data.sqlite file size">{{ t.s("tenants_list.table.db") }}</th>
               <th class="num" style="width:100px;" title="_system_files SUM(size_bytes)">{{ t.s("tenants_list.table.files") }}</th>
@@ -87,6 +88,7 @@
                   </span>
                 </a>
               </td>
+              {% if admin.is_owner %}<td class="muted-cell">{{ t.owner_display }}</td>{% endif %}
               <td class="muted-cell">{{ t.created_at }}</td>
               <td class="num">{{ t.db_display }}</td>
               <td class="num"><a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ t.id }}/files" style="color:inherit;">{{ t.files_display }}</a></td>
@@ -104,7 +106,7 @@
             </tr>
             {% endfor %}
             <tr id="tenants-empty-row" hidden>
-              <td colspan="6" class="muted-cell" style="text-align:center;padding:32px 16px;font-family:var(--font-mono);">
+              <td colspan="{% if admin.is_owner %}7{% else %}6{% endif %}" class="muted-cell" style="text-align:center;padding:32px 16px;font-family:var(--font-mono);">
                 no matches for <code id="tenants-empty-q" style="color:var(--fg);"></code>
               </td>
             </tr>

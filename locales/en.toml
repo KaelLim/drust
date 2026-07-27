@@ -1168,6 +1168,15 @@ sub = "These live on their own pages — linked here, not moved."
 title = "Related settings"
 webhooks_desc = "outbound webhook subscriptions"
 
+[tenant_settings.transfer]
+failed_title = "Transfer failed"
+hint = "Member admins only see and manage tenants they own; the transfer takes effect immediately, including the admin's PAT reach on the data plane."
+label = "Owner admin"
+orphan_option = "(no owner — visible to owner-role admins only)"
+sub = "Reassign which admin owns this tenant. Owner-role admins always see every tenant."
+submit = "Transfer"
+title = "Ownership"
+
 [tenants_list.actions]
 new_tenant = "New tenant"
 
@@ -1383,6 +1392,7 @@ gemini = "Gemini CLI"
 created = "created"
 db = "db"
 files = "files"
+owner = "Owner"
 tenant = "Tenant"
 total = "total"
 
