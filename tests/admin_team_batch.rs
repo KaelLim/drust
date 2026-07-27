@@ -19,7 +19,10 @@ use tower::ServiceExt;
 // ─── helpers (mirrored from admin_team_crud.rs) ──────────────────────────────
 
 fn build_state(conn: rusqlite::Connection, data_dir: PathBuf, log_dir: PathBuf) -> MgmtState {
-    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data_dir.clone(), 2));
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
+        data_dir.clone(),
+        2,
+    ));
     let bus = drust::tenant::events::EventBus::new();
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
         drust::mcp::server::McpRegistry::new(tenants.clone()),
@@ -101,11 +104,17 @@ async fn login(app: &axum::Router, username: &str, password: &str) -> String {
 }
 
 async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), 262_144).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 262_144)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
 }
 
-async fn batch(app: &axum::Router, cookie: &str, payload: serde_json::Value) -> axum::http::Response<Body> {
+async fn batch(
+    app: &axum::Router,
+    cookie: &str,
+    payload: serde_json::Value,
+) -> axum::http::Response<Body> {
     app.clone()
         .oneshot(
             Request::builder()
@@ -221,7 +230,10 @@ async fn batch_role_owner_creates_owners() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
-    assert_eq!(admin_role(&dir, "boss@example.com").as_deref(), Some("owner"));
+    assert_eq!(
+        admin_role(&dir, "boss@example.com").as_deref(),
+        Some("owner")
+    );
 }
 
 #[tokio::test]
@@ -240,7 +252,11 @@ async fn batch_dedupes_within_request() {
     .await;
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    assert_eq!(body["created"].as_array().unwrap().len(), 1, "created once: {body}");
+    assert_eq!(
+        body["created"].as_array().unwrap().len(),
+        1,
+        "created once: {body}"
+    );
     // Within-batch duplicates are silently collapsed — no skip entries.
     assert_eq!(
         body["skipped"].as_array().unwrap().len(),
@@ -281,11 +297,19 @@ async fn batch_rejects_malformed_addressbook_paste() {
     let body = body_json(resp).await;
 
     let created = body["created"].as_array().unwrap();
-    assert_eq!(created.len(), 1, "only the well-formed address is created: {body}");
+    assert_eq!(
+        created.len(),
+        1,
+        "only the well-formed address is created: {body}"
+    );
     assert_eq!(created[0]["email"], "carol@example.com");
 
     let skipped = body["skipped"].as_array().unwrap();
-    assert_eq!(skipped.len(), 3, "three malformed addresses skipped: {body}");
+    assert_eq!(
+        skipped.len(),
+        3,
+        "three malformed addresses skipped: {body}"
+    );
     assert!(
         skipped.iter().all(|s| s["reason"] == "invalid"),
         "all malformed → invalid: {body}"

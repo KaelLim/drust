@@ -818,7 +818,11 @@ pub async fn batch_invite_admin(
 
     // Whole batch in one transaction: hard errors roll back everything, soft
     // skips (invalid/exists) don't abort their siblings.
-    type BatchOk = (Vec<(i64, String)>, Vec<(String, SkipReason)>, Option<String>);
+    type BatchOk = (
+        Vec<(i64, String)>,
+        Vec<(String, SkipReason)>,
+        Option<String>,
+    );
     let db_result: Result<BatchOk, Response> = {
         let conn = s.meta.lock().await;
         let tx = match conn.unchecked_transaction() {
