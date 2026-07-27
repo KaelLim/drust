@@ -21,21 +21,21 @@ generated_by: docs/gen-architecture.py
 
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
-| [`(root)/`](#srcroot) | 6 | 31 | 3 | 26 |
+| [`(root)/`](#srcroot) | 6 | 33 | 3 | 27 |
 | [`auth/`](#srcauth) | 10 | 53 | 3 | 42 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
-| [`db/`](#srcdb) | 2 | 14 | 1 | 0 |
+| [`db/`](#srcdb) | 2 | 15 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 69 | 38 | 19 |
 | [`mcp/`](#srcmcp) | 21 | 160 | 61 | 32 |
-| [`mgmt/`](#srcmgmt) | 38 | 308 | 106 | 48 |
+| [`mgmt/`](#srcmgmt) | 39 | 319 | 110 | 51 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 8 | 49 | 8 | 30 |
 | [`rpc/`](#srcrpc) | 6 | 37 | 17 | 9 |
 | [`safety/`](#srcsafety) | 8 | 39 | 1 | 12 |
-| [`storage/`](#srcstorage) | 15 | 128 | 16 | 86 |
-| [`tenant/`](#srctenant) | 36 | 240 | 112 | 65 |
+| [`storage/`](#srcstorage) | 15 | 130 | 16 | 86 |
+| [`tenant/`](#srctenant) | 36 | 241 | 112 | 65 |
 
 ## Group dependency graph
 
@@ -105,7 +105,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`base_path.rs`](../src/base_path.rs) — Configurable external URL prefix. Every browser-facing path (redirect · 5 pub
 - [`bin_helpers.rs`](../src/bin_helpers.rs) — Shared between bin/set_admin_password.rs and tests. · 2 pub
 - [`config.rs`](../src/config.rs) — 3 pub
-- [`error.rs`](../src/error.rs) — 4 pub
+- [`error.rs`](../src/error.rs) — 6 pub
 - [`lib.rs`](../src/lib.rs) — 17 pub
 - [`main.rs`](../src/main.rs)
 
@@ -160,7 +160,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/db/`
 
-- [`migrations.rs`](../src/db/migrations.rs) — 13 pub
+- [`migrations.rs`](../src/db/migrations.rs) — 14 pub
 - [`mod.rs`](../src/db/mod.rs) — 1 pub
 
 <a id="srcfunctions"></a>
@@ -224,17 +224,18 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 9 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
-- [`mod.rs`](../src/mgmt/mod.rs) — 31 pub
+- [`mod.rs`](../src/mgmt/mod.rs) — 32 pub
 - [`oauth_login.rs`](../src/mgmt/oauth_login.rs) — Admin-specific OAuth glue. Calls into src/oauth/ (provider-agnostic · 4 pub
 - [`public_files.rs`](../src/mgmt/public_files.rs) — Admin UI for the host-level public bucket. Provides list, upload, delete, · 20 pub
+- [`quota_admin.rs`](../src/mgmt/quota_admin.rs) — v1.50 (Spec B, Task 6) — quota upgrade request / review admin plane. · 8 pub
 - [`routes.rs`](../src/mgmt/routes.rs) — 2 pub
 - [`rpc_admin.rs`](../src/mgmt/rpc_admin.rs) — Admin-UI handlers for the `_rpc` virtual collection page. · 10 pub
 - [`script_json.rs`](../src/mgmt/script_json.rs) — HTML-`<script>`-safe JSON serialization — single canonical escaper. · 2 pub
 - [`signed_bytes.rs`](../src/mgmt/signed_bytes.rs) — Public (unauth) GET handlers that serve a drust-signed download URL. · 4 pub
 - [`stats.rs`](../src/mgmt/stats.rs) — Tenant-stats denormalization sampler. · 4 pub
-- [`tenant_authz.rs`](../src/mgmt/tenant_authz.rs) — v1.50 — single ownership predicate shared by every enforcement site · 5 pub
+- [`tenant_authz.rs`](../src/mgmt/tenant_authz.rs) — v1.50 — single ownership predicate shared by every enforcement site · 6 pub
 - [`tenant_broadcast.rs`](../src/mgmt/tenant_broadcast.rs) — v1.31.5 — Admin Broadcast Inspector page. · 1 pub
-- [`tenant_files.rs`](../src/mgmt/tenant_files.rs) — Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign). · 16 pub
+- [`tenant_files.rs`](../src/mgmt/tenant_files.rs) — Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign). · 17 pub
 - [`tenant_settings.rs`](../src/mgmt/tenant_settings.rs) — v1.46 — per-tenant Settings backend (spec §5.6): display-name rename + · 11 pub
 - [`tenants.rs`](../src/mgmt/tenants.rs) — 8 pub
 - [`tenants/common.rs`](../src/mgmt/tenants/common.rs) — Cross-page helpers shared by the OAuth-providers and Webhooks admin pages. · 2 pub
@@ -307,7 +308,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`meta.rs`](../src/storage/meta.rs) — 3 pub
 - [`mod.rs`](../src/storage/mod.rs) — 14 pub
 - [`pool.rs`](../src/storage/pool.rs) — 3 pub
-- [`quota.rs`](../src/storage/quota.rs) — 3 pub
+- [`quota.rs`](../src/storage/quota.rs) — Per-tenant unified quota (v1.50, Spec B). · 5 pub
 - [`record_history.rs`](../src/storage/record_history.rs) — v1.46 — supa_audit-style record-history capture. One shared helper wired · 19 pub
 - [`schema.rs`](../src/storage/schema.rs) — 43 pub
 - [`schema_cache.rs`](../src/storage/schema_cache.rs) — 1 pub
@@ -347,7 +348,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`rooms/state.rs`](../src/tenant/rooms/state.rs) — v1.31 rooms config: env-driven knobs threaded through `TenantStack`. · 1 pub
 - [`rooms/ws.rs`](../src/tenant/rooms/ws.rs) — v1.31 WebSocket multiplex handler — GET /t/{tenant}/realtime. · 1 pub
 - [`rooms/ws_auth.rs`](../src/tenant/rooms/ws_auth.rs) — v1.31 query-string-to-header bearer adapter for WS upgrade. · 1 pub
-- [`router.rs`](../src/tenant/router.rs) — 6 pub
+- [`router.rs`](../src/tenant/router.rs) — 7 pub
 - [`sse.rs`](../src/tenant/sse.rs) — 1 pub
 - [`uploads/mod.rs`](../src/tenant/uploads/mod.rs) — v1.33 — Mode B large-file upload: tus 1.0 server + spool-to-Garage. · 9 pub
 - [`uploads/session.rs`](../src/tenant/uploads/session.rs) — _system_upload_sessions row CRUD + tus metadata/derivation helpers + · 12 pub
