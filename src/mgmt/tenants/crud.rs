@@ -172,6 +172,7 @@ fn make_tenant_inner(
     name: &str,
     quota_mb: i64,
     quota_rows: i64,
+    owner_admin_id: Option<i64>,
 ) -> anyhow::Result<CreatedResp> {
     if let Err(e) = validate_tenant_id(id) {
         anyhow::bail!("invalid tenant id: {e}");
@@ -218,10 +219,13 @@ fn make_tenant_inner(
     // so the run-once boot backfill must NEVER touch it — otherwise it would
     // resurrect an admin-removed origin every boot (the v1.41.5 idempotency
     // invariant). Existing tenants keep the column default 0 and backfill once.
+    // owner_admin_id — v1.50 tenant ownership: the creating admin owns the
+    // tenant. On the recycle branch above the old row was hard-DELETEd, so
+    // this INSERT stamps the NEW creator (never resurrects the old owner).
     conn.execute(
-        "INSERT INTO tenants (id, name, quota_db_mb, quota_rows, egress_backfill_done) \
-         VALUES (?1, ?2, ?3, ?4, 1)",
-        rusqlite::params![id, name, quota_mb, quota_rows],
+        "INSERT INTO tenants (id, name, quota_db_mb, quota_rows, egress_backfill_done, \
+         owner_admin_id) VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+        rusqlite::params![id, name, quota_mb, quota_rows, owner_admin_id],
     )?;
     // Create directory + data.sqlite file
     let _ = open_write(data_dir, id)?;
@@ -268,6 +272,9 @@ fn make_tenant_inner(
 /// fails after local state has already been written.
 pub async fn create_tenant_json(
     State(state): State<TenantsState>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Json(form): Json<CreateTenantJson>,
 ) -> Response {
     let mb = form.quota_db_mb.unwrap_or(500);
@@ -278,7 +285,15 @@ pub async fn create_tenant_json(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let mut conn = state.session.meta.lock().await;
-    let resp = match make_tenant_inner(&mut conn, &state.data_dir, &id, &form.name, mb, rows) {
+    let resp = match make_tenant_inner(
+        &mut conn,
+        &state.data_dir,
+        &id,
+        &form.name,
+        mb,
+        rows,
+        Some(caller_id),
+    ) {
         Ok(resp) => resp,
         Err(e) => {
             let msg = e.to_string();
@@ -308,12 +323,23 @@ pub async fn create_tenant_json(
 
 pub async fn create_tenant_form(
     State(state): State<TenantsState>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Form(form): Form<CreateTenantForm>,
 ) -> Response {
     // UUID v4 — user never types a slug. Display name is the human label.
     let id = uuid::Uuid::new_v4().to_string();
     let mut conn = state.session.meta.lock().await;
-    let created = make_tenant_inner(&mut conn, &state.data_dir, &id, &form.name, 500, 1_000_000);
+    let created = make_tenant_inner(
+        &mut conn,
+        &state.data_dir,
+        &id,
+        &form.name,
+        500,
+        1_000_000,
+        Some(caller_id),
+    );
     drop(conn);
 
     match created {
