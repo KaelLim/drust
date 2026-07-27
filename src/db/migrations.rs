@@ -867,13 +867,22 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         meta.execute_batch(
             "ALTER TABLE tenants ADD COLUMN owner_admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL",
         )?;
+        // RUN-ONCE backfill: only in the same branch that CREATES the column,
+        // so it fires exactly once (first boot after upgrade, when every row
+        // is NULL). Re-running it every boot would re-own tenants that were
+        // DELIBERATELY orphaned afterwards — an admin removed (FK SET NULL) or
+        // a transfer-to-null — resurrecting a removed relationship on every
+        // restart. That is the exact anti-pattern the v1.41.5 egress-backfill
+        // idempotency invariant forbids: "never resurrect a removed entry
+        // every boot". After first boot `has_owner_col` is true → never again;
+        // deliberate NULLs (orphans, transfer-to-null) are durable forever.
+        meta.execute(
+            "UPDATE tenants SET owner_admin_id = \
+               (SELECT id FROM admins WHERE role='owner' ORDER BY id LIMIT 1) \
+             WHERE owner_admin_id IS NULL AND deleted_at IS NULL",
+            [],
+        )?;
     }
-    meta.execute(
-        "UPDATE tenants SET owner_admin_id = \
-           (SELECT id FROM admins WHERE role='owner' ORDER BY id LIMIT 1) \
-         WHERE owner_admin_id IS NULL AND deleted_at IS NULL",
-        [],
-    )?;
 
     report.meta_done = true;
 
@@ -2340,6 +2349,29 @@ mod tests {
         assert_eq!(
             reassigned, 2,
             "second boot must not overwrite a manual assignment"
+        );
+
+        // v1.50 regression (HIGH): a DELIBERATELY orphaned LIVE tenant (admin
+        // removed → FK SET NULL, or an owner transfer-to-null) must STAY NULL
+        // across reboots. The backfill fires ONCE (only in the column-create
+        // branch), so a later intentional NULL is never re-owned — the
+        // v1.41.5 "never resurrect a removed entry every boot" invariant.
+        conn.execute(
+            "UPDATE tenants SET owner_admin_id=NULL WHERE id='t-live2'",
+            [],
+        )
+        .unwrap();
+        run_migrations(&conn, dir.path()).unwrap();
+        let still_orphan: Option<i64> = conn
+            .query_row(
+                "SELECT owner_admin_id FROM tenants WHERE id='t-live2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            still_orphan, None,
+            "a deliberately-orphaned live tenant must NOT be re-owned on reboot"
         );
         let dead2: Option<i64> = conn
             .query_row(
