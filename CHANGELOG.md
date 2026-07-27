@@ -1,4 +1,24 @@
-## Unreleased
+## v1.50.0 — 2026-07-27
+
+Two tenant-management subsystems — each brainstormed → spec → plan → subagent-implemented → adversarially self-reviewed (which caught two HIGH ownership gaps and four quota gaps, all fixed before ship) — plus the MCP tool-annotation surface.
+
+### Tenant ownership & role-scoped visibility
+
+- **`tenants.owner_admin_id`** (meta.sqlite, FK → `admins.id` `ON DELETE SET NULL`; a run-**once** idempotent backfill assigns legacy live tenants to the lowest-id owner, so a deliberate orphan is never re-owned on reboot). `owner`-role admins manage every tenant (byte-for-byte unchanged, cross-tenant); a `member` admin only sees/manages tenants it owns.
+- Enforced at **six sites sharing one predicate** (`tenant_authz::tenant_access_for`): console list filtering, a route-layer guard, the `ensure_tenant_visible` handler choke point, **data-plane member-PAT scoping** (a fail-closed allow-list on the bearer CTE — a member's PAT resolves only on tenants it owns), creator-becomes-owner on create, and FK orphaning. A non-owned tenant answers **404** everywhere (no existence oracle).
+- **Host-wide surfaces that expose every tenant are owner-only**: backups (a download carries every tenant's plaintext service/admin tokens) and the host `/admin/audit` view. Ownership transfer is owner-only and evicts the affected admin's PAT cache.
+- Adversarial self-review caught **two HIGH gaps** before ship: a boot backfill that re-owned deliberately-orphaned tenants on every restart, and member reach to the token-bearing backup download.
+
+### Per-tenant storage quota
+
+- **Hard cap `quota_tier × 10 GiB`** (db + files shared, default tier 1 = 10 GiB), measured **live inside the writer transaction** (`PRAGMA page_count × page_size` + `SUM(_system_files.size_bytes)`), enforced at **every growth choke point for all callers** (REST/MCP/edge record writes, every `run_write_rpc` caller incl. cron, Mode-A + tus uploads, edge `put-file`) → **507 `TENANT_QUOTA_EXCEEDED`**. `delete`, `update`, reads, and the visibility bucket-move are never blocked.
+- **Upgrade requests**: a member requests a higher tier for a tenant it owns; an owner approves (sets the tier in one tx) or rejects. **Config is admin-plane only** — no per-tenant MCP tool can raise a tenant's own cap.
+- Adversarial self-review caught **four gaps** before ship: a write-RPC amplification (`INSERT … SELECT FROM big, big`) that could grow past the cap in one fire (now a post-body in-tx re-check rolls back + 507s), an over-cap tenant wrongly blocked from shrinking to recover, a stale approval that could silently downgrade a tier, and a `create_index` DDL scope boundary (documented, trusted-caller-only).
+
+### MCP
+
+- All **67 per-tenant MCP tools carry `ToolAnnotations`** (readOnly / destructive / idempotent / openWorld hints) so clients present and confirm them safely; MCP tool count unchanged.
+- `list_functions` / `get_function_logs` moved to the reader lane so their `readOnlyHint=true` is truthful — a read no longer runs the lazy `ensure_tables` DDL or takes the writer mutex on a function-less tenant.
 
 ### Deploy
 
