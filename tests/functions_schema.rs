@@ -280,3 +280,31 @@ async fn delete_purges_logs_for_that_name() {
         "delete_function must purge that name's log rows"
     );
 }
+
+// v1.50 — list_functions / list_logs back readOnlyHint=true MCP tools, so the
+// read path must not run the lazy `ensure_tables` DDL (nor take the writer
+// mutex): a fresh tenant that never created a function gets `[]` back and its
+// schema stays untouched. Mirrors get_function's reader-lane F2 pattern.
+#[tokio::test]
+async fn list_functions_and_logs_on_fresh_tenant_do_not_create_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = pool_for(dir.path());
+
+    let all = schema::list_functions(&pool).await.expect("list");
+    assert!(all.is_empty());
+
+    let logs = schema::list_logs(&pool, "nope", 10).await.expect("logs");
+    assert!(logs.is_empty());
+
+    let db = dir.path().join("tenants").join("t-fn").join("data.sqlite");
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE name IN ('_system_functions','_system_function_logs')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 0, "read path must not create lazy function tables");
+}

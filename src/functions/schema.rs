@@ -154,11 +154,28 @@ fn unwrap_module_err(e: rusqlite::Error) -> String {
 }
 
 pub async fn list_functions(pool: &SharedTenantPool) -> anyhow::Result<Vec<FunctionRow>> {
-    pool.with_writer(move |c| {
-        ensure_tables(c)?;
-        let mut st = c.prepare(&format!(
+    // Read lane, NOT the writer (v1.50): this backs readOnlyHint=true surfaces
+    // (MCP `list_functions`, REST GET /functions, the admin page, and the
+    // bindings-cache reload), so it must not run the lazy `ensure_tables` DDL
+    // nor take the tenant's serialized writer mutex. `_system_functions` is
+    // created lazily by `create_function` (which runs its own `ensure_tables`),
+    // so a read before any function ever existed hits "no such table" —
+    // semantically "no functions" → empty list. Same F2 pattern as
+    // `get_function` below.
+    pool.with_reader(move |c| {
+        // Defensive (F2): `_system_functions` is DENIED by the read-only
+        // authorizer and this runs on the SHARED reader pool — clear any
+        // authorizer a prior borrower might have left attached.
+        crate::query::authorizer::detach_authorizer(c);
+        let mut st = match c.prepare(&format!(
             "SELECT {COLS} FROM _system_functions ORDER BY name"
-        ))?;
+        )) {
+            Ok(st) => st,
+            Err(rusqlite::Error::SqliteFailure(_, Some(ref m))) if m.contains("no such table") => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e),
+        };
         let rows = st.query_map([], row_from)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     })
@@ -408,14 +425,24 @@ pub async fn list_logs(
 ) -> anyhow::Result<Vec<LogRowOut>> {
     let function_name = function_name.to_string();
     let limit = limit.clamp(1, 1000);
-    pool.with_writer(move |c| {
-        ensure_tables(c)?;
-        let mut st = c.prepare(
+    // Read lane, NOT the writer (v1.50): backs the readOnlyHint=true MCP
+    // `get_function_logs` + REST GET /logs + the admin page. No `ensure_tables`
+    // DDL on a read path — a fresh tenant with no `_system_function_logs`
+    // table simply has no logs → empty list (F2 pattern, see list_functions).
+    pool.with_reader(move |c| {
+        crate::query::authorizer::detach_authorizer(c);
+        let mut st = match c.prepare(
             "SELECT invocation_id, function_name, trigger, status, duration_ms,
                     log_text, result_json, created_at
              FROM _system_function_logs WHERE function_name = ?1
              ORDER BY id DESC LIMIT ?2",
-        )?;
+        ) {
+            Ok(st) => st,
+            Err(rusqlite::Error::SqliteFailure(_, Some(ref m))) if m.contains("no such table") => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e),
+        };
         let rows = st
             .query_map(rusqlite::params![function_name, limit], |r| {
                 Ok(LogRowOut {
