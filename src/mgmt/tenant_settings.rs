@@ -226,6 +226,121 @@ pub async fn apply_audit_default_all(
     .into_response()
 }
 
+/// Body for `PATCH /admin/tenants/{id}/owner` — the new owner's admin id, or
+/// `null` (or absent) to orphan the tenant (owner-admins-only visibility).
+#[derive(serde::Deserialize)]
+pub struct TenantOwnerPatch {
+    #[serde(default)]
+    pub owner_admin_id: Option<i64>,
+}
+
+/// `PATCH /admin/tenants/{id}/owner` (+ `/admin/api/tenants/{id}/owner` twin)
+///
+/// v1.50 Task 7 — owner-only ownership transfer. Reassigns
+/// `tenants.owner_admin_id` to the given admin (must exist → else
+/// `400 ADMIN_NOT_FOUND`) or to NULL (orphan: visible to owner admins only).
+/// Emits audit op `tenant.owner.set`, then evicts BOTH the old and the new
+/// owner's PAT entries from the auth cache — Task 8 scopes member PATs to
+/// owned tenants on the data plane, so a transfer changes each side's reach
+/// and a stale cached PAT must not keep the pre-transfer scope for up to the
+/// safety TTL.
+pub async fn patch_tenant_owner(
+    State(state): State<TenantsState>,
+    Path(tid): Path<String>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    axum::Extension(profile): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Json(body): axum::Json<TenantOwnerPatch>,
+) -> Response {
+    // Owner-only — same guard shape as admin_team.rs::owner_guard.
+    if !profile.is_owner {
+        return json_error(StatusCode::FORBIDDEN, "NOT_OWNER", "owner role required");
+    }
+    let new_owner = body.owner_admin_id;
+
+    // All DB work in one sync block; the meta guard drops before any .await.
+    let db_result: Result<(Option<i64>, Option<String>), Response> = {
+        let conn = state.session.meta.lock().await;
+
+        // A concrete target must be an existing admin.
+        if let Some(target) = new_owner {
+            let exists = conn
+                .prepare("SELECT 1 FROM admins WHERE id = ?1")
+                .and_then(|mut s| s.exists(rusqlite::params![target]))
+                .unwrap_or(false);
+            if !exists {
+                return json_error(StatusCode::BAD_REQUEST, "ADMIN_NOT_FOUND", "no such admin");
+            }
+        }
+
+        // Old owner read doubles as the tenant existence check.
+        let old_owner: Option<i64> = match conn
+            .query_row(
+                "SELECT owner_admin_id FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+                rusqlite::params![tid],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()
+        {
+            Ok(Some(v)) => v,
+            Ok(None) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DB_ERROR",
+                    &e.to_string(),
+                );
+            }
+        };
+
+        if let Err(e) = conn.execute(
+            "UPDATE tenants SET owner_admin_id = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            rusqlite::params![new_owner, tid],
+        ) {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
+
+        // Caller email for audit attribution (mirrors admin_team.rs).
+        let caller_email: Option<String> = conn
+            .query_row(
+                "SELECT email FROM admins WHERE id = ?1",
+                rusqlite::params![caller_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        Ok((old_owner, caller_email))
+        // conn guard drops here — before any .await
+    };
+    let (old_owner, caller_email) = match db_result {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    // Evict both sides' PAT cache entries (skip when old == new — one evict
+    // suffices; clear_admin_pat is a scan, not a keyed remove).
+    for admin_id in [old_owner, new_owner].into_iter().flatten() {
+        state.auth_cache.clear_admin_pat(admin_id);
+    }
+
+    // Emit audit (async — safe; lock already released).
+    let mut entry = crate::safety::audit::AuditEntry::success(&tid, "-", "tenant.owner.set", 0);
+    entry.actor_admin_id = Some(caller_id);
+    entry.actor_email_snapshot = caller_email;
+    entry = entry.with_extra(json!({
+        "old_owner_admin_id": old_owner,
+        "new_owner_admin_id": new_owner,
+    }));
+    crate::safety::audit::write_entry(&state.log_dir, &entry).await;
+
+    Json(json!({ "id": tid, "owner_admin_id": new_owner })).into_response()
+}
+
 /// Body for `POST /admin/tenants/{id}/egress` — the admin block submits the
 /// FULL desired allowlist (whole-list replace, same as REST/MCP).
 #[derive(serde::Deserialize)]

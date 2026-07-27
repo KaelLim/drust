@@ -907,6 +907,17 @@ impl MgmtState {
                 "/admin/tenants/{id}/egress",
                 post(super::tenant_settings::post_egress_allowlist),
             )
+            // v1.50 Task 7 — owner-only ownership transfer. Page + API twin
+            // share one handler; owner_guard lives in the handler (the route
+            // guard below only enforces member visibility, not the role).
+            .route(
+                "/admin/tenants/{id}/owner",
+                axum::routing::patch(super::tenant_settings::patch_tenant_owner),
+            )
+            .route(
+                "/admin/api/tenants/{id}/owner",
+                axum::routing::patch(super::tenant_settings::patch_tenant_owner),
+            )
             // v1.46 — `⚙ _settings` virtual sidebar entry: rename form +
             // audit default toggle + apply-to-all, and links to the pages
             // that already host related settings (nothing relocated).
