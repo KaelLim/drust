@@ -46,6 +46,13 @@ pub struct RoleBody {
     pub role: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BatchInviteBody {
+    pub emails: Vec<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
 // ─── HTML page structs ───────────────────────────────────────────────────────
 
 /// One row displayed in the /admin/team table.
@@ -98,6 +105,122 @@ fn owner_guard(profile: &AdminProfileExt) -> Result<(), Response> {
 fn validate_email(email: &str) -> bool {
     let parts: Vec<&str> = email.splitn(2, '@').collect();
     parts.len() == 2 && !parts[0].is_empty() && parts[1].contains('.')
+}
+
+// ─── shared per-email invite core ────────────────────────────────────────────
+
+/// Why one email in an invite produced no new admin.
+#[derive(Debug, Clone, Copy)]
+enum SkipReason {
+    /// Email failed `validate_email`.
+    Invalid,
+    /// An admin with this email already exists.
+    Exists,
+    /// The same email appeared earlier in the same batch.
+    Duplicate,
+}
+
+impl SkipReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            SkipReason::Invalid => "invalid",
+            SkipReason::Exists => "exists",
+            SkipReason::Duplicate => "duplicate",
+        }
+    }
+}
+
+/// Outcome of inviting one email.
+enum InviteOutcome {
+    Created { id: i64 },
+    Skipped { reason: SkipReason },
+}
+
+/// Insert one admin (+ its PAT) inside `tx`. `email` must already be trimmed and
+/// lowercased; `role` must already be validated (`owner|member`). Returns
+/// `Created{id}` on success or `Skipped` when the email is malformed or already
+/// taken. A hard rusqlite error propagates so the caller can roll back the whole
+/// batch. Shared by single `invite_admin` and `batch_invite_admin` so both agree
+/// on what "invite one admin" means (DRY).
+fn insert_one_admin(
+    tx: &rusqlite::Transaction<'_>,
+    email: &str,
+    role: &str,
+) -> rusqlite::Result<InviteOutcome> {
+    use rusqlite::OptionalExtension;
+
+    if !validate_email(email) {
+        return Ok(InviteOutcome::Skipped {
+            reason: SkipReason::Invalid,
+        });
+    }
+
+    // Uniqueness — case-insensitive, matching the single-invite check.
+    let existing = tx
+        .query_row(
+            "SELECT 1 FROM admins WHERE email = ?1 COLLATE NOCASE",
+            params![email],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if existing.is_some() {
+        return Ok(InviteOutcome::Skipped {
+            reason: SkipReason::Exists,
+        });
+    }
+
+    // Derive a unique username from the email local-part.
+    let username_base = email
+        .split('@')
+        .next()
+        .unwrap_or("admin")
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let username = {
+        let mut candidate = username_base.clone();
+        let mut suffix = 2u32;
+        loop {
+            let taken = tx
+                .query_row(
+                    "SELECT 1 FROM admins WHERE username = ?1",
+                    params![candidate],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !taken {
+                break candidate;
+            }
+            candidate = format!("{username_base}{suffix}");
+            suffix += 1;
+        }
+    };
+
+    // Insert the admin row. A UNIQUE collision (racing case) degrades to a
+    // soft "exists" skip rather than aborting the batch.
+    match tx.execute(
+        "INSERT INTO admins (username, password_hash, email, role) VALUES (?1, ?2, ?3, ?4)",
+        params![username, OAUTH_ONLY_SENTINEL, email, role],
+    ) {
+        Ok(_) => {}
+        Err(e) if e.to_string().contains("UNIQUE") => {
+            return Ok(InviteOutcome::Skipped {
+                reason: SkipReason::Exists,
+            });
+        }
+        Err(e) => return Err(e),
+    }
+
+    let new_id = tx.last_insert_rowid();
+
+    // Mint the admin's PAT (same shape as single invite).
+    let pat_plaintext = crate::auth::admin_token::generate_token();
+    let pat_hash = crate::auth::admin_token::hash_token(&pat_plaintext);
+    tx.execute(
+        "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext) VALUES (?1, ?2, ?3)",
+        params![new_id, pat_hash, pat_plaintext],
+    )?;
+
+    Ok(InviteOutcome::Created { id: new_id })
 }
 
 // ─── handlers ────────────────────────────────────────────────────────────────
@@ -259,53 +382,12 @@ pub async fn invite_admin(
         );
     }
 
-    let username_base = email
-        .split('@')
-        .next()
-        .unwrap_or("admin")
-        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
-
-    // Collect all DB results, drop the guard before any .await.
+    // Single-invite: run the shared per-email insert inside a transaction.
+    // `insert_one_admin` is the one source of truth (also used by the batch
+    // handler); map its Skipped outcomes back to the single-invite error codes.
     let db_result: Result<(i64, Option<String>), Response> = {
         let conn = s.meta.lock().await;
 
-        // Uniqueness check for email.
-        let existing: bool = conn
-            .query_row(
-                "SELECT 1 FROM admins WHERE email = ?1 COLLATE NOCASE",
-                params![email],
-                |_| Ok(()),
-            )
-            .is_ok();
-        if existing {
-            return json_error(
-                StatusCode::CONFLICT,
-                "ADMIN_EMAIL_TAKEN",
-                "an admin with that email already exists",
-            );
-        }
-
-        // Build a unique username.
-        let username = {
-            let mut candidate = username_base.clone();
-            let mut suffix = 2u32;
-            loop {
-                let taken: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM admins WHERE username = ?1",
-                        params![candidate],
-                        |_| Ok(()),
-                    )
-                    .is_ok();
-                if !taken {
-                    break candidate;
-                }
-                candidate = format!("{username_base}{suffix}");
-                suffix += 1;
-            }
-        };
-
-        // v1.29.3 — atomic admin + PAT creation. Same pattern as change_role.
         let tx = match conn.unchecked_transaction() {
             Ok(t) => t,
             Err(e) => {
@@ -317,40 +399,34 @@ pub async fn invite_admin(
             }
         };
 
-        if let Err(e) = tx.execute(
-            "INSERT INTO admins (username, password_hash, email, role) VALUES (?1, ?2, ?3, ?4)",
-            params![username, OAUTH_ONLY_SENTINEL, email, role],
-        ) {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE") {
+        let new_id = match insert_one_admin(&tx, &email, role) {
+            Ok(InviteOutcome::Created { id }) => id,
+            Ok(InviteOutcome::Skipped {
+                reason: SkipReason::Invalid,
+            }) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_EMAIL",
+                    "email must be a valid address",
+                );
+            }
+            Ok(InviteOutcome::Skipped {
+                reason: SkipReason::Exists | SkipReason::Duplicate,
+            }) => {
                 return json_error(
                     StatusCode::CONFLICT,
                     "ADMIN_EMAIL_TAKEN",
                     "an admin with that email already exists",
                 );
             }
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error_code": "INTERNAL", "message": msg })),
-            )
-                .into_response();
-        }
-
-        let new_id = tx.last_insert_rowid();
-
-        // PAT for the freshly-created admin.
-        let pat_plaintext = crate::auth::admin_token::generate_token();
-        let pat_hash = crate::auth::admin_token::hash_token(&pat_plaintext);
-        if let Err(e) = tx.execute(
-            "INSERT INTO _admin_tokens (admin_id, token_hash, plaintext) VALUES (?1, ?2, ?3)",
-            params![new_id, pat_hash, pat_plaintext],
-        ) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
-            )
-                .into_response();
-        }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+                )
+                    .into_response();
+            }
+        };
 
         if let Err(e) = tx.commit() {
             return (
@@ -660,4 +736,162 @@ pub async fn remove_admin(
     crate::safety::audit::write_entry(&s.log_dir, &entry).await;
 
     Json(serde_json::json!({ "removed": true })).into_response()
+}
+
+/// `POST /admin/team/batch` — invite many admins at once (Owner-only).
+///
+/// Body `{ emails: [..], role? }`. Each email is trimmed + lowercased and
+/// deduped within the batch; malformed / already-existing / duplicate emails
+/// are reported in `skipped` without aborting the others. Every created admin
+/// is minted a PAT and gets one `admin.team.invite` audit row — identical to
+/// the single-invite path (shared `insert_one_admin`). The whole batch runs in
+/// one transaction: a hard DB error rolls everything back.
+pub async fn batch_invite_admin(
+    State(s): State<MgmtState>,
+    axum::Extension(AdminId(caller_id)): axum::Extension<AdminId>,
+    axum::Extension(profile): axum::Extension<AdminProfileExt>,
+    Json(body): Json<BatchInviteBody>,
+) -> Response {
+    if let Err(r) = owner_guard(&profile) {
+        return r;
+    }
+
+    let role = body.role.as_deref().unwrap_or("member");
+    if !is_valid_role(role) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "INVALID_ROLE",
+            "role must be 'owner' or 'member'",
+        );
+    }
+
+    let max = std::env::var("DRUST_ADMIN_BATCH_MAX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(50);
+    if body.emails.len() > max {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "TOO_MANY",
+            "too many emails in one batch",
+        );
+    }
+
+    // Normalize + dedupe (preserve order). Blank entries are ignored silently;
+    // a repeat of an earlier email is reported as skipped:duplicate.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut normalized: Vec<String> = Vec::new();
+    let mut pre_skipped: Vec<(String, SkipReason)> = Vec::new();
+    for raw in &body.emails {
+        let e = raw.trim().to_ascii_lowercase();
+        if e.is_empty() {
+            continue;
+        }
+        if !seen.insert(e.clone()) {
+            pre_skipped.push((e, SkipReason::Duplicate));
+            continue;
+        }
+        normalized.push(e);
+    }
+
+    // Whole batch in one transaction: hard errors roll back everything, soft
+    // skips (invalid/exists) don't abort their siblings.
+    type BatchOk = (Vec<(i64, String)>, Vec<(String, SkipReason)>, Option<String>);
+    let db_result: Result<BatchOk, Response> = {
+        let conn = s.meta.lock().await;
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+                )
+                    .into_response();
+            }
+        };
+
+        let mut created: Vec<(i64, String)> = Vec::new();
+        let mut skipped_db: Vec<(String, SkipReason)> = Vec::new();
+        for e in &normalized {
+            match insert_one_admin(&tx, e, role) {
+                Ok(InviteOutcome::Created { id }) => created.push((id, e.clone())),
+                Ok(InviteOutcome::Skipped { reason }) => skipped_db.push((e.clone(), reason)),
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error_code": "INTERNAL",
+                            "message": err.to_string(),
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        if let Err(e) = tx.commit() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
+        let caller_email: Option<String> = conn
+            .query_row(
+                "SELECT email FROM admins WHERE id = ?1",
+                params![caller_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        Ok((created, skipped_db, caller_email))
+        // conn guard drops here — before any .await
+    };
+
+    let (created, skipped_db, caller_email) = match db_result {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    // One audit row per created admin (lock released — safe to await).
+    for (id, email) in &created {
+        let mut entry = AuditEntry::success("-", "-", "admin.team.invite", 0);
+        entry.actor_admin_id = Some(caller_id);
+        entry.actor_email_snapshot = caller_email.clone();
+        entry = entry.with_extra(serde_json::json!({
+            "invited_admin_id": id,
+            "invited_email": email,
+            "role": role,
+        }));
+        crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+    }
+
+    let created_json: Vec<serde_json::Value> = created
+        .iter()
+        .map(|(id, email)| serde_json::json!({ "id": id, "email": email }))
+        .collect();
+    let mut skipped_json: Vec<serde_json::Value> = pre_skipped
+        .iter()
+        .map(|(email, reason)| serde_json::json!({ "email": email, "reason": reason.as_str() }))
+        .collect();
+    skipped_json.extend(
+        skipped_db
+            .iter()
+            .map(|(email, reason)| serde_json::json!({ "email": email, "reason": reason.as_str() })),
+    );
+
+    let status = if created.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    let mut resp = Json(serde_json::json!({
+        "created": created_json,
+        "skipped": skipped_json,
+    }))
+    .into_response();
+    *resp.status_mut() = status;
+    resp
 }

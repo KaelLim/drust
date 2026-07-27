@@ -1306,6 +1306,10 @@ impl MgmtState {
                 get(super::admin_team::team_page_or_json).post(super::admin_team::invite_admin),
             )
             .route(
+                "/admin/team/batch",
+                post(super::admin_team::batch_invite_admin),
+            )
+            .route(
                 "/admin/team/{id}",
                 axum::routing::delete(super::admin_team::remove_admin),
             )
