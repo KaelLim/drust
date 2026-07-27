@@ -943,6 +943,16 @@ pub async fn tenants_state_with_cache(
     .unwrap();
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    // v1.50 — a real meta.sqlite always has ≥1 admin after bootstrap, and
+    // `tenants.owner_admin_id` (FK → admins.id, enforced: open_meta sets
+    // PRAGMA foreign_keys=ON) is stamped on create. Seed an owner AFTER
+    // migrations (the `role` column is added by apply_migrations) so the
+    // recycle-create path in this helper's tests satisfies the FK.
+    conn.execute(
+        "INSERT INTO admins (id, username, password_hash, role) VALUES (1, 'admin', 'x', 'owner')",
+        [],
+    )
+    .unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
     let meta = Arc::new(Mutex::new(conn));

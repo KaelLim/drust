@@ -98,7 +98,14 @@ async fn create_recycling_id_clears_stale_entries() {
         quota_db_mb: None,
         quota_rows: None,
     };
-    let resp = drust::mgmt::tenants::create_tenant_json(State(state), axum::Json(body)).await;
+    // v1.50 — create_tenant_json now takes the caller's AdminId (creator
+    // becomes owner). Driving the handler directly (no router), supply it.
+    let resp = drust::mgmt::tenants::create_tenant_json(
+        State(state),
+        axum::Extension(drust::auth::middleware::AdminId(1)),
+        axum::Json(body),
+    )
+    .await;
     assert!(resp.status().is_success(), "recycle-create succeeded");
     assert!(
         cache.get("stale2").is_none(),
