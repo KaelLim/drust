@@ -213,7 +213,6 @@ result_skipped = "已略過"
 result_none = "無"
 reason_invalid = "email 格式錯誤"
 reason_exists = "已是 admin"
-reason_duplicate = "清單內重複"
 [audit_body.aria]
 # REVIEW (low confidence): aria-label with template var, please verify wording
 show_details_for = "顯示 {op} 的詳細資訊"

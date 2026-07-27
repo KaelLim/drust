@@ -196,6 +196,11 @@
       ,
       detail: function (opts) {
         opts = opts || {};
+        // Optional `opts.onClose` fires on ANY dismissal (OK button, Escape, or
+        // backdrop click) — close() invokes closeCb(value) uniformly, so a
+        // caller that must run on close (e.g. reload after a bulk invite) can't
+        // be skipped by dismissing the modal without the action button.
+        closeCb = opts.onClose || null;
         titleEl.textContent = opts.title || '{{ t.s("common.modal.title_details") }}';
         // v1.32.10 — `opts.wide` widens the modal box (~720px vs the
         // default 460px) for single-value cell viewers where every

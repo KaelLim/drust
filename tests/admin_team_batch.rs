@@ -241,9 +241,12 @@ async fn batch_dedupes_within_request() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
     assert_eq!(body["created"].as_array().unwrap().len(), 1, "created once: {body}");
-    let skipped = body["skipped"].as_array().unwrap();
-    assert_eq!(skipped.len(), 2, "two dupes skipped: {body}");
-    assert!(skipped.iter().all(|s| s["reason"] == "duplicate"));
+    // Within-batch duplicates are silently collapsed — no skip entries.
+    assert_eq!(
+        body["skipped"].as_array().unwrap().len(),
+        0,
+        "dupes deduped silently, not reported: {body}"
+    );
 
     // Only one admin row exists for that address.
     let meta_path = dir.path().join("meta.sqlite");
@@ -256,6 +259,40 @@ async fn batch_dedupes_within_request() {
         )
         .unwrap();
     assert_eq!(cnt, 1);
+}
+
+#[tokio::test]
+async fn batch_rejects_malformed_addressbook_paste() {
+    let (app, dir) = spin_up().await;
+    let cookie = login(&app, "root", "hunter2").await;
+
+    // Angle-bracketed display-name form, double-@, and a dotless domain must all
+    // be rejected as invalid — not silently turned into junk admin rows.
+    let resp = batch(
+        &app,
+        &cookie,
+        serde_json::json!({
+            "emails": ["<alice@example.com>", "a@b@c.com", "bob@example", "carol@example.com"],
+            "role": "member"
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+
+    let created = body["created"].as_array().unwrap();
+    assert_eq!(created.len(), 1, "only the well-formed address is created: {body}");
+    assert_eq!(created[0]["email"], "carol@example.com");
+
+    let skipped = body["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 3, "three malformed addresses skipped: {body}");
+    assert!(
+        skipped.iter().all(|s| s["reason"] == "invalid"),
+        "all malformed → invalid: {body}"
+    );
+
+    // No junk admin row for the bracketed address.
+    assert_eq!(admin_role(&dir, "<alice@example.com>"), None);
 }
 
 #[tokio::test]

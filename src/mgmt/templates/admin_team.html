@@ -80,9 +80,8 @@
 
   // Invite admins — bulk paste + role select.
   var REASON_TEXT = {
-    invalid:   '{{ t.s("admin_team.invite.reason_invalid") }}',
-    exists:    '{{ t.s("admin_team.invite.reason_exists") }}',
-    duplicate: '{{ t.s("admin_team.invite.reason_duplicate") }}'
+    invalid: '{{ t.s("admin_team.invite.reason_invalid") }}',
+    exists:  '{{ t.s("admin_team.invite.reason_exists") }}'
   };
 
   function showInviteResult(data) {
@@ -94,20 +93,23 @@
     drustUI.detail({
       title: '{{ t.s("admin_team.invite.result_title") }}',
       wide:  true,
+      // Reload on ANY dismissal (OK, Escape, backdrop) so the newly-created
+      // admins can never be left off a stale table.
+      onClose: function () { window.location.reload(); },
       fields: [
         {
           label: '{{ t.s("admin_team.invite.result_created") }} (' + created.length + ')',
           value: created.length ? created.join('\n') : noneTxt,
-          textarea: created.length > 4
+          textarea: created.length > 1
         },
         {
           label: '{{ t.s("admin_team.invite.result_skipped") }} (' + skipped.length + ')',
           value: skipped.length ? skipped.join('\n') : noneTxt,
-          textarea: skipped.length > 4
+          textarea: skipped.length > 1
         }
       ],
       actions: [
-        { label: '{{ t.s("common.button.ok") }}', variant: 'primary', onClick: function () { window.location.reload(); } }
+        { label: '{{ t.s("common.button.ok") }}', variant: 'primary' }
       ]
     });
   }

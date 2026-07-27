@@ -103,8 +103,33 @@ fn owner_guard(profile: &AdminProfileExt) -> Result<(), Response> {
 /// both sides.  No RFC-5321 deep validation; the invite flow is Owner-only
 /// so this is good-faith input.
 fn validate_email(email: &str) -> bool {
-    let parts: Vec<&str> = email.splitn(2, '@').collect();
-    parts.len() == 2 && !parts[0].is_empty() && parts[1].contains('.')
+    // Good-faith check (owner-only invite). Reject the shapes a bulk address-book
+    // paste tends to produce — display names, angle brackets, quotes, and
+    // multi-`@` strings — so `Alice <a@b.com>` or `a@b@c.com` don't slip through
+    // as junk admin rows.
+    if email.is_empty() || email.len() > 254 {
+        return false;
+    }
+    if email
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '<' | '>' | ',' | ';' | '"'))
+    {
+        return false;
+    }
+    // Exactly one '@'.
+    let mut parts = email.split('@');
+    let (local, domain) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(l), Some(d), None) => (l, d),
+        _ => return false,
+    };
+    if local.is_empty() || domain.is_empty() {
+        return false;
+    }
+    // Domain must be dotted with non-empty labels either side of the last dot.
+    match domain.rsplit_once('.') {
+        Some((head, tld)) => !head.is_empty() && !tld.is_empty(),
+        None => false,
+    }
 }
 
 // ─── shared per-email invite core ────────────────────────────────────────────
@@ -116,8 +141,6 @@ enum SkipReason {
     Invalid,
     /// An admin with this email already exists.
     Exists,
-    /// The same email appeared earlier in the same batch.
-    Duplicate,
 }
 
 impl SkipReason {
@@ -125,7 +148,6 @@ impl SkipReason {
         match self {
             SkipReason::Invalid => "invalid",
             SkipReason::Exists => "exists",
-            SkipReason::Duplicate => "duplicate",
         }
     }
 }
@@ -411,7 +433,7 @@ pub async fn invite_admin(
                 );
             }
             Ok(InviteOutcome::Skipped {
-                reason: SkipReason::Exists | SkipReason::Duplicate,
+                reason: SkipReason::Exists,
             }) => {
                 return json_error(
                     StatusCode::CONFLICT,
@@ -778,21 +800,20 @@ pub async fn batch_invite_admin(
         );
     }
 
-    // Normalize + dedupe (preserve order). Blank entries are ignored silently;
-    // a repeat of an earlier email is reported as skipped:duplicate.
+    // Normalize + dedupe (preserve order). Blank entries and repeated paste
+    // lines are silently collapsed — a within-batch duplicate's outcome is
+    // already carried by its first occurrence, so a separate skip entry would
+    // just double-report the same address.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut normalized: Vec<String> = Vec::new();
-    let mut pre_skipped: Vec<(String, SkipReason)> = Vec::new();
     for raw in &body.emails {
         let e = raw.trim().to_ascii_lowercase();
         if e.is_empty() {
             continue;
         }
-        if !seen.insert(e.clone()) {
-            pre_skipped.push((e, SkipReason::Duplicate));
-            continue;
+        if seen.insert(e.clone()) {
+            normalized.push(e);
         }
-        normalized.push(e);
     }
 
     // Whole batch in one transaction: hard errors roll back everything, soft
@@ -872,15 +893,10 @@ pub async fn batch_invite_admin(
         .iter()
         .map(|(id, email)| serde_json::json!({ "id": id, "email": email }))
         .collect();
-    let mut skipped_json: Vec<serde_json::Value> = pre_skipped
+    let skipped_json: Vec<serde_json::Value> = skipped_db
         .iter()
         .map(|(email, reason)| serde_json::json!({ "email": email, "reason": reason.as_str() }))
         .collect();
-    skipped_json.extend(
-        skipped_db
-            .iter()
-            .map(|(email, reason)| serde_json::json!({ "email": email, "reason": reason.as_str() })),
-    );
 
     let status = if created.is_empty() {
         StatusCode::OK

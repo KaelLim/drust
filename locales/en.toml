@@ -207,7 +207,6 @@ result_skipped = "Skipped"
 result_none = "none"
 reason_invalid = "invalid email"
 reason_exists = "already an admin"
-reason_duplicate = "duplicate in list"
 [audit_body.aria]
 show_details_for = "show details for {op}"
 
