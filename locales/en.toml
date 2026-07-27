@@ -1146,12 +1146,62 @@ title = "Egress allowlist"
 uri_label = "Origin"
 uri_placeholder = "https://api.example.com"
 
+[quota_review.action]
+approve = "Approve"
+reject = "Reject"
+
+[quota_review.banner]
+body = "Approving raises the tenant's quota tier immediately (each tier = 10 GiB shared across database + files). Rejecting closes the request without changing the tier."
+title = "Upgrade requests"
+
+[quota_review.decide]
+failed_title = "Decision failed"
+
+[quota_review.empty]
+sub = "Member admins file requests from their tenant's Settings page."
+title = "No pending upgrade requests"
+
+[quota_review.head]
+eyebrow = "Admin · platform"
+sub = "Members request more quota; owners approve or reject here."
+title = "Quota upgrade requests"
+
+[quota_review.page]
+meta_description = "drust admin — pending per-tenant quota upgrade requests awaiting owner review."
+title = "drust admin — quota requests"
+
+[quota_review.reject]
+confirm_body = "Reject this upgrade request? The requester can file a new one."
+confirm_title = "Reject request"
+
+[quota_review.table]
+actions = "Actions"
+created = "Requested"
+reason = "Reason"
+requester = "Requester"
+tenant = "Tenant"
+tier = "Tier change"
+
 [tenant_settings.head]
 sub = "Tenant-level settings: display name and the record-history audit default. Everything else stays on its own page — see Related settings below."
 title = "Settings"
 
 [tenant_settings.meta]
 description = "drust admin — tenant {tenant_name}: settings (rename, record-history audit default)."
+
+[tenant_settings.quota]
+pending_note = "An upgrade request is pending owner review."
+request_done_body = "The tenant owner will review your upgrade request."
+request_done_title = "Request submitted"
+request_failed_title = "Request failed"
+request_reason_label = "Reason (optional)"
+request_reason_placeholder = "Why do you need more room?"
+request_submit = "Request upgrade"
+request_tier_label = "Requested tier"
+sub = "Hard cap = tier × 10 GiB, shared across the database and files. Members request a higher tier; the owner approves."
+tier_label = "Current tier"
+title = "Storage quota"
+usage_label = "Usage"
 
 [tenant_settings.rename]
 failed_title = "Rename failed"

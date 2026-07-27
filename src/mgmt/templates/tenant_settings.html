@@ -97,6 +97,46 @@
           </div>
         </div>
 
+        <!-- 2b. Storage quota (v1.50, Spec B) — usage bar + member upgrade
+             request. Config (tier set / approve) is owner-only on other faces;
+             here a member (or owner) of the tenant files a request. -->
+        <div class="card" style="margin-top:22px;">
+          <div class="card-head">
+            <div>
+              <div class="card-title">{{ t.s("tenant_settings.quota.title") }}</div>
+              <div class="card-sub">{{ t.s("tenant_settings.quota.sub") }}</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="row" style="gap:16px;align-items:baseline;flex-wrap:wrap;margin-bottom:10px;">
+              <span style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.3px;color:var(--muted);text-transform:uppercase;">{{ t.s("tenant_settings.quota.tier_label") }}</span>
+              <code>{{ quota_tier }}</code>
+              <span style="font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.3px;color:var(--muted);text-transform:uppercase;">{{ t.s("tenant_settings.quota.usage_label") }}</span>
+              <code>{{ usage_human }} / {{ limit_human }}</code>
+            </div>
+            <div style="height:8px;border-radius:6px;background:var(--bg-deep);overflow:hidden;max-width:520px;">
+              <div style="height:100%;width:{{ usage_pct }}%;background:var(--accent);"></div>
+            </div>
+
+            {% if has_pending_quota_request %}
+            <div style="margin-top:14px;color:var(--muted-2);font-size:11px;">{{ t.s("tenant_settings.quota.pending_note") }}</div>
+            {% else %}
+            <form id="quota-request-form" onsubmit="return false;" style="margin-top:16px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+              <div class="field" style="min-width:120px;">
+                <label for="quota-tier-input">{{ t.s("tenant_settings.quota.request_tier_label") }}</label>
+                <input class="input" id="quota-tier-input" type="number" min="{{ quota_tier + 1 }}" value="{{ quota_tier + 1 }}" step="1">
+              </div>
+              <div class="field" style="flex:1;min-width:240px;max-width:420px;">
+                <label for="quota-reason-input">{{ t.s("tenant_settings.quota.request_reason_label") }}</label>
+                <input class="input" id="quota-reason-input" autocomplete="off"
+                       placeholder="{{ t.s("tenant_settings.quota.request_reason_placeholder") }}">
+              </div>
+              <button type="submit" class="btn primary" id="quota-request-submit">{{ t.s("tenant_settings.quota.request_submit") }}</button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
+
         <!-- 3. Egress allowlist — outbound origins for webhooks + function http-fetch. -->
         <div class="card" style="margin-top:22px;">
           <div class="card-head">
@@ -276,6 +316,41 @@
         cb.checked = !newVal;
         tile.classList.toggle('on', !newVal);
         drustUI.alert({title: '{{ t.s("tenant_settings.audit.update_failed_title") }}', body: ''});
+      });
+    });
+  })();
+
+  // Storage-quota upgrade request (v1.50) — POST {requested_tier, reason};
+  // on success alert + reload so the pending note replaces the form.
+  (function () {
+    var form = document.getElementById('quota-request-form');
+    if (!form) return;
+    form.addEventListener('submit', function () {
+      var tierEl = document.getElementById('quota-tier-input');
+      var reasonEl = document.getElementById('quota-reason-input');
+      var tier = parseInt(tierEl.value, 10);
+      if (!tier || tier < 1) { tierEl.focus(); return; }
+      fetch('{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/quota/requests', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({requested_tier: tier, reason: (reasonEl.value || '')})
+      }).then(function (r) {
+        if (r.ok) {
+          drustUI.alert({
+            title: '{{ t.s("tenant_settings.quota.request_done_title") }}',
+            body: '{{ t.s("tenant_settings.quota.request_done_body") }}'
+          });
+          setTimeout(function () { location.reload(); }, 900);
+          return;
+        }
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          drustUI.alert({
+            title: '{{ t.s("tenant_settings.quota.request_failed_title") }}',
+            body: (b && (b.message || b.error_code)) || ''
+          });
+        });
+      }).catch(function () {
+        drustUI.alert({title: '{{ t.s("tenant_settings.quota.request_failed_title") }}', body: ''});
       });
     });
   })();

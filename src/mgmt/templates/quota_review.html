@@ -1,0 +1,106 @@
+{% extends "_base.html" %}
+{% import "_ui.html" as ui %}
+
+{% block title %}{{ t.s("quota_review.page.title") }}{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.s("quota_review.page.meta_description") }}">{% endblock %}
+{% block body_attrs %} data-section="quota-requests"{% endblock %}
+
+{% block content %}
+    <div class="page">
+
+      {% call ui::view_head(t.s("quota_review.head.eyebrow"), t.s("quota_review.head.title"), t.s("quota_review.head.sub")) %}{% endcall %}
+
+      <div class="banner info" style="margin-bottom:18px;">
+        <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
+        <div class="b-body">
+          <div class="b-title">{{ t.s("quota_review.banner.title") }}</div>
+          <p>{{ t.s("quota_review.banner.body") }}</p>
+        </div>
+      </div>
+
+      {% if requests.is_empty() %}
+      <div class="card">
+        {% call ui::empty_state("curious", t.s("quota_review.empty.title"), t.s("quota_review.empty.sub")) %}{% endcall %}
+      </div>
+      {% else %}
+      <div class="card">
+        {% call ui::data_table("") %}
+        <thead>
+          <tr>
+            <th>{{ t.s("quota_review.table.tenant") }}</th>
+            <th>{{ t.s("quota_review.table.requester") }}</th>
+            <th>{{ t.s("quota_review.table.tier") }}</th>
+            <th>{{ t.s("quota_review.table.reason") }}</th>
+            <th>{{ t.s("quota_review.table.created") }}</th>
+            <th>{{ t.s("quota_review.table.actions") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for q in requests %}
+          <tr data-req-id="{{ q.id }}">
+            <td>
+              <div>{{ q.tenant_name }}</div>
+              <code style="font-family:var(--font-mono);font-size:11px;color:var(--muted);word-break:break-all;">{{ q.tenant_id }}</code>
+            </td>
+            <td>{{ q.requester }}</td>
+            <td><span class="pill">{{ q.current_tier }} &rarr; {{ q.requested_tier }}</span></td>
+            <td style="max-width:280px;word-break:break-word;">{{ q.reason }}</td>
+            <td><code style="font-family:var(--font-mono);font-size:11px;color:var(--muted);">{{ q.created_at }}</code></td>
+            <td>
+              <button type="button" class="btn sm primary" data-decide="approve" data-id="{{ q.id }}">{{ t.s("quota_review.action.approve") }}</button>
+              <button type="button" class="btn sm ghost" data-decide="reject" data-id="{{ q.id }}">{{ t.s("quota_review.action.reject") }}</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        {% endcall %}
+      </div>
+      {% endif %}
+
+    </div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "_mascot.html" %}
+{% include "_cmdk.html" %}
+{% include "_modal.html" %}
+<script>
+  // Approve / reject a pending request. POST {action}; reload on success so the
+  // queue re-renders without the decided row (and, on approve, the raised tier
+  // is already live via the auth-cache eviction the handler performed).
+  (function () {
+    document.querySelectorAll('button[data-decide]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        var action = btn.getAttribute('data-decide');
+        var id = btn.getAttribute('data-id');
+        if (action === 'reject') {
+          var ok = await drustUI.confirm({
+            title: '{{ t.s("quota_review.reject.confirm_title") }}',
+            body: '{{ t.s("quota_review.reject.confirm_body") }}',
+            okText: '{{ t.s("quota_review.action.reject") }}'
+          });
+          if (!ok) return;
+        }
+        btn.disabled = true;
+        fetch('{{ crate::base_path::base_path() }}/admin/quota-requests/' + id + '/decide', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action: action})
+        }).then(function (r) {
+          if (r.ok) { location.reload(); return; }
+          btn.disabled = false;
+          return r.json().catch(function () { return {}; }).then(function (b) {
+            drustUI.alert({
+              title: '{{ t.s("quota_review.decide.failed_title") }}',
+              body: (b && (b.message || b.error_code)) || ''
+            });
+          });
+        }).catch(function () {
+          btn.disabled = false;
+          drustUI.alert({title: '{{ t.s("quota_review.decide.failed_title") }}', body: ''});
+        });
+      });
+    });
+  })();
+</script>
+{% endblock %}

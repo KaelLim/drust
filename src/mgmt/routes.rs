@@ -920,6 +920,20 @@ impl MgmtState {
                 "/admin/api/tenants/{id}/owner",
                 axum::routing::patch(super::tenant_settings::patch_tenant_owner),
             )
+            // v1.50 (Spec B, Task 6) — quota upgrade request/set (tenant-scoped
+            // faces). `quota/requests` (POST) is member-callable on an owned
+            // tenant; the ownership guard below 404s a foreign tenant.
+            // `quota` (PATCH) is owner-only — the handler adds the role check
+            // the visibility guard does not. Config is admin-plane only (no
+            // per-tenant MCP tool — a service key must never raise its quota).
+            .route(
+                "/admin/tenants/{id}/quota",
+                axum::routing::patch(super::quota_admin::patch_tenant_quota),
+            )
+            .route(
+                "/admin/tenants/{id}/quota/requests",
+                post(super::quota_admin::create_quota_request),
+            )
             // v1.46 — `⚙ _settings` virtual sidebar entry: rename form +
             // audit default toggle + apply-to-all, and links to the pages
             // that already host related settings (nothing relocated).
@@ -1154,7 +1168,7 @@ impl MgmtState {
                 ownership_guard_state.clone(),
                 crate::mgmt::tenant_authz::tenant_ownership_layer,
             ))
-            .with_state(tenants_state);
+            .with_state(tenants_state.clone());
 
         // Backups sub-router — list + download snapshots produced by
         // drust-backup.timer. Read-only; restore is intentionally manual
@@ -1184,6 +1198,25 @@ impl MgmtState {
                 crate::mgmt::tenant_authz::require_owner_layer,
             ))
             .with_state(backups_state);
+
+        // v1.50 (Spec B, Task 6) — host-wide quota review queue. Owner-only
+        // (inner to admin_profile_layer, same shape as backups_router): a
+        // member admin never sees another tenant's upgrade requests, and
+        // approve/reject can raise any tenant's tier. Shares `tenants_state`
+        // (meta + auth_cache + log_dir).
+        let quota_review_router = Router::new()
+            .route(
+                "/admin/quota-requests",
+                get(super::quota_admin::quota_requests_page),
+            )
+            .route(
+                "/admin/quota-requests/{id}/decide",
+                post(super::quota_admin::decide_quota_request),
+            )
+            .layer(axum::middleware::from_fn(
+                crate::mgmt::tenant_authz::require_owner_layer,
+            ))
+            .with_state(tenants_state);
 
         // Public-files sub-router (new in v1.4.0). Upload route carries its
         // own DefaultBodyLimit so multipart payloads larger than the cap
@@ -1326,6 +1359,7 @@ impl MgmtState {
             .merge(public_files_router)
             .merge(admin_tenant_files_router)
             .merge(backups_router)
+            .merge(quota_review_router)
             .merge(design_router)
             .merge(metrics_router)
             .merge(settings_router)

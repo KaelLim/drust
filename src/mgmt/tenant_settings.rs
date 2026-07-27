@@ -415,6 +415,14 @@ struct TenantSettingsPage {
     tenant_name: String,
     /// Current `tenants.audit_default` — seeds the toggle state.
     audit_default: bool,
+    /// v1.50 (Spec B, Task 6) — quota tier + live usage for the storage-quota
+    /// card. `usage_pct` (0..=100) drives the usage bar width; the member
+    /// upgrade-request form is hidden when `has_pending_quota_request`.
+    quota_tier: i64,
+    usage_human: String,
+    limit_human: String,
+    usage_pct: u8,
+    has_pending_quota_request: bool,
     /// `DRUST_AUDIT_HISTORY_RETENTION_DAYS` resolved at render time;
     /// `0` renders as "keep forever". Display-only — the env var is the
     /// sole config surface for retention.
@@ -449,28 +457,58 @@ pub async fn tenant_settings_page(
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    // Name + audit_default + current owner in one meta read; 404 when
-    // missing/soft-deleted.
-    let row: Option<(String, i64, Option<i64>)> = {
+    // Name + audit_default + current owner + quota_tier in one meta read; 404
+    // when missing/soft-deleted.
+    let row: Option<(String, i64, Option<i64>, i64)> = {
         let conn = state.session.meta.lock().await;
         conn.query_row(
-            "SELECT name, COALESCE(audit_default, 1), owner_admin_id FROM tenants \
-             WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT name, COALESCE(audit_default, 1), owner_admin_id, COALESCE(quota_tier, 1) \
+             FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
             rusqlite::params![tenant_id],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, i64>(1)?,
                     r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, i64>(3)?,
                 ))
             },
         )
         .optional()
         .unwrap_or(None)
     };
-    let (tenant_name, audit_default, owner_admin_id) = match row {
-        Some((n, d, o)) => (n, d != 0, o),
+    let (tenant_name, audit_default, owner_admin_id, quota_tier) = match row {
+        Some((n, d, o, q)) => (n, d != 0, o, q),
         None => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+    };
+
+    // v1.50 — live usage for the storage-quota card. Measured off a pooled
+    // reader (same source as the stats sampler); best-effort → 0 on error so a
+    // fresh/unopenable tenant still renders. `pending` hides the request form.
+    let usage_bytes: u64 = match state.tenants.get_or_open(&tenant_id) {
+        Ok(pool) => pool
+            .with_reader(|c| crate::storage::quota::usage_on_conn(c))
+            .await
+            .unwrap_or(0),
+        Err(_) => 0,
+    };
+    let limit_bytes =
+        (quota_tier.max(1) as u64).saturating_mul(crate::storage::quota::QUOTA_TIER_BYTES);
+    let usage_pct: u8 = if limit_bytes == 0 {
+        0
+    } else {
+        ((usage_bytes.saturating_mul(100)) / limit_bytes).min(100) as u8
+    };
+    let usage_human = crate::mgmt::format::humanize_bytes(usage_bytes);
+    let limit_human = crate::mgmt::format::humanize_bytes(limit_bytes);
+    let has_pending_quota_request: bool = {
+        let conn = state.session.meta.lock().await;
+        conn.prepare(
+            "SELECT 1 FROM quota_requests \
+             WHERE tenant_id = ?1 AND status = 'pending' LIMIT 1",
+        )
+        .and_then(|mut s| s.exists(rusqlite::params![tenant_id]))
+        .unwrap_or(false)
     };
 
     // v1.50 — transfer dropdown rows, owner-role viewers only (the control is
@@ -539,6 +577,11 @@ pub async fn tenant_settings_page(
         tenant_id,
         tenant_name,
         audit_default,
+        quota_tier,
+        usage_human,
+        limit_human,
+        usage_pct,
+        has_pending_quota_request,
         retention_days: crate::storage::record_history::retention_days_from_env(),
         collections,
         egress_entries,

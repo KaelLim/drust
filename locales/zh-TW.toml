@@ -1168,12 +1168,62 @@ title = "Egress 白名單"
 uri_label = "來源"
 uri_placeholder = "https://api.example.com"
 
+[quota_review.action]
+approve = "核准"
+reject = "駁回"
+
+[quota_review.banner]
+body = "核准會立即調升該租戶的配額級距（每級 = 10 GiB,資料庫與檔案共用）。駁回僅關閉申請,不改變級距。"
+title = "擴容申請"
+
+[quota_review.decide]
+failed_title = "決議失敗"
+
+[quota_review.empty]
+sub = "member 於各自租戶的設定頁提出申請。"
+title = "目前沒有待審的擴容申請"
+
+[quota_review.head]
+eyebrow = "Admin · 平台"
+sub = "member 申請擴容,owner 在此核准或駁回。"
+title = "配額擴容申請"
+
+[quota_review.page]
+meta_description = "drust admin — 待 owner 審核的租戶配額擴容申請。"
+title = "drust admin — 配額申請"
+
+[quota_review.reject]
+confirm_body = "駁回此擴容申請?申請者可再重新提出。"
+confirm_title = "駁回申請"
+
+[quota_review.table]
+actions = "動作"
+created = "申請時間"
+reason = "理由"
+requester = "申請者"
+tenant = "租戶"
+tier = "級距變更"
+
 [tenant_settings.head]
 sub = "租戶層級設定：顯示名稱與紀錄歷史稽核預設。其他設定仍在各自頁面 — 見下方相關設定。"
 title = "設定"
 
 [tenant_settings.meta]
 description = "drust admin — 租戶 {tenant_name}：設定（重新命名、紀錄歷史稽核預設）。"
+
+[tenant_settings.quota]
+pending_note = "已有一筆擴容申請待 owner 審核。"
+request_done_body = "租戶擁有者將審核你的擴容申請。"
+request_done_title = "申請已送出"
+request_failed_title = "申請失敗"
+request_reason_label = "理由（選填）"
+request_reason_placeholder = "為什麼需要更多空間?"
+request_submit = "申請擴容"
+request_tier_label = "申請級距"
+sub = "硬上限 = 級距 × 10 GiB,資料庫與檔案共用。member 申請更高級距,由 owner 核准。"
+tier_label = "目前級距"
+title = "儲存配額"
+usage_label = "用量"
 
 [tenant_settings.rename]
 failed_title = "重新命名失敗"
