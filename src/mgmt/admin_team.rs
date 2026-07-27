@@ -511,6 +511,14 @@ pub async fn change_role(
         Err(r) => return r,
     };
 
+    // hook 13 — role flip re-scopes every PAT of this admin: an owner→member
+    // demotion narrows their PATs to owned tenants only (v1.50 CTE deny), but
+    // a freshly-used PAT may still sit in the data-plane auth cache bound to a
+    // foreign tenant and be served on a hit WITHOUT a meta lookup. Evict now
+    // so the new scope applies immediately, not after the 10s safety TTL.
+    // Mirrors remove_admin below.
+    s.auth_cache.clear_admin_pat(target_id);
+
     // Emit audit (async — safe; lock already released).
     let mut entry = AuditEntry::success("-", "-", "admin.team.role_change", 0);
     entry.actor_admin_id = Some(caller_id);

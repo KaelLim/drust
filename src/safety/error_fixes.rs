@@ -112,6 +112,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "This collection has an owner_field; service-key INSERT must populate it explicitly. User-token INSERT auto-fills it from the authenticated user.",
     ),
     (
+        "PAT_TENANT_DENIED",
+        "This personal access token belongs to a member admin and only resolves on tenants that admin owns. Use the tenant's own service key, a PAT from an owner admin, or have an owner transfer the tenant. Older clients may match the WRITE_DENIED alias.",
+    ),
+    (
         "POLICY_CHECK_FAILED",
         "The row violates this collection's row-level policy CHECK for this op. Adjust the field values so they satisfy the policy, or change the policy via PUT /collections/<c>/policies.",
     ),

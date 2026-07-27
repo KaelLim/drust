@@ -399,6 +399,10 @@ pub async fn bearer_auth_layer(
         // v1.42 — appended `file_anon_caps_json` / `file_user_caps_json`
         // (cols 8,9) so the file handlers can gate per-verb without a second
         // meta.lock(). NULL (tenant missing) → treated as '[]' = no caps.
+        // v1.50 — appended the PAT admin's `role` (col 11) and the tenant's
+        // `owner_admin_id` (col 12) so the PAT branch can deny a member
+        // admin's PAT on tenants that admin does not own. Both NULL on
+        // non-PAT bearers / missing tenant.
         const SQL_BEARER_AUTH_CTE: &str = "\
 WITH bearer_match AS ( \
     SELECT 'admin_pat' AS kind, p.id AS token_id, p.admin_id, \
@@ -424,7 +428,9 @@ SELECT \
     (SELECT COALESCE(allow_anon_publish, 0) FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
     (SELECT COALESCE(file_anon_caps_json, '[]') FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
     (SELECT COALESCE(file_user_caps_json, '[]') FROM tenants WHERE id = ?1 AND deleted_at IS NULL), \
-    (SELECT expires_at FROM bearer_match LIMIT 1)";
+    (SELECT expires_at FROM bearer_match LIMIT 1), \
+    (SELECT role FROM admins WHERE id = (SELECT admin_id FROM bearer_match LIMIT 1)), \
+    (SELECT owner_admin_id FROM tenants WHERE id = ?1 AND deleted_at IS NULL)";
 
         let pat_hash = bearer
             .starts_with(crate::auth::admin_token::TOKEN_PREFIX)
@@ -442,6 +448,8 @@ SELECT \
             String,         // file_anon_caps_json (v1.42) — '[]' when tenant missing
             String,         // file_user_caps_json (v1.42)
             Option<String>, // pat_expires_at (v1.45.1 F3)
+            Option<String>, // pat_admin_role (v1.50)
+            Option<i64>,    // tenant_owner_admin_id (v1.50)
         )> = {
             let conn = state.meta.lock().await;
             conn.query_row(
@@ -463,10 +471,15 @@ SELECT \
                     r.get::<_, Option<String>>(8)?.unwrap_or_else(|| "[]".into()),
                     r.get::<_, Option<String>>(9)?.unwrap_or_else(|| "[]".into()),
                     r.get::<_, Option<String>>(10)?,
+                    r.get::<_, Option<String>>(11)?,
+                    r.get::<_, Option<i64>>(12)?,
                 )),
             )
             .ok()
         };
+        // 13-tuple: no `Default` impl (std stops at 12) — explicit fallback,
+        // semantically identical to the previous `unwrap_or_default()`
+        // (tenant_ok=false short-circuits to TENANT_NOT_FOUND below).
         let (
             tenant_ok,
             kind,
@@ -479,7 +492,23 @@ SELECT \
             file_anon_caps_json,
             file_user_caps_json,
             pat_expires_raw,
-        ) = meta_row.unwrap_or_default();
+            pat_admin_role,
+            tenant_owner_admin_id,
+        ) = meta_row.unwrap_or((
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+            0,
+            "[]".into(),
+            "[]".into(),
+            None,
+            None,
+            None,
+        ));
         let publish_policy = crate::tenant::rooms::policy::TenantPublishPolicy {
             allow_user: allow_user_publish != 0,
             allow_anon: allow_anon_publish != 0,
@@ -607,6 +636,28 @@ SELECT \
                 // Email snapshot from CTE travels to the audit branch via
                 // the captured local (no extra meta.lock at audit time).
                 resolved_email_snapshot = pat_email_snapshot;
+                // v1.50 — member-scoped PAT: a member admin's PAT only
+                // resolves on tenants that admin owns (spec A §5.4). Owner
+                // PATs keep the historical cross-tenant reach unchanged.
+                // Cache-safe by construction: a Bearer hit is bound to one
+                // tenant (the hit path above falls through on mismatch), so
+                // every cross-tenant attempt re-enters this DB path; a
+                // same-tenant entry that goes stale is evicted by hook 13
+                // (change_role) and the ownership-transfer hook (T7).
+                if pat_admin_role.as_deref() == Some("member")
+                    && tenant_owner_admin_id != Some(admin_id)
+                {
+                    crate::mgmt::metrics::metrics()
+                        .bearer_denied_total
+                        .with_label_values(&["admin_pat", "HTTP_403"])
+                        .inc();
+                    return crate::error::json_error_with_aliases(
+                        StatusCode::FORBIDDEN,
+                        "PAT_TENANT_DENIED",
+                        &["WRITE_DENIED"],
+                        "this personal access token is scoped to tenants owned by its admin",
+                    );
+                }
                 let ctx = AuthCtx::Service { admin_id: Some(admin_id) };
                 resolved_auth_ctx = Some(ctx.clone());
                 req.extensions_mut().insert(ctx);
