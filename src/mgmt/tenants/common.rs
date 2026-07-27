@@ -1,6 +1,6 @@
 //! Cross-page helpers shared by the OAuth-providers and Webhooks admin pages.
 //! Relocated from `tenants.rs` (group G) by the Finding #4 split.
-//! `load_tenant_shell` + `ensure_tenant_exists` are `pub(crate)` — the only
+//! `load_tenant_shell` + `ensure_tenant_visible` are `pub(crate)` — the only
 //! deliberate visibility widening in the refactor (was module-private).
 
 use super::TenantsState;
@@ -36,27 +36,37 @@ pub(crate) async fn load_tenant_shell(
     Ok((tenant_name, collections))
 }
 
-/// Lightweight existence guard for admin POST handlers (DELETE / upsert):
-/// returns `None` if the tenant exists in `meta.tenants` and isn't
-/// soft-deleted, or a 404 response otherwise. Used before
-/// `state.tenants.get_or_open(...)` so we don't materialise an empty
-/// `tenants/<bogus_id>/data.sqlite` for an admin-typed path. Cheaper than
-/// `load_tenant_shell` (no collection list).
-pub(crate) async fn ensure_tenant_exists(
+/// v1.50 — ownership-aware visibility guard for admin POST handlers
+/// (DELETE / upsert), the successor to `ensure_tenant_exists`: returns
+/// `None` when the tenant exists in `meta.tenants`, isn't soft-deleted,
+/// AND `tenant_authz::tenant_access_for` allows the caller (owner: always;
+/// member: only tenants they own). Missing tenant and member-not-owned both
+/// return the SAME 404 so a member cannot probe for a foreign tenant's
+/// existence. Runs before `state.tenants.get_or_open(...)` so we don't
+/// materialise an empty `tenants/<bogus_id>/data.sqlite` for an admin-typed
+/// path. Cheaper than `load_tenant_shell` (no collection list).
+pub(crate) async fn ensure_tenant_visible(
     state: &TenantsState,
     tenant_id: &str,
+    is_owner: bool,
+    caller_admin_id: i64,
 ) -> Option<Response> {
-    let exists: bool = {
+    let owner: Result<Option<i64>, _> = {
         let conn = state.session.meta.lock().await;
         conn.query_row(
-            "SELECT 1 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT owner_admin_id FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
             rusqlite::params![tenant_id],
-            |_| Ok(()),
+            |r| r.get(0),
         )
-        .is_ok()
     };
-    if !exists {
-        return Some((StatusCode::NOT_FOUND, "no such tenant").into_response());
+    match owner {
+        Err(_) => Some((StatusCode::NOT_FOUND, "no such tenant").into_response()),
+        Ok(o) => match crate::mgmt::tenant_authz::tenant_access_for(is_owner, caller_admin_id, o) {
+            crate::mgmt::tenant_authz::TenantAccess::Allow => None,
+            // 404 (not 403): never leak a foreign tenant's existence to a member.
+            crate::mgmt::tenant_authz::TenantAccess::Deny => {
+                Some((StatusCode::NOT_FOUND, "no such tenant").into_response())
+            }
+        },
     }
-    None
 }

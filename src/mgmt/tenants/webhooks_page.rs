@@ -254,11 +254,16 @@ pub async fn tenant_webhook_create_form(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path(tenant_id): Path<String>,
     Form(form): Form<WebhookCreateForm>,
 ) -> Response {
     // Guard FIRST so a missing tenant doesn't re-materialise its dir.
-    if let Some(r) = common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    {
         return r;
     }
     let events: Vec<String> = form
@@ -447,9 +452,15 @@ pub async fn tenant_webhook_create_form(
 /// 303 back to the list.
 pub async fn tenant_webhook_delete_form(
     State(state): State<TenantsState>,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path((tenant_id, wid)): Path<(String, i64)>,
 ) -> Response {
-    if let Some(r) = common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    {
         return r;
     }
     if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {

@@ -145,6 +145,9 @@ pub async fn tenant_oauth_provider_upsert(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path(tenant_id): Path<String>,
     Form(form): Form<OauthProviderUpsertForm>,
 ) -> Response {
@@ -152,7 +155,9 @@ pub async fn tenant_oauth_provider_upsert(
     // by the writer-mutex below via get_or_open → open_write → create_dir_all.
     // GET path runs the same check via load_tenant_shell; DELETE and the
     // upsert error-leg need it too.
-    if let Some(r) = common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    {
         return r;
     }
 
@@ -220,12 +225,18 @@ pub async fn tenant_oauth_provider_upsert(
 /// needed; the row simply disappears).
 pub async fn tenant_oauth_provider_delete(
     State(state): State<TenantsState>,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path((tenant_id, provider)): Path<(String, String)>,
 ) -> Response {
     // Guard FIRST: a missing/soft-deleted tenant must not be re-materialised
     // by get_or_open → open_write → create_dir_all. GET path runs the same
     // check via load_tenant_shell.
-    if let Some(r) = common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    {
         return r;
     }
     if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
@@ -255,10 +266,15 @@ pub async fn tenant_oauth_redirect_uris_update(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path((tenant_id, provider)): Path<(String, String)>,
     Form(form): Form<OauthRedirectUrisForm>,
 ) -> Response {
-    if let Some(r) = common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    {
         return r;
     }
     let uris: Vec<String> = form

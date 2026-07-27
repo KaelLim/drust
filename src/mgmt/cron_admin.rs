@@ -225,10 +225,16 @@ pub async fn create(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path(tenant_id): Path<String>,
     Form(form): Form<CronCreateForm>,
 ) -> Response {
-    if let Some(r) = super::tenants::common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
+            .await
+    {
         return r;
     }
     let pool = match state.tenants.get_or_open(&tenant_id) {
@@ -277,9 +283,16 @@ pub async fn create(
 /// (index reload rides `ops::set_active`), audit, 303 back. Missing job 404s.
 pub async fn toggle(
     State(state): State<TenantsState>,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
-    if let Some(r) = super::tenants::common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
+            .await
+    {
         return r;
     }
     let pool = match state.tenants.get_or_open(&tenant_id) {
@@ -310,9 +323,16 @@ pub async fn toggle(
 /// gone → idempotent, still redirect (the functions_admin delete pattern).
 pub async fn delete(
     State(state): State<TenantsState>,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
-    if let Some(r) = super::tenants::common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
+            .await
+    {
         return r;
     }
     let pool = match state.tenants.get_or_open(&tenant_id) {

@@ -205,9 +205,16 @@ pub async fn page(
 /// invalidate the trigger-match cache, audit, then 303 back to the list.
 pub async fn toggle(
     State(state): State<TenantsState>,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
-    if let Some(r) = super::tenants::common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
+            .await
+    {
         return r;
     }
     let pool = match state.tenants.get_or_open(&tenant_id) {
@@ -250,10 +257,17 @@ pub struct InvokeAclForm {
 /// `schema::set_invoke_acl` the REST + MCP surfaces use.
 pub async fn set_invoke_acl(
     State(state): State<TenantsState>,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path((tenant_id, name)): Path<(String, String)>,
     Form(form): Form<InvokeAclForm>,
 ) -> Response {
-    if let Some(r) = super::tenants::common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
+            .await
+    {
         return r;
     }
     let pool = match state.tenants.get_or_open(&tenant_id) {
@@ -277,9 +291,16 @@ pub async fn set_invoke_acl(
 /// via the shared `delete_impl`, audit, then 303 back to the list.
 pub async fn delete(
     State(state): State<TenantsState>,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
-    if let Some(r) = super::tenants::common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
+            .await
+    {
         return r;
     }
     let pool = match state.tenants.get_or_open(&tenant_id) {
@@ -321,10 +342,16 @@ pub async fn invoke(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
     Path((tenant_id, name)): Path<(String, String)>,
     Form(form): Form<InvokeForm>,
 ) -> Response {
-    if let Some(r) = super::tenants::common::ensure_tenant_exists(&state, &tenant_id).await {
+    if let Some(r) =
+        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
+            .await
+    {
         return r;
     }
     // 404 before running anything if the function does not exist.

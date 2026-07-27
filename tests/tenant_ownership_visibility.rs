@@ -259,3 +259,96 @@ async fn member_cmdk_lists_only_owned() {
         "cmdk must be ownership-scoped for member admins"
     );
 }
+
+// ─── Task 5: ensure_tenant_visible choke point ───────────────────────────────
+// The 12 admin POST handlers that used to call `ensure_tenant_exists` now go
+// through the ownership-aware `ensure_tenant_visible`: a member hitting a
+// tenant they do not own gets 404 "no such tenant" (no existence leak) BEFORE
+// the handler opens the tenant pool; owned tenants behave as before. One
+// representative route per caller family (oauth / webhooks / cron / functions).
+
+async fn post_status(app: &axum::Router, cookie: &str, uri: &str) -> (StatusCode, String) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1_048_576)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn member_choke_point_denies_foreign_tenant_admin_actions() {
+    let (app, _dir, _owner_cookie, member_cookie) = seed_three_tenants().await;
+    // Foreign (owner-owned) tenant AND the NULL-owner orphan: both invisible.
+    for tenant in ["t-owner-a", "t-orphan-c"] {
+        for uri in [
+            format!("/admin/tenants/{tenant}/_oauth_providers/google/delete"),
+            format!("/admin/tenants/{tenant}/_webhooks/1/delete"),
+            format!("/admin/tenants/{tenant}/_cron/nojob/toggle"),
+            format!("/admin/tenants/{tenant}/_functions/nofn/toggle"),
+        ] {
+            let (status, body) = post_status(&app, &member_cookie, &uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "member POST {uri} must 404");
+            assert!(
+                body.contains("no such tenant"),
+                "deny must be indistinguishable from a missing tenant on {uri}, got: {body}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn member_choke_point_allows_owned_tenant_admin_actions() {
+    let (app, _dir, _owner_cookie, member_cookie) = seed_three_tenants().await;
+    // Idempotent deletes on the member's own tenant pass the visibility gate
+    // and 303 back to the page (both swallow downstream errors by design).
+    let (status, _) = post_status(
+        &app,
+        &member_cookie,
+        "/admin/tenants/t-member-b/_oauth_providers/google/delete",
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "own-tenant oauth delete");
+    let (status, _) = post_status(
+        &app,
+        &member_cookie,
+        "/admin/tenants/t-member-b/_webhooks/1/delete",
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "own-tenant webhook delete");
+}
+
+#[tokio::test]
+async fn owner_choke_point_keeps_cross_tenant_access() {
+    let (app, _dir, owner_cookie, _member_cookie) = seed_three_tenants().await;
+    // Owner reach is unchanged: foreign-owned and orphan tenants both pass.
+    for tenant in ["t-member-b", "t-orphan-c"] {
+        let uri = format!("/admin/tenants/{tenant}/_oauth_providers/google/delete");
+        let (status, _) = post_status(&app, &owner_cookie, &uri).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "owner POST {uri} must pass");
+    }
+}
+
+#[tokio::test]
+async fn choke_point_still_404s_missing_tenant() {
+    let (app, _dir, owner_cookie, _member_cookie) = seed_three_tenants().await;
+    let (status, body) = post_status(
+        &app,
+        &owner_cookie,
+        "/admin/tenants/t-nope/_oauth_providers/google/delete",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("no such tenant"));
+}
