@@ -1014,12 +1014,11 @@ pub async fn create_handler(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // +Extension(quota_tier) keeps this at 8 params
 pub async fn update_handler(
     Extension(t): Extension<TenantRef>,
     Extension(ctx): Extension<AuthCtx>,
-    // v1.50 (Spec B, Task 5) — quota tier from the bearer CTE (see create_handler).
-    Extension(TenantQuotaTier(quota_tier)): Extension<TenantQuotaTier>,
+    // v1.50 (Spec B, adversarial F3) — UPDATE is NOT quota-gated (shrink/recovery
+    // must never be blocked), so no TenantQuotaTier extractor here.
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
     Json(body): Json<DataBody>,
     bus: EventBus,
@@ -1139,15 +1138,10 @@ pub async fn update_handler(
     let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
-            // v1.50 (Spec B §5.1) — per-tenant hard quota (see create_handler).
-            // A growth-shaped UPDATE passes incoming=0; delete / shrink is not
-            // gated (only ever lowers usage). Reject → sentinel → 507 below.
-            crate::storage::quota::check_tenant_quota(
-                crate::storage::quota::usage_on_conn(tx)?,
-                0,
-                quota_tier,
-            )
-            .map_err(crate::error::quota_exceeded_error)?;
+            // v1.50 (Spec B, adversarial F3): UPDATE is NOT quota-gated — a
+            // shrink / in-place update must never be blocked so a tenant over
+            // cap (e.g. after a tier downgrade) can recover (spec §7). Growth
+            // is gated at INSERT / upload / write-RPC.
             let schema = match describe_collection(tx, &coll_clone)? {
                 Some(s) => s,
                 None => return Err(rusqlite::Error::InvalidQuery),

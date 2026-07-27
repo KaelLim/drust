@@ -487,18 +487,18 @@ pub async fn tenant_settings_page(
     // fresh/unopenable tenant still renders. `pending` hides the request form.
     let usage_bytes: u64 = match state.tenants.get_or_open(&tenant_id) {
         Ok(pool) => pool
-            .with_reader(|c| crate::storage::quota::usage_on_conn(c))
+            .with_reader(crate::storage::quota::usage_on_conn)
             .await
             .unwrap_or(0),
         Err(_) => 0,
     };
     let limit_bytes =
         (quota_tier.max(1) as u64).saturating_mul(crate::storage::quota::QUOTA_TIER_BYTES);
-    let usage_pct: u8 = if limit_bytes == 0 {
-        0
-    } else {
-        ((usage_bytes.saturating_mul(100)) / limit_bytes).min(100) as u8
-    };
+    let usage_pct: u8 = usage_bytes
+        .saturating_mul(100)
+        .checked_div(limit_bytes)
+        .unwrap_or(0)
+        .min(100) as u8;
     let usage_human = crate::mgmt::format::humanize_bytes(usage_bytes);
     let limit_human = crate::mgmt::format::humanize_bytes(limit_bytes);
     let has_pending_quota_request: bool = {

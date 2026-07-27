@@ -24,6 +24,7 @@ fn opens_fresh_db_with_schema() {
             "_system_files",
             "_trash_pending_revokes",
             "admins",
+            "quota_requests",
             "sessions",
             "tenants",
             "tokens"

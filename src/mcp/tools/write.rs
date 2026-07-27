@@ -467,21 +467,12 @@ pub async fn update_record_checked(
         .map(|v| v.name.clone())
         .collect();
 
-    // v1.50 (Spec B §5.1) — per-tenant quota tier (see insert_record_checked).
-    let inner = s.inner();
-    let quota_tier = match inner.meta.as_ref() {
-        Some(m) => crate::storage::quota::read_tier(m, &inner.tenant_id).await,
-        None => 1,
-    };
+    // v1.50 (Spec B, adversarial F3): UPDATE is NOT quota-gated. A shrink or
+    // in-place update must never be blocked — a tenant already over cap (e.g.
+    // after an owner tier downgrade) has to be able to shrink to recover
+    // (spec §7). Growth is gated at INSERT / upload / write-RPC instead.
     let record = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
-            // Per-tenant hard quota (growth-shaped UPDATE passes incoming=0).
-            crate::storage::quota::check_tenant_quota(
-                crate::storage::quota::usage_on_conn(tx)?,
-                0,
-                quota_tier,
-            )
-            .map_err(crate::error::quota_exceeded_error)?;
             let schema = describe_collection(tx, &coll)?
                 .ok_or_else(|| invalid_input(format!("unknown collection: '{}'", coll)))?;
             let allowed: std::collections::HashSet<&str> =

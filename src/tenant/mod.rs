@@ -384,13 +384,13 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     let b = bus.clone();
                     let wh = webhooks.clone();
                     let fns = functions.clone();
-                    // v1.50 (Spec B, Task 5) — quota tier from the bearer CTE
-                    // request extension; `update_handler` extracts it.
-                    move |ext, ctx, quota, p, body| {
+                    // v1.50 (Spec B, adversarial F3) — UPDATE is not quota-gated
+                    // (shrink/recovery must never be blocked), so no
+                    // TenantQuotaTier extractor is threaded to `update_handler`.
+                    move |ext, ctx, p, body| {
                         records::update_handler(
                             ext,
                             ctx,
-                            quota,
                             p,
                             body,
                             b.clone(),

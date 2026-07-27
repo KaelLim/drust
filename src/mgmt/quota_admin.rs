@@ -71,7 +71,7 @@ pub async fn create_quota_request(
     // Normalize the reason: trim, cap length, reject control chars (mirrors the
     // display-name validator's posture).
     let reason: Option<String> = match body.reason.as_deref().map(str::trim) {
-        Some(r) if r.is_empty() => None,
+        Some("") => None,
         Some(r) if r.len() > 500 => {
             return json_error(
                 StatusCode::BAD_REQUEST,
@@ -300,6 +300,29 @@ pub async fn decide_quota_request(
                 );
             }
         };
+
+        // v1.50 (Spec B, adversarial F4): re-validate requested_tier > current
+        // AT APPROVE TIME. A request created when the tenant was at tier N can
+        // sit pending while the owner raises the tier via a later request or a
+        // direct PATCH; approving the stale row would silently DOWNGRADE the
+        // quota. Re-read the live tier and refuse a non-increase (the request
+        // stays pending so it can be rejected explicitly).
+        if approve {
+            let current_tier: i64 = conn
+                .query_row(
+                    "SELECT quota_tier FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+                    rusqlite::params![tenant_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(1);
+            if requested_tier <= current_tier {
+                return json_error(
+                    StatusCode::CONFLICT,
+                    "QUOTA_TIER_NOT_INCREASE",
+                    "the tenant is already at or above the requested tier",
+                );
+            }
+        }
 
         let tx = match conn.transaction() {
             Ok(t) => t,

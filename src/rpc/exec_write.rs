@@ -565,6 +565,52 @@ pub async fn run_write_rpc(
                 };
             }
 
+            // ── STEP 5c (v1.50 Spec B, adversarial F2): post-body quota
+            //    re-check. STEP 1's pre-check (incoming=0) only refuses a
+            //    tenant ALREADY over cap; a single amplifying fire
+            //    (`INSERT ... SELECT FROM big, big`, recursive-CTE INSERT)
+            //    can grow the DB far past the cap within this savepoint, and
+            //    an audit-disabled collection has no record-history capture
+            //    cap to bound it. Re-measure now — authorizer detached at
+            //    STEP 5, every statement + history write applied, savepoint
+            //    still open — and on the COMMIT path roll back + surface 507
+            //    if the committed size would exceed the cap. This is the
+            //    in-tx hard guarantee the record-write choke points give.
+            if exec_error.is_none() && !dry_run {
+                match crate::storage::quota::usage_on_conn(conn) {
+                    Ok(usage) => {
+                        if let Err(qe) = crate::storage::quota::check_tenant_quota(usage, 0, tier) {
+                            let crate::storage::quota::QuotaError::TenantQuotaExceeded {
+                                usage,
+                                limit,
+                                ..
+                            } = qe;
+                            let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
+                            if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
+                                return Ok(Err(TxCommitError(rel.to_string())));
+                            }
+                            return Ok(Ok(Err(RpcStatementError {
+                                statement_index: statement_count,
+                                message: format!(
+                                    "TENANT_QUOTA_EXCEEDED: tenant storage usage {usage}B \
+                                     would exceed the {limit}B limit"
+                                ),
+                                authorizer_denied: false,
+                                capture_limit_exceeded: false,
+                                quota_exceeded: true,
+                            })));
+                        }
+                    }
+                    Err(e) => {
+                        let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
+                        let _ = conn.execute("RELEASE drust_rpc_v2", []);
+                        return Ok(Err(TxCommitError(format!(
+                            "tenant-quota re-probe failed: {e}"
+                        ))));
+                    }
+                }
+            }
+
             // ── STEP 6: resolve savepoint.
             let should_rollback = exec_error.is_some() || dry_run;
             if should_rollback {

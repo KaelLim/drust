@@ -115,7 +115,9 @@ async fn over_quota_service_rest_writes_507_reads_ok() {
         "507 must carry a suggested_fix: {v}"
     );
 
-    // UPDATE (growth) → 507.
+    // UPDATE → allowed even over quota (adversarial F3: a shrink / in-place
+    // update must never be blocked so an over-cap tenant can recover; UPDATE
+    // is not quota-gated — only INSERT / upload / write-RPC growth is).
     let r = app
         .clone()
         .oneshot(
@@ -129,10 +131,10 @@ async fn over_quota_service_rest_writes_507_reads_ok() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        r.status(),
-        StatusCode::INSUFFICIENT_STORAGE,
-        "update over quota must be 507"
+    assert!(
+        r.status().is_success(),
+        "update must be allowed over quota (recovery), got {}",
+        r.status()
     );
 
     // GET one → 200 (reads always allowed).
