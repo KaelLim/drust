@@ -849,6 +849,32 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     // credential, so a second boot is a pure no-op (v1.41.5 invariant).
     meta.execute_batch(SQL_CREATE_CLI_DEVICE_CODES_IF_NOT_EXISTS)?;
 
+    // v1.50 — tenant ownership. Idempotent by construction (run_migrations
+    // runs on EVERY boot — v1.41.5 invariant): (a) ADD COLUMN only when the
+    // column is absent; (b) backfill touches only rows still NULL, so a manual
+    // (re)assignment is never overwritten. Live tenants backfill to the
+    // lowest-id owner admin; soft-deleted tenants stay NULL (= unowned,
+    // visible to owner admins only). Placed after the v1.29.0 role step so
+    // `admins.role` exists for the backfill subselect.
+    // deleted_at is a defense-in-depth no-op on real DBs (SCHEMA_SQL has
+    // always created it); it keeps minimal test fixtures aligned with the
+    // backfill's WHERE clause — same posture as the v1.29.3 revoked_at add.
+    add_column_if_missing(meta, "tenants", "deleted_at", "TEXT")?;
+    let has_owner_col: bool = meta
+        .prepare("SELECT 1 FROM pragma_table_info('tenants') WHERE name='owner_admin_id'")?
+        .exists([])?;
+    if !has_owner_col {
+        meta.execute_batch(
+            "ALTER TABLE tenants ADD COLUMN owner_admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL",
+        )?;
+    }
+    meta.execute(
+        "UPDATE tenants SET owner_admin_id = \
+           (SELECT id FROM admins WHERE role='owner' ORDER BY id LIMIT 1) \
+         WHERE owner_admin_id IS NULL AND deleted_at IS NULL",
+        [],
+    )?;
+
     report.meta_done = true;
 
     let mut stmt = meta.prepare("SELECT id FROM tenants")?;
@@ -2237,6 +2263,92 @@ mod tests {
             )
             .unwrap();
         assert_eq!(strict, 1, "_system_record_history must exist and be STRICT");
+    }
+
+    /// v1.50 fixture — legacy meta shape from before tenant ownership:
+    /// `tenants` WITHOUT owner_admin_id, one owner admin (id=1) + one member
+    /// admin (id=2), two live tenants + one soft-deleted tenant.
+    fn legacy_meta_without_ownership() -> (TempDir, Connection) {
+        let dir = TempDir::new().unwrap();
+        let conn = Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT);
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, \
+                 password_hash TEXT NOT NULL, email TEXT, \
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')), \
+                 role TEXT NOT NULL DEFAULT 'member');
+             INSERT INTO admins (id, username, password_hash, role) VALUES (1, 'boss', 'h', 'owner');
+             INSERT INTO admins (id, username, password_hash, role) VALUES (2, 'mem', 'h', 'member');
+             INSERT INTO tenants (id, name) VALUES ('t-live', 'Live');
+             INSERT INTO tenants (id, name) VALUES ('t-live2', 'Live Two');
+             INSERT INTO tenants (id, name, deleted_at) VALUES ('t-dead', 'Dead', datetime('now'));",
+        )
+        .unwrap();
+        (dir, conn)
+    }
+
+    #[test]
+    fn ownership_migration_adds_column_and_backfills_idempotently() {
+        let (dir, conn) = legacy_meta_without_ownership();
+        run_migrations(&conn, dir.path()).unwrap();
+
+        let has_col: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('tenants') WHERE name='owner_admin_id'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_col, "owner_admin_id column must exist after migration");
+
+        // Backfill: live tenants → lowest-id owner admin; soft-deleted → NULL.
+        let owner: i64 = conn
+            .query_row(
+                "SELECT owner_admin_id FROM tenants WHERE id='t-live'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner, 1, "live tenant backfills to the lowest-id owner");
+        let owner2: i64 = conn
+            .query_row(
+                "SELECT owner_admin_id FROM tenants WHERE id='t-live2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner2, 1, "every live tenant gets the same backfill owner");
+        let dead: Option<i64> = conn
+            .query_row(
+                "SELECT owner_admin_id FROM tenants WHERE id='t-dead'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dead, None, "soft-deleted tenant stays unowned (NULL)");
+
+        // Idempotent: a manual reassignment survives a second boot untouched
+        // (the backfill only fills rows still NULL — v1.41.5 invariant).
+        conn.execute("UPDATE tenants SET owner_admin_id=2 WHERE id='t-live'", [])
+            .unwrap();
+        run_migrations(&conn, dir.path()).unwrap();
+        let reassigned: i64 = conn
+            .query_row(
+                "SELECT owner_admin_id FROM tenants WHERE id='t-live'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            reassigned, 2,
+            "second boot must not overwrite a manual assignment"
+        );
+        let dead2: Option<i64> = conn
+            .query_row(
+                "SELECT owner_admin_id FROM tenants WHERE id='t-dead'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dead2, None, "soft-deleted tenant stays NULL on second boot");
     }
 
     #[test]

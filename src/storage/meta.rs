@@ -39,7 +39,11 @@ CREATE TABLE IF NOT EXISTS tenants (
   -- v1.49 — per-tenant egress allowlist ({system,uri} tagged JSON, origin
   -- level, deny-all default). '[]' denies every outbound path; run_migrations
   -- adds this idempotently on upgraded DBs. See src/tenant/egress.rs.
-  egress_allowlist_json TEXT NOT NULL DEFAULT '[]'
+  egress_allowlist_json TEXT NOT NULL DEFAULT '[]',
+  -- v1.50 — tenant ownership. NULL = unowned (visible to owner admins only);
+  -- a removed admin's tenants orphan to NULL via the FK. run_migrations adds
+  -- this idempotently + backfills on upgraded DBs.
+  owner_admin_id        INTEGER REFERENCES admins(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tenants_deleted ON tenants(deleted_at);
 
