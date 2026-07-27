@@ -644,9 +644,13 @@ SELECT \
                 // every cross-tenant attempt re-enters this DB path; a
                 // same-tenant entry that goes stale is evicted by hook 13
                 // (change_role) and the ownership-transfer hook (T7).
-                if pat_admin_role.as_deref() == Some("member")
-                    && tenant_owner_admin_id != Some(admin_id)
-                {
+                // Fail-CLOSED allow-list (mirrors mgmt tenant_access_for): an
+                // owner-role PAT keeps cross-tenant reach; every other role
+                // (member today, any future role) is confined to tenants that
+                // admin OWNS. Keying on `!= "member"` would fail OPEN for a
+                // future non-owner role — deny unless owner-or-owns instead.
+                let pat_is_owner = pat_admin_role.as_deref() == Some("owner");
+                if !(pat_is_owner || tenant_owner_admin_id == Some(admin_id)) {
                     crate::mgmt::metrics::metrics()
                         .bearer_denied_total
                         .with_label_values(&["admin_pat", "HTTP_403"])

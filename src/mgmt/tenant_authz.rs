@@ -42,6 +42,33 @@ pub struct TenantOwnershipLayerState {
     pub meta: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
 }
 
+/// v1.50 — owner-only gate for HOST-WIDE admin surfaces that expose every
+/// tenant's data or roster (backups, host audit, host metrics). These have no
+/// `{id}` param, so `tenant_ownership_layer` passes them through; they predate
+/// the member role (when every admin was cross-tenant) and would otherwise
+/// leak the full tenant roster — and, for a backup download, EVERY tenant's
+/// plaintext service/admin tokens — to a member admin. Reads
+/// `AdminProfileExt.is_owner` (populated by the outer `admin_profile_layer`);
+/// a non-owner (or missing profile → fail-closed) gets `403 OWNER_REQUIRED`.
+pub async fn require_owner_layer(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let is_owner = req
+        .extensions()
+        .get::<crate::mgmt::admin_profile::AdminProfileExt>()
+        .map(|p| p.is_owner)
+        .unwrap_or(false);
+    if !is_owner {
+        return crate::error::json_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "OWNER_REQUIRED",
+            "this host-wide admin surface requires the owner role",
+        );
+    }
+    next.run(req).await
+}
+
 /// v1.50 — route-level ownership guard for the tenant-scoped admin
 /// sub-routers (`tenants_router` + `admin_tenant_files_router`). Reads the
 /// `{id}` path param; routes on the same router without one (host-wide

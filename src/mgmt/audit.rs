@@ -707,6 +707,16 @@ pub async fn audit_host_page(
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
+    // v1.50 — the HOST audit view spans every tenant (row-level activity +
+    // full tenant roster), so it is owner-only. Members use the per-tenant
+    // `/admin/tenants/{id}/_logs` view, which the ownership guard fronts.
+    if !admin.is_owner {
+        return crate::error::json_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "OWNER_REQUIRED",
+            "the host-wide audit view requires the owner role",
+        );
+    }
     let tenant_name_map = {
         let meta = state.session.meta.lock().await;
         build_tenant_name_map(&meta)
@@ -1250,8 +1260,17 @@ async fn audit_json_inner(
 
 pub async fn audit_host_json(
     State(state): State<crate::mgmt::tenants::TenantsState>,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
+    // v1.50 — owner-only host audit (see audit_host_page).
+    if !admin.is_owner {
+        return crate::error::json_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "OWNER_REQUIRED",
+            "the host-wide audit view requires the owner role",
+        );
+    }
     let map = {
         let meta = state.session.meta.lock().await;
         build_tenant_name_map(&meta)
