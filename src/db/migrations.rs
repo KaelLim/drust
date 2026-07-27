@@ -123,6 +123,29 @@ CREATE INDEX IF NOT EXISTS idx_sysrechist_rec ON _system_record_history(collecti
 CREATE INDEX IF NOT EXISTS idx_sysrechist_ts  ON _system_record_history(ts);
 "#;
 
+// v1.50 (Spec B §3.2) — quota upgrade-request queue: a `member` admin files a
+// request against a tenant they own; an `owner` approves (sets
+// `tenants.quota_tier`) or rejects. Config is admin-plane only — there is
+// deliberately NO per-tenant MCP tool (a tenant's service key must never raise
+// its own quota). Shared const so `meta.rs` fresh-create (`open_meta`) and this
+// boot migration produce byte-identical schema forever (drift-proof, same
+// posture as SQL_CREATE_SYSTEM_RECORD_HISTORY_IF_NOT_EXISTS).
+pub const SQL_CREATE_QUOTA_REQUESTS_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS quota_requests (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id           TEXT    NOT NULL,
+  requester_admin_id  INTEGER NOT NULL,
+  requested_tier      INTEGER NOT NULL,
+  reason              TEXT,
+  status              TEXT    NOT NULL DEFAULT 'pending',
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  decided_by_admin_id INTEGER,
+  decided_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_quota_requests_status ON quota_requests(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_quota_requests_tenant ON quota_requests(tenant_id);
+"#;
+
 pub fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -650,6 +673,20 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         "audit_default",
         "INTEGER NOT NULL DEFAULT 1",
     )?;
+
+    // v1.50 (Spec B §3.1) — per-tenant unified quota. Hard cap = quota_tier *
+    // 10 GiB (db + files shared). Default 1 → every existing tenant gets a
+    // 10 GiB ceiling immediately on upgrade. add_column_if_missing is the
+    // idempotency guard (run_migrations runs on EVERY boot — v1.41.5 invariant):
+    // ADD COLUMN fires only when the column is absent, so the DEFAULT 1 backfills
+    // existing rows exactly once and a later manual tier change is never reset.
+    // The legacy quota_db_mb / quota_rows columns are left untouched (deprecated,
+    // no longer read — Spec B §2 Non-Goals).
+    add_column_if_missing(meta, "tenants", "quota_tier", "INTEGER NOT NULL DEFAULT 1")?;
+    // v1.50 (Spec B §3.2) — quota upgrade-request queue. CREATE TABLE/INDEX
+    // IF NOT EXISTS only; mints/revokes/deletes nothing, so a second boot is a
+    // pure no-op (v1.41.5 invariant).
+    meta.execute_batch(SQL_CREATE_QUOTA_REQUESTS_IF_NOT_EXISTS)?;
 
     // v1.29.0 — team management: role column + backfill
     add_column_if_missing(meta, "admins", "role", "TEXT NOT NULL DEFAULT 'member'")?;
@@ -2407,5 +2444,79 @@ mod tests {
             )
             .unwrap();
         assert_eq!(d, 1, "existing tenants backfill to audit ON");
+    }
+
+    // v1.50 (Spec B §3.1/§3.2) — per-tenant quota tier + upgrade-request queue.
+    #[test]
+    fn quota_tier_migration_adds_column_and_creates_requests_table_idempotently() {
+        let dir = TempDir::new().unwrap();
+        let conn = Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        // Legacy meta shape from before quota tiers: `tenants` WITHOUT
+        // quota_tier, and no quota_requests table.
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT);
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, \
+                 password_hash TEXT NOT NULL, email TEXT, \
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')), \
+                 role TEXT NOT NULL DEFAULT 'member');
+             INSERT INTO admins (id, username, password_hash, role) VALUES (1, 'boss', 'h', 'owner');
+             INSERT INTO tenants (id, name) VALUES ('t1', 'One');
+             INSERT INTO tenants (id, name) VALUES ('t2', 'Two');",
+        )
+        .unwrap();
+
+        run_migrations(&conn, dir.path()).unwrap();
+
+        // (a) Column exists.
+        let has_col: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('tenants') WHERE name='quota_tier'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_col, "quota_tier column must exist after migration");
+
+        // (b) Existing rows backfill to tier 1 (10 GiB baseline).
+        let tiers: Vec<i64> = conn
+            .prepare("SELECT quota_tier FROM tenants ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(tiers, vec![1, 1], "existing tenants default to tier 1");
+
+        // (c) quota_requests table + its two indexes exist.
+        let has_table: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='quota_requests'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_table, "quota_requests table must exist");
+        for idx in ["idx_quota_requests_status", "idx_quota_requests_tenant"] {
+            let has_idx: bool = conn
+                .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1")
+                .unwrap()
+                .exists([idx])
+                .unwrap();
+            assert!(has_idx, "index {idx} must exist");
+        }
+
+        // (d) Idempotent + does NOT overwrite a manually-changed tier
+        //     (ADD COLUMN only fires when absent — v1.41.5 invariant).
+        conn.execute("UPDATE tenants SET quota_tier=3 WHERE id='t1'", [])
+            .unwrap();
+        run_migrations(&conn, dir.path()).unwrap();
+        let t1_tier: i64 = conn
+            .query_row("SELECT quota_tier FROM tenants WHERE id='t1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(t1_tier, 3, "second boot must not reset a manually-set tier");
+        let t2_tier: i64 = conn
+            .query_row("SELECT quota_tier FROM tenants WHERE id='t2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(t2_tier, 1, "untouched tenant stays at tier 1");
     }
 }

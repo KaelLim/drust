@@ -43,7 +43,12 @@ CREATE TABLE IF NOT EXISTS tenants (
   -- v1.50 — tenant ownership. NULL = unowned (visible to owner admins only);
   -- a removed admin's tenants orphan to NULL via the FK. run_migrations adds
   -- this idempotently + backfills on upgraded DBs.
-  owner_admin_id        INTEGER REFERENCES admins(id) ON DELETE SET NULL
+  owner_admin_id        INTEGER REFERENCES admins(id) ON DELETE SET NULL,
+  -- v1.50 (Spec B §3.1) — per-tenant quota tier. Hard cap = quota_tier * 10 GiB
+  -- (db + files shared). run_migrations adds this idempotently on upgraded DBs;
+  -- the legacy quota_db_mb / quota_rows columns above are deprecated (no longer
+  -- read). See src/storage/quota.rs.
+  quota_tier            INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_tenants_deleted ON tenants(deleted_at);
 
@@ -124,6 +129,10 @@ pub fn open_meta(path: &Path) -> anyhow::Result<Connection> {
     // `CREATE TABLE IF NOT EXISTS "_system_files"` is a no-op on upgraded DBs.
     pre_schema_migrations(&conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
+    // v1.50 (Spec B §3.2) — quota upgrade-request queue. Created from the shared
+    // const in db::migrations so fresh + upgraded DBs get byte-identical schema
+    // (drift-proof); IF NOT EXISTS keeps it a no-op once run_migrations has run.
+    conn.execute_batch(crate::db::migrations::SQL_CREATE_QUOTA_REQUESTS_IF_NOT_EXISTS)?;
     apply_migrations(&conn)?;
     Ok(conn)
 }
