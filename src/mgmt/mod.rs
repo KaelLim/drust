@@ -21,6 +21,7 @@ pub mod rpc_admin;
 pub mod script_json;
 pub mod signed_bytes;
 pub mod stats;
+pub mod tenant_authz;
 pub mod tenant_broadcast;
 pub mod tenant_files;
 pub mod tenant_settings;
