@@ -1,3 +1,11 @@
+## v1.51.0 — 2026-07-27
+
+### Admin team
+
+- **Bulk invite with role selection** on `/admin/team`. The "Add admin" button now opens a paste-many-emails dialog (new shared `drustUI.form` modal primitive: textarea + owner/member selector) that posts to **`POST /admin/team/batch`** `{emails, role}` (owner-only). The whole batch runs in one `meta.sqlite` transaction; each email is trimmed/lowercased and **silently deduped**, and the response reports `created` + `skipped` (per-email `invalid` / `exists`) so a partial paste is legible. Per-request size is capped by **`DRUST_ADMIN_BATCH_MAX`** (default 50). Single-invite and batch share one `insert_one_admin` core, so both agree on validation, case-insensitive uniqueness, PAT minting, and the one-`admin.team.invite`-audit-row-per-created-admin contract. ("Invite" pre-creates an OAuth-only admin row — drust has no mail transport — so the email can sign in via Google/GitHub with the chosen role; no email is sent.)
+- **`validate_email` tightened** to reject display-name / angle-bracketed / multi-`@` / dotless-domain forms, so an address-book paste (`Alice <a@b.com>`, `a@b@c.com`) can't create junk admin rows + latent PATs.
+- Adversarially self-reviewed — four LOW findings fixed before ship: a stale roster when the result modal is dismissed via Escape/backdrop (`drustUI.detail` gained an `onClose` that fires on any dismissal), loose email validation, duplicate double-reporting (now silently deduped), and short result lists collapsing their line breaks. The three higher-risk candidates the review probed (batch lock/DoS, UNIQUE mislabel, `=0` knob) were all refuted with sound reasoning.
+
 ## v1.50.0 — 2026-07-27
 
 Two tenant-management subsystems — each brainstormed → spec → plan → subagent-implemented → adversarially self-reviewed (which caught two HIGH ownership gaps and four quota gaps, all fixed before ship) — plus the MCP tool-annotation surface.
