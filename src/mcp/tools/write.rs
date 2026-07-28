@@ -250,6 +250,114 @@ pub async fn insert_record(
 }
 
 /// `insert_record` with an optional in-tx policy CHECK (enforcement-core entry).
+/// The per-row INSERT body, run INSIDE a caller-supplied writer transaction.
+/// Shared by single-row `insert_record_checked` (called once) and batch insert
+/// (M2 — called once per row inside ONE tx). In order: per-row quota check,
+/// field allowlist, structured CHECK pre-validation, `INSERT ... RETURNING *`
+/// projected via `materialize_row`, id extraction, optional policy CHECK, and
+/// in-tx record-history capture. `schema` is the AUTHORITATIVE in-tx describe
+/// the caller performed once; `quota_tier`/`vector_names`/`actor` are shared
+/// across a batch while `data_map`/`vector_bytes` are per row. Returns
+/// `(id, post-image row)`. A rolled-back tx discards the data AND history rows.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_row_in_tx(
+    tx: &rusqlite::Connection,
+    schema: &crate::storage::schema::CollectionSchema,
+    data_map: &serde_json::Map<String, serde_json::Value>,
+    vector_bytes: &std::collections::HashMap<String, Vec<u8>>,
+    vector_names: &HashSet<String>,
+    quota_tier: i64,
+    policy_check: Option<&PolicyCheck>,
+    actor: &crate::storage::record_history::AuditActor,
+) -> rusqlite::Result<(i64, serde_json::Value)> {
+    // Per-tenant hard quota, measured on THIS writer conn inside the tx
+    // (single-writer invariant, no TOCTOU). usage_on_conn reflects in-tx page
+    // growth, so in a batch the row that would cross the tier fails here → the
+    // whole tx rolls back. incoming=0: "reject the next growth once at cap".
+    crate::storage::quota::check_tenant_quota(
+        crate::storage::quota::usage_on_conn(tx)?,
+        0,
+        quota_tier,
+    )
+    .map_err(crate::error::quota_exceeded_error)?;
+    let allowed: std::collections::HashSet<&str> =
+        schema.fields.iter().map(|f| f.name.as_str()).collect();
+    for k in data_map.keys() {
+        if !allowed.contains(k.as_str()) {
+            let mut names: Vec<&str> = allowed.iter().copied().collect();
+            names.sort();
+            return Err(invalid_input(format!(
+                "unknown field '{}' for collection '{}' (allowed: {})",
+                k,
+                schema.name,
+                names.join(", ")
+            )));
+        }
+    }
+    // v1.43 — structured CHECK pre-validation (typed 4xx before the native
+    // CHECK would raise a raw SQLite string).
+    check_constraints(schema, data_map)?;
+    let cols: Vec<&str> = data_map.keys().map(|k| k.as_str()).collect();
+    let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+    // `RETURNING *` collapses the post-insert read-back into one round-trip.
+    let sql = if cols.is_empty() {
+        format!(
+            "INSERT INTO \"{}\" DEFAULT VALUES RETURNING *",
+            schema.name.replace('"', "\"\"")
+        )
+    } else {
+        format!(
+            "INSERT INTO \"{}\" ({}) VALUES ({}) RETURNING *",
+            schema.name.replace('"', "\"\""),
+            cols.iter()
+                .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(","),
+            placeholders.join(","),
+        )
+    };
+    // Vector fields bind as BLOB from the pre-encoded bytes; the rest through
+    // json_to_sql_value.
+    let params: Vec<Value> = data_map
+        .iter()
+        .map(|(k, v)| match vector_bytes.get(k) {
+            Some(bytes) => Value::Blob(bytes.clone()),
+            None => json_to_sql_value(v),
+        })
+        .collect();
+    let refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let mut stmt = tx.prepare(&sql)?;
+    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let rec = stmt
+        .query_row(&refs[..], |r| materialize_row(r, &col_names, vector_names))
+        .map_err(map_check_violation)?;
+    // Pull id from the RETURNING row; fall back to last_insert_rowid for the
+    // (theoretical) collection without an `id` column.
+    let id = rec
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| tx.last_insert_rowid());
+    // Explicit-policy CHECK on the persisted row. A failing predicate returns
+    // the sentinel → rolls back the INSERT. `None` for service/Privileged.
+    if let Some(check) = policy_check {
+        check.enforce(&rec)?;
+    }
+    // v1.46 — history capture (in-tx, atomic; after the policy CHECK so a
+    // rejected insert leaves no history row). new = the persisted row.
+    crate::storage::record_history::capture(
+        tx,
+        &schema.name,
+        crate::storage::record_history::HistoryOp::Insert,
+        id,
+        None,
+        Some(&rec),
+        actor,
+        schema.audit_enabled,
+    )?;
+    Ok((id, rec))
+}
+
 pub async fn insert_record_checked(
     s: &DrustMcp,
     collection: &str,
@@ -298,96 +406,19 @@ pub async fn insert_record_checked(
     };
     let (id, record) = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<(i64, serde_json::Value)> {
-            // Per-tenant hard quota, measured on THIS writer conn inside the tx
-            // (single-writer invariant, no TOCTOU). Reject → sentinel rusqlite
-            // error whose message the MCP surface maps to TENANT_QUOTA_EXCEEDED.
-            crate::storage::quota::check_tenant_quota(
-                crate::storage::quota::usage_on_conn(tx)?,
-                0,
-                quota_tier,
-            )
-            .map_err(crate::error::quota_exceeded_error)?;
+            // Authoritative in-tx describe (once), then the shared per-row body.
             let schema = describe_collection(tx, &coll)?
                 .ok_or_else(|| invalid_input(format!("unknown collection: '{}'", coll)))?;
-            let allowed: std::collections::HashSet<&str> =
-                schema.fields.iter().map(|f| f.name.as_str()).collect();
-            for k in data_map.keys() {
-                if !allowed.contains(k.as_str()) {
-                    let mut names: Vec<&str> = allowed.iter().copied().collect();
-                    names.sort();
-                    return Err(invalid_input(format!(
-                        "unknown field '{}' for collection '{}' (allowed: {})",
-                        k,
-                        coll,
-                        names.join(", ")
-                    )));
-                }
-            }
-            // v1.43 — structured CHECK pre-validation (typed 4xx before the
-            // native CHECK would raise a raw SQLite string).
-            check_constraints(&schema, &data_map)?;
-            let cols: Vec<&str> = data_map.keys().map(|k| k.as_str()).collect();
-            let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
-            // `RETURNING *` collapses the post-insert read-back: SQLite returns
-            // the persisted row in one round-trip, so there is no second SELECT.
-            let sql = if cols.is_empty() {
-                format!(
-                    "INSERT INTO \"{}\" DEFAULT VALUES RETURNING *",
-                    coll.replace('"', "\"\"")
-                )
-            } else {
-                format!(
-                    "INSERT INTO \"{}\" ({}) VALUES ({}) RETURNING *",
-                    coll.replace('"', "\"\""),
-                    cols.iter()
-                        .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    placeholders.join(","),
-                )
-            };
-            // Vector fields bind as BLOB from the pre-encoded bytes; the
-            // rest go through json_to_sql_value.
-            let params: Vec<Value> = data_map
-                .iter()
-                .map(|(k, v)| match vector_bytes.get(k) {
-                    Some(bytes) => Value::Blob(bytes.clone()),
-                    None => json_to_sql_value(v),
-                })
-                .collect();
-            let refs: Vec<&dyn rusqlite::ToSql> =
-                params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            let mut stmt = tx.prepare(&sql)?;
-            let col_names: Vec<String> =
-                stmt.column_names().iter().map(|s| s.to_string()).collect();
-            let rec = stmt
-                .query_row(&refs[..], |r| materialize_row(r, &col_names, &vector_names))
-                .map_err(map_check_violation)?;
-            // Pull id from the RETURNING row; fall back to last_insert_rowid for
-            // the (theoretical) collection without an `id` column.
-            let id = rec
-                .get("id")
-                .and_then(|v| v.as_i64())
-                .unwrap_or_else(|| tx.last_insert_rowid());
-            // Explicit-policy CHECK on the persisted row (enforcement core).
-            // A failing predicate returns the sentinel → rolls back the INSERT,
-            // mirroring records.rs (REST). `None` for service/Privileged.
-            if let Some(check) = &policy_check {
-                check.enforce(&rec)?;
-            }
-            // v1.46 — history capture (in-tx, atomic; after the policy CHECK so
-            // a rejected insert leaves no history row). new = the persisted row.
-            crate::storage::record_history::capture(
+            insert_row_in_tx(
                 tx,
-                &coll,
-                crate::storage::record_history::HistoryOp::Insert,
-                id,
-                None,
-                Some(&rec),
+                &schema,
+                &data_map,
+                &vector_bytes,
+                &vector_names,
+                quota_tier,
+                policy_check.as_ref(),
                 &actor,
-                schema.audit_enabled,
-            )?;
-            Ok((id, rec))
+            )
         })
         .await?;
     // Build response first; dispatch only after payload exists.
