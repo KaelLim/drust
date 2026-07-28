@@ -393,6 +393,47 @@ fn map_list_error(e: ListError) -> Response {
             "PAGE_RANGE_INVALID",
             "per_page must be 1..=500 and page must be >= 1",
         ),
+        // ── aggregate (M1) — all client input errors → 400 ──
+        ListError::NoMetrics => json_error(
+            StatusCode::BAD_REQUEST,
+            "AGG_NO_METRICS",
+            "aggregate needs at least one metric",
+        ),
+        ListError::MetricOpInvalid(op) => json_error(
+            StatusCode::BAD_REQUEST,
+            "AGG_OP_INVALID",
+            &format!("aggregate op must be count|sum|avg|min|max: {op:?}"),
+        ),
+        ListError::MetricFieldRequired(op) => json_error(
+            StatusCode::BAD_REQUEST,
+            "AGG_FIELD_REQUIRED",
+            &format!("aggregate op {op:?} requires a field"),
+        ),
+        ListError::MetricFieldUnknown(f) => json_error(
+            StatusCode::BAD_REQUEST,
+            "AGG_FIELD_UNKNOWN",
+            &format!("unknown aggregate field: {f:?}"),
+        ),
+        ListError::MetricVectorField(f) => json_error(
+            StatusCode::BAD_REQUEST,
+            "AGG_FIELD_VECTOR",
+            &format!("aggregate field is a vector column: {f:?}"),
+        ),
+        ListError::GroupFieldUnknown(f) => json_error(
+            StatusCode::BAD_REQUEST,
+            "AGG_GROUP_UNKNOWN",
+            &format!("unknown group_by field: {f:?}"),
+        ),
+        ListError::GroupVectorField(f) => json_error(
+            StatusCode::BAD_REQUEST,
+            "AGG_GROUP_VECTOR",
+            &format!("group_by field is a vector column: {f:?}"),
+        ),
+        ListError::AliasInvalid(a) => json_error(
+            StatusCode::BAD_REQUEST,
+            "AGG_ALIAS_INVALID",
+            &format!("aggregate alias must be an identifier: {a:?}"),
+        ),
     }
 }
 

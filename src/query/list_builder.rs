@@ -50,6 +50,37 @@ fn default_dir() -> String {
     "desc".into()
 }
 
+/// Body of `POST /t/<id>/collections/<c>/aggregate` (M1). Same filter/owner/
+/// policy authorization surface as `/list`, but projects aggregate metrics with
+/// an optional `group_by`.
+#[derive(Debug, Deserialize, Default)]
+pub struct AggregateRequest {
+    #[serde(default)]
+    pub filter: Option<FilterAst>,
+    #[serde(default)]
+    pub group_by: Option<Vec<String>>,
+    pub metrics: Vec<AggregateMetric>,
+    #[serde(default)]
+    pub sort: Option<SortSpec>,
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AggregateMetric {
+    /// One of `count | sum | avg | min | max`.
+    pub op: String,
+    /// The column to aggregate. Required for every op except `count`
+    /// (`count` with no field is `COUNT(*)`).
+    #[serde(default)]
+    pub field: Option<String>,
+    /// Optional result-column name; defaults to `<op>` / `<op>_<field>`.
+    #[serde(default, rename = "as")]
+    pub alias: Option<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum ListError {
     #[error(transparent)]
@@ -64,6 +95,23 @@ pub enum ListError {
     SelectFieldUnknown(String),
     #[error("page out of range")]
     PageRangeInvalid,
+    // ── aggregate (M1) ──
+    #[error("aggregate needs at least one metric")]
+    NoMetrics,
+    #[error("aggregate op invalid: {0:?}")]
+    MetricOpInvalid(String),
+    #[error("aggregate metric field required for op: {0:?}")]
+    MetricFieldRequired(String),
+    #[error("aggregate metric field unknown: {0:?}")]
+    MetricFieldUnknown(String),
+    #[error("aggregate metric field is vector: {0:?}")]
+    MetricVectorField(String),
+    #[error("group_by field unknown: {0:?}")]
+    GroupFieldUnknown(String),
+    #[error("group_by field is vector: {0:?}")]
+    GroupVectorField(String),
+    #[error("aggregate alias invalid: {0:?}")]
+    AliasInvalid(String),
 }
 
 /// Map a [`ListError`] to its stable `CODE` string (the code half of drust's
@@ -88,6 +136,14 @@ pub fn list_error_code(e: &ListError) -> &'static str {
         ListError::SortDirInvalid => "SORT_DIR_INVALID",
         ListError::SelectFieldUnknown(_) => "SELECT_FIELD_UNKNOWN",
         ListError::PageRangeInvalid => "PAGE_RANGE_INVALID",
+        ListError::NoMetrics => "AGG_NO_METRICS",
+        ListError::MetricOpInvalid(_) => "AGG_OP_INVALID",
+        ListError::MetricFieldRequired(_) => "AGG_FIELD_REQUIRED",
+        ListError::MetricFieldUnknown(_) => "AGG_FIELD_UNKNOWN",
+        ListError::MetricVectorField(_) => "AGG_FIELD_VECTOR",
+        ListError::GroupFieldUnknown(_) => "AGG_GROUP_UNKNOWN",
+        ListError::GroupVectorField(_) => "AGG_GROUP_VECTOR",
+        ListError::AliasInvalid(_) => "AGG_ALIAS_INVALID",
     }
 }
 
@@ -132,30 +188,10 @@ pub fn build_structured_list_sql(
         }
     };
 
-    // (2) WHERE — user filter + optional owner clause.
-    let mut binds: Vec<Value> = Vec::new();
-    let mut wheres: Vec<String> = Vec::new();
-    if let Some(ast) = &req.filter {
-        let (sql, mut filter_binds) = vector_filter::compile(schema, ast)?;
-        wheres.push(format!("({sql})"));
-        binds.append(&mut filter_binds);
-    }
-    if let Some((field, uid)) = owner {
-        wheres.push(format!("{} = ?", q(field)));
-        binds.push(Value::Text(uid.to_string()));
-    }
-    // Explicit-policy USING — AND-ed alongside the unchanged owner clause.
-    // The fragment is already `?`-bound; its binds append after the owner
-    // bind so the parameter order matches the `?` order in the assembled SQL.
-    if let Some((frag, mut pbinds)) = policy_clause {
-        wheres.push(format!("({frag})"));
-        binds.append(&mut pbinds);
-    }
-    let where_clause = if wheres.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", wheres.join(" AND "))
-    };
+    // (2) WHERE — user filter + optional owner clause + explicit policy.
+    // Shared with `/aggregate` via `build_where_clause`, so both faces keep the
+    // SAME row-authorization (owner + RLS + `?`-bound filter) by construction.
+    let (where_clause, binds) = build_where_clause(schema, &req.filter, owner, policy_clause)?;
 
     // (3) ORDER BY — sort field allowlist (declared fields + system) and
     // dir must be exactly "asc"|"desc".
@@ -195,6 +231,195 @@ pub fn build_structured_list_sql(
     );
     let count_sql = format!("SELECT COUNT(*) FROM {table}{where_clause}");
     Ok((list_sql, count_sql, binds))
+}
+
+/// The shared WHERE fragment (`" WHERE …"` with a leading space, or empty) for
+/// both `/list` and `/aggregate`: the user `FilterAst` (compiled to `?`-bound
+/// SQL), the optional owner clause, and the optional explicit-policy USING —
+/// AND-ed in a fixed order so the `?` binds line up. Extracting this keeps the
+/// two faces' row-authorization identical by construction.
+fn build_where_clause(
+    schema: &CollectionSchema,
+    filter: &Option<FilterAst>,
+    owner: Option<(&str, &str)>,
+    policy_clause: Option<(String, Vec<Value>)>,
+) -> Result<(String, Vec<Value>), ListError> {
+    let mut binds: Vec<Value> = Vec::new();
+    let mut wheres: Vec<String> = Vec::new();
+    if let Some(ast) = filter {
+        let (sql, mut filter_binds) = vector_filter::compile(schema, ast)?;
+        wheres.push(format!("({sql})"));
+        binds.append(&mut filter_binds);
+    }
+    if let Some((field, uid)) = owner {
+        wheres.push(format!("{} = ?", q(field)));
+        binds.push(Value::Text(uid.to_string()));
+    }
+    if let Some((frag, mut pbinds)) = policy_clause {
+        wheres.push(format!("({frag})"));
+        binds.append(&mut pbinds);
+    }
+    let where_clause = if wheres.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", wheres.join(" AND "))
+    };
+    Ok((where_clause, binds))
+}
+
+/// The five aggregate operations drust exposes — a fixed allowlist, never
+/// interpolated from raw user text.
+fn is_valid_agg_op(op: &str) -> bool {
+    matches!(op, "count" | "sum" | "avg" | "min" | "max")
+}
+
+/// A result-column alias must be a strict identifier: it is echoed into the
+/// SELECT text (quoted) AND becomes a JSON key in the response, so it may not
+/// carry arbitrary bytes.
+fn valid_alias(a: &str) -> bool {
+    !a.is_empty()
+        && a.len() <= 64
+        && (a.as_bytes()[0].is_ascii_alphabetic() || a.as_bytes()[0] == b'_')
+        && a.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// A column referenced by an aggregate metric or `group_by` must be a declared
+/// (or system) non-vector field — same allowlist discipline as sort/select.
+fn validate_agg_field(schema: &CollectionSchema, f: &str) -> Result<(), ListError> {
+    if !(field_exists(schema, f) || SYSTEM_SORTABLE.contains(&f)) {
+        return Err(ListError::MetricFieldUnknown(f.to_string()));
+    }
+    if is_vector_field(schema, f) {
+        return Err(ListError::MetricVectorField(f.to_string()));
+    }
+    Ok(())
+}
+
+/// Compile an aggregate request into `(sql, binds)`. The WHERE (filter + owner +
+/// policy) is built by the same `build_where_clause` as `/list`, so a User only
+/// aggregates rows they may read and anon obeys `anon_caps`/policy — the row
+/// authorization is in lockstep by construction. Group/metric columns go
+/// through the schema allowlist; ops through `is_valid_agg_op`; every value is
+/// `?`-bound. No aggregate function is exposed beyond the fixed five.
+pub fn build_aggregate_sql(
+    schema: &CollectionSchema,
+    req: &AggregateRequest,
+    owner: Option<(&str, &str)>,
+    policy_clause: Option<(String, Vec<Value>)>,
+) -> Result<(String, Vec<Value>), ListError> {
+    let table = q(&schema.name);
+    if req.metrics.is_empty() {
+        return Err(ListError::NoMetrics);
+    }
+
+    // (1) GROUP BY columns — declared/system, non-vector.
+    let group_cols: Vec<String> = match &req.group_by {
+        None => Vec::new(),
+        Some(cols) => {
+            let mut out = Vec::new();
+            for c in cols {
+                if !(field_exists(schema, c) || SYSTEM_SORTABLE.contains(&c.as_str())) {
+                    return Err(ListError::GroupFieldUnknown(c.clone()));
+                }
+                if is_vector_field(schema, c) {
+                    return Err(ListError::GroupVectorField(c.clone()));
+                }
+                out.push(c.clone());
+            }
+            out
+        }
+    };
+
+    // (2) SELECT list — group cols (quoted) then metric exprs.
+    let mut select_parts: Vec<String> = group_cols.iter().map(|c| q(c)).collect();
+    let mut aliases: Vec<String> = Vec::new();
+    for m in &req.metrics {
+        let op = m.op.to_ascii_lowercase();
+        if !is_valid_agg_op(&op) {
+            return Err(ListError::MetricOpInvalid(m.op.clone()));
+        }
+        let (expr, default_alias) = if op == "count" {
+            match &m.field {
+                None => ("COUNT(*)".to_string(), "count".to_string()),
+                Some(f) => {
+                    validate_agg_field(schema, f)?;
+                    (format!("COUNT({})", q(f)), format!("count_{f}"))
+                }
+            }
+        } else {
+            let f = m
+                .field
+                .as_ref()
+                .ok_or_else(|| ListError::MetricFieldRequired(op.clone()))?;
+            validate_agg_field(schema, f)?;
+            (
+                format!("{}({})", op.to_ascii_uppercase(), q(f)),
+                format!("{op}_{f}"),
+            )
+        };
+        let alias = match &m.alias {
+            Some(a) => {
+                if !valid_alias(a) {
+                    return Err(ListError::AliasInvalid(a.clone()));
+                }
+                a.clone()
+            }
+            None => default_alias,
+        };
+        select_parts.push(format!("{expr} AS {}", q(&alias)));
+        aliases.push(alias);
+    }
+    let select_list = select_parts.join(", ");
+
+    // (3) WHERE — identical to /list.
+    let (where_clause, binds) = build_where_clause(schema, &req.filter, owner, policy_clause)?;
+
+    // (4) GROUP BY.
+    let group_by_clause = if group_cols.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " GROUP BY {}",
+            group_cols
+                .iter()
+                .map(|c| q(c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    // (5) ORDER BY — optional; must reference a group column or a metric alias
+    // (both are in the SELECT). dir asc|desc.
+    let order_clause = match &req.sort {
+        None => String::new(),
+        Some(s) => {
+            let known =
+                group_cols.iter().any(|c| c == &s.field) || aliases.iter().any(|a| a == &s.field);
+            if !known {
+                return Err(ListError::SortFieldUnknown(s.field.clone()));
+            }
+            let dir = match s.dir.as_str() {
+                "asc" | "ASC" => "ASC",
+                "desc" | "DESC" => "DESC",
+                _ => return Err(ListError::SortDirInvalid),
+            };
+            format!(" ORDER BY {} {dir}", q(&s.field))
+        }
+    };
+
+    // (6) LIMIT / OFFSET — bound the number of groups returned.
+    let per_page = req.per_page.unwrap_or(DEFAULT_PER_PAGE);
+    let page = req.page.unwrap_or(1);
+    if per_page == 0 || per_page > MAX_PER_PAGE || page == 0 {
+        return Err(ListError::PageRangeInvalid);
+    }
+    let offset = (page as u64 - 1) * (per_page as u64);
+
+    let sql = format!(
+        "SELECT {select_list} FROM {table}{where_clause}{group_by_clause}{order_clause} \
+         LIMIT {per_page} OFFSET {offset}"
+    );
+    Ok((sql, binds))
 }
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -294,6 +519,140 @@ mod tests {
     fn leaf(json: &str) -> FilterAst {
         let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(json).unwrap();
         FilterAst::Leaf(obj)
+    }
+
+    fn agg_metric(op: &str, field: Option<&str>, alias: Option<&str>) -> AggregateMetric {
+        AggregateMetric {
+            op: op.into(),
+            field: field.map(String::from),
+            alias: alias.map(String::from),
+        }
+    }
+
+    #[test]
+    fn aggregate_count_star_default_alias() {
+        let s = fixture_schema();
+        let req = AggregateRequest {
+            metrics: vec![agg_metric("count", None, None)],
+            ..Default::default()
+        };
+        let (sql, binds) = build_aggregate_sql(&s, &req, None, None).unwrap();
+        assert!(sql.contains("COUNT(*) AS \"count\""), "sql: {sql}");
+        assert!(sql.contains("FROM \"posts\""), "sql: {sql}");
+        assert!(!sql.contains("GROUP BY"), "no group: {sql}");
+        assert!(sql.contains("LIMIT 20 OFFSET 0"), "sql: {sql}");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn aggregate_sum_group_by_with_alias() {
+        let s = fixture_schema();
+        let req = AggregateRequest {
+            group_by: Some(vec!["title".into()]),
+            metrics: vec![agg_metric("sum", Some("score"), Some("total"))],
+            ..Default::default()
+        };
+        let (sql, _b) = build_aggregate_sql(&s, &req, None, None).unwrap();
+        assert!(
+            sql.contains("SELECT \"title\", SUM(\"score\") AS \"total\""),
+            "sql: {sql}"
+        );
+        assert!(sql.contains("GROUP BY \"title\""), "sql: {sql}");
+    }
+
+    #[test]
+    fn aggregate_owner_clause_in_lockstep() {
+        // The owner clause + bind must appear exactly as /list builds it — the
+        // shared build_where_clause guarantees this.
+        let s = fixture_schema();
+        let req = AggregateRequest {
+            metrics: vec![agg_metric("count", None, None)],
+            ..Default::default()
+        };
+        let (sql, binds) = build_aggregate_sql(&s, &req, Some(("owner_id", "u1")), None).unwrap();
+        assert!(
+            sql.contains("WHERE \"owner_id\" = ?"),
+            "owner clause: {sql}"
+        );
+        assert_eq!(binds.len(), 1, "binds: {binds:?}");
+        assert!(matches!(binds.first(), Some(Value::Text(t)) if t == "u1"));
+    }
+
+    #[test]
+    fn aggregate_rejects_bad_inputs() {
+        let s = fixture_schema();
+        let one = |m: AggregateMetric| AggregateRequest {
+            metrics: vec![m],
+            ..Default::default()
+        };
+        assert!(matches!(
+            build_aggregate_sql(&s, &AggregateRequest::default(), None, None),
+            Err(ListError::NoMetrics)
+        ));
+        assert!(matches!(
+            build_aggregate_sql(
+                &s,
+                &one(agg_metric("median", Some("score"), None)),
+                None,
+                None
+            ),
+            Err(ListError::MetricOpInvalid(_))
+        ));
+        assert!(matches!(
+            build_aggregate_sql(&s, &one(agg_metric("sum", None, None)), None, None),
+            Err(ListError::MetricFieldRequired(_))
+        ));
+        assert!(matches!(
+            build_aggregate_sql(&s, &one(agg_metric("sum", Some("nope"), None)), None, None),
+            Err(ListError::MetricFieldUnknown(_))
+        ));
+        assert!(matches!(
+            build_aggregate_sql(
+                &s,
+                &one(agg_metric("avg", Some("embedding"), None)),
+                None,
+                None
+            ),
+            Err(ListError::MetricVectorField(_))
+        ));
+        assert!(matches!(
+            build_aggregate_sql(
+                &s,
+                &one(agg_metric("count", None, Some("a b; drop"))),
+                None,
+                None
+            ),
+            Err(ListError::AliasInvalid(_))
+        ));
+    }
+
+    #[test]
+    fn aggregate_sort_by_alias_or_group_only() {
+        let s = fixture_schema();
+        let req = AggregateRequest {
+            group_by: Some(vec!["title".into()]),
+            metrics: vec![agg_metric("count", None, Some("n"))],
+            sort: Some(SortSpec {
+                field: "n".into(),
+                dir: "desc".into(),
+            }),
+            ..Default::default()
+        };
+        let (sql, _b) = build_aggregate_sql(&s, &req, None, None).unwrap();
+        assert!(sql.contains("ORDER BY \"n\" DESC"), "sort by alias: {sql}");
+
+        let bad = AggregateRequest {
+            metrics: vec![agg_metric("count", None, None)],
+            sort: Some(SortSpec {
+                field: "score".into(),
+                dir: "asc".into(),
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            build_aggregate_sql(&s, &bad, None, None),
+            Err(ListError::SortFieldUnknown(_))
+        ));
     }
 
     #[test]

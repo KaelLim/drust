@@ -237,6 +237,19 @@ fn map_list_error(e: ListError) -> anyhow::Error {
         ListError::PageRangeInvalid => {
             anyhow::anyhow!("PAGE_RANGE_INVALID: per_page must be 1..=500 and page must be >= 1")
         }
+        // ── aggregate (M1) ──
+        ListError::NoMetrics => anyhow::anyhow!("AGG_NO_METRICS: needs at least one metric"),
+        ListError::MetricOpInvalid(op) => {
+            anyhow::anyhow!("AGG_OP_INVALID: op must be count|sum|avg|min|max: {op}")
+        }
+        ListError::MetricFieldRequired(op) => {
+            anyhow::anyhow!("AGG_FIELD_REQUIRED: op {op} requires a field")
+        }
+        ListError::MetricFieldUnknown(f) => anyhow::anyhow!("AGG_FIELD_UNKNOWN: {f}"),
+        ListError::MetricVectorField(f) => anyhow::anyhow!("AGG_FIELD_VECTOR: {f}"),
+        ListError::GroupFieldUnknown(f) => anyhow::anyhow!("AGG_GROUP_UNKNOWN: {f}"),
+        ListError::GroupVectorField(f) => anyhow::anyhow!("AGG_GROUP_VECTOR: {f}"),
+        ListError::AliasInvalid(a) => anyhow::anyhow!("AGG_ALIAS_INVALID: {a}"),
     }
 }
 
