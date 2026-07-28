@@ -30,11 +30,11 @@
           <div class="coll-desc-inline" id="desc-body-collection">
             {% if let Some(desc) = collection_description %}
               <span class="desc-text">{{ desc }}</span>
-              <button type="button" class="desc-add" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')" aria-label="{{ t.s("collection_page.desc.edit_aria") }}" title="{{ t.s("collection_page.desc.edit_aria") }}">
+              <button type="button" class="desc-add" data-desc-edit data-desc-kind="collection" data-desc-tenant="{{ tenant_id }}" data-desc-coll="{{ coll_name }}" aria-label="{{ t.s("collection_page.desc.edit_aria") }}" title="{{ t.s("collection_page.desc.edit_aria") }}">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               </button>
             {% else %}
-              <button type="button" class="desc-add" onclick="editDesc('collection', '{{ tenant_id }}', '{{ coll_name }}')">
+              <button type="button" class="desc-add" data-desc-edit data-desc-kind="collection" data-desc-tenant="{{ tenant_id }}" data-desc-coll="{{ coll_name }}">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 {{ t.s("collection_page.desc.add") }}
               </button>
@@ -126,7 +126,7 @@
               {% else %}
                 <em class="muted" style="opacity:0.5;">{{ t.s("common.desc.field_none") }}</em>
               {% endif %}
-              <button type="button" class="btn sm icon ghost" style="margin-top:4px;" onclick="editDesc('field', '{{ tenant_id }}', '{{ coll_name }}', '{{ f.name }}')" title="{{ t.s("common.desc.edit_aria") }}" aria-label="{{ t.s("collection_rows.schema.edit_field_desc_aria") }}">
+              <button type="button" class="btn sm icon ghost" style="margin-top:4px;" data-desc-edit data-desc-kind="field" data-desc-tenant="{{ tenant_id }}" data-desc-coll="{{ coll_name }}" data-desc-extra="{{ f.name }}" title="{{ t.s("common.desc.edit_aria") }}" aria-label="{{ t.s("collection_rows.schema.edit_field_desc_aria") }}">
                 <svg aria-hidden="true"><use href="#i-edit"/></svg>
               </button>
             </div>
@@ -164,7 +164,7 @@
                   {% else %}
                     <em class="muted" style="opacity:0.5;">{{ t.s("common.desc.field_none") }}</em>
                   {% endif %}
-                  <button type="button" class="btn sm icon ghost" style="margin-top:4px;" onclick="editDesc('index', '{{ tenant_id }}', '{{ coll_name }}', '{{ idx.name }}')" title="{{ t.s("common.desc.edit_aria") }}" aria-label="{{ t.s("collection_rows.indexes.edit_index_desc_aria") }}">
+                  <button type="button" class="btn sm icon ghost" style="margin-top:4px;" data-desc-edit data-desc-kind="index" data-desc-tenant="{{ tenant_id }}" data-desc-coll="{{ coll_name }}" data-desc-extra="{{ idx.name }}" title="{{ t.s("common.desc.edit_aria") }}" aria-label="{{ t.s("collection_rows.indexes.edit_index_desc_aria") }}">
                     <svg aria-hidden="true"><use href="#i-edit"/></svg>
                   </button>
                 </td>
@@ -1266,6 +1266,14 @@ for (;;) {
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
 <script>
+// gate 7 — the description-edit buttons were migrated off inline onclick=
+// (which interpolated tenant/collection/field/index names) onto data-* attrs
+// + this delegated handler; editDesc is unchanged (hoisted below).
+document.querySelectorAll('[data-desc-edit]').forEach(function (b) {
+  b.addEventListener('click', function () {
+    editDesc(b.dataset.descKind, b.dataset.descTenant, b.dataset.descColl, b.dataset.descExtra);
+  });
+});
 function editDesc(kind, tenant, coll, extra) {
   var bodyId = kind === 'collection' ? 'desc-body-collection'
              : kind === 'field'      ? 'desc-body-field-' + extra

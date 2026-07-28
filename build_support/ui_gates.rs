@@ -1203,6 +1203,118 @@ fn used_classes(content: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// True iff `expr` is exactly `t.s("literal")` — the sole inline-handler-safe
+/// interpolation (compile-time i18n bundle, literal key, no dynamic operand).
+/// Reuses the same shape test as the `|safe` allowlist.
+fn is_static_ts(expr: &str) -> bool {
+    if expr.starts_with("t.s(") {
+        let open = "t.s".len();
+        return first_arg_is_literal(expr, open) && call_closes_at_end(expr, open);
+    }
+    false
+}
+
+/// Gate 7 — an inline event-handler attribute (`onclick=`, `onsubmit=`, `on…=`)
+/// must NOT interpolate any dynamic `{{ … }}` expression; the only exemption is
+/// a pure `t.s("literal")`. A browser HTML-entity-DECODES an event-handler
+/// attribute value BEFORE compiling it as JS, so Askama's auto-escaping (which
+/// turns `'` into `&#x27;`) is UNDONE in that context — a `{{ r.collection }}`
+/// there restores the quote and executes attacker JS (the v1.52.0 webhook
+/// stored-XSS; the five earlier gates, including the `|safe` allowlist, all miss
+/// it because `t.fmt`/`t.s` output is "auto-escaped" and thus deemed safe —
+/// which is false in a JS event-handler context). Even a currently
+/// identifier-validated value is refused: relying on the value happening to be
+/// quote-free is fragile (webhook `url` passed `check_url` with a `'` in the
+/// path). Move dynamic values onto `data-*` attributes (HTML attribute escaping
+/// IS correct there) read back via a delegated handler and rendered through
+/// `textContent` (e.g. `drustUI.confirm`). The `on` must OPEN an attribute
+/// (preceded by whitespace / `<`) so `content=` / `data-chonk=` are not mistaken
+/// for handlers; the closing `"` search skips `{{ … }}` spans, whose Rust-level
+/// `t.s("key")` legitimately contains `"` in template source.
+pub fn check_inline_handler_interp(file: &str, content: &str) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while let Some(rel) = line[i..].find("on") {
+            let at = i + rel;
+            i = at + 2;
+            // `on` must open an attribute name: preceded by whitespace / `<`
+            // (or line start) — rejects `content=` / `data-chonk=`.
+            if at > 0 {
+                let p = bytes[at - 1];
+                if !(p.is_ascii_whitespace() || p == b'<') {
+                    continue;
+                }
+            }
+            // `on` + [a-z]+ + `="`
+            let mut j = at + 2;
+            while j < bytes.len() && bytes[j].is_ascii_lowercase() {
+                j += 1;
+            }
+            if j == at + 2 || bytes.get(j) != Some(&b'=') || bytes.get(j + 1) != Some(&b'"') {
+                continue;
+            }
+            let handler = &line[at..j];
+            // Extract the attribute value up to the closing `"` that is NOT
+            // inside a `{{ … }}` expression (which may contain Rust-level `"`).
+            let val_start = j + 2;
+            let mut m = val_start;
+            let mut in_expr = false;
+            let mut val_end = None;
+            while m < bytes.len() {
+                // Byte comparisons only — `m` advances byte-by-byte and may land
+                // mid-char (templates carry non-ASCII), so never slice `line[m..]`.
+                if !in_expr && bytes[m] == b'{' && bytes.get(m + 1) == Some(&b'{') {
+                    in_expr = true;
+                    m += 2;
+                    continue;
+                }
+                if in_expr && bytes[m] == b'}' && bytes.get(m + 1) == Some(&b'}') {
+                    in_expr = false;
+                    m += 2;
+                    continue;
+                }
+                if !in_expr && bytes[m] == b'"' {
+                    val_end = Some(m);
+                    break;
+                }
+                m += 1;
+            }
+            let Some(val_end) = val_end else { continue };
+            let value = &line[val_start..val_end];
+            i = val_end + 1;
+            // Every `{{ … }}` in the value must be a static `t.s("literal")`.
+            let mut k = 0;
+            while let Some(orel) = value[k..].find("{{") {
+                let ostart = k + orel;
+                let Some(crel) = value[ostart + 2..].find("}}") else {
+                    break;
+                };
+                let cend = ostart + 2 + crel;
+                let inner = value[ostart + 2..cend].trim();
+                k = cend + 2;
+                if !is_static_ts(inner) {
+                    out.push(Violation::new(
+                        file,
+                        idx + 1,
+                        "inline-handler-interp",
+                        format!(
+                            "`{handler}=\"…{{{{ {inner} }}}}…\"` interpolates a dynamic value \
+                             into an inline event handler. A browser entity-decodes the \
+                             attribute before compiling it as JS, so auto-escaping is undone \
+                             there (stored-XSS). Only `t.s(\"literal\")` is allowed inline; \
+                             move the value onto a `data-*` attribute + a delegated handler \
+                             rendered via textContent (e.g. drustUI.confirm)."
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Collect every CSS custom property this text DEFINES (`--name:`), across the
 /// whole template — CSS variables can be defined both in `<style>` blocks and
 /// in inline `style="--x: …"` attributes, so (unlike `defined_classes`, which
@@ -1368,6 +1480,7 @@ pub fn scan_all(templates: &[(String, String)], css: &str) -> Vec<Violation> {
         out.extend(check_button_convention(file, body));
         out.extend(check_safe_filter(file, body));
         out.extend(check_view_head(file, body));
+        out.extend(check_inline_handler_interp(file, body));
     }
     out.extend(check_ghost_classes(templates, css));
     out.extend(check_ghost_css_vars(templates));
@@ -1392,11 +1505,19 @@ mod tests {
         )];
         let v = check_ghost_css_vars(&templates);
         let names: Vec<&str> = v.iter().map(|x| x.file.as_str()).collect();
-        assert_eq!(v.len(), 2, "both --nope and --nope2 are ghosts, got: {names:?}");
+        assert_eq!(
+            v.len(),
+            2,
+            "both --nope and --nope2 are ghosts, got: {names:?}"
+        );
         assert!(v.iter().all(|x| x.rule == "ghost-css-var"));
-        assert!(v.iter().any(|x| x.message.contains("--nope") && x.line == 3));
         assert!(
-            v.iter().any(|x| x.message.contains("--nope2") && x.line == 4),
+            v.iter()
+                .any(|x| x.message.contains("--nope") && x.line == 3)
+        );
+        assert!(
+            v.iter()
+                .any(|x| x.message.contains("--nope2") && x.line == 4),
             "a fallback must not exempt a ghost var"
         );
     }
@@ -1429,15 +1550,17 @@ mod tests {
             ".card--active:hover{color:red} .b{--real: 1px} div{color:var(--used)}",
         );
         assert!(defs.contains("real"));
-        assert!(!defs.contains("active"), "BEM `card--active:` is not a var def");
+        assert!(
+            !defs.contains("active"),
+            "BEM `card--active:` is not a var def"
+        );
         assert!(!defs.contains("used"), "`var(--used)` is a use, not a def");
     }
 
     #[test]
     fn used_css_vars_handles_spacing_fallback_and_reports_lines() {
-        let uses = used_css_vars(
-            "a{color:var(--x)}\nb{color:var( --y , red)}\nc{color:var(--z,#000)}",
-        );
+        let uses =
+            used_css_vars("a{color:var(--x)}\nb{color:var( --y , red)}\nc{color:var(--z,#000)}");
         let names: Vec<&str> = uses.iter().map(|(_, n)| n.as_str()).collect();
         assert!(names.contains(&"x") && names.contains(&"y") && names.contains(&"z"));
         assert_eq!(uses.iter().find(|(_, n)| n == "x").unwrap().0, 1);
@@ -1449,12 +1572,63 @@ mod tests {
         // A var named only inside a /* */ comment is neither a def nor a use.
         let templates = vec![(
             "page.html".to_string(),
-            "<style>/* var(--documented-only) is just prose */ .a{color:red}</style>"
-                .to_string(),
+            "<style>/* var(--documented-only) is just prose */ .a{color:red}</style>".to_string(),
         )];
         assert!(
             check_ghost_css_vars(&templates).is_empty(),
             "a var mentioned only in a CSS comment is not a use"
+        );
+    }
+
+    #[test]
+    fn inline_handler_flags_dynamic_value() {
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<button onclick=\"editDesc('{{ tenant_id }}')\">x</button>",
+        );
+        assert_eq!(v.len(), 1, "a dynamic {{ }} in onclick must flag: {v:?}");
+        assert_eq!(v[0].rule, "inline-handler-interp");
+        assert_eq!(v[0].line, 1);
+        assert!(v[0].message.contains("onclick"));
+    }
+
+    #[test]
+    fn inline_handler_exempts_static_ts_even_with_nested_quotes() {
+        // `t.s("literal")` is the only allowed inline interpolation; its
+        // Rust-level quotes around the key must not confuse the closing-quote
+        // scan (a naive find('"') would truncate the value mid-expression).
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<form onsubmit=\"return confirm('{{ t.s(\"cron.delete_confirm\") }}')\">",
+        );
+        assert!(
+            v.is_empty(),
+            "t.s(\"literal\") is exempt inline, got: {v:?}"
+        );
+    }
+
+    #[test]
+    fn inline_handler_flags_t_fmt_and_bare_var() {
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<form onsubmit=\"return confirm('{{ t.fmt1(\"k\", \"n\", p.provider) }}')\">\n\
+             <button onclick=\"toggleKey('key-{{ role }}', this)\">y</button>",
+        );
+        assert_eq!(v.len(), 2, "t.fmt1(...) and {{ role }} both flag: {v:?}");
+        assert!(v.iter().any(|x| x.line == 1) && v.iter().any(|x| x.line == 2));
+    }
+
+    #[test]
+    fn inline_handler_not_fooled_by_on_inside_other_attrs() {
+        // `content=` and `data-chonk=` embed "on" mid-word — not event handlers.
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<meta name=\"description\" content=\"{{ t.fmt1(\"a\",\"b\",x) }}\">\n\
+             <canvas data-chonk=\"{{ chonk }}\"></canvas>",
+        );
+        assert!(
+            v.is_empty(),
+            "content=/data-chonk= are not event handlers: {v:?}"
         );
     }
 

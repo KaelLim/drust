@@ -69,7 +69,7 @@
                     <button type="submit" class="btn sm">{% if f.active %}{{ t.s("tenant_functions.btn_disable") }}{% else %}{{ t.s("tenant_functions.btn_enable") }}{% endif %}</button>
                   </form>
                   <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_functions/{{ f.name }}/delete"
-                        onsubmit="return confirm('{{ t.s("tenant_functions.delete_confirm") }} {{ f.name }}');"
+                        data-confirm-msg="{{ t.s("tenant_functions.delete_confirm") }} {{ f.name }}"
                         style="display:inline;margin:0;">
                     <button type="submit" class="btn sm danger">{{ t.s("tenant_functions.btn_delete") }}</button>
                   </form>
@@ -142,4 +142,18 @@
 {% block extra_scripts %}
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
+{% include "_modal.html" %}
+<script>
+// gate 7 — delete confirm moved out of the inline onsubmit handler (a browser
+// entity-decodes an on* attribute before compiling it as JS; a dynamic value
+// there is a stored-XSS vector). Message rides a data-* attr, rendered via
+// drustUI.confirm's textContent.
+document.querySelectorAll('form[data-confirm-msg]').forEach(function (f) {
+  f.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var ok = await drustUI.confirm({ body: f.getAttribute('data-confirm-msg') || '', danger: true });
+    if (ok) f.submit();
+  });
+});
+</script>
 {% endblock %}

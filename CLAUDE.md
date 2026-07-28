@@ -125,7 +125,7 @@ Two pages (v1.5.1+): `/admin/tenants` (search-able list) and `/admin/tenants/{id
 
 ### Admin 頁面解剖學(v1.50+)
 
-新增或修改 admin 頁面前先讀這節。五道 build.rs 閘會強制其中每一條 —— 違反的後果是 `cargo build` 失敗,不是 review 時才被發現。
+新增或修改 admin 頁面前先讀這節。七道 build.rs 閘會強制其中每一條 —— 違反的後果是 `cargo build` 失敗,不是 review 時才被發現。
 
 **頁面骨架**(每個非 `_` 開頭的模板):
 
@@ -153,7 +153,7 @@ Two pages (v1.5.1+): `/admin/tenants` (search-able list) and `/admin/tenants/{id
 
 **按鈕正典**:`class="btn"` 加修飾詞 —— `sm`(小)、`icon`(方形圖示鈕)、`primary` / `ghost` / `danger`(變體)。例:`class="btn sm ghost"`。BEM 形式(`btn-sm`、`btn-ghost`、`btn-primary`、`btn-danger`)**已淘汰**,模板與 JS 字串皆不得使用。
 
-**五道閘**(`build_support/ui_gates.rs`,由 `build.rs` 執行):
+**七道閘**(`build_support/ui_gates.rs`,由 `build.rs` 執行):
 
 | 閘 | 規則 | 觸發時的修法 |
 |---|---|---|
@@ -162,6 +162,8 @@ Two pages (v1.5.1+): `/admin/tenants` (search-able list) and `/admin/tenants/{id
 | `ghost-class` | 用到的 class 必須有 CSS 定義 | 在 `_styles.html` 補定義,或改用既有 class |
 | `button-convention` | 禁用 BEM 按鈕 class | 改修飾詞形式 |
 | `unsafe-safe-filter` | `\|safe` 只允許白名單來源 | 見下 |
+| `ghost-css-var` | 用到的 `var(--x)` 必須有 `--x:` 定義(帶 fallback 也不豁免) | 在 `_styles.html` 補 `--x:` 定義,或改用既有變數 |
+| `inline-handler-interp` | inline 事件處理器(`onclick=`/`onsubmit=`/`on*=`)禁內插動態 `{{ }}`,僅 `t.s("字面")` 豁免 | 值移到 `data-*` 屬性 + delegated handler,經 `textContent`(如 `drustUI.confirm`)呈現。瀏覽器先 entity-decode 屬性再當 JS 編譯,自動跳脫在此無效 |
 
 > [!CAUTION]
 > **`t.fmt<N>(…)` 與 `t.fmt<N>_html(…)` 只差一個尾綴,但只有後者跳脫插值參數。** 把前者接上 `|safe` 會重現 v1.49.3 修掉的 HIGH stored-XSS,而且**執行期測試抓不到**。閘 5 因此只允許以下 `|safe` 來源 —— 三種形狀規則:帶 `json` 底線區段的變數(`script_json.rs` 正典跳脫器)、`t.s("…")`(編譯期 bundle,key 必須是字面值)、`t.fmt<N>_html(…)`;外加兩條具名例外:`i18n_js`(同一個 `script_json` 跳脫器,名字早於 `_json` 慣例)與 `body_html`(CHANGELOG viewer 專屬,operator 控制的 markdown,綁定 `src/mgmt/docs.rs` 一個 handler)。新增任何一條都必須是經審查的刻意行為,且在 `is_allowlisted_safe_producer` 就地附註來源。

@@ -21,10 +21,10 @@
     {% if let Some(pt) = info.plaintext %}
   <code class="key-val" id="key-{{ role }}" data-plain="{{ pt }}" data-revealed="0">••••••••••••••••••••••••••••••••</code>
   <div class="row" style="gap:6px;">
-    <button class="btn sm icon ghost" type="button" onclick="toggleKey('key-{{ role }}', this)" title="{{ t.s("tenant_api_keys.btn.show_hide_title") }}" aria-label="show or hide key">
+    <button class="btn sm icon ghost" type="button" data-key-target="key-{{ role }}" data-key-action="toggle" title="{{ t.s("tenant_api_keys.btn.show_hide_title") }}" aria-label="show or hide key">
       <svg aria-hidden="true"><use href="#i-eye"/></svg>
     </button>
-    <button class="btn sm icon" type="button" onclick="copyKey('key-{{ role }}', this)" title="{{ t.s("tenant_api_keys.btn.copy_key_title") }}" aria-label="copy key">
+    <button class="btn sm icon" type="button" data-key-target="key-{{ role }}" data-key-action="copy" title="{{ t.s("tenant_api_keys.btn.copy_key_title") }}" aria-label="copy key">
       <svg aria-hidden="true"><use href="#i-copy"/></svg>
     </button>
     <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="{{ t.fmt1("tenant_api_keys.confirm.reroll_text", "role", role) }}" class="reroll-form" style="margin:0;display:inline;">
@@ -229,6 +229,14 @@
     var el = document.getElementById(id);
     navigator.clipboard.writeText(el.getAttribute('data-plain')).then(function () { _setOk(btn); });
   }
+  // gate 7 — the show/hide + copy buttons were migrated off inline onclick=
+  // (which interpolated the per-role key id) onto data-* attributes + this
+  // delegated handler; toggleKey/copyKey are unchanged.
+  document.querySelectorAll('[data-key-action]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      (b.dataset.keyAction === 'copy' ? copyKey : toggleKey)(b.dataset.keyTarget, b);
+    });
+  });
   // v1.29.3 — reads PAT from server-injected <span id="key-mcp-pat"
   // data-plain="..."> and writes the `claude mcp add` snippet directly
   // to clipboard. No fetch — single round-trip eliminated.
