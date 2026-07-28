@@ -1,3 +1,12 @@
+## v1.54.0 — 2026-07-28
+
+### SQLite Wave 1 — M1: data-plane aggregation
+
+- **`POST /t/<id>/collections/<c>/aggregate` + MCP `aggregate`** (MCP tool count 67 → 68). Computed rollups — `count` / `sum` / `avg` / `min` / `max` over rows with an optional `group_by` — built by drust from a structured body (`{filter?, group_by?, metrics:[{op, field?, as?}], sort?, page?, per_page?}`), never raw SQL. Ops are a fixed allowlist; group/metric/sort columns go through the schema field allowlist (declared/system, non-vector); every value is `?`-bound.
+- **Row-authorization is in lockstep with `/list` by construction.** The owner/policy/cap matrix was extracted into a shared `records_list::compute_read_auth`, and the WHERE (filter + owner clause + explicit-policy USING) into `list_builder::build_where_clause` — both `/list` and `/aggregate` call them verbatim. So a User only aggregates rows they may read (`owner_field` / `read_scope`), anon obeys `anon_caps` + any select policy, and the service key aggregates everything. `/query` stays service-only; aggregate accepts only structured input.
+- codegen: OpenAPI gains the `/aggregate` path.
+- Adversarially self-reviewed (5-lens workflow; the auth-lockstep and SQL-injection lenses came back clean). Two correctness findings fixed before ship: duplicate output-column names (a repeated metric alias, or an alias equal to a `group_by` column) now reject with `AGG_ALIAS_DUPLICATE` instead of silently overwriting a column in the JSON response; and an omitted `metrics` key now returns the typed `AGG_NO_METRICS` 400 (via `#[serde(default)]`) instead of a generic serde 422.
+
 ## v1.53.0 — 2026-07-28
 
 Two more compile-time admin-UI gates (build.rs), taking the set from five to seven. Pure build-time lints — no runtime behavior change beyond the gate-7 handler migration (which is behaviour-preserving).
