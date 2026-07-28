@@ -1,3 +1,16 @@
+## v1.53.0 — 2026-07-28
+
+Two more compile-time admin-UI gates (build.rs), taking the set from five to seven. Pure build-time lints — no runtime behavior change beyond the gate-7 handler migration (which is behaviour-preserving).
+
+### Gate 6 — `ghost-css-var`
+
+- Every `var(--x)` a template uses must have a `--x:` definition somewhere in the CSS. An undefined custom property fails silently (CSS falls back to `initial` or the `var()` fallback arg) and renders wrong with no signal — how ~14 ghost vars (`--line`, `--bg-soft`, …) accumulated historically. Cross-file (a var defined in `_styles.html` is used everywhere); a fallback does **not** exempt the variable. The codebase is currently ghost-free, so the gate went hard immediately with no migration.
+
+### Gate 7 — `inline-handler-interp` (anti stored-XSS)
+
+- An inline event-handler attribute (`onclick=`/`onsubmit=`/`on…=`) may not interpolate a dynamic `{{ … }}` expression; only `t.s("literal")` is exempt. A browser HTML-entity-**decodes** an event-handler attribute *before* compiling it as JS, so Askama's auto-escaping is undone there — the v1.52.0 webhook stored-XSS, which all five earlier gates (incl. the `|safe` allowlist) miss because `t.fmt`/`t.s` output is deemed auto-escaped. The 8 remaining dynamic handlers (cron/functions/oauth delete confirms, api-keys show/copy, collection-rows description edit) were migrated onto `data-*` attributes + delegated handlers rendered via `textContent` — even the identifier-validated ones, since relying on a value being quote-free is fragile.
+- The gate is built on the codebase's shared attribute parser (`class_attr_value`/`attr_value_end`/`askama_construct_len`) and matches `on` case-insensitively at the complete set of HTML5 attribute-name boundaries. Two rounds of adversarial self-review hardened it against **7 bypass classes** (single-quoted handlers, `onClick`/`ONCLICK`, a `"` inside a `{% %}` tag truncating the scan, multi-line values, a handler abutting a quote or a `/` separator, and space before `=`) — each is now a regression test, so a green build means "clean", not "not looking".
+
 ## v1.52.0 — 2026-07-28
 
 ### Admin UI
