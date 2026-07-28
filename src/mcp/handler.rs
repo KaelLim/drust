@@ -9,9 +9,9 @@
 
 use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::{
-    exploration, files as file_tools, oauth as oauth_tools, owner_field as owner_field_tools, read,
-    schema as schema_tools, user as user_tools, vector as vector_tools, webhook as webhook_tools,
-    write as write_tools,
+    batch, exploration, files as file_tools, oauth as oauth_tools,
+    owner_field as owner_field_tools, read, schema as schema_tools, user as user_tools,
+    vector as vector_tools, webhook as webhook_tools, write as write_tools,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -1299,6 +1299,38 @@ impl DrustMcpService {
     ) -> Result<CallToolResult, McpError> {
         let data = Value::Object(data.into_iter().collect());
         match write_tools::insert_record(&self.state, &collection, data).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
+        description = "Insert MANY records into a collection in ONE atomic transaction \
+        (all-or-nothing: any invalid row rolls back the WHOLE batch — no partial writes, no \
+        orphan history). USE WHEN: bulk-loading rows. Each row is validated exactly like \
+        `insert_record` (known fields, CHECK constraints) and captured to record-history per \
+        row. `records` is a JSON array of objects; up to DRUST_BATCH_MAX_ROWS (default 1000). \
+        Service-key only. Returns {inserted:[rows], count}. Errors: BATCH_EMPTY, \
+        BATCH_TOO_LARGE, OWNER_FIELD_REQUIRED, CHECK_CONSTRAINT_FAILED, TENANT_QUOTA_EXCEEDED. \
+        EXAMPLE call: {\"collection\": \"posts\", \"records\": [{\"title\": \"a\"}, \
+        {\"title\": \"b\"}]}"
+    )]
+    async fn insert_records(
+        &self,
+        Parameters(batch::InsertRecordsArgs {
+            collection,
+            records,
+        }): Parameters<batch::InsertRecordsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match batch::batch_insert(
+            &self.state,
+            &collection,
+            records,
+            crate::storage::record_history::AuditActor::service(),
+        )
+        .await
+        {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -3140,8 +3172,8 @@ mod instructions_tests {
 mod annotation_tests {
     use super::*;
 
-    // Wire name == fn name (no `name=` overrides). Buckets sum to 66; call_rpc &
-    // invoke_function are special-cased below. Total must equal tool_count() (68).
+    // Wire name == fn name (no `name=` overrides). Buckets sum to 67; call_rpc &
+    // invoke_function are special-cased below. Total must equal tool_count() (69).
     const READONLY: &[&str] = &[
         "list_collections",
         "whoami",
@@ -3207,6 +3239,7 @@ mod annotation_tests {
     ];
     const ADDITIVE: &[&str] = &[
         "insert_record",
+        "insert_records",
         "create_collection",
         "add_field",
         "create_index",
@@ -3229,14 +3262,14 @@ mod annotation_tests {
             .unwrap_or_else(|| panic!("tool {name} has no annotations"))
     }
 
-    /// Completeness anchor: proves wire name == fn name, the count is 68, and the
+    /// Completeness anchor: proves wire name == fn name, the count is 69, and the
     /// classification below covers EXACTLY the real tool set (catches renames/adds/typos).
     #[test]
-    fn wire_names_match_classification_and_count_is_68() {
+    fn wire_names_match_classification_and_count_is_69() {
         let names: Vec<String> = tools().iter().map(|t| t.name.to_string()).collect();
         assert_eq!(
             names.len(),
-            68,
+            69,
             "tool count changed — update tool_count assertions too"
         );
         let mut covered: Vec<&str> = READONLY

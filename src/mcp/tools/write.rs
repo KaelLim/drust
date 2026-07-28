@@ -10,7 +10,7 @@ use std::collections::HashSet;
 /// message. Using `rusqlite::Error::InvalidQuery` (the obvious-looking variant)
 /// is wrong — its Display is hard-coded to `"Query is not read-only"`, which
 /// bubbles up as a confusing error from the writer path.
-fn invalid_input(msg: String) -> rusqlite::Error {
+pub(crate) fn invalid_input(msg: String) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(msg))
 }
 
@@ -173,7 +173,7 @@ pub fn materialize_row(
 /// BLOB, returning the bytes keyed by field name. Errors map to typed
 /// strings so callers can render them as the expected error codes
 /// (`VECTOR_DIM_MISMATCH` / `VECTOR_NON_FINITE` / `VECTOR_TYPE_ERROR`).
-fn pre_encode_vectors(
+pub(crate) fn pre_encode_vectors(
     vector_fields: &[VectorField],
     data_map: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<std::collections::HashMap<String, Vec<u8>>, anyhow::Error> {

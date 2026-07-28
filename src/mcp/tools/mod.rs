@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod batch;
 pub mod cron;
 pub mod exploration;
 pub mod files;
