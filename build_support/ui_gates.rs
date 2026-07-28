@@ -1203,6 +1203,125 @@ fn used_classes(content: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// Collect every CSS custom property this text DEFINES (`--name:`), across the
+/// whole template — CSS variables can be defined both in `<style>` blocks and
+/// in inline `style="--x: …"` attributes, so (unlike `defined_classes`, which
+/// only reads `<style>`) this scans all text. `/* */` comments are blanked so a
+/// var named only in a comment is not counted. `--` preceded by an identifier
+/// char is the tail of a BEM class (`.card--active:`), not a definition.
+fn defined_css_vars(text: &str) -> std::collections::HashSet<String> {
+    let text = blank_block_comments(text);
+    let bytes = text.as_bytes();
+    let mut out = std::collections::HashSet::new();
+    let mut i = 0;
+    while let Some(rel) = text[i..].find("--") {
+        let at = i + rel;
+        i = at + 2;
+        if at > 0 {
+            let p = bytes[at - 1];
+            if p.is_ascii_alphanumeric() || p == b'_' || p == b'-' {
+                continue;
+            }
+        }
+        let name_start = at + 2;
+        let mut j = name_start;
+        while j < bytes.len()
+            && (bytes[j].is_ascii_lowercase() || bytes[j].is_ascii_digit() || bytes[j] == b'-')
+        {
+            j += 1;
+        }
+        if j == name_start {
+            continue;
+        }
+        // optional whitespace then `:` marks a declaration (vs a `var(--x)` use,
+        // which is followed by `)` / `,`).
+        let mut k = j;
+        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        if bytes.get(k) == Some(&b':') {
+            out.insert(text[name_start..j].to_string());
+        }
+    }
+    out
+}
+
+/// Collect every CSS custom property this text USES (`var(--name)`), with the
+/// 1-indexed line of each use. Handles `var(--x)`, `var( --x )`, and
+/// `var(--x, fallback)` — the fallback does NOT exempt the variable. `/* */`
+/// comments are blanked so a var named only in a comment is not counted.
+fn used_css_vars(text: &str) -> Vec<(usize, String)> {
+    let text = blank_block_comments(text);
+    let bytes = text.as_bytes();
+    let newlines: Vec<usize> = bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b == b'\n')
+        .map(|(i, _)| i)
+        .collect();
+    let line_of = |off: usize| newlines.partition_point(|&n| n < off) + 1;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = text[i..].find("var(") {
+        let at = i + rel;
+        i = at + 4;
+        let mut j = at + 4;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if !(bytes.get(j) == Some(&b'-') && bytes.get(j + 1) == Some(&b'-')) {
+            continue;
+        }
+        let name_start = j + 2;
+        let mut k = name_start;
+        while k < bytes.len()
+            && (bytes[k].is_ascii_lowercase() || bytes[k].is_ascii_digit() || bytes[k] == b'-')
+        {
+            k += 1;
+        }
+        if k > name_start {
+            out.push((line_of(at), text[name_start..k].to_string()));
+        }
+    }
+    out
+}
+
+/// Gate 6 — every `var(--x)` a template uses must have a `--x:` definition
+/// somewhere in the CSS. An undefined custom property does not error: CSS
+/// silently falls back to `initial` (or the `var()` fallback arg), rendering
+/// wrong with no signal — the exact drift that let ~14 ghost vars (`--line`,
+/// `--bg-soft`, …) accumulate historically. Cross-file by nature: a var defined
+/// in `_styles.html` is used everywhere, so definitions are aggregated across
+/// all templates first. A fallback does NOT exempt the variable (that is how
+/// the historical ghosts hid behind `currentColor`). No interpolated var names
+/// exist in the codebase, so there is no prefix allowlist.
+pub fn check_ghost_css_vars(templates: &[(String, String)]) -> Vec<Violation> {
+    let mut defined = std::collections::HashSet::new();
+    for (_file, body) in templates {
+        defined.extend(defined_css_vars(body));
+    }
+    let mut out = Vec::new();
+    for (file, body) in templates {
+        for (line, name) in used_css_vars(body) {
+            if !defined.contains(&name) {
+                out.push(Violation::new(
+                    file,
+                    line,
+                    "ghost-css-var",
+                    format!(
+                        "`var(--{name})` uses a CSS custom property with no `--{name}:` \
+                         definition — it silently falls back (to `initial` or the fallback \
+                         arg) and renders wrong. Define `--{name}:` in _styles.html, or use \
+                         an existing variable. A fallback like `var(--{name}, currentColor)` \
+                         does NOT exempt it."
+                    ),
+                ));
+            }
+        }
+    }
+    out
+}
+
 /// Gate 3 — every class a template uses must be defined somewhere in the CSS.
 /// A class with no definition is a ghost: it renders unstyled, and the author
 /// typically papers over that with an inline `style=` (this is precisely how
@@ -1251,12 +1370,93 @@ pub fn scan_all(templates: &[(String, String)], css: &str) -> Vec<Violation> {
         out.extend(check_view_head(file, body));
     }
     out.extend(check_ghost_classes(templates, css));
+    out.extend(check_ghost_css_vars(templates));
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ghost_css_var_flagged_when_undefined_even_with_fallback() {
+        // `--defined` exists; `--nope` does not. A fallback must NOT exempt it —
+        // that is exactly how the historical ghosts (--line, currentColor) hid.
+        let templates = vec![(
+            "page.html".to_string(),
+            "<style>.a{--defined:#000}</style>\n\
+             <div style=\"color:var(--defined)\">ok</div>\n\
+             <div style=\"color:var(--nope)\">bad</div>\n\
+             <div style=\"color:var(--nope2, currentColor)\">also bad</div>"
+                .to_string(),
+        )];
+        let v = check_ghost_css_vars(&templates);
+        let names: Vec<&str> = v.iter().map(|x| x.file.as_str()).collect();
+        assert_eq!(v.len(), 2, "both --nope and --nope2 are ghosts, got: {names:?}");
+        assert!(v.iter().all(|x| x.rule == "ghost-css-var"));
+        assert!(v.iter().any(|x| x.message.contains("--nope") && x.line == 3));
+        assert!(
+            v.iter().any(|x| x.message.contains("--nope2") && x.line == 4),
+            "a fallback must not exempt a ghost var"
+        );
+    }
+
+    #[test]
+    fn ghost_css_var_defined_across_files_and_via_theme_interpolation() {
+        // A var defined in _styles.html (theme var: literal name, interpolated
+        // value) is usable from any other template — defs are aggregated.
+        let templates = vec![
+            (
+                "_styles.html".to_string(),
+                ":root{ --accent:{{ p.accent[\"accent\"] }}; --gap: 4px; }".to_string(),
+            ),
+            (
+                "page.html".to_string(),
+                "<div style=\"color:var(--accent);padding:var(--gap)\">x</div>".to_string(),
+            ),
+        ];
+        assert!(
+            check_ghost_css_vars(&templates).is_empty(),
+            "theme var (interpolated value, literal name) and cross-file def must resolve"
+        );
+    }
+
+    #[test]
+    fn defined_css_vars_ignores_uses_and_bem_lookalikes() {
+        // `var(--x)` is a USE not a def; `.card--active:hover` is a BEM class,
+        // not a `--active` definition (the `--` is preceded by an identifier).
+        let defs = defined_css_vars(
+            ".card--active:hover{color:red} .b{--real: 1px} div{color:var(--used)}",
+        );
+        assert!(defs.contains("real"));
+        assert!(!defs.contains("active"), "BEM `card--active:` is not a var def");
+        assert!(!defs.contains("used"), "`var(--used)` is a use, not a def");
+    }
+
+    #[test]
+    fn used_css_vars_handles_spacing_fallback_and_reports_lines() {
+        let uses = used_css_vars(
+            "a{color:var(--x)}\nb{color:var( --y , red)}\nc{color:var(--z,#000)}",
+        );
+        let names: Vec<&str> = uses.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(names.contains(&"x") && names.contains(&"y") && names.contains(&"z"));
+        assert_eq!(uses.iter().find(|(_, n)| n == "x").unwrap().0, 1);
+        assert_eq!(uses.iter().find(|(_, n)| n == "z").unwrap().0, 3);
+    }
+
+    #[test]
+    fn ghost_css_var_ignores_mentions_in_css_comments() {
+        // A var named only inside a /* */ comment is neither a def nor a use.
+        let templates = vec![(
+            "page.html".to_string(),
+            "<style>/* var(--documented-only) is just prose */ .a{color:red}</style>"
+                .to_string(),
+        )];
+        assert!(
+            check_ghost_css_vars(&templates).is_empty(),
+            "a var mentioned only in a CSS comment is not a use"
+        );
+    }
 
     #[test]
     fn scan_all_on_clean_input_is_empty() {
