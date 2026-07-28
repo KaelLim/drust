@@ -1253,10 +1253,18 @@ pub fn check_inline_handler_interp(file: &str, content: &str) -> Vec<Violation> 
             i += 1;
             continue;
         }
-        // Attribute-name boundary: preceded by whitespace or a closing quote
-        // (a handler may legally abut a preceding quoted value with no space).
-        // Rejects `content` / `data-chonk` (alnum) and JS `.onclick` (dot).
-        if i > 0 && !matches!(bytes[i - 1], b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'') {
+        // Attribute-name boundary — the complete set of HTML5 chars that can
+        // precede an attribute name inside a tag: ASCII whitespace (incl.
+        // form-feed 0x0C), the self-closing `/` (`<img/onerror=…>` runs the
+        // handler), or a preceding attribute's closing quote (a handler may
+        // legally abut a quoted value with no space). Rejects `content` /
+        // `data-chonk` (alnum) and JS `.onclick` (dot).
+        if i > 0
+            && !matches!(
+                bytes[i - 1],
+                b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'/' | b'"' | b'\''
+            )
+        {
             i += 1;
             continue;
         }
@@ -1679,6 +1687,18 @@ mod tests {
             1,
             "a multi-line handler value must still flag: {v:?}"
         );
+    }
+
+    #[test]
+    fn inline_handler_flags_slash_separated() {
+        // HTML5 treats `/` as an attribute separator: <img/onerror=…> and
+        // <input value="v"/onclick=…> run the handler in a browser.
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<img src=\"a\"/onerror=\"d('{{ collection }}')\">\n\
+             <button/onclick=\"x('{{ id }}')\">b</button>",
+        );
+        assert_eq!(v.len(), 2, "slash-separated handlers must flag: {v:?}");
     }
 
     #[test]
