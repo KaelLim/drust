@@ -48,6 +48,14 @@ async fn spin_up() -> (axum::Router, tempfile::TempDir) {
     let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
     drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     bootstrap_admin(&mut conn, "root", "hunter2").unwrap();
+    // /admin/_metrics is owner-only (v1.52): the scrape lists every tenant, a
+    // host-wide surface. bootstrap creates role='member' and the promotion
+    // migration already ran, so promote root explicitly to exercise the 200.
+    conn.execute(
+        "UPDATE admins SET role = 'owner' WHERE username = 'root'",
+        [],
+    )
+    .unwrap();
     // Seed one tenant so tenant_db_bytes gauge has a label to emit.
     conn.execute(
         "INSERT INTO tenants (id, name, db_bytes) VALUES ('metrics-test-tenant-01', 'metrics-test', 4096)",
@@ -139,6 +147,47 @@ async fn metrics_authenticated_returns_200_with_all_counter_names() {
     assert!(
         body.contains("# HELP") || body.contains("# TYPE"),
         "Prometheus body does not look like text exposition format"
+    );
+}
+
+/// Test 1b (v1.52): a MEMBER admin is denied — /admin/_metrics lists every
+/// tenant, so it is owner-only (require_owner_layer). Pins the isolation fix.
+#[tokio::test]
+async fn metrics_member_admin_forbidden() {
+    let (app, dir) = spin_up().await;
+    let meta_path = dir.path().join("meta.sqlite");
+    let conn = rusqlite::Connection::open(&meta_path).unwrap();
+    conn.execute(
+        "INSERT INTO admins (username, password_hash, email, role) \
+         VALUES ('member1', '$oauth-only$', 'member1@example.com', 'member')",
+        [],
+    )
+    .unwrap();
+    let mid = conn.last_insert_rowid();
+    let token = "test_metrics_member_tok_BBBBBBBBBB";
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(7);
+    conn.execute(
+        "INSERT INTO sessions (token, admin_id, expires_at) VALUES (?1, ?2, ?3)",
+        params![token, mid, expires_at.to_rfc3339()],
+    )
+    .unwrap();
+    let cookie = format!("drust_session={token}");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/admin/_metrics")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "member admin must be denied the host-wide metrics scrape"
     );
 }
 

@@ -431,6 +431,53 @@ async fn owner_approve_sets_tier_and_emits_audit() {
 }
 
 #[tokio::test]
+async fn approve_on_soft_deleted_tenant_404() {
+    // v1.52 — a pending request whose tenant is soft-deleted before approval
+    // must be refused, not silently "approved" with a tier change the
+    // deleted_at-scoped UPDATE never applied. The request stays pending.
+    let (app, dir, owner, member) = seed().await;
+    let (_st, body) = send(
+        &app,
+        "POST",
+        "/admin/tenants/t-member-b/quota/requests",
+        &member,
+        Some(serde_json::json!({"requested_tier": 3, "reason": "need room"})),
+    )
+    .await;
+    let id = body["id"].as_i64().unwrap();
+
+    // Soft-delete the tenant out from under the pending request.
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        conn.execute(
+            "UPDATE tenants SET deleted_at = datetime('now') WHERE id = 't-member-b'",
+            [],
+        )
+        .unwrap();
+    }
+
+    let (st, dbody) = send(
+        &app,
+        "POST",
+        &format!("/admin/quota-requests/{id}/decide"),
+        &owner,
+        Some(serde_json::json!({"action": "approve"})),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "approve on a soft-deleted tenant must 404: {dbody}"
+    );
+    assert_eq!(dbody["error_code"], "TENANT_NOT_FOUND");
+    assert_eq!(
+        request_status(&dir, id),
+        "pending",
+        "the request stays pending, not falsely approved"
+    );
+}
+
+#[tokio::test]
 async fn owner_reject_leaves_tier_unchanged() {
     let (app, dir, owner, member) = seed().await;
     let (_st, body) = send(

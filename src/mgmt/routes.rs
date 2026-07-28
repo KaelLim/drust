@@ -1271,8 +1271,18 @@ impl MgmtState {
 
         // v1.32 C1 — Prometheus metrics endpoint. Admin-session-gated;
         // exposes operational counters for ISO/IEC 27001 A.8.16 compliance.
+        // v1.52 — OWNER-ONLY (inner to admin_profile_layer, same shape as
+        // backups_router + quota_review_router): the scrape emits one
+        // `drust_tenant_db_bytes{tenant_id=…}` series per live tenant, i.e. the
+        // full tenant roster + per-tenant sizes — a host-wide surface with no
+        // `{id}` for the ownership guard to filter. Without this a `member`
+        // admin could enumerate every tenant, defeating the v1.50 visibility
+        // boundary (which otherwise 404s to avoid an existence oracle).
         let metrics_router = Router::new()
             .route("/admin/_metrics", get(super::metrics::handler))
+            .layer(axum::middleware::from_fn(
+                crate::mgmt::tenant_authz::require_owner_layer,
+            ))
             .with_state(self.clone());
 
         // Per-admin preferences hub. First section: locale switch (was on

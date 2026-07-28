@@ -308,13 +308,29 @@ pub async fn decide_quota_request(
         // quota. Re-read the live tier and refuse a non-increase (the request
         // stays pending so it can be rejected explicitly).
         if approve {
-            let current_tier: i64 = conn
+            use rusqlite::OptionalExtension;
+            // v1.52 — a soft-deleted (or vanished) tenant returns no row here;
+            // the old `.unwrap_or(1)` treated that as "current tier 1" and would
+            // report an approval whose tier UPDATE (also scoped `deleted_at IS
+            // NULL`) actually touched zero rows. Refuse explicitly instead.
+            let current_tier: i64 = match conn
                 .query_row(
                     "SELECT quota_tier FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
                     rusqlite::params![tenant_id],
                     |r| r.get(0),
                 )
-                .unwrap_or(1);
+                .optional()
+                .unwrap_or(None)
+            {
+                Some(t) => t,
+                None => {
+                    return json_error(
+                        StatusCode::NOT_FOUND,
+                        "TENANT_NOT_FOUND",
+                        "the tenant no longer exists",
+                    );
+                }
+            };
             if requested_tier <= current_tier {
                 return json_error(
                     StatusCode::CONFLICT,

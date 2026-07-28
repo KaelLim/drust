@@ -86,7 +86,8 @@
           <div style="display:flex;gap:6px;">
             <form method="post"
                   action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_webhooks/{{ r.id }}/delete"
-                  onsubmit="return confirm('{{ t.fmt3("tenant_webhooks_admin.delete.confirm", "id", r.id, "collection", r.collection, "url", r.url) }}');"
+                  class="webhook-delete-form"
+                  data-id="{{ r.id }}" data-collection="{{ r.collection }}" data-url="{{ r.url }}"
                   style="margin:0;">
               <button type="submit" class="btn sm danger">{{ t.s("files.row.delete_btn") }}</button>
             </form>
@@ -139,4 +140,28 @@
 {% block extra_scripts %}
 {% include "_mascot.html" %}
 {% include "_cmdk.html" %}
+{% include "_modal.html" %}
+<script>
+(function () {
+  // v1.52 — the delete confirm was moved OUT of an inline onsubmit handler.
+  // The webhook collection/url are tenant-controlled and free-form; inside an
+  // inline on* handler the browser HTML-entity-decodes the attribute before
+  // compiling it as JS, so an escaped quote was restored and broke into the JS
+  // context (stored XSS, tenant -> host-admin). Values now ride data-* attrs,
+  // read back as plain strings and rendered via drustUI.confirm's textContent.
+  var tmpl = '{{ t.s("tenant_webhooks_admin.delete.confirm") }}';
+  function fill(t, k, v) { return t.split('{' + k + '}').join(v); }
+  document.querySelectorAll('form.webhook-delete-form').forEach(function (f) {
+    f.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var msg = fill(fill(fill(tmpl,
+        'id', f.getAttribute('data-id') || ''),
+        'collection', f.getAttribute('data-collection') || ''),
+        'url', f.getAttribute('data-url') || '');
+      var ok = await drustUI.confirm({ body: msg, okText: '{{ t.s("files.row.delete_btn") }}', danger: true });
+      if (ok) f.submit();
+    });
+  });
+})();
+</script>
 {% endblock %}

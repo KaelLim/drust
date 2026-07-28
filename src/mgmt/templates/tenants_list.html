@@ -165,6 +165,7 @@
             var nextBtn = document.getElementById('ten-next');
             var pageInfo = document.getElementById('ten-pageinfo');
             var pageFmt = '{{ t.s("common.pager.page_fmt") }}';
+            var countTotalFmt = '{{ t.s("tenants_list.count.total") }}';
             var PER_PAGE = 20;
             var totalRows = rows.length;
             var page = 1;
@@ -186,9 +187,8 @@
               if (matched.length === 0 && q) { emptyRow.hidden = false; emptyQ.textContent = q; }
               else { emptyRow.hidden = true; }
               if (countEl) {
-                countEl.textContent = q
-                  ? matched.length + ' / ' + totalRows + ' tenants'
-                  : totalRows + ' tenants';
+                var totalLabel = countTotalFmt.split('{n}').join(totalRows);
+                countEl.textContent = q ? (matched.length + ' / ' + totalLabel) : totalLabel;
               }
               if (pager) {
                 if (totalPages <= 1) { pager.hidden = true; }

@@ -517,6 +517,25 @@ impl host::Host for StoreData {
 
         let started = std::time::Instant::now();
         let tenant = self.host.mcp.tenant_id().to_string();
+        // v1.52 — audit blocked fetches too (SSRF-attempt visibility). The
+        // success path is audited at the end of this method; the security gates
+        // below call this to leave a `function.http_fetch` denial row.
+        let audit_deny = |origin_for_audit: &str, method_for_audit: &str, reason: &str| {
+            crate::safety::audit_db::try_send(
+                &crate::safety::audit::AuditEntry::success(
+                    &tenant,
+                    "function",
+                    "function.http_fetch",
+                    started.elapsed().as_millis() as u64,
+                )
+                .with_extra(serde_json::json!({
+                    "origin": origin_for_audit,
+                    "method": method_for_audit,
+                    "outcome": "denied",
+                    "reason": reason,
+                })),
+            );
+        };
 
         // 1. Normalize the requested origin, then the allowlist gate (gate 1/2).
         //    Fail-closed: an un-normalizable origin or an origin absent from the
@@ -529,10 +548,20 @@ impl host::Host for StoreData {
         // loopback. Reject private/loopback/link-local IP literals explicitly here;
         // DNS-name hosts fall through to the resolver as before (codex full-scan F2).
         if origin_host_is_private_ip(&origin) {
+            audit_deny(
+                &origin,
+                &method.to_ascii_uppercase(),
+                "private/loopback origin",
+            );
             return Err("origin host is a private/loopback address".to_string());
         }
         let allowlist = self.host.http.allowlist().await.to_string();
         if !check_egress(&allowlist, EgressSystem::Function, &origin) {
+            audit_deny(
+                &origin,
+                &method.to_ascii_uppercase(),
+                "origin not allowlisted",
+            );
             return Err("origin not allowlisted".to_string());
         }
 
@@ -545,7 +574,10 @@ impl host::Host for StoreData {
             "PATCH" => reqwest::Method::PATCH,
             "DELETE" => reqwest::Method::DELETE,
             "HEAD" => reqwest::Method::HEAD,
-            other => return Err(format!("method not allowed: {other}")),
+            other => {
+                audit_deny(&origin, other, "method not allowed");
+                return Err(format!("method not allowed: {other}"));
+            }
         };
 
         // 3. Path-shape guard (pure, cheap — BEFORE the rate limit so a
@@ -559,11 +591,13 @@ impl host::Host for StoreData {
         //    any residual authority-injection fails closed even if the
         //    leading-`/` check is ever loosened.
         if !path.is_empty() && !path.starts_with('/') {
+            audit_deny(&origin, &method_uc, "non-rooted path");
             return Err("path must be empty or start with '/'".to_string());
         }
         let url = format!("{origin}{path}");
         let dialed = normalize_origin(&url).map_err(|e| format!("bad url: {e}"))?;
         if dialed != origin {
+            audit_deny(&origin, &method_uc, "path alters request host");
             return Err("path must not alter the request host".to_string());
         }
 
