@@ -1,3 +1,21 @@
+## v1.52.0 — 2026-07-28
+
+### Admin UI
+
+- **Tenant list pagination + Cloudflare-style delete confirm.** `/admin/tenants` gained client-side pagination (20/page) layered on the existing instant search — filter then paginate matches, pager hidden when it fits one page. Tenant delete now uses a new reusable `drustUI.confirmTyped` modal: a copyable name chip + a text input, with Delete disabled until the typed name matches exactly.
+
+### Security — codex + adversarial-workflow cross-review
+
+A full-codebase review (codex full-scan + an independent Claude adversarial workflow, every finding REFUTE-verified, then a self-verify pass on the fixes) turned up and fixed:
+
+- **HIGH — stored XSS in the webhook delete confirm.** The tenant-controlled, free-form webhook `collection` AND `url` were interpolated into an inline `onsubmit` handler; a browser HTML-entity-decodes an event-handler attribute *before* compiling it as JS, so Askama's escaped quote was restored and attacker JS executed in the **host admin's** session on Delete (tenant → admin-plane escalation). codex flagged `collection`; the independent pass found `url` is a second, independent vector (its only gate, `check_url`, permits a `'` in the path), so the fix removes ALL dynamic interpolation from the inline handler — `id`/`collection`/`url` now ride `data-*` attributes rendered via `drustUI.confirm`'s `textContent`, safe by construction. The self-verify pass confirmed both vectors are closed.
+- **MED — `GET /admin/_metrics` leaked the full tenant roster to member admins.** The Prometheus scrape emits one `drust_tenant_db_bytes{tenant_id=…}` series per live tenant — a host-wide surface — but `metrics_router` lacked the `require_owner_layer` its siblings (backups, quota-review) carry, so a `member` admin could enumerate every tenant id + size, defeating the v1.50 visibility boundary (which CLAUDE.md already documented as owner-only). Guard added; `member → 403` pinned by test.
+- **LOW** — `decide_quota_request` approved a request for a soft-deleted tenant (an `unwrap_or(1)` masked the vanished row and reported a tier change the `deleted_at`-scoped UPDATE never applied) → now `404 TENANT_NOT_FOUND`; the request stays pending.
+- **LOW** — the new tenant-list pagination clobbered the localized count with hardcoded English → now uses the i18n template.
+- **LOW** — `http_fetch` now audits blocked attempts too (SSRF-attempt visibility), not just successful fetches.
+
+codex's "structured insert can exceed quota by one body" was correctly refuted — it is the documented, bounded-overshoot `incoming=0` tradeoff (accepted, not a defect).
+
 ## v1.51.0 — 2026-07-27
 
 ### Admin team
