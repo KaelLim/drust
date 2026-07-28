@@ -6,14 +6,22 @@
 //! captures per row, and a mid-batch failure rolls back every data AND history
 //! row. Schema read + vector pre-encode happen OUTSIDE the tx so typed errors
 //! surface before the writer lock is taken.
+//!
+//! The write is a primitive-based `batch_insert_core` so BOTH faces reuse it:
+//! the MCP `insert_records` tool (thin `batch_insert` wrapper) and the REST
+//! `records:batch` handler (which has `TenantRef` + extensions, not a DrustMcp).
 
+use crate::functions::dispatcher::FunctionDispatcher;
 use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::write::{insert_row_in_tx, invalid_input, pre_encode_vectors};
+use crate::storage::pool::SharedTenantPool;
 use crate::storage::record_history::AuditActor;
 use crate::storage::schema::{describe_collection, is_protected_collection};
-use crate::tenant::events::Event;
+use crate::tenant::events::{Event, EventBus};
+use crate::tenant::webhook_dispatcher::WebhookDispatcher;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// MCP arg shape for `insert_records`. Mirrors REST `POST .../records:batch`.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -35,7 +43,7 @@ pub(crate) fn batch_max_rows() -> usize {
         .unwrap_or(1000)
 }
 
-/// Parse `records` into non-empty object maps (typed error otherwise).
+/// Parse `records` into object maps (typed error otherwise).
 pub(crate) fn parse_rows(
     records: Vec<serde_json::Value>,
 ) -> anyhow::Result<Vec<serde_json::Map<String, serde_json::Value>>> {
@@ -49,11 +57,18 @@ pub(crate) fn parse_rows(
         .collect()
 }
 
-/// Atomic batch insert. `actor` is the service identity (MCP dispatch is
-/// service-only; the REST handler is service-gated). Returns
+/// Atomic batch insert over the raw primitives — shared by the MCP tool and the
+/// REST handler. `quota_tier` is resolved by the caller (MCP: `read_tier`; REST:
+/// the bearer-CTE `TenantQuotaTier` extension). Returns
 /// `{"inserted":[row, ...], "count": N}`.
-pub async fn batch_insert(
-    s: &DrustMcp,
+#[allow(clippy::too_many_arguments)]
+pub async fn batch_insert_core(
+    pool: &SharedTenantPool,
+    tenant_id: &str,
+    bus: &EventBus,
+    webhooks: &Arc<WebhookDispatcher>,
+    functions: Option<&Arc<FunctionDispatcher>>,
+    quota_tier: i64,
     collection: &str,
     records: Vec<serde_json::Value>,
     actor: AuditActor,
@@ -76,8 +91,6 @@ pub async fn batch_insert(
     let rows = parse_rows(records)?;
 
     let coll = collection.to_string();
-    let pool = s.inner().pool.clone();
-    let tenant = s.inner().tenant_id.clone();
 
     // Schema OUTSIDE the tx: vector fields for pre-encode + a typed early error.
     let coll_for_schema = coll.clone();
@@ -118,11 +131,6 @@ pub async fn batch_insert(
         encoded.push((m, vb));
     }
 
-    let quota_tier = match s.inner().meta.as_ref() {
-        Some(mm) => crate::storage::quota::read_tier(mm, &tenant).await,
-        None => 1,
-    };
-
     // ONE writer tx — all-or-nothing. Any row error rolls back every data AND
     // history row (record_history::capture runs inside this same tx).
     let coll_tx = coll.clone();
@@ -149,18 +157,43 @@ pub async fn batch_insert(
         .await?;
 
     // Post-commit fan-out per row (outside the tx), mirroring single insert.
-    let bus = s.inner().bus.clone();
-    let webhooks = s.inner().webhooks.clone();
     for rec in &inserted {
         let ev = Event::Created {
             record: rec.clone(),
         };
-        bus.publish(&tenant, collection, ev.clone());
-        if let Some(f) = s.inner().functions.as_ref() {
-            f.dispatch(&tenant, collection, &ev);
+        bus.publish(tenant_id, collection, ev.clone());
+        if let Some(f) = functions {
+            f.dispatch(tenant_id, collection, &ev);
         }
-        webhooks.dispatch(&tenant, collection, ev);
+        webhooks.dispatch(tenant_id, collection, ev);
     }
 
     Ok(json!({ "inserted": inserted, "count": inserted.len() }))
+}
+
+/// MCP-facing thin wrapper: resolves the quota tier from the host state then
+/// delegates to [`batch_insert_core`]. Service-identity `actor`.
+pub async fn batch_insert(
+    s: &DrustMcp,
+    collection: &str,
+    records: Vec<serde_json::Value>,
+    actor: AuditActor,
+) -> anyhow::Result<serde_json::Value> {
+    let inner = s.inner();
+    let quota_tier = match inner.meta.as_ref() {
+        Some(m) => crate::storage::quota::read_tier(m, &inner.tenant_id).await,
+        None => 1,
+    };
+    batch_insert_core(
+        &inner.pool,
+        &inner.tenant_id,
+        &inner.bus,
+        &inner.webhooks,
+        inner.functions.as_ref(),
+        quota_tier,
+        collection,
+        records,
+        actor,
+    )
+    .await
 }

@@ -706,6 +706,82 @@ pub struct DataBody {
     pub data: serde_json::Value,
 }
 
+/// Body of `POST .../records:batch` — an array of insert-shaped row objects.
+#[derive(Deserialize)]
+pub struct BatchBody {
+    #[serde(default)]
+    pub records: Vec<serde_json::Value>,
+}
+
+/// `POST /t/<id>/collections/<c>/records:batch` — atomic batch insert
+/// (service-only). Delegates to the shared `batch_insert_core`; anon/user get
+/// `403 WRITE_DENIED` (they use single `/records` with their caps).
+#[allow(clippy::too_many_arguments)]
+pub async fn post_batch(
+    Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
+    Extension(TenantQuotaTier(quota_tier)): Extension<TenantQuotaTier>,
+    Path((_tenant, coll)): Path<(String, String)>,
+    Json(body): Json<BatchBody>,
+    bus: EventBus,
+    webhooks: Arc<WebhookDispatcher>,
+    functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
+) -> Response {
+    if !matches!(ctx, AuthCtx::Service { .. }) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            "batch insert requires the service token",
+        );
+    }
+    let actor = crate::storage::record_history::AuditActor::from_auth_ctx(&ctx);
+    match crate::mcp::tools::batch::batch_insert_core(
+        &t.pool,
+        &t.tenant_id,
+        &bus,
+        &webhooks,
+        Some(&functions),
+        quota_tier,
+        &coll,
+        body.records,
+        actor,
+    )
+    .await
+    {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => map_batch_error(e),
+    }
+}
+
+/// Map a batch/upsert `anyhow` error to an HTTP response by its `CODE:` prefix
+/// (the same code convention MCP's `bail_mcp` parses). Reuses the single-write
+/// deny codes so tests assert the same shapes.
+pub(crate) fn map_batch_error(e: anyhow::Error) -> Response {
+    let msg = e.to_string();
+    let code = msg.split(':').next().unwrap_or("").trim();
+    match code {
+        "TENANT_QUOTA_EXCEEDED" => json_error(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "TENANT_QUOTA_EXCEEDED",
+            &msg,
+        ),
+        "OWNER_FIELD_REQUIRED" => json_error(StatusCode::CONFLICT, "OWNER_FIELD_REQUIRED", &msg),
+        "PROTECTED_COLLECTION" => json_error(StatusCode::NOT_FOUND, "PROTECTED_COLLECTION", &msg),
+        "CHECK_CONSTRAINT_FAILED" => {
+            json_error(StatusCode::BAD_REQUEST, "CHECK_CONSTRAINT_FAILED", &msg)
+        }
+        "POLICY_CHECK_FAILED" => json_error(StatusCode::FORBIDDEN, "POLICY_CHECK_FAILED", &msg),
+        "UPSERT_NO_UNIQUE" => json_error(StatusCode::BAD_REQUEST, "UPSERT_NO_UNIQUE", &msg),
+        "BATCH_EMPTY" | "BATCH_TOO_LARGE" | "BATCH_ROW_NOT_OBJECT" => {
+            json_error(StatusCode::BAD_REQUEST, code, &msg)
+        }
+        _ if msg.contains("unknown collection") => {
+            json_error(StatusCode::NOT_FOUND, "COLLECTION_NOT_FOUND", &msg)
+        }
+        _ => json_error(StatusCode::BAD_REQUEST, "BATCH_ROW_INVALID", &msg),
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // +Extension(quota_tier) keeps this at 8 params
 pub async fn create_handler(
     Extension(t): Extension<TenantRef>,

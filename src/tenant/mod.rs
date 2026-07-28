@@ -382,6 +382,27 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::max(rec_body_limit)),
         )
         .route(
+            "/t/{tenant}/collections/{coll}/records:batch",
+            post({
+                let b = bus.clone();
+                let wh = webhooks.clone();
+                let fns = functions.clone();
+                move |ext, ctx, quota, p, body| {
+                    records::post_batch(
+                        ext,
+                        ctx,
+                        quota,
+                        p,
+                        body,
+                        b.clone(),
+                        wh.clone(),
+                        fns.clone(),
+                    )
+                }
+            })
+            .layer(axum::extract::DefaultBodyLimit::max(rec_body_limit)),
+        )
+        .route(
             "/t/{tenant}/records/{coll}/{id}",
             get(records::get_handler)
                 .patch({
