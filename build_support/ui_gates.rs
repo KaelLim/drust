@@ -1227,89 +1227,84 @@ fn is_static_ts(expr: &str) -> bool {
 /// quote-free is fragile (webhook `url` passed `check_url` with a `'` in the
 /// path). Move dynamic values onto `data-*` attributes (HTML attribute escaping
 /// IS correct there) read back via a delegated handler and rendered through
-/// `textContent` (e.g. `drustUI.confirm`). The `on` must OPEN an attribute
-/// (preceded by whitespace / `<`) so `content=` / `data-chonk=` are not mistaken
-/// for handlers; the closing `"` search skips `{{ … }}` spans, whose Rust-level
-/// `t.s("key")` legitimately contains `"` in template source.
+/// `textContent` (e.g. `drustUI.confirm`).
+///
+/// Scanning is deliberately over-inclusive so the gate cannot be evaded by a
+/// legal-but-unusual spelling (a green build must mean "clean", not "not
+/// looking"): the WHOLE file is scanned so a multi-line handler value is
+/// covered; `on` is matched CASE-INSENSITIVELY (`onClick` / `ONCLICK` fire the
+/// browser handler just the same) at an HTML attribute-name boundary (preceded
+/// by whitespace or a preceding attribute's closing quote — so `content=` /
+/// `data-chonk=` and JS `foo.onclick =` are excluded, but a dropped-space
+/// `"v"onclick=` is caught); and the value is parsed with the shared
+/// `class_attr_value` / `attr_value_end` helpers, which accept `"`, `'`, or
+/// unquoted delimiters and skip a `"` embedded inside a `{{ … }}` OR `{% … %}`
+/// construct (so a `{% if x == "y" %}` cannot truncate the scan and hide a
+/// later interpolation). Only `{{ … }}` output expressions are checked;
+/// `{% … %}` control tags emit no value and are skipped.
 pub fn check_inline_handler_interp(file: &str, content: &str) -> Vec<Violation> {
     let mut out = Vec::new();
-    for (idx, line) in content.lines().enumerate() {
-        let bytes = line.as_bytes();
-        let mut i = 0;
-        while let Some(rel) = line[i..].find("on") {
-            let at = i + rel;
-            i = at + 2;
-            // `on` must open an attribute name: preceded by whitespace / `<`
-            // (or line start) — rejects `content=` / `data-chonk=`.
-            if at > 0 {
-                let p = bytes[at - 1];
-                if !(p.is_ascii_whitespace() || p == b'<') {
-                    continue;
+    let bytes = content.as_bytes();
+    let line_of = |off: usize| bytes[..off].iter().filter(|&&b| b == b'\n').count() + 1;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        // Case-insensitive `on`.
+        if (bytes[i] | 0x20) != b'o' || (bytes[i + 1] | 0x20) != b'n' {
+            i += 1;
+            continue;
+        }
+        // Attribute-name boundary: preceded by whitespace or a closing quote
+        // (a handler may legally abut a preceding quoted value with no space).
+        // Rejects `content` / `data-chonk` (alnum) and JS `.onclick` (dot).
+        if i > 0 && !matches!(bytes[i - 1], b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'') {
+            i += 1;
+            continue;
+        }
+        // Handler NAME: `on` + ASCII letters (either case).
+        let name_start = i;
+        let mut j = i + 2;
+        while j < bytes.len() && bytes[j].is_ascii_alphabetic() {
+            j += 1;
+        }
+        // Everything after the name is parsed by the shared attribute-value
+        // helper: optional ws around `=`, any of `"`/`'`/unquoted, askama-aware
+        // close. `None` ⇒ `on…` was not actually `= …`, so it's not a handler.
+        match class_attr_value(&content[j..]) {
+            Some((value, _delim, consumed)) => {
+                let line = line_of(name_start);
+                let handler = &content[name_start..j];
+                let mut k = 0;
+                while k < value.len() {
+                    if let Some(len) = askama_construct_len(value, k) {
+                        // `{{` (output) is checked; `{%` (control) emits nothing.
+                        if value.as_bytes().get(k + 1) == Some(&b'{') {
+                            let inner = value[k + 2..k + len - 2].trim();
+                            if !is_static_ts(inner) {
+                                out.push(Violation::new(
+                                    file,
+                                    line,
+                                    "inline-handler-interp",
+                                    format!(
+                                        "`{handler}=\"…{{{{ {inner} }}}}…\"` interpolates a \
+                                         dynamic value into an inline event handler. A browser \
+                                         entity-decodes the attribute before compiling it as \
+                                         JS, so auto-escaping is undone there (stored-XSS). \
+                                         Only `t.s(\"literal\")` is allowed inline; move the \
+                                         value onto a `data-*` attribute + a delegated handler \
+                                         rendered via textContent (e.g. drustUI.confirm)."
+                                    ),
+                                ));
+                            }
+                        }
+                        k += len;
+                        continue;
+                    }
+                    let ch = value[k..].chars().next().expect("char boundary");
+                    k += ch.len_utf8();
                 }
+                i = j + consumed;
             }
-            // `on` + [a-z]+ + `="`
-            let mut j = at + 2;
-            while j < bytes.len() && bytes[j].is_ascii_lowercase() {
-                j += 1;
-            }
-            if j == at + 2 || bytes.get(j) != Some(&b'=') || bytes.get(j + 1) != Some(&b'"') {
-                continue;
-            }
-            let handler = &line[at..j];
-            // Extract the attribute value up to the closing `"` that is NOT
-            // inside a `{{ … }}` expression (which may contain Rust-level `"`).
-            let val_start = j + 2;
-            let mut m = val_start;
-            let mut in_expr = false;
-            let mut val_end = None;
-            while m < bytes.len() {
-                // Byte comparisons only — `m` advances byte-by-byte and may land
-                // mid-char (templates carry non-ASCII), so never slice `line[m..]`.
-                if !in_expr && bytes[m] == b'{' && bytes.get(m + 1) == Some(&b'{') {
-                    in_expr = true;
-                    m += 2;
-                    continue;
-                }
-                if in_expr && bytes[m] == b'}' && bytes.get(m + 1) == Some(&b'}') {
-                    in_expr = false;
-                    m += 2;
-                    continue;
-                }
-                if !in_expr && bytes[m] == b'"' {
-                    val_end = Some(m);
-                    break;
-                }
-                m += 1;
-            }
-            let Some(val_end) = val_end else { continue };
-            let value = &line[val_start..val_end];
-            i = val_end + 1;
-            // Every `{{ … }}` in the value must be a static `t.s("literal")`.
-            let mut k = 0;
-            while let Some(orel) = value[k..].find("{{") {
-                let ostart = k + orel;
-                let Some(crel) = value[ostart + 2..].find("}}") else {
-                    break;
-                };
-                let cend = ostart + 2 + crel;
-                let inner = value[ostart + 2..cend].trim();
-                k = cend + 2;
-                if !is_static_ts(inner) {
-                    out.push(Violation::new(
-                        file,
-                        idx + 1,
-                        "inline-handler-interp",
-                        format!(
-                            "`{handler}=\"…{{{{ {inner} }}}}…\"` interpolates a dynamic value \
-                             into an inline event handler. A browser entity-decodes the \
-                             attribute before compiling it as JS, so auto-escaping is undone \
-                             there (stored-XSS). Only `t.s(\"literal\")` is allowed inline; \
-                             move the value onto a `data-*` attribute + a delegated handler \
-                             rendered via textContent (e.g. drustUI.confirm)."
-                        ),
-                    ));
-                }
-            }
+            None => i += 1,
         }
     }
     out
@@ -1629,6 +1624,74 @@ mod tests {
         assert!(
             v.is_empty(),
             "content=/data-chonk= are not event handlers: {v:?}"
+        );
+    }
+
+    #[test]
+    fn inline_handler_flags_single_quoted() {
+        // Single-quoted handler: a browser entity-decodes it identically, and
+        // askama escapes `'` → `&#x27;` which decodes back inside the JS string.
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<button onclick='del(\"{{ r.collection }}\")'>x</button>",
+        );
+        assert_eq!(v.len(), 1, "a single-quoted handler must flag: {v:?}");
+        assert_eq!(v[0].rule, "inline-handler-interp");
+    }
+
+    #[test]
+    fn inline_handler_flags_case_insensitive_names() {
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<a onClick=\"go('{{ id }}')\">a</a>\n<a ONSUBMIT=\"go('{{ id }}')\">b</a>",
+        );
+        assert_eq!(
+            v.len(),
+            2,
+            "onClick and ONSUBMIT both fire → both flag: {v:?}"
+        );
+    }
+
+    #[test]
+    fn inline_handler_percent_construct_does_not_truncate() {
+        // A `"` inside a `{% if %}` tag must not read as the closing quote — that
+        // would hide the real `{{ record_id }}` past the truncation point.
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<button onclick=\"{% if mode == \"edit\" %}u{% else %}a{% endif %}('{{ record_id }}')\">x</button>",
+        );
+        assert_eq!(
+            v.len(),
+            1,
+            "a dynamic interp after a percent-tag must still flag: {v:?}"
+        );
+        assert!(v[0].message.contains("record_id"));
+    }
+
+    #[test]
+    fn inline_handler_flags_multiline_value() {
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<button onclick=\"\n  editDesc('{{ tenant_id }}')\n\">x</button>",
+        );
+        assert_eq!(
+            v.len(),
+            1,
+            "a multi-line handler value must still flag: {v:?}"
+        );
+    }
+
+    #[test]
+    fn inline_handler_ignores_js_property_assignment() {
+        // `el.onclick = …` in a <script> is JS (preceded by `.`), not an HTML
+        // attribute — script-context escaping is a separate concern.
+        let v = check_inline_handler_interp(
+            "p.html",
+            "<script>el.onclick = build('{{ x }}');</script>",
+        );
+        assert!(
+            v.is_empty(),
+            "a JS .onclick assignment is not an HTML handler: {v:?}"
         );
     }
 
