@@ -203,6 +203,95 @@ pub async fn list_records(
     }))
 }
 
+/// MCP arg shape for `aggregate`. Mirrors REST `POST /aggregate`. `filter` is a
+/// raw JSON value (parsed to `FilterAst` inline) for the same catalog-friendly
+/// reason as [`ListRecordsArgs`].
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AggregateArgs {
+    /// Collection name.
+    pub collection: String,
+    /// Optional structured filter (same shape as `list_records`).
+    #[serde(default)]
+    pub filter: Option<serde_json::Value>,
+    /// Optional columns to GROUP BY (declared/system fields, non-vector).
+    #[serde(default)]
+    pub group_by: Option<Vec<String>>,
+    /// One or more metrics `{op, field?, as?}` where op is one of
+    /// count|sum|avg|min|max; `field` is required for every op except `count`
+    /// (bare `count` is `COUNT(*)`); `as` names the result column.
+    #[serde(default)]
+    pub metrics: Vec<list_builder::AggregateMetric>,
+    /// Optional sort — must reference a group column or a metric alias.
+    #[serde(default)]
+    pub sort: Option<SortSpec>,
+    /// Page number (1-indexed). Defaults to 1.
+    #[serde(default)]
+    pub page: Option<u32>,
+    /// Group rows per page. 1..=500; default 20.
+    #[serde(default)]
+    pub per_page: Option<u32>,
+}
+
+/// MCP `aggregate` impl. Service-only at the transport layer (like
+/// `list_records`); owner/policy are bypassed (`None, None`) to match the
+/// service-key REST behaviour.
+pub async fn aggregate(s: &DrustMcp, args: AggregateArgs) -> anyhow::Result<serde_json::Value> {
+    if is_protected_collection(&args.collection) {
+        anyhow::bail!(
+            "COLLECTION_NOT_FOUND: no such collection: {}",
+            args.collection
+        );
+    }
+    let pool = s.inner().pool.clone();
+    let cache = pool.schema_cache.clone();
+    let coll = args.collection.clone();
+    let schema = pool
+        .with_reader(move |c| cache.ensure_loaded(c, &coll))
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "COLLECTION_NOT_FOUND: no such collection: {}",
+                args.collection
+            )
+        })?;
+
+    let filter_ast: Option<FilterAst> = match args.filter {
+        None => None,
+        Some(raw) => Some(
+            serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("FILTER_PARSE_ERROR: {e}"))?,
+        ),
+    };
+
+    let req = list_builder::AggregateRequest {
+        filter: filter_ast,
+        group_by: args.group_by,
+        metrics: args.metrics,
+        sort: args.sort,
+        page: args.page,
+        per_page: args.per_page,
+    };
+
+    // MCP is service-only → owner/policy bypass, same as list_records.
+    let (sql, binds) =
+        list_builder::build_aggregate_sql(&schema, &req, None, None).map_err(map_list_error)?;
+
+    let pool_run = s.inner().pool.clone();
+    let sql_owned = sql.clone();
+    let binds_owned = binds.clone();
+    let rows: Vec<serde_json::Value> = pool_run
+        .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
+            attach_readonly_authorizer(c);
+            let r = run_bound_select(c, &sql_owned, &binds_owned);
+            detach_authorizer(c);
+            r
+        })
+        .await?;
+
+    let per_page = req.per_page.unwrap_or(20);
+    let page = req.page.unwrap_or(1);
+    Ok(json!({ "rows": rows, "page": page, "perPage": per_page }))
+}
+
 /// Map a `ListError` to a typed-code error message. The MCP transport
 /// surfaces these as the `anyhow` `Display` body; tests assert on the
 /// `CODE:` prefix.
@@ -250,6 +339,7 @@ fn map_list_error(e: ListError) -> anyhow::Error {
         ListError::GroupFieldUnknown(f) => anyhow::anyhow!("AGG_GROUP_UNKNOWN: {f}"),
         ListError::GroupVectorField(f) => anyhow::anyhow!("AGG_GROUP_VECTOR: {f}"),
         ListError::AliasInvalid(a) => anyhow::anyhow!("AGG_ALIAS_INVALID: {a}"),
+        ListError::AliasDuplicate(a) => anyhow::anyhow!("AGG_ALIAS_DUPLICATE: {a}"),
     }
 }
 

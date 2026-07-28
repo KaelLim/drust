@@ -291,6 +291,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             post(records_list::post_list_explain),
         )
         .route(
+            "/t/{tenant}/collections/{coll}/aggregate",
+            post(records_list::post_aggregate),
+        )
+        .route(
             "/t/{tenant}/collections/{coll}/history",
             get(records::history_handler),
         )

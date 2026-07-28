@@ -12,9 +12,11 @@
 use crate::auth::middleware::AuthCtx;
 use crate::error::json_error;
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
-use crate::query::list_builder::{ListError, ListRequest, build_structured_list_sql};
+use crate::query::list_builder::{
+    AggregateRequest, ListError, ListRequest, build_aggregate_sql, build_structured_list_sql,
+};
 use crate::query::vector_filter::FilterError;
-use crate::storage::schema::{DmlVerb, is_protected_collection};
+use crate::storage::schema::{CollectionSchema, DmlVerb, is_protected_collection};
 use crate::tenant::router::{TenantRef, TokenRole};
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -22,6 +24,119 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use rusqlite::types::{Value, ValueRef};
 use serde_json::json;
+
+/// Shared read-authorization for `/list` and `/aggregate`. Given the caller and
+/// the collection schema, returns `(owner_pair, policy_clause)` — the owner
+/// row-filter clause (when one applies) and the explicit-policy USING clause —
+/// making the SAME cap/owner/policy decision for both faces so their row
+/// authorization is in lockstep by construction. Returns `Err(Response)` on a
+/// typed deny (403) or a policy compile error (500).
+///
+/// LOCKSTEP: the User cap checks consult `user_caps` (NOT `anon_caps`),
+/// mirroring the User arm of `crate::storage::schema::has_dml_cap`. The
+/// `read_scope="all"` branch deliberately keeps its own select-cap requirement
+/// despite `owner_field` (it does NOT use has_dml_cap's owner short-circuit) —
+/// see spec §5.3. Any change to the cap source MUST be made in BOTH places.
+///
+/// Does NOT run the ctx/role sanity `debug_assert` — that stays in the callers
+/// where `TenantRef::role` is in scope (see [`debug_assert_ctx_role`]).
+pub(crate) fn compute_read_auth(
+    ctx: &AuthCtx,
+    schema: &CollectionSchema,
+    coll: &str,
+) -> Result<(Option<(String, String)>, Option<(String, Vec<Value>)>), Response> {
+    let owner_pair: Option<(String, String)> = match (
+        ctx,
+        schema.owner_field.as_deref(),
+        schema.read_scope.as_deref(),
+    ) {
+        // Service — bypass everything.
+        (AuthCtx::Service { .. }, _, _) => None,
+
+        // Anon on owner-scoped → typed deny.
+        (AuthCtx::Anon, Some(_), _) => {
+            return Err(json_error(
+                StatusCode::FORBIDDEN,
+                "ANON_FORBIDDEN_OWNER_SCOPED",
+                "anon cannot read owner-scoped collection — register a user",
+            ));
+        }
+        // Anon on non-owner-scoped → needs select cap.
+        (AuthCtx::Anon, None, _) => {
+            if !schema.anon_caps.contains(&DmlVerb::Select) {
+                return Err(json_error(
+                    StatusCode::FORBIDDEN,
+                    "ANON_CAP_DENIED",
+                    &format!("anon role lacks 'select' on collection '{coll}'"),
+                ));
+            }
+            None
+        }
+        // User on owner-scoped + read_scope=own → auto-append owner clause.
+        (AuthCtx::User { user_id, .. }, Some(field), Some("own")) => {
+            Some((field.to_string(), user_id.clone()))
+        }
+        // User on owner-scoped + read_scope=all → no row filter, but still gate
+        // via user_caps (no escalation; keeps parity with /search). This branch
+        // keeps its own cap check despite owner_field — see the LOCKSTEP note.
+        (AuthCtx::User { .. }, Some(_), Some(_)) => {
+            if !schema.user_caps.contains(&DmlVerb::Select) {
+                return Err(json_error(
+                    StatusCode::FORBIDDEN,
+                    "ANON_CAP_DENIED",
+                    &format!(
+                        "user role lacks 'select' on collection '{coll}' (grant it via user_caps)"
+                    ),
+                ));
+            }
+            None
+        }
+        // User on non-owner-scoped → gate via user_caps (no escalation).
+        (AuthCtx::User { .. }, _, _) => {
+            if !schema.user_caps.contains(&DmlVerb::Select) {
+                return Err(json_error(
+                    StatusCode::FORBIDDEN,
+                    "ANON_CAP_DENIED",
+                    &format!(
+                        "user role lacks 'select' on collection '{coll}' (grant it via user_caps)"
+                    ),
+                ));
+            }
+            None
+        }
+    };
+
+    // Explicit-policy USING (AND-ed alongside the owner clause). Service → None
+    // (bypass). A compile error → 500 with a typed code.
+    let policy_clause = match crate::query::policy::policy_using_sql(ctx, schema, DmlVerb::Select) {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "POLICY_COMPILE_ERROR",
+                &e.to_string(),
+            ));
+        }
+    };
+
+    Ok((owner_pair, policy_clause))
+}
+
+/// Debug sanity check that the `AuthCtx` and `TokenRole` extensions stayed in
+/// sync (set together in `bearer_auth_layer`). A future refactor that splits
+/// them surfaces here during tests. No-op in release builds.
+#[inline]
+fn debug_assert_ctx_role(ctx: &AuthCtx, role: TokenRole) {
+    debug_assert!(
+        matches!(
+            (ctx, role),
+            (AuthCtx::Anon, TokenRole::Anon)
+                | (AuthCtx::Service { .. }, TokenRole::Service)
+                | (AuthCtx::User { .. }, TokenRole::User)
+        ),
+        "AuthCtx/TokenRole mismatch (ctx={ctx:?} role={role:?})",
+    );
+}
 
 /// `POST /t/<id>/collections/<c>/list`
 pub async fn post_list(
@@ -61,111 +176,15 @@ pub async fn post_list(
         }
     };
 
-    // ── Auth matrix per spec §2.2 ────────────────────────────────────
-    // LOCKSTEP: the two User cap checks below consult `user_caps` (NOT
-    // `anon_caps`), mirroring the User arm of
-    // `crate::storage::schema::has_dml_cap` (the keystone gate that
-    // `/records` GET-list + write and `/search` route through). This
-    // handler hand-rolls the matrix and does NOT call `has_dml_cap`, so
-    // any change to the User-role cap source MUST be made in BOTH places.
-    // The read_scope="all" branch deliberately keeps its own select-cap
-    // requirement despite owner_field (it does NOT use has_dml_cap's
-    // owner short-circuit) — see spec §5.3.
-    let owner_pair: Option<(String, String)> = match (
-        &ctx,
-        schema.owner_field.as_deref(),
-        schema.read_scope.as_deref(),
-    ) {
-        // Service — bypass everything.
-        (AuthCtx::Service { .. }, _, _) => None,
-
-        // Anon on owner-scoped → typed deny.
-        (AuthCtx::Anon, Some(_), _) => {
-            return json_error(
-                StatusCode::FORBIDDEN,
-                "ANON_FORBIDDEN_OWNER_SCOPED",
-                "anon cannot read owner-scoped collection — register a user",
-            );
-        }
-        // Anon on non-owner-scoped → needs select cap.
-        (AuthCtx::Anon, None, _) => {
-            if !schema.anon_caps.contains(&DmlVerb::Select) {
-                return json_error(
-                    StatusCode::FORBIDDEN,
-                    "ANON_CAP_DENIED",
-                    &format!("anon role lacks 'select' on collection '{coll}'"),
-                );
-            }
-            None
-        }
-        // User on owner-scoped + read_scope=own → auto-append owner clause.
-        (AuthCtx::User { user_id, .. }, Some(field), Some("own")) => {
-            Some((field.to_string(), user_id.clone()))
-        }
-
-        // User on owner-scoped + read_scope=all → no row filter but caller
-        // is owner-scope-aware. Treat as non-owner-scoped for caps (no
-        // escalation): fall through to user_caps check.
-        (AuthCtx::User { .. }, Some(_), Some(_)) => {
-            // read_scope = "all" — owner-scope is informational; the user
-            // sees everyone's rows. Still gate via user_caps to keep parity
-            // with /search. (This branch keeps its own cap check despite
-            // owner_field; it does NOT use has_dml_cap's owner short-circuit
-            // — see the LOCKSTEP note above and spec §5.3.)
-            if !schema.user_caps.contains(&DmlVerb::Select) {
-                return json_error(
-                    StatusCode::FORBIDDEN,
-                    "ANON_CAP_DENIED",
-                    &format!(
-                        "user role lacks 'select' on collection '{coll}' (grant it via user_caps)"
-                    ),
-                );
-            }
-            None
-        }
-        // User on non-owner-scoped → gate via user_caps (no escalation).
-        (AuthCtx::User { .. }, _, _) => {
-            if !schema.user_caps.contains(&DmlVerb::Select) {
-                return json_error(
-                    StatusCode::FORBIDDEN,
-                    "ANON_CAP_DENIED",
-                    &format!(
-                        "user role lacks 'select' on collection '{coll}' (grant it via user_caps)"
-                    ),
-                );
-            }
-            None
-        }
+    // Row-authorization (owner clause + explicit-policy USING), computed by the
+    // shared `compute_read_auth` so `/list` and `/aggregate` stay in lockstep by
+    // construction. The full cap/owner/policy matrix (incl. the read_scope="all"
+    // note) lives there.
+    let (owner_pair, policy_clause) = match compute_read_auth(&ctx, &schema, &coll) {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
-
-    // Use TokenRole as a sanity check that the AuthCtx wiring stayed
-    // in sync with the bearer_auth_layer extension setup. If a future
-    // refactor splits them, this debug_assert surfaces during tests.
-    debug_assert!(
-        matches!(
-            (&ctx, t.role),
-            (AuthCtx::Anon, TokenRole::Anon)
-                | (AuthCtx::Service { .. }, TokenRole::Service)
-                | (AuthCtx::User { .. }, TokenRole::User)
-        ),
-        "AuthCtx/TokenRole mismatch (ctx={:?} role={:?})",
-        ctx,
-        t.role,
-    );
-
-    // Explicit-policy USING (AND-ed alongside the owner clause). Service →
-    // None (bypass). A compile error → 500 with a typed code.
-    let policy_clause = match crate::query::policy::policy_using_sql(&ctx, &schema, DmlVerb::Select)
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "POLICY_COMPILE_ERROR",
-                &e.to_string(),
-            );
-        }
-    };
+    debug_assert_ctx_role(&ctx, t.role);
 
     // ── Compile SQL ──────────────────────────────────────────────────
     let owner_ref = owner_pair.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
@@ -258,6 +277,95 @@ pub async fn post_list(
     Json(json!({
         "records": records_out,
         "total": total,
+        "page": page,
+        "perPage": per_page,
+    }))
+    .into_response()
+}
+
+/// `POST /t/<id>/collections/<c>/aggregate` (M1)
+///
+/// Aggregate metrics (count/sum/avg/min/max) with an optional `group_by`, under
+/// the SAME row-authorization as `/list`: the shared [`compute_read_auth`] plus
+/// `build_aggregate_sql`'s reuse of `build_where_clause` guarantee a User only
+/// aggregates rows they may read and anon obeys `anon_caps`/policy by
+/// construction. Read-only connection + read-only authorizer; service bypasses.
+pub async fn post_aggregate(
+    Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((_tenant, coll)): Path<(String, String)>,
+    Json(req): Json<AggregateRequest>,
+) -> Response {
+    if is_protected_collection(&coll) {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "COLLECTION_NOT_FOUND",
+            &format!("no such collection: {coll}"),
+        );
+    }
+    let pool = t.pool.clone();
+    let cache = pool.schema_cache.clone();
+    let coll_owned = coll.clone();
+    let schema = match pool
+        .with_reader(move |c| cache.ensure_loaded(c, &coll_owned))
+        .await
+    {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "COLLECTION_NOT_FOUND",
+                &format!("no such collection: {coll}"),
+            );
+        }
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
+    };
+
+    // Same owner/policy authorization as /list — in lockstep by construction.
+    let (owner_pair, policy_clause) = match compute_read_auth(&ctx, &schema, &coll) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    debug_assert_ctx_role(&ctx, t.role);
+
+    let owner_ref = owner_pair.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
+    let (sql, binds) = match build_aggregate_sql(&schema, &req, owner_ref, policy_clause) {
+        Ok(x) => x,
+        Err(e) => return map_list_error(e),
+    };
+
+    let pool_run = t.pool.clone();
+    let sql_owned = sql.clone();
+    let binds_owned = binds.clone();
+    let rows_res: rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> = pool_run
+        .with_reader(move |c| {
+            attach_readonly_authorizer(c);
+            let r = run_bound_select(c, &sql_owned, &binds_owned);
+            detach_authorizer(c);
+            r
+        })
+        .await;
+    let (_col_names, rows) = match rows_res {
+        Ok(v) => v,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
+    };
+
+    let per_page = req.per_page.unwrap_or(20);
+    let page = req.page.unwrap_or(1);
+    Json(json!({
+        "rows": rows,
         "page": page,
         "perPage": per_page,
     }))
@@ -433,6 +541,11 @@ fn map_list_error(e: ListError) -> Response {
             StatusCode::BAD_REQUEST,
             "AGG_ALIAS_INVALID",
             &format!("aggregate alias must be an identifier: {a:?}"),
+        ),
+        ListError::AliasDuplicate(a) => json_error(
+            StatusCode::BAD_REQUEST,
+            "AGG_ALIAS_DUPLICATE",
+            &format!("aggregate output column name is duplicated: {a:?}"),
         ),
     }
 }

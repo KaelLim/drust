@@ -170,15 +170,14 @@ async fn mcp_set_function_invoke_acl_happy_path() {
 }
 
 #[test]
-fn mcp_exposes_sixty_seven_tools() {
+fn mcp_exposes_sixty_eight_tools() {
     // v1.48 added the four cron tools (61 → 65). v1.49 adds the two egress
-    // tools (set_egress_allowlist, get_egress_allowlist), bumping the
-    // documented MCP tool count from 65 to 67. `tool_count()` is derived from
-    // the macro-generated router, so this pins router reality to the spec'd
-    // number.
+    // tools (65 → 67). v1.54 (SQLite Wave 1 M1) adds the `aggregate` tool
+    // (67 → 68). `tool_count()` is derived from the macro-generated router, so
+    // this pins router reality to the spec'd number.
     assert_eq!(
         drust::mcp::handler::DrustMcpService::tool_count(),
-        67,
-        "MCP tool count must be 67 after adding the two egress tools"
+        68,
+        "MCP tool count must be 68 after adding the M1 aggregate tool"
     );
 }

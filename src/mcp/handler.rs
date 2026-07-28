@@ -1257,6 +1257,37 @@ impl DrustMcpService {
     }
 
     #[tool(
+        annotations(read_only_hint = true),
+        description = "Aggregate ONE collection: count / sum / avg / min / max over \
+        rows, with an optional `group_by`. USE WHEN: you want computed rollups \
+        (totals, averages, per-group counts) instead of raw rows — e.g. \"count \
+        posts per status\" or \"average score by author\". NOT WHEN: you want the \
+        rows themselves (use `list_records`) or nearest-vector ranking (use \
+        `search_collection`). Builds the SQL itself from the structured body — no \
+        raw SQL — so the SAME owner_field / policy / cap row-authorization as \
+        `list_records` applies (MCP is service-only, so this tool sees all rows). \
+        `metrics` is a list of `{op, field?, as?}`: op in {count, sum, avg, min, \
+        max}; `field` is required for every op except `count` (bare count is \
+        COUNT(*)); `as` names the output column (defaults to `<op>` / \
+        `<op>_<field>`). `group_by` lists columns to group on; `sort` must \
+        reference a group column or a metric alias; `per_page` bounds the number \
+        of groups returned (1..=500, default 20). Returns `{rows, page, perPage}`. \
+        EXAMPLE call: {\"collection\": \"posts\", \"group_by\": [\"status\"], \
+        \"metrics\": [{\"op\": \"count\", \"as\": \"n\"}, {\"op\": \"avg\", \
+        \"field\": \"score\", \"as\": \"avg_score\"}], \"sort\": {\"field\": \"n\", \
+        \"dir\": \"desc\"}}"
+    )]
+    async fn aggregate(
+        &self,
+        Parameters(args): Parameters<read::AggregateArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match read::aggregate(&self.state, args).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(
         annotations(destructive_hint = false, idempotent_hint = false),
         description = "Insert one record into a collection. `data` is a JSON object whose keys \
         must be known fields of the collection (unknown fields are rejected). \
@@ -3109,8 +3140,8 @@ mod instructions_tests {
 mod annotation_tests {
     use super::*;
 
-    // Wire name == fn name (no `name=` overrides). Buckets sum to 65; call_rpc &
-    // invoke_function are special-cased below. Total must equal tool_count() (67).
+    // Wire name == fn name (no `name=` overrides). Buckets sum to 66; call_rpc &
+    // invoke_function are special-cased below. Total must equal tool_count() (68).
     const READONLY: &[&str] = &[
         "list_collections",
         "whoami",
@@ -3122,6 +3153,7 @@ mod annotation_tests {
         "get_policies",
         "search_collection",
         "list_records",
+        "aggregate",
         "list_files",
         "get_file_url",
         "list_rpc",
@@ -3197,14 +3229,14 @@ mod annotation_tests {
             .unwrap_or_else(|| panic!("tool {name} has no annotations"))
     }
 
-    /// Completeness anchor: proves wire name == fn name, the count is 67, and the
+    /// Completeness anchor: proves wire name == fn name, the count is 68, and the
     /// classification below covers EXACTLY the real tool set (catches renames/adds/typos).
     #[test]
-    fn wire_names_match_classification_and_count_is_67() {
+    fn wire_names_match_classification_and_count_is_68() {
         let names: Vec<String> = tools().iter().map(|t| t.name.to_string()).collect();
         assert_eq!(
             names.len(),
-            67,
+            68,
             "tool count changed — update tool_count assertions too"
         );
         let mut covered: Vec<&str> = READONLY

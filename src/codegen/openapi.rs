@@ -43,6 +43,11 @@ pub fn render_openapi(ir: &CodegenIr) -> Value {
             format!("/t/{}/collections/{}/list", ir.tenant_id, coll.name),
             json!({ "post": list_filter_op(&row_name) }),
         );
+        // POST /collections/<c>/aggregate — count/sum/avg/min/max + group_by
+        paths.insert(
+            format!("/t/{}/collections/{}/aggregate", ir.tenant_id, coll.name),
+            json!({ "post": aggregate_op(&coll.name) }),
+        );
         if coll.has_vector {
             paths.insert(
                 format!("/t/{}/collections/{}/search", ir.tenant_id, coll.name),
@@ -290,6 +295,54 @@ fn list_filter_op(row_name: &str) -> Value {
                 "properties": {
                     "items": { "type": "array", "items": { "$ref": format!("#/components/schemas/{row_name}") } },
                     "total": { "type": "integer" }
+                }
+            }}}}
+        }
+    })
+}
+
+fn aggregate_op(coll: &str) -> Value {
+    json!({
+        "summary": format!("Aggregate {coll} (count/sum/avg/min/max + group_by)"),
+        "requestBody": {
+            "required": true,
+            "content": { "application/json": { "schema": {
+                "type": "object",
+                "required": ["metrics"],
+                "properties": {
+                    "filter": { "$ref": "#/components/schemas/FilterAst" },
+                    "group_by": { "type": "array", "items": { "type": "string" } },
+                    "metrics": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["op"],
+                            "properties": {
+                                "op": { "type": "string", "enum": ["count", "sum", "avg", "min", "max"] },
+                                "field": { "type": "string" },
+                                "as": { "type": "string" }
+                            }
+                        }
+                    },
+                    "sort": {
+                        "type": "object",
+                        "properties": {
+                            "field": { "type": "string" },
+                            "dir": { "type": "string", "enum": ["asc", "desc"] }
+                        }
+                    },
+                    "page": { "type": "integer" },
+                    "per_page": { "type": "integer" }
+                }
+            }}}
+        },
+        "responses": {
+            "200": { "description": "OK", "content": { "application/json": { "schema": {
+                "type": "object",
+                "properties": {
+                    "rows": { "type": "array", "items": { "type": "object" } },
+                    "page": { "type": "integer" },
+                    "perPage": { "type": "integer" }
                 }
             }}}}
         }

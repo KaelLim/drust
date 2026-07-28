@@ -59,6 +59,7 @@ pub struct AggregateRequest {
     pub filter: Option<FilterAst>,
     #[serde(default)]
     pub group_by: Option<Vec<String>>,
+    #[serde(default)]
     pub metrics: Vec<AggregateMetric>,
     #[serde(default)]
     pub sort: Option<SortSpec>,
@@ -68,7 +69,7 @@ pub struct AggregateRequest {
     pub per_page: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct AggregateMetric {
     /// One of `count | sum | avg | min | max`.
     pub op: String,
@@ -112,6 +113,8 @@ pub enum ListError {
     GroupVectorField(String),
     #[error("aggregate alias invalid: {0:?}")]
     AliasInvalid(String),
+    #[error("aggregate output column name duplicated: {0:?}")]
+    AliasDuplicate(String),
 }
 
 /// Map a [`ListError`] to its stable `CODE` string (the code half of drust's
@@ -144,6 +147,7 @@ pub fn list_error_code(e: &ListError) -> &'static str {
         ListError::GroupFieldUnknown(_) => "AGG_GROUP_UNKNOWN",
         ListError::GroupVectorField(_) => "AGG_GROUP_VECTOR",
         ListError::AliasInvalid(_) => "AGG_ALIAS_INVALID",
+        ListError::AliasDuplicate(_) => "AGG_ALIAS_DUPLICATE",
     }
 }
 
@@ -370,6 +374,20 @@ pub fn build_aggregate_sql(
         aliases.push(alias);
     }
     let select_list = select_parts.join(", ");
+
+    // Output-column names (group columns + metric aliases) must be pairwise
+    // distinct. Two identically-named result columns are legal SQL, but
+    // `run_bound_select` keys each JSON row by column name, so a collision
+    // silently overwrites one (dropping a metric or the group label) with no
+    // error. Reject at build time — fail closed.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for name in group_cols.iter().chain(aliases.iter()) {
+            if !seen.insert(name.as_str()) {
+                return Err(ListError::AliasDuplicate(name.clone()));
+            }
+        }
+    }
 
     // (3) WHERE — identical to /list.
     let (where_clause, binds) = build_where_clause(schema, &req.filter, owner, policy_clause)?;
@@ -623,6 +641,57 @@ mod tests {
                 None
             ),
             Err(ListError::AliasInvalid(_))
+        ));
+    }
+
+    #[test]
+    fn aggregate_rejects_duplicate_output_names() {
+        let s = fixture_schema();
+        // Two metrics sharing an explicit alias.
+        assert!(matches!(
+            build_aggregate_sql(
+                &s,
+                &AggregateRequest {
+                    metrics: vec![
+                        agg_metric("count", None, Some("x")),
+                        agg_metric("sum", Some("score"), Some("x")),
+                    ],
+                    ..Default::default()
+                },
+                None,
+                None
+            ),
+            Err(ListError::AliasDuplicate(_))
+        ));
+        // A metric alias colliding with a group_by column.
+        assert!(matches!(
+            build_aggregate_sql(
+                &s,
+                &AggregateRequest {
+                    group_by: Some(vec!["title".into()]),
+                    metrics: vec![agg_metric("count", None, Some("title"))],
+                    ..Default::default()
+                },
+                None,
+                None
+            ),
+            Err(ListError::AliasDuplicate(_))
+        ));
+        // Two default-aliased metrics resolving to the same name (`sum_score`).
+        assert!(matches!(
+            build_aggregate_sql(
+                &s,
+                &AggregateRequest {
+                    metrics: vec![
+                        agg_metric("sum", Some("score"), None),
+                        agg_metric("sum", Some("score"), None),
+                    ],
+                    ..Default::default()
+                },
+                None,
+                None
+            ),
+            Err(ListError::AliasDuplicate(_))
         ));
     }
 
