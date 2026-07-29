@@ -1,4 +1,6 @@
-//! rmcp Streamable HTTP handler that exposes the 13 drust tools.
+//! rmcp Streamable HTTP handler for the per-tenant MCP endpoint — the drust
+//! tools (see the `#[tool]` annotations; count asserted by `tool_count_tests`)
+//! plus the hand-written Resources + Prompts surface.
 //!
 //! This file is a thin adapter layer: each `#[tool]` method delegates
 //! to the existing `pub async fn` in `src/mcp/tools/*` and converts
@@ -2790,7 +2792,14 @@ RECOVERY — experiment cheaply, you can always see and undo-plan:
 
 NOTES
   • Schema drops and delete_file are irreversible (use dry_run first).
-  • Call `tools/list` for the canonical input schema of every tool listed above."#
+  • Call `tools/list` for the canonical input schema of every tool listed above.
+  • RESOURCES + PROMPTS (v1.56): this endpoint also serves MCP Resources and
+    Prompts. `resources/list` + `resources/templates/list` project this tenant's
+    knowledge as `drust://{tenant_id}/…` URIs — `schema`, `schema.md`,
+    `collections`, `openapi.json`, `types.ts`, `zod.ts`, plus templates like
+    `collections/<c>/records/<id>` for a single row. `prompts/list` offers task
+    recipes; start with the `bootstrap` prompt. (Read tools return a
+    `resource_link` / `resource_uri_template` pointing back at these.)"#
     )
 }
 
@@ -3134,6 +3143,17 @@ mod instructions_tests {
                 "instructions prologue must register RLS tool: {tool}"
             );
         }
+    }
+
+    #[test]
+    fn instructions_mention_resources_and_prompts() {
+        // v1.56 — the prologue must point the model at the Resources + Prompts
+        // surface (they add no tools, so tools/list alone wouldn't reveal them).
+        let s = build_instructions("test-tenant-abc", "https://example.test");
+        assert!(s.contains("resources/list"), "must point at resources/list");
+        assert!(s.contains("prompts/list"), "must point at prompts/list");
+        assert!(s.contains("bootstrap"), "must name the bootstrap prompt");
+        assert!(s.contains("drust://"), "must show the resource URI scheme");
     }
 
     #[test]

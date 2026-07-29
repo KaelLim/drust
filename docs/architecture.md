@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-07-27
+updated: 2026-07-29
 generated_by: docs/gen-architecture.py
 ---
 
@@ -27,15 +27,15 @@ generated_by: docs/gen-architecture.py
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 15 | 1 | 0 |
-| [`functions/`](#srcfunctions) | 10 | 69 | 38 | 19 |
-| [`mcp/`](#srcmcp) | 21 | 160 | 61 | 32 |
-| [`mgmt/`](#srcmgmt) | 39 | 319 | 110 | 51 |
+| [`functions/`](#srcfunctions) | 10 | 69 | 38 | 20 |
+| [`mcp/`](#srcmcp) | 24 | 189 | 75 | 39 |
+| [`mgmt/`](#srcmgmt) | 39 | 321 | 110 | 51 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
-| [`query/`](#srcquery) | 8 | 49 | 8 | 30 |
+| [`query/`](#srcquery) | 8 | 52 | 8 | 30 |
 | [`rpc/`](#srcrpc) | 6 | 37 | 17 | 9 |
 | [`safety/`](#srcsafety) | 8 | 39 | 1 | 12 |
-| [`storage/`](#srcstorage) | 15 | 130 | 16 | 86 |
-| [`tenant/`](#srctenant) | 36 | 241 | 112 | 65 |
+| [`storage/`](#srcstorage) | 15 | 130 | 16 | 90 |
+| [`tenant/`](#srctenant) | 36 | 248 | 112 | 67 |
 
 ## Group dependency graph
 
@@ -59,6 +59,7 @@ graph LR
   functions --> storage
   functions --> tenant
   mcp --> cron
+  mcp --> functions
   mcp --> query
   mcp --> storage
   mcp --> tenant
@@ -182,27 +183,30 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/mcp/`
 
-- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler that exposes the 13 drust tools. · 52 pub
+- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler for the per-tenant MCP endpoint — the drust · 52 pub
 - [`http_registry.rs`](../src/mcp/http_registry.rs) — Per-tenant cache of `StreamableHttpService` instances. · 2 pub
-- [`mod.rs`](../src/mcp/mod.rs) — 4 pub
+- [`mod.rs`](../src/mcp/mod.rs) — 6 pub
+- [`prompts.rs`](../src/mcp/prompts.rs) — v1.56 M3 — MCP Prompts. Hand-written (rmcp's `#[prompt_router]` macro would · 2 pub
+- [`resources.rs`](../src/mcp/resources.rs) — MCP Resources (v1.56, M2) — the URI parser + a thin router that projects · 9 pub
 - [`server.rs`](../src/mcp/server.rs) — 3 pub
 - [`tools/audit.rs`](../src/mcp/tools/audit.rs) — v1.46 — MCP audit tools over the per-tenant record-history trail. · 2 pub
+- [`tools/batch.rs`](../src/mcp/tools/batch.rs) — M2 — batch insert (+ upsert, next task), service-only on both faces. · 8 pub
 - [`tools/cron.rs`](../src/mcp/tools/cron.rs) — v1.48 — MCP cron tools. Service-only by MCP dispatch (transport rejects · 4 pub
 - [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 4 pub
 - [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url. · 8 pub
 - [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by MCP dispatch (transport · 6 pub
 - [`tools/index.rs`](../src/mcp/tools/index.rs) — 6 pub
-- [`tools/mod.rs`](../src/mcp/tools/mod.rs) — 16 pub
+- [`tools/mod.rs`](../src/mcp/tools/mod.rs) — 17 pub
 - [`tools/oauth.rs`](../src/mcp/tools/oauth.rs) — Pure async helpers for the per-tenant OAuth-provider admin MCP tools · 4 pub
 - [`tools/owner_field.rs`](../src/mcp/tools/owner_field.rs) — Pure async helpers for T25 MCP owner-field + set_self_register tools. · 4 pub
 - [`tools/policy.rs`](../src/mcp/tools/policy.rs) — RLS Phase 8 (Config) — MCP delegate fns for per-collection, · 3 pub
-- [`tools/read.rs`](../src/mcp/tools/read.rs) — 4 pub
+- [`tools/read.rs`](../src/mcp/tools/read.rs) — 6 pub
 - [`tools/realtime.rs`](../src/mcp/tools/realtime.rs) — MCP `set_realtime` tool — toggle SSE broadcast on one collection. · 1 pub
 - [`tools/schema.rs`](../src/mcp/tools/schema.rs) — 16 pub
 - [`tools/user.rs`](../src/mcp/tools/user.rs) — Pure async helpers for T24 MCP user-management tools. · 6 pub
 - [`tools/vector.rs`](../src/mcp/tools/vector.rs) — MCP `search_collection` tool. Thin wrapper that constructs the same · 2 pub
 - [`tools/webhook.rs`](../src/mcp/tools/webhook.rs) — Pure async helpers for Task 7 — webhook subscription MCP tools. · 4 pub
-- [`tools/write.rs`](../src/mcp/tools/write.rs) — 9 pub
+- [`tools/write.rs`](../src/mcp/tools/write.rs) — 14 pub
 
 <a id="srcmgmt"></a>
 
@@ -211,7 +215,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`admin_pat.rs`](../src/mgmt/admin_pat.rs) — v1.29.3 S2c — single per-admin PAT reroll endpoint. · 7 pub
 - [`admin_profile.rs`](../src/mgmt/admin_profile.rs) — v1.28.9 — admin profile extension surfaced through the sidebar. · 4 pub
 - [`admin_rooms.rs`](../src/mgmt/admin_rooms.rs) — v1.31 — admin-side broadcast room operations. · 2 pub
-- [`admin_team.rs`](../src/mgmt/admin_team.rs) — Admin team management — list/invite/role-change/remove. · 8 pub
+- [`admin_team.rs`](../src/mgmt/admin_team.rs) — Admin team management — list/invite/role-change/remove. · 10 pub
 - [`audit.rs`](../src/mgmt/audit.rs) — Admin-UI audit log viewer. · 30 pub
 - [`backups.rs`](../src/mgmt/backups.rs) — Admin-UI handlers for `drust-backup` snapshot inspection + download. · 12 pub
 - [`browse.rs`](../src/mgmt/browse.rs) — 22 pub
@@ -266,7 +270,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`authorizer.rs`](../src/query/authorizer.rs) — 3 pub
 - [`executor.rs`](../src/query/executor.rs) — 9 pub
 - [`filter.rs`](../src/query/filter.rs) — 5 pub
-- [`list_builder.rs`](../src/query/list_builder.rs) — Structured list-SQL builder for `POST /t/<id>/collections/<c>/list` · 5 pub
+- [`list_builder.rs`](../src/query/list_builder.rs) — Structured list-SQL builder for `POST /t/<id>/collections/<c>/list` · 8 pub
 - [`mod.rs`](../src/query/mod.rs) — 7 pub
 - [`policy.rs`](../src/query/policy.rs) — Row-level security policy engine. A `Policy` is a per-operation pair of · 12 pub
 - [`vector_codec.rs`](../src/query/vector_codec.rs) — JSON ↔ packed-f32 BLOB codec for vector fields. · 3 pub
@@ -337,8 +341,8 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`policy_routes.rs`](../src/tenant/policy_routes.rs) — RLS Phase 8 (Config) — service-only REST surface for per-collection, · 4 pub
 - [`query_endpoint.rs`](../src/tenant/query_endpoint.rs) — 4 pub
 - [`realtime_routes.rs`](../src/tenant/realtime_routes.rs) — v1.16 — service-only endpoint to toggle SSE realtime broadcast on · 2 pub
-- [`records.rs`](../src/tenant/records.rs) — 14 pub
-- [`records_list.rs`](../src/tenant/records_list.rs) — `POST /t/<id>/collections/<c>/list` — structured list endpoint. · 2 pub
+- [`records.rs`](../src/tenant/records.rs) — 19 pub
+- [`records_list.rs`](../src/tenant/records_list.rs) — `POST /t/<id>/collections/<c>/list` — structured list endpoint. · 4 pub
 - [`rooms/audit.rs`](../src/tenant/rooms/audit.rs) — v1.31 audit emit for broadcast.publish. · 2 pub
 - [`rooms/bus.rs`](../src/tenant/rooms/bus.rs) — 2 pub
 - [`rooms/envelope.rs`](../src/tenant/rooms/envelope.rs) — v1.31 wire envelope. Client → Server uses `op`-tagged objects; · 3 pub

@@ -358,7 +358,7 @@ async fn codegen_ir(s: &DrustMcp) -> Result<crate::codegen::ir::CodegenIr, McpEr
 
 /// Render the `get_schema_overview` JSON (`{tenant, collections:[…], rpcs:[…]}`)
 /// as a compact Markdown table. Defensive: missing keys are skipped.
-fn schema_json_to_md(v: &serde_json::Value) -> String {
+pub(crate) fn schema_json_to_md(v: &serde_json::Value) -> String {
     let mut out = String::new();
     if let Some(t) = v.get("tenant").and_then(|x| x.as_str()) {
         out.push_str(&format!("# Tenant `{t}` schema\n\n"));
