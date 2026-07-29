@@ -132,6 +132,48 @@ async fn patch_role(
     .unwrap()
 }
 
+async fn invite(
+    app: axum::Router,
+    cookie: &str,
+    email: &str,
+    role: &str,
+) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/admin/team")
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "email": email, "role": role }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn batch_invite(
+    app: axum::Router,
+    cookie: &str,
+    emails: serde_json::Value,
+    role: &str,
+) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/admin/team/batch")
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "emails": emails, "role": role }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
 // ─── change_role authority matrix ────────────────────────────────────────────
 
 /// The matrix the plan enumerates:
@@ -225,4 +267,150 @@ async fn owner_can_demote_admin_to_member() {
     let body = body_json(resp).await;
     assert_eq!(status, StatusCode::OK, "owner demote admin→member: {body}");
     assert_eq!(body["role"], "member");
+}
+
+// ─── invite authority matrix (single) ─────────────────────────────────────────
+
+/// The matrix the plan enumerates for `invite_admin`:
+///   owner may invite any role (member/admin);
+///   admin may invite a `member` ONLY (inviting an admin/owner →
+///     403 PRIVILEGED_ROLE_REQUIRED);
+///   member invites nothing (403 NOT_A_MANAGER).
+/// Table-driven: (caller_role, invited_role) → (status, error_code?). A
+/// successful invite returns 201 CREATED echoing the invited role (mirrors the
+/// existing `owner_can_invite_admin` scaffold in tests/admin_team_crud.rs).
+#[tokio::test]
+async fn invite_authority_matrix() {
+    let cases: [(&str, &str, StatusCode, Option<&str>); 6] = [
+        // owner may invite any role.
+        ("owner", "member", StatusCode::CREATED, None),
+        ("owner", "admin", StatusCode::CREATED, None),
+        // admin may invite a member.
+        ("admin", "member", StatusCode::CREATED, None),
+        // admin may NOT mint an admin or an owner.
+        (
+            "admin",
+            "admin",
+            StatusCode::FORBIDDEN,
+            Some("PRIVILEGED_ROLE_REQUIRED"),
+        ),
+        (
+            "admin",
+            "owner",
+            StatusCode::FORBIDDEN,
+            Some("PRIVILEGED_ROLE_REQUIRED"),
+        ),
+        // member manages nothing.
+        (
+            "member",
+            "member",
+            StatusCode::FORBIDDEN,
+            Some("NOT_A_MANAGER"),
+        ),
+    ];
+
+    for (caller_role, invited_role, expected_status, expected_code) in cases {
+        let (app, dir) = spin_up().await;
+        let caller_cookie = if caller_role == "owner" {
+            login(&app, "root", "hunter2").await
+        } else {
+            insert_admin(
+                &dir,
+                &format!("caller-{caller_role}@example.com"),
+                caller_role,
+            )
+            .1
+        };
+
+        let resp = invite(app, &caller_cookie, "invitee@example.com", invited_role).await;
+        let status = resp.status();
+        let body = body_json(resp).await;
+
+        assert_eq!(
+            status, expected_status,
+            "caller={caller_role} invited={invited_role}: body={body}"
+        );
+        match expected_code {
+            Some(code) => assert_eq!(
+                body["error_code"], code,
+                "caller={caller_role} invited={invited_role}"
+            ),
+            None => assert_eq!(
+                body["role"], invited_role,
+                "positive invite must echo the invited role: body={body}"
+            ),
+        }
+    }
+}
+
+// ─── batch invite authority matrix ────────────────────────────────────────────
+
+/// Same authority matrix over `POST /admin/team/batch` — the up-front authority
+/// check is identical to the single-invite path. A successful batch returns 201
+/// CREATED with exactly one `created` entry.
+#[tokio::test]
+async fn batch_invite_authority_matrix() {
+    let cases: [(&str, &str, StatusCode, Option<&str>); 6] = [
+        ("owner", "member", StatusCode::CREATED, None),
+        ("owner", "admin", StatusCode::CREATED, None),
+        ("admin", "member", StatusCode::CREATED, None),
+        (
+            "admin",
+            "admin",
+            StatusCode::FORBIDDEN,
+            Some("PRIVILEGED_ROLE_REQUIRED"),
+        ),
+        (
+            "admin",
+            "owner",
+            StatusCode::FORBIDDEN,
+            Some("PRIVILEGED_ROLE_REQUIRED"),
+        ),
+        (
+            "member",
+            "member",
+            StatusCode::FORBIDDEN,
+            Some("NOT_A_MANAGER"),
+        ),
+    ];
+
+    for (caller_role, invited_role, expected_status, expected_code) in cases {
+        let (app, dir) = spin_up().await;
+        let caller_cookie = if caller_role == "owner" {
+            login(&app, "root", "hunter2").await
+        } else {
+            insert_admin(
+                &dir,
+                &format!("caller-{caller_role}@example.com"),
+                caller_role,
+            )
+            .1
+        };
+
+        let resp = batch_invite(
+            app,
+            &caller_cookie,
+            serde_json::json!(["invitee@example.com"]),
+            invited_role,
+        )
+        .await;
+        let status = resp.status();
+        let body = body_json(resp).await;
+
+        assert_eq!(
+            status, expected_status,
+            "caller={caller_role} invited={invited_role}: body={body}"
+        );
+        match expected_code {
+            Some(code) => assert_eq!(
+                body["error_code"], code,
+                "caller={caller_role} invited={invited_role}"
+            ),
+            None => assert_eq!(
+                body["created"].as_array().map(|a| a.len()),
+                Some(1),
+                "positive batch must create exactly one admin: body={body}"
+            ),
+        }
+    }
 }

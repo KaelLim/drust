@@ -268,7 +268,10 @@ async fn member_cannot_invite() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN, "member must get 403");
     let body = body_json(resp).await;
-    assert_eq!(body["error_code"], "NOT_OWNER");
+    // v1.57 3-tier roles: a `member` caller is not a team manager. The invite
+    // gate is now `require_manage_members` (owner|admin) → `NOT_A_MANAGER`,
+    // replacing the former owner-only `NOT_OWNER`. Still a hard 403.
+    assert_eq!(body["error_code"], "NOT_A_MANAGER");
 }
 
 #[tokio::test]

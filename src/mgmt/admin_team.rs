@@ -398,7 +398,9 @@ pub async fn invite_admin(
     axum::Extension(profile): axum::Extension<AdminProfileExt>,
     Json(body): Json<InviteBody>,
 ) -> Response {
-    if let Err(r) = owner_guard(&profile) {
+    // v1.57 authority: a team manager (owner|admin) may invite MEMBER rows;
+    // minting an owner/admin is owner-only. A `member` caller manages nothing.
+    if let Err(r) = require_manage_members(&profile) {
         return r;
     }
 
@@ -407,7 +409,17 @@ pub async fn invite_admin(
         return json_error(
             StatusCode::BAD_REQUEST,
             "INVALID_ROLE",
-            "role must be 'owner' or 'member'",
+            "role must be 'owner', 'admin' or 'member'",
+        );
+    }
+
+    if matches!(role, "owner" | "admin")
+        && !crate::mgmt::tenant_authz::can_manage_privileged(&profile.role)
+    {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "PRIVILEGED_ROLE_REQUIRED",
+            "only an owner may invite an owner or admin",
         );
     }
 
@@ -809,7 +821,10 @@ pub async fn batch_invite_admin(
     axum::Extension(profile): axum::Extension<AdminProfileExt>,
     Json(body): Json<BatchInviteBody>,
 ) -> Response {
-    if let Err(r) = owner_guard(&profile) {
+    // v1.57 authority: same up-front matrix as the single-invite path — owner|
+    // admin may bulk-invite MEMBER rows; minting owner/admin is owner-only; a
+    // `member` caller manages nothing.
+    if let Err(r) = require_manage_members(&profile) {
         return r;
     }
 
@@ -818,7 +833,17 @@ pub async fn batch_invite_admin(
         return json_error(
             StatusCode::BAD_REQUEST,
             "INVALID_ROLE",
-            "role must be 'owner' or 'member'",
+            "role must be 'owner', 'admin' or 'member'",
+        );
+    }
+
+    if matches!(role, "owner" | "admin")
+        && !crate::mgmt::tenant_authz::can_manage_privileged(&profile.role)
+    {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "PRIVILEGED_ROLE_REQUIRED",
+            "only an owner may invite an owner or admin",
         );
     }
 
