@@ -588,9 +588,17 @@ impl GarageClient {
         key: &str,
     ) -> anyhow::Result<impl futures::Stream<Item = anyhow::Result<bytes::Bytes>> + use<>> {
         use object_store::ObjectStoreExt;
-        let s3 = self.build_s3_for_bucket(bucket)?;
-        let path = StorePath::from(key);
-        let result = s3.get(&path).await?;
+        // Same test affordance as `get_object_bytes_in` / `put_object_in`: a
+        // `from_store` client (empty endpoint) has no real S3, so the bucket is
+        // folded into the key against the single backing store.
+        let result = if self.s3_endpoint.is_empty() {
+            let path = StorePath::from(format!("{bucket}/{key}"));
+            self.store.get(&path).await?
+        } else {
+            let s3 = self.build_s3_for_bucket(bucket)?;
+            let path = StorePath::from(key);
+            s3.get(&path).await?
+        };
         Ok(futures::StreamExt::map(result.into_stream(), |r| {
             r.map_err(anyhow::Error::from)
         }))

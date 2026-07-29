@@ -516,8 +516,12 @@ pub async fn put_file_raw(
     let pool = inner.pool.clone();
     let size = bytes.len() as i64;
     let cc = put_file_cache_control(visibility);
+    // P0-1 (2026-07-29 audit), LAYER 1 — a guest wasm chooses this content
+    // type, so it is caller-supplied exactly like a multipart upload. A
+    // script-executing type becomes an octet-stream attachment.
+    let (safe_ct, disp_mode) = crate::storage::files::neutralize_content_type(Some(content_type));
     let key_w = key.to_string();
-    let ct_w = content_type.to_string();
+    let ct_w = safe_ct.clone();
     let vis_w = visibility.to_string();
     let cc_w = cc.to_string();
     // v1.50 (Spec B §5.3) — the edge-function `put-file` host op is a file
@@ -540,8 +544,8 @@ pub async fn put_file_raw(
             "INSERT INTO _system_files
              (key, original_name, content_type, size_bytes, content_disposition,
               visibility, cache_control, meta_json, uploader)
-             VALUES (?1, ?2, ?3, ?4, 'inline', ?5, ?6, NULL, 'function')",
-            rusqlite::params![key_w, key_w, ct_w, size, vis_w, cc_w],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 'function')",
+            rusqlite::params![key_w, key_w, ct_w, size, disp_mode, vis_w, cc_w],
         )
         .map(|_| ())
     })
@@ -561,8 +565,8 @@ pub async fn put_file_raw(
             bucket,
             &object_key,
             bytes.into(),
-            Some(content_type),
-            "inline",
+            Some(safe_ct.as_str()),
+            disp_mode,
             key,
             Some(cc),
             None,

@@ -118,3 +118,133 @@ pub fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
         uploader: row.get("uploader")?,
     })
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Stored-XSS neutralization (2026-07-29 audit, finding P0-1)
+// ───────────────────────────────────────────────────────────────────────────
+//
+// Tenant-uploaded objects are served from the SAME ORIGIN as the admin UI:
+// Caddy serves `/public/*` (Garage web) and `/drust/*` (this service) out of
+// one site block, and drust itself streams private bytes back at
+// `/drust/t/{id}/files/{key}/bytes` (also under `/drust/admin/...`). A file
+// stored with a caller-supplied `text/html` (or SVG, or XML) content type and
+// rendered `inline` therefore executes script in the admin plane's origin —
+// escalating a tenant service key to host-admin via the admin session cookie.
+//
+// The fix is to never let those types reach a browser as a renderable
+// document. `neutralize_content_type` is applied TWICE (defence in depth, per
+// CLAUDE.md's DiD >= 2 rule):
+//   * layer 1 — at every ingest path, so the bytes are never STORED with a
+//     dangerous type (Mode-A admin + tenant multipart, tus finalize, the edge
+//     function `put-file` host op, and the visibility bucket move);
+//   * layer 2 — at every drust-owned byte responder, so rows uploaded BEFORE
+//     this fix are served safely too.
+// The Caddy `/public/*` block additionally carries `X-Content-Type-Options:
+// nosniff` (operator-owned, outside this repo).
+
+/// Content types a browser renders as a scriptable document when served
+/// `inline`. Serving any of these from the admin origin is stored XSS.
+///
+/// `application/javascript` is deliberately ABSENT: navigating to a `.js` URL
+/// downloads/renders it as text, it does not execute in the page's origin, and
+/// neutering it would break legitimate static-asset hosting.
+pub const UNSAFE_INLINE_CONTENT_TYPES: &[&str] = &[
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "text/xml",
+    "application/xml",
+];
+
+/// True when `ct` is a script-executing document type. Case-insensitive and
+/// parameter-insensitive: `"text/html"`, `"TEXT/HTML"`, `" text/html "` and
+/// `"text/html; charset=utf-8"` all match.
+pub fn is_unsafe_inline_type(ct: &str) -> bool {
+    let essence = ct.split(';').next().unwrap_or("").trim();
+    if essence.is_empty() {
+        return false;
+    }
+    UNSAFE_INLINE_CONTENT_TYPES
+        .iter()
+        .any(|u| essence.eq_ignore_ascii_case(u))
+}
+
+/// Map a caller-supplied / stored content type onto the (content type,
+/// disposition mode) pair that is safe to store AND to serve.
+///
+/// * a script-executing type -> `("application/octet-stream", "attachment")`
+/// * anything else -> unchanged, `"inline"`
+/// * `None` / blank -> `("application/octet-stream", "inline")`
+pub fn neutralize_content_type(ct: Option<&str>) -> (String, &'static str) {
+    match ct.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(c) if is_unsafe_inline_type(c) => {
+            ("application/octet-stream".to_string(), "attachment")
+        }
+        Some(c) => (c.to_string(), "inline"),
+        None => ("application/octet-stream".to_string(), "inline"),
+    }
+}
+
+#[cfg(test)]
+mod content_type_safety_tests {
+    use super::*;
+
+    #[test]
+    fn neutralize_flags_html_and_variants() {
+        for ct in [
+            "text/html",
+            "text/html;charset=utf-8",
+            "text/html; charset=UTF-8",
+            "TEXT/HTML",
+            " text/html ",
+            "image/svg+xml",
+            "IMAGE/SVG+XML; charset=utf-8",
+            "application/xhtml+xml",
+            "text/xml",
+            "application/xml",
+        ] {
+            assert!(is_unsafe_inline_type(ct), "{ct} must be flagged unsafe");
+            let (out_ct, disp) = neutralize_content_type(Some(ct));
+            assert_eq!(out_ct, "application/octet-stream", "ct for {ct}");
+            assert_eq!(disp, "attachment", "disposition for {ct}");
+        }
+    }
+
+    #[test]
+    fn neutralize_passes_through_safe_types() {
+        for ct in [
+            "image/png",
+            "application/pdf",
+            "text/plain",
+            "application/javascript",
+            "text/javascript",
+            "application/json",
+            "text/html-ish",
+            "text/htmlx",
+        ] {
+            assert!(!is_unsafe_inline_type(ct), "{ct} must NOT be flagged");
+            let (out_ct, disp) = neutralize_content_type(Some(ct));
+            assert_eq!(out_ct, ct, "ct for {ct}");
+            assert_eq!(disp, "inline", "disposition for {ct}");
+        }
+    }
+
+    #[test]
+    fn neutralize_handles_missing_and_blank() {
+        assert_eq!(
+            neutralize_content_type(None),
+            ("application/octet-stream".to_string(), "inline")
+        );
+        assert_eq!(
+            neutralize_content_type(Some("")),
+            ("application/octet-stream".to_string(), "inline")
+        );
+        assert_eq!(
+            neutralize_content_type(Some("   ")),
+            ("application/octet-stream".to_string(), "inline")
+        );
+        assert!(!is_unsafe_inline_type(""));
+        assert!(!is_unsafe_inline_type("   "));
+        assert!(!is_unsafe_inline_type(";charset=utf-8"));
+    }
+}

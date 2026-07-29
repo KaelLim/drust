@@ -524,7 +524,15 @@ async fn finalize_and_respond(
         crate::storage::files::Disposition::Inline,
     )
     .to_string();
-    let disp_mode = "inline";
+    // P0-1 (2026-07-29 audit), LAYER 1 — the tus session carries the client's
+    // `filetype` metadata verbatim; finalize is where it becomes a stored
+    // `_system_files` row + a Garage object. Neutralize a script-executing
+    // type here so an in-flight session created before this fix is covered too.
+    let (safe_ct, disp_mode) =
+        match crate::storage::files::neutralize_content_type(sess.content_type.as_deref()) {
+            (safe, "attachment") => (Some(safe), "attachment"),
+            _ => (sess.content_type.clone(), "inline"),
+        };
 
     // v1.50 (Spec B §5.3) — finalize is the accounting point: re-check the hard
     // quota on the writer conn, inside the same tx as the row INSERT (the
@@ -535,7 +543,7 @@ async fn finalize_and_respond(
     {
         let key = sess.key.clone();
         let on = sess.original_name.clone();
-        let ct = sess.content_type.clone();
+        let ct = safe_ct.clone();
         let cc = cache_control.clone();
         let vis = sess.visibility.clone();
         let total = sess.total_length;
@@ -593,7 +601,7 @@ async fn finalize_and_respond(
             bucket,
             &object_key,
             &spool,
-            sess.content_type.as_deref(),
+            safe_ct.as_deref(),
             disp_mode,
             &sess.original_name,
             Some(&cache_control),
@@ -620,9 +628,7 @@ async fn finalize_and_respond(
         &sess.key,
         sess.total_length,
         &sess.visibility,
-        sess.content_type
-            .as_deref()
-            .unwrap_or("application/octet-stream"),
+        safe_ct.as_deref().unwrap_or("application/octet-stream"),
     );
 
     let mut h = tus_headers();

@@ -167,11 +167,16 @@ pub async fn stream_bytes(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("get: {e}")))?;
 
     let body = Body::from_stream(stream);
-    let ct = row
-        .content_type
-        .as_deref()
-        .unwrap_or("application/octet-stream");
-    let disp_mode = row.content_disposition.as_deref().unwrap_or("inline");
+    // P0-1 (2026-07-29 audit), LAYER 2 — this route is same-origin with the
+    // admin UI (it is also mounted under `/admin`), so a row written before the
+    // ingest fix must not be echoed back as a renderable document.
+    let (ct, forced_disp) =
+        crate::storage::files::neutralize_content_type(row.content_type.as_deref());
+    let disp_mode = if forced_disp == "attachment" {
+        "attachment"
+    } else {
+        row.content_disposition.as_deref().unwrap_or("inline")
+    };
     let ascii = crate::storage::garage::ascii_fallback_filename(&row.original_name);
     let pct = urlencoding::encode(&row.original_name);
     let cd = format!("{disp_mode}; filename=\"{ascii}\"; filename*=UTF-8''{pct}");
@@ -181,6 +186,9 @@ pub async fn stream_bytes(
     headers.insert(header::CONTENT_TYPE, ct.parse().unwrap());
     headers.insert(header::CONTENT_DISPOSITION, cd.parse().unwrap());
     headers.insert(header::CACHE_CONTROL, cc.parse().unwrap());
+    // Make the declared type authoritative — without it a browser may sniff
+    // an octet-stream body back into HTML.
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
 
     Ok((headers, body).into_response())
 }
@@ -374,6 +382,15 @@ pub async fn upload(
         Visibility::Public => "public",
         Visibility::Private => "private",
     };
+    // P0-1 (2026-07-29 audit), LAYER 1 — see `files::neutralize_content_type`.
+    // A tenant service key must not be able to park a scriptable document on
+    // the admin plane's origin, so a script-executing type is stored as an
+    // octet-stream attachment. No-op for every other type.
+    let (sniffed_ct, disp_mode) =
+        match crate::storage::files::neutralize_content_type(sniffed_ct.as_deref()) {
+            (safe, "attachment") => (Some(safe), "attachment"),
+            _ => (sniffed_ct, disp_mode),
+        };
     let bucket = crate::storage::files::bucket_for(visibility);
 
     // DB stores the bare key (`<uuid>.<ext>`); Garage uses `<tenant>/<key>`

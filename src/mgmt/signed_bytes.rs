@@ -46,11 +46,11 @@ fn respond<S>(row: &FileRow, stream: S, download: bool) -> axum::response::Respo
 where
     S: futures::Stream<Item = Result<bytes::Bytes, anyhow::Error>> + Send + 'static,
 {
-    let ct = row
-        .content_type
-        .as_deref()
-        .unwrap_or("application/octet-stream");
-    let disp_mode = if download {
+    // P0-1 (2026-07-29 audit), LAYER 2 — the signed-URL responder lives on the
+    // same origin as the admin UI, so a stored script-executing type is
+    // neutralized here too (not only at ingest).
+    let (ct, forced_disp) = files::neutralize_content_type(row.content_type.as_deref());
+    let disp_mode = if download || forced_disp == "attachment" {
         "attachment"
     } else {
         row.content_disposition.as_deref().unwrap_or("inline")
@@ -63,6 +63,10 @@ where
     headers.insert(axum::http::header::CONTENT_TYPE, ct.parse().unwrap());
     headers.insert(axum::http::header::CONTENT_DISPOSITION, cd.parse().unwrap());
     headers.insert(axum::http::header::CACHE_CONTROL, cc.parse().unwrap());
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        "nosniff".parse().unwrap(),
+    );
     (headers, axum::body::Body::from_stream(stream)).into_response()
 }
 
