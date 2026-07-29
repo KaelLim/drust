@@ -603,6 +603,44 @@ pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path
     Redirect::to(&crate::base_path::base("/admin/files")).into_response()
 }
 
+/// Is this object key an **admin-level** key?
+///
+/// v1.5.0 retired per-tenant buckets: tenant files now live in the SAME
+/// host-wide `public` / `private` buckets, namespaced by a `<tenant-id>/`
+/// key prefix (`storage::files::compose_key` — `Owner::Admin => "<file-id>"`,
+/// `Owner::Tenant(id) => "<id>/<file-id>"`). So "contains a `/`" is exactly
+/// "belongs to a tenant", and a tenant object's inventory row lives in that
+/// tenant's own `data.sqlite::_system_files` — never in meta.sqlite. The
+/// reconcile page diffs the **admin** inventory only, so tenant-namespaced
+/// keys must never enter it (they would all look like orphans, and the apply
+/// form would then drive a cross-tenant delete).
+///
+/// Also refuses the shapes that can never be a legitimate admin key
+/// (`""`, `.`, `..`, backslash, NUL) so the apply-side validator is
+/// defensive on its own, independent of what the page rendered.
+fn is_admin_level_key(key: &str) -> bool {
+    !key.is_empty()
+        && !key.contains('/')
+        && !key.contains('\\')
+        && !key.contains('\0')
+        && key != "."
+        && key != ".."
+}
+
+/// Objects present in the bucket but absent from the ADMIN inventory
+/// (meta.sqlite `_system_files`). Tenant-namespaced keys are filtered out
+/// first — see [`is_admin_level_key`].
+fn classify_orphans(
+    bucket_keys: &[(String, u64)],
+    admin_db_keys: &HashSet<String>,
+) -> Vec<(String, String)> {
+    bucket_keys
+        .iter()
+        .filter(|(key, _)| is_admin_level_key(key) && !admin_db_keys.contains(key))
+        .map(|(key, size)| (key.clone(), humanize_bytes(*size)))
+        .collect()
+}
+
 pub async fn reconcile_page(
     State(state): State<PublicFilesState>,
     LocaleHint(locale): LocaleHint,
@@ -639,12 +677,20 @@ pub async fn reconcile_page(
     };
     let db_keys: HashSet<String> = db_rows.iter().map(|(_, k, _)| k.clone()).collect();
 
-    let orphan_objects: Vec<(String, String)> = garage_list
+    // `garage.list_objects()` lists the WHOLE shared bucket (no prefix), so it
+    // also returns every tenant's `<tenant-id>/<file-id>` object. Only the
+    // admin-level (slash-free) keys may be diffed against meta.sqlite — see
+    // `is_admin_level_key`.
+    let bucket_keys: Vec<(String, u64)> = garage_list
         .iter()
-        .filter(|o| !db_keys.contains(&o.key))
-        .map(|o| (o.key.clone(), humanize_bytes(o.size)))
+        .map(|o| (o.key.clone(), o.size))
         .collect();
+    let orphan_objects: Vec<(String, String)> = classify_orphans(&bucket_keys, &db_keys);
 
+    // Asymmetric on purpose: `db_rows` is already admin-only (meta.sqlite
+    // `_system_files`, keys with no slash) and `garage_keys` is the whole
+    // bucket, so a row with no matching object really is an admin-level row
+    // whose object is gone. No key-shape filter is needed on this direction.
     let dangling_rows: Vec<(i64, String, String)> = db_rows
         .into_iter()
         .filter(|(_, k, _)| !garage_keys.contains(k))
@@ -779,6 +825,15 @@ pub async fn reconcile_apply(
     };
 
     for key in form.delete_orphan_keys {
+        // Defence in depth: the form is caller-supplied, so re-validate the
+        // key shape server-side. A tenant-namespaced (`<tenant-id>/<file-id>`)
+        // key must never be deletable from this page even if the rendering
+        // side ever regresses — that would be a cross-tenant delete. Skip and
+        // continue, matching the per-key error posture below.
+        if !is_admin_level_key(&key) {
+            tracing::warn!(key = %key, "reconcile: refused non-admin orphan key");
+            continue;
+        }
         if let Err(e) = garage.delete_object(&key).await {
             tracing::warn!(key = %key, error = %e, "reconcile: orphan delete failed");
         }
@@ -1080,4 +1135,80 @@ pub async fn admin_sign_url(
         url,
         expires_at: Some(expires_at),
     }))
+}
+
+#[cfg(test)]
+mod reconcile_key_tests {
+    use super::{classify_orphans, is_admin_level_key};
+    use std::collections::HashSet;
+
+    fn keys(v: &[&str]) -> HashSet<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn tenant_prefixed_object_is_never_an_admin_orphan() {
+        // v1.5.0 moved tenant files INTO the shared `public` bucket under a
+        // `<tenant-id>/` prefix. Their inventory row lives in that tenant's
+        // own data.sqlite, not in meta.sqlite — so they must not be diffed
+        // against the admin inventory.
+        let bucket = vec![(
+            "3f1c8b0e-4d2a-4f3b-9c11-2a7e5d6f8a90/logo.png".to_string(),
+            123_u64,
+        )];
+        let admin_db = keys(&[]);
+        assert!(
+            classify_orphans(&bucket, &admin_db).is_empty(),
+            "tenant-namespaced object must not be classified as an admin orphan"
+        );
+    }
+
+    #[test]
+    fn admin_object_absent_from_db_is_an_orphan() {
+        let bucket = vec![(
+            "3f1c8b0e-4d2a-4f3b-9c11-2a7e5d6f8a90.png".to_string(),
+            10_u64,
+        )];
+        let admin_db = keys(&[]);
+        let out = classify_orphans(&bucket, &admin_db);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "3f1c8b0e-4d2a-4f3b-9c11-2a7e5d6f8a90.png");
+    }
+
+    #[test]
+    fn admin_object_present_in_db_is_not_an_orphan() {
+        let bucket = vec![("abc.png".to_string(), 10_u64)];
+        let admin_db = keys(&["abc.png"]);
+        assert!(classify_orphans(&bucket, &admin_db).is_empty());
+    }
+
+    #[test]
+    fn classify_orphans_mixed_bucket_keeps_only_admin_orphans() {
+        let bucket = vec![
+            ("tenant-id/a.png".to_string(), 1),
+            ("kept.png".to_string(), 2),
+            ("orphan.png".to_string(), 3),
+        ];
+        let admin_db = keys(&["kept.png"]);
+        let out = classify_orphans(&bucket, &admin_db);
+        assert_eq!(
+            out.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["orphan.png"]
+        );
+    }
+
+    #[test]
+    fn apply_side_key_validator_refuses_non_admin_keys() {
+        assert!(is_admin_level_key("a"), "bare admin key must be accepted");
+        assert!(
+            !is_admin_level_key("a/b"),
+            "tenant-namespaced key must be refused"
+        );
+        assert!(!is_admin_level_key(""), "empty key must be refused");
+        assert!(!is_admin_level_key("../x"), "traversal key must be refused");
+        assert!(!is_admin_level_key(".."), "dot-dot must be refused");
+        assert!(!is_admin_level_key("."), "dot must be refused");
+        assert!(!is_admin_level_key("a\\b"), "backslash key must be refused");
+        assert!(!is_admin_level_key("a\0b"), "NUL key must be refused");
+    }
 }
