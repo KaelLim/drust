@@ -453,11 +453,11 @@ async fn owner_sidebar_shows_audit_and_backups() {
 }
 
 #[tokio::test]
-async fn member_sidebar_hides_audit_and_backups_but_keeps_the_rest() {
+async fn member_sidebar_hides_owner_only_nav_items_but_keeps_the_rest() {
     let (app, _dir, _owner_cookie, member_cookie) = seed_three_tenants().await;
     let (status, html) = get_body(&app, &member_cookie, "/admin/tenants").await;
     assert_eq!(status, StatusCode::OK);
-    // Owner-only host surfaces (member gets 403 on both) — no dead nav links.
+    // Owner-only host surfaces (member gets 403 on all three) — no dead nav links.
     assert!(
         !html.contains(r#"data-section="audit""#),
         "member must NOT see the audit-log nav item"
@@ -466,14 +466,18 @@ async fn member_sidebar_hides_audit_and_backups_but_keeps_the_rest() {
         !html.contains(r#"data-section="backups""#),
         "member must NOT see the backups nav item"
     );
+    // v1.57 — the host-files surface gained require_owner_layer (it is host-wide
+    // with no `{id}`, and /admin/files/reconcile renders cross-tenant ids), so
+    // the nav item is owner-only too. This assertion used to pin the opposite;
+    // it is flipped deliberately alongside the route guard.
+    assert!(
+        !html.contains(r#"data-section="files""#),
+        "member must NOT see the host-files nav item (owner-only since v1.57)"
+    );
     // The sidebar still renders; member-accessible entries stay.
     assert!(
         html.contains(r#"data-section="tenants""#),
         "member keeps the tenants nav item"
-    );
-    assert!(
-        html.contains(r#"data-section="files""#),
-        "member keeps the host-files nav item (not owner-gated)"
     );
     // v1.57 — member is locked out of the team page entirely (owner|admin only),
     // so the nav item is hidden too — no dead link that would 403.

@@ -1235,6 +1235,17 @@ impl MgmtState {
             )
             .route("/admin/files/{key}/bytes", get(admin_stream_bytes))
             .route("/admin/files/{key}/sign", post(admin_sign_url))
+            // v1.57 — OWNER-ONLY (inner to admin_profile_layer, same shape as
+            // backups_router + quota_review_router + metrics_router): these
+            // routes are host-wide with no `{id}` for tenant_ownership_layer to
+            // filter, so every non-owner admin would otherwise read and mutate
+            // the shared public/private buckets. `/admin/files/reconcile` also
+            // renders the tenant id + name of every pending revoke / orphan
+            // bucket — the exact cross-tenant enumeration the v1.50 visibility
+            // boundary 404s to prevent.
+            .layer(axum::middleware::from_fn(
+                crate::mgmt::tenant_authz::require_owner_layer,
+            ))
             .with_state(public_files_state);
 
         // Admin-scoped tenant files sub-router — uploads land in the tenant's
