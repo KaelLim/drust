@@ -99,6 +99,22 @@ fn owner_guard(profile: &AdminProfileExt) -> Result<(), Response> {
     Ok(())
 }
 
+/// v1.57 — team-manager gate: owner OR admin may manage MEMBER-role admins.
+/// A `member` caller manages nothing → `403 NOT_A_MANAGER`. This is the
+/// entry gate for member-scoped team ops; touching an owner/admin row (or
+/// creating one) additionally requires `can_manage_privileged` (owner) at the
+/// call site.
+fn require_manage_members(profile: &AdminProfileExt) -> Result<(), Response> {
+    if !crate::mgmt::tenant_authz::can_manage_members(&profile.role) {
+        return Err(json_error(
+            StatusCode::FORBIDDEN,
+            "NOT_A_MANAGER",
+            "owner or admin role required",
+        ));
+    }
+    Ok(())
+}
+
 /// Email basic sanity check — must contain exactly one '@' and something on
 /// both sides.  No RFC-5321 deep validation; the invite flow is Owner-only
 /// so this is good-faith input.
@@ -508,7 +524,11 @@ pub async fn change_role(
     axum::Extension(profile): axum::Extension<AdminProfileExt>,
     Json(body): Json<RoleBody>,
 ) -> Response {
-    if let Err(r) = owner_guard(&profile) {
+    // v1.57 authority: a `member` caller manages nothing. Touching an
+    // owner/admin row (as the target's CURRENT role or the requested new role)
+    // is owner-only (`can_manage_privileged`, checked below once the target's
+    // role is known); an admin may only operate on member rows.
+    if let Err(r) = require_manage_members(&profile) {
         return r;
     }
 
@@ -537,6 +557,21 @@ pub async fn change_role(
             Some(r) => r,
             None => return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "admin not found"),
         };
+
+        // v1.57 privileged gate: creating/altering an owner|admin role — or
+        // touching a row that currently HOLDS one — is owner-only. An admin
+        // (team manager) may only operate on member rows staying member.
+        // Placed before the no-op short-circuit so an admin cannot even
+        // no-op-touch an owner/admin row.
+        let touches_privileged = matches!(new_role.as_str(), "owner" | "admin")
+            || matches!(current_role.as_str(), "owner" | "admin");
+        if touches_privileged && !crate::mgmt::tenant_authz::can_manage_privileged(&profile.role) {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "PRIVILEGED_ROLE_REQUIRED",
+                "only an owner may set or change owner/admin roles",
+            );
+        }
 
         // If the role isn't actually changing, succeed immediately.
         if current_role == new_role {
