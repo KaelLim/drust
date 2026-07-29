@@ -177,10 +177,9 @@ no_pat_title = "No PAT available"
 no_pat_body = "Visit /drust/admin/settings to view your PAT, then click here again."
 
 [admin_team.action]
-promote = "Promote to Owner"
-demote = "Demote to Member"
 remove = "Remove"
-confirm_demote = "Demote {email} to Member?"
+change_role = "Change role"
+confirm_role = "Change {email} to the {role} role?"
 confirm_remove = "Type {email} to confirm removal"
 
 [admin_team.col]

@@ -183,10 +183,9 @@ no_pat_title = "尚無可用 PAT"
 no_pat_body = "請到 /drust/admin/settings 查看你的 PAT，然後再按一次。"
 
 [admin_team.action]
-promote = "提升為 Owner"
-demote = "降為 Member"
 remove = "移除"
-confirm_demote = "將 {email} 降為 Member？"
+change_role = "變更角色"
+confirm_role = "將 {email} 變更為 {role} 角色？"
 confirm_remove = "輸入 {email} 確認移除"
 
 [admin_team.col]

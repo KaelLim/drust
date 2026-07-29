@@ -561,7 +561,7 @@ pub async fn change_role(
         return json_error(
             StatusCode::BAD_REQUEST,
             "INVALID_ROLE",
-            "role must be 'owner' or 'member'",
+            "role must be 'owner', 'admin' or 'member'",
         );
     }
 

@@ -1522,6 +1522,10 @@
   .key-meta{font-size:11.5px;line-height:1.6}
   .hk-rate{font-family:var(--font-mono);font-size:11px;color:var(--muted);letter-spacing:0.3px}
 
+  /* admin_team.html — per-row role picker + remove, right-aligned on one line. */
+  .role-actions{text-align:right;white-space:nowrap}
+  .role-select{height:28px;min-width:0;padding:0 8px;font-size:12px;vertical-align:middle;margin-right:6px}
+
   /* ---------------- behaviour hooks ----------------
      Classes that carry NO styling on purpose: they exist solely as
      querySelector anchors for a page's own script. Declared here — with the
@@ -1549,7 +1553,5 @@
   .p-op{}                 /* collection_rows.html: policy rule operator select */
   .p-kind{}               /* collection_rows.html: policy rule operand kind */
   .p-val{}                /* collection_rows.html: policy rule value input */
-  .btn-promote{}          /* admin_team.html: promote-to-owner button */
-  .btn-demote{}           /* admin_team.html: demote-to-member button */
   .btn-remove{}           /* admin_team.html: remove-admin button */
 </style>

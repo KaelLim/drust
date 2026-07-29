@@ -571,17 +571,21 @@ async fn team_ui_role_controls_adapt_to_caller() {
                 .contains("full access to every tenant"),
         "admin caller must NOT be offered the admin/owner invite options"
     );
-    // codex review: promotion targets owner (owner-only), so an admin caller
-    // must see NO promote BUTTON on any row (no dead 403 button); an owner sees
-    // it on the member row. Match the button's class attribute (`…btn-promote"`,
-    // double-quoted) — NOT the bare token, which also appears in the JS handler's
-    // `querySelector('.btn-promote')` (single-quoted, always present).
+    // Role editing on a row is owner-only (`can_manage_privileged`), so only an
+    // owner gets the three-way role picker; an admin caller sees no role control
+    // at all (a picker would be a dead 403 button). Anchor on the double-quoted
+    // class ATTRIBUTE — the bare token also appears in the JS handler's
+    // `querySelector('.role-select')`, which is always present.
     assert!(
-        owner_html.contains("btn-promote\""),
-        "owner must see a promote button"
+        owner_html.contains(r#"class="select role-select""#),
+        "owner must see the row role picker"
     );
     assert!(
-        !admin_html.contains("btn-promote\""),
-        "admin must NOT see any promote button (promotion is owner-only)"
+        owner_html.contains(r#"<option value="admin""#),
+        "owner picker must reach the admin middle tier"
+    );
+    assert!(
+        !admin_html.contains(r#"class="select role-select""#),
+        "admin must NOT see any role picker (role editing is owner-only)"
     );
 }

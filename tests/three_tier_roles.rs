@@ -187,6 +187,29 @@ async fn remove(app: axum::Router, cookie: &str, target_id: i64) -> axum::http::
     .unwrap()
 }
 
+/// GET an admin HTML page as `cookie`. `Accept: text/html` is mandatory —
+/// `team_page_or_json` serves the JSON roster to any other Accept.
+async fn get_html(app: &axum::Router, cookie: &str, uri: &str) -> (StatusCode, String) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(header::COOKIE, cookie)
+                .header(header::ACCEPT, "text/html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 8_000_000)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
 fn root_id(dir: &tempfile::TempDir) -> i64 {
     let meta_path = dir.path().join("meta.sqlite");
     let conn = rusqlite::Connection::open(&meta_path).unwrap();
@@ -543,4 +566,151 @@ async fn remove_last_owner_still_rejected() {
     let body = body_json(resp).await;
     assert_eq!(status, StatusCode::CONFLICT, "remove last owner: {body}");
     assert_eq!(body["error_code"], "LAST_OWNER");
+}
+
+// ─── P0-4 — the roster UI must reach all three tiers ─────────────────────────
+// Until v1.56.1 the roster rendered a single Promote button hard-wired to
+// `patchRole(id, 'owner')` and a Demote button hard-wired to `'member'`, so
+// there was NO member→admin and NO admin→member path in the UI at all — the
+// middle tier could only be chosen at invite time. The backend always
+// supported it (`is_valid_role` accepts owner|admin|member); only the frontend
+// was half-wired.
+
+/// Owner caller: every row carries a three-way role picker, so member→admin is
+/// reachable. Anchored on the double-quoted class attribute + the concrete
+/// `<option value="admin">` markup — never a bare token, which would also
+/// match the script's `querySelector('.role-select')`.
+#[tokio::test]
+async fn team_page_owner_gets_three_way_role_picker() {
+    let (app, dir) = spin_up().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    insert_admin(&dir, "mem@example.com", "member");
+
+    let (status, html) = get_html(&app, &owner_cookie, "/admin/team").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"class="select role-select""#),
+        "owner must get a role picker on the roster"
+    );
+    for role in ["owner", "admin", "member"] {
+        assert!(
+            html.contains(&format!(r#"<option value="{role}""#)),
+            "role picker must offer `{role}` — member→admin/admin→member were unreachable"
+        );
+    }
+}
+
+/// Admin caller: no owner/admin-targeting control anywhere on the page. An
+/// admin may only remove member rows (`can_manage_privileged` is owner-only),
+/// so rendering a picker would be a dead 403 button.
+#[tokio::test]
+async fn team_page_admin_caller_gets_no_role_picker() {
+    let (app, dir) = spin_up().await;
+    let (_mid, _mc) = insert_admin(&dir, "mem@example.com", "member");
+    let (_aid, admin_cookie) = insert_admin(&dir, "adm@example.com", "admin");
+
+    let (status, html) = get_html(&app, &admin_cookie, "/admin/team").await;
+    assert_eq!(status, StatusCode::OK);
+    // Anchor on the double-quoted class ATTRIBUTE, never the bare token — the
+    // script's `querySelector('.role-select')` is emitted for every caller.
+    assert!(
+        !html.contains(r#"class="select role-select""#),
+        "admin caller must NOT get a role picker"
+    );
+    assert!(
+        !html.contains(r#"<option value="owner""#) && !html.contains(r#"<option value="admin""#),
+        "admin caller must not be offered an owner/admin target anywhere"
+    );
+    // The member row keeps its remove control (unchanged behaviour).
+    assert!(
+        html.contains(r#"btn-remove""#),
+        "admin caller keeps the remove button on member rows"
+    );
+}
+
+/// Backend half of the member→admin transition the picker now exposes: 200 and
+/// the re-rendered roster shows the `admin` pill.
+#[tokio::test]
+async fn owner_promotes_member_to_admin_roster_shows_admin_pill() {
+    let (app, dir) = spin_up().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (mem_id, _) = insert_admin(&dir, "mem@example.com", "member");
+
+    let resp = patch_role(app.clone(), &owner_cookie, mem_id, "admin").await;
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "owner member→admin: {body}");
+    assert_eq!(body["role"], "admin");
+
+    let (s, html) = get_html(&app, &owner_cookie, "/admin/team").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        html.contains(r#"<span class="pill mint">admin</span>"#),
+        "roster must render the admin pill after promotion"
+    );
+}
+
+/// The reverse transition the picker also exposes: admin→member is a 200 for an
+/// owner caller and the roster falls back to the member pill.
+#[tokio::test]
+async fn owner_demotes_admin_to_member_roster_shows_member_pill() {
+    let (app, dir) = spin_up().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (adm_id, _) = insert_admin(&dir, "adm@example.com", "admin");
+
+    let resp = patch_role(app.clone(), &owner_cookie, adm_id, "member").await;
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "owner admin→member: {body}");
+    assert_eq!(body["role"], "member");
+
+    let (s, html) = get_html(&app, &owner_cookie, "/admin/team").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        html.contains(r#"<span class="pill muted">member</span>"#),
+        "roster must render the member pill after demotion"
+    );
+    assert!(
+        !html.contains(r#"<span class="pill mint">admin</span>"#),
+        "no admin row should remain"
+    );
+}
+
+/// Last-owner guard is untouched by the picker: BOTH owner→member and
+/// owner→admin on the sole owner stay 409 LAST_OWNER.
+#[tokio::test]
+async fn last_owner_guard_holds_for_both_demotion_targets() {
+    for target in ["member", "admin"] {
+        let (app, dir) = spin_up().await;
+        let owner_cookie = login(&app, "root", "hunter2").await;
+        let sole_owner = root_id(&dir);
+        let resp = patch_role(app, &owner_cookie, sole_owner, target).await;
+        let status = resp.status();
+        let body = body_json(resp).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "owner→{target} on the last owner: {body}"
+        );
+        assert_eq!(body["error_code"], "LAST_OWNER");
+    }
+}
+
+/// The `change_role` INVALID_ROLE message must name all three tiers — it was
+/// stale ("'owner' or 'member'") while the invite/batch paths already listed
+/// `admin`, so an operator hitting it was told the middle tier does not exist.
+#[tokio::test]
+async fn change_role_invalid_role_message_names_admin_tier() {
+    let (app, dir) = spin_up().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (mem_id, _) = insert_admin(&dir, "mem@example.com", "member");
+
+    let resp = patch_role(app, &owner_cookie, mem_id, "supervisor").await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert_eq!(body["error_code"], "INVALID_ROLE");
+    assert_eq!(
+        body["message"], "role must be 'owner', 'admin' or 'member'",
+        "INVALID_ROLE message must name the admin tier"
+    );
 }

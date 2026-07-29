@@ -24,7 +24,7 @@
           <th>{{ t.s("admin_team.col.name") }}</th>
           <th>{{ t.s("admin_team.col.email") }}</th>
           <th style="width:120px;">{{ t.s("admin_team.col.role") }}</th>
-          {% if admin.sees_team %}<th style="width:220px;text-align:right;"></th>{% endif %}
+          {% if admin.sees_team %}<th style="width:250px;text-align:right;"></th>{% endif %}
         </tr>
       </thead>
       <tbody>
@@ -42,23 +42,25 @@
             {% endif %}
           </td>
           {% if admin.sees_team %}
-          <td style="text-align:right;">
-            {% if row.role == "member" %}
-              {# member row — an admin (team manager) may REMOVE a member but not
-                 promote one: promotion targets owner (btn-promote → role:'owner'),
-                 which is owner-only. So gate promote on is_owner; an admin sees
-                 only remove here (no dead 403 button). #}
-              {% if admin.is_owner %}
-              <button type="button" class="btn sm ghost btn-promote">{{ t.s("admin_team.action.promote") }}</button>
-              {% endif %}
+          <td class="role-actions">
+            {% if admin.is_owner %}
+              {# owner caller — the ONLY role that may create/edit an owner or
+                 admin row (`can_manage_privileged`), so it gets the full
+                 three-way picker on every row. The pre-v1.57 Promote/Demote
+                 pair was hard-wired to owner/member and could not reach the
+                 `admin` middle tier at all. The last-owner guard still answers
+                 409 server-side when the sole owner picks a lesser role. #}
+              <select class="select role-select" aria-label="{{ t.s("admin_team.col.role") }}">
+                <option value="owner"{% if row.role == "owner" %} selected{% endif %}>owner</option>
+                <option value="admin"{% if row.role == "admin" %} selected{% endif %}>admin</option>
+                <option value="member"{% if row.role == "member" %} selected{% endif %}>member</option>
+              </select>
               <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>
-            {% else if admin.is_owner %}
-              {# owner / admin row — owner-only; admin callers see no controls here #}
-              {% if row.role == "owner" %}
-                <button type="button" class="btn sm ghost btn-demote">{{ t.s("admin_team.action.demote") }}</button>
-              {% else %}
-                <button type="button" class="btn sm ghost btn-promote">{{ t.s("admin_team.action.promote") }}</button>
-              {% endif %}
+            {% else if row.role == "member" %}
+              {# admin (team-manager) caller — may REMOVE a member but may not
+                 set ANY role: every target other than `member` is privileged
+                 (403 PRIVILEGED_ROLE_REQUIRED) and `member` is a no-op, so a
+                 picker here would be dead UI. Owner/admin rows get nothing. #}
               <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>
             {% endif %}
           </td>
@@ -192,23 +194,24 @@
     var id    = tr.getAttribute('data-admin-id');
     var email = tr.getAttribute('data-admin-email') || '(no email)';
 
-    var bp = tr.querySelector('.btn-promote');
-    if (bp) bp.addEventListener('click', async function () {
-      var res = await patchRole(id, 'owner');
-      if (res.ok) { window.location.reload(); return; }
-      alertError(res);
-    });
-
-    var bd = tr.querySelector('.btn-demote');
-    if (bd) bd.addEventListener('click', async function () {
+    // Role picker (owner callers only — see the template comment). Reverts to
+    // the row's current role on cancel or on any server refusal (409 LAST_OWNER,
+    // 403 PRIVILEGED_ROLE_REQUIRED), so the control never shows a role the
+    // server did not accept.
+    var sel = tr.querySelector('.role-select');
+    if (sel) sel.addEventListener('change', async function () {
+      var current = tr.getAttribute('data-admin-role') || sel.value;
+      var next    = sel.value;
+      if (next === current) return;
       var ok = await drustUI.confirm({
-        title:  '{{ t.s("admin_team.action.demote") }}',
-        body:   '{{ t.s("admin_team.action.confirm_demote") }}'.replace('{email}', email),
+        title:  '{{ t.s("admin_team.action.change_role") }}',
+        body:   '{{ t.s("admin_team.action.confirm_role") }}'.replace('{email}', email).replace('{role}', next),
         danger: true
       });
-      if (!ok) return;
-      var res = await patchRole(id, 'member');
+      if (!ok) { sel.value = current; return; }
+      var res = await patchRole(id, next);
       if (res.ok) { window.location.reload(); return; }
+      sel.value = current;
       alertError(res);
     });
 
