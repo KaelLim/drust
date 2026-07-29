@@ -419,3 +419,60 @@ async fn upsert_duplicate_on_conflict_columns_rejected() {
         "got {err}"
     );
 }
+
+#[tokio::test]
+async fn upsert_within_batch_duplicate_rejected_on_id_less_table() {
+    // (codex r2) Fix: dedup still fires for a table with no `id` column
+    // (falls back to the raw conflict-key tuple).
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    exec(&d, "CREATE TABLE noid (sku TEXT UNIQUE, name TEXT)").await;
+    let err = batch_upsert(
+        &s,
+        "noid",
+        vec![json!({"sku":"a","name":"X"}), json!({"sku":"a","name":"Y"})],
+        vec!["sku".into()],
+        AuditActor::service(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("UPSERT_DUPLICATE_IN_BATCH"),
+        "got {err}"
+    );
+    assert_eq!(count_rows(&d, "noid").await, 0, "atomic rollback");
+}
+
+#[tokio::test]
+async fn upsert_partial_unique_index_rejected_as_target() {
+    // (codex r2) Fix: a partial unique index is not a valid ON CONFLICT target
+    // → clean UPSERT_NO_UNIQUE, not a confusing runtime SQLite error.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    exec(
+        &d,
+        "CREATE TABLE pt (sku TEXT, name TEXT); \
+         CREATE UNIQUE INDEX ux_pt ON pt(sku) WHERE name IS NOT NULL;",
+    )
+    .await;
+    let err = batch_upsert(
+        &s,
+        "pt",
+        vec![json!({"sku":"a","name":"X"})],
+        vec!["sku".into()],
+        AuditActor::service(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("UPSERT_NO_UNIQUE"),
+        "partial index must not be a target: {err}"
+    );
+}
+
+// The mixed-expression-index case (`(sku, lower(name))` must NOT satisfy
+// on_conflict=["sku"]) is covered as a direct `validate_conflict_target` unit
+// test in src/mcp/tools/write.rs — a full batch_upsert can't reach it because
+// `describe_collection` itself cannot read a table carrying an expression index
+// (pre-existing; and such indexes are unreachable via drust's API — create_index
+// only takes column names).

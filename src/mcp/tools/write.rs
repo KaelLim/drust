@@ -404,14 +404,25 @@ pub(crate) fn validate_conflict_target(
     // entries (key == 0, or a NULL expression name) are skipped.
     let idx_names: Vec<String> = tx
         .prepare(&format!("PRAGMA index_list(\"{}\")", esc(table)))?
-        .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+        // index_list cols: (0 seq, 1 name, 2 unique, 3 origin, 4 partial).
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
-        .filter(|(_, uniq)| *uniq == 1)
-        .map(|(n, _)| n)
+        // UNIQUE and NOT partial. A partial unique index (`... WHERE <pred>`)
+        // requires a matching `ON CONFLICT(cols) WHERE <pred>` — drust generates
+        // no WHERE, so SQLite would reject the target at runtime; refuse it here
+        // with a clean UPSERT_NO_UNIQUE instead.
+        .filter(|(_, uniq, partial)| *uniq == 1 && *partial == 0)
+        .map(|(n, _, _)| n)
         .collect();
     for iname in idx_names {
-        let cols: Vec<(String, String)> = tx
+        let key_cols: Vec<(Option<String>, String)> = tx
             .prepare(&format!("PRAGMA index_xinfo(\"{}\")", esc(&iname)))?
             .query_map([], |r| {
                 Ok((
@@ -422,8 +433,19 @@ pub(crate) fn validate_conflict_target(
             })?
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
-            .filter(|(key, name, _)| *key == 1 && name.is_some())
-            .map(|(_, name, coll)| (name.unwrap(), coll.unwrap_or_else(|| "BINARY".to_string())))
+            .filter(|(key, _, _)| *key == 1)
+            .map(|(_, name, coll)| (name, coll.unwrap_or_else(|| "BINARY".to_string())))
+            .collect();
+        // An expression key column (NULL name) means this is not a plain-column
+        // unique index — it cannot be an `ON CONFLICT(col, ...)` target. Skip the
+        // WHOLE index so a caller can't falsely match on the remaining named
+        // subset (e.g. `(a, lower(b))` must NOT satisfy on_conflict=["a"]).
+        if key_cols.iter().any(|(name, _)| name.is_none()) {
+            continue;
+        }
+        let cols: Vec<(String, String)> = key_cols
+            .into_iter()
+            .map(|(name, coll)| (name.unwrap(), coll))
             .collect();
         let colset: std::collections::BTreeSet<String> =
             cols.iter().map(|(n, _)| n.clone()).collect();
@@ -1082,4 +1104,77 @@ pub async fn delete_record_filtered(
     }
     webhooks.dispatch(&tenant, collection, ev);
     Ok(response_payload)
+}
+
+#[cfg(test)]
+mod validate_conflict_target_tests {
+    use super::validate_conflict_target;
+    use rusqlite::Connection;
+
+    fn conn_with(ddl: &str) -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(ddl).unwrap();
+        c
+    }
+
+    #[test]
+    fn accepts_unique_column_returns_binary_collation() {
+        let c = conn_with("CREATE TABLE t(sku TEXT UNIQUE, name TEXT);");
+        let m = validate_conflict_target(&c, "t", &["sku".to_string()]).unwrap();
+        assert_eq!(m.get("sku").map(|s| s.as_str()), Some("BINARY"));
+    }
+
+    #[test]
+    fn accepts_integer_pk_target() {
+        // Bare INTEGER PRIMARY KEY (rowid, no autoindex) still resolves via the
+        // PK fallback after the unique-index scan.
+        let c = conn_with("CREATE TABLE t(id INTEGER PRIMARY KEY, sku TEXT);");
+        let m = validate_conflict_target(&c, "t", &["id".to_string()]).unwrap();
+        assert_eq!(m.get("id").map(|s| s.as_str()), Some("BINARY"));
+    }
+
+    #[test]
+    fn reports_index_collation() {
+        let c = conn_with(
+            "CREATE TABLE t(sku TEXT, name TEXT); \
+             CREATE UNIQUE INDEX ux ON t(sku COLLATE NOCASE);",
+        );
+        let m = validate_conflict_target(&c, "t", &["sku".to_string()]).unwrap();
+        assert_eq!(m.get("sku").map(|s| s.as_str()), Some("NOCASE"));
+    }
+
+    #[test]
+    fn rejects_partial_unique_index() {
+        let c = conn_with(
+            "CREATE TABLE t(sku TEXT, name TEXT); \
+             CREATE UNIQUE INDEX ux ON t(sku) WHERE name IS NOT NULL;",
+        );
+        let e = validate_conflict_target(&c, "t", &["sku".to_string()]).unwrap_err();
+        assert!(e.to_string().contains("UPSERT_NO_UNIQUE"), "got {e}");
+    }
+
+    #[test]
+    fn rejects_expression_index_on_named_subset() {
+        // `(sku, lower(name))` must NOT satisfy on_conflict=["sku"].
+        let c = conn_with(
+            "CREATE TABLE t(sku TEXT, name TEXT); \
+             CREATE UNIQUE INDEX ux ON t(sku, lower(name));",
+        );
+        let e = validate_conflict_target(&c, "t", &["sku".to_string()]).unwrap_err();
+        assert!(e.to_string().contains("UPSERT_NO_UNIQUE"), "got {e}");
+    }
+
+    #[test]
+    fn rejects_duplicate_columns() {
+        let c = conn_with("CREATE TABLE t(a TEXT, b TEXT, UNIQUE(a, b));");
+        let e = validate_conflict_target(&c, "t", &["a".to_string(), "a".to_string()]).unwrap_err();
+        assert!(e.to_string().contains("UPSERT_DUPLICATE_COLUMN"), "got {e}");
+    }
+
+    #[test]
+    fn rejects_non_unique_target() {
+        let c = conn_with("CREATE TABLE t(sku TEXT UNIQUE, name TEXT);");
+        let e = validate_conflict_target(&c, "t", &["name".to_string()]).unwrap_err();
+        assert!(e.to_string().contains("UPSERT_NO_UNIQUE"), "got {e}");
+    }
 }

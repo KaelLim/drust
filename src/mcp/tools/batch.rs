@@ -313,7 +313,8 @@ pub async fn batch_upsert_core(
                 // key on the resolved record id, so it is collation-correct by
                 // construction (the fixed pre-image probe resolves both to one
                 // id). Any error rolls the whole atomic tx back before fan-out.
-                let mut touched_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+                let mut touched: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 for (m, vb) in &encoded {
                     let (op, rec) = upsert_row_in_tx(
                         tx,
@@ -326,12 +327,25 @@ pub async fn batch_upsert_core(
                         quota_tier,
                         &actor,
                     )?;
-                    if let Some(id) = rec.get("id").and_then(|v| v.as_i64())
-                        && !touched_ids.insert(id)
-                    {
-                        return Err(invalid_input(format!(
-                            "UPSERT_DUPLICATE_IN_BATCH: two rows resolve to the same record (id {id}) — a batch may not upsert the same conflict key twice"
-                        )));
+                    // Dedup key: the resolved record `id` when present
+                    // (collation-correct — two collation-colliding rows resolve
+                    // to ONE id); otherwise the raw conflict-key tuple, so a
+                    // no-`id` table (not reachable via create_collection, which
+                    // always adds `id`) still gets exact-key dedup.
+                    let dedup_key = match rec.get("id").and_then(|v| v.as_i64()) {
+                        Some(id) => format!("id:{id}"),
+                        None => {
+                            let parts: Vec<String> = on_conflict_tx
+                                .iter()
+                                .map(|c| m.get(c).map(|v| v.to_string()).unwrap_or_default())
+                                .collect();
+                            format!("k:{}", parts.join("\u{1}"))
+                        }
+                    };
+                    if !touched.insert(dedup_key) {
+                        return Err(invalid_input(
+                            "UPSERT_DUPLICATE_IN_BATCH: two rows resolve to the same record — a batch may not upsert the same conflict key twice".to_string(),
+                        ));
                     }
                     out.push((op, rec));
                 }
