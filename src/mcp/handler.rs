@@ -2800,9 +2800,51 @@ impl ServerHandler for DrustMcpService {
         let tenant_id = self.state.tenant_id();
         let base = self.state.public_base_url();
         let instructions = build_instructions(tenant_id, base);
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("drust", env!("CARGO_PKG_VERSION")))
-            .with_instructions(instructions)
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::new("drust", env!("CARGO_PKG_VERSION")))
+        .with_instructions(instructions)
+    }
+
+    // --- MCP Resources (v1.56, M2). Hand-written (rmcp has no resource macro);
+    // thin wrappers over `crate::mcp::resources` — the tenant comes from the
+    // per-tenant `self.state`, role is always Service (mcp_dispatch-gated), so
+    // no request-context plumbing is needed. See src/mcp/resources.rs.
+    async fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourcesResult, McpError> {
+        Ok(rmcp::model::ListResourcesResult::with_all_items(
+            crate::mcp::resources::static_resource_list(self.state.tenant_id()),
+        ))
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourceTemplatesResult, McpError> {
+        // Templates land in Task 3 (M4); none advertised yet.
+        Ok(rmcp::model::ListResourceTemplatesResult::default())
+    }
+
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResult, McpError> {
+        use crate::mcp::resources;
+        let uri = resources::parse_resource_uri(&request.uri, self.state.tenant_id())?;
+        let (body, mime) = resources::render_resource(&self.state, &uri).await?;
+        resources::audit_resource_read(&self.state, &request.uri);
+        let contents = rmcp::model::ResourceContents::text(resources::cap_body(body), &request.uri)
+            .with_mime_type(mime);
+        Ok(rmcp::model::ReadResourceResult::new(vec![contents]))
     }
 }
 
