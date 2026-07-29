@@ -611,20 +611,25 @@ fn internal(msg: String) -> Response {
     r
 }
 
-async fn legacy_files_redirect() -> Response {
+/// Browser-facing `Location` must carry the external mount prefix — routes
+/// live at root but the proxy strips `DRUST_BASE_PATH` before axum, so a bare
+/// `/admin/...` here 301s outside the mount in root mode. See the base_path
+/// invariant in CLAUDE.md.
+fn permanent_redirect_to(path: &str) -> Response {
     let mut resp = "".into_response();
     *resp.status_mut() = StatusCode::MOVED_PERMANENTLY;
-    resp.headers_mut()
-        .insert(header::LOCATION, "/admin/files".parse().unwrap());
+    if let Ok(v) = crate::base_path::base(path).parse() {
+        resp.headers_mut().insert(header::LOCATION, v);
+    }
     resp
 }
 
+async fn legacy_files_redirect() -> Response {
+    permanent_redirect_to("/admin/files")
+}
+
 async fn legacy_reconcile_redirect() -> Response {
-    let mut resp = "".into_response();
-    *resp.status_mut() = StatusCode::MOVED_PERMANENTLY;
-    resp.headers_mut()
-        .insert(header::LOCATION, "/admin/files/reconcile".parse().unwrap());
-    resp
+    permanent_redirect_to("/admin/files/reconcile")
 }
 
 pub fn build_mgmt_router(state: MgmtState) -> Router {
