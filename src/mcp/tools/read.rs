@@ -200,6 +200,15 @@ pub async fn list_records(
         "total": total,
         "page": page,
         "perPage": per_page,
+        // v1.56 M4 resource_link: a TOP-LEVEL template (never per-row — the
+        // default projection omits `id` and `resource_link` is a legal user
+        // column). The model substitutes an id it selected to fetch that row
+        // as a `drust://…/records/{id}` resource.
+        "resource_uri_template": format!(
+            "drust://{}/collections/{}/records/{{id}}",
+            s.tenant_id(),
+            args.collection
+        ),
     }))
 }
 

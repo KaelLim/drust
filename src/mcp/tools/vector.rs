@@ -166,5 +166,11 @@ pub async fn search_collection(
         "k": input.k,
         "metric": input.metric,
         "truncated": false,
+        // v1.56 M4 resource_link (top-level template — see list_records).
+        "resource_uri_template": format!(
+            "drust://{}/collections/{}/records/{{id}}",
+            s.tenant_id(),
+            input.collection
+        ),
     }))
 }

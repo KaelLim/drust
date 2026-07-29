@@ -239,14 +239,33 @@ pub async fn insert_record(
     collection: &str,
     data: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    insert_record_checked(
+    let mut out = insert_record_checked(
         s,
         collection,
         data,
         None,
         crate::storage::record_history::AuditActor::service(),
     )
-    .await
+    .await?;
+    // v1.56 M4 resource_link: a CONCRETE, top-level link to the new row (the
+    // response already carries its `id`). Injected in the single-insert wrapper
+    // only, so the shared `insert_record_checked` core (also used by the batch
+    // and edge paths) is byte-unchanged. Top-level, so it can never collide
+    // with a user column named `resource_link` inside `record`.
+    if let Some(o) = out.as_object_mut()
+        && let Some(id) = o.get("id").cloned()
+    {
+        o.insert(
+            "resource_link".into(),
+            serde_json::Value::String(format!(
+                "drust://{}/collections/{}/records/{}",
+                s.tenant_id(),
+                collection,
+                id
+            )),
+        );
+    }
+    Ok(out)
 }
 
 /// `insert_record` with an optional in-tx policy CHECK (enforcement-core entry).

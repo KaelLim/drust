@@ -25,8 +25,9 @@ pub fn resource_max_bytes() -> usize {
         .unwrap_or(262_144)
 }
 
-/// The parsed, tenant-checked resource identity. Static entries (M2); Task 3 adds
-/// the record/history templates.
+/// The parsed, tenant-checked resource identity. The first nine are static
+/// (M2); the last four are the M4 templates (parsed + validated here so
+/// `render_resource` only ever sees an already-authorized shape).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceUri {
     /// `drust://<t>/schema` — the `get_schema_overview` payload (bootstrap first stop).
@@ -47,14 +48,123 @@ pub enum ResourceUri {
     Rpcs,
     /// `drust://<t>/cron` — cron-job inventory.
     Cron,
+    // ── M4 templates ──
+    /// `drust://<t>/collections/{c}/schema` — one collection's full schema.
+    CollectionSchema { collection: String },
+    /// `drust://<t>/collections/{c}/records{?page,per_page,sort,order}` — a page of rows.
+    Records {
+        collection: String,
+        page: Option<u32>,
+        per_page: Option<u32>,
+        sort: Option<String>,
+        order: Option<String>,
+    },
+    /// `drust://<t>/collections/{c}/records/{id}` — one row by integer id.
+    Record { collection: String, id: i64 },
+    /// `drust://<t>/rpcs/{name}` — one stored RPC's metadata (sql/defaults redacted).
+    Rpc { name: String },
 }
 
 fn not_found(uri: &str) -> McpError {
     McpError::resource_not_found(format!("no such resource: {uri}"), None)
 }
 
+/// A parsed-but-empty target (unknown collection / missing row / missing rpc)
+/// maps to the same `-32002` — the render layer must NOT become an existence
+/// oracle, and a genuinely-absent resource is "not found" all the same.
+fn missing() -> McpError {
+    McpError::resource_not_found("no such resource".to_string(), None)
+}
+
 fn internal(e: impl std::fmt::Display) -> McpError {
     McpError::internal_error(e.to_string(), None)
+}
+
+/// Map a reader's `anyhow` error: an unknown-collection signal → `-32002`
+/// (not an existence oracle — parse already rejected protected/ill-formed
+/// names), everything else → internal. Substring is a SECONDARY contract here
+/// (the parser is the primary gate); `list_records` reliably `bail!`s
+/// `COLLECTION_NOT_FOUND` for a valid-but-absent collection.
+fn map_reader_err(e: anyhow::Error) -> McpError {
+    let s = e.to_string();
+    if s.contains("COLLECTION_NOT_FOUND") || s.contains("no such collection") {
+        McpError::resource_not_found(s, None)
+    } else {
+        McpError::internal_error(s, None)
+    }
+}
+
+/// `identifier()` + protected-collection guard for a `{collection}` segment.
+/// Rejects `_system_*` (else the template becomes an existence oracle for
+/// protected tables) and any non-identifier → `-32002`.
+fn valid_collection(c: &str, raw: &str) -> Result<(), McpError> {
+    crate::mcp::tools::schema::identifier(c).map_err(|_| not_found(raw))?;
+    if crate::storage::schema::is_protected_collection(c) {
+        return Err(not_found(raw));
+    }
+    Ok(())
+}
+
+/// `identifier()` for a `{name}`/`{field}` segment (no collection-protection
+/// semantics — a stored RPC named `_system_*` would simply not resolve).
+fn valid_ident(name: &str, raw: &str) -> Result<(), McpError> {
+    crate::mcp::tools::schema::identifier(name).map_err(|_| not_found(raw))
+}
+
+/// Parse a CANONICAL i64 (drust ids are `INTEGER PRIMARY KEY AUTOINCREMENT`).
+/// One row ⇒ exactly one URI: `05` / `+5` / ` 5` round-trip to a different
+/// string and are rejected, so SQLite affinity can never alias `/records/05`
+/// onto id 5 (codex D2).
+fn parse_canonical_i64(s: &str, raw: &str) -> Result<i64, McpError> {
+    let n: i64 = s.parse().map_err(|_| not_found(raw))?;
+    if n.to_string() != s {
+        return Err(not_found(raw));
+    }
+    Ok(n)
+}
+
+/// Parse the `records` template's query. `as_str()==raw` canonicalizes the PATH
+/// but url's form-decoding (`query_pairs()`) still re-decodes `%xx` and `+` in
+/// the QUERY past that check (codex D1: `?p%61ge=2` → key `page`). So force the
+/// raw query to literal ASCII — reject any `%`/`+` — then `query_pairs()`
+/// decoded == raw and is safe. Unknown/duplicate keys and unparseable values
+/// are rejected (deny-by-default); `per_page` clamps to 1..=200, `page` to ≥1.
+#[allow(clippy::type_complexity)]
+fn parse_records_query(
+    u: &url::Url,
+    raw: &str,
+) -> Result<(Option<u32>, Option<u32>, Option<String>, Option<String>), McpError> {
+    let Some(q) = u.query() else {
+        return Ok((None, None, None, None));
+    };
+    if q.contains('%') || q.contains('+') {
+        return Err(not_found(raw));
+    }
+    let (mut page, mut per_page, mut sort, mut order) = (None, None, None, None);
+    let mut seen = std::collections::HashSet::new();
+    for (k, v) in u.query_pairs() {
+        if !seen.insert(k.to_string()) {
+            return Err(not_found(raw)); // duplicate key
+        }
+        match k.as_ref() {
+            "page" => page = Some(v.parse::<u32>().map_err(|_| not_found(raw))?.max(1)),
+            "per_page" => {
+                per_page = Some(v.parse::<u32>().map_err(|_| not_found(raw))?.clamp(1, 200))
+            }
+            "sort" => {
+                valid_ident(v.as_ref(), raw)?; // list_records re-checks the field vs schema
+                sort = Some(v.to_string());
+            }
+            "order" => {
+                if v.as_ref() != "asc" && v.as_ref() != "desc" {
+                    return Err(not_found(raw));
+                }
+                order = Some(v.to_string());
+            }
+            _ => return Err(not_found(raw)), // unknown key
+        }
+    }
+    Ok((page, per_page, sort, order))
 }
 
 /// Parse + tenant-authorize a `drust://<tenant>/<path>` URI. Deny-by-default:
@@ -71,12 +181,16 @@ fn internal(e: impl std::fmt::Display) -> McpError {
 /// not canonical → reject.
 pub fn parse_resource_uri(raw: &str, tenant_id: &str) -> Result<ResourceUri, McpError> {
     let u = url::Url::parse(raw).map_err(|_| not_found(raw))?;
+    // Authority + path canonicalization. `as_str()==raw` rejects EVERY url
+    // rewrite — most importantly literal AND `%2e`-encoded dot-segments, both
+    // of which url resolves before serializing (empirically confirmed on url
+    // 2.5.8), so `…/a/../schema` and `…/a/%2e%2e/schema` both serialize to
+    // `…/schema` ≠ raw → rejected. Query is per-route (below), NOT blanket.
     if u.scheme() != "drust"
         || !u.username().is_empty()
         || u.password().is_some()
         || u.port().is_some()
         || u.fragment().is_some()
-        || u.query().is_some() // no static resource takes a query (templates relax this in Task 3)
         || u.cannot_be_a_base()
         || u.host_str() != Some(tenant_id)
         || u.as_str() != raw
@@ -87,22 +201,95 @@ pub fn parse_resource_uri(raw: &str, tenant_id: &str) -> Result<ResourceUri, Mcp
         Some(it) => it.collect(),
         None => return Err(not_found(raw)),
     };
-    // Reject empty segments (`//`, trailing `/`) — no valid resource has them.
-    if segs.iter().any(|s| s.is_empty()) {
+    // Every segment: non-empty and %-free. `as_str()==raw` already killed
+    // path-normalization; the no-`%` rule closes the encodings url KEEPS
+    // verbatim (`%2f`, `%00`, `%5c`) so a segment can never smuggle a slash /
+    // NUL / dot past the structural match below.
+    if segs.iter().any(|s| s.is_empty() || s.contains('%')) {
         return Err(not_found(raw));
     }
+    let has_query = u.query().is_some();
     match segs.as_slice() {
-        ["schema"] => Ok(ResourceUri::Schema),
-        ["schema.md"] => Ok(ResourceUri::SchemaMd),
-        ["collections"] => Ok(ResourceUri::Collections),
-        ["openapi.json"] => Ok(ResourceUri::OpenApi),
-        ["types.ts"] => Ok(ResourceUri::TypesTs),
-        ["zod.ts"] => Ok(ResourceUri::ZodTs),
-        ["functions"] => Ok(ResourceUri::Functions),
-        ["rpcs"] => Ok(ResourceUri::Rpcs),
-        ["cron"] => Ok(ResourceUri::Cron),
+        // ── static (no query) ──
+        ["schema"] if !has_query => Ok(ResourceUri::Schema),
+        ["schema.md"] if !has_query => Ok(ResourceUri::SchemaMd),
+        ["collections"] if !has_query => Ok(ResourceUri::Collections),
+        ["openapi.json"] if !has_query => Ok(ResourceUri::OpenApi),
+        ["types.ts"] if !has_query => Ok(ResourceUri::TypesTs),
+        ["zod.ts"] if !has_query => Ok(ResourceUri::ZodTs),
+        ["functions"] if !has_query => Ok(ResourceUri::Functions),
+        ["rpcs"] if !has_query => Ok(ResourceUri::Rpcs),
+        ["cron"] if !has_query => Ok(ResourceUri::Cron),
+        // ── M4 templates ──
+        ["collections", c, "schema"] if !has_query => {
+            valid_collection(c, raw)?;
+            Ok(ResourceUri::CollectionSchema {
+                collection: c.to_string(),
+            })
+        }
+        ["collections", c, "records"] => {
+            valid_collection(c, raw)?;
+            let (page, per_page, sort, order) = parse_records_query(&u, raw)?;
+            Ok(ResourceUri::Records {
+                collection: c.to_string(),
+                page,
+                per_page,
+                sort,
+                order,
+            })
+        }
+        ["collections", c, "records", id] if !has_query => {
+            valid_collection(c, raw)?;
+            Ok(ResourceUri::Record {
+                collection: c.to_string(),
+                id: parse_canonical_i64(id, raw)?,
+            })
+        }
+        ["rpcs", name] if !has_query => {
+            valid_ident(name, raw)?;
+            Ok(ResourceUri::Rpc {
+                name: name.to_string(),
+            })
+        }
         _ => Err(not_found(raw)),
     }
+}
+
+/// The URI templates advertised via `resources/templates/list`. history +
+/// function-logs are DELIBERATELY absent (codex D4 / spec §3): a resource may
+/// be auto-pulled into model context, and old row snapshots / function stdout
+/// can carry secrets — those stay behind the explicit `get_record_history` /
+/// `get_function_logs` tools.
+pub fn resource_template_list(t: &str) -> Vec<rmcp::model::ResourceTemplate> {
+    let e = |tmpl: &str, name: &str, desc: &str| {
+        rmcp::model::RawResourceTemplate::new(format!("drust://{t}/{tmpl}"), name.to_string())
+            .with_description(desc.to_string())
+            .with_mime_type("application/json".to_string())
+            .no_annotation()
+    };
+    vec![
+        e(
+            "collections/{collection}/schema",
+            "collection schema",
+            "One collection's full schema — fields, indexes, caps, owner_field, RLS policies.",
+        ),
+        e(
+            "collections/{collection}/records{?page,per_page,sort,order}",
+            "collection records",
+            "A page of rows (service view). per_page clamps to 200; the body carries a \
+             resource_uri_template for per-row links.",
+        ),
+        e(
+            "collections/{collection}/records/{id}",
+            "single record",
+            "One row addressed by its integer id.",
+        ),
+        e(
+            "rpcs/{name}",
+            "stored RPC",
+            "One stored RPC's metadata (name, params, mode). SQL body and param defaults are redacted.",
+        ),
+    ]
 }
 
 /// The resources advertised in `resources/list` (all static; templates are NOT
@@ -214,40 +401,33 @@ fn schema_json_to_md(v: &serde_json::Value) -> String {
     out
 }
 
-/// Render a parsed resource to `(body, mime)` by calling the existing reader fn —
-/// same path, same `_system_*` protection as the corresponding tool.
-///
-/// Read-size note (codex Task-1 review): `cap_body` bounds the returned BODY, not
-/// the pre-serialization read. That is acceptable here because every resource is
-/// bounded at the source: `schema`/codegen resources read the tenant's OWN config
-/// (identical to the existing `get_schema_overview`/codegen tools — service-only,
-/// no new amplification), and the record/history templates (Task 3) are
-/// page-bounded (`per_page` ≤ 200). No resource reads attacker-unbounded data
-/// before the cap.
 /// Strip credential-bearing free-form fields from a config-inventory value
 /// before it becomes an **auto-fetchable** resource (spec §3 — a client may pull
 /// a resource into context WITHOUT an explicit model call, unlike a tool). An
 /// RPC `sql` body or param `default` can embed a hardcoded secret; the inventory
 /// (names / shape / mode) is what a bootstrapping agent needs, and the full body
-/// stays available via the explicit `list_rpc` / `call_rpc` tools. Operates on
-/// the JSON array of RPC objects (as `get_schema_overview` and the `rpcs`
-/// resource both carry it).
+/// stays available via the explicit `list_rpc` / `call_rpc` tools. `redact_rpc_obj`
+/// handles one RPC object; `redact_rpc_array` maps it over the inventory array.
+fn redact_rpc_obj(r: &mut serde_json::Value) {
+    let Some(obj) = r.as_object_mut() else {
+        return;
+    };
+    obj.remove("sql");
+    if let Some(params) = obj.get_mut("params").and_then(|p| p.as_array_mut()) {
+        for p in params {
+            if let Some(po) = p.as_object_mut() {
+                po.remove("default");
+            }
+        }
+    }
+}
+
 fn redact_rpc_array(rpcs: &mut serde_json::Value) {
     let Some(arr) = rpcs.as_array_mut() else {
         return;
     };
     for r in arr {
-        let Some(obj) = r.as_object_mut() else {
-            continue;
-        };
-        obj.remove("sql");
-        if let Some(params) = obj.get_mut("params").and_then(|p| p.as_array_mut()) {
-            for p in params {
-                if let Some(po) = p.as_object_mut() {
-                    po.remove("default");
-                }
-            }
-        }
+        redact_rpc_obj(r);
     }
 }
 
@@ -264,6 +444,20 @@ fn redact_cron(jobs: &mut serde_json::Value) {
     }
 }
 
+/// Render a parsed resource to `(body, mime)` by calling the existing reader fn
+/// — same path, same `_system_*` protection as the corresponding tool. An absent
+/// target (unknown collection / missing row / missing rpc) → `-32002` via
+/// `missing()`.
+///
+/// Size posture (codex impl-review CONCERN #6): `cap_body` (applied by the
+/// caller) bounds the OUTPUT that enters model context, NOT peak render memory —
+/// a row with a multi-MB text field is materialized in full before truncation.
+/// This is accepted, not a new amplification: every template reads exactly the
+/// same rows the `list_records` / `search_collection` tools already return
+/// UNCAPPED (the resource is strictly tighter — it truncates), it is service-
+/// only, blobs are elided to `{"__blob_bytes": n}` (never their content), and
+/// pages are bounded to `per_page ≤ 200`. A streaming byte-budget reader would
+/// be the fix if this surface ever admits an untrusted caller.
 pub async fn render_resource(
     s: &DrustMcp,
     uri: &ResourceUri,
@@ -339,7 +533,134 @@ pub async fn render_resource(
             redact_cron(&mut v);
             json(&v)
         }
+        ResourceUri::CollectionSchema { collection } => {
+            let v = exploration::describe_collection(s, collection)
+                .await
+                .map_err(internal)?;
+            // describe_collection returns Ok({"error_code":"COLLECTION_NOT_FOUND"})
+            // for a missing collection (codex D5) — never an Err — so the
+            // string mapper never sees it. Detect the sentinel explicitly.
+            if v.get("error_code").is_some() {
+                return Err(missing());
+            }
+            json(&v)
+        }
+        ResourceUri::Records {
+            collection,
+            page,
+            per_page,
+            sort,
+            order,
+        } => {
+            let sort_spec = sort.as_ref().map(|f| crate::query::list_builder::SortSpec {
+                field: f.clone(),
+                // list_builder's own default dir is "desc"; mirror it
+                // when only a field was given.
+                dir: order.clone().unwrap_or_else(|| "desc".to_string()),
+            });
+            let args = crate::mcp::tools::read::ListRecordsArgs {
+                collection: collection.clone(),
+                filter: None,
+                sort: sort_spec,
+                page: *page,
+                per_page: *per_page,
+                select: None,
+            };
+            let mut v = crate::mcp::tools::read::list_records(s, args)
+                .await
+                .map_err(map_reader_err)?;
+            // Top-level (never per-row — codex D3): the default projection omits
+            // `id` and `resource_link` is a legal user column, so a row-level
+            // link would be absent-or-colliding. This template tells the model
+            // how to address a single row it selected `id` for.
+            if let Some(o) = v.as_object_mut() {
+                o.insert(
+                    "resource_uri_template".into(),
+                    serde_json::Value::String(format!(
+                        "drust://{}/collections/{}/records/{{id}}",
+                        s.tenant_id(),
+                        collection
+                    )),
+                );
+            }
+            json(&v)
+        }
+        ResourceUri::Record { collection, id } => {
+            match read_one_record(s, collection, *id).await? {
+                Some(row) => json(&serde_json::json!({ "record": row })),
+                None => Err(missing()),
+            }
+        }
+        ResourceUri::Rpc { name } => {
+            let name_owned = name.clone();
+            let found = s
+                .inner()
+                .pool
+                .with_reader(move |c| {
+                    crate::rpc::registry::lookup(c, &name_owned).map_err(|e| {
+                        rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(1),
+                            Some(e.to_string()),
+                        )
+                    })
+                })
+                .await
+                .map_err(internal)?;
+            match found {
+                Some(rpc) => {
+                    let mut v = serde_json::to_value(&rpc).map_err(internal)?;
+                    // Same spec §3 redaction as the `rpcs` list resource.
+                    redact_rpc_obj(&mut v);
+                    json(&v)
+                }
+                None => Err(missing()),
+            }
+        }
     }
+}
+
+/// Dedicated single-row reader for the `Record{c,id}` template. The `/list`
+/// filter path CANNOT serve this — `vector_filter::compile` only accepts
+/// declared fields, so `{"id": …}` is `FILTER_UNKNOWN_FIELD` (codex D2). MCP is
+/// service-only, so — exactly like the REST `get_handler` service path — there
+/// is no owner/policy filter. Plain `prepare` (NOT `prepare_cached`): `SELECT *`
+/// column set shifts under `add_field`/`drop_field` (v1.43 invariant). Vector
+/// columns are hidden via `materialize_row`. Unknown collection OR absent row →
+/// `Ok(None)` → `-32002`.
+async fn read_one_record(
+    s: &DrustMcp,
+    collection: &str,
+    id: i64,
+) -> Result<Option<serde_json::Value>, McpError> {
+    let pool = s.inner().pool.clone();
+    let cache = pool.schema_cache.clone();
+    let coll = collection.to_string();
+    // Schema load + row read in ONE closure so a concurrent drop_collection
+    // cannot land between them (a dropped table would else surface as a 500
+    // instead of -32002). Unknown collection → Ok(None) → -32002.
+    pool.with_reader(move |c| -> rusqlite::Result<Option<serde_json::Value>> {
+        use rusqlite::OptionalExtension;
+        let Some(schema) = cache.ensure_loaded(c, &coll)? else {
+            return Ok(None);
+        };
+        let vector_names: std::collections::HashSet<String> = schema
+            .vector_fields
+            .iter()
+            .map(|v| v.name.clone())
+            .collect();
+        let sql = format!(
+            "SELECT * FROM \"{}\" WHERE id = ?1",
+            coll.replace('"', "\"\"")
+        );
+        let mut stmt = c.prepare(&sql)?;
+        let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        stmt.query_row([id], |r| {
+            crate::mcp::tools::write::materialize_row(r, &cols, &vector_names)
+        })
+        .optional()
+    })
+    .await
+    .map_err(internal)
 }
 
 /// Truncate an over-cap body to a UTF-8 boundary + append a machine-readable

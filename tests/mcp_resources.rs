@@ -128,3 +128,83 @@ async fn cross_tenant_uri_denied_without_touching_pool() {
     let e = parse_resource_uri("drust://other-tenant/schema", "blog").unwrap_err();
     assert_eq!(e.code.0, -32002);
 }
+
+// ── M4 templates ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn collection_schema_and_records_templates_render() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "notes", &[tf("body", "text")])
+        .await
+        .unwrap();
+
+    let cs = parse_resource_uri("drust://blog/collections/notes/schema", "blog").unwrap();
+    let (body, mime) = render_resource(&s, &cs).await.unwrap();
+    assert_eq!(mime, "application/json");
+    assert!(body.contains("body"), "schema lists the field: {body}");
+
+    let recs =
+        parse_resource_uri("drust://blog/collections/notes/records?per_page=5", "blog").unwrap();
+    let (body, _) = render_resource(&s, &recs).await.unwrap();
+    assert!(
+        body.contains("drust://blog/collections/notes/records/{id}"),
+        "records body carries the top-level resource_uri_template: {body}"
+    );
+}
+
+#[tokio::test]
+async fn single_record_template_returns_the_row() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "notes", &[tf("body", "text")])
+        .await
+        .unwrap();
+    // Insert one row and confirm the single-record resource returns it AND the
+    // insert response carries a concrete resource_link.
+    let ins = drust::mcp::tools::write::insert_record(
+        &s,
+        "notes",
+        serde_json::json!({ "body": "hello-resource" }),
+    )
+    .await
+    .unwrap();
+    let id = ins["id"].as_i64().unwrap();
+    assert_eq!(
+        ins["resource_link"],
+        format!("drust://blog/collections/notes/records/{id}"),
+        "insert_record carries a concrete resource_link: {ins}"
+    );
+
+    let uri = format!("drust://blog/collections/notes/records/{id}");
+    let parsed = parse_resource_uri(&uri, "blog").unwrap();
+    let (body, mime) = render_resource(&s, &parsed).await.unwrap();
+    assert_eq!(mime, "application/json");
+    assert!(
+        body.contains("hello-resource"),
+        "single-record resource returns the row: {body}"
+    );
+}
+
+#[tokio::test]
+async fn single_record_missing_row_is_not_found() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "notes", &[tf("body", "text")])
+        .await
+        .unwrap();
+    let parsed = parse_resource_uri("drust://blog/collections/notes/records/9999", "blog").unwrap();
+    let e = render_resource(&s, &parsed).await.unwrap_err();
+    assert_eq!(e.code.0, -32002, "absent row → -32002, not a 500");
+}
+
+#[tokio::test]
+async fn collection_schema_unknown_collection_is_not_found() {
+    // describe_collection returns Ok({"error_code":...}) for a missing
+    // collection — the render arm must map that to -32002, not a success body.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let parsed = parse_resource_uri("drust://blog/collections/nope/schema", "blog").unwrap();
+    let e = render_resource(&s, &parsed).await.unwrap_err();
+    assert_eq!(e.code.0, -32002);
+}

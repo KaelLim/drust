@@ -2829,8 +2829,9 @@ impl ServerHandler for DrustMcpService {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListResourceTemplatesResult, McpError> {
-        // Templates land in Task 3 (M4); none advertised yet.
-        Ok(rmcp::model::ListResourceTemplatesResult::default())
+        Ok(rmcp::model::ListResourceTemplatesResult::with_all_items(
+            crate::mcp::resources::resource_template_list(self.state.tenant_id()),
+        ))
     }
 
     async fn read_resource(
