@@ -301,8 +301,19 @@ pub async fn batch_upsert_core(
             move |tx| -> rusqlite::Result<Vec<(HistoryOp, serde_json::Value)>> {
                 let schema_tx = describe_collection(tx, &coll_tx)?
                     .ok_or_else(|| invalid_input(format!("unknown collection: '{}'", coll_tx)))?;
-                validate_conflict_target(tx, &coll_tx, &on_conflict_tx)?;
+                // Validate the conflict target ONCE + get its per-column
+                // collation so each row's pre-image probe matches SQLite's
+                // ON CONFLICT semantics.
+                let collations = validate_conflict_target(tx, &coll_tx, &on_conflict_tx)?;
                 let mut out = Vec::with_capacity(encoded.len());
+                // Reject a within-batch duplicate conflict key (Postgres upsert
+                // errors "cannot affect row a second time"). Two rows resolving
+                // to the SAME committed record would otherwise fan out a
+                // superseded, never-committed intermediate `Created` event. We
+                // key on the resolved record id, so it is collation-correct by
+                // construction (the fixed pre-image probe resolves both to one
+                // id). Any error rolls the whole atomic tx back before fan-out.
+                let mut touched_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
                 for (m, vb) in &encoded {
                     let (op, rec) = upsert_row_in_tx(
                         tx,
@@ -311,9 +322,17 @@ pub async fn batch_upsert_core(
                         vb,
                         &vector_names,
                         &on_conflict_tx,
+                        &collations,
                         quota_tier,
                         &actor,
                     )?;
+                    if let Some(id) = rec.get("id").and_then(|v| v.as_i64())
+                        && !touched_ids.insert(id)
+                    {
+                        return Err(invalid_input(format!(
+                            "UPSERT_DUPLICATE_IN_BATCH: two rows resolve to the same record (id {id}) — a batch may not upsert the same conflict key twice"
+                        )));
+                    }
                     out.push((op, rec));
                 }
                 Ok(out)

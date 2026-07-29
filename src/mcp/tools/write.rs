@@ -359,38 +359,49 @@ pub(crate) fn insert_row_in_tx(
 }
 
 /// Validate that `on_conflict` (as a column SET) matches a real conflict target
-/// on `table`: the PRIMARY KEY, or any UNIQUE index — INCLUDING the implicit
-/// `sqlite_autoindex_*` that a `UNIQUE` COLUMN constraint creates. This is why
-/// we query `PRAGMA index_list`/`table_info` DIRECTLY rather than reuse
-/// `describe_collection().indices`, which deliberately FILTERS OUT autoindexes
-/// (schema.rs) — a `sku TEXT UNIQUE` or a PK target would be invisible there and
-/// wrongly rejected. Order-insensitive set match. `UPSERT_NO_UNIQUE` otherwise.
+/// on `table`: any UNIQUE index — INCLUDING the implicit `sqlite_autoindex_*` a
+/// `UNIQUE` COLUMN / non-integer PK / composite PK creates — or the bare
+/// single-column INTEGER PRIMARY KEY (rowid). We query `PRAGMA index_xinfo`/
+/// `table_info` DIRECTLY rather than reuse `describe_collection().indices`,
+/// which deliberately FILTERS OUT autoindexes (schema.rs) — a `sku TEXT UNIQUE`
+/// or a PK target would be invisible there and wrongly rejected. Order-
+/// insensitive set match.
+///
+/// Returns the matched target's **per-column collation** (`column → collation
+/// name`, e.g. `NOCASE`), so the caller's pre-image probe can match SQLite's
+/// actual ON CONFLICT semantics (a `NOCASE` unique index must probe with
+/// `COLLATE NOCASE`, else `'a'` vs stored `'A'` is misclassified as an insert).
+/// UNIQUE indexes are checked BEFORE the bare-PK branch so a non-integer/
+/// composite PK's autoindex supplies its real collation; the rowid-PK branch
+/// (no autoindex) defaults to `BINARY`. `UPSERT_NO_UNIQUE` / `_NO_CONFLICT_COLS`
+/// / `_DUPLICATE_COLUMN` otherwise.
 pub(crate) fn validate_conflict_target(
     tx: &rusqlite::Connection,
     table: &str,
     on_conflict: &[String],
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<std::collections::HashMap<String, String>> {
     if on_conflict.is_empty() {
         return Err(invalid_input(
             "UPSERT_NO_CONFLICT_COLS: on_conflict must list at least one column".to_string(),
         ));
     }
+    // Reject duplicate columns — `["sku","sku"]` would dedup to a matching set
+    // below but generate a malformed `ON CONFLICT("sku","sku")`.
+    let mut distinct = std::collections::HashSet::new();
+    for c in on_conflict {
+        if !distinct.insert(c.as_str()) {
+            return Err(invalid_input(format!(
+                "UPSERT_DUPLICATE_COLUMN: on_conflict lists column '{c}' more than once"
+            )));
+        }
+    }
     let esc = |s: &str| s.replace('"', "\"\"");
     let want: std::collections::BTreeSet<String> = on_conflict.iter().cloned().collect();
-    // Candidate 1: the PRIMARY KEY column set (`table_info.pk` > 0).
-    let pk: std::collections::BTreeSet<String> = tx
-        .prepare(&format!("PRAGMA table_info(\"{}\")", esc(table)))?
-        .query_map([], |r| Ok((r.get::<_, i64>(5)?, r.get::<_, String>(1)?)))?
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|(pk, _)| *pk > 0)
-        .map(|(_, n)| n)
-        .collect();
-    if !pk.is_empty() && pk == want {
-        return Ok(());
-    }
-    // Candidate 2: any UNIQUE index (incl. `sqlite_autoindex_*`) whose column
-    // set equals `on_conflict`.
+
+    // Candidate 1 (checked first): any UNIQUE index (incl. `sqlite_autoindex_*`)
+    // whose KEY-column set equals `on_conflict`. `index_xinfo` yields the per-
+    // column collation (col 4) for key columns (col 5 == 1); auxiliary/rowid
+    // entries (key == 0, or a NULL expression name) are skipped.
     let idx_names: Vec<String> = tx
         .prepare(&format!("PRAGMA index_list(\"{}\")", esc(table)))?
         .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
@@ -400,19 +411,43 @@ pub(crate) fn validate_conflict_target(
         .map(|(n, _)| n)
         .collect();
     for iname in idx_names {
-        let cols: std::collections::BTreeSet<String> = tx
-            .prepare(&format!("PRAGMA index_info(\"{}\")", esc(&iname)))?
-            // index_info col 2 is the indexed column name; NULL for an
-            // expression/rowid entry — skip those (no column to match).
-            .query_map([], |r| r.get::<_, Option<String>>(2))?
+        let cols: Vec<(String, String)> = tx
+            .prepare(&format!("PRAGMA index_xinfo(\"{}\")", esc(&iname)))?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(5)?,            // key (1 = a key column)
+                    r.get::<_, Option<String>>(2)?, // column name (NULL = expression)
+                    r.get::<_, Option<String>>(4)?, // collation
+                ))
+            })?
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
-            .flatten()
+            .filter(|(key, name, _)| *key == 1 && name.is_some())
+            .map(|(_, name, coll)| (name.unwrap(), coll.unwrap_or_else(|| "BINARY".to_string())))
             .collect();
-        if !cols.is_empty() && cols == want {
-            return Ok(());
+        let colset: std::collections::BTreeSet<String> =
+            cols.iter().map(|(n, _)| n.clone()).collect();
+        if !colset.is_empty() && colset == want {
+            return Ok(cols.into_iter().collect());
         }
     }
+
+    // Candidate 2: the bare single/composite PRIMARY KEY (`table_info.pk` > 0).
+    // A non-integer or composite PK already matched above via its autoindex; the
+    // only case reaching here is the rowid INTEGER PRIMARY KEY, which compares
+    // as an integer — collation BINARY.
+    let pk: std::collections::BTreeSet<String> = tx
+        .prepare(&format!("PRAGMA table_info(\"{}\")", esc(table)))?
+        .query_map([], |r| Ok((r.get::<_, i64>(5)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|(pk, _)| *pk > 0)
+        .map(|(_, n)| n)
+        .collect();
+    if !pk.is_empty() && pk == want {
+        return Ok(pk.into_iter().map(|n| (n, "BINARY".to_string())).collect());
+    }
+
     Err(invalid_input(format!(
         "UPSERT_NO_UNIQUE: on_conflict {on_conflict:?} does not match any UNIQUE index or the \
          primary key of '{table}'"
@@ -437,6 +472,7 @@ pub(crate) fn upsert_row_in_tx(
     vector_bytes: &std::collections::HashMap<String, Vec<u8>>,
     vector_names: &HashSet<String>,
     on_conflict: &[String],
+    collations: &std::collections::HashMap<String, String>,
     quota_tier: i64,
     actor: &crate::storage::record_history::AuditActor,
 ) -> rusqlite::Result<(crate::storage::record_history::HistoryOp, serde_json::Value)> {
@@ -467,11 +503,26 @@ pub(crate) fn upsert_row_in_tx(
     check_constraints(schema, data_map)?;
     let esc = |s: &str| s.replace('"', "\"\"");
 
-    // Pre-image by the conflict key → decides op + supplies history `old`.
+    // Pre-image by the conflict key → decides op + supplies history `old`. The
+    // probe MUST use the conflict index's collation (from validate_conflict_
+    // target), else a `NOCASE` unique index makes SQLite take the DO UPDATE
+    // branch while a BINARY `=` here misses the row and misclassifies it as an
+    // insert (wrong history op / lost old image / a pure update wrongly quota-
+    // gated). `collation_clause` is empty for BINARY (the common case).
     let key_where: Vec<String> = on_conflict
         .iter()
         .enumerate()
-        .map(|(i, c)| format!("\"{}\" = ?{}", esc(c), i + 1))
+        .map(|(i, c)| {
+            let coll = collations.get(c).map(|s| s.as_str()).unwrap_or("BINARY");
+            // Collation names come from `PRAGMA index_xinfo` (SQLite metadata,
+            // not user input): BINARY / NOCASE / RTRIM. Safe to interpolate.
+            let collation_clause = if coll.eq_ignore_ascii_case("BINARY") {
+                String::new()
+            } else {
+                format!(" COLLATE {coll}")
+            };
+            format!("\"{}\" = ?{}{}", esc(c), i + 1, collation_clause)
+        })
         .collect();
     let sel = format!(
         "SELECT * FROM \"{}\" WHERE {}",
@@ -514,13 +565,20 @@ pub(crate) fn upsert_row_in_tx(
     let cols: Vec<&str> = data_map.keys().map(|k| k.as_str()).collect();
     let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
     let key_set: std::collections::HashSet<&str> = on_conflict.iter().map(|s| s.as_str()).collect();
-    // DO UPDATE assigns every NON-key provided column from `excluded`, plus a
-    // convergent `updated_at` so `RETURNING *` matches the committed (post
-    // AFTER-trigger) row — the same reason `update_record_checked` writes it in
-    // its SET (v1.43 reader-cache/RETURNING invariant).
+    // DO UPDATE assigns every NON-key, NON-server-managed provided column from
+    // `excluded`, plus a convergent `updated_at` so `RETURNING *` matches the
+    // committed (post AFTER-trigger) row (v1.43 reader-cache/RETURNING invariant).
+    // `id` / `created_at` are drust-maintained (`SYSTEM_COLUMNS`): the INSERT
+    // branch still honors an explicitly-supplied value (they ride the VALUES
+    // list), but the UPDATE branch must NOT overwrite an existing row's PK or
+    // creation time even when the payload carries them (external-sync payloads
+    // routinely include their own id) — that would move the PK / reset the
+    // timestamp and diverge the history record_id from the pre-image.
     let mut set_exprs: Vec<String> = cols
         .iter()
-        .filter(|c| !key_set.contains(**c))
+        .filter(|c| {
+            !key_set.contains(**c) && !crate::mcp::tools::schema::SYSTEM_COLUMNS.contains(&**c)
+        })
         .map(|c| {
             let e = esc(c);
             format!("\"{e}\" = excluded.\"{e}\"")

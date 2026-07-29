@@ -269,3 +269,153 @@ async fn upsert_empty_and_protected_rejected() {
         "got {err}"
     );
 }
+
+/// (codex F1) Fix: the pre-image probe honors the conflict INDEX's collation.
+/// A `NOCASE` unique index makes SQLite take the DO UPDATE branch for 'a' vs
+/// stored 'A'; a BINARY probe would misclassify it as an insert (wrong op +
+/// lost old image). No MCP tool builds a COLLATE index, so create it raw.
+async fn exec(dir: &tempfile::TempDir, sql: &str) {
+    let tr = TenantRegistry::new(dir.path().to_path_buf(), 2);
+    let pool = tr.get_or_open("blog").unwrap();
+    let sql = sql.to_string();
+    pool.with_writer(move |c| c.execute_batch(&sql))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn upsert_honors_conflict_index_collation() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "citems", &[tf("sku", "text"), tf("name", "text")])
+        .await
+        .unwrap();
+    exec(
+        &d,
+        "CREATE UNIQUE INDEX ux_citems_sku ON citems(sku COLLATE NOCASE)",
+    )
+    .await;
+
+    batch_upsert(
+        &s,
+        "citems",
+        vec![json!({"sku":"A","name":"Apple"})],
+        vec!["sku".into()],
+        AuditActor::service(),
+    )
+    .await
+    .unwrap();
+    // sku 'a' differs only by case → NOCASE index → SQLite UPDATEs the 'A' row.
+    let out = batch_upsert(
+        &s,
+        "citems",
+        vec![json!({"sku":"a","name":"Apricot"})],
+        vec!["sku".into()],
+        AuditActor::service(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        out["results"][0]["op"], "updated",
+        "NOCASE collation must classify as update: {out}"
+    );
+    assert_eq!(count_rows(&d, "citems").await, 1, "one row, not two");
+    let h = history(&d).await;
+    assert_eq!(
+        h.last().unwrap().0,
+        "update",
+        "history op must be update: {h:?}"
+    );
+}
+
+async fn read_id_created(dir: &tempfile::TempDir, sku: &str) -> (i64, String) {
+    let tr = TenantRegistry::new(dir.path().to_path_buf(), 2);
+    let pool = tr.get_or_open("blog").unwrap();
+    let sku = sku.to_string();
+    pool.with_reader(move |c| {
+        c.query_row(
+            "SELECT id, created_at FROM products WHERE sku=?1",
+            [sku],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+        )
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn upsert_update_preserves_server_managed_id_and_created_at() {
+    // (codex F2) Fix: the DO UPDATE branch never overwrites id / created_at,
+    // even when the payload supplies them (external-sync payloads carry ids).
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    make_products(&s).await;
+    batch_upsert(
+        &s,
+        "products",
+        vec![json!({"sku":"a","name":"X"})],
+        vec!["sku".into()],
+        AuditActor::service(),
+    )
+    .await
+    .unwrap();
+    let (id0, ca0) = read_id_created(&d, "a").await;
+    let out = batch_upsert(
+        &s,
+        "products",
+        vec![json!({"sku":"a","id":999,"created_at":"2000-01-01 00:00:00","name":"Y"})],
+        vec!["sku".into()],
+        AuditActor::service(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["results"][0]["op"], "updated");
+    let (id1, ca1) = read_id_created(&d, "a").await;
+    assert_eq!(id1, id0, "id must be preserved, not moved to 999");
+    assert_eq!(ca1, ca0, "created_at must be preserved");
+    assert_eq!(out["results"][0]["record"]["name"], "Y");
+}
+
+#[tokio::test]
+async fn upsert_within_batch_duplicate_key_rejected() {
+    // (workflow F1) Two rows with the same conflict key in one call → reject
+    // (Postgres "cannot affect row a second time"); whole batch rolls back.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    make_products(&s).await;
+    let err = batch_upsert(
+        &s,
+        "products",
+        vec![json!({"sku":"a","name":"X"}), json!({"sku":"a","name":"Y"})],
+        vec!["sku".into()],
+        AuditActor::service(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("UPSERT_DUPLICATE_IN_BATCH"),
+        "got {err}"
+    );
+    assert_eq!(count_rows(&d, "products").await, 0, "atomic rollback");
+}
+
+#[tokio::test]
+async fn upsert_duplicate_on_conflict_columns_rejected() {
+    // (workflow F4) on_conflict:["sku","sku"] must reject, not build malformed SQL.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    make_products(&s).await;
+    let err = batch_upsert(
+        &s,
+        "products",
+        vec![json!({"sku":"a","name":"X"})],
+        vec!["sku".into(), "sku".into()],
+        AuditActor::service(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("UPSERT_DUPLICATE_COLUMN"),
+        "got {err}"
+    );
+}

@@ -821,9 +821,16 @@ pub(crate) fn map_batch_error(e: anyhow::Error) -> Response {
             json_error(StatusCode::BAD_REQUEST, "CHECK_CONSTRAINT_FAILED", &msg)
         }
         "POLICY_CHECK_FAILED" => json_error(StatusCode::FORBIDDEN, "POLICY_CHECK_FAILED", &msg),
-        "UPSERT_NO_UNIQUE" | "UPSERT_NO_CONFLICT_COLS" | "UPSERT_MISSING_KEY" => {
-            json_error(StatusCode::BAD_REQUEST, code, &msg)
+        // Vector-encode failures map to 422 with the SPECIFIC code — parity with
+        // the single-insert REST path (`create_handler`), not a generic 400.
+        "VECTOR_DIM_MISMATCH" | "VECTOR_NON_FINITE" | "VECTOR_TYPE_ERROR" => {
+            json_error(StatusCode::UNPROCESSABLE_ENTITY, code, &msg)
         }
+        "UPSERT_NO_UNIQUE"
+        | "UPSERT_NO_CONFLICT_COLS"
+        | "UPSERT_MISSING_KEY"
+        | "UPSERT_DUPLICATE_COLUMN"
+        | "UPSERT_DUPLICATE_IN_BATCH" => json_error(StatusCode::BAD_REQUEST, code, &msg),
         "BATCH_EMPTY" | "BATCH_TOO_LARGE" | "BATCH_ROW_NOT_OBJECT" => {
             json_error(StatusCode::BAD_REQUEST, code, &msg)
         }
@@ -1846,6 +1853,46 @@ pub async fn put_audit_handler(
         "audit_enabled": enabled,
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod batch_error_tests {
+    use super::map_batch_error;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn vector_errors_map_to_422_like_single_insert() {
+        for code in [
+            "VECTOR_DIM_MISMATCH",
+            "VECTOR_NON_FINITE",
+            "VECTOR_TYPE_ERROR",
+        ] {
+            let r = map_batch_error(anyhow::anyhow!("{code}: bad vector"));
+            assert_eq!(
+                r.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{code} should map to 422 for parity with single insert"
+            );
+        }
+    }
+
+    #[test]
+    fn upsert_config_codes_map_to_400() {
+        for code in [
+            "UPSERT_NO_UNIQUE",
+            "UPSERT_NO_CONFLICT_COLS",
+            "UPSERT_MISSING_KEY",
+            "UPSERT_DUPLICATE_COLUMN",
+            "UPSERT_DUPLICATE_IN_BATCH",
+        ] {
+            let r = map_batch_error(anyhow::anyhow!("{code}: detail"));
+            assert_eq!(
+                r.status(),
+                StatusCode::BAD_REQUEST,
+                "{code} should map to 400"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
