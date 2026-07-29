@@ -1,3 +1,13 @@
+## v1.56.1 — 2026-07-29
+
+### Admin roles — three tiers (owner > admin > member) + member nav fix (#904, #905)
+
+- **#904 (member nav):** the host-wide audit-log + backups sidebar entries were owner-only at the route since v1.50 but still rendered for member admins — dead links that 403 on click. Gated on `admin.is_owner`. (The team entry stays visible; team was read-only for members pre-v1.56.1.)
+- **#905 — new `admin` middle tier.** `owner > admin > member`, keeping `owner` as the unchanged, immutable top. **Tenant visibility** widens to `sees_all_tenants = owner|admin` across all six v1.50 enforcement sites — the management plane AND the data-plane bearer CTE (admin PATs are now cross-tenant like owner). **Host-wide sensitive surfaces stay owner-only:** `require_owner_layer` (backups + metrics + quota-review) and the inline `is_owner` checks (host audit, direct quota set) are unchanged, so `admin` never reaches them. `admin` manages MEMBER-role admins (invite/remove) and sees the team page; it may NOT create/edit/remove an owner/admin row (`403 PRIVILEGED_ROLE_REQUIRED`), and a `member` caller is `403 NOT_A_MANAGER`. `member` loses the team page (`403` at the route + nav hidden).
+- **Frontend (fully updated, not just backend):** sidebar `team` nav gated on `sees_team`; roster shows an `admin` pill; the invite role picker offers admin/owner to owners only; the member-row "promote" control is owner-only (an admin sees only "remove"); new `role_admin` i18n key in `locales/en.toml` + `locales/zh-TW.toml`.
+- **Immutability:** `change_role`'s last-owner guard now fires on `owner → (any non-owner)` — the new `owner → admin` transition is covered, not just `owner → member`; `remove_admin` guards the last owner. Zero owners is unreachable via UI/API (break-glass = the `set_admin_role` CLI, which now accepts `admin`). **Zero data migration** — `admin` is a new legal `role` value; existing `owner`/`member` rows are untouched.
+- **Dual-engine review (adversarial workflow + codex).** The workflow's security agent caught a last-owner escape (`owner → admin` could reach zero owners — fixed); codex caught a member-row promote control rendered for admins (dead 403 button — gated owner-only) and documented the out-of-process CLI eviction bound (data-plane effect within the 10 s auth-cache TTL). The full `--no-fail-fast` gate caught a pre-existing `member_cannot_remove` test still asserting the old `NOT_OWNER` code (now `NOT_A_MANAGER` — still a 403).
+
 ## v1.56.0 — 2026-07-29
 
 ### MCP protocol surface — Resources + Prompts (M2 + M3 + M4)

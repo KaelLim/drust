@@ -29,7 +29,7 @@ generated_by: docs/gen-architecture.py
 | [`db/`](#srcdb) | 2 | 15 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 69 | 38 | 20 |
 | [`mcp/`](#srcmcp) | 24 | 189 | 75 | 39 |
-| [`mgmt/`](#srcmgmt) | 39 | 321 | 110 | 51 |
+| [`mgmt/`](#srcmgmt) | 39 | 326 | 110 | 51 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 8 | 52 | 8 | 30 |
 | [`rpc/`](#srcrpc) | 6 | 37 | 17 | 9 |
@@ -237,7 +237,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`script_json.rs`](../src/mgmt/script_json.rs) — HTML-`<script>`-safe JSON serialization — single canonical escaper. · 2 pub
 - [`signed_bytes.rs`](../src/mgmt/signed_bytes.rs) — Public (unauth) GET handlers that serve a drust-signed download URL. · 4 pub
 - [`stats.rs`](../src/mgmt/stats.rs) — Tenant-stats denormalization sampler. · 4 pub
-- [`tenant_authz.rs`](../src/mgmt/tenant_authz.rs) — v1.50 — single ownership predicate shared by every enforcement site · 6 pub
+- [`tenant_authz.rs`](../src/mgmt/tenant_authz.rs) — v1.50 — single ownership predicate shared by every enforcement site · 11 pub
 - [`tenant_broadcast.rs`](../src/mgmt/tenant_broadcast.rs) — v1.31.5 — Admin Broadcast Inspector page. · 1 pub
 - [`tenant_files.rs`](../src/mgmt/tenant_files.rs) — Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign). · 17 pub
 - [`tenant_settings.rs`](../src/mgmt/tenant_settings.rs) — v1.46 — per-tenant Settings backend (spec §5.6): display-name rename + · 11 pub

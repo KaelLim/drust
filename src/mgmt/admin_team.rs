@@ -87,17 +87,10 @@ fn is_valid_role(r: &str) -> bool {
     matches!(r, "owner" | "admin" | "member")
 }
 
-/// Return 403 NOT_OWNER when the caller does not have the owner role.
-fn owner_guard(profile: &AdminProfileExt) -> Result<(), Response> {
-    if !profile.is_owner {
-        return Err(json_error(
-            StatusCode::FORBIDDEN,
-            "NOT_OWNER",
-            "owner role required",
-        ));
-    }
-    Ok(())
-}
+// v1.57 — the pre-3-tier `owner_guard` (pure owner check) was replaced by
+// `require_manage_members` (owner|admin entry gate) + the inline
+// `can_manage_privileged` (owner-only) escalation check at each mutation site;
+// no standalone owner-only team op remains, so the old helper was removed.
 
 /// v1.57 — team-manager gate: owner OR admin may manage MEMBER-role admins.
 /// A `member` caller manages nothing → `403 NOT_A_MANAGER`. This is the
