@@ -303,7 +303,9 @@ async fn member_cannot_remove() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN, "member must get 403");
     let body = body_json(resp).await;
-    assert_eq!(body["error_code"], "NOT_OWNER");
+    // v1.57 — a member hits `require_manage_members` first, so the code is now
+    // NOT_A_MANAGER (replacing the former owner-only NOT_OWNER). Still a hard 403.
+    assert_eq!(body["error_code"], "NOT_A_MANAGER");
 }
 
 #[tokio::test]

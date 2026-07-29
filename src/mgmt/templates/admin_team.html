@@ -44,8 +44,13 @@
           {% if admin.sees_team %}
           <td style="text-align:right;">
             {% if row.role == "member" %}
-              {# member row — editable by any team manager (owner|admin) #}
+              {# member row — an admin (team manager) may REMOVE a member but not
+                 promote one: promotion targets owner (btn-promote → role:'owner'),
+                 which is owner-only. So gate promote on is_owner; an admin sees
+                 only remove here (no dead 403 button). #}
+              {% if admin.is_owner %}
               <button type="button" class="btn sm ghost btn-promote">{{ t.s("admin_team.action.promote") }}</button>
+              {% endif %}
               <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>
             {% else if admin.is_owner %}
               {# owner / admin row — owner-only; admin callers see no controls here #}

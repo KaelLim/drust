@@ -567,4 +567,17 @@ async fn team_ui_role_controls_adapt_to_caller() {
                 .contains("full access to every tenant"),
         "admin caller must NOT be offered the admin/owner invite options"
     );
+    // codex review: promotion targets owner (owner-only), so an admin caller
+    // must see NO promote BUTTON on any row (no dead 403 button); an owner sees
+    // it on the member row. Match the button's class attribute (`…btn-promote"`,
+    // double-quoted) — NOT the bare token, which also appears in the JS handler's
+    // `querySelector('.btn-promote')` (single-quoted, always present).
+    assert!(
+        owner_html.contains("btn-promote\""),
+        "owner must see a promote button"
+    );
+    assert!(
+        !admin_html.contains("btn-promote\""),
+        "admin must NOT see any promote button (promotion is owner-only)"
+    );
 }

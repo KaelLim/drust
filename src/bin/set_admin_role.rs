@@ -5,6 +5,14 @@
 //!     ./target/release/set_admin_role --email <addr> --role owner|admin|member
 //!
 //! Mirrors the DRUST_DATA_DIR convention used by set_admin_password.
+//!
+//! NOTE (out-of-process, codex-review): this CLI writes `admins.role` directly
+//! in `meta.sqlite` and cannot reach the RUNNING server's PAT auth-cache, so a
+//! demotion here (e.g. admin→member) takes effect on the data plane within the
+//! auth-cache's 10 s safety TTL, not instantly — same bound as any other
+//! out-of-process credential change. The in-process HTTP path
+//! (`PATCH /admin/team/{id}/role`) evicts immediately. For an instant effect,
+//! prefer the admin UI / API; use this break-glass tool for recovery.
 
 use rusqlite::params;
 use std::path::PathBuf;
