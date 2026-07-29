@@ -143,12 +143,17 @@ async fn seed_three_tenants() -> (axum::Router, tempfile::TempDir, String, Strin
 }
 
 async fn get_body(app: &axum::Router, cookie: &str, uri: &str) -> (StatusCode, String) {
+    // Browsers always send `Accept: text/html` on a page GET; the content-negotiated
+    // `/admin/team` route (team_page_or_json) renders HTML for that Accept and JSON
+    // otherwise. Send it so the page-render assertions exercise the real HTML path.
+    // Dedicated JSON routes (`/admin/api/*`) ignore Accept and stay JSON.
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .uri(uri)
                 .header(header::COOKIE, cookie)
+                .header(header::ACCEPT, "text/html")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -533,5 +538,33 @@ async fn admin_sidebar_shows_team() {
     assert!(
         html.contains(r#"data-section="team""#),
         "admin sidebar must show the team nav item"
+    );
+}
+
+// ─── Task 9 (v1.57) — team UI role-management controls adapt to caller ────────
+// owner is offered the full invite role picker (owner/admin/member) + can
+// edit/remove any row; admin is offered member-only invite and cannot see the
+// admin/owner options at all.
+
+#[tokio::test]
+async fn team_ui_role_controls_adapt_to_caller() {
+    let (app, dir, owner_cookie, _member) = seed_three_tenants().await;
+    let (_aid, admin_cookie) = insert_admin(&dir, "adm@example.com", "admin");
+    // owner: invite picker offers the admin option.
+    let (s, owner_html) = get_body(&app, &owner_cookie, "/admin/team").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        owner_html.contains("role_admin") || owner_html.to_lowercase().contains("admin —"),
+        "owner invite picker must offer the admin role option"
+    );
+    // admin: invite picker must NOT offer the admin/owner options.
+    let (s2, admin_html) = get_body(&app, &admin_cookie, "/admin/team").await;
+    assert_eq!(s2, StatusCode::OK);
+    assert!(
+        !admin_html.to_lowercase().contains("admin — sees all")
+            && !admin_html
+                .to_lowercase()
+                .contains("full access to every tenant"),
+        "admin caller must NOT be offered the admin/owner invite options"
     );
 }

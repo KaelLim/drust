@@ -9,7 +9,7 @@
 <div class="page">
 
   {% call ui::view_head(t.s("admin_team.head.eyebrow"), t.s("admin_team.head.title"), t.s("admin_team.head.subtitle")) %}
-    {% if admin.is_owner %}
+    {% if admin.sees_team %}
     <button type="button" class="btn primary" id="btn-invite">
       <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
       {{ t.s("admin_team.head.add") }}
@@ -24,7 +24,7 @@
           <th>{{ t.s("admin_team.col.name") }}</th>
           <th>{{ t.s("admin_team.col.email") }}</th>
           <th style="width:120px;">{{ t.s("admin_team.col.role") }}</th>
-          {% if admin.is_owner %}<th style="width:220px;text-align:right;"></th>{% endif %}
+          {% if admin.sees_team %}<th style="width:220px;text-align:right;"></th>{% endif %}
         </tr>
       </thead>
       <tbody>
@@ -35,18 +35,27 @@
           <td>
             {% if row.role == "owner" %}
               <span class="pill accent">owner</span>
+            {% else if row.role == "admin" %}
+              <span class="pill mint">admin</span>
             {% else %}
               <span class="pill muted">member</span>
             {% endif %}
           </td>
-          {% if admin.is_owner %}
+          {% if admin.sees_team %}
           <td style="text-align:right;">
-            {% if row.role == "owner" %}
-              <button type="button" class="btn sm ghost btn-demote">{{ t.s("admin_team.action.demote") }}</button>
-            {% else %}
+            {% if row.role == "member" %}
+              {# member row — editable by any team manager (owner|admin) #}
               <button type="button" class="btn sm ghost btn-promote">{{ t.s("admin_team.action.promote") }}</button>
+              <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>
+            {% else if admin.is_owner %}
+              {# owner / admin row — owner-only; admin callers see no controls here #}
+              {% if row.role == "owner" %}
+                <button type="button" class="btn sm ghost btn-demote">{{ t.s("admin_team.action.demote") }}</button>
+              {% else %}
+                <button type="button" class="btn sm ghost btn-promote">{{ t.s("admin_team.action.promote") }}</button>
+              {% endif %}
+              <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>
             {% endif %}
-            <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>
           </td>
           {% endif %}
         </tr>
@@ -133,8 +142,9 @@
             type: 'select', name: 'role', value: 'member',
             label: '{{ t.s("admin_team.invite.role_label") }}',
             options: [
-              { value: 'member', label: '{{ t.s("admin_team.invite.role_member") }}' },
-              { value: 'owner',  label: '{{ t.s("admin_team.invite.role_owner") }}' }
+              { value: 'member', label: '{{ t.s("admin_team.invite.role_member") }}' }{% if admin.is_owner %},
+              { value: 'admin',  label: '{{ t.s("admin_team.invite.role_admin") }}' },
+              { value: 'owner',  label: '{{ t.s("admin_team.invite.role_owner") }}' }{% endif %}
             ]
           }
         ]
