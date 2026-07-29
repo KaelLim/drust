@@ -291,6 +291,26 @@ async fn owner_can_demote_admin_to_member() {
     assert_eq!(body["role"], "member");
 }
 
+/// Regression (adversarial-review finding): demoting the LAST owner to the new
+/// `admin` tier must be rejected. Pre-fix the last-owner guard only fired on
+/// owner→member, so owner→admin escaped it and could reach ZERO owners — a
+/// lockout, since only an owner can mint owners/admins or read backups.
+#[tokio::test]
+async fn change_role_last_owner_to_admin_rejected() {
+    let (app, dir) = spin_up().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let sole_owner = root_id(&dir); // bootstrap root is the only owner
+    let resp = patch_role(app, &owner_cookie, sole_owner, "admin").await;
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "owner→admin on last owner: {body}"
+    );
+    assert_eq!(body["error_code"], "LAST_OWNER");
+}
+
 // ─── invite authority matrix (single) ─────────────────────────────────────────
 
 /// The matrix the plan enumerates for `invite_admin`:

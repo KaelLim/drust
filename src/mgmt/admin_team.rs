@@ -621,7 +621,12 @@ pub async fn change_role(
             }
         };
 
-        if new_role == "member" && current_role == "owner" {
+        // Last-owner immutability: demoting an owner to ANY non-owner role
+        // (member OR the new v1.57 `admin` tier) must leave at least one owner.
+        // (Pre-v1.57 this only guarded owner→member; owner→admin escaped it and
+        // could reach zero owners — a lockout, since only an owner creates
+        // owners/admins or sees backups. Adversarial-review finding.)
+        if current_role == "owner" && new_role != "owner" {
             let other_owner: bool = tx
                 .query_row(
                     "SELECT 1 FROM admins WHERE role = 'owner' AND id != ?1 LIMIT 1",
