@@ -49,9 +49,14 @@ async fn legacy_public_files_redirects_to_files() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+    // v1.56.2 deliberate contract change: this assertion used to pin the bare
+    // `/admin/files`, i.e. the bug. `Location` is browser-facing, so it must
+    // carry the external mount the proxy strips — every other redirect in the
+    // codebase goes through `base_path::base`. This is the default-mode
+    // oracle for that invariant; `tests/base_path_root.rs` covers empty mode.
     assert_eq!(
         resp.headers().get(header::LOCATION).unwrap(),
-        "/admin/files"
+        "/drust/admin/files"
     );
 }
 
@@ -69,8 +74,9 @@ async fn legacy_public_files_reconcile_redirects() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+    // Same deliberate contract change as above — see the note there.
     assert_eq!(
         resp.headers().get(header::LOCATION).unwrap(),
-        "/admin/files/reconcile"
+        "/drust/admin/files/reconcile"
     );
 }

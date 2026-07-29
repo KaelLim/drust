@@ -195,10 +195,7 @@ pub fn is_unsafe_inline_type(ct: &str) -> bool {
         return false;
     }
     let lower = essence.to_ascii_lowercase();
-    lower.ends_with("+xml")
-        || UNSAFE_INLINE_CONTENT_TYPES
-            .iter()
-            .any(|u| lower.as_str() == *u)
+    lower.ends_with("+xml") || UNSAFE_INLINE_CONTENT_TYPES.contains(&lower.as_str())
 }
 
 /// Turn a STORED string into a response header value, falling back when the

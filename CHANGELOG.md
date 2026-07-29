@@ -1,3 +1,21 @@
+## v1.56.2 — 2026-07-29
+
+### Security — the four P0 findings of the full backend + frontend audit
+
+Dual-track review (codex + a 6-lens adversarial agent sweep) over the whole codebase. 44 raw candidates → 4 P0 / 12 P1 / 26 P2 after cross-verification; this release closes the P0s. Report: `docs/superpowers/specs/2026-07-29-drust-full-review.md`.
+
+- **Stored XSS → host-admin takeover via tenant file upload.** Tenant uploads kept a **client-supplied `Content-Type`**, defaulted to `public`, and are served from the **same origin as the admin UI** (Caddy serves `/public/*` and `/drust/*` from one site block) — and the admin file list itself renders the object as a clickable link. A tenant service key could therefore upload `text/html` and execute script in the admin plane's origin; `HttpOnly` and `SameSite` are both irrelevant (no cookie read, same-site). Private files were equally affected: `stream_bytes` echoed the stored type with `Content-Disposition: inline` under `/drust/admin/...`. Now `neutralize_content_type` forces script-executing types to `application/octet-stream` + `attachment` at **every ingest path** and **every byte responder** (DiD ≥ 2), all responders send `nosniff`, and the operator-side Caddy `/public/*` block carries `nosniff` too. **The predicate is structural, not a list** — the adversarial review broke the first version with `application/rss+xml`, so `is_unsafe_inline_type` matches every `+xml` essence plus `text/xsl`. **Behaviour change:** SVG/XML assets now download instead of rendering inline. This deployment had zero stored files, so nothing was live-exploitable and no backfill was needed.
+- **`/admin/files*` was the only host-wide admin surface without an owner gate.** Its three siblings (backups, metrics, quota-review) all carry `require_owner_layer`; this one carried none, and its sidebar link sat outside the owner-gated block. A `member` could list/upload/delete host files and open `/admin/files/reconcile`, which renders tenant ids + names from `_trash_pending_revokes` — the exact cross-tenant enumeration the v1.50 boundary answers `404` to prevent. Now owner-only at the router, with the nav link gated to match.
+- **The reconcile page's "orphan object" diff was wrong by construction.** It subtracted meta.sqlite's `_system_files` (admin-level rows only) from a listing of the *entire* shared `public` bucket, so **every tenant's public object was classified as a deletable orphan** — and `reconcile_apply` deleted whatever keys the form submitted, with no ownership check and errors swallowed. An owner doing routine housekeeping could have wiped every tenant's public files. Regression from v1.5.0, when per-tenant buckets were retired and tenant objects moved into the shared bucket under a `<tenant-id>/` prefix without the diff being updated. Orphans are now restricted to admin-level (slash-free) keys, and the apply path re-validates every submitted key.
+- **The v1.56.1 three-tier role model was only half-wired on the frontend.** The roster's promote/demote buttons hardcoded `owner` and `member`, so there was **no `member → admin` and no `admin → member` path in the UI** — the middle tier could only ever be chosen at invite time. Replaced with a role picker covering all three tiers, owner-gated, backend authority rules unchanged.
+
+### Also fixed
+
+- Three byte responders built header values with `.parse().unwrap()` on **stored** strings. tus takes `Upload-Metadata: filetype` as base64 free text with no MIME validation, so a stored `"text/plain\r\nX: y"` panicked the responder — a stored DoS against every later reader of that row. Added `safe_header_value`.
+- `change_visibility` neutralized the re-PUT object headers but left the row's `content_type`/`content_disposition` stale, so `_system_files` no longer described what Garage serves.
+- The two legacy `/admin/public-files` redirects emitted a bare `/admin/files` `Location`, breaking the `base_path` invariant in root mode.
+- `change_role`'s `INVALID_ROLE` message still named only two roles.
+
 ## v1.56.1 — 2026-07-29
 
 ### Admin roles — three tiers (owner > admin > member) + member nav fix (#904, #905)
