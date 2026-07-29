@@ -1055,10 +1055,21 @@ pub async fn admin_stream_bytes(
     let cd = format!("{disp_mode}; filename=\"{ascii}\"; filename*=UTF-8''{pct}");
     let cc = row.cache_control.as_deref().unwrap_or("private, no-store");
 
+    // Stored values are unvalidated caller input — never `.unwrap()` them.
+    use crate::storage::files::safe_header_value;
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(axum::http::header::CONTENT_TYPE, ct.parse().unwrap());
-    headers.insert(axum::http::header::CONTENT_DISPOSITION, cd.parse().unwrap());
-    headers.insert(axum::http::header::CACHE_CONTROL, cc.parse().unwrap());
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        safe_header_value(&ct, "application/octet-stream"),
+    );
+    headers.insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        safe_header_value(&cd, "attachment"),
+    );
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        safe_header_value(cc, "private, no-store"),
+    );
     headers.insert(
         axum::http::header::X_CONTENT_TYPE_OPTIONS,
         "nosniff".parse().unwrap(),

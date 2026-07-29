@@ -140,33 +140,81 @@ pub fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
 //   * layer 2 — at every drust-owned byte responder, so rows uploaded BEFORE
 //     this fix are served safely too.
 // The Caddy `/public/*` block additionally carries `X-Content-Type-Options:
-// nosniff` (operator-owned, outside this repo).
+// nosniff` (operator-owned, outside this repo); every drust responder sets it
+// too.
+//
+// Why the pair (structural type rule + `nosniff`) is COMPLETE, and why there
+// is no blanket `Content-Security-Policy: sandbox` on file responses:
+//   * a type that DECLARES itself a scriptable document is caught by
+//     `is_unsafe_inline_type` — the `+xml` suffix rule makes that structural,
+//     not an enumeration that the next vendor type escapes;
+//   * a type the browser does NOT recognise cannot be sniffed back into HTML,
+//     because `nosniff` makes the declared type authoritative — it is
+//     downloaded, not rendered;
+//   * PDF is the remaining scriptable format, and PDF JS runs in the viewer's
+//     own context: it cannot read the admin DOM or issue credentialed
+//     same-origin requests.
+// A blanket `sandbox` CSP would add nothing against these and WOULD risk
+// breaking legitimate inline rendering (images, PDF viewer), so it is
+// deliberately not set. Revisit if a new scriptable, browser-recognised
+// document format appears.
 
 /// Content types a browser renders as a scriptable document when served
 /// `inline`. Serving any of these from the admin origin is stored XSS.
+///
+/// This list is the EXACT-MATCH tail of the rule — the structural `+xml`
+/// suffix in [`is_unsafe_inline_type`] already covers `application/xhtml+xml`,
+/// `image/svg+xml` and every vendor XML type, so only the essences that do not
+/// end in `+xml` need enumerating.
 ///
 /// `application/javascript` is deliberately ABSENT: navigating to a `.js` URL
 /// downloads/renders it as text, it does not execute in the page's origin, and
 /// neutering it would break legitimate static-asset hosting.
 pub const UNSAFE_INLINE_CONTENT_TYPES: &[&str] = &[
     "text/html",
-    "application/xhtml+xml",
-    "image/svg+xml",
     "text/xml",
     "application/xml",
+    // XSLT: a stylesheet can carry an XHTML-namespaced <script>.
+    "text/xsl",
 ];
 
 /// True when `ct` is a script-executing document type. Case-insensitive and
 /// parameter-insensitive: `"text/html"`, `"TEXT/HTML"`, `" text/html "` and
 /// `"text/html; charset=utf-8"` all match.
+///
+/// The rule is deliberately STRUCTURAL, not a blocklist of known names: every
+/// `<type>/<subtype>+xml` essence is an XML document type to Blink
+/// (`MIMETypeRegistry::IsXMLMIMEType`) and Gecko, and an XML document
+/// containing an XHTML-namespaced `<script>` executes in the response's
+/// origin. An enumerated list is always a strict subset of that — the
+/// 2026-07-29 adversarial review broke the first version of this function with
+/// `application/rss+xml`, which no reasonable enumeration would have listed.
 pub fn is_unsafe_inline_type(ct: &str) -> bool {
     let essence = ct.split(';').next().unwrap_or("").trim();
     if essence.is_empty() {
         return false;
     }
-    UNSAFE_INLINE_CONTENT_TYPES
-        .iter()
-        .any(|u| essence.eq_ignore_ascii_case(u))
+    let lower = essence.to_ascii_lowercase();
+    lower.ends_with("+xml")
+        || UNSAFE_INLINE_CONTENT_TYPES
+            .iter()
+            .any(|u| lower.as_str() == *u)
+}
+
+/// Turn a STORED string into a response header value, falling back when the
+/// stored bytes are not header-legal.
+///
+/// Every value these responders echo (`content_type`, `content_disposition`,
+/// `cache_control`) originates as unvalidated caller input — the tus ingest
+/// path takes `Upload-Metadata: filetype` as base64 free text with no MIME
+/// validation at all, and the multipart path takes `cache_control` verbatim.
+/// A stored `"text/plain\r\nX: y"` therefore reaches `HeaderValue::from_str`,
+/// which rejects CR/LF/NUL — and the previous `.parse().unwrap()` turned that
+/// into a panic on the SERVE path, i.e. a stored denial-of-service against
+/// every later reader of that row. (2026-07-29 audit, adversarial review.)
+pub fn safe_header_value(value: &str, fallback: &'static str) -> axum::http::header::HeaderValue {
+    axum::http::header::HeaderValue::from_str(value)
+        .unwrap_or_else(|_| axum::http::header::HeaderValue::from_static(fallback))
 }
 
 /// Map a caller-supplied / stored content type onto the (content type,
@@ -246,5 +294,70 @@ mod content_type_safety_tests {
         assert!(!is_unsafe_inline_type(""));
         assert!(!is_unsafe_inline_type("   "));
         assert!(!is_unsafe_inline_type(";charset=utf-8"));
+    }
+
+    /// 2026-07-29 audit, adversarial review finding 3A: an exact-match list is
+    /// the wrong shape. Blink's `MIMETypeRegistry::IsXMLMIMEType` (and Gecko's
+    /// equivalent) treat EVERY `<type>/<subtype>+xml` essence as an XML
+    /// document, plus `text/xsl` — and an XML document carrying an
+    /// XHTML-namespaced `<script>` executes in the response's origin. So the
+    /// five enumerated types were a strict subset of the real vector:
+    /// `application/rss+xml` sailed through and re-opened P0-1.
+    #[test]
+    fn neutralize_flags_every_xml_document_type() {
+        for ct in [
+            "application/rss+xml",
+            "application/atom+xml",
+            "application/mathml+xml",
+            "application/x+xml",
+            "APPLICATION/RSS+XML; charset=utf-8",
+            "text/xsl",
+            "TEXT/XSL",
+            " text/xsl ",
+        ] {
+            assert!(is_unsafe_inline_type(ct), "{ct} must be flagged unsafe");
+            let (out_ct, disp) = neutralize_content_type(Some(ct));
+            assert_eq!(out_ct, "application/octet-stream", "ct for {ct}");
+            assert_eq!(disp, "attachment", "disposition for {ct}");
+        }
+    }
+
+    /// A stored value that is not header-legal must degrade to the fallback,
+    /// never panic the responder. `Upload-Metadata: filetype` (tus) is base64
+    /// free text with no MIME validation, so CR/LF/NUL are all reachable.
+    #[test]
+    fn safe_header_value_degrades_instead_of_panicking() {
+        for bad in [
+            "text/plain\r\nX-Injected: y",
+            "text/plain\n",
+            "text/plain\r",
+            "text/plain\0",
+            "\u{7f}",
+        ] {
+            assert_eq!(
+                safe_header_value(bad, "application/octet-stream"),
+                "application/octet-stream",
+                "{bad:?} must fall back"
+            );
+        }
+        // A legal value is passed through untouched.
+        assert_eq!(
+            safe_header_value("image/png", "application/octet-stream"),
+            "image/png"
+        );
+    }
+
+    /// The `+xml` rule is a SUFFIX on the essence, not a substring: a type that
+    /// merely mentions xml stays inline.
+    #[test]
+    fn xml_suffix_rule_does_not_over_match() {
+        for ct in [
+            "application/xml-dtd",
+            "text/xmlish",
+            "application/vnd.foo+xmlx",
+            "application/json",
+        ] {
+            assert!(!is_unsafe_inline_type(ct), "{ct} must NOT be flagged");
+        }
     }
 }

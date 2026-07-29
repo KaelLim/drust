@@ -121,15 +121,24 @@ pub async fn change_visibility(
         )
         .await?;
 
-    // 3. UPDATE the row (visibility + cache_control) — the single linearization
-    //    point. Before this commits, reads see the old bucket; after, the new.
+    // 3. UPDATE the row (visibility + cache_control + the neutralized
+    //    content type/disposition) — the single linearization point. Before
+    //    this commits, reads see the old bucket; after, the new.
+    //
+    //    The content type/disposition ride along because step 2 may have
+    //    rewritten them on the object: leaving the row un-updated would make
+    //    `_system_files` disagree with what Garage actually serves, and that
+    //    row is exactly what a remediation sweep would key off.
     let key_upd = key.to_string();
     let cc_upd = new_cc.to_string();
     let tgt_upd = target_str.to_string();
+    let ct_upd = put_ct.clone();
+    let cd_upd = disposition_mode.to_string();
     pool.with_writer(move |c| {
         c.execute(
-            "UPDATE _system_files SET visibility=?1, cache_control=?2 WHERE key=?3",
-            rusqlite::params![tgt_upd, cc_upd, key_upd],
+            "UPDATE _system_files SET visibility=?1, cache_control=?2, \
+             content_type=?4, content_disposition=?5 WHERE key=?3",
+            rusqlite::params![tgt_upd, cc_upd, key_upd, ct_upd, cd_upd],
         )
         .map(|_| ())
     })

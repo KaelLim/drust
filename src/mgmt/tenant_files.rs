@@ -182,10 +182,22 @@ pub async fn stream_bytes(
     let cd = format!("{disp_mode}; filename=\"{ascii}\"; filename*=UTF-8''{pct}");
     let cc = row.cache_control.as_deref().unwrap_or("private, no-store");
 
+    // Stored values are unvalidated caller input (tus `Upload-Metadata`,
+    // multipart `cache_control`) — never `.unwrap()` them into a header.
+    use crate::storage::files::safe_header_value;
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, ct.parse().unwrap());
-    headers.insert(header::CONTENT_DISPOSITION, cd.parse().unwrap());
-    headers.insert(header::CACHE_CONTROL, cc.parse().unwrap());
+    headers.insert(
+        header::CONTENT_TYPE,
+        safe_header_value(&ct, "application/octet-stream"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        safe_header_value(&cd, "attachment"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        safe_header_value(cc, "private, no-store"),
+    );
     // Make the declared type authoritative — without it a browser may sniff
     // an octet-stream body back into HTML.
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
