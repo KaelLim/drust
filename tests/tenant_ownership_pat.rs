@@ -34,6 +34,8 @@ struct Fixture {
     member_pat: String,
     owner2_pat: String,
     owner2_id: i64,
+    admin_pat: String,
+    admin_id: i64,
     _dir: tempfile::TempDir,
 }
 
@@ -67,6 +69,15 @@ async fn spin_up() -> Fixture {
     )
     .unwrap();
     let member_id = conn.last_insert_rowid();
+    // v1.57 — an `admin`-role admin owns NO tenant: its PAT must reach every
+    // tenant (sees_all_tenants = owner|admin), like an owner PAT.
+    conn.execute(
+        "INSERT INTO admins (username, password_hash, email, role) \
+         VALUES ('adm', '$oauth-only$', 'adm@example.com', 'admin')",
+        [],
+    )
+    .unwrap();
+    let admin_id = conn.last_insert_rowid();
 
     // Tenants with explicit owners (inserted post-migration so the ownership
     // backfill never touches them).
@@ -94,6 +105,12 @@ async fn spin_up() -> Fixture {
     conn.execute(
         "INSERT INTO _admin_tokens (admin_id, token_hash) VALUES (?1, ?2)",
         params![owner2_id, admin_token::hash_token(&owner2_pat)],
+    )
+    .unwrap();
+    let admin_pat = admin_token::generate_token();
+    conn.execute(
+        "INSERT INTO _admin_tokens (admin_id, token_hash) VALUES (?1, ?2)",
+        params![admin_id, admin_token::hash_token(&admin_pat)],
     )
     .unwrap();
 
@@ -146,6 +163,8 @@ async fn spin_up() -> Fixture {
         member_pat,
         owner2_pat,
         owner2_id,
+        admin_pat,
+        admin_id,
         _dir: dir,
     }
 }
@@ -331,6 +350,51 @@ async fn ownership_transfer_away_denies_member_pat_immediately() {
         s2,
         StatusCode::FORBIDDEN,
         "ex-owner member PAT must lose the transferred tenant immediately: {b2}"
+    );
+    assert!(b2.contains("PAT_TENANT_DENIED"), "got {b2}");
+}
+
+// ─── 7. admin-role PAT is cross-tenant (v1.57 sees_all = owner|admin) ────────
+
+#[tokio::test]
+async fn admin_pat_reaches_foreign_tenant() {
+    let f = spin_up().await;
+    // The `admin`-role admin owns NO tenant, yet its PAT resolves Service on
+    // both t-own (member-owned) and t-other (root-owned) — cross-tenant like an
+    // owner PAT, NOT 403 PAT_TENANT_DENIED.
+    let (s1, b1) = data_get(&f.tenant_app, "t-own", &f.admin_pat).await;
+    assert_eq!(s1, StatusCode::OK, "admin PAT on t-own: {b1}");
+    let (s2, b2) = data_get(&f.tenant_app, "t-other", &f.admin_pat).await;
+    assert_eq!(s2, StatusCode::OK, "admin PAT on t-other: {b2}");
+}
+
+// ─── 8. admin→member demotion re-scopes the PAT immediately (hook 13) ────────
+
+#[tokio::test]
+async fn admin_demoted_to_member_loses_foreign_tenant_immediately() {
+    let f = spin_up().await;
+    // Warm the cache with an admin-privileged (cross-tenant) hit on t-other.
+    let (s1, b1) = data_get(&f.tenant_app, "t-other", &f.admin_pat).await;
+    assert_eq!(s1, StatusCode::OK, "pre-demotion admin reach: {b1}");
+
+    // Demote the admin → member through the real admin-team route.
+    let cookie = login(&f.mgmt_app, "root", "hunter2").await;
+    let (status, body) = admin_patch(
+        &f.mgmt_app,
+        &cookie,
+        &format!("/admin/team/{}/role", f.admin_id),
+        serde_json::json!({"role": "member"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "role change failed: {body}");
+
+    // Immediately after (no TTL wait): hook 13 evicted the cached t-other entry
+    // and the DB path must deny — the demoted admin owns no tenant.
+    let (s2, b2) = data_get(&f.tenant_app, "t-other", &f.admin_pat).await;
+    assert_eq!(
+        s2,
+        StatusCode::FORBIDDEN,
+        "demoted admin's PAT must lose foreign tenants immediately: {b2}"
     );
     assert!(b2.contains("PAT_TENANT_DENIED"), "got {b2}");
 }

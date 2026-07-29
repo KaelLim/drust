@@ -680,8 +680,13 @@ SELECT \
                 // (member today, any future role) is confined to tenants that
                 // admin OWNS. Keying on `!= "member"` would fail OPEN for a
                 // future non-owner role — deny unless owner-or-owns instead.
-                let pat_is_owner = pat_admin_role.as_deref() == Some("owner");
-                if !(pat_is_owner || tenant_owner_admin_id == Some(admin_id)) {
+                // v1.57 — owner AND admin are cross-tenant (sees_all_tenants); a
+                // member PAT is scoped to owned tenants only. The v1.50 comment
+                // anticipated this exact widening ("deny unless owner-or-owns");
+                // the fail-closed shape is preserved.
+                let pat_sees_all =
+                    matches!(pat_admin_role.as_deref(), Some("owner") | Some("admin"));
+                if !(pat_sees_all || tenant_owner_admin_id == Some(admin_id)) {
                     crate::mgmt::metrics::metrics()
                         .bearer_denied_total
                         .with_label_values(&["admin_pat", "HTTP_403"])
