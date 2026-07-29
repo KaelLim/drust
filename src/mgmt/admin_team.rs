@@ -84,7 +84,7 @@ const OAUTH_ONLY_SENTINEL: &str = "$oauth-only$";
 
 /// Valid role strings.
 fn is_valid_role(r: &str) -> bool {
-    matches!(r, "owner" | "member")
+    matches!(r, "owner" | "admin" | "member")
 }
 
 /// Return 403 NOT_OWNER when the caller does not have the owner role.

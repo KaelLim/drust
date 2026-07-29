@@ -31,6 +31,26 @@ pub fn visibility_where(is_owner: bool) -> &'static str {
     }
 }
 
+// ─── role-capability helpers (v1.57 — 3-tier owner > admin > member) ──────────
+
+/// Global tenant reach — owner AND admin see every tenant; member sees only owned.
+pub fn sees_all_tenants(role: &str) -> bool {
+    matches!(role, "owner" | "admin")
+}
+/// May invite/remove MEMBER-role admins (owner + admin).
+pub fn can_manage_members(role: &str) -> bool {
+    matches!(role, "owner" | "admin")
+}
+/// May create/demote OWNER or ADMIN roles, and reach owner-only host surfaces.
+/// Owner-only — the top tier.
+pub fn can_manage_privileged(role: &str) -> bool {
+    role == "owner"
+}
+/// May see the team page (owner + admin; member cannot).
+pub fn sees_team_page(role: &str) -> bool {
+    matches!(role, "owner" | "admin")
+}
+
 // ─── route-layer guard middleware ────────────────────────────────────────────
 
 /// State for `tenant_ownership_layer` — mirrors
@@ -134,6 +154,25 @@ pub async fn tenant_ownership_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_capabilities() {
+        for (role, all, mem, priv_, team) in [
+            ("owner", true, true, true, true),
+            ("admin", true, true, false, true),
+            ("member", false, false, false, false),
+            ("bogus", false, false, false, false), // unknown → nothing
+        ] {
+            assert_eq!(sees_all_tenants(role), all, "{role} sees_all");
+            assert_eq!(can_manage_members(role), mem, "{role} manage_members");
+            assert_eq!(
+                can_manage_privileged(role),
+                priv_,
+                "{role} manage_privileged"
+            );
+            assert_eq!(sees_team_page(role), team, "{role} sees_team");
+        }
+    }
 
     // owner × {owned, foreign, NULL} → Allow ×3
     #[test]
