@@ -2804,6 +2804,7 @@ impl ServerHandler for DrustMcpService {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_prompts()
                 .build(),
         )
         .with_server_info(Implementation::new("drust", env!("CARGO_PKG_VERSION")))
@@ -2846,6 +2847,27 @@ impl ServerHandler for DrustMcpService {
         let contents = rmcp::model::ResourceContents::text(resources::cap_body(body), &request.uri)
             .with_mime_type(mime);
         Ok(rmcp::model::ReadResourceResult::new(vec![contents]))
+    }
+
+    // --- MCP Prompts (v1.56, M3). Hand-written (no prompt macro); thin wrappers
+    // over `crate::mcp::prompts`. Tenant comes from `self.state`; role is always
+    // Service (mcp_dispatch-gated). See src/mcp/prompts.rs.
+    async fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListPromptsResult, McpError> {
+        Ok(rmcp::model::ListPromptsResult::with_all_items(
+            crate::mcp::prompts::prompt_list(),
+        ))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: rmcp::model::GetPromptRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::GetPromptResult, McpError> {
+        crate::mcp::prompts::render_prompt(&self.state, &request.name, &request.arguments).await
     }
 }
 
