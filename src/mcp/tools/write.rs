@@ -358,6 +358,230 @@ pub(crate) fn insert_row_in_tx(
     Ok((id, rec))
 }
 
+/// Validate that `on_conflict` (as a column SET) matches a real conflict target
+/// on `table`: the PRIMARY KEY, or any UNIQUE index — INCLUDING the implicit
+/// `sqlite_autoindex_*` that a `UNIQUE` COLUMN constraint creates. This is why
+/// we query `PRAGMA index_list`/`table_info` DIRECTLY rather than reuse
+/// `describe_collection().indices`, which deliberately FILTERS OUT autoindexes
+/// (schema.rs) — a `sku TEXT UNIQUE` or a PK target would be invisible there and
+/// wrongly rejected. Order-insensitive set match. `UPSERT_NO_UNIQUE` otherwise.
+pub(crate) fn validate_conflict_target(
+    tx: &rusqlite::Connection,
+    table: &str,
+    on_conflict: &[String],
+) -> rusqlite::Result<()> {
+    if on_conflict.is_empty() {
+        return Err(invalid_input(
+            "UPSERT_NO_CONFLICT_COLS: on_conflict must list at least one column".to_string(),
+        ));
+    }
+    let esc = |s: &str| s.replace('"', "\"\"");
+    let want: std::collections::BTreeSet<String> = on_conflict.iter().cloned().collect();
+    // Candidate 1: the PRIMARY KEY column set (`table_info.pk` > 0).
+    let pk: std::collections::BTreeSet<String> = tx
+        .prepare(&format!("PRAGMA table_info(\"{}\")", esc(table)))?
+        .query_map([], |r| Ok((r.get::<_, i64>(5)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|(pk, _)| *pk > 0)
+        .map(|(_, n)| n)
+        .collect();
+    if !pk.is_empty() && pk == want {
+        return Ok(());
+    }
+    // Candidate 2: any UNIQUE index (incl. `sqlite_autoindex_*`) whose column
+    // set equals `on_conflict`.
+    let idx_names: Vec<String> = tx
+        .prepare(&format!("PRAGMA index_list(\"{}\")", esc(table)))?
+        .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|(_, uniq)| *uniq == 1)
+        .map(|(n, _)| n)
+        .collect();
+    for iname in idx_names {
+        let cols: std::collections::BTreeSet<String> = tx
+            .prepare(&format!("PRAGMA index_info(\"{}\")", esc(&iname)))?
+            // index_info col 2 is the indexed column name; NULL for an
+            // expression/rowid entry — skip those (no column to match).
+            .query_map([], |r| r.get::<_, Option<String>>(2))?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        if !cols.is_empty() && cols == want {
+            return Ok(());
+        }
+    }
+    Err(invalid_input(format!(
+        "UPSERT_NO_UNIQUE: on_conflict {on_conflict:?} does not match any UNIQUE index or the \
+         primary key of '{table}'"
+    )))
+}
+
+/// The per-row UPSERT body, run INSIDE a caller-supplied writer tx (M2). Mirrors
+/// [`insert_row_in_tx`] but resolves an existing row by the `on_conflict` key
+/// first: a hit is an UPDATE (history `op=update`, old=pre-image), a miss is an
+/// INSERT (`op=insert`). Order: field allowlist → conflict-key presence →
+/// structured CHECK → pre-image probe → **quota gate ONLY on the insert branch**
+/// (a conflict UPDATE mirrors `update_record_checked`: not quota-gated, so a
+/// shrink/recovery is never blocked) → `INSERT ... ON CONFLICT(<cols>) DO UPDATE
+/// SET <non-key col>=excluded.<col>, updated_at=datetime('now') RETURNING *` →
+/// in-tx history capture. Returns `(op, post-image)`; a rolled-back tx discards
+/// data AND history. Upsert is service-only (no policy CHECK; service bypasses).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn upsert_row_in_tx(
+    tx: &rusqlite::Connection,
+    schema: &crate::storage::schema::CollectionSchema,
+    data_map: &serde_json::Map<String, serde_json::Value>,
+    vector_bytes: &std::collections::HashMap<String, Vec<u8>>,
+    vector_names: &HashSet<String>,
+    on_conflict: &[String],
+    quota_tier: i64,
+    actor: &crate::storage::record_history::AuditActor,
+) -> rusqlite::Result<(crate::storage::record_history::HistoryOp, serde_json::Value)> {
+    use crate::storage::record_history::HistoryOp;
+    let allowed: std::collections::HashSet<&str> =
+        schema.fields.iter().map(|f| f.name.as_str()).collect();
+    for k in data_map.keys() {
+        if !allowed.contains(k.as_str()) {
+            let mut names: Vec<&str> = allowed.iter().copied().collect();
+            names.sort();
+            return Err(invalid_input(format!(
+                "unknown field '{}' for collection '{}' (allowed: {})",
+                k,
+                schema.name,
+                names.join(", ")
+            )));
+        }
+    }
+    // Every conflict key must be present in the row — otherwise we cannot probe
+    // the pre-image (nor would the caller's intent be well-defined).
+    for c in on_conflict {
+        if !data_map.contains_key(c) {
+            return Err(invalid_input(format!(
+                "UPSERT_MISSING_KEY: row is missing on_conflict column '{c}'"
+            )));
+        }
+    }
+    check_constraints(schema, data_map)?;
+    let esc = |s: &str| s.replace('"', "\"\"");
+
+    // Pre-image by the conflict key → decides op + supplies history `old`.
+    let key_where: Vec<String> = on_conflict
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("\"{}\" = ?{}", esc(c), i + 1))
+        .collect();
+    let sel = format!(
+        "SELECT * FROM \"{}\" WHERE {}",
+        esc(&schema.name),
+        key_where.join(" AND ")
+    );
+    let key_params: Vec<Value> = on_conflict
+        .iter()
+        .map(|c| match vector_bytes.get(c) {
+            Some(bytes) => Value::Blob(bytes.clone()),
+            None => json_to_sql_value(&data_map[c]),
+        })
+        .collect();
+    let krefs: Vec<&dyn rusqlite::ToSql> = key_params
+        .iter()
+        .map(|v| v as &dyn rusqlite::ToSql)
+        .collect();
+    let pre = {
+        let mut st = tx.prepare(&sel)?;
+        let cn: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+        st.query_row(&krefs[..], |r| materialize_row(r, &cn, vector_names))
+            .optional()?
+    };
+    let op = if pre.is_some() {
+        HistoryOp::Update
+    } else {
+        HistoryOp::Insert
+    };
+    // Quota gates the growth (INSERT) branch only — a conflict UPDATE is in
+    // lockstep with `update_record_checked` (v1.50 F3: never block a shrink).
+    if matches!(op, HistoryOp::Insert) {
+        crate::storage::quota::check_tenant_quota(
+            crate::storage::quota::usage_on_conn(tx)?,
+            0,
+            quota_tier,
+        )
+        .map_err(crate::error::quota_exceeded_error)?;
+    }
+
+    let cols: Vec<&str> = data_map.keys().map(|k| k.as_str()).collect();
+    let placeholders: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+    let key_set: std::collections::HashSet<&str> = on_conflict.iter().map(|s| s.as_str()).collect();
+    // DO UPDATE assigns every NON-key provided column from `excluded`, plus a
+    // convergent `updated_at` so `RETURNING *` matches the committed (post
+    // AFTER-trigger) row — the same reason `update_record_checked` writes it in
+    // its SET (v1.43 reader-cache/RETURNING invariant).
+    let mut set_exprs: Vec<String> = cols
+        .iter()
+        .filter(|c| !key_set.contains(**c))
+        .map(|c| {
+            let e = esc(c);
+            format!("\"{e}\" = excluded.\"{e}\"")
+        })
+        .collect();
+    if schema.fields.iter().any(|f| f.name == "updated_at") {
+        set_exprs.push("updated_at = datetime('now')".to_string());
+    }
+    if set_exprs.is_empty() {
+        // Degenerate: only key columns and no `updated_at` — a harmless
+        // self-assignment keeps DO UPDATE (and thus RETURNING) well-formed.
+        let e = esc(&on_conflict[0]);
+        set_exprs.push(format!("\"{e}\" = excluded.\"{e}\""));
+    }
+    let conflict_sql = on_conflict
+        .iter()
+        .map(|c| format!("\"{}\"", esc(c)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "INSERT INTO \"{}\" ({}) VALUES ({}) ON CONFLICT({}) DO UPDATE SET {} RETURNING *",
+        esc(&schema.name),
+        cols.iter()
+            .map(|c| format!("\"{}\"", esc(c)))
+            .collect::<Vec<_>>()
+            .join(","),
+        placeholders.join(","),
+        conflict_sql,
+        set_exprs.join(","),
+    );
+    let params: Vec<Value> = data_map
+        .iter()
+        .map(|(k, v)| match vector_bytes.get(k) {
+            Some(bytes) => Value::Blob(bytes.clone()),
+            None => json_to_sql_value(v),
+        })
+        .collect();
+    let refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let mut stmt = tx.prepare(&sql)?;
+    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let rec = stmt
+        .query_row(&refs[..], |r| materialize_row(r, &col_names, vector_names))
+        .map_err(map_check_violation)?;
+    let id = rec
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| tx.last_insert_rowid());
+    crate::storage::record_history::capture(
+        tx,
+        &schema.name,
+        op,
+        id,
+        pre.as_ref(),
+        Some(&rec),
+        actor,
+        schema.audit_enabled,
+    )?;
+    Ok((op, rec))
+}
+
 pub async fn insert_record_checked(
     s: &DrustMcp,
     collection: &str,

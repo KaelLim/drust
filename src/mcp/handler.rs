@@ -1338,6 +1338,42 @@ impl DrustMcpService {
 
     #[tool(
         annotations(destructive_hint = false, idempotent_hint = true),
+        description = "UPSERT many records in ONE atomic transaction (all-or-nothing). Each row is \
+        INSERTed, or — when it collides with an existing row on the `on_conflict` key — UPDATEs \
+        that row (`INSERT ... ON CONFLICT DO UPDATE`). USE WHEN: syncing external data by a natural \
+        key (e.g. `sku`). `on_conflict` MUST match a declared UNIQUE index (incl. a UNIQUE column) \
+        or the primary key, else UPSERT_NO_UNIQUE; every row MUST include the `on_conflict` \
+        column(s), else UPSERT_MISSING_KEY. Record-history captures the correct per-row op \
+        (insert vs update, with old/new). Service-key only. Returns {results:[{op,record}], count} \
+        where op is \"inserted\"|\"updated\". Errors: UPSERT_NO_UNIQUE, UPSERT_MISSING_KEY, \
+        BATCH_EMPTY, BATCH_TOO_LARGE, OWNER_FIELD_REQUIRED, CHECK_CONSTRAINT_FAILED, \
+        TENANT_QUOTA_EXCEEDED. EXAMPLE call: {\"collection\": \"products\", \"records\": \
+        [{\"sku\": \"a\", \"name\": \"Apple\"}], \"on_conflict\": [\"sku\"]}"
+    )]
+    async fn upsert_records(
+        &self,
+        Parameters(batch::UpsertRecordsArgs {
+            collection,
+            records,
+            on_conflict,
+        }): Parameters<batch::UpsertRecordsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match batch::batch_upsert(
+            &self.state,
+            &collection,
+            records,
+            on_conflict,
+            crate::storage::record_history::AuditActor::service(),
+        )
+        .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
         description = "Partially update one record. `data` is a JSON object of fields to set; \
         omitted fields are left unchanged. `updated_at` is bumped automatically."
     )]
@@ -3172,8 +3208,8 @@ mod instructions_tests {
 mod annotation_tests {
     use super::*;
 
-    // Wire name == fn name (no `name=` overrides). Buckets sum to 67; call_rpc &
-    // invoke_function are special-cased below. Total must equal tool_count() (69).
+    // Wire name == fn name (no `name=` overrides). Buckets sum to 68; call_rpc &
+    // invoke_function are special-cased below. Total must equal tool_count() (70).
     const READONLY: &[&str] = &[
         "list_collections",
         "whoami",
@@ -3233,6 +3269,7 @@ mod annotation_tests {
         "set_function_invoke_acl",
         "set_cron_job_active",
         "update_record",
+        "upsert_records",
         "update_rpc",
         "update_user",
         "update_webhook",
@@ -3262,14 +3299,14 @@ mod annotation_tests {
             .unwrap_or_else(|| panic!("tool {name} has no annotations"))
     }
 
-    /// Completeness anchor: proves wire name == fn name, the count is 69, and the
+    /// Completeness anchor: proves wire name == fn name, the count is 70, and the
     /// classification below covers EXACTLY the real tool set (catches renames/adds/typos).
     #[test]
-    fn wire_names_match_classification_and_count_is_69() {
+    fn wire_names_match_classification_and_count_is_70() {
         let names: Vec<String> = tools().iter().map(|t| t.name.to_string()).collect();
         assert_eq!(
             names.len(),
-            69,
+            70,
             "tool count changed — update tool_count assertions too"
         );
         let mut covered: Vec<&str> = READONLY

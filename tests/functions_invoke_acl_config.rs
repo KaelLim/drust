@@ -170,15 +170,15 @@ async fn mcp_set_function_invoke_acl_happy_path() {
 }
 
 #[test]
-fn mcp_exposes_sixty_nine_tools() {
+fn mcp_exposes_seventy_tools() {
     // v1.48 added the four cron tools (61 → 65). v1.49 adds the two egress
     // tools (65 → 67). v1.54 M1 adds `aggregate` (67 → 68). v1.55 M2 adds
-    // `insert_records` (68 → 69; `upsert_records` will make it 70).
+    // `insert_records` (68 → 69) and `upsert_records` (69 → 70).
     // `tool_count()` is derived from the macro-generated router, so this pins
     // router reality to the spec'd number.
     assert_eq!(
         drust::mcp::handler::DrustMcpService::tool_count(),
-        69,
-        "MCP tool count must be 69 after adding the M2 insert_records tool"
+        70,
+        "MCP tool count must be 70 after adding the M2 upsert_records tool"
     );
 }
