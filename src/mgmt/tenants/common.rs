@@ -39,16 +39,16 @@ pub(crate) async fn load_tenant_shell(
 /// v1.50 — ownership-aware visibility guard for admin POST handlers
 /// (DELETE / upsert), the successor to `ensure_tenant_exists`: returns
 /// `None` when the tenant exists in `meta.tenants`, isn't soft-deleted,
-/// AND `tenant_authz::tenant_access_for` allows the caller (owner: always;
-/// member: only tenants they own). Missing tenant and member-not-owned both
-/// return the SAME 404 so a member cannot probe for a foreign tenant's
-/// existence. Runs before `state.tenants.get_or_open(...)` so we don't
-/// materialise an empty `tenants/<bogus_id>/data.sqlite` for an admin-typed
-/// path. Cheaper than `load_tenant_shell` (no collection list).
+/// AND `tenant_authz::tenant_access_for` allows the caller (sees_all =
+/// owner OR admin: always; member: only tenants they own). Missing tenant
+/// and member-not-owned both return the SAME 404 so a member cannot probe
+/// for a foreign tenant's existence. Runs before `state.tenants.get_or_open(...)`
+/// so we don't materialise an empty `tenants/<bogus_id>/data.sqlite` for an
+/// admin-typed path. Cheaper than `load_tenant_shell` (no collection list).
 pub(crate) async fn ensure_tenant_visible(
     state: &TenantsState,
     tenant_id: &str,
-    is_owner: bool,
+    sees_all: bool,
     caller_admin_id: i64,
 ) -> Option<Response> {
     let owner: Result<Option<i64>, _> = {
@@ -61,7 +61,7 @@ pub(crate) async fn ensure_tenant_visible(
     };
     match owner {
         Err(_) => Some((StatusCode::NOT_FOUND, "no such tenant").into_response()),
-        Ok(o) => match crate::mgmt::tenant_authz::tenant_access_for(is_owner, caller_admin_id, o) {
+        Ok(o) => match crate::mgmt::tenant_authz::tenant_access_for(sees_all, caller_admin_id, o) {
             crate::mgmt::tenant_authz::TenantAccess::Allow => None,
             // 404 (not 403): never leak a foreign tenant's existence to a member.
             crate::mgmt::tenant_authz::TenantAccess::Deny => {

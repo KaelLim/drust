@@ -77,12 +77,9 @@ pub async fn list_page_axum(
     // v1.15.0 — reads denormalized stats columns. Zero per-tenant SQLite
     // opens on the request path; the background sampler keeps them fresh.
     // v1.50 — ownership-scoped: member admins only see tenants they own.
-    let clause = crate::mgmt::tenant_authz::visibility_where(admin.is_owner);
-    let binds: Vec<i64> = if admin.is_owner {
-        vec![]
-    } else {
-        vec![caller_id]
-    };
+    let sees_all = crate::mgmt::tenant_authz::sees_all_tenants(&admin.role);
+    let clause = crate::mgmt::tenant_authz::visibility_where(sees_all);
+    let binds: Vec<i64> = if sees_all { vec![] } else { vec![caller_id] };
     let mut latest_sample: Option<String> = None;
     let rows: Vec<TenantRow> = {
         let conn = state.session.meta.lock().await;
@@ -619,12 +616,9 @@ pub async fn tenants_json(
         crate::auth::middleware::AdminId,
     >,
 ) -> Response {
-    let clause = crate::mgmt::tenant_authz::visibility_where(profile.is_owner);
-    let binds: Vec<i64> = if profile.is_owner {
-        vec![]
-    } else {
-        vec![caller_id]
-    };
+    let sees_all = crate::mgmt::tenant_authz::sees_all_tenants(&profile.role);
+    let clause = crate::mgmt::tenant_authz::visibility_where(sees_all);
+    let binds: Vec<i64> = if sees_all { vec![] } else { vec![caller_id] };
     let conn = state.session.meta.lock().await;
     let mut out: Vec<TenantApiRow> = Vec::new();
     if let Ok(mut stmt) = conn.prepare(&format!(
@@ -671,12 +665,9 @@ pub async fn cmdk_tenants_json(
         crate::auth::middleware::AdminId,
     >,
 ) -> Response {
-    let clause = crate::mgmt::tenant_authz::visibility_where(profile.is_owner);
-    let binds: Vec<i64> = if profile.is_owner {
-        vec![]
-    } else {
-        vec![caller_id]
-    };
+    let sees_all = crate::mgmt::tenant_authz::sees_all_tenants(&profile.role);
+    let clause = crate::mgmt::tenant_authz::visibility_where(sees_all);
+    let binds: Vec<i64> = if sees_all { vec![] } else { vec![caller_id] };
     let conn = state.session.meta.lock().await;
     let mut out: Vec<CmdkTenant> = Vec::new();
     if let Ok(mut stmt) = conn.prepare(&format!(

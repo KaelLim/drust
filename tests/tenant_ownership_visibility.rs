@@ -198,6 +198,18 @@ async fn member_api_json_lists_only_owned() {
     );
 }
 
+// v1.57 — an `admin`-role admin (sees_all_tenants = owner|admin) sees EVERY
+// tenant on the management plane, exactly like an owner.
+#[tokio::test]
+async fn admin_api_json_lists_all_tenants_like_owner() {
+    let (app, dir, _owner, _member) = seed_three_tenants().await;
+    let (_id, admin_cookie) = insert_admin(&dir, "adm@example.com", "admin");
+    let (status, body) = get_body(&app, &admin_cookie, "/admin/api/tenants").await;
+    assert_eq!(status, StatusCode::OK);
+    let ids = json_ids(&body);
+    assert_eq!(ids, vec!["t-member-b", "t-orphan-c", "t-owner-a"]);
+}
+
 // ─── /admin/tenants (list_page_axum HTML) ────────────────────────────────────
 
 #[tokio::test]

@@ -155,8 +155,13 @@ pub async fn tenant_oauth_provider_upsert(
     // by the writer-mutex below via get_or_open → open_write → create_dir_all.
     // GET path runs the same check via load_tenant_shell; DELETE and the
     // upsert error-leg need it too.
-    if let Some(r) =
-        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    if let Some(r) = common::ensure_tenant_visible(
+        &state,
+        &tenant_id,
+        crate::mgmt::tenant_authz::sees_all_tenants(&admin.role),
+        caller_id,
+    )
+    .await
     {
         return r;
     }
@@ -234,8 +239,13 @@ pub async fn tenant_oauth_provider_delete(
     // Guard FIRST: a missing/soft-deleted tenant must not be re-materialised
     // by get_or_open → open_write → create_dir_all. GET path runs the same
     // check via load_tenant_shell.
-    if let Some(r) =
-        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    if let Some(r) = common::ensure_tenant_visible(
+        &state,
+        &tenant_id,
+        crate::mgmt::tenant_authz::sees_all_tenants(&admin.role),
+        caller_id,
+    )
+    .await
     {
         return r;
     }
@@ -272,8 +282,13 @@ pub async fn tenant_oauth_redirect_uris_update(
     Path((tenant_id, provider)): Path<(String, String)>,
     Form(form): Form<OauthRedirectUrisForm>,
 ) -> Response {
-    if let Some(r) =
-        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    if let Some(r) = common::ensure_tenant_visible(
+        &state,
+        &tenant_id,
+        crate::mgmt::tenant_authz::sees_all_tenants(&admin.role),
+        caller_id,
+    )
+    .await
     {
         return r;
     }

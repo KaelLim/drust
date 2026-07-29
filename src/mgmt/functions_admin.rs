@@ -211,9 +211,13 @@ pub async fn toggle(
     >,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
-    if let Some(r) =
-        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
-            .await
+    if let Some(r) = super::tenants::common::ensure_tenant_visible(
+        &state,
+        &tenant_id,
+        crate::mgmt::tenant_authz::sees_all_tenants(&admin.role),
+        caller_id,
+    )
+    .await
     {
         return r;
     }
@@ -264,9 +268,13 @@ pub async fn set_invoke_acl(
     Path((tenant_id, name)): Path<(String, String)>,
     Form(form): Form<InvokeAclForm>,
 ) -> Response {
-    if let Some(r) =
-        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
-            .await
+    if let Some(r) = super::tenants::common::ensure_tenant_visible(
+        &state,
+        &tenant_id,
+        crate::mgmt::tenant_authz::sees_all_tenants(&admin.role),
+        caller_id,
+    )
+    .await
     {
         return r;
     }
@@ -297,9 +305,13 @@ pub async fn delete(
     >,
     Path((tenant_id, name)): Path<(String, String)>,
 ) -> Response {
-    if let Some(r) =
-        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
-            .await
+    if let Some(r) = super::tenants::common::ensure_tenant_visible(
+        &state,
+        &tenant_id,
+        crate::mgmt::tenant_authz::sees_all_tenants(&admin.role),
+        caller_id,
+    )
+    .await
     {
         return r;
     }
@@ -348,9 +360,13 @@ pub async fn invoke(
     Path((tenant_id, name)): Path<(String, String)>,
     Form(form): Form<InvokeForm>,
 ) -> Response {
-    if let Some(r) =
-        super::tenants::common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id)
-            .await
+    if let Some(r) = super::tenants::common::ensure_tenant_visible(
+        &state,
+        &tenant_id,
+        crate::mgmt::tenant_authz::sees_all_tenants(&admin.role),
+        caller_id,
+    )
+    .await
     {
         return r;
     }

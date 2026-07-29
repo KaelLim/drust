@@ -261,8 +261,13 @@ pub async fn tenant_webhook_create_form(
     Form(form): Form<WebhookCreateForm>,
 ) -> Response {
     // Guard FIRST so a missing tenant doesn't re-materialise its dir.
-    if let Some(r) =
-        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    if let Some(r) = common::ensure_tenant_visible(
+        &state,
+        &tenant_id,
+        crate::mgmt::tenant_authz::sees_all_tenants(&admin.role),
+        caller_id,
+    )
+    .await
     {
         return r;
     }
@@ -458,8 +463,13 @@ pub async fn tenant_webhook_delete_form(
     >,
     Path((tenant_id, wid)): Path<(String, i64)>,
 ) -> Response {
-    if let Some(r) =
-        common::ensure_tenant_visible(&state, &tenant_id, admin.is_owner, caller_id).await
+    if let Some(r) = common::ensure_tenant_visible(
+        &state,
+        &tenant_id,
+        crate::mgmt::tenant_authz::sees_all_tenants(&admin.role),
+        caller_id,
+    )
+    .await
     {
         return r;
     }
