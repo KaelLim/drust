@@ -174,6 +174,28 @@ async fn batch_invite(
     .unwrap()
 }
 
+async fn remove(app: axum::Router, cookie: &str, target_id: i64) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/admin/team/{target_id}"))
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+fn root_id(dir: &tempfile::TempDir) -> i64 {
+    let meta_path = dir.path().join("meta.sqlite");
+    let conn = rusqlite::Connection::open(&meta_path).unwrap();
+    conn.query_row("SELECT id FROM admins WHERE username = 'root'", [], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+
 // ─── change_role authority matrix ────────────────────────────────────────────
 
 /// The matrix the plan enumerates:
@@ -413,4 +435,92 @@ async fn batch_invite_authority_matrix() {
             ),
         }
     }
+}
+
+// ─── remove authority matrix ──────────────────────────────────────────────────
+
+/// The matrix the plan enumerates for `remove_admin` (DELETE /admin/team/{id}):
+///   owner may remove any admin (except the last owner — the LAST_OWNER guard);
+///   admin may remove a `member` ONLY (removing an admin/owner →
+///     403 PRIVILEGED_ROLE_REQUIRED);
+///   member removes nothing (403 NOT_A_MANAGER).
+/// Table-driven: (caller_role, target_role) → (status, error_code?). A
+/// successful remove returns 200 OK with `{ "removed": true }`.
+#[tokio::test]
+async fn remove_authority_matrix() {
+    let cases: [(&str, &str, StatusCode, Option<&str>); 5] = [
+        // owner may remove an admin.
+        ("owner", "admin", StatusCode::OK, None),
+        // admin may remove a member.
+        ("admin", "member", StatusCode::OK, None),
+        // admin may NOT remove an admin or an owner.
+        (
+            "admin",
+            "admin",
+            StatusCode::FORBIDDEN,
+            Some("PRIVILEGED_ROLE_REQUIRED"),
+        ),
+        (
+            "admin",
+            "owner",
+            StatusCode::FORBIDDEN,
+            Some("PRIVILEGED_ROLE_REQUIRED"),
+        ),
+        // member manages nothing.
+        (
+            "member",
+            "member",
+            StatusCode::FORBIDDEN,
+            Some("NOT_A_MANAGER"),
+        ),
+    ];
+
+    for (caller_role, target_role, expected_status, expected_code) in cases {
+        let (app, dir) = spin_up().await;
+        let caller_cookie = if caller_role == "owner" {
+            login(&app, "root", "hunter2").await
+        } else {
+            insert_admin(
+                &dir,
+                &format!("caller-{caller_role}@example.com"),
+                caller_role,
+            )
+            .1
+        };
+        let (target_id, _) = insert_admin(&dir, "target@example.com", target_role);
+
+        let resp = remove(app, &caller_cookie, target_id).await;
+        let status = resp.status();
+        let body = body_json(resp).await;
+
+        assert_eq!(
+            status, expected_status,
+            "caller={caller_role} target={target_role}: body={body}"
+        );
+        match expected_code {
+            Some(code) => assert_eq!(
+                body["error_code"], code,
+                "caller={caller_role} target={target_role}"
+            ),
+            None => assert_eq!(
+                body["removed"], true,
+                "positive remove must report removed=true: body={body}"
+            ),
+        }
+    }
+}
+
+/// Owner removing the LAST owner is still rejected with 409 LAST_OWNER — the
+/// v1.50 immutability guard is untouched by the 3-tier authority matrix.
+#[tokio::test]
+async fn remove_last_owner_still_rejected() {
+    let (app, dir) = spin_up().await;
+    let owner_id = root_id(&dir);
+    let owner_cookie = login(&app, "root", "hunter2").await;
+
+    let resp = remove(app, &owner_cookie, owner_id).await;
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::CONFLICT, "remove last owner: {body}");
+    assert_eq!(body["error_code"], "LAST_OWNER");
 }

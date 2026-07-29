@@ -689,7 +689,10 @@ pub async fn remove_admin(
     axum::Extension(AdminId(caller_id)): axum::Extension<AdminId>,
     axum::Extension(profile): axum::Extension<AdminProfileExt>,
 ) -> Response {
-    if let Err(r) = owner_guard(&profile) {
+    // v1.57 authority: a `member` caller manages nothing; removing an
+    // owner/admin row is owner-only (`can_manage_privileged`, checked below once
+    // the target's role is known); an admin may only remove member rows.
+    if let Err(r) = require_manage_members(&profile) {
         return r;
     }
 
@@ -710,6 +713,19 @@ pub async fn remove_admin(
             Some(s) => s,
             None => return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "admin not found"),
         };
+
+        // v1.57 privileged gate: removing a row that HOLDS an owner|admin role is
+        // owner-only. An admin (team manager) may only remove member rows. Placed
+        // before the last-owner guard so an admin never learns owner-count state.
+        if matches!(target_role.as_str(), "owner" | "admin")
+            && !crate::mgmt::tenant_authz::can_manage_privileged(&profile.role)
+        {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "PRIVILEGED_ROLE_REQUIRED",
+                "only an owner may remove owner/admin roles",
+            );
+        }
 
         // TOCTOU-safe invariant check inside a transaction.
         let tx = match conn.unchecked_transaction() {
