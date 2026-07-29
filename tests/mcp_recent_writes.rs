@@ -147,3 +147,37 @@ async fn recent_writes_since_ts_filter() {
     assert_eq!(rows.len(), 1, "since_ts should narrow to the 03:00 entry");
     assert_eq!(rows[0].ts, "2026-05-25T03:00:00.000Z");
 }
+
+/// v1.55 M2 — the bulk write ops `insert_records` / `upsert_records` are part of
+/// the WRITE_OPS filter, so a retrying model sees its prior bulk call.
+#[tokio::test]
+async fn recent_writes_surfaces_batch_and_upsert_ops() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("audit.sqlite");
+    let writer_conn = open_audit_db_write(&path).unwrap();
+    let w = AuditWriter::new(writer_conn);
+
+    for (ts, op) in [
+        ("2026-07-28T01:00:00.000Z", "insert_records"),
+        ("2026-07-28T02:00:00.000Z", "upsert_records"),
+        ("2026-07-28T03:00:00.000Z", "GET /records/products"), // read — filtered out
+    ] {
+        w.send_backfill(mk(ts, "acme", op, Some("products")))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let read_conn = open_audit_db_read(&path).unwrap();
+    let arc_read = Arc::new(Mutex::new(read_conn));
+    let rows = query_recent(&arc_read, "acme", 50, None, None)
+        .await
+        .unwrap();
+    let ops: Vec<&str> = rows.iter().map(|r| r.op.as_str()).collect();
+    assert!(ops.contains(&"insert_records"), "got {ops:?}");
+    assert!(ops.contains(&"upsert_records"), "got {ops:?}");
+    assert!(
+        !ops.contains(&"GET /records/products"),
+        "read must be filtered"
+    );
+}

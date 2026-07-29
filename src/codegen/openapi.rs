@@ -48,6 +48,25 @@ pub fn render_openapi(ir: &CodegenIr) -> Value {
             format!("/t/{}/collections/{}/aggregate", ir.tenant_id, coll.name),
             json!({ "post": aggregate_op(&coll.name) }),
         );
+        // Service-only bulk writes (M2). `include_descriptions` is true iff the
+        // caller is the service key — exactly who may call these — so gate on it
+        // to keep them out of the anon-tier schema.
+        if ir.include_descriptions {
+            paths.insert(
+                format!(
+                    "/t/{}/collections/{}/records:batch",
+                    ir.tenant_id, coll.name
+                ),
+                json!({ "post": records_batch_op(&coll.name, &insert_name, &row_name) }),
+            );
+            paths.insert(
+                format!(
+                    "/t/{}/collections/{}/records:upsert",
+                    ir.tenant_id, coll.name
+                ),
+                json!({ "post": records_upsert_op(&coll.name, &insert_name, &row_name) }),
+            );
+        }
         if coll.has_vector {
             paths.insert(
                 format!("/t/{}/collections/{}/search", ir.tenant_id, coll.name),
@@ -343,6 +362,63 @@ fn aggregate_op(coll: &str) -> Value {
                     "rows": { "type": "array", "items": { "type": "object" } },
                     "page": { "type": "integer" },
                     "perPage": { "type": "integer" }
+                }
+            }}}}
+        }
+    })
+}
+
+fn records_batch_op(coll: &str, insert_name: &str, row_name: &str) -> Value {
+    json!({
+        "summary": format!("Batch insert into {coll} (service-only, atomic all-or-nothing)"),
+        "requestBody": {
+            "required": true,
+            "content": { "application/json": { "schema": {
+                "type": "object",
+                "required": ["records"],
+                "properties": {
+                    "records": { "type": "array", "items": { "$ref": format!("#/components/schemas/{insert_name}") } }
+                }
+            }}}
+        },
+        "responses": {
+            "200": { "description": "OK", "content": { "application/json": { "schema": {
+                "type": "object",
+                "properties": {
+                    "inserted": { "type": "array", "items": { "$ref": format!("#/components/schemas/{row_name}") } },
+                    "count": { "type": "integer" }
+                }
+            }}}}
+        }
+    })
+}
+
+fn records_upsert_op(coll: &str, insert_name: &str, row_name: &str) -> Value {
+    json!({
+        "summary": format!("Upsert into {coll} (service-only, atomic; INSERT ON CONFLICT DO UPDATE)"),
+        "requestBody": {
+            "required": true,
+            "content": { "application/json": { "schema": {
+                "type": "object",
+                "required": ["records", "on_conflict"],
+                "properties": {
+                    "records": { "type": "array", "items": { "$ref": format!("#/components/schemas/{insert_name}") } },
+                    "on_conflict": { "type": "array", "items": { "type": "string" } }
+                }
+            }}}
+        },
+        "responses": {
+            "200": { "description": "OK", "content": { "application/json": { "schema": {
+                "type": "object",
+                "properties": {
+                    "results": { "type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": { "type": "string", "enum": ["inserted", "updated"] },
+                            "record": { "$ref": format!("#/components/schemas/{row_name}") }
+                        }
+                    }},
+                    "count": { "type": "integer" }
                 }
             }}}}
         }

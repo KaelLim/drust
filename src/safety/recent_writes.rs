@@ -20,6 +20,8 @@ pub struct RecentWrite {
 
 const WRITE_OPS: &[&str] = &[
     "insert_record",
+    "insert_records",
+    "upsert_records",
     "update_record",
     "delete_record",
     "create_collection",
