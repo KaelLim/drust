@@ -753,6 +753,56 @@ pub async fn post_batch(
     }
 }
 
+/// Body of `POST .../records:upsert` — rows + the conflict-target columns.
+#[derive(Deserialize)]
+pub struct UpsertBody {
+    #[serde(default)]
+    pub records: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub on_conflict: Vec<String>,
+}
+
+/// `POST /t/<id>/collections/<c>/records:upsert` — atomic batch upsert
+/// (service-only). Delegates to the shared `batch_upsert_core`; anon/user get
+/// `403 WRITE_DENIED`.
+#[allow(clippy::too_many_arguments)]
+pub async fn post_upsert(
+    Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
+    Extension(TenantQuotaTier(quota_tier)): Extension<TenantQuotaTier>,
+    Path((_tenant, coll)): Path<(String, String)>,
+    Json(body): Json<UpsertBody>,
+    bus: EventBus,
+    webhooks: Arc<WebhookDispatcher>,
+    functions: Arc<crate::functions::dispatcher::FunctionDispatcher>,
+) -> Response {
+    if !matches!(ctx, AuthCtx::Service { .. }) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "WRITE_DENIED",
+            "upsert requires the service token",
+        );
+    }
+    let actor = crate::storage::record_history::AuditActor::from_auth_ctx(&ctx);
+    match crate::mcp::tools::batch::batch_upsert_core(
+        &t.pool,
+        &t.tenant_id,
+        &bus,
+        &webhooks,
+        Some(&functions),
+        quota_tier,
+        &coll,
+        body.records,
+        body.on_conflict,
+        actor,
+    )
+    .await
+    {
+        Ok(v) => (StatusCode::OK, Json(v)).into_response(),
+        Err(e) => map_batch_error(e),
+    }
+}
+
 /// Map a batch/upsert `anyhow` error to an HTTP response by its `CODE:` prefix
 /// (the same code convention MCP's `bail_mcp` parses). Reuses the single-write
 /// deny codes so tests assert the same shapes.
@@ -771,7 +821,9 @@ pub(crate) fn map_batch_error(e: anyhow::Error) -> Response {
             json_error(StatusCode::BAD_REQUEST, "CHECK_CONSTRAINT_FAILED", &msg)
         }
         "POLICY_CHECK_FAILED" => json_error(StatusCode::FORBIDDEN, "POLICY_CHECK_FAILED", &msg),
-        "UPSERT_NO_UNIQUE" => json_error(StatusCode::BAD_REQUEST, "UPSERT_NO_UNIQUE", &msg),
+        "UPSERT_NO_UNIQUE" | "UPSERT_NO_CONFLICT_COLS" | "UPSERT_MISSING_KEY" => {
+            json_error(StatusCode::BAD_REQUEST, code, &msg)
+        }
         "BATCH_EMPTY" | "BATCH_TOO_LARGE" | "BATCH_ROW_NOT_OBJECT" => {
             json_error(StatusCode::BAD_REQUEST, code, &msg)
         }
