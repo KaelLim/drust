@@ -415,3 +415,51 @@ async fn member_settings_page_hides_transfer_control() {
         "member view must not render the ownership-transfer control"
     );
 }
+
+// ─── sidebar owner-only nav (audit + backups) — #904 ─────────────────────────
+// `data-section="…"` is the sidebar nav-item marker (see _admin_sidebar.html),
+// so asserting on it isolates the nav from the cmdk palette / other surfaces.
+
+#[tokio::test]
+async fn owner_sidebar_shows_audit_and_backups() {
+    let (app, _dir, owner_cookie, _member_cookie) = seed_three_tenants().await;
+    let (status, html) = get_body(&app, &owner_cookie, "/admin/tenants").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"data-section="audit""#),
+        "owner sidebar must show the audit-log nav item"
+    );
+    assert!(
+        html.contains(r#"data-section="backups""#),
+        "owner sidebar must show the backups nav item"
+    );
+}
+
+#[tokio::test]
+async fn member_sidebar_hides_audit_and_backups_but_keeps_the_rest() {
+    let (app, _dir, _owner_cookie, member_cookie) = seed_three_tenants().await;
+    let (status, html) = get_body(&app, &member_cookie, "/admin/tenants").await;
+    assert_eq!(status, StatusCode::OK);
+    // Owner-only host surfaces (member gets 403 on both) — no dead nav links.
+    assert!(
+        !html.contains(r#"data-section="audit""#),
+        "member must NOT see the audit-log nav item"
+    );
+    assert!(
+        !html.contains(r#"data-section="backups""#),
+        "member must NOT see the backups nav item"
+    );
+    // The sidebar still renders; member-accessible entries stay.
+    assert!(
+        html.contains(r#"data-section="tenants""#),
+        "member keeps the tenants nav item"
+    );
+    assert!(
+        html.contains(r#"data-section="files""#),
+        "member keeps the host-files nav item (not owner-gated)"
+    );
+    assert!(
+        html.contains(r#"data-section="team""#),
+        "member keeps the team nav item (team_page is member-viewable read-only)"
+    );
+}

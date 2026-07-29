@@ -34,6 +34,13 @@
       <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/></svg></span>
       {{ t.s("admin_sidebar.nav.tenants") }}
     </a>
+    {# audit + backups are host-wide OWNER-ONLY surfaces (v1.50 require_owner_layer
+       on backups; inline OWNER_REQUIRED on the audit host page). A member admin
+       gets 403 on both, so hide the nav entries — the route guard remains the
+       enforcement boundary; this only stops showing a link that would error.
+       (team stays visible: team_page is member-viewable read-only; only its
+       mutations are owner-gated.) #}
+    {% if admin.is_owner %}
     <a class="nav-item" data-section="audit" href="{{ crate::base_path::base_path() }}/admin/audit">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h6"/></svg></span>
       {{ t.s("admin_sidebar.nav.audit_log") }}
@@ -42,6 +49,7 @@
       <span class="nav-icon"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span>
       {{ t.s("admin_sidebar.nav.backups") }}
     </a>
+    {% endif %}
     <a class="nav-item" data-section="files" href="{{ crate::base_path::base_path() }}/admin/files">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 7l2-2h5l2 2h9v12H3z"/></svg></span>
       {{ t.s("admin_sidebar.nav.host_files") }}
