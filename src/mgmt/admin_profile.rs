@@ -14,11 +14,18 @@ pub struct AdminProfileExt {
     pub picture_url: Option<String>,
     /// Computed at load time. Total — never empty. See `compute_initials`.
     pub initials: String,
-    /// v1.29: 'owner' | 'member'. Read from admins.role at request time
-    /// (no caching) so a demote takes effect on the target's next nav.
+    /// v1.29: 'owner' | 'admin' | 'member'. Read from admins.role at request
+    /// time (no caching) so a demote takes effect on the target's next nav.
     pub role: String,
     /// Convenience flag; mirrors `role == "owner"` for template `{% if admin.is_owner %}` use.
     pub is_owner: bool,
+    /// v1.57: mirrors `role == "admin"` — the middle tier. Template convenience.
+    pub is_admin: bool,
+    /// v1.57: `owner | admin` — global tenant reach (management-plane visibility).
+    /// Computed via `tenant_authz::sees_all_tenants` so all sites stay in lockstep.
+    pub sees_all_tenants: bool,
+    /// v1.57: `owner | admin` — may see the team page (member is locked out).
+    pub sees_team: bool,
 }
 
 impl AdminProfileExt {
@@ -58,6 +65,9 @@ impl AdminProfileExt {
             initials: "?".to_string(),
             role: "member".to_string(),
             is_owner: false,
+            is_admin: false,
+            sees_all_tenants: false,
+            sees_team: false,
         }
     }
 }
@@ -94,6 +104,9 @@ pub fn load_admin_profile(
     Ok(row.map(|(display_name, email, picture_url, role)| {
         let initials = AdminProfileExt::compute_initials(display_name.as_deref(), email.as_deref());
         let is_owner = role == "owner";
+        let is_admin = role == "admin";
+        let sees_all_tenants = crate::mgmt::tenant_authz::sees_all_tenants(&role);
+        let sees_team = crate::mgmt::tenant_authz::sees_team_page(&role);
         AdminProfileExt {
             display_name,
             email,
@@ -101,6 +114,9 @@ pub fn load_admin_profile(
             initials,
             role,
             is_owner,
+            is_admin,
+            sees_all_tenants,
+            sees_team,
         }
     }))
 }
@@ -219,5 +235,27 @@ mod tests {
         let p = AdminProfileExt::placeholder();
         assert_eq!(p.role, "member");
         assert!(!p.is_owner);
+    }
+
+    #[test]
+    fn role_flags_for_three_tiers() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE admins (id INTEGER PRIMARY KEY, display_name TEXT, email TEXT, picture_url TEXT, role TEXT NOT NULL DEFAULT 'member');
+             INSERT INTO admins (id, display_name, email, role) VALUES (1, 'O', 'o@x', 'owner');
+             INSERT INTO admins (id, display_name, email, role) VALUES (2, 'A', 'a@x', 'admin');
+             INSERT INTO admins (id, display_name, email, role) VALUES (3, 'M', 'm@x', 'member');"
+        ).unwrap();
+
+        let owner = load_admin_profile(&conn, 1).unwrap().unwrap();
+        assert!(owner.is_owner && !owner.is_admin && owner.sees_all_tenants && owner.sees_team);
+
+        let admin = load_admin_profile(&conn, 2).unwrap().unwrap();
+        assert!(!admin.is_owner && admin.is_admin && admin.sees_all_tenants && admin.sees_team);
+
+        let member = load_admin_profile(&conn, 3).unwrap().unwrap();
+        assert!(
+            !member.is_owner && !member.is_admin && !member.sees_all_tenants && !member.sees_team
+        );
     }
 }

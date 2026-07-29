@@ -44,6 +44,9 @@ fn build_app() -> (Router, std::path::PathBuf, tempfile::TempDir) {
         initials: "R".into(),
         role: "owner".into(),
         is_owner: true,
+        is_admin: false,
+        sees_all_tenants: true,
+        sees_team: true,
     };
     let app = Router::new()
         .route(

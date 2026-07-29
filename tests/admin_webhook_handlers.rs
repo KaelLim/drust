@@ -56,6 +56,9 @@ async fn build_app(tenant_id: &str) -> (Router, std::path::PathBuf, tempfile::Te
         initials: "R".into(),
         role: "owner".into(),
         is_owner: true,
+        is_admin: false,
+        sees_all_tenants: true,
+        sees_team: true,
     };
     let app = Router::new()
         .route(
