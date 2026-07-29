@@ -2,7 +2,7 @@
 //!
 //! Usage:
 //!   sudo -u drust DRUST_DATA_DIR=/var/lib/drust \
-//!     ./target/release/set_admin_role --email <addr> --role owner|member
+//!     ./target/release/set_admin_role --email <addr> --role owner|admin|member
 //!
 //! Mirrors the DRUST_DATA_DIR convention used by set_admin_password.
 
@@ -10,7 +10,7 @@ use rusqlite::params;
 use std::path::PathBuf;
 
 fn print_usage() {
-    eprintln!("usage: set_admin_role --email <addr> --role owner|member");
+    eprintln!("usage: set_admin_role --email <addr> --role owner|admin|member");
     eprintln!("       DRUST_DATA_DIR must be set (default path: /var/lib/drust)");
 }
 
@@ -35,8 +35,8 @@ fn main() -> anyhow::Result<()> {
     }
     let email = email.ok_or_else(|| anyhow::anyhow!("--email required"))?;
     let role = role.ok_or_else(|| anyhow::anyhow!("--role required"))?;
-    if role != "owner" && role != "member" {
-        anyhow::bail!("--role must be owner|member, got: {role:?}");
+    if !matches!(role.as_str(), "owner" | "admin" | "member") {
+        anyhow::bail!("--role must be owner|admin|member, got: {role:?}");
     }
 
     let data_dir: PathBuf = std::env::var("DRUST_DATA_DIR")
