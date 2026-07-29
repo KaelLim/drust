@@ -89,6 +89,34 @@ pub async fn require_owner_layer(
     next.run(req).await
 }
 
+/// v1.57 — route-layer member block for the team READ surface (`GET /admin/team`).
+/// The mutation routes on the same sub-router (invite / batch / role / remove)
+/// enforce their own authority matrix in-handler (`NOT_A_MANAGER` /
+/// `PRIVILEGED_ROLE_REQUIRED`), so this guard gates ONLY the GET read — the
+/// second, independent line of defense next to `team_page`'s `sees_team` handler
+/// gate (DiD ≥ 2). Reads `AdminProfileExt.sees_team` (owner|admin); a `member`
+/// (or a missing profile → fail-closed) gets `403 TEAM_REQUIRES_MANAGEMENT`.
+pub async fn require_sees_team_layer(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if req.method() == axum::http::Method::GET {
+        let sees_team = req
+            .extensions()
+            .get::<crate::mgmt::admin_profile::AdminProfileExt>()
+            .map(|p| p.sees_team)
+            .unwrap_or(false); // no profile → treat as member, fail-closed
+        if !sees_team {
+            return crate::error::json_error(
+                axum::http::StatusCode::FORBIDDEN,
+                "TEAM_REQUIRES_MANAGEMENT",
+                "the team page requires the owner or admin role",
+            );
+        }
+    }
+    next.run(req).await
+}
+
 /// v1.50 — route-level ownership guard for the tenant-scoped admin
 /// sub-routers (`tenants_router` + `admin_tenant_files_router`). Reads the
 /// `{id}` path param; routes on the same router without one (host-wide

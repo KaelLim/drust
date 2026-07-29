@@ -1327,6 +1327,13 @@ impl MgmtState {
                 "/admin/team/{id}/role",
                 axum::routing::patch(super::admin_team::change_role),
             )
+            // v1.57 — DiD route-layer member block on the team READ (GET). The
+            // mutation routes keep their in-handler authority matrix, so this
+            // only gates the read next to the `team_page` handler `sees_team`
+            // gate. Inner to `admin_profile_layer`, so the extension is set.
+            .layer(axum::middleware::from_fn(
+                crate::mgmt::tenant_authz::require_sees_team_layer,
+            ))
             .with_state(self.clone());
 
         // v1.44 (CLI Phase 2, T3) — device-flow approval pages. Ride inside

@@ -38,8 +38,8 @@
        on backups; inline OWNER_REQUIRED on the audit host page). A member admin
        gets 403 on both, so hide the nav entries — the route guard remains the
        enforcement boundary; this only stops showing a link that would error.
-       (team stays visible: team_page is member-viewable read-only; only its
-       mutations are owner-gated.) #}
+       (v1.57: team is now owner|admin only too — gated on `admin.sees_team`
+       below — so a member no longer sees a link that would 403.) #}
     {% if admin.is_owner %}
     <a class="nav-item" data-section="audit" href="{{ crate::base_path::base_path() }}/admin/audit">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h6"/></svg></span>
@@ -54,10 +54,12 @@
       <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 7l2-2h5l2 2h9v12H3z"/></svg></span>
       {{ t.s("admin_sidebar.nav.host_files") }}
     </a>
+    {% if admin.sees_team %}
     <a class="nav-item" data-section="team" href="{{ crate::base_path::base_path() }}/admin/team">
       <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="18" cy="8" r="2.5"/><path d="M21 20c0-2.8-1.3-5-3-5.8"/></svg></span>
       {{ t.s("admin_sidebar.nav.team") }}
     </a>
+    {% endif %}
 
     <div class="nav-section"><span>{{ t.s("admin_sidebar.section.resources") }}</span></div>
     <a class="nav-item" data-section="docs" href="{{ crate::base_path::base_path() }}/admin/_docs/changelog">

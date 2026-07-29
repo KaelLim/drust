@@ -276,6 +276,17 @@ pub async fn team_page_or_json(
     admin_ext: axum::Extension<AdminProfileExt>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    // v1.57 — the team page is owner|admin only; a `member` is locked out (403).
+    // This handler check covers BOTH the JSON and HTML dispatch branches (and any
+    // future direct mount); the route-layer `require_sees_team_layer` gates the
+    // GET independently for DiD ≥ 2.
+    if !admin_ext.sees_team {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "TEAM_REQUIRES_MANAGEMENT",
+            "the team page requires the owner or admin role",
+        );
+    }
     let accept = headers
         .get(axum::http::header::ACCEPT)
         .and_then(|v| v.to_str().ok())
@@ -297,6 +308,14 @@ async fn team_page(
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<AdminProfileExt>,
 ) -> Response {
+    // v1.57 — owner|admin only (DiD with `team_page_or_json` + the route layer).
+    if !admin.sees_team {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "TEAM_REQUIRES_MANAGEMENT",
+            "the team page requires the owner or admin role",
+        );
+    }
     let rows: Vec<AdminTeamRow> = {
         let conn = s.meta.lock().await;
         let mut stmt =

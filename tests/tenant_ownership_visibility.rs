@@ -470,8 +470,68 @@ async fn member_sidebar_hides_audit_and_backups_but_keeps_the_rest() {
         html.contains(r#"data-section="files""#),
         "member keeps the host-files nav item (not owner-gated)"
     );
+    // v1.57 — member is locked out of the team page entirely (owner|admin only),
+    // so the nav item is hidden too — no dead link that would 403.
+    assert!(
+        !html.contains(r#"data-section="team""#),
+        "member must NOT see the team nav item (owner|admin only)"
+    );
+}
+
+// ─── Task 8 (v1.57) — team page + nav are owner|admin only ───────────────────
+// The team page (read AND mutations) was member-viewable read-only until v1.57;
+// the 3-tier model locks `member` out entirely — 403 at the route AND the nav
+// entry hidden (DiD ≥ 2). owner|admin (sees_team) keep both.
+
+#[tokio::test]
+async fn member_team_page_forbidden() {
+    let (app, _dir, _owner, member_cookie) = seed_three_tenants().await;
+    let (status, body) = get_body(&app, &member_cookie, "/admin/team").await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "member must be locked out of /admin/team"
+    );
+    assert!(
+        body.contains("TEAM_REQUIRES_MANAGEMENT"),
+        "member team-page deny code, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn owner_team_page_ok() {
+    let (app, _dir, owner_cookie, _member) = seed_three_tenants().await;
+    let (status, _body) = get_body(&app, &owner_cookie, "/admin/team").await;
+    assert_eq!(status, StatusCode::OK, "owner reaches the team page");
+}
+
+#[tokio::test]
+async fn admin_team_page_ok() {
+    let (app, dir, _owner, _member) = seed_three_tenants().await;
+    let (_id, admin_cookie) = insert_admin(&dir, "adm@example.com", "admin");
+    let (status, _body) = get_body(&app, &admin_cookie, "/admin/team").await;
+    assert_eq!(status, StatusCode::OK, "admin reaches the team page");
+}
+
+#[tokio::test]
+async fn owner_sidebar_shows_team() {
+    let (app, _dir, owner_cookie, _member) = seed_three_tenants().await;
+    let (status, html) = get_body(&app, &owner_cookie, "/admin/tenants").await;
+    assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(r#"data-section="team""#),
-        "member keeps the team nav item (team_page is member-viewable read-only)"
+        "owner sidebar must show the team nav item"
+    );
+}
+
+#[tokio::test]
+async fn admin_sidebar_shows_team() {
+    let (app, dir, _owner, _member) = seed_three_tenants().await;
+    let (_id, admin_cookie) = insert_admin(&dir, "adm@example.com", "admin");
+    let (status, html) = get_body(&app, &admin_cookie, "/admin/tenants").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"data-section="team""#),
+        "admin sidebar must show the team nav item"
     );
 }
