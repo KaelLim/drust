@@ -55,13 +55,70 @@ async fn schema_resource_renders_via_reader_fn() {
 }
 
 #[tokio::test]
-async fn static_list_advertises_schema_for_this_tenant() {
+async fn static_list_advertises_all_nine_resources() {
     let list = static_resource_list("blog");
+    assert_eq!(list.len(), 9, "9 static resources advertised");
     let json = serde_json::to_string(&list).unwrap();
-    assert!(
-        json.contains("drust://blog/schema"),
-        "resources/list must include the schema resource: {json}"
-    );
+    for path in [
+        "schema",
+        "schema.md",
+        "collections",
+        "openapi.json",
+        "types.ts",
+        "zod.ts",
+        "functions",
+        "rpcs",
+        "cron",
+    ] {
+        assert!(
+            json.contains(&format!("drust://blog/{path}")),
+            "resources/list must include {path}: {json}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn all_static_resources_render_with_correct_mime() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "notes", &[tf("body", "text")])
+        .await
+        .unwrap();
+    // Every static resource renders non-empty with the declared mime.
+    for (uri, mime) in [
+        ("drust://blog/schema", "application/json"),
+        ("drust://blog/schema.md", "text/markdown"),
+        ("drust://blog/collections", "application/json"),
+        ("drust://blog/openapi.json", "application/json"),
+        ("drust://blog/types.ts", "text/typescript"),
+        ("drust://blog/zod.ts", "text/typescript"),
+        ("drust://blog/functions", "application/json"),
+        ("drust://blog/rpcs", "application/json"),
+        ("drust://blog/cron", "application/json"),
+    ] {
+        let parsed = parse_resource_uri(uri, "blog").unwrap();
+        let (body, m) = render_resource(&s, &parsed).await.unwrap();
+        assert_eq!(m, mime, "mime for {uri}");
+        assert!(!body.is_empty(), "empty body for {uri}");
+    }
+    // The schema-derived resources all mention the collection (thin-router: same
+    // output as the underlying reader/codegen).
+    for uri in [
+        "drust://blog/schema",
+        "drust://blog/schema.md",
+        "drust://blog/collections",
+        "drust://blog/openapi.json",
+        "drust://blog/types.ts",
+        "drust://blog/zod.ts",
+    ] {
+        let parsed = parse_resource_uri(uri, "blog").unwrap();
+        let (body, _) = render_resource(&s, &parsed).await.unwrap();
+        assert!(
+            body.to_lowercase().contains("notes"),
+            "{uri} should mention the collection: {}",
+            &body[..body.len().min(160)]
+        );
+    }
 }
 
 #[tokio::test]
