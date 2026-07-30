@@ -133,6 +133,9 @@ pub fn open_meta(path: &Path) -> anyhow::Result<Connection> {
     // const in db::migrations so fresh + upgraded DBs get byte-identical schema
     // (drift-proof); IF NOT EXISTS keeps it a no-op once run_migrations has run.
     conn.execute_batch(crate::db::migrations::SQL_CREATE_QUOTA_REQUESTS_IF_NOT_EXISTS)?;
+    // v1.57 — member tenant-cap request queue, from the same shared const so
+    // fresh + upgraded DBs get byte-identical schema (drift-proof).
+    conn.execute_batch(crate::db::migrations::SQL_CREATE_TENANT_CAP_REQUESTS_IF_NOT_EXISTS)?;
     apply_migrations(&conn)?;
     Ok(conn)
 }

@@ -146,6 +146,28 @@ CREATE INDEX IF NOT EXISTS idx_quota_requests_status ON quota_requests(status, c
 CREATE INDEX IF NOT EXISTS idx_quota_requests_tenant ON quota_requests(tenant_id);
 "#;
 
+/// v1.57 — member tenant-cap upgrade-request queue. Subject is an ADMIN, not a
+/// tenant (that is why this is a separate table from `quota_requests`, whose
+/// `tenant_id` is NOT NULL and whose review page, decide handler, and audit
+/// payload all assume one-request-per-tenant). `requested_cap` is the ABSOLUTE
+/// target the member asked for; approval converts it to a delta before storing.
+/// Shared const so `meta.rs` fresh-create and the boot migration produce
+/// byte-identical schema forever (same posture as the quota_requests const).
+pub const SQL_CREATE_TENANT_CAP_REQUESTS_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS tenant_cap_requests (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  requester_admin_id  INTEGER NOT NULL,
+  requested_cap       INTEGER NOT NULL,
+  reason              TEXT,
+  status              TEXT    NOT NULL DEFAULT 'pending',
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  decided_by_admin_id INTEGER,
+  decided_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tenant_cap_requests_status ON tenant_cap_requests(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_tenant_cap_requests_admin ON tenant_cap_requests(requester_admin_id);
+"#;
+
 pub fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -687,6 +709,22 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     // IF NOT EXISTS only; mints/revokes/deletes nothing, so a second boot is a
     // pure no-op (v1.41.5 invariant).
     meta.execute_batch(SQL_CREATE_QUOTA_REQUESTS_IF_NOT_EXISTS)?;
+
+    // v1.57 — per-member tenant creation cap. The column holds a DELTA against
+    // the global default (`DRUST_MEMBER_TENANT_CAP`), not an absolute ceiling,
+    // so raising the default lifts every admin including adjusted ones.
+    // `NOT NULL DEFAULT 0` needs no backfill — 0 ("no adjustment") is correct
+    // for every existing row. add_column_if_missing is the idempotency guard:
+    // ADD COLUMN fires only when absent, so a later operator-set bonus is never
+    // reset on reboot (v1.41.5 invariant). The table create is IF NOT EXISTS
+    // only — it mints, revokes, and deletes nothing.
+    add_column_if_missing(
+        meta,
+        "admins",
+        "tenant_cap_bonus",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    meta.execute_batch(SQL_CREATE_TENANT_CAP_REQUESTS_IF_NOT_EXISTS)?;
 
     // v1.29.0 — team management: role column + backfill
     add_column_if_missing(meta, "admins", "role", "TEXT NOT NULL DEFAULT 'member'")?;
@@ -2518,5 +2556,76 @@ mod tests {
             })
             .unwrap();
         assert_eq!(t2_tier, 1, "untouched tenant stays at tier 1");
+    }
+
+    /// v1.57 — the member tenant cap adds one column and one table. Both must be
+    /// idempotent: `run_migrations` runs on EVERY boot (v1.41.5 invariant), so a
+    /// second pass must not reset an operator-set bonus.
+    #[test]
+    fn tenant_cap_migration_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let conn = Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT);
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, \
+                 password_hash TEXT NOT NULL, email TEXT, \
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')), \
+                 role TEXT NOT NULL DEFAULT 'member');
+             INSERT INTO admins (id, username, password_hash, role) VALUES (1, 'boss', 'h', 'owner');
+             INSERT INTO admins (id, username, password_hash, role) VALUES (2, 'mem', 'h', 'member');",
+        )
+        .unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        run_migrations(&conn, tmp.path()).unwrap();
+
+        // (a) Column exists and defaults to 0 for every existing row.
+        let bonuses: Vec<i64> = conn
+            .prepare("SELECT tenant_cap_bonus FROM admins ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            bonuses,
+            vec![0, 0],
+            "existing admins default to no adjustment"
+        );
+
+        // (b) The request table and its two indexes exist.
+        let has_table: bool = conn
+            .prepare(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tenant_cap_requests'",
+            )
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_table, "tenant_cap_requests table must exist");
+        for idx in [
+            "idx_tenant_cap_requests_status",
+            "idx_tenant_cap_requests_admin",
+        ] {
+            let has_idx: bool = conn
+                .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1")
+                .unwrap()
+                .exists(rusqlite::params![idx])
+                .unwrap();
+            assert!(has_idx, "{idx} must exist");
+        }
+
+        // (c) An operator-set bonus survives a second migration pass — the
+        //     v1.41.5 invariant (no migration step may rewrite rows on reboot).
+        conn.execute("UPDATE admins SET tenant_cap_bonus = 4 WHERE id = 2", [])
+            .unwrap();
+        run_migrations(&conn, tmp.path()).unwrap();
+        let bonus: i64 = conn
+            .query_row(
+                "SELECT tenant_cap_bonus FROM admins WHERE id = 2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bonus, 4, "a second boot must not reset an operator's bonus");
     }
 }
