@@ -939,6 +939,15 @@ impl MgmtState {
                 "/admin/tenants/{id}/quota/requests",
                 post(super::quota_admin::create_quota_request),
             )
+            // v1.57 — member tenant-cap increase request. SELF-SCOPED: the
+            // subject is always the authenticated caller, so there is no
+            // on-behalf-of parameter and nothing for the ownership guard to
+            // filter (no `{id}` — the layer passes it through). Any admin may
+            // file one; only an owner decides it (owner-gated sub-router).
+            .route(
+                "/admin/tenant-cap/requests",
+                post(super::tenant_cap::create_cap_request),
+            )
             // v1.46 — `⚙ _settings` virtual sidebar entry: rename form +
             // audit default toggle + apply-to-all, and links to the pages
             // that already host related settings (nothing relocated).

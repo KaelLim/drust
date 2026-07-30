@@ -6,6 +6,12 @@
 //! that raising `DRUST_MEMBER_TENANT_CAP` left previously-adjusted admins
 //! behind. See docs/superpowers/specs/2026-07-30-member-tenant-cap-design.md.
 
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+
+use crate::error::json_error;
+
 /// Global fallback when `DRUST_MEMBER_TENANT_CAP` is unset or unparseable.
 pub const DEFAULT_MEMBER_TENANT_CAP: i64 = 3;
 
@@ -73,6 +79,130 @@ pub fn effective_cap_for_admin(
         )
         .unwrap_or_else(|_| ("member".to_string(), 0));
     Ok((role, effective_cap(configured_default(), bonus)))
+}
+
+// ─── member: file a cap-increase request ──────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct CapRequestBody {
+    pub requested_cap: i64,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `POST /admin/tenant-cap/requests`
+///
+/// SELF-SCOPED: the subject is always the authenticated caller — there is no
+/// "on behalf of another admin" parameter, so there is no cross-admin surface to
+/// authorise. Emits audit `admin.tenant_cap.request`.
+pub async fn create_cap_request(
+    State(state): State<crate::mgmt::tenants::TenantsState>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    axum::Json(body): axum::Json<CapRequestBody>,
+) -> Response {
+    if body.requested_cap < 1 || body.requested_cap > MAX_CAP {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "TENANT_CAP_INVALID",
+            &format!("requested_cap must be between 1 and {MAX_CAP}"),
+        );
+    }
+    // Same normalisation as quota_admin::create_quota_request.
+    let reason: Option<String> = match body.reason.as_deref().map(str::trim) {
+        Some("") => None,
+        Some(r) if r.len() > 500 => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "TENANT_CAP_REASON_TOO_LONG",
+                "reason must be at most 500 bytes",
+            );
+        }
+        Some(r) if r.chars().any(|c| c.is_control() && c != '\n' && c != '\t') => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "TENANT_CAP_REASON_INVALID",
+                "reason must not contain control characters",
+            );
+        }
+        Some(r) => Some(r.to_string()),
+        None => None,
+    };
+
+    let insert_result: Result<i64, Response> = {
+        let conn = state.session.meta.lock().await;
+
+        let (_, cap) = match effective_cap_for_admin(&conn, caller_id) {
+            Ok(v) => v,
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DB_ERROR",
+                    &e.to_string(),
+                );
+            }
+        };
+        if body.requested_cap <= cap {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "TENANT_CAP_NOT_INCREASE",
+                "requested_cap must be greater than your current cap",
+            );
+        }
+
+        let has_pending: bool = conn
+            .prepare(
+                "SELECT 1 FROM tenant_cap_requests \
+                 WHERE requester_admin_id = ?1 AND status = 'pending'",
+            )
+            .and_then(|mut s| s.exists(rusqlite::params![caller_id]))
+            .unwrap_or(false);
+        if has_pending {
+            return json_error(
+                StatusCode::CONFLICT,
+                "TENANT_CAP_REQUEST_PENDING",
+                "you already have a pending request",
+            );
+        }
+
+        if let Err(e) = conn.execute(
+            "INSERT INTO tenant_cap_requests (requester_admin_id, requested_cap, reason) \
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![caller_id, body.requested_cap, reason],
+        ) {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            );
+        }
+        Ok(conn.last_insert_rowid())
+        // conn guard drops here — before any .await
+    };
+    let req_id = match insert_result {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let mut entry =
+        crate::safety::audit::AuditEntry::success("-", "-", "admin.tenant_cap.request", 0);
+    entry.actor_admin_id = Some(caller_id);
+    entry = entry.with_extra(serde_json::json!({
+        "request_id": req_id,
+        "requested_cap": body.requested_cap,
+    }));
+    crate::safety::audit::write_entry(&state.log_dir, &entry).await;
+
+    (
+        StatusCode::CREATED,
+        axum::Json(serde_json::json!({
+            "id": req_id,
+            "requested_cap": body.requested_cap,
+            "status": "pending",
+        })),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
