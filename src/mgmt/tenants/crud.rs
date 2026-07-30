@@ -183,7 +183,7 @@ fn humanize_age(iso: Option<&str>) -> String {
     }
 }
 
-fn make_tenant_inner(
+pub fn make_tenant_inner(
     conn: &mut rusqlite::Connection,
     data_dir: &std::path::Path,
     id: &str,
@@ -191,7 +191,25 @@ fn make_tenant_inner(
     quota_mb: i64,
     quota_rows: i64,
     owner_admin_id: Option<i64>,
+    creator_role: &str,
 ) -> anyhow::Result<CreatedResp> {
+    // v1.57 — per-member tenant cap. Gated HERE, not in the two HTTP handlers,
+    // for two reasons: (1) both callers already hold the meta mutex across this
+    // fn, so the count is read inside the same critical section as the INSERT —
+    // two concurrent creates cannot both observe `owned = cap - 1` and both
+    // commit; (2) a future third creation entry point inherits the gate for
+    // free instead of having to remember it. Refuses before any write, so a
+    // refused create leaves no row, no directory, and no tokens.
+    if let Some(admin_id) = owner_admin_id {
+        let owned = crate::mgmt::tenant_cap::owned_tenant_count(conn, admin_id)?;
+        let (_, cap) = crate::mgmt::tenant_cap::effective_cap_for_admin(conn, admin_id)?;
+        if !crate::mgmt::tenant_cap::may_create_tenant(creator_role, owned, cap) {
+            anyhow::bail!(
+                "TENANT_CAP_EXCEEDED: you own {owned} of {cap} allowed databases. \
+                 Delete one, or request an increase from an owner."
+            );
+        }
+    }
     if let Err(e) = validate_tenant_id(id) {
         anyhow::bail!("invalid tenant id: {e}");
     }
@@ -293,6 +311,7 @@ pub async fn create_tenant_json(
     axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
         crate::auth::middleware::AdminId,
     >,
+    axum::Extension(profile): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Json(form): Json<CreateTenantJson>,
 ) -> Response {
     let mb = form.quota_db_mb.unwrap_or(500);
@@ -311,11 +330,14 @@ pub async fn create_tenant_json(
         mb,
         rows,
         Some(caller_id),
+        &profile.role,
     ) {
         Ok(resp) => resp,
         Err(e) => {
             let msg = e.to_string();
-            return if msg.contains("invalid tenant id") || msg.contains("UNIQUE") {
+            return if msg.contains("TENANT_CAP_EXCEEDED") {
+                crate::error::json_error(StatusCode::FORBIDDEN, "TENANT_CAP_EXCEEDED", &msg)
+            } else if msg.contains("invalid tenant id") || msg.contains("UNIQUE") {
                 (StatusCode::BAD_REQUEST, msg).into_response()
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
@@ -344,6 +366,7 @@ pub async fn create_tenant_form(
     axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
         crate::auth::middleware::AdminId,
     >,
+    axum::Extension(profile): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Form(form): Form<CreateTenantForm>,
 ) -> Response {
     // UUID v4 — user never types a slug. Display name is the human label.
@@ -357,6 +380,7 @@ pub async fn create_tenant_form(
         500,
         1_000_000,
         Some(caller_id),
+        &profile.role,
     );
     drop(conn);
 
@@ -366,7 +390,15 @@ pub async fn create_tenant_form(
             crate::mgmt::stats::sample_one(&state.session.meta, &state.tenants, &id).await;
             Redirect::to(&crate::base_path::base("/admin/tenants")).into_response()
         }
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            let code = if msg.contains("TENANT_CAP_EXCEEDED") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (code, msg).into_response()
+        }
     }
 }
 

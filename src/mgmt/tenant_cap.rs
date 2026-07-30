@@ -47,6 +47,34 @@ pub fn may_create_tenant(role: &str, owned: i64, effective_cap: i64) -> bool {
     owned < effective_cap
 }
 
+/// Live tenants currently owned by `admin_id`. Soft-deleted rows do NOT count,
+/// so deleting a tenant — or transferring its ownership away — frees a slot.
+/// Same "current usage" semantics as the storage quota.
+pub fn owned_tenant_count(conn: &rusqlite::Connection, admin_id: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM tenants WHERE owner_admin_id = ?1 AND deleted_at IS NULL",
+        rusqlite::params![admin_id],
+        |r| r.get(0),
+    )
+}
+
+/// `(role, effective_cap)` for one admin. A missing admin row yields
+/// `("member", …)` so an unknown caller is treated as the most restricted role
+/// rather than silently uncapped.
+pub fn effective_cap_for_admin(
+    conn: &rusqlite::Connection,
+    admin_id: i64,
+) -> rusqlite::Result<(String, i64)> {
+    let (role, bonus): (String, i64) = conn
+        .query_row(
+            "SELECT role, tenant_cap_bonus FROM admins WHERE id = ?1",
+            rusqlite::params![admin_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or_else(|_| ("member".to_string(), 0));
+    Ok((role, effective_cap(configured_default(), bonus)))
+}
+
 #[cfg(test)]
 mod cap_arithmetic_tests {
     use super::*;

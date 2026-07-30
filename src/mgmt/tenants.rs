@@ -5,7 +5,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub(crate) mod common;
-mod crud;
+// v1.57 — `pub` (was private) so the integration suite can drive
+// `crud::make_tenant_inner` directly: it is the single shared seam both HTTP
+// creation entry points call, and the per-member tenant cap is gated inside it.
+// Every item in `crud` that this exposes was already re-exported below, so this
+// adds a second path to the same API, never a new one.
+pub mod crud;
 mod files_page;
 mod oauth_page;
 mod overview;
