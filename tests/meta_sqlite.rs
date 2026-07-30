@@ -17,6 +17,11 @@ fn opens_fresh_db_with_schema() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
+    // This list is the fresh-install schema surface. It is asserted exactly so
+    // that UNINTENDED drift fails the build; a deliberate addition updates it
+    // here. v1.57 added `tenant_cap_requests` (the per-member tenant-cap
+    // upgrade-request queue), created by `open_meta` from the same shared const
+    // the boot migration uses, so fresh and upgraded databases stay identical.
     assert_eq!(
         tables,
         [
@@ -26,6 +31,7 @@ fn opens_fresh_db_with_schema() {
             "admins",
             "quota_requests",
             "sessions",
+            "tenant_cap_requests",
             "tenants",
             "tokens"
         ]

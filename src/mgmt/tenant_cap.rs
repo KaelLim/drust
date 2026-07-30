@@ -387,7 +387,7 @@ pub async fn decide_cap_request(
                     return Err(rusqlite::Error::QueryReturnedNoRows);
                 }
             }
-            tx.execute(
+            let closed = tx.execute(
                 "UPDATE tenant_cap_requests \
                  SET status = ?1, decided_by_admin_id = ?2, decided_at = datetime('now') \
                  WHERE id = ?3 AND status = 'pending'",
@@ -397,6 +397,19 @@ pub async fn decide_cap_request(
                     req_id
                 ],
             )?;
+            // The close is `WHERE status = 'pending'`, so if the row stopped
+            // being pending between the read above and here, this touches zero
+            // rows — and without this check the bonus write would still commit
+            // and a second success audit row would be emitted for a request
+            // that was already decided (codex review). Not reachable in-process
+            // today: `session.meta` is ONE connection behind ONE mutex held
+            // across this whole block, so two decides are serialized. The check
+            // is here so correctness does not depend on that, and because
+            // checking the admins UPDATE while ignoring this one is exactly the
+            // asymmetry a later refactor of the locking would turn into a bug.
+            if closed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
             Ok(())
         })();
         match tx_result.and_then(|_| tx.commit()) {

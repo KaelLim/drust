@@ -278,7 +278,7 @@ pub fn make_tenant_inner(
     name: &str,
     quota_mb: i64,
     quota_rows: i64,
-    owner_admin_id: Option<i64>,
+    owner_admin_id: i64,
 ) -> anyhow::Result<CreatedResp> {
     // v1.57 — per-member tenant cap. Gated HERE, not in the two HTTP handlers,
     // for two reasons: (1) both callers already hold the meta mutex across this
@@ -290,14 +290,24 @@ pub fn make_tenant_inner(
     // especially because the id-recycle branch below hard-DELETEs a soft-deleted
     // tenant's data, and that must never happen for a create we then refuse.
     //
-    // The role is read from the DB here rather than accepted as an argument
-    // (2026-07-30 adversarial review, finding 2). The first version took a
-    // `creator_role: &str` and discarded the role this very query returns, which
-    // meant the gate could be *lied to*: it relocated the mistake from
-    // "a new caller forgets the check" to "a new caller passes the wrong
-    // string", and `make_tenant_inner` is `pub`. Reading the authoritative value
-    // in the same critical section removes the parameter and the lie with it.
-    if let Some(admin_id) = owner_admin_id {
+    // Two rounds of review hardened this signature, and both times the fix was
+    // to REMOVE a way to be wrong rather than to add a check:
+    //
+    //   * the role is read from the DB, not accepted as an argument (adversarial
+    //     review, finding 2). The first version took a `creator_role: &str` and
+    //     discarded the role this very query returns, so the gate could be
+    //     *lied to* — the mistake merely moved from "a new caller forgets the
+    //     check" to "a new caller passes the wrong string", and this fn is pub.
+    //   * `owner_admin_id` is `i64`, not `Option<i64>` (codex review). The gate
+    //     used to sit inside `if let Some(..)`, so a caller passing `None`
+    //     skipped it entirely and created an unowned, uncapped tenant. Nothing
+    //     ever passed `None` — every creation has an authenticated creator, and
+    //     v1.50's creator-becomes-owner invariant requires one — so making the
+    //     parameter non-optional renders that bypass unrepresentable instead of
+    //     merely unused. (A tenant can still BECOME unowned later, via
+    //     remove_admin's `ON DELETE SET NULL`; that is orphaning, not creation.)
+    {
+        let admin_id = owner_admin_id;
         let owned = crate::mgmt::tenant_cap::owned_tenant_count(conn, admin_id)?;
         // A vanished admin fails CLOSED (cap 0) rather than inheriting the
         // global default — an owner_admin_id with no admins row is not a caller
@@ -429,7 +439,7 @@ pub async fn create_tenant_json(
         &form.name,
         mb,
         rows,
-        Some(caller_id),
+        caller_id,
     ) {
         Ok(resp) => resp,
         Err(e) => {
@@ -477,7 +487,7 @@ pub async fn create_tenant_form(
         &form.name,
         500,
         1_000_000,
-        Some(caller_id),
+        caller_id,
     );
     drop(conn);
 

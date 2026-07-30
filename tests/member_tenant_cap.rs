@@ -105,7 +105,7 @@ fn create(
         "Display Name",
         500,
         1_000_000,
-        Some(admin_id),
+        admin_id,
     )
     .map(|_| ())
 }
@@ -312,7 +312,7 @@ async fn two_concurrent_creates_at_the_boundary_yield_exactly_one_success() {
                 "N",
                 500,
                 1_000_000,
-                Some(2),
+                2,
             )
             .map(|_| ())
         }));
