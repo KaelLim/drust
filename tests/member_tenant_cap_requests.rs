@@ -170,14 +170,12 @@ fn cap_requests(dir: &TempDir, admin_id: i64) -> Vec<(i64, i64, Option<String>, 
              WHERE requester_admin_id = ?1 ORDER BY id",
         )
         .unwrap();
-    let rows = stmt
-        .query_map(params![admin_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    rows
+    stmt.query_map(params![admin_id], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })
+    .unwrap()
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .unwrap()
 }
 
 /// The stored DELTA for one admin (`admins.tenant_cap_bonus`).

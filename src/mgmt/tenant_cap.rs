@@ -475,7 +475,7 @@ pub async fn patch_admin_tenant_cap(
         );
     }
     if let Some(cap) = body.cap
-        && (cap < 1 || cap > MAX_CAP)
+        && !(1..=MAX_CAP).contains(&cap)
     {
         return json_error(
             StatusCode::BAD_REQUEST,
