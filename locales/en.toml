@@ -1298,6 +1298,9 @@ title = "Ownership"
 new_tenant = "New tenant"
 
 [tenants_list.cap]
+blocked_body = "You have reached your database limit. Delete one you no longer need, or request a higher limit — the Remaining card has the request button."
+blocked_title = "Database limit reached"
+create_failed_title = "Could not create the tenant"
 left = "left"
 over_limit = "over limit"
 pending_note = "An increase request is pending owner review."

@@ -175,8 +175,13 @@ pub async fn list_page_axum(
     } else {
         let conn = state.session.meta.lock().await;
         let owned = crate::mgmt::tenant_cap::owned_tenant_count(&conn, caller_id).unwrap_or(0);
-        let (_, cap) = crate::mgmt::tenant_cap::effective_cap_for_admin(&conn, caller_id)
-            .unwrap_or_else(|_| ("member".to_string(), 0));
+        // Display-only: a read failure or a vanished row shows cap 0 (the
+        // restrictive floor) rather than the permissive default.
+        let cap = crate::mgmt::tenant_cap::lookup_admin_cap(&conn, caller_id)
+            .ok()
+            .flatten()
+            .map(|(_, cap)| cap)
+            .unwrap_or(0);
         let has_pending: bool = conn
             .prepare(
                 "SELECT 1 FROM tenant_cap_requests \
@@ -274,7 +279,6 @@ pub fn make_tenant_inner(
     quota_mb: i64,
     quota_rows: i64,
     owner_admin_id: Option<i64>,
-    creator_role: &str,
 ) -> anyhow::Result<CreatedResp> {
     // v1.57 — per-member tenant cap. Gated HERE, not in the two HTTP handlers,
     // for two reasons: (1) both callers already hold the meta mutex across this
@@ -282,11 +286,25 @@ pub fn make_tenant_inner(
     // two concurrent creates cannot both observe `owned = cap - 1` and both
     // commit; (2) a future third creation entry point inherits the gate for
     // free instead of having to remember it. Refuses before any write, so a
-    // refused create leaves no row, no directory, and no tokens.
+    // refused create leaves no row, no directory, and no tokens — which matters
+    // especially because the id-recycle branch below hard-DELETEs a soft-deleted
+    // tenant's data, and that must never happen for a create we then refuse.
+    //
+    // The role is read from the DB here rather than accepted as an argument
+    // (2026-07-30 adversarial review, finding 2). The first version took a
+    // `creator_role: &str` and discarded the role this very query returns, which
+    // meant the gate could be *lied to*: it relocated the mistake from
+    // "a new caller forgets the check" to "a new caller passes the wrong
+    // string", and `make_tenant_inner` is `pub`. Reading the authoritative value
+    // in the same critical section removes the parameter and the lie with it.
     if let Some(admin_id) = owner_admin_id {
         let owned = crate::mgmt::tenant_cap::owned_tenant_count(conn, admin_id)?;
-        let (_, cap) = crate::mgmt::tenant_cap::effective_cap_for_admin(conn, admin_id)?;
-        if !crate::mgmt::tenant_cap::may_create_tenant(creator_role, owned, cap) {
+        // A vanished admin fails CLOSED (cap 0) rather than inheriting the
+        // global default — an owner_admin_id with no admins row is not a caller
+        // we should extend an allowance to.
+        let (role, cap) = crate::mgmt::tenant_cap::lookup_admin_cap(conn, admin_id)?
+            .unwrap_or_else(|| ("member".to_string(), 0));
+        if !crate::mgmt::tenant_cap::may_create_tenant(&role, owned, cap) {
             anyhow::bail!(
                 "TENANT_CAP_EXCEEDED: you own {owned} of {cap} allowed databases. \
                  Delete one, or request an increase from an owner."
@@ -394,7 +412,6 @@ pub async fn create_tenant_json(
     axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
         crate::auth::middleware::AdminId,
     >,
-    axum::Extension(profile): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Json(form): Json<CreateTenantJson>,
 ) -> Response {
     let mb = form.quota_db_mb.unwrap_or(500);
@@ -413,7 +430,6 @@ pub async fn create_tenant_json(
         mb,
         rows,
         Some(caller_id),
-        &profile.role,
     ) {
         Ok(resp) => resp,
         Err(e) => {
@@ -449,7 +465,6 @@ pub async fn create_tenant_form(
     axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
         crate::auth::middleware::AdminId,
     >,
-    axum::Extension(profile): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Form(form): Form<CreateTenantForm>,
 ) -> Response {
     // UUID v4 — user never types a slug. Display name is the human label.
@@ -463,7 +478,6 @@ pub async fn create_tenant_form(
         500,
         1_000_000,
         Some(caller_id),
-        &profile.role,
     );
     drop(conn);
 

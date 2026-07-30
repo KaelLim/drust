@@ -803,6 +803,25 @@ pub async fn remove_admin(
                 .into_response();
         }
 
+        // v1.57 — the removed admin's tenant-cap requests go with them
+        // (2026-07-30 adversarial review, finding 1). There is no FK on
+        // `tenant_cap_requests.requester_admin_id`, and `admins.id` is
+        // `INTEGER PRIMARY KEY` WITHOUT AUTOINCREMENT — so SQLite reuses a
+        // deleted top rowid and the next invited teammate could inherit this
+        // id, making an orphaned pending row appear to be theirs on the review
+        // queue. Deleting the rows here is the primary fix; the decide handler
+        // also refuses a vanished requester as layer 2.
+        if let Err(e) = tx.execute(
+            "DELETE FROM tenant_cap_requests WHERE requester_admin_id = ?1",
+            params![target_id],
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
         if let Err(e) = tx.execute("DELETE FROM admins WHERE id = ?1", params![target_id]) {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,

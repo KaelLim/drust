@@ -271,7 +271,35 @@
           name = name.trim();
           if (!name) return;
           nameInput.value = name;
-          form.submit();
+          // v1.57 — submit via fetch, not form.submit(). A full-page POST turns
+          // any refusal into a bare text/plain error document with no nav and no
+          // way back, and for a capped member that refusal is the ROUTINE
+          // outcome, not an edge case (2026-07-30 adversarial review, finding
+          // 3). Handling it here keeps the user on the page and points them at
+          // the request flow — the dead end names its own exit.
+          btn.disabled = true;
+          try {
+            var resp = await fetch(form.action, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+              body: new URLSearchParams({name: name}).toString(),
+            });
+            if (resp.ok || resp.redirected) { location.reload(); return; }
+            var text = await resp.text().catch(function () { return ''; });
+            if (resp.status === 403 && text.indexOf('TENANT_CAP_EXCEEDED') !== -1) {
+              await drustUI.alert({
+                title: '{{ t.s("tenants_list.cap.blocked_title") }}',
+                body: '{{ t.s("tenants_list.cap.blocked_body") }}'
+              });
+            } else {
+              await drustUI.alert({
+                title: '{{ t.s("tenants_list.cap.create_failed_title") }}',
+                body: text || '{{ t.s("tenants_list.cap.create_failed_title") }}'
+              });
+            }
+          } finally {
+            btn.disabled = false;
+          }
         });
       })();
 

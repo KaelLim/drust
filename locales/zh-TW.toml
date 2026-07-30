@@ -1320,6 +1320,9 @@ title = "擁有權"
 new_tenant = "新增租戶"
 
 [tenants_list.cap]
+blocked_body = "你已達資料庫數量上限。請先刪除不再需要的資料庫,或申請調高上限 —— 申請按鈕就在「剩餘額度」卡片上。"
+blocked_title = "已達資料庫數量上限"
+create_failed_title = "無法建立租戶"
 left = "個可用"
 over_limit = "已超出上限"
 pending_note = "已有一筆調高申請正等待 owner 審核。"

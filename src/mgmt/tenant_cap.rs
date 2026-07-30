@@ -23,37 +23,48 @@ pub const MAX_CAP: i64 = 100;
 
 /// Global default cap, from `DRUST_MEMBER_TENANT_CAP`. Same `env_or` posture as
 /// `DRUST_CRON_MAX_JOBS_PER_TENANT` (`src/cron/mod.rs`): unparseable → default.
+///
+/// Clamped into `0..=MAX_CAP`. The value is operator-controlled free text, and
+/// an unclamped `i64::MAX` would overflow the `default + bonus` addition below
+/// (2026-07-30 adversarial review, finding 8).
 pub fn configured_default() -> i64 {
     std::env::var("DRUST_MEMBER_TENANT_CAP")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(DEFAULT_MEMBER_TENANT_CAP)
+        .clamp(0, MAX_CAP)
 }
 
 /// Effective cap for an admin: the global default shifted by their stored delta,
 /// clamped at zero.
+///
+/// `saturating_add` because both operands are operator-controlled (`bonus` is a
+/// column an owner sets, `default` an env var) and a wrapping overflow would
+/// silently invert the comparison in [`may_create_tenant`].
 pub fn effective_cap(default: i64, bonus: i64) -> i64 {
-    (default + bonus).max(0)
+    default.saturating_add(bonus).max(0)
 }
 
 /// The delta to STORE so that this admin's effective cap becomes `target_cap`
 /// under the current `default`. The API speaks absolute numbers (that is what a
 /// person means); storage holds the delta.
 pub fn bonus_for_target(default: i64, target_cap: i64) -> i64 {
-    target_cap - default
+    target_cap.saturating_sub(default)
 }
 
 /// May this admin create one more tenant?
 ///
 /// Only `member` is capped — `owner`/`admin` already see every tenant, so
-/// creating one is a management act for them. Any OTHER role string fails
-/// closed (capped), so a future role cannot silently gain unlimited creation by
-/// not being listed here.
-pub fn may_create_tenant(role: &str, owned: i64, effective_cap: i64) -> bool {
-    if matches!(role, "owner" | "admin") {
+/// creating one is a management act for them. The role test delegates to
+/// [`crate::mgmt::tenant_authz::sees_all_tenants`] rather than re-listing the
+/// privileged roles, per CLAUDE.md's lockstep rule: a fourth role added there
+/// must reach every site that asks "does this role see everything?" (2026-07-30
+/// adversarial review, finding 6). Any other role string is capped.
+pub fn may_create_tenant(role: &str, owned: i64, cap: i64) -> bool {
+    if crate::mgmt::tenant_authz::sees_all_tenants(role) {
         return true;
     }
-    owned < effective_cap
+    owned < cap
 }
 
 /// Live tenants currently owned by `admin_id`. Soft-deleted rows do NOT count,
@@ -67,21 +78,30 @@ pub fn owned_tenant_count(conn: &rusqlite::Connection, admin_id: i64) -> rusqlit
     )
 }
 
-/// `(role, effective_cap)` for one admin. A missing admin row yields
-/// `("member", …)` so an unknown caller is treated as the most restricted role
-/// rather than silently uncapped.
-pub fn effective_cap_for_admin(
+/// `(role, effective_cap)` for one admin, or `None` when no such admin row
+/// exists.
+///
+/// `None` and `Err` are deliberately distinct (2026-07-30 adversarial review,
+/// findings 1 and 7). The first version collapsed both into a permissive
+/// `("member", global_default)` fallback, which produced two bugs: a transient
+/// read failure handed a deliberately-restricted admin the full default, and the
+/// approve path treated a deleted requester as a live admin at the default cap —
+/// marking the request `approved` and writing an audit row while its `UPDATE`
+/// touched zero rows. `decide_quota_request` fixed that same shape in v1.52;
+/// callers here must handle both arms explicitly.
+pub fn lookup_admin_cap(
     conn: &rusqlite::Connection,
     admin_id: i64,
-) -> rusqlite::Result<(String, i64)> {
-    let (role, bonus): (String, i64) = conn
+) -> rusqlite::Result<Option<(String, i64)>> {
+    use rusqlite::OptionalExtension;
+    let row: Option<(String, i64)> = conn
         .query_row(
             "SELECT role, tenant_cap_bonus FROM admins WHERE id = ?1",
             rusqlite::params![admin_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .unwrap_or_else(|_| ("member".to_string(), 0));
-    Ok((role, effective_cap(configured_default(), bonus)))
+        .optional()?;
+    Ok(row.map(|(role, bonus)| (role, effective_cap(configured_default(), bonus))))
 }
 
 // ─── member: file a cap-increase request ──────────────────────────────────────
@@ -136,8 +156,18 @@ pub async fn create_cap_request(
     let insert_result: Result<i64, Response> = {
         let conn = state.session.meta.lock().await;
 
-        let (_, cap) = match effective_cap_for_admin(&conn, caller_id) {
-            Ok(v) => v,
+        let cap = match lookup_admin_cap(&conn, caller_id) {
+            Ok(Some((_, cap))) => cap,
+            Ok(None) => {
+                // The authenticated caller has no admins row — not a state a
+                // live session should reach, and not one to extend an
+                // allowance to.
+                return json_error(
+                    StatusCode::NOT_FOUND,
+                    "ADMIN_NOT_FOUND",
+                    "your admin record no longer exists",
+                );
+            }
             Err(e) => {
                 return json_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -226,8 +256,21 @@ pub async fn decide_cap_request(
     axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
         crate::auth::middleware::AdminId,
     >,
+    axum::Extension(profile): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     axum::Json(body): axum::Json<CapDecideBody>,
 ) -> Response {
+    // DiD layer 2 on top of `require_owner_layer` (2026-07-30 adversarial
+    // review, finding 12). The layer is the primary boundary, but this repo's
+    // doctrine is >= 2 independent checks on a security decision, and a future
+    // re-mount of this handler on a differently-guarded router would otherwise
+    // lose all protection silently. `patch_admin_tenant_cap` already does this.
+    if !profile.is_owner {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "NOT_OWNER",
+            "owner role required to decide a tenant-cap request",
+        );
+    }
     let approve = match body.action.as_str() {
         "approve" => true,
         "reject" => false,
@@ -283,9 +326,25 @@ pub async fn decide_cap_request(
         // owner raises them via a direct set. Approving the stale row would
         // silently LOWER their cap. Re-read the live cap and refuse a
         // non-increase; the row stays pending so it can be rejected explicitly.
+        //
+        // The subject lookup is also where a DELETED requester is caught
+        // (2026-07-30 adversarial review, finding 1). `remove_admin` does not
+        // touch `tenant_cap_requests` and there is no FK, so a pending row can
+        // outlive its author; and because `admins.id` is `INTEGER PRIMARY KEY`
+        // WITHOUT AUTOINCREMENT, SQLite reuses a deleted top rowid, so the next
+        // invited teammate can inherit that id — approving the orphan would
+        // grant a stranger an allowance they never asked for. Refuse instead.
+        // (`remove_admin` now also deletes the requests, so this is layer 2.)
         if approve {
-            let (_, current_cap) = match effective_cap_for_admin(&conn, subject_id) {
-                Ok(v) => v,
+            let current_cap = match lookup_admin_cap(&conn, subject_id) {
+                Ok(Some((_, cap))) => cap,
+                Ok(None) => {
+                    return json_error(
+                        StatusCode::NOT_FOUND,
+                        "ADMIN_NOT_FOUND",
+                        "the requesting admin no longer exists",
+                    );
+                }
                 Err(e) => {
                     return json_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -316,10 +375,17 @@ pub async fn decide_cap_request(
         };
         let tx_result: Result<(), rusqlite::Error> = (|| {
             if approve {
-                tx.execute(
+                let affected = tx.execute(
                     "UPDATE admins SET tenant_cap_bonus = ?1 WHERE id = ?2",
                     rusqlite::params![new_bonus, subject_id],
                 )?;
+                // Belt to the pre-flight lookup's braces: never report an
+                // approval whose UPDATE touched nothing. Returning an error
+                // rolls the whole tx back, so the request stays `pending`
+                // rather than being closed against a write that did not land.
+                if affected == 0 {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                }
             }
             tx.execute(
                 "UPDATE tenant_cap_requests \
