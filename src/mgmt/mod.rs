@@ -24,6 +24,7 @@ pub mod signed_bytes;
 pub mod stats;
 pub mod tenant_authz;
 pub mod tenant_broadcast;
+pub mod tenant_cap;
 pub mod tenant_files;
 pub mod tenant_settings;
 pub mod tenants;
