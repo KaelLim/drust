@@ -1221,6 +1221,42 @@ requester = "申請者"
 tenant = "租戶"
 tier = "級距變更"
 
+[tenant_cap_review.action]
+approve = "核准"
+reject = "駁回"
+
+[tenant_cap_review.banner]
+body = "核准會立即調升該管理者可擁有的資料庫數量。儲存的是相對於全域預設的差額,因此日後調整預設值時他們也會一起被調升。駁回僅關閉申請,不改變任何設定。"
+title = "資料庫數量申請"
+
+[tenant_cap_review.decide]
+failed_title = "決議失敗"
+
+[tenant_cap_review.empty]
+sub = "member 於自己的資料庫列表頁提出申請。"
+title = "目前沒有待審的數量申請"
+
+[tenant_cap_review.head]
+eyebrow = "Admin · 平台"
+sub = "member 申請更多資料庫,owner 在此核准或駁回。"
+title = "資料庫數量申請"
+
+[tenant_cap_review.page]
+meta_description = "drust admin — 待 owner 審核的管理者資料庫數量申請。"
+title = "drust admin — 數量申請"
+
+[tenant_cap_review.reject]
+confirm_body = "駁回此數量申請?申請者可再重新提出。"
+confirm_title = "駁回申請"
+
+[tenant_cap_review.table]
+actions = "動作"
+admin = "管理者"
+cap = "數量變更"
+created = "申請時間"
+owned = "目前擁有"
+reason = "理由"
+
 [tenant_settings.head]
 sub = "租戶層級設定：顯示名稱與紀錄歷史稽核預設。其他設定仍在各自頁面 — 見下方相關設定。"
 title = "設定"

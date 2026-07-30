@@ -1230,6 +1230,26 @@ impl MgmtState {
             .layer(axum::middleware::from_fn(
                 crate::mgmt::tenant_authz::require_owner_layer,
             ))
+            .with_state(tenants_state.clone());
+
+        // v1.57 — host-wide member tenant-cap review queue. Owner-only, same
+        // shape as quota_review_router: the route has no tenant `{id}` for
+        // `tenant_ownership_layer` to filter, so per CLAUDE.md's standing
+        // invariant it MUST join `require_owner_layer`. Approving raises another
+        // admin's host allowance, which is an owner decision — an `admin`
+        // manages member accounts, not host capacity.
+        let tenant_cap_review_router = Router::new()
+            .route(
+                "/admin/tenant-cap-requests",
+                get(super::tenant_cap::cap_requests_page),
+            )
+            .route(
+                "/admin/tenant-cap-requests/{id}/decide",
+                post(super::tenant_cap::decide_cap_request),
+            )
+            .layer(axum::middleware::from_fn(
+                crate::mgmt::tenant_authz::require_owner_layer,
+            ))
             .with_state(tenants_state);
 
         // Public-files sub-router (new in v1.4.0). Upload route carries its
@@ -1352,6 +1372,15 @@ impl MgmtState {
                 "/admin/team/{id}/role",
                 axum::routing::patch(super::admin_team::change_role),
             )
+            // v1.57 — owner-only direct set of an admin's tenant cap. Sits here
+            // (next to the role change) because the roster row is where it is
+            // surfaced, and the owner gate is IN THE HANDLER: this sub-router
+            // admits `admin` too (`require_sees_team_layer` gates only the GET),
+            // and an `admin` must never set a host allowance.
+            .route(
+                "/admin/team/{id}/tenant-cap",
+                axum::routing::patch(super::tenant_cap::patch_admin_tenant_cap),
+            )
             // v1.57 — DiD route-layer member block on the team READ (GET). The
             // mutation routes keep their in-handler authority matrix, so this
             // only gates the read next to the `team_page` handler `sees_team`
@@ -1406,6 +1435,7 @@ impl MgmtState {
             .merge(admin_tenant_files_router)
             .merge(backups_router)
             .merge(quota_review_router)
+            .merge(tenant_cap_review_router)
             .merge(design_router)
             .merge(metrics_router)
             .merge(settings_router)

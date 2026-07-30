@@ -58,15 +58,42 @@ async fn spin_up() -> (axum::Router, TempDir) {
     (router, dir)
 }
 
-/// Insert a member admin (OAuth-only sentinel) + a live session. Mirrors
+/// Log the bootstrap admin in and return its session cookie. `root` is admin
+/// id 1 and `run_migrations` promotes it to `owner` (the "no owner exists yet"
+/// backfill), so this is the owner cookie.
+async fn login(app: &axum::Router, username: &str, password: &str) -> String {
+    let form = format!("username={username}&password={password}");
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(form))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "login failed");
+    let sc = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("no Set-Cookie on login")
+        .to_str()
+        .unwrap();
+    sc.split(';').next().unwrap().to_string()
+}
+
+/// Insert an admin of `role` (OAuth-only sentinel) + a live session. Mirrors
 /// tests/tenant_quota_requests.rs.
-fn insert_member(dir: &TempDir, email: &str) -> (i64, String) {
+fn insert_admin_role(dir: &TempDir, email: &str, role: &str) -> (i64, String) {
     let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
     let username = email.split('@').next().unwrap_or("admin").to_string();
     conn.execute(
         "INSERT INTO admins (username, password_hash, email, role) \
-         VALUES (?1, '$oauth-only$', ?2, 'member')",
-        params![username, email],
+         VALUES (?1, '$oauth-only$', ?2, ?3)",
+        params![username, email, role],
     )
     .unwrap();
     let admin_id = conn.last_insert_rowid();
@@ -86,12 +113,24 @@ fn insert_member(dir: &TempDir, email: &str) -> (i64, String) {
     (admin_id, format!("drust_session={session_token}"))
 }
 
+fn insert_member(dir: &TempDir, email: &str) -> (i64, String) {
+    insert_admin_role(dir, email, "member")
+}
+
 /// (app, dir, member_admin_id, member_cookie). The member carries no
 /// `tenant_cap_bonus`, so their effective cap is the global default.
 async fn seed() -> (axum::Router, TempDir, i64, String) {
     let (app, dir) = spin_up().await;
     let (mid, cookie) = insert_member(&dir, "alice@example.com");
     (app, dir, mid, cookie)
+}
+
+/// (app, dir, member_admin_id, member_cookie, owner_cookie).
+async fn seed_with_owner() -> (axum::Router, TempDir, i64, String, String) {
+    let (app, dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    let (mid, member) = insert_member(&dir, "alice@example.com");
+    (app, dir, mid, member, owner)
 }
 
 async fn send(
@@ -139,6 +178,72 @@ fn cap_requests(dir: &TempDir, admin_id: i64) -> Vec<(i64, i64, Option<String>, 
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
     rows
+}
+
+/// The stored DELTA for one admin (`admins.tenant_cap_bonus`).
+fn admin_bonus(dir: &TempDir, admin_id: i64) -> i64 {
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.query_row(
+        "SELECT tenant_cap_bonus FROM admins WHERE id = ?1",
+        params![admin_id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// `(status, decided_by_admin_id, decided_at)` for one request row.
+fn decision(dir: &TempDir, req_id: i64) -> (String, Option<i64>, Option<String>) {
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.query_row(
+        "SELECT status, decided_by_admin_id, decided_at FROM tenant_cap_requests \
+         WHERE id = ?1",
+        params![req_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .unwrap()
+}
+
+/// The bootstrap admin's id — `root`, promoted to `owner` by the migration.
+fn owner_id(dir: &TempDir) -> i64 {
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.query_row("SELECT id FROM admins WHERE username = 'root'", [], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+
+/// File a request as `cookie` and return its id (asserting the 201).
+async fn file_request(app: &axum::Router, cookie: &str, requested_cap: i64) -> i64 {
+    let (st, body) = send(
+        app,
+        "POST",
+        "/admin/tenant-cap/requests",
+        cookie,
+        Some(serde_json::json!({"requested_cap": requested_cap})),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "filing a request for {requested_cap} must 201: {body}"
+    );
+    body["id"].as_i64().expect("response carries a request id")
+}
+
+async fn get_status(app: &axum::Router, uri: &str, cookie: &str) -> StatusCode {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    resp.status()
 }
 
 // ─── happy path ───────────────────────────────────────────────────────────────
@@ -328,4 +433,280 @@ async fn a_control_character_in_the_reason_is_rejected() {
         cap_requests(&dir, mid).is_empty(),
         "a refused request must write no row"
     );
+}
+
+// ─── owner: decide a pending request ─────────────────────────────────────────
+
+#[tokio::test]
+async fn owner_approves_and_the_cap_rises() {
+    let (app, dir, mid, member, owner) = seed_with_owner().await;
+    let default = tenant_cap::configured_default();
+    let req_id = file_request(&app, &member, default + 2).await;
+
+    let (st, body) = send(
+        &app,
+        "POST",
+        &format!("/admin/tenant-cap-requests/{req_id}/decide"),
+        &owner,
+        Some(serde_json::json!({"action": "approve"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "owner approve must 200: {body}");
+
+    // The ABSOLUTE target the member asked for is stored as a DELTA.
+    assert_eq!(
+        admin_bonus(&dir, mid),
+        2,
+        "approving `default + 2` stores a +2 delta, never the absolute"
+    );
+    let (status, by, at) = decision(&dir, req_id);
+    assert_eq!(status, "approved");
+    assert_eq!(by, Some(owner_id(&dir)), "the deciding owner is recorded");
+    assert!(at.is_some(), "decided_at is stamped");
+}
+
+#[tokio::test]
+async fn owner_rejects_without_raising() {
+    let (app, dir, mid, member, owner) = seed_with_owner().await;
+    let default = tenant_cap::configured_default();
+    let req_id = file_request(&app, &member, default + 2).await;
+
+    let (st, body) = send(
+        &app,
+        "POST",
+        &format!("/admin/tenant-cap-requests/{req_id}/decide"),
+        &owner,
+        Some(serde_json::json!({"action": "reject"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "owner reject must 200: {body}");
+
+    assert_eq!(
+        admin_bonus(&dir, mid),
+        0,
+        "a rejection must not touch the adjustment"
+    );
+    let (status, by, at) = decision(&dir, req_id);
+    assert_eq!(status, "rejected");
+    assert_eq!(by, Some(owner_id(&dir)));
+    assert!(at.is_some(), "a rejection still stamps decided_at");
+}
+
+/// The F4 analogue. `quota_admin::decide_quota_request` carries a comment
+/// recording adversarial finding F4 from the v1.50 review: approving a stale
+/// pending row would silently DOWNGRADE. The identical hazard exists here —
+/// a member files for `default + 1`, an owner then direct-sets them higher, and
+/// approving the stale row must NOT lower them back.
+#[tokio::test]
+async fn approving_a_stale_request_cannot_downgrade() {
+    let (app, dir, mid, member, owner) = seed_with_owner().await;
+    let default = tenant_cap::configured_default();
+    let req_id = file_request(&app, &member, default + 1).await;
+
+    // Owner raises them past the pending request via a direct set.
+    let (st, body) = send(
+        &app,
+        "PATCH",
+        &format!("/admin/team/{mid}/tenant-cap"),
+        &owner,
+        Some(serde_json::json!({"cap": default + 3})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "owner direct set must 200: {body}");
+    assert_eq!(admin_bonus(&dir, mid), 3, "direct set stored a +3 delta");
+
+    // Approving the now-stale row must refuse rather than lower them.
+    let (st, body) = send(
+        &app,
+        "POST",
+        &format!("/admin/tenant-cap-requests/{req_id}/decide"),
+        &owner,
+        Some(serde_json::json!({"action": "approve"})),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "approving a stale request must 409, never silently downgrade: {body}"
+    );
+    assert_eq!(body["error_code"], "TENANT_CAP_NOT_INCREASE", "{body}");
+
+    assert_eq!(
+        admin_bonus(&dir, mid),
+        3,
+        "the live cap must survive the refused approval"
+    );
+    let (status, by, at) = decision(&dir, req_id);
+    assert_eq!(
+        status, "pending",
+        "the row stays pending so it can be rejected explicitly"
+    );
+    assert_eq!(by, None, "a refused approval records no decider");
+    assert_eq!(at, None, "a refused approval stamps no decided_at");
+}
+
+#[tokio::test]
+async fn deciding_an_already_decided_row_is_refused() {
+    let (app, dir, mid, member, owner) = seed_with_owner().await;
+    let default = tenant_cap::configured_default();
+    let req_id = file_request(&app, &member, default + 2).await;
+    let uri = format!("/admin/tenant-cap-requests/{req_id}/decide");
+
+    let (st1, body1) = send(
+        &app,
+        "POST",
+        &uri,
+        &owner,
+        Some(serde_json::json!({"action": "approve"})),
+    )
+    .await;
+    assert_eq!(st1, StatusCode::OK, "first approve must 200: {body1}");
+
+    let (st2, body2) = send(
+        &app,
+        "POST",
+        &uri,
+        &owner,
+        Some(serde_json::json!({"action": "approve"})),
+    )
+    .await;
+    assert_eq!(
+        st2,
+        StatusCode::CONFLICT,
+        "a double-submitted approval must 409, not re-apply: {body2}"
+    );
+    assert_eq!(body2["error_code"], "TENANT_CAP_REQUEST_DECIDED", "{body2}");
+    assert_eq!(
+        admin_bonus(&dir, mid),
+        2,
+        "the second decision changed nothing"
+    );
+}
+
+// ─── authorisation ────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn member_and_admin_cannot_reach_the_review_queue() {
+    let (app, dir, _mid, member, owner) = seed_with_owner().await;
+    let (_aid, admin) = insert_admin_role(&dir, "carol@example.com", "admin");
+
+    assert_eq!(
+        get_status(&app, "/admin/tenant-cap-requests", &member).await,
+        StatusCode::FORBIDDEN,
+        "a member must not see the host-wide review queue"
+    );
+    assert_eq!(
+        get_status(&app, "/admin/tenant-cap-requests", &admin).await,
+        StatusCode::FORBIDDEN,
+        "an admin must not see it either — allowance decisions are owner-only"
+    );
+    assert_eq!(
+        get_status(&app, "/admin/tenant-cap-requests", &owner).await,
+        StatusCode::OK,
+        "the owner sees the queue"
+    );
+}
+
+#[tokio::test]
+async fn only_owner_can_direct_set_a_cap() {
+    let (app, dir, mid, member, owner) = seed_with_owner().await;
+    let (_aid, admin) = insert_admin_role(&dir, "carol@example.com", "admin");
+    let default = tenant_cap::configured_default();
+    let uri = format!("/admin/team/{mid}/tenant-cap");
+
+    for (label, cookie) in [("admin", &admin), ("member", &member)] {
+        let (st, body) = send(
+            &app,
+            "PATCH",
+            &uri,
+            cookie,
+            Some(serde_json::json!({"cap": 7})),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::FORBIDDEN,
+            "a {label} must not set a host allowance: {body}"
+        );
+        assert_eq!(
+            admin_bonus(&dir, mid),
+            0,
+            "a refused {label} direct-set must change nothing"
+        );
+    }
+
+    let (st, body) = send(
+        &app,
+        "PATCH",
+        &uri,
+        &owner,
+        Some(serde_json::json!({"cap": 7})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "owner direct set must 200: {body}");
+    assert_eq!(
+        admin_bonus(&dir, mid),
+        7 - default,
+        "the absolute target is stored as a delta against the global default"
+    );
+}
+
+#[tokio::test]
+async fn direct_set_null_clears_the_adjustment() {
+    let (app, dir, mid, _member, owner) = seed_with_owner().await;
+    let default = tenant_cap::configured_default();
+    let uri = format!("/admin/team/{mid}/tenant-cap");
+
+    let (st, body) = send(
+        &app,
+        "PATCH",
+        &uri,
+        &owner,
+        Some(serde_json::json!({"cap": default + 4})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(admin_bonus(&dir, mid), 4, "adjusted first");
+
+    let (st, body) = send(
+        &app,
+        "PATCH",
+        &uri,
+        &owner,
+        Some(serde_json::json!({"cap": null})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "clearing must 200: {body}");
+    assert_eq!(
+        admin_bonus(&dir, mid),
+        0,
+        "null clears the adjustment back to the global default"
+    );
+}
+
+#[tokio::test]
+async fn direct_set_rejects_out_of_range() {
+    let (app, dir, mid, _member, owner) = seed_with_owner().await;
+    let uri = format!("/admin/team/{mid}/tenant-cap");
+
+    for cap in [0, tenant_cap::MAX_CAP + 1] {
+        let (st, body) = send(
+            &app,
+            "PATCH",
+            &uri,
+            &owner,
+            Some(serde_json::json!({"cap": cap})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "cap={cap} must 400: {body}");
+        assert_eq!(
+            body["error_code"], "TENANT_CAP_INVALID",
+            "cap={cap}: {body}"
+        );
+        assert_eq!(
+            admin_bonus(&dir, mid),
+            0,
+            "cap={cap} must leave the adjustment untouched"
+        );
+    }
 }

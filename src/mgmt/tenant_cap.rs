@@ -6,11 +6,14 @@
 //! that raising `DRUST_MEMBER_TENANT_CAP` left previously-adjusted admins
 //! behind. See docs/superpowers/specs/2026-07-30-member-tenant-cap-design.md.
 
+use askama::Template;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 
 use crate::error::json_error;
+use crate::mgmt::i18n::{LocaleHint, Translator};
+use crate::mgmt::theme::{ResolvedPalette, ThemeHint, ThemeRenderCtx};
 
 /// Global fallback when `DRUST_MEMBER_TENANT_CAP` is unset or unparseable.
 pub const DEFAULT_MEMBER_TENANT_CAP: i64 = 3;
@@ -203,6 +206,331 @@ pub async fn create_cap_request(
         })),
     )
         .into_response()
+}
+
+// ─── owner: decide a pending request ─────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct CapDecideBody {
+    pub action: String,
+}
+
+/// `POST /admin/tenant-cap-requests/{id}/decide` body `{"action":"approve"|"reject"}`
+///
+/// Owner-only (mounted behind `require_owner_layer`). Approve converts the
+/// absolute `requested_cap` to a delta and writes `admins.tenant_cap_bonus`,
+/// closing the row in ONE transaction. Reject only closes it.
+pub async fn decide_cap_request(
+    State(state): State<crate::mgmt::tenants::TenantsState>,
+    axum::extract::Path(req_id): axum::extract::Path<i64>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    axum::Json(body): axum::Json<CapDecideBody>,
+) -> Response {
+    let approve = match body.action.as_str() {
+        "approve" => true,
+        "reject" => false,
+        _ => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "TENANT_CAP_DECISION_INVALID",
+                "action must be 'approve' or 'reject'",
+            );
+        }
+    };
+
+    let decided: Result<(i64, i64), Response> = {
+        use rusqlite::OptionalExtension;
+        let mut conn = state.session.meta.lock().await;
+
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT requester_admin_id, requested_cap FROM tenant_cap_requests \
+                 WHERE id = ?1 AND status = 'pending'",
+                rusqlite::params![req_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .unwrap_or(None);
+        let (subject_id, requested_cap) = match row {
+            Some(v) => v,
+            None => {
+                // Either no such id, or already decided. Distinguish so a
+                // double-submitted approval reads as a conflict, not a 404.
+                let exists: bool = conn
+                    .prepare("SELECT 1 FROM tenant_cap_requests WHERE id = ?1")
+                    .and_then(|mut s| s.exists(rusqlite::params![req_id]))
+                    .unwrap_or(false);
+                return if exists {
+                    json_error(
+                        StatusCode::CONFLICT,
+                        "TENANT_CAP_REQUEST_DECIDED",
+                        "that request has already been decided",
+                    )
+                } else {
+                    json_error(
+                        StatusCode::NOT_FOUND,
+                        "TENANT_CAP_REQUEST_NOT_FOUND",
+                        "no pending request with that id",
+                    )
+                };
+            }
+        };
+
+        // v1.57 — the F4 analogue (see quota_admin::decide_quota_request): a
+        // request filed when the admin was at cap N can sit pending while an
+        // owner raises them via a direct set. Approving the stale row would
+        // silently LOWER their cap. Re-read the live cap and refuse a
+        // non-increase; the row stays pending so it can be rejected explicitly.
+        if approve {
+            let (_, current_cap) = match effective_cap_for_admin(&conn, subject_id) {
+                Ok(v) => v,
+                Err(e) => {
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "DB_ERROR",
+                        &e.to_string(),
+                    );
+                }
+            };
+            if requested_cap <= current_cap {
+                return json_error(
+                    StatusCode::CONFLICT,
+                    "TENANT_CAP_NOT_INCREASE",
+                    "that admin is already at or above the requested cap",
+                );
+            }
+        }
+
+        let new_bonus = bonus_for_target(configured_default(), requested_cap);
+        let tx = match conn.transaction() {
+            Ok(t) => t,
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DB_ERROR",
+                    &e.to_string(),
+                );
+            }
+        };
+        let tx_result: Result<(), rusqlite::Error> = (|| {
+            if approve {
+                tx.execute(
+                    "UPDATE admins SET tenant_cap_bonus = ?1 WHERE id = ?2",
+                    rusqlite::params![new_bonus, subject_id],
+                )?;
+            }
+            tx.execute(
+                "UPDATE tenant_cap_requests \
+                 SET status = ?1, decided_by_admin_id = ?2, decided_at = datetime('now') \
+                 WHERE id = ?3 AND status = 'pending'",
+                rusqlite::params![
+                    if approve { "approved" } else { "rejected" },
+                    caller_id,
+                    req_id
+                ],
+            )?;
+            Ok(())
+        })();
+        match tx_result.and_then(|_| tx.commit()) {
+            Ok(()) => Ok((subject_id, requested_cap)),
+            Err(e) => Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DB_ERROR",
+                &e.to_string(),
+            )),
+        }
+        // conn guard drops here — before any .await
+    };
+    let (subject_id, requested_cap) = match decided {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let op = if approve {
+        "admin.tenant_cap.set"
+    } else {
+        "admin.tenant_cap.reject"
+    };
+    let mut entry = crate::safety::audit::AuditEntry::success("-", "-", op, 0);
+    entry.actor_admin_id = Some(caller_id);
+    entry = entry.with_extra(serde_json::json!({
+        "request_id": req_id,
+        "subject_admin_id": subject_id,
+        "requested_cap": requested_cap,
+    }));
+    crate::safety::audit::write_entry(&state.log_dir, &entry).await;
+
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+// ─── owner: direct cap set ───────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct CapSetBody {
+    /// Absolute target cap, or `null` to clear the adjustment back to the
+    /// global default.
+    pub cap: Option<i64>,
+}
+
+/// `PATCH /admin/team/{admin_id}/tenant-cap` body `{"cap": N}` or `{"cap": null}`
+///
+/// Owner-only via an in-handler check — `team_router` admits `admin` too (its
+/// route-layer guard only gates the team READ), and an `admin` must not set host
+/// allowances. Emits audit `admin.tenant_cap.set`.
+pub async fn patch_admin_tenant_cap(
+    State(state): State<crate::mgmt::routes::MgmtState>,
+    axum::extract::Path(subject_id): axum::extract::Path<i64>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    axum::Extension(profile): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+    axum::Json(body): axum::Json<CapSetBody>,
+) -> Response {
+    if !profile.is_owner {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "NOT_OWNER",
+            "owner role required to set a tenant cap",
+        );
+    }
+    if let Some(cap) = body.cap
+        && (cap < 1 || cap > MAX_CAP)
+    {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "TENANT_CAP_INVALID",
+            &format!("cap must be between 1 and {MAX_CAP}"),
+        );
+    }
+    let new_bonus = match body.cap {
+        Some(cap) => bonus_for_target(configured_default(), cap),
+        None => 0,
+    };
+
+    {
+        let conn = state.meta.lock().await;
+        let affected = match conn.execute(
+            "UPDATE admins SET tenant_cap_bonus = ?1 WHERE id = ?2",
+            rusqlite::params![new_bonus, subject_id],
+        ) {
+            Ok(n) => n,
+            Err(e) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DB_ERROR",
+                    &e.to_string(),
+                );
+            }
+        };
+        if affected == 0 {
+            return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "no such admin");
+        }
+    }
+
+    let mut entry = crate::safety::audit::AuditEntry::success("-", "-", "admin.tenant_cap.set", 0);
+    entry.actor_admin_id = Some(caller_id);
+    entry = entry.with_extra(serde_json::json!({
+        "subject_admin_id": subject_id,
+        "cap": body.cap,
+        "bonus": new_bonus,
+    }));
+    crate::safety::audit::write_entry(&state.log_dir, &entry).await;
+
+    axum::Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+// ─── owner: review page ──────────────────────────────────────────────────────
+
+/// One pending cap-request row for the review table. Every figure is computed
+/// in Rust — the template does no arithmetic.
+pub struct CapRequestRow {
+    pub id: i64,
+    /// Requester email when set, else username, else `#<id>`.
+    pub requester: String,
+    pub requested_cap: i64,
+    /// The requester's LIVE effective cap, so an owner decides with real
+    /// numbers rather than only the requested figure.
+    pub current_cap: i64,
+    /// Live tenants they own right now.
+    pub owned: i64,
+    pub reason: String,
+    pub created_at: String,
+}
+
+#[derive(Template)]
+#[template(path = "tenant_cap_review.html")]
+struct TenantCapReviewPage {
+    version: &'static str,
+    requests: Vec<CapRequestRow>,
+    t: Translator,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
+    palette_resolved: ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
+}
+
+/// `GET /admin/tenant-cap-requests` — owner-only pending-request queue (the
+/// `require_owner_layer` on the sub-router already denied member + admin).
+/// Joins the subject's live owned-tenant count and stored delta so the page
+/// shows the current cap next to the requested one.
+pub async fn cap_requests_page(
+    State(state): State<crate::mgmt::tenants::TenantsState>,
+    LocaleHint(locale): LocaleHint,
+    ThemeHint(theme): ThemeHint,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
+) -> Response {
+    let default = configured_default();
+    let requests: Vec<CapRequestRow> = {
+        let conn = state.session.meta.lock().await;
+        conn.prepare(
+            "SELECT r.id, \
+                    COALESCE(a.email, a.username, '#' || r.requester_admin_id), \
+                    r.requested_cap, COALESCE(a.tenant_cap_bonus, 0), \
+                    COALESCE(r.reason, ''), r.created_at, \
+                    (SELECT COUNT(*) FROM tenants t \
+                      WHERE t.owner_admin_id = r.requester_admin_id \
+                        AND t.deleted_at IS NULL) \
+             FROM tenant_cap_requests r \
+             LEFT JOIN admins a ON a.id = r.requester_admin_id \
+             WHERE r.status = 'pending' \
+             ORDER BY r.created_at ASC, r.id ASC",
+        )
+        .and_then(|mut s| {
+            s.query_map([], |r| {
+                let bonus: i64 = r.get(3)?;
+                Ok(CapRequestRow {
+                    id: r.get(0)?,
+                    requester: r.get(1)?,
+                    requested_cap: r.get(2)?,
+                    current_cap: effective_cap(default, bonus),
+                    reason: r.get(4)?,
+                    created_at: r.get(5)?,
+                    owned: r.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_default()
+    };
+
+    let trc = ThemeRenderCtx::build(theme);
+    let page = TenantCapReviewPage {
+        version: env!("CARGO_PKG_VERSION"),
+        requests,
+        t: Translator::new(locale),
+        admin,
+        palette_resolved: trc.palette_resolved,
+        mascot_json_static: trc.mascot_json_static,
+        mascot_json_light: trc.mascot_json_light,
+        mascot_json_dark: trc.mascot_json_dark,
+    };
+    match page.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 #[cfg(test)]
