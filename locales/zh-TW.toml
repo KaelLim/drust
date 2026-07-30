@@ -1305,6 +1305,26 @@ title = "擁有權"
 [tenants_list.actions]
 new_tenant = "新增租戶"
 
+[tenants_list.cap]
+left = "個可用"
+over_limit = "已超出上限"
+pending_note = "已有一筆調高申請正等待 owner 審核。"
+remaining = "剩餘額度"
+remaining_meta = "在需要調高上限之前還剩的名額"
+request = "申請調高"
+request_body = "填入你需要的租戶總數。送出後由 owner 審核。"
+request_cap_label = "申請的總數"
+request_done_body = "接下來由 owner 審核。核准後新的額度會顯示在這裡。"
+request_done_title = "申請已送出"
+request_failed_title = "申請失敗"
+request_reason_label = "原因（選填）"
+request_reason_placeholder = "為什麼需要更多"
+request_title = "申請調高租戶額度"
+# REVIEW (low confidence): contains template var {total}, verify wording
+storage_meta = "／你的租戶額度合計 {total} GB"
+tenants = "你的租戶"
+tenants_meta = "你擁有的租戶數，對比你的額度上限"
+
 [tenants_list.count]
 # REVIEW (low confidence): contains template var {n}, please verify
 total = "共 {n} 個租戶"

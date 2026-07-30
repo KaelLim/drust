@@ -22,7 +22,13 @@ use serde_json::json;
 struct TenantsListPage {
     tenants: Vec<TenantRow>,
     version: &'static str,
+    /// Host physical-disk figures. Rendered ONLY when `cap_view` is `None`
+    /// (owner/admin) — see `CapView`. For a member this carries the redacted
+    /// `"?"` shape, so even a template mistake cannot leak host state.
     disk: crate::mgmt::public_files::DiskView,
+    /// v1.57 — `Some` for a capped caller (`member`), `None` for `owner`/`admin`.
+    /// Doubles as the template's role switch for the stat cards.
+    cap_view: Option<CapView>,
     /// Sampler refresh interval, displayed in the footer as "refresh every N min".
     stats_interval_min: u64,
     /// Human "N min ago" for the most recently re-sampled row in this batch
@@ -56,6 +62,30 @@ struct TenantRow {
     /// `admin.is_owner`): members already see just their own tenants, and
     /// the column would leak other admins' emails.
     owner_display: String,
+}
+
+/// v1.57 — the tenant-scoped stat cards a `member` sees on `/admin/tenants`,
+/// in place of the host-disk cards.
+///
+/// `total_gb` is the SUM of this member's own tenants' quota allowances
+/// (`quota_tier × 10 GiB`), NOT host disk: tiers differ per tenant, so a single
+/// host number is meaningless to them — and host infrastructure state is not
+/// theirs to see (same family as the `/admin/_metrics` owner gate).
+pub struct CapView {
+    /// Live tenants this admin owns.
+    pub owned: i64,
+    /// Their effective cap (global default + stored delta).
+    pub cap: i64,
+    /// Slots left, floored at 0 — an over-cap admin shows `0`, never negative.
+    pub remaining: i64,
+    /// `owned > cap`: reachable by lowering a cap or demoting a busy owner.
+    /// Nothing is ever deleted; the marker just makes the state legible.
+    pub over: bool,
+    /// A `pending` row in `tenant_cap_requests` — shows the pending note
+    /// instead of the request button.
+    pub has_pending: bool,
+    pub used_gb: String,
+    pub total_gb: String,
 }
 
 fn short_id(id: &str) -> String {
@@ -135,7 +165,59 @@ pub async fn list_page_axum(
         )
         .collect()
     };
-    let disk = crate::mgmt::public_files::build_disk_view();
+    // v1.57 — a capped caller (`member`) gets tenant-scoped cards; host disk
+    // state is never rendered to them (infrastructure state they have no
+    // business seeing, same family as the /admin/_metrics owner gate). Every
+    // figure comes from denormalized `tenants` columns, so this adds ZERO
+    // per-tenant SQLite opens on the request path (the v1.15 property).
+    let cap_view = if sees_all {
+        None
+    } else {
+        let conn = state.session.meta.lock().await;
+        let owned = crate::mgmt::tenant_cap::owned_tenant_count(&conn, caller_id).unwrap_or(0);
+        let (_, cap) = crate::mgmt::tenant_cap::effective_cap_for_admin(&conn, caller_id)
+            .unwrap_or_else(|_| ("member".to_string(), 0));
+        let has_pending: bool = conn
+            .prepare(
+                "SELECT 1 FROM tenant_cap_requests \
+                 WHERE requester_admin_id = ?1 AND status = 'pending'",
+            )
+            .and_then(|mut s| s.exists(rusqlite::params![caller_id]))
+            .unwrap_or(false);
+        // Allowance is quota_tier * 10 GiB per owned tenant (v1.50).
+        let (used_bytes, allowance_bytes): (i64, i64) = conn
+            .query_row(
+                "SELECT COALESCE(SUM(db_bytes + files_bytes), 0), \
+                        COALESCE(SUM(COALESCE(quota_tier, 1) * 10737418240), 0) \
+                 FROM tenants WHERE owner_admin_id = ?1 AND deleted_at IS NULL",
+                rusqlite::params![caller_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((0, 0));
+        Some(CapView {
+            owned,
+            cap,
+            remaining: (cap - owned).max(0),
+            over: owned > cap,
+            has_pending,
+            used_gb: format!("{:.1}", used_bytes as f64 / 1_073_741_824.0),
+            total_gb: format!("{:.0}", allowance_bytes as f64 / 1_073_741_824.0),
+        })
+    };
+    // Defense in depth: the template gates the host cards on `cap_view`, and
+    // the figures themselves are never even computed for a capped caller. The
+    // redacted shape is byte-identical to what `build_disk_view` returns when
+    // statvfs fails, so no new rendering case is introduced.
+    let disk = if cap_view.is_some() {
+        crate::mgmt::public_files::DiskView {
+            used_gb: "?".into(),
+            total_gb: "?".into(),
+            free_pct: 100.0,
+            free_pct_display: "?".into(),
+        }
+    } else {
+        crate::mgmt::public_files::build_disk_view()
+    };
     let stats_interval_min: u64 = std::env::var("DRUST_STATS_SAMPLE_INTERVAL_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -148,6 +230,7 @@ pub async fn list_page_axum(
             tenants: rows,
             version: env!("CARGO_PKG_VERSION"),
             disk,
+            cap_view,
             stats_interval_min,
             stats_age_display,
             t: Translator::new(locale),

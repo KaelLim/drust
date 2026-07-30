@@ -1283,6 +1283,25 @@ title = "Ownership"
 [tenants_list.actions]
 new_tenant = "New tenant"
 
+[tenants_list.cap]
+left = "left"
+over_limit = "over limit"
+pending_note = "An increase request is pending owner review."
+remaining = "Remaining"
+remaining_meta = "slots left before you need an increase"
+request = "Request more"
+request_body = "Name the total number of tenants you need. An owner reviews the request."
+request_cap_label = "requested total"
+request_done_body = "An owner reviews it next. The new allowance shows up here once approved."
+request_done_title = "Request filed"
+request_failed_title = "Request failed"
+request_reason_label = "reason (optional)"
+request_reason_placeholder = "why you need more"
+request_title = "Request more tenants"
+storage_meta = "of {total} GB allowance across your tenants"
+tenants = "Your tenants"
+tenants_meta = "live tenants you own, against your allowance"
+
 [tenants_list.count]
 total = "{n} tenants"
 [tenants_list.disk]
