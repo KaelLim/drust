@@ -217,6 +217,42 @@ async fn html_with_charset_parameter_is_stored_verbatim() {
     assert_eq!(row["content_disposition"], "inline");
 }
 
+/// The Caddy `/public/*` response-header matcher can only do a plain,
+/// case-SENSITIVE glob (Caddy 2.6.2 has no case-insensitive/regex option in
+/// its response-matcher allowlist) — so ingest normalizes the essence to
+/// lowercase, closing what would otherwise be a case-obfuscation bypass of
+/// that layer (a browser still renders `TeXt/HtMl` as HTML; `nosniff` does
+/// not help against an unambiguous-but-oddly-cased type).
+#[tokio::test]
+async fn uppercase_content_type_essence_is_normalized_to_lowercase() {
+    let (app, _state, _pool, _dir) = setup();
+    let up = do_upload(&app, "evil.bin", "TeXt/HtMl; charset=UTF-8").await;
+    let key = up["key"].as_str().unwrap().to_string();
+
+    // axum's multipart `Field::content_type()` is backed by the `mime` crate,
+    // which already lowercases the essence and unquoted parameter values on
+    // parse — so by the time `normalize_content_type_case` runs, `explicit_ct`
+    // has arrived as "text/html; charset=utf-8". The unit tests on
+    // `normalize_content_type_case` itself (src/storage/files.rs) pin its OWN
+    // contract (params untouched) directly, bypassing this upstream parsing —
+    // this integration test only needs to prove the essence is unsafe-flagged
+    // and CSP-protected end to end regardless of the casing declared on the
+    // wire, which is the actual property that matters here.
+    let row = list_row(&app, &key).await;
+    assert_eq!(row["content_type"], "text/html; charset=utf-8");
+
+    let h = get_bytes_headers(&app, &key).await;
+    assert_eq!(hdr(&h, "content-type"), "text/html; charset=utf-8");
+    assert_eq!(
+        hdr(&h, "content-security-policy"),
+        SANDBOX_CSP,
+        "is_unsafe_inline_type is already case-insensitive independent of \
+         ingest normalization, so drust's own responder was never at risk — \
+         this proves the STORED value drust hands to Garage is also safe for \
+         the Caddy /public/* layer, which is not case-insensitive"
+    );
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Serve: a script-executing type gets a sandbox CSP.
 // ───────────────────────────────────────────────────────────────────────────

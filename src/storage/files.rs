@@ -195,6 +195,31 @@ pub const UNSAFE_INLINE_CONTENT_TYPES: &[&str] = &[
     "text/xsl",
 ];
 
+/// Lowercase the type/subtype ("essence") portion of a content type,
+/// leaving any `;params` suffix byte-for-byte untouched.
+///
+/// MIME essence matching is case-insensitive (RFC 2045 §5.1), so this
+/// changes nothing about how any client interprets or renders the type — it
+/// exists purely so the Caddy `/public/*` `handle_response` matcher (see
+/// `is_unsafe_inline_type`'s doc comment) can rely on ONE canonical casing.
+/// Caddy 2.6.2's response-matcher allowlist has no case-insensitive or regex
+/// option (only a plain, case-SENSITIVE glob on `header`), so without this
+/// normalization an upload declaring `Content-Type: TeXt/HtMl` would sail
+/// past a lowercase-only Caddy pattern while a browser still renders it as
+/// HTML — MIME type matching is case-insensitive independent of `nosniff`,
+/// which guards a different class of attack (an UNRECOGNIZED type being
+/// sniffed into something else, not an unambiguous-but-oddly-cased one).
+pub fn normalize_content_type_case(ct: &str) -> String {
+    let ct = ct.trim();
+    match ct.find(';') {
+        Some(idx) => {
+            let (essence, rest) = ct.split_at(idx);
+            format!("{}{rest}", essence.trim().to_ascii_lowercase())
+        }
+        None => ct.to_ascii_lowercase(),
+    }
+}
+
 /// True when `ct` is a script-executing document type. Case-insensitive and
 /// parameter-insensitive: `"text/html"`, `"TEXT/HTML"`, `" text/html "` and
 /// `"text/html; charset=utf-8"` all match.
@@ -356,6 +381,14 @@ mod content_type_safety_tests {
     /// substitute for the review this file's history demands.
     #[test]
     fn sandbox_csp_never_grants_same_origin_or_scripts() {
+        // Exact-literal pin (codex review, 2026-07-30): substring checks alone
+        // would wave through a widened value that still avoids the two named
+        // tokens (e.g. adding `allow-forms` or `allow-popups`) — no such
+        // widening should land without deliberately touching this assertion.
+        assert_eq!(
+            SANDBOX_CSP,
+            "sandbox allow-top-navigation-by-user-activation"
+        );
         assert!(!SANDBOX_CSP.contains("allow-same-origin"));
         assert!(!SANDBOX_CSP.contains("allow-scripts"));
         assert!(SANDBOX_CSP.starts_with("sandbox"));
@@ -433,5 +466,37 @@ mod content_type_safety_tests {
         ] {
             assert!(!is_unsafe_inline_type(ct), "{ct} must NOT be flagged");
         }
+    }
+
+    /// The Caddy `/public/*` `handle_response` matcher can only do a plain,
+    /// CASE-SENSITIVE glob on the upstream's `Content-Type` (Caddy 2.6.2's
+    /// response-matcher allowlist has no `header_regexp`/`expression`, so
+    /// there is no case-insensitive option there) — so an ingest-time upload
+    /// declaring `Content-Type: TeXt/HtMl` would sail past a lowercase-only
+    /// Caddy pattern while a browser still renders it as HTML (MIME essence
+    /// matching is case-insensitive per RFC 2045 §5.1, independent of
+    /// `nosniff`, which only guards a DIFFERENT class of attack). Every
+    /// ingest site therefore normalizes the essence to lowercase before
+    /// storing, so the Caddy glob only ever needs to match ONE casing.
+    #[test]
+    fn normalize_content_type_case_lowercases_essence_only() {
+        assert_eq!(normalize_content_type_case("TEXT/HTML"), "text/html");
+        assert_eq!(normalize_content_type_case("Text/Html"), "text/html");
+        assert_eq!(
+            normalize_content_type_case("Text/Html; charset=UTF-8"),
+            "text/html; charset=UTF-8",
+            "params after the first ';' are left byte-for-byte untouched"
+        );
+        assert_eq!(
+            normalize_content_type_case(" TEXT/HTML "),
+            "text/html",
+            "outer whitespace is trimmed"
+        );
+        assert_eq!(normalize_content_type_case("image/PNG"), "image/png");
+        assert_eq!(normalize_content_type_case(""), "");
+        assert_eq!(
+            normalize_content_type_case("APPLICATION/RSS+XML"),
+            "application/rss+xml"
+        );
     }
 }

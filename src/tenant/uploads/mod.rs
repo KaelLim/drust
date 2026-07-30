@@ -526,7 +526,14 @@ async fn finalize_and_respond(
     .to_string();
     // P0-1 (2026-07-29 audit) / redesigned 2026-07-30 — ingest no longer
     // downgrades a script-executing type; see `files::content_security_policy_for`.
-    let safe_ct = sess.content_type.clone();
+    // The essence casing is normalized to lowercase (see
+    // `files::normalize_content_type_case`) so the Caddy `/public/*`
+    // response-header matcher — case-sensitive, unlike `is_unsafe_inline_type`
+    // — only ever needs to match one canonical case.
+    let safe_ct = sess
+        .content_type
+        .clone()
+        .map(|ct| crate::storage::files::normalize_content_type_case(&ct));
     let disp_mode = "inline";
 
     // v1.50 (Spec B §5.3) — finalize is the accounting point: re-check the hard

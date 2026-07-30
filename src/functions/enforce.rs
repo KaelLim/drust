@@ -518,7 +518,11 @@ pub async fn put_file_raw(
     let cc = put_file_cache_control(visibility);
     // P0-1 (2026-07-29 audit) / redesigned 2026-07-30 — ingest no longer
     // downgrades a script-executing type; see `files::content_security_policy_for`.
-    let safe_ct = content_type.to_string();
+    // The essence casing is normalized to lowercase (see
+    // `files::normalize_content_type_case`) so the Caddy `/public/*`
+    // response-header matcher — case-sensitive, unlike `is_unsafe_inline_type`
+    // — only ever needs to match one canonical case.
+    let safe_ct = crate::storage::files::normalize_content_type_case(content_type);
     let disp_mode = "inline";
     let key_w = key.to_string();
     let ct_w = safe_ct.clone();

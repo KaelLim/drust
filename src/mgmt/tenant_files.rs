@@ -367,14 +367,18 @@ pub async fn upload(
 
     let size = body.len() as i64;
 
-    // Resolve content-type.
+    // Resolve content-type. The essence casing is normalized to lowercase
+    // (see `files::normalize_content_type_case`) so the Caddy `/public/*`
+    // response-header matcher — case-sensitive, unlike `is_unsafe_inline_type`
+    // — only ever needs to match one canonical case.
     let sniffed_ct = explicit_ct
         .filter(|ct| ct != "application/octet-stream")
         .or_else(|| {
             mime_guess::from_path(&original_name)
                 .first_raw()
                 .map(|s| s.to_string())
-        });
+        })
+        .map(|ct| crate::storage::files::normalize_content_type_case(&ct));
 
     // Build cache_control.
     let cache_control = cache_control_override
