@@ -61,6 +61,16 @@ struct AdminTeamRow {
     pub display_name: Option<String>,
     pub email: Option<String>,
     pub role: String,
+    /// v1.57 — the admin's EFFECTIVE tenant-creation cap: the global default
+    /// (`DRUST_MEMBER_TENANT_CAP`) shifted by their stored delta. Resolved in
+    /// Rust so the template does no arithmetic. Only `member` is actually
+    /// capped, but the figure is well-defined for every row (and becomes live
+    /// the moment a row is demoted), so it is rendered for all of them.
+    pub tenant_cap: i64,
+    /// True when `admins.tenant_cap_bonus != 0` — this row carries an
+    /// owner-set adjustment instead of inheriting the global default. Drives
+    /// the "adjusted" vs "inherited" hint next to the figure.
+    pub cap_is_custom: bool,
 }
 
 #[derive(Template)]
@@ -309,34 +319,42 @@ async fn team_page(
             "the team page requires the owner or admin role",
         );
     }
+    // v1.57 — read once, outside the row loop: `configured_default` hits the
+    // process env, and the cap must be resolved from the SAME default for every
+    // row on one render.
+    let cap_default = crate::mgmt::tenant_cap::configured_default();
     let rows: Vec<AdminTeamRow> = {
         let conn = s.meta.lock().await;
-        let mut stmt =
-            match conn.prepare("SELECT id, display_name, email, role FROM admins ORDER BY id") {
-                Ok(s) => s,
-                Err(e) => {
-                    return (
+        let mut stmt = match conn.prepare(
+            "SELECT id, display_name, email, role, tenant_cap_bonus FROM admins ORDER BY id",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
                 )
                     .into_response();
-                }
-            };
+            }
+        };
         stmt.query_map([], |r| {
             let id: i64 = r.get(0)?;
             let display_name: Option<String> = r.get(1)?;
             let email: Option<String> = r.get(2)?;
             let role: String = r.get(3)?;
-            Ok((id, display_name, email, role))
+            let bonus: i64 = r.get(4)?;
+            Ok((id, display_name, email, role, bonus))
         })
         .and_then(|iter| iter.collect::<rusqlite::Result<Vec<_>>>())
         .unwrap_or_default()
         .into_iter()
-        .map(|(id, display_name, email, role)| AdminTeamRow {
+        .map(|(id, display_name, email, role, bonus)| AdminTeamRow {
             id,
             display_name,
             email,
             role,
+            tenant_cap: crate::mgmt::tenant_cap::effective_cap(cap_default, bonus),
+            cap_is_custom: bonus != 0,
         })
         .collect()
     };

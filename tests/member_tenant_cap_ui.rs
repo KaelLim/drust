@@ -291,3 +291,103 @@ async fn member_below_the_cap_sees_neither_the_button_nor_the_pending_note() {
     );
     assert!(!html.contains(&en("tenants_list.cap.pending_note")));
 }
+
+// ─── the team roster cap column ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn roster_shows_each_admin_cap_and_owner_only_controls() {
+    let (app, dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    let (mid, _member) = insert_member(&dir, "alice@example.com");
+    let (_aid, other_admin) = insert_admin_role(&dir, "boss2@example.com", "admin");
+    let cap = tenant_cap::configured_default();
+
+    // Owner: sees the figure AND the direct-set control.
+    let (st, html) = get_html(&app, "/admin/team", &owner).await;
+    assert_eq!(st, StatusCode::OK, "an owner may read the roster");
+    assert!(
+        html.contains(&format!("data-cap-figure=\"{cap}\"")),
+        "the member row must render its effective cap ({cap})"
+    );
+    assert!(
+        html.contains("data-set-cap="),
+        "an owner gets the direct-set control on the roster"
+    );
+
+    // A custom adjustment must read as custom, not inherited.
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        conn.execute(
+            "UPDATE admins SET tenant_cap_bonus = 2 WHERE id = ?1",
+            params![mid],
+        )
+        .unwrap();
+    }
+    let (st, html) = get_html(&app, "/admin/team", &owner).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        html.contains(&format!("data-cap-figure=\"{}\"", cap + 2)),
+        "a +2 bonus must show as {} on the roster",
+        cap + 2
+    );
+    assert!(
+        html.contains(&en("admin_team.cap.custom")),
+        "an adjusted row must be labelled custom, not inherited"
+    );
+
+    // An `admin` (middle tier) sees the figure but may not change a host
+    // allowance — the control must not be rendered for them at all.
+    let (st, html) = get_html(&app, "/admin/team", &other_admin).await;
+    assert_eq!(st, StatusCode::OK, "an admin may read the roster");
+    assert!(
+        html.contains("data-cap-figure="),
+        "an admin still sees each member's cap"
+    );
+    assert!(
+        !html.contains("data-set-cap="),
+        "only an owner may set a tenant cap, so the control must be absent"
+    );
+}
+
+// ─── owner-gated nav for BOTH review queues ───────────────────────────────────
+
+#[tokio::test]
+async fn owner_sidebar_links_both_review_queues() {
+    let (app, dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    let (_mid, member) = insert_member(&dir, "alice@example.com");
+
+    let (st, html) = get_html(&app, "/admin/tenants", &owner).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        html.contains("/admin/tenant-cap-requests\""),
+        "the owner sidebar must link the tenant-cap review queue"
+    );
+    assert!(
+        html.contains("/admin/quota-requests\""),
+        "the owner sidebar must link the quota review queue — it had ZERO \
+         inbound links anywhere before v1.57 (2026-07-29 audit finding)"
+    );
+    // The highlight script matches nav `data-section` against the page's
+    // `<body data-section=…>`; both queue pages already set theirs, so the nav
+    // entries must use the same values or the active state silently never fires.
+    assert!(
+        html.contains("data-section=\"tenant-cap-requests\""),
+        "nav data-section must match tenant_cap_review.html's body value"
+    );
+    assert!(
+        html.contains("data-section=\"quota-requests\""),
+        "nav data-section must match quota_review.html's body value"
+    );
+
+    let (st, html) = get_html(&app, "/admin/tenants", &member).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        !html.contains("/admin/tenant-cap-requests"),
+        "a member gets 403 on the queue, so the link must not be shown"
+    );
+    assert!(
+        !html.contains("/admin/quota-requests"),
+        "a member gets 403 on the quota queue, so the link must not be shown"
+    );
+}

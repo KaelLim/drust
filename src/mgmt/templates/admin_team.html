@@ -24,6 +24,7 @@
           <th>{{ t.s("admin_team.col.name") }}</th>
           <th>{{ t.s("admin_team.col.email") }}</th>
           <th style="width:120px;">{{ t.s("admin_team.col.role") }}</th>
+          <th style="width:200px;">{{ t.s("admin_team.col.cap") }}</th>
           {% if admin.sees_team %}<th style="width:250px;text-align:right;"></th>{% endif %}
         </tr>
       </thead>
@@ -40,6 +41,18 @@
             {% else %}
               <span class="pill muted">member</span>
             {% endif %}
+          </td>
+          {# v1.57 — tenant-creation cap. The figure is the EFFECTIVE cap
+             (global default + this row's stored delta), resolved in Rust. Only
+             `member` is actually capped, so an owner/admin row shows the number
+             with a "not capped" hint rather than pretending it binds. The
+             direct-set control is gated on `admin.is_owner`: `team_router`
+             admits `admin` too, and an `admin` must never move a host
+             allowance (the handler re-checks — this only hides dead UI). #}
+          <td>
+            <span class="pill{% if row.cap_is_custom %} accent{% else %} muted{% endif %}" data-cap-figure="{{ row.tenant_cap }}">{{ row.tenant_cap }}</span>
+            <span class="muted-cell">{% if row.role != "member" %}{{ t.s("admin_team.cap.not_capped") }}{% else if row.cap_is_custom %}{{ t.s("admin_team.cap.custom") }}{% else %}{{ t.s("admin_team.cap.inherited") }}{% endif %}</span>
+            {% if admin.is_owner %}<button type="button" class="btn sm ghost" data-set-cap="{{ row.id }}" data-cap="{{ row.tenant_cap }}">{{ t.s("admin_team.cap.set") }}</button>{% endif %}
           </td>
           {% if admin.sees_team %}
           <td class="role-actions">
@@ -189,6 +202,53 @@
       headers: { 'Accept': 'application/json' }
     });
   }
+
+  // v1.57 — owner-only direct set of an admin's tenant-creation cap. The admin
+  // id and the current cap travel on data-* attributes read back by this
+  // delegated listener; nothing dynamic is interpolated into an inline on*=
+  // handler (gate 7). An empty input clears the adjustment (PATCH {cap: null}),
+  // which is how an admin returns to the global default.
+  document.querySelectorAll('button[data-set-cap]').forEach(function (btn) {
+    btn.addEventListener('click', async function () {
+      var id = btn.getAttribute('data-set-cap');
+      var current = btn.getAttribute('data-cap') || '';
+      var out = await drustUI.form({
+        title:  '{{ t.s("admin_team.cap.set_title") }}',
+        body:   '{{ t.s("admin_team.cap.set_body") }}',
+        okText: '{{ t.s("admin_team.cap.set") }}',
+        fields: [
+          {
+            type: 'text', name: 'cap', value: current,
+            label: '{{ t.s("admin_team.cap.set_label") }}',
+            placeholder: '{{ t.s("admin_team.cap.set_placeholder") }}'
+          }
+        ]
+      });
+      if (!out) return;
+      var raw = (out.cap || '').trim();
+      var payload;
+      if (raw === '') {
+        payload = { cap: null };
+      } else {
+        var n = parseInt(raw, 10);
+        if (!(n >= 1)) {
+          drustUI.alert({
+            title: '{{ t.s("common.modal.title_notice") }}',
+            body:  '{{ t.s("admin_team.cap.set_invalid") }}'
+          });
+          return;
+        }
+        payload = { cap: n };
+      }
+      var res = await fetch('{{ crate::base_path::base_path() }}/admin/team/' + id + '/tenant-cap', {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body:    JSON.stringify(payload)
+      });
+      if (res.ok) { window.location.reload(); return; }
+      alertError(res);
+    });
+  });
 
   document.querySelectorAll('tr[data-admin-id]').forEach(function (tr) {
     var id    = tr.getAttribute('data-admin-id');
