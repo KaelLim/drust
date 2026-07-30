@@ -120,7 +120,7 @@ pub fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Stored-XSS neutralization (2026-07-29 audit, finding P0-1)
+// Stored-XSS mitigation (2026-07-29 audit, finding P0-1; redesigned 2026-07-30)
 // ───────────────────────────────────────────────────────────────────────────
 //
 // Tenant-uploaded objects are served from the SAME ORIGIN as the admin UI:
@@ -131,33 +131,50 @@ pub fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
 // rendered `inline` therefore executes script in the admin plane's origin —
 // escalating a tenant service key to host-admin via the admin session cookie.
 //
-// The fix is to never let those types reach a browser as a renderable
-// document. `neutralize_content_type` is applied TWICE (defence in depth, per
-// CLAUDE.md's DiD >= 2 rule):
-//   * layer 1 — at every ingest path, so the bytes are never STORED with a
-//     dangerous type (Mode-A admin + tenant multipart, tus finalize, the edge
-//     function `put-file` host op, and the visibility bucket move);
-//   * layer 2 — at every drust-owned byte responder, so rows uploaded BEFORE
-//     this fix are served safely too.
-// The Caddy `/public/*` block additionally carries `X-Content-Type-Options:
-// nosniff` (operator-owned, outside this repo); every drust responder sets it
-// too.
+// v1.56.2 closed this by downgrading the type to `application/octet-stream` +
+// `attachment` at ingest AND at serve, so the browser never renders it. That
+// broke every legitimate use of the same feature (a Google-Docs-export-to-HTML
+// pipeline, SVG logos) — HTML/SVG could no longer be VIEWED, only downloaded.
 //
-// Why the pair (structural type rule + `nosniff`) is COMPLETE, and why there
-// is no blanket `Content-Security-Policy: sandbox` on file responses:
-//   * a type that DECLARES itself a scriptable document is caught by
-//     `is_unsafe_inline_type` — the `+xml` suffix rule makes that structural,
-//     not an enumeration that the next vendor type escapes;
-//   * a type the browser does NOT recognise cannot be sniffed back into HTML,
-//     because `nosniff` makes the declared type authoritative — it is
-//     downloaded, not rendered;
-//   * PDF is the remaining scriptable format, and PDF JS runs in the viewer's
-//     own context: it cannot read the admin DOM or issue credentialed
-//     same-origin requests.
-// A blanket `sandbox` CSP would add nothing against these and WOULD risk
-// breaking legitimate inline rendering (images, PDF viewer), so it is
-// deliberately not set. Revisit if a new scriptable, browser-recognised
-// document format appears.
+// The v1.56.3 redesign keeps the content type as declared/stored (so it
+// renders) and instead sandboxes the RENDERING: every response whose type is
+// `is_unsafe_inline_type` carries `Content-Security-Policy: sandbox
+// allow-top-navigation-by-user-activation` ([`SANDBOX_CSP`]). Bare `sandbox`
+// gives the document a unique opaque origin and disables scripts, forms, and
+// popups; `allow-top-navigation-by-user-activation` restores plain hyperlink
+// navigation (a genuine user click can still leave the page) without
+// re-enabling anything script-driven. This is the same technique GitHub uses
+// to serve arbitrary user HTML from `raw.githubusercontent.com` directly, and
+// CSP3 explicitly extends `sandbox` to top-level (not just framed) documents
+// — Chrome, Firefox, and Safari all enforce it there.
+//
+// **`allow-same-origin` and `allow-scripts` must NEVER be added to
+// [`SANDBOX_CSP`].** Either one alone is close to harmless; together they
+// reopen exactly the escalation this exists to close (a script that can also
+// read the admin origin's cookies and issue credentialed same-origin
+// requests). A `<meta http-equiv="Content-Security-Policy">` inside the
+// document cannot relax this — CSP enforcement is the INTERSECTION of every
+// applicable policy, header and meta alike, never the union.
+//
+// Applied at:
+//   * every drust-owned byte responder — `tenant_files::stream_bytes`,
+//     `signed_bytes::respond`, the admin `/admin/files/{key}/bytes` handler —
+//     via [`content_security_policy_for`], keyed off the STORED type, so a row
+//     from any point in time (before or after this file existed) is covered;
+//   * the Caddy `/public/*` block (`handle_response` matcher on the upstream's
+//     OWN `Content-Type`, not on the request path's file extension — a caller
+//     controls the object's key/extension and its declared Content-Type
+//     independently, so an extension-based matcher is bypassable and a
+//     response-header-based one is not). The Caddy regex mirrors
+//     `is_unsafe_inline_type` exactly and the two MUST be kept in lockstep.
+// Ingest no longer downgrades anything — `is_unsafe_inline_type` now drives a
+// CSP decision at serve time only, never a stored-value rewrite.
+//
+// `X-Content-Type-Options: nosniff` remains unconditional on every responder
+// and on the Caddy block regardless of declared type — it is the ONLY defense
+// against a DIFFERENT attack (a file declared as a safe type, e.g.
+// `image/png`, whose bytes a browser could still sniff back into HTML without
+// it). CSP sandbox and nosniff are orthogonal and both stay on.
 
 /// Content types a browser renders as a scriptable document when served
 /// `inline`. Serving any of these from the admin origin is stored XSS.
@@ -214,19 +231,47 @@ pub fn safe_header_value(value: &str, fallback: &'static str) -> axum::http::hea
         .unwrap_or_else(|_| axum::http::header::HeaderValue::from_static(fallback))
 }
 
-/// Map a caller-supplied / stored content type onto the (content type,
-/// disposition mode) pair that is safe to store AND to serve.
+/// The `Content-Security-Policy` value applied when serving a script-executing
+/// type. See the module doc comment above for the full threat model and the
+/// hard invariant: `allow-same-origin` and `allow-scripts` must NEVER be
+/// added — either one defeats this protection.
+pub const SANDBOX_CSP: &str = "sandbox allow-top-navigation-by-user-activation";
+
+/// `Content-Security-Policy` header value to send when serving `ct`, if any.
+/// `None` means "declared type is not a scriptable document — no CSP needed
+/// for this purpose" (the response still gets `nosniff` unconditionally,
+/// applied separately by each responder).
+pub fn content_security_policy_for(ct: &str) -> Option<&'static str> {
+    is_unsafe_inline_type(ct).then_some(SANDBOX_CSP)
+}
+
+/// Insert the three headers that decide whether `ct` renders safely:
+/// `Content-Type` (via [`safe_header_value`] — `ct` is unvalidated caller
+/// input), `X-Content-Type-Options: nosniff` (unconditional — the defense
+/// against a browser sniffing a DIFFERENT declared type back into HTML), and
+/// `Content-Security-Policy` (only when [`content_security_policy_for`]
+/// returns `Some`).
 ///
-/// * a script-executing type -> `("application/octet-stream", "attachment")`
-/// * anything else -> unchanged, `"inline"`
-/// * `None` / blank -> `("application/octet-stream", "inline")`
-pub fn neutralize_content_type(ct: Option<&str>) -> (String, &'static str) {
-    match ct.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(c) if is_unsafe_inline_type(c) => {
-            ("application/octet-stream".to_string(), "attachment")
-        }
-        Some(c) => (c.to_string(), "inline"),
-        None => ("application/octet-stream".to_string(), "inline"),
+/// This is the ONE place all three drust byte responders
+/// (`tenant_files::stream_bytes`, `signed_bytes::respond`, the admin
+/// `/admin/files/{key}/bytes` handler) build these three headers, so the
+/// CSP-sandbox decision cannot drift between them — a responder that inserted
+/// its own copy of this logic could silently skip the CSP branch and reopen
+/// P0-1 for that one route without anyone noticing.
+pub fn insert_content_type_headers(headers: &mut axum::http::HeaderMap, ct: &str) {
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        safe_header_value(ct, "application/octet-stream"),
+    );
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::header::HeaderValue::from_static("nosniff"),
+    );
+    if let Some(csp) = content_security_policy_for(ct) {
+        headers.insert(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            axum::http::header::HeaderValue::from_static(csp),
+        );
     }
 }
 
@@ -235,7 +280,7 @@ mod content_type_safety_tests {
     use super::*;
 
     #[test]
-    fn neutralize_flags_html_and_variants() {
+    fn flags_html_and_variants_as_unsafe() {
         for ct in [
             "text/html",
             "text/html;charset=utf-8",
@@ -249,14 +294,16 @@ mod content_type_safety_tests {
             "application/xml",
         ] {
             assert!(is_unsafe_inline_type(ct), "{ct} must be flagged unsafe");
-            let (out_ct, disp) = neutralize_content_type(Some(ct));
-            assert_eq!(out_ct, "application/octet-stream", "ct for {ct}");
-            assert_eq!(disp, "attachment", "disposition for {ct}");
+            assert_eq!(
+                content_security_policy_for(ct),
+                Some(SANDBOX_CSP),
+                "csp for {ct}"
+            );
         }
     }
 
     #[test]
-    fn neutralize_passes_through_safe_types() {
+    fn safe_types_get_no_csp() {
         for ct in [
             "image/png",
             "application/pdf",
@@ -268,40 +315,23 @@ mod content_type_safety_tests {
             "text/htmlx",
         ] {
             assert!(!is_unsafe_inline_type(ct), "{ct} must NOT be flagged");
-            let (out_ct, disp) = neutralize_content_type(Some(ct));
-            assert_eq!(out_ct, ct, "ct for {ct}");
-            assert_eq!(disp, "inline", "disposition for {ct}");
+            assert_eq!(content_security_policy_for(ct), None, "csp for {ct}");
         }
     }
 
     #[test]
-    fn neutralize_handles_missing_and_blank() {
-        assert_eq!(
-            neutralize_content_type(None),
-            ("application/octet-stream".to_string(), "inline")
-        );
-        assert_eq!(
-            neutralize_content_type(Some("")),
-            ("application/octet-stream".to_string(), "inline")
-        );
-        assert_eq!(
-            neutralize_content_type(Some("   ")),
-            ("application/octet-stream".to_string(), "inline")
-        );
+    fn empty_and_blank_are_not_flagged() {
         assert!(!is_unsafe_inline_type(""));
         assert!(!is_unsafe_inline_type("   "));
         assert!(!is_unsafe_inline_type(";charset=utf-8"));
+        assert_eq!(content_security_policy_for(""), None);
     }
 
-    /// 2026-07-29 audit, adversarial review finding 3A: an exact-match list is
-    /// the wrong shape. Blink's `MIMETypeRegistry::IsXMLMIMEType` (and Gecko's
-    /// equivalent) treat EVERY `<type>/<subtype>+xml` essence as an XML
-    /// document, plus `text/xsl` — and an XML document carrying an
-    /// XHTML-namespaced `<script>` executes in the response's origin. So the
-    /// five enumerated types were a strict subset of the real vector:
-    /// `application/rss+xml` sailed through and re-opened P0-1.
+    /// (kept from the 2026-07-29 adversarial review) an exact-match list is
+    /// the wrong shape — `application/rss+xml` sailed through the first
+    /// version of `is_unsafe_inline_type`.
     #[test]
-    fn neutralize_flags_every_xml_document_type() {
+    fn flags_every_xml_document_type_as_unsafe() {
         for ct in [
             "application/rss+xml",
             "application/atom+xml",
@@ -313,10 +343,57 @@ mod content_type_safety_tests {
             " text/xsl ",
         ] {
             assert!(is_unsafe_inline_type(ct), "{ct} must be flagged unsafe");
-            let (out_ct, disp) = neutralize_content_type(Some(ct));
-            assert_eq!(out_ct, "application/octet-stream", "ct for {ct}");
-            assert_eq!(disp, "attachment", "disposition for {ct}");
+            assert_eq!(
+                content_security_policy_for(ct),
+                Some(SANDBOX_CSP),
+                "csp for {ct}"
+            );
         }
+    }
+
+    /// Codified guardrail: whoever edits SANDBOX_CSP next cannot silently
+    /// weaken it. This only checks the string — it is a tripwire, not a
+    /// substitute for the review this file's history demands.
+    #[test]
+    fn sandbox_csp_never_grants_same_origin_or_scripts() {
+        assert!(!SANDBOX_CSP.contains("allow-same-origin"));
+        assert!(!SANDBOX_CSP.contains("allow-scripts"));
+        assert!(SANDBOX_CSP.starts_with("sandbox"));
+    }
+
+    /// Exercises the ONE function all three drust byte responders call — this
+    /// is the shared-logic coverage the 2026-07-30 adversarial review asked
+    /// for: `tenant_files::stream_bytes` is covered end-to-end by
+    /// `tests/upload_content_type_safety.rs`, but `signed_bytes::respond` and
+    /// the admin `/admin/files/{key}/bytes` handler have no router harness.
+    /// Since all three now call this one function for these three headers,
+    /// testing it once here covers all three call sites structurally — a
+    /// responder that stopped calling it (or reimplemented it) would be the
+    /// only way to regress, and that's a one-line diff to catch on review.
+    #[test]
+    fn insert_content_type_headers_sets_csp_only_for_unsafe_types() {
+        let mut h = axum::http::HeaderMap::new();
+        insert_content_type_headers(&mut h, "text/html");
+        assert_eq!(h.get("content-type").unwrap(), "text/html");
+        assert_eq!(h.get("x-content-type-options").unwrap(), "nosniff");
+        assert_eq!(h.get("content-security-policy").unwrap(), SANDBOX_CSP);
+
+        let mut h = axum::http::HeaderMap::new();
+        insert_content_type_headers(&mut h, "image/png");
+        assert_eq!(h.get("content-type").unwrap(), "image/png");
+        assert_eq!(h.get("x-content-type-options").unwrap(), "nosniff");
+        assert!(
+            h.get("content-security-policy").is_none(),
+            "a safe type must not get a CSP header"
+        );
+
+        // A caller-controlled value that isn't header-legal degrades via
+        // safe_header_value instead of panicking, and — being a fallback of
+        // "application/octet-stream" — correctly gets NO csp header either.
+        let mut h = axum::http::HeaderMap::new();
+        insert_content_type_headers(&mut h, "text/plain\r\nX-Injected: y");
+        assert_eq!(h.get("content-type").unwrap(), "application/octet-stream");
+        assert!(h.get("content-security-policy").is_none());
     }
 
     /// A stored value that is not header-legal must degrade to the fallback,

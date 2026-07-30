@@ -1,19 +1,33 @@
 //! 2026-07-29 audit, finding P0-1 — stored XSS via a caller-supplied
-//! `Content-Type` on a tenant file upload.
+//! `Content-Type` on a tenant file upload. Redesigned 2026-07-30.
 //!
 //! Tenant objects are served from the SAME ORIGIN as the admin UI (Caddy fans
 //! `/public/*` and `/drust/*` out of one site block, and drust itself streams
 //! private bytes at `/drust/t/{id}/files/{key}/bytes`, a route also mounted
 //! under `/drust/admin/...`). A file stored as `text/html` and served `inline`
-//! therefore runs script in the admin plane's origin.
+//! could therefore run script in the admin plane's origin.
 //!
-//! Two layers are asserted here:
-//!   * LAYER 1 (ingest) — the row PERSISTED by `tenant_files::upload` already
-//!     carries `application/octet-stream` + `attachment`, so even a reader that
-//!     bypasses drust (Caddy -> Garage web) gets safe object headers;
-//!   * LAYER 2 (serve) — `stream_bytes` neutralizes what it read from the row,
-//!     so a row written BEFORE this fix is served safely too, and every
-//!     response carries `X-Content-Type-Options: nosniff`.
+//! The v1.56.2 fix downgraded a script-executing type to
+//! `application/octet-stream` + `attachment` at both ingest and serve — safe,
+//! but it broke legitimate markup uploads (a Google-Docs-export-to-HTML
+//! pipeline, SVG logos): they could only be downloaded, never viewed.
+//!
+//! The v1.56.3 redesign has two parts instead:
+//!   * INGEST is untouched — the declared/sniffed content type and the
+//!     caller's requested disposition are stored verbatim;
+//!   * SERVE attaches `Content-Security-Policy: sandbox
+//!     allow-top-navigation-by-user-activation` ([`SANDBOX_CSP`]) whenever the
+//!     stored type is a script-executing one. Bare `sandbox` puts the
+//!     rendered document in a unique opaque origin and disables scripts,
+//!     forms, and popups; the `allow-top-navigation-by-user-activation` token
+//!     only restores ordinary user-initiated hyperlink navigation. The
+//!     decision is made fresh at every serve from the STORED type, so it
+//!     covers a row from any point in time — before this file existed, after
+//!     the v1.56.2 downgrade, or freshly uploaded under this design.
+//!
+//! `X-Content-Type-Options: nosniff` stays unconditional on every response —
+//! it is the orthogonal defense against a browser sniffing a DIFFERENT
+//! declared type back into HTML.
 //!
 //! Harness mirrors tests/tenant_quota_files.rs: real tenant sqlite in a
 //! tempdir + an in-memory `GarageClient::from_store`.
@@ -21,6 +35,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use drust::mgmt::tenant_files::{TenantFilesState, list, stream_bytes, upload};
+use drust::storage::files::SANDBOX_CSP;
 use drust::storage::garage::GarageClient;
 use drust::storage::pool::{SharedTenantPool, TenantRegistry};
 use object_store::memory::InMemory;
@@ -154,80 +169,90 @@ fn hdr(h: &axum::http::HeaderMap, name: &str) -> String {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// LAYER 1 — neutralize at ingest.
+// Ingest: declared type is stored as-is.
 // ───────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn html_upload_is_stored_as_octet_stream_attachment() {
+async fn html_upload_is_stored_as_declared_type_inline() {
     let (app, _state, _pool, _dir) = setup();
     let up = do_upload(&app, "evil.html", "text/html").await;
     let key = up["key"].as_str().unwrap().to_string();
 
     let row = list_row(&app, &key).await;
     assert_eq!(
-        row["content_type"], "application/octet-stream",
-        "a text/html upload must NOT be stored as text/html"
+        row["content_type"], "text/html",
+        "the declared type is stored verbatim — ingest no longer rewrites it"
     );
     assert_eq!(
-        row["content_disposition"], "attachment",
-        "a neutralized file must be stored as attachment even though the \
-         caller asked for inline"
+        row["content_disposition"], "inline",
+        "the caller's requested disposition is stored verbatim"
     );
 }
 
 #[tokio::test]
-async fn svg_upload_is_stored_as_octet_stream_attachment() {
+async fn svg_upload_is_stored_as_declared_type_inline() {
     let (app, _state, _pool, _dir) = setup();
     // No explicit part content type -> mime_guess infers image/svg+xml from
-    // the extension. The extension route must be neutralized too.
+    // the extension.
     let up = do_upload(&app, "evil.svg", "application/octet-stream").await;
     let key = up["key"].as_str().unwrap().to_string();
 
     let row = list_row(&app, &key).await;
-    assert_eq!(row["content_type"], "application/octet-stream");
-    assert_eq!(row["content_disposition"], "attachment");
+    assert!(
+        row["content_type"].as_str().unwrap().contains("svg"),
+        "got {:?}",
+        row["content_type"]
+    );
+    assert_eq!(row["content_disposition"], "inline");
 }
 
 #[tokio::test]
-async fn html_with_charset_parameter_is_neutralized() {
+async fn html_with_charset_parameter_is_stored_verbatim() {
     let (app, _state, _pool, _dir) = setup();
     let up = do_upload(&app, "evil.bin", "text/html; charset=utf-8").await;
     let key = up["key"].as_str().unwrap().to_string();
 
     let row = list_row(&app, &key).await;
-    assert_eq!(row["content_type"], "application/octet-stream");
-    assert_eq!(row["content_disposition"], "attachment");
+    assert_eq!(row["content_type"], "text/html; charset=utf-8");
+    assert_eq!(row["content_disposition"], "inline");
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// LAYER 2 — neutralize at serve (+ nosniff).
+// Serve: a script-executing type gets a sandbox CSP.
 // ───────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn html_upload_is_served_as_octet_stream_attachment_with_nosniff() {
+async fn html_upload_is_served_inline_with_sandbox_csp_and_nosniff() {
     let (app, _state, _pool, _dir) = setup();
     let up = do_upload(&app, "evil.html", "text/html").await;
     let key = up["key"].as_str().unwrap().to_string();
 
     let h = get_bytes_headers(&app, &key).await;
-    assert_eq!(hdr(&h, "content-type"), "application/octet-stream");
+    assert_eq!(hdr(&h, "content-type"), "text/html");
     assert!(
-        hdr(&h, "content-disposition").starts_with("attachment;"),
-        "expected attachment, got {}",
+        hdr(&h, "content-disposition").starts_with("inline;"),
+        "expected inline, got {}",
         hdr(&h, "content-disposition")
     );
     assert_eq!(hdr(&h, "x-content-type-options"), "nosniff");
+    let csp = hdr(&h, "content-security-policy");
+    assert_eq!(csp, SANDBOX_CSP, "csp must equal the pinned constant");
+    assert!(csp.contains("sandbox"));
+    assert!(!csp.contains("allow-same-origin"));
+    assert!(!csp.contains("allow-scripts"));
 }
 
-/// A row written BEFORE this fix still says `text/html` + `inline`. The serve
-/// layer must neutralize it independently of the ingest layer.
+/// A row from ANY point in time — before this file existed, after the
+/// v1.56.2 downgrade, or freshly written under this design — gets the SAME
+/// sandbox CSP treatment, because the decision is made fresh at every serve
+/// from the stored type, never baked in.
 #[tokio::test]
-async fn legacy_html_row_is_neutralized_at_serve_time() {
+async fn legacy_html_row_is_served_with_sandbox_csp_not_neutralized() {
     let (app, _state, pool, _dir) = setup();
     let up = do_upload(&app, "innocent.png", "image/png").await;
     let key = up["key"].as_str().unwrap().to_string();
 
-    // Rewrite the row the way a pre-fix upload would have persisted it.
+    // Rewrite the row to simulate a pre-existing `text/html` row.
     let key_w = key.clone();
     pool.with_writer(move |c| {
         c.execute(
@@ -243,10 +268,31 @@ async fn legacy_html_row_is_neutralized_at_serve_time() {
     let h = get_bytes_headers(&app, &key).await;
     assert_eq!(
         hdr(&h, "content-type"),
-        "application/octet-stream",
-        "a legacy text/html row must not be echoed back verbatim"
+        "text/html",
+        "the stored type is served as declared, never rewritten"
     );
-    assert!(hdr(&h, "content-disposition").starts_with("attachment;"));
+    assert!(hdr(&h, "content-disposition").starts_with("inline;"));
+    assert_eq!(hdr(&h, "content-security-policy"), SANDBOX_CSP);
+    assert_eq!(hdr(&h, "x-content-type-options"), "nosniff");
+}
+
+/// The 2026-07-29 adversarial review found `application/rss+xml` bypassing
+/// the first exact-match blocklist. That finding is now closed by rendering
+/// it SAFELY (sandbox CSP) instead of needing to keep expanding a blocklist.
+#[tokio::test]
+async fn rss_xml_upload_is_served_inline_with_sandbox_csp() {
+    let (app, _state, _pool, _dir) = setup();
+    let up = do_upload(&app, "feed.xml", "application/rss+xml").await;
+    let key = up["key"].as_str().unwrap().to_string();
+
+    let row = list_row(&app, &key).await;
+    assert_eq!(row["content_type"], "application/rss+xml");
+    assert_eq!(row["content_disposition"], "inline");
+
+    let h = get_bytes_headers(&app, &key).await;
+    assert_eq!(hdr(&h, "content-type"), "application/rss+xml");
+    assert!(hdr(&h, "content-disposition").starts_with("inline;"));
+    assert_eq!(hdr(&h, "content-security-policy"), SANDBOX_CSP);
     assert_eq!(hdr(&h, "x-content-type-options"), "nosniff");
 }
 
@@ -274,6 +320,11 @@ async fn png_upload_round_trips_unchanged_as_inline() {
     // nosniff is unconditional — it is what makes the passed-through type
     // authoritative instead of a sniffing hint.
     assert_eq!(hdr(&h, "x-content-type-options"), "nosniff");
+    // A safe type must never get a spurious sandbox CSP.
+    assert!(
+        h.get("content-security-policy").is_none(),
+        "safe type must not get a CSP header"
+    );
 }
 
 #[tokio::test]
@@ -289,4 +340,10 @@ async fn javascript_upload_is_not_neutralized() {
          neutralizing it would break legitimate asset hosting"
     );
     assert_eq!(row["content_disposition"], "inline");
+
+    let h = get_bytes_headers(&app, &key).await;
+    assert!(
+        h.get("content-security-policy").is_none(),
+        "application/javascript is not a script-executing DOCUMENT type — no CSP"
+    );
 }

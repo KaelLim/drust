@@ -503,15 +503,10 @@ pub async fn upload_submit(
         Visibility::Public => "public",
         Visibility::Private => "private",
     };
-    // P0-1 (2026-07-29 audit), LAYER 1 — a caller-supplied `text/html` /
-    // SVG / XML type served inline from this same-origin host is stored XSS
-    // against the admin plane. Never persist one; force a download instead.
-    // No-op for every other type, so `disposition` stays caller-controlled.
-    let (sniffed_ct, disp_mode) =
-        match crate::storage::files::neutralize_content_type(sniffed_ct.as_deref()) {
-            (safe, "attachment") => (Some(safe), "attachment"),
-            _ => (sniffed_ct, disp_mode),
-        };
+    // P0-1 (2026-07-29 audit) / redesigned 2026-07-30 — ingest no longer
+    // downgrades a script-executing type; see
+    // `files::content_security_policy_for` for where the safety decision now
+    // lives (serve time + the Caddy `/public/*` response-header matcher).
     let bucket = bucket_for_upload(&Owner::Admin, visibility);
 
     // Step 6: generate key.
@@ -1041,15 +1036,15 @@ pub async fn admin_stream_bytes(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("get: {e}")))?;
 
-    // P0-1 (2026-07-29 audit), LAYER 2 — same-origin admin route; neutralize a
-    // stored script-executing type instead of echoing it back.
-    let (ct, forced_disp) =
-        crate::storage::files::neutralize_content_type(row.content_type.as_deref());
-    let disp_mode = if forced_disp == "attachment" {
-        "attachment"
-    } else {
-        row.content_disposition.as_deref().unwrap_or("inline")
-    };
+    // P0-1 (2026-07-29 audit) / redesigned 2026-07-30 — same-origin admin
+    // route; a script-executing type is served under
+    // `Content-Security-Policy: sandbox` instead of being downgraded — see
+    // `files::content_security_policy_for`.
+    let ct = row
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let disp_mode = row.content_disposition.as_deref().unwrap_or("inline");
     let ascii = crate::storage::garage::ascii_fallback_filename(&row.original_name);
     let pct = urlencoding::encode(&row.original_name);
     let cd = format!("{disp_mode}; filename=\"{ascii}\"; filename*=UTF-8''{pct}");
@@ -1058,10 +1053,10 @@ pub async fn admin_stream_bytes(
     // Stored values are unvalidated caller input — never `.unwrap()` them.
     use crate::storage::files::safe_header_value;
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::CONTENT_TYPE,
-        safe_header_value(&ct, "application/octet-stream"),
-    );
+    // Content-Type, nosniff, and the conditional sandbox CSP are one shared
+    // function across all three drust byte responders — see
+    // `files::insert_content_type_headers`.
+    crate::storage::files::insert_content_type_headers(&mut headers, &ct);
     headers.insert(
         axum::http::header::CONTENT_DISPOSITION,
         safe_header_value(&cd, "attachment"),
@@ -1069,10 +1064,6 @@ pub async fn admin_stream_bytes(
     headers.insert(
         axum::http::header::CACHE_CONTROL,
         safe_header_value(cc, "private, no-store"),
-    );
-    headers.insert(
-        axum::http::header::X_CONTENT_TYPE_OPTIONS,
-        "nosniff".parse().unwrap(),
     );
 
     Ok((headers, axum::body::Body::from_stream(stream)).into_response())

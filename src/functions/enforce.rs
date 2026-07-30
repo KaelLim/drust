@@ -516,10 +516,10 @@ pub async fn put_file_raw(
     let pool = inner.pool.clone();
     let size = bytes.len() as i64;
     let cc = put_file_cache_control(visibility);
-    // P0-1 (2026-07-29 audit), LAYER 1 — a guest wasm chooses this content
-    // type, so it is caller-supplied exactly like a multipart upload. A
-    // script-executing type becomes an octet-stream attachment.
-    let (safe_ct, disp_mode) = crate::storage::files::neutralize_content_type(Some(content_type));
+    // P0-1 (2026-07-29 audit) / redesigned 2026-07-30 — ingest no longer
+    // downgrades a script-executing type; see `files::content_security_policy_for`.
+    let safe_ct = content_type.to_string();
+    let disp_mode = "inline";
     let key_w = key.to_string();
     let ct_w = safe_ct.clone();
     let vis_w = visibility.to_string();

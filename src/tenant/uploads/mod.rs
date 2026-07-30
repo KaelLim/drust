@@ -524,15 +524,10 @@ async fn finalize_and_respond(
         crate::storage::files::Disposition::Inline,
     )
     .to_string();
-    // P0-1 (2026-07-29 audit), LAYER 1 — the tus session carries the client's
-    // `filetype` metadata verbatim; finalize is where it becomes a stored
-    // `_system_files` row + a Garage object. Neutralize a script-executing
-    // type here so an in-flight session created before this fix is covered too.
-    let (safe_ct, disp_mode) =
-        match crate::storage::files::neutralize_content_type(sess.content_type.as_deref()) {
-            (safe, "attachment") => (Some(safe), "attachment"),
-            _ => (sess.content_type.clone(), "inline"),
-        };
+    // P0-1 (2026-07-29 audit) / redesigned 2026-07-30 — ingest no longer
+    // downgrades a script-executing type; see `files::content_security_policy_for`.
+    let safe_ct = sess.content_type.clone();
+    let disp_mode = "inline";
 
     // v1.50 (Spec B §5.3) — finalize is the accounting point: re-check the hard
     // quota on the writer conn, inside the same tx as the row INSERT (the

@@ -96,15 +96,11 @@ pub async fn change_visibility(
     // file never carries a public cache header (and vice versa).
     let new_cc = default_cache_control(target, disposition);
 
-    // P0-1 (2026-07-29 audit), LAYER 1 — this move is a re-PUT, and a row
-    // written before the ingest fix may still carry a script-executing content
-    // type. Making such a file public would publish it under the admin plane's
-    // origin, so neutralize the object headers we write. No-op otherwise.
-    let (put_ct, disposition_mode) =
-        match crate::storage::files::neutralize_content_type(meta.content_type.as_deref()) {
-            (safe, "attachment") => (Some(safe), "attachment"),
-            _ => (meta.content_type.clone(), disposition_mode),
-        };
+    // P0-1 (2026-07-29 audit) / redesigned 2026-07-30 — the bucket move no
+    // longer downgrades a script-executing type; the object's Content-Type
+    // rides along unchanged and the safety decision lives at serve time (see
+    // `files::content_security_policy_for`).
+    let put_ct = meta.content_type.clone();
 
     // 2. Copy: read bytes from the old bucket, put to the new bucket.
     let bytes = garage.get_object_bytes_in(old_bucket, &object_key).await?;

@@ -46,11 +46,15 @@ fn respond<S>(row: &FileRow, stream: S, download: bool) -> axum::response::Respo
 where
     S: futures::Stream<Item = Result<bytes::Bytes, anyhow::Error>> + Send + 'static,
 {
-    // P0-1 (2026-07-29 audit), LAYER 2 — the signed-URL responder lives on the
-    // same origin as the admin UI, so a stored script-executing type is
-    // neutralized here too (not only at ingest).
-    let (ct, forced_disp) = files::neutralize_content_type(row.content_type.as_deref());
-    let disp_mode = if download || forced_disp == "attachment" {
+    // P0-1 (2026-07-29 audit) / redesigned 2026-07-30 — the signed-URL
+    // responder lives on the same origin as the admin UI; a script-executing
+    // type is served under `Content-Security-Policy: sandbox` instead of
+    // being downgraded — see `files::content_security_policy_for`.
+    let ct = row
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let disp_mode = if download {
         "attachment"
     } else {
         row.content_disposition.as_deref().unwrap_or("inline")
@@ -62,10 +66,10 @@ where
     // Stored values are unvalidated caller input — never `.unwrap()` them.
     use crate::storage::files::safe_header_value;
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::CONTENT_TYPE,
-        safe_header_value(&ct, "application/octet-stream"),
-    );
+    // Content-Type, nosniff, and the conditional sandbox CSP are one shared
+    // function across all three drust byte responders — see
+    // `files::insert_content_type_headers`.
+    crate::storage::files::insert_content_type_headers(&mut headers, &ct);
     headers.insert(
         axum::http::header::CONTENT_DISPOSITION,
         safe_header_value(&cd, "attachment"),
@@ -73,10 +77,6 @@ where
     headers.insert(
         axum::http::header::CACHE_CONTROL,
         safe_header_value(cc, "private, no-store"),
-    );
-    headers.insert(
-        axum::http::header::X_CONTENT_TYPE_OPTIONS,
-        "nosniff".parse().unwrap(),
     );
     (headers, axum::body::Body::from_stream(stream)).into_response()
 }
