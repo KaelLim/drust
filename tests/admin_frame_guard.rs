@@ -5,7 +5,9 @@
 //! `frame-ancestors`, so any site could iframe it and harvest a click.
 //!
 //! Scope matters: the guard is admin-plane only. Tenant data routes are an API
-//! for third-party frontends, and `/public/*` never reaches drust at all.
+//! for third-party frontends, the tenant half of the signed-bytes pair
+//! (`/s/t/{tenant}/{key}`) is a delivery surface a tenant frontend may embed,
+//! and `/public/*` never reaches drust at all.
 
 mod helpers;
 
@@ -235,6 +237,57 @@ async fn admin_byte_route_keeps_its_sandbox_csp() {
             .get("x-frame-options")
             .map(|v| v.to_str().unwrap()),
         Some("DENY")
+    );
+}
+
+/// The signed-bytes pair is split across the guard boundary: `/s/admin/{key}`
+/// is admin-owned and stays inside, `/s/t/{tenant}/{key}` is a tenant delivery
+/// surface and stays outside — a tenant frontend may legitimately `<iframe>` a
+/// signed asset of its own, and `X-Frame-Options: DENY` would break that.
+///
+/// Both are driven with a deliberately bogus token: the 403 comes from the
+/// handler, which proves the route matched (a 404 would satisfy the header
+/// assertions without ever entering the route), and the response layer runs on
+/// the error path exactly as it does on the success path.
+async fn signed_bytes_probe(app: &axum::Router, uri: &str) -> axum::response::Response {
+    let e = chrono::Utc::now().timestamp() + 600;
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{uri}?e={e}&t=not-a-real-token&d=0"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "{uri} should reach the signature check, got {}",
+        res.status()
+    );
+    res
+}
+
+#[tokio::test]
+async fn admin_signed_bytes_refuses_framing() {
+    let (app, _dir) = mgmt_app().await;
+    let res = signed_bytes_probe(&app, "/s/admin/somekey").await;
+    assert_frame_denied(&res, "/s/admin/{key}");
+}
+
+#[tokio::test]
+async fn tenant_signed_bytes_is_not_frame_guarded() {
+    let (app, _dir) = mgmt_app().await;
+    let res = signed_bytes_probe(&app, "/s/t/t1/somekey").await;
+    assert!(
+        res.headers().get("x-frame-options").is_none(),
+        "/s/t/{{tenant}}/{{key}} is a tenant delivery surface and must not be frame-guarded"
+    );
+    assert!(
+        res.headers().get("content-security-policy").is_none(),
+        "/s/t/{{tenant}}/{{key}} must not inherit the admin frame-ancestors CSP"
     );
 }
 

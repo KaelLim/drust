@@ -863,11 +863,16 @@ impl MgmtState {
             );
 
         // Unauth public signed-bytes endpoints — token validates in the handler.
-        let signed_router = Router::new()
+        // Split in two because only the admin arm belongs to the admin plane:
+        // the frame guard below wraps `admin_signed_router` and deliberately
+        // does NOT wrap `tenant_signed_router` (see `frame_guard`'s module doc).
+        let admin_signed_router = Router::new()
             .route(
                 "/s/admin/{key}",
                 get(crate::mgmt::signed_bytes::admin_signed_bytes),
             )
+            .with_state(signed_bytes_state.clone());
+        let tenant_signed_router = Router::new()
             .route(
                 "/s/t/{tenant}/{key}",
                 get(crate::mgmt::signed_bytes::tenant_signed_bytes),
@@ -1462,24 +1467,29 @@ impl MgmtState {
             meta: self.meta.clone(),
             allow_db_fallback: false,
         };
-        // v1.58 P1-11 — frame guard on the whole mgmt plane, including
-        // `/login` and the signed-bytes routes. Applied here rather than in
-        // main.rs so the tenant data plane, merged separately, stays untouched.
-        crate::mgmt::frame_guard::frame_guard_layers(
+        // v1.58 P1-11 — frame guard on the admin plane: `/login`, everything
+        // under `/admin`, and the admin arm of the signed-bytes routes.
+        // Applied here rather than in main.rs so the tenant data plane, merged
+        // separately, stays untouched — and `tenant_signed_router` is merged
+        // OUTSIDE the guard for the same reason, since `/s/t/{tenant}/{key}`
+        // is a tenant delivery surface, not an admin one.
+        let guarded = crate::mgmt::frame_guard::frame_guard_layers(
             public
                 .merge(legacy_redirects)
-                .merge(signed_router)
-                .merge(protected)
-                // v1.22 i18n — outermost layer so unauthenticated routes
-                // (`/login`, `/admin/oauth/<provider>/callback`) also resolve
-                // a locale and let users switch language before signing in.
-                .layer(axum::middleware::from_fn(
-                    crate::mgmt::locale_layer::locale_layer,
-                ))
-                .layer(axum::middleware::from_fn_with_state(
-                    outer_theme_state,
-                    crate::mgmt::theme_layer::theme_layer,
-                )),
-        )
+                .merge(admin_signed_router)
+                .merge(protected),
+        );
+        guarded
+            .merge(tenant_signed_router)
+            // v1.22 i18n — outermost layer so unauthenticated routes
+            // (`/login`, `/admin/oauth/<provider>/callback`) also resolve
+            // a locale and let users switch language before signing in.
+            .layer(axum::middleware::from_fn(
+                crate::mgmt::locale_layer::locale_layer,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                outer_theme_state,
+                crate::mgmt::theme_layer::theme_layer,
+            ))
     }
 }
