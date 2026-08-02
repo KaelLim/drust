@@ -20,9 +20,7 @@ pub fn attach_readonly_authorizer(conn: &Connection) {
         match ctx.action {
             AuthAction::Select => Authorization::Allow,
             AuthAction::Read { table_name, .. } => {
-                if table_name.starts_with("sqlite_")
-                    || crate::storage::schema::is_protected_collection(table_name)
-                {
+                if crate::storage::schema::is_protected_collection(table_name) {
                     Authorization::Deny
                 } else {
                     Authorization::Allow
@@ -74,8 +72,9 @@ pub fn attach_readonly_authorizer(conn: &Connection) {
 /// v1.30 — writable authorizer for stored RPC `mode='write'` bodies.
 ///
 /// Mirrors [`attach_readonly_authorizer`] EXACTLY for every action except
-/// Insert/Update/Delete: those are Allowed for tables that are neither
-/// `sqlite_*` nor [`crate::storage::schema::is_protected_collection`].
+/// Insert/Update/Delete: those are Allowed for tables that are not
+/// [`crate::storage::schema::is_protected_collection`] (which covers both
+/// `_system_*` and `sqlite_*`, case-insensitively).
 /// Triggers, views, vtables, DDL, ATTACH, transaction control, savepoint
 /// control, and pragma-writable_schema are all Denied (same as the
 /// readonly variant).
@@ -91,9 +90,7 @@ pub fn attach_writable_authorizer(conn: &Connection) {
         match ctx.action {
             AuthAction::Select => Authorization::Allow,
             AuthAction::Read { table_name, .. } => {
-                if table_name.starts_with("sqlite_")
-                    || crate::storage::schema::is_protected_collection(table_name)
-                {
+                if crate::storage::schema::is_protected_collection(table_name) {
                     Authorization::Deny
                 } else {
                     Authorization::Allow
@@ -112,9 +109,7 @@ pub fn attach_writable_authorizer(conn: &Connection) {
             AuthAction::Insert { table_name, .. }
             | AuthAction::Update { table_name, .. }
             | AuthAction::Delete { table_name, .. } => {
-                if table_name.starts_with("sqlite_")
-                    || crate::storage::schema::is_protected_collection(table_name)
-                {
+                if crate::storage::schema::is_protected_collection(table_name) {
                     Authorization::Deny
                 } else {
                     Authorization::Allow

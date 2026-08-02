@@ -3,11 +3,33 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// System-managed collections are drop-protected. Any name starting with
-/// `_system_` (note the trailing underscore) is refused by schema-mutating
-/// tools. `_system` alone is not protected — the prefix is strict.
+/// System-managed tables are drop- and write-protected.
+///
+/// Two families: drust's own `_system_*` metadata, and SQLite's internal
+/// `sqlite_*` tables. They used to be enforced by two predicates — this one,
+/// which matched only `_system_`, and a private `starts_with("sqlite_")`
+/// repeated at three sites in the authorizer. One concept, two spellings, and
+/// only the authorizer copy knew about `sqlite_*`, so every gate that consults
+/// this predicate instead (the records API, the MCP write/schema/index/policy
+/// tools, edge enforcement) treated `sqlite_sequence` as an ordinary
+/// collection.
+///
+/// That was not a demonstrated exploit — drust's structured writes always key
+/// on an `id` column that `sqlite_*` tables do not have, so they fail with
+/// `no such column: id` rather than landing — but it is exactly the kind of
+/// near-miss that a future write path with a different shape turns into a real
+/// one. Merged so the two cannot drift apart again.
+///
+/// Matching is case-insensitive because SQLite resolves ASCII identifiers
+/// case-insensitively, so `SQLITE_SEQUENCE` names the same table. The
+/// authorizer itself is handed the canonical lowercase spelling
+/// (`tests/sqlite_internal_write_denied.rs` pins this), but the API-facing
+/// callers of this predicate receive whatever the client typed.
+///
+/// Both prefixes are strict: `_system` and `sqlite` alone are not protected.
 pub fn is_protected_collection(name: &str) -> bool {
-    name.starts_with("_system_")
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("_system_") || lower.starts_with("sqlite_")
 }
 
 #[cfg(test)]
@@ -26,6 +48,29 @@ mod protection_tests {
         assert!(!is_protected_collection("_system")); // exact, not prefix
         assert!(!is_protected_collection("system_logs"));
         assert!(!is_protected_collection("__private"));
+    }
+
+    #[test]
+    fn sqlite_internal_tables_are_protected() {
+        assert!(is_protected_collection("sqlite_sequence"));
+        assert!(is_protected_collection("sqlite_master"));
+        assert!(is_protected_collection("sqlite_stat1"));
+    }
+
+    #[test]
+    fn protection_is_case_insensitive() {
+        // SQLite identifiers are case-insensitive for ASCII, so a
+        // case-sensitive prefix test is a bypass waiting to happen.
+        assert!(is_protected_collection("SQLITE_SEQUENCE"));
+        assert!(is_protected_collection("SqLiTe_sequence"));
+        assert!(is_protected_collection("_SYSTEM_users"));
+    }
+
+    #[test]
+    fn lookalike_names_are_not_protected() {
+        assert!(!is_protected_collection("sqlite"));
+        assert!(!is_protected_collection("sqlitex_things"));
+        assert!(!is_protected_collection("my_sqlite_notes"));
     }
 }
 
