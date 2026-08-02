@@ -7,7 +7,15 @@
 //!
 //! The fix lives in `insert_row_in_tx`, the one per-row body all three MCP-side
 //! surfaces share, rather than as a fourth parallel check.
+//!
+//! Review follow-up: that placement also binds `CallerCtx::Privileged`, whose
+//! host-op arm in `functions/runtime.rs` calls `write::insert_record` directly.
+//! That is intended — the guard is row validation, not an authorization gate —
+//! and `privileged_edge_insert_still_requires_the_owner_field` pins it so the
+//! decision cannot be silently reverted.
 
+use drust::functions::caller::CallerCtx;
+use drust::functions::runtime::{HttpFetchState, StoreData, host::Host};
 use drust::mcp::server::{DrustMcp, McpRegistry};
 use drust::mcp::tools::schema::{FieldSpec, create_collection};
 use drust::storage::pool::TenantRegistry;
@@ -136,4 +144,48 @@ async fn collections_without_an_owner_field_are_unaffected() {
             .await
             .expect("no owner_field configured means no constraint");
     assert!(out.get("id").is_some(), "unexpected shape: {out}");
+}
+
+// ───────────────── Privileged edge host op (review follow-up) ─────────────────
+
+/// The `CallerCtx::Privileged` arm of the wasm `insert-record` host import
+/// (`functions/runtime.rs`) calls `write::insert_record` DIRECTLY, bypassing
+/// `functions::enforce` — so unlike the service REST path it neither supplies
+/// nor stamps the owner field, and it reaches the guard in `insert_row_in_tx`
+/// with whatever the guest sent. `Privileged` is what cron fires, record/file
+/// event dispatch and service manual invoke all run as, so this is the exact
+/// caller that used to be able to mint owner-less rows.
+///
+/// The stricter behavior is deliberate: it matches REST-service (409
+/// `OWNER_FIELD_REQUIRED`) and the `AuthCtx::Service` arm of `enforce.rs`, and
+/// it is the same family as the quota / unknown-field / CHECK validations that
+/// already bind `Privileged` in this body. God-mode covers authorization
+/// decisions — caps, owner filtering, RLS, file caps — not row validation.
+/// Driving the real host trait rather than `write::insert_record` is what makes
+/// this a regression test for the BRANCH, not just for the guard.
+#[tokio::test]
+async fn privileged_edge_insert_still_requires_the_owner_field() {
+    let d = tempfile::tempdir().unwrap();
+    let mcp = svc(&d).await;
+    make_owner_scoped_notes(&mcp).await;
+    seed_user(&mcp, "u-1").await;
+
+    let mut store =
+        StoreData::new_for_test(mcp, CallerCtx::Privileged, HttpFetchState::test_default());
+
+    let err = store
+        .insert_record("notes".into(), r#"{"body":"god"}"#.into())
+        .await
+        .expect_err("a Privileged host insert with no owner must be refused");
+    assert!(
+        err.contains("OWNER_FIELD_REQUIRED"),
+        "expected OWNER_FIELD_REQUIRED, got: {err}"
+    );
+
+    // ...and god-mode is otherwise intact: supplying the owner still inserts.
+    let ok = store
+        .insert_record("notes".into(), r#"{"body":"god","uid":"u-1"}"#.into())
+        .await
+        .expect("a populated owner field must still insert under Privileged");
+    assert!(ok.contains("\"id\""), "unexpected shape: {ok}");
 }

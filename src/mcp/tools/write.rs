@@ -302,11 +302,25 @@ pub(crate) fn insert_row_in_tx(
     // v1.58 P1-3 — an owner-scoped collection may not take a row with no owner.
     //
     // Placed in the shared per-row body rather than as a fourth parallel check
-    // beside REST / edge / batch: every caller of this function either supplies
-    // the field (service) or pre-populates it (`functions::enforce` overwrites
-    // it with the caller's user id before delegating), so one guard here covers
-    // MCP single insert, MCP batch insert and the edge path at once. Predicate
-    // is byte-identical to the batch pre-tx check so the two cannot drift.
+    // beside REST / edge / batch, so MCP single insert, MCP batch insert, upsert
+    // and the edge host op are covered by one guard. Predicate is byte-identical
+    // to the batch pre-tx check so the two cannot drift.
+    //
+    // This is row VALIDATION, not an authorization gate, so it deliberately
+    // binds `CallerCtx::Privileged` as well. Do not assume every caller has
+    // already settled the field: the service REST path supplies it and
+    // `functions::enforce` stamps it for a User, but the Privileged arm of the
+    // wasm `insert-record` host import (`functions/runtime.rs`) calls
+    // `write::insert_record` DIRECTLY and does neither — it arrives here with
+    // whatever the guest sent. Cron fires, record/file event dispatch and
+    // service manual invoke all run as Privileged, so before this guard they
+    // could mint owner-less rows. Refusing them matches REST-service (409
+    // OWNER_FIELD_REQUIRED) and the `AuthCtx::Service` arm of `enforce.rs`, and
+    // it is the same family as the quota, unknown-field and CHECK validations
+    // that already bind Privileged in this body. God-mode covers authorization
+    // — caps, owner filtering, RLS, file caps — not row validation.
+    // `.claude/rules/background-jobs.md` records the carve-out;
+    // `tests/mcp_owner_field_required.rs` pins the Privileged branch.
     if let Some(of) = schema.owner_field.as_deref() {
         let supplied = data_map
             .get(of)
