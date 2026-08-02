@@ -299,6 +299,26 @@ pub(crate) fn insert_row_in_tx(
         quota_tier,
     )
     .map_err(crate::error::quota_exceeded_error)?;
+    // v1.58 P1-3 — an owner-scoped collection may not take a row with no owner.
+    //
+    // Placed in the shared per-row body rather than as a fourth parallel check
+    // beside REST / edge / batch: every caller of this function either supplies
+    // the field (service) or pre-populates it (`functions::enforce` overwrites
+    // it with the caller's user id before delegating), so one guard here covers
+    // MCP single insert, MCP batch insert and the edge path at once. Predicate
+    // is byte-identical to the batch pre-tx check so the two cannot drift.
+    if let Some(of) = schema.owner_field.as_deref() {
+        let supplied = data_map
+            .get(of)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty());
+        if !supplied {
+            return Err(invalid_input(format!(
+                "OWNER_FIELD_REQUIRED: must supply a non-empty '{of}' on owner-scoped collection '{}'",
+                schema.name
+            )));
+        }
+    }
     let allowed: std::collections::HashSet<&str> =
         schema.fields.iter().map(|f| f.name.as_str()).collect();
     for k in data_map.keys() {
