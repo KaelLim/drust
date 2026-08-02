@@ -45,6 +45,9 @@ Destructive ops `delete_record` / `drop_collection` / `drop_index` accept `dry_r
 
 `recent_writes` (service-only) reads mutation rows from `meta_logs.sqlite` filtered to the calling tenant — lets a retrying model recover what its previous attempt already did. Default limit is **100**, matching what the tool description and the MCP prologue tell the model; an explicit `limit` wins and is clamped to `1..=200`.
 
+> [!CAUTION]
+> **A `///` doc comment on any `*Args` field in `src/mcp/handler.rs` is model-facing, not prose.** Those structs derive `schemars::JsonSchema`, so each doc comment is published verbatim as that property's `description` in the `tools/list` inputSchema — the surface the prologue itself designates canonical and that most MCP clients render into the system prompt. Changing a default or a range in the handler body means changing the doc comment in the same commit; a prose-only sweep leaves the machine-readable number stale and the model holding two answers. `tests/mcp_recent_writes_limit.rs` pins this for `recent_writes`.
+
 ## Provenance
 
 Extracted from CLAUDE.md "Tools & endpoints" (MCP bullets, Resources+Prompts, AI introspection helpers) during the 2026-08-02 restructure.

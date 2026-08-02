@@ -221,6 +221,54 @@ async fn recent_writes_default_matches_its_advertised_limit() {
     );
 }
 
+/// The prologue tells the model "call `tools/list` for the canonical input
+/// schema of every tool", and schemars publishes the `RecentWritesArgs::limit`
+/// doc comment verbatim as that parameter's description. So the doc comment is
+/// not prose — it is the machine-readable half of the same promise, and the one
+/// most MCP clients render into the system prompt. If it disagrees with what
+/// the handler actually does, the model holds two numbers for one parameter.
+#[tokio::test]
+async fn tools_list_schema_advertises_the_same_default() {
+    let tenant = "rwlimit3";
+    let (app, tok, _audit, _dir) = spin_up_with_audit(tenant).await;
+    let sid = mcp_init(&app, tenant, &tok).await;
+
+    let list = mcp_req(
+        tenant,
+        &tok,
+        Some(&sid),
+        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+    );
+    let resp = app.clone().oneshot(list).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "tools/list failed");
+    let msgs = parse_mcp_response(resp).await;
+    let tools = msgs
+        .iter()
+        .find_map(|m| m["result"]["tools"].as_array().cloned())
+        .unwrap_or_else(|| panic!("no tools array in {msgs:?}"));
+    let tool = tools
+        .iter()
+        .find(|t| t["name"] == "recent_writes")
+        .unwrap_or_else(|| panic!("recent_writes missing from tools/list"));
+    let desc = tool["inputSchema"]["properties"]["limit"]["description"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!(
+                "no description on the limit property; schema was {}",
+                tool["inputSchema"]
+            )
+        });
+
+    assert!(
+        !desc.contains("50"),
+        "the published input schema still advertises the old default: {desc:?}"
+    );
+    assert!(
+        desc.contains("100"),
+        "the published input schema must state the real default of 100: {desc:?}"
+    );
+}
+
 #[tokio::test]
 async fn an_explicit_limit_still_wins_and_is_clamped() {
     let tenant = "rwlimit2";

@@ -115,7 +115,12 @@ pub struct DropIndexArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RecentWritesArgs {
-    /// 1..=200; defaults to 50.
+    // NOT prose: schemars publishes the doc line below verbatim as this
+    // parameter's `description` in `tools/list` — the surface the prologue
+    // itself calls canonical and that most clients paste into the system
+    // prompt. Keep it in lockstep with `limit.unwrap_or(..)` in
+    // `recent_writes` and with the "last 100 mutations" prologue text.
+    /// 1..=200; defaults to 100.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Optional filter — only entries whose collection matches.
