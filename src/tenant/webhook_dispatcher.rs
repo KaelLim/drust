@@ -6,6 +6,11 @@
 //!       resolver_override: Option<Arc<dyn reqwest::dns::Resolve + Send + Sync>>,
 //!   ) -> Arc<Self>
 //!   WebhookDispatcher::dispatch(&self, tenant: &str, collection: &str, event: Event)
+//!   WebhookDispatcher::dispatch_many(&self, tenant, collection, events: Vec<Event>)
+//!
+//! `dispatch` is a one-element `dispatch_many`; batch writers call
+//! `dispatch_many` so the subscription lookup and the egress-allowlist read
+//! happen once per batch instead of once per row.
 //!
 //! Production passes `None` for `resolver_override` so dispatch uses
 //! `webhook_resolver::PinnedPublicResolver`. Tests inject an
@@ -161,12 +166,34 @@ pub(crate) async fn registration_egress_allowed(
     dispatch_egress_allowed(&allowlist, url)
 }
 
+/// Count of meta.sqlite connections the webhook dispatch path has opened (or
+/// attempted to open) in this process — the cost the batch entry point exists
+/// to bound. Incremented before the open so a failed open still counts: the
+/// syscall is paid either way. Read it with [`meta_connections_opened`].
+///
+/// Observability hook for `tests/batch_webhook_fanout.rs`; a relaxed atomic
+/// increment next to a SQLite file open is not measurable, so it is compiled
+/// unconditionally (integration tests link the lib without `cfg(test)`).
+#[doc(hidden)]
+pub static META_CONNECTIONS_OPENED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Current value of [`META_CONNECTIONS_OPENED`]. Tests assert on a DELTA around
+/// one operation, never on the absolute value.
+#[doc(hidden)]
+pub fn meta_connections_opened() -> u64 {
+    META_CONNECTIONS_OPENED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Read a tenant's egress allowlist JSON from `meta.sqlite` for the dispatch
 /// gate. Opens a short-lived READ-ONLY connection (dispatch runs on a spawned,
-/// off-hot-path task, so a per-event open is acceptable). Fail-CLOSED: any
-/// open/read failure yields the deny-all `"[]"`, so a transient meta hiccup
-/// denies delivery to non-loopback hosts rather than opening egress.
+/// off-hot-path task, so a per-fan-out open is acceptable — a per-ROW one is
+/// not, which is why `dispatch_many` calls this once per batch and only when
+/// the collection actually has subscriptions). Fail-CLOSED: any open/read
+/// failure yields the deny-all `"[]"`, so a transient meta hiccup denies
+/// delivery to non-loopback hosts rather than opening egress.
 fn read_tenant_egress_allowlist(registry: &TenantRegistry, tenant: &str) -> String {
+    META_CONNECTIONS_OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let meta_path = registry.data_root().join("meta.sqlite");
     match rusqlite::Connection::open_with_flags(
         &meta_path,
@@ -234,11 +261,38 @@ impl WebhookDispatcher {
     }
 
     /// Fan out `event` to every active subscriber for `(tenant, collection)`.
+    /// A one-element call into [`WebhookDispatcher::dispatch_many`], so there is
+    /// exactly ONE delivery implementation. Returns immediately — the callers
+    /// are on the hot REST/MCP path and must not block.
+    pub fn dispatch(&self, tenant: &str, collection: &str, event: Event) {
+        self.dispatch_many(tenant, collection, vec![event]);
+    }
+
+    /// Fan out many events for one collection, resolving subscriptions ONCE.
+    ///
     /// Spawns a Tokio task per delivery; errors are silently swallowed at the
     /// dispatch level (individual delivery failures are recorded via
-    /// `record_failure`). Returns immediately — the callers are on the hot
-    /// REST/MCP path and must not block.
-    pub fn dispatch(&self, tenant: &str, collection: &str, event: Event) {
+    /// `record_failure`). Returns immediately.
+    ///
+    /// v1.58 P1-7 — the per-row caller used to invoke `dispatch` once per row,
+    /// and every call opened the tenant pool, listed subscriptions, and opened
+    /// a fresh meta.sqlite connection for the egress allowlist. A 1000-row
+    /// batch therefore cost 1000 meta connections and saturated the tenant's
+    /// reader semaphore even when the collection had no subscriptions at all.
+    /// Here the lookup happens once and an empty subscription set returns
+    /// BEFORE the allowlist read, so the zero-subscriber case (the common one)
+    /// costs one reader acquisition for the whole batch and no meta connection.
+    ///
+    /// Event granularity is unchanged — one delivery per (subscription, event),
+    /// because collapsing them into an aggregate payload would break every
+    /// existing consumer. The loop is subscription-major rather than
+    /// event-major so the per-subscription decisions (event filter, egress
+    /// gate) are made once per batch instead of once per row; deliveries are
+    /// spawned concurrently either way, so no ordering guarantee changes.
+    pub fn dispatch_many(&self, tenant: &str, collection: &str, events: Vec<Event>) {
+        if events.is_empty() {
+            return;
+        }
         let pool = self.pool.clone();
         let tenant = tenant.to_string();
         let collection = collection.to_string();
@@ -273,12 +327,23 @@ impl WebhookDispatcher {
                     return;
                 }
             };
+            // Nothing subscribed: return BEFORE the meta open below. This is
+            // the case a batch hits N times, and it must cost nothing.
+            if subs.is_empty() {
+                return;
+            }
             // v1.49 egress third gate — read the tenant's allowlist ONCE per
-            // event (fresh from meta, so a just-removed origin is honored).
+            // fan-out (fresh from meta, so a just-removed origin is honored;
+            // a batch's deliveries are all spawned within the same instant, so
+            // reading it once per batch is as fresh as once per row was).
             let allowlist_json = read_tenant_egress_allowlist(&pool, &tenant);
-            let event_name = event.name();
             for sub in subs {
-                if !events_contains(&sub.events, event_name) {
+                // Which of this fan-out's events this subscription wants.
+                let matching: Vec<&Event> = events
+                    .iter()
+                    .filter(|e| events_contains(&sub.events, e.name()))
+                    .collect();
+                if matching.is_empty() {
                     continue;
                 }
                 // Egress third gate: deny delivery to any origin not on the
@@ -286,7 +351,11 @@ impl WebhookDispatcher {
                 // the resolver's carve-out). A denial records a failure and
                 // skips — no POST, no retry. check_url (registration) + the
                 // PinnedPublicResolver (per attempt) remain; this is an ADDED
-                // gate, never a replacement.
+                // gate, never a replacement. The failure is recorded ONCE per
+                // subscription per fan-out: `record_failure` overwrites one
+                // row with a reason that does not depend on the event, so N
+                // identical writes under the writer lock leave exactly the
+                // state a single write leaves.
                 if !dispatch_egress_allowed(&allowlist_json, &sub.url) {
                     let id = sub.id;
                     let reason = format!("egress_not_allowlisted: {}", sub.url);
@@ -295,44 +364,47 @@ impl WebhookDispatcher {
                         .await;
                     continue;
                 }
-                let delivery_id = uuid::Uuid::new_v4().to_string();
-                let timestamp = chrono::Utc::now().to_rfc3339();
-                let body_bytes = match serde_json::to_vec(&build_payload(
-                    &tenant,
-                    &collection,
-                    &event,
-                    &delivery_id,
-                    &timestamp,
-                )) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!(error = ?e, tenant = %tenant, collection = %collection, "webhook dispatch: serialize payload failed");
-                        continue;
-                    }
-                };
-                let resolver2 = resolver.clone();
-                let pool2 = pool.clone();
-                let tenant2 = tenant.clone();
-                let delivery_id2 = delivery_id.clone();
-                let timestamp2 = timestamp.clone();
-                let client2 = client.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = deliver(
-                        client2,
-                        resolver2,
-                        &sub,
-                        body_bytes,
-                        delivery_id2,
-                        timestamp2,
-                        DeliverySchedule::default(),
-                        &pool2,
-                        &tenant2,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = ?e, tenant = %tenant2, webhook_id = %sub.id, "webhook deliver: final failure");
-                    }
-                });
+                for event in matching {
+                    let delivery_id = uuid::Uuid::new_v4().to_string();
+                    let timestamp = chrono::Utc::now().to_rfc3339();
+                    let body_bytes = match serde_json::to_vec(&build_payload(
+                        &tenant,
+                        &collection,
+                        event,
+                        &delivery_id,
+                        &timestamp,
+                    )) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!(error = ?e, tenant = %tenant, collection = %collection, "webhook dispatch: serialize payload failed");
+                            continue;
+                        }
+                    };
+                    let resolver2 = resolver.clone();
+                    let pool2 = pool.clone();
+                    let tenant2 = tenant.clone();
+                    let delivery_id2 = delivery_id.clone();
+                    let timestamp2 = timestamp.clone();
+                    let client2 = client.clone();
+                    let sub2 = sub.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = deliver(
+                            client2,
+                            resolver2,
+                            &sub2,
+                            body_bytes,
+                            delivery_id2,
+                            timestamp2,
+                            DeliverySchedule::default(),
+                            &pool2,
+                            &tenant2,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = ?e, tenant = %tenant2, webhook_id = %sub2.id, "webhook deliver: final failure");
+                        }
+                    });
+                }
             }
         });
     }

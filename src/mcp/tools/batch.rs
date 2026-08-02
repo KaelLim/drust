@@ -172,7 +172,12 @@ pub async fn batch_insert_core(
         })
         .await?;
 
-    // Post-commit fan-out per row (outside the tx), mirroring single insert.
+    // Post-commit fan-out (outside the tx), mirroring single insert. SSE and
+    // the function dispatcher stay per row (both are in-process and cheap);
+    // webhooks go through the batch entry point so the subscription lookup and
+    // the egress-allowlist read happen ONCE for the whole batch instead of once
+    // per row (v1.58 P1-7). Event granularity is unchanged.
+    let mut webhook_events = Vec::with_capacity(inserted.len());
     for rec in &inserted {
         let ev = Event::Created {
             record: rec.clone(),
@@ -181,8 +186,9 @@ pub async fn batch_insert_core(
         if let Some(f) = functions {
             f.dispatch(tenant_id, collection, &ev);
         }
-        webhooks.dispatch(tenant_id, collection, ev);
+        webhook_events.push(ev);
     }
+    webhooks.dispatch_many(tenant_id, collection, webhook_events);
 
     Ok(json!({ "inserted": inserted, "count": inserted.len() }))
 }
@@ -354,9 +360,13 @@ pub async fn batch_upsert_core(
         )
         .await?;
 
-    // Post-commit fan-out per row (outside the tx) — Created for inserts,
-    // Updated for updates, mirroring single insert/update.
+    // Post-commit fan-out (outside the tx) — Created for inserts, Updated for
+    // updates, mirroring single insert/update. As in `batch_insert_core`, SSE
+    // and the function dispatcher stay per row while webhooks go through the
+    // batch entry point (v1.58 P1-7); the per-row Created/Updated distinction
+    // is preserved because `dispatch_many` takes the event list verbatim.
     let mut out_rows = Vec::with_capacity(results.len());
+    let mut webhook_events = Vec::with_capacity(results.len());
     for (op, rec) in &results {
         let (label, ev) = match op {
             HistoryOp::Insert => (
@@ -376,9 +386,10 @@ pub async fn batch_upsert_core(
         if let Some(f) = functions {
             f.dispatch(tenant_id, collection, &ev);
         }
-        webhooks.dispatch(tenant_id, collection, ev);
+        webhook_events.push(ev);
         out_rows.push(json!({ "op": label, "record": rec }));
     }
+    webhooks.dispatch_many(tenant_id, collection, webhook_events);
     Ok(json!({ "results": out_rows, "count": out_rows.len() }))
 }
 
