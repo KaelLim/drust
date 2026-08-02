@@ -83,6 +83,16 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+# Full debug info is this repo's single largest disk cost. Every tests/*.rs is
+# its own binary statically linking the lib plus wasmtime, and there are 229 of
+# them: measured 2026-08-02, that is 55.9 GB of target/debug, ~176 MB of
+# .debug_info per binary. "line-tables-only" keeps file:line in panic
+# backtraces — the part anyone actually reads — and drops the type and variable
+# DWARF nobody steps through here. Override per-invocation when you need a real
+# debugger: CARGO_PROFILE_DEV_DEBUG=2 cargo test --test <name>
+[profile.dev]
+debug = "line-tables-only"
+
 [workspace]
 members = ["cli"]
 resolver = "2"
