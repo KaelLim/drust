@@ -144,6 +144,17 @@ pub fn daily_submit_limit() -> i64 {
 /// silently dropping one would look to the member like their request was
 /// ignored. They are bounded instead by the one-pending-per-admin rule in
 /// [`create_cap_request`].
+///
+/// The age is measured from `decided_at`, NOT `created_at` (2026-08-02
+/// adversarial review). Retention is a promise about how long the *decision* is
+/// kept, and a request can sit pending for months — drust has no mail transport,
+/// so the queue only surfaces when an owner opens it. Anchored on `created_at`,
+/// a request filed 135 days ago and rejected this morning was destroyed by the
+/// very next 03:00 pass: zero retention where the docs say 90 days, and for an
+/// approval that means a raised `tenant_cap_bonus` with no queue record of who
+/// granted it. `COALESCE` keeps a hand-edited row with a NULL `decided_at`
+/// prunable rather than immortal — `decide_cap_request` is the only writer and
+/// always sets it.
 pub fn prune_decided_requests(conn: &rusqlite::Connection, days: i64) -> rusqlite::Result<usize> {
     if days <= 0 {
         return Ok(0);
@@ -151,7 +162,7 @@ pub fn prune_decided_requests(conn: &rusqlite::Connection, days: i64) -> rusqlit
     conn.execute(
         "DELETE FROM tenant_cap_requests \
          WHERE status IN ('approved','rejected') \
-           AND created_at < datetime('now', ?1)",
+           AND COALESCE(decided_at, created_at) < datetime('now', ?1)",
         rusqlite::params![format!("-{days} days")],
     )
 }
@@ -169,46 +180,10 @@ pub fn submits_today(conn: &rusqlite::Connection, admin_id: i64) -> rusqlite::Re
     )
 }
 
-/// Daily prune of decided cap requests, plus one pass at boot.
-///
-/// Anchored to 03:00 UTC like the other `meta.sqlite` retention passes
-/// (`audit_db`, `record_history`). The boot pass exists for the same reason the
-/// `_trash` janitor has one: a deployment that restarts more often than daily
-/// would otherwise never reach its tick.
-///
-/// Deliberately its OWN task rather than a call inside
-/// `record_history::spawn_retention_task`: that task returns early when
-/// `DRUST_AUDIT_HISTORY_RETENTION_DAYS=0`, so hanging this off it would let one
-/// operator knob silently disable an unrelated retention.
-///
-/// `tokio::spawn(tenant_cap::spawn_request_retention_task(meta))`.
-pub async fn spawn_request_retention_task(
-    meta: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
-) {
-    let days = request_retention_days();
-    if days == 0 {
-        tracing::info!(
-            "tenant-cap request retention disabled (DRUST_TENANT_CAP_REQUEST_RETENTION_DAYS=0); keeping decided requests forever"
-        );
-        return;
-    }
-    loop {
-        {
-            let conn = meta.lock().await;
-            match prune_decided_requests(&conn, days) {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(pruned = n, days, "tenant-cap requests pruned"),
-                Err(e) => tracing::warn!(error = ?e, "tenant-cap request prune failed"),
-            }
-        }
-        let now = chrono::Utc::now();
-        let next = crate::safety::audit_db::next_0300_utc(now);
-        let dur = (next - now)
-            .to_std()
-            .unwrap_or(std::time::Duration::from_secs(60));
-        tokio::time::sleep(dur).await;
-    }
-}
+// The daily prune task lives in `crate::mgmt::request_janitor`, which sweeps
+// BOTH admin request queues. It is not here because a janitor named after one
+// table is exactly how the other one gets forgotten — which is what happened to
+// `quota_requests` for two releases.
 
 // ─── member: file a cap-increase request ──────────────────────────────────────
 

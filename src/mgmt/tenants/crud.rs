@@ -373,6 +373,12 @@ pub fn make_tenant_inner(
             "DELETE FROM tokens WHERE tenant_id = ?1",
             rusqlite::params![id],
         )?;
+        // 2026-08-02 review — the old tenant's quota requests go too. The row
+        // stores a `tenant_id` STRING and `decide_quota_request` resolves it
+        // live, so a request left behind here would be applied to whatever
+        // tenant next holds this id: an owner approving a stale queue entry
+        // would raise the NEW tenant's tier. Nothing may outlive a recycled id.
+        crate::mgmt::quota_admin::delete_requests_for_tenant(conn, id)?;
         conn.execute("DELETE FROM tenants WHERE id = ?1", rusqlite::params![id])?;
         let dir = tenant_dir(data_dir, id);
         if dir.exists() {

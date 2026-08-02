@@ -223,3 +223,72 @@ fn two_soft_deletes_of_one_id_in_the_same_second_get_separate_snapshots() {
     // Both shapes must stay under `_trash/` so either janitor still sweeps them.
     assert_eq!(second.parent().unwrap(), data.join("_trash"));
 }
+
+/// 2026-08-02 review — the recycle branch purged the old tenant's row and
+/// tokens but left its `quota_requests` behind.
+///
+/// Those rows key on the `tenant_id` STRING, and `decide_quota_request`
+/// resolves it live against `tenants`. A pending request filed against the
+/// PREVIOUS occupant of an id therefore stays on the owner's review queue and,
+/// once approved, raises the tier of whatever tenant now holds that id — a
+/// different database, possibly a different owner. Tenant ids are
+/// caller-supplied and explicitly recyclable, so nothing may outlive one.
+#[test]
+fn recycling_an_id_drops_the_old_tenants_quota_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let mut conn = meta_with_admins(data);
+
+    make_tenant_inner(&mut conn, data, "acme", "Acme", 10, 1000, 1).unwrap();
+    conn.execute(
+        "INSERT INTO quota_requests (tenant_id, requester_admin_id, requested_tier) \
+         VALUES ('acme', 1, 50)",
+        [],
+    )
+    .unwrap();
+    soft_delete_row(&conn, "acme");
+
+    make_tenant_inner(&mut conn, data, "acme", "Acme 2", 10, 1000, 1).unwrap();
+
+    let leftover: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM quota_requests WHERE tenant_id = 'acme'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        leftover, 0,
+        "the previous occupant's pending tier-50 request must not target the new tenant"
+    );
+}
+
+/// The recycle purge is destructive and already gated by `tenant_access_for`;
+/// a refused caller must not get the deletion as a side effect.
+#[test]
+fn a_refused_recycle_leaves_the_quota_requests_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let mut conn = meta_with_admins(data);
+
+    make_tenant_inner(&mut conn, data, "victim", "Victim", 10, 1000, 1).unwrap();
+    conn.execute(
+        "INSERT INTO quota_requests (tenant_id, requester_admin_id, requested_tier) \
+         VALUES ('victim', 1, 7)",
+        [],
+    )
+    .unwrap();
+    soft_delete_row(&conn, "victim");
+
+    make_tenant_inner(&mut conn, data, "victim", "Mine Now", 10, 1000, 2)
+        .expect_err("a member must not be able to recycle a foreign tenant's id");
+
+    let kept: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM quota_requests WHERE tenant_id = 'victim'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, 1, "a denied caller destroys nothing");
+}

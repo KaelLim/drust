@@ -519,3 +519,369 @@ async fn owner_sets_tier_directly() {
     assert_eq!(body["quota_tier"], 3);
     assert_eq!(meta_tier(&dir, "t-owner-a"), 3);
 }
+
+// ─── 2026-08-02 review: the queue's LIFETIME ─────────────────────────────────
+//
+// `quota_requests` is the table `tenant_cap_requests` was modelled on, and when
+// the cap queue got a retention janitor and a submit budget this one got
+// neither — while being strictly more exposed, because its pending gate is
+// keyed on the tenant rather than the requester.
+
+fn plain_meta() -> (rusqlite::Connection, TempDir) {
+    let dir = tempdir().unwrap();
+    let conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    (conn, dir)
+}
+
+/// `filed` / `decided` are `datetime` modifiers; `decided` of `None` leaves
+/// `decided_at` NULL (the hand-edited / legacy shape).
+fn insert_quota_request(
+    conn: &rusqlite::Connection,
+    tenant: &str,
+    tier: i64,
+    status: &str,
+    filed: &str,
+    decided: Option<&str>,
+) {
+    match decided {
+        Some(d) => conn.execute(
+            "INSERT INTO quota_requests \
+                 (tenant_id, requester_admin_id, requested_tier, status, created_at, \
+                  decided_by_admin_id, decided_at) \
+             VALUES (?1, 2, ?2, ?3, datetime('now', ?4), 1, datetime('now', ?5))",
+            params![tenant, tier, status, filed, d],
+        ),
+        None => conn.execute(
+            "INSERT INTO quota_requests \
+                 (tenant_id, requester_admin_id, requested_tier, status, created_at) \
+             VALUES (?1, 2, ?2, ?3, datetime('now', ?4))",
+            params![tenant, tier, status, filed],
+        ),
+    }
+    .unwrap();
+}
+
+fn count_quota_requests(dir: &TempDir) -> i64 {
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.query_row("SELECT COUNT(*) FROM quota_requests", [], |r| r.get(0))
+        .unwrap()
+}
+
+fn admin_id_of(dir: &TempDir, email: &str) -> i64 {
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.query_row(
+        "SELECT id FROM admins WHERE email = ?1",
+        params![email],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn quota_prune_removes_old_decided_requests_and_keeps_pending() {
+    let (conn, _d) = plain_meta();
+    insert_quota_request(&conn, "t-a", 2, "rejected", "-200 days", Some("-200 days"));
+    insert_quota_request(&conn, "t-a", 3, "approved", "-200 days", Some("-200 days"));
+    insert_quota_request(&conn, "t-a", 4, "pending", "-200 days", None);
+
+    assert_eq!(
+        drust::mgmt::quota_admin::prune_decided_requests(&conn, 90).unwrap(),
+        2,
+        "both decided rows should go"
+    );
+    let status: String = conn
+        .query_row("SELECT status FROM quota_requests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        status, "pending",
+        "the pending request must survive — it is a to-do, not a record"
+    );
+}
+
+/// Same anchor rule as the cap queue: the retention clock starts at the
+/// DECISION. A request that sat pending past the window must not be destroyed
+/// by the first pass after someone finally acts on it.
+#[test]
+fn quota_retention_runs_from_the_decision_not_the_filing() {
+    let (conn, _d) = plain_meta();
+    insert_quota_request(&conn, "t-a", 2, "rejected", "-135 days", Some("-0 days"));
+    assert_eq!(
+        drust::mgmt::quota_admin::prune_decided_requests(&conn, 90).unwrap(),
+        0
+    );
+    insert_quota_request(&conn, "t-a", 3, "approved", "-400 days", Some("-91 days"));
+    assert_eq!(
+        drust::mgmt::quota_admin::prune_decided_requests(&conn, 90).unwrap(),
+        1,
+        "an old DECISION goes, however recently it was filed"
+    );
+}
+
+/// A decided row with no `decided_at` — only reachable by hand-editing, since
+/// `decide_quota_request` always writes one — must still age out on
+/// `created_at` rather than becoming immortal.
+#[test]
+fn quota_retention_falls_back_to_created_at_when_decided_at_is_null() {
+    let (conn, _d) = plain_meta();
+    insert_quota_request(&conn, "t-a", 2, "rejected", "-200 days", None);
+    assert_eq!(
+        drust::mgmt::quota_admin::prune_decided_requests(&conn, 90).unwrap(),
+        1
+    );
+}
+
+#[test]
+fn quota_prune_is_a_noop_at_zero_and_for_a_negative() {
+    let (conn, _d) = plain_meta();
+    insert_quota_request(
+        &conn,
+        "t-a",
+        2,
+        "rejected",
+        "-9000 days",
+        Some("-9000 days"),
+    );
+    assert_eq!(
+        drust::mgmt::quota_admin::prune_decided_requests(&conn, 0).unwrap(),
+        0,
+        "0 means keep forever, not delete everything"
+    );
+    assert_eq!(
+        drust::mgmt::quota_admin::prune_decided_requests(&conn, -1).unwrap(),
+        0,
+        "a negative is operator error, not an instruction to empty the table"
+    );
+}
+
+/// The budget is keyed on the TENANT, matching the one-pending-per-tenant 409.
+#[test]
+fn quota_submits_today_is_per_tenant_and_counts_decided_rows() {
+    let (conn, _d) = plain_meta();
+    insert_quota_request(&conn, "t-a", 2, "rejected", "-0 days", Some("-0 days"));
+    insert_quota_request(&conn, "t-a", 3, "pending", "-0 days", None);
+    insert_quota_request(&conn, "t-a", 4, "rejected", "-2 days", Some("-2 days"));
+    insert_quota_request(&conn, "t-b", 2, "pending", "-0 days", None);
+
+    assert_eq!(
+        drust::mgmt::quota_admin::submits_today(&conn, "t-a").unwrap(),
+        2,
+        "today only, but a rejection still counts — that loop is why the limit exists"
+    );
+    assert_eq!(
+        drust::mgmt::quota_admin::submits_today(&conn, "t-b").unwrap(),
+        1
+    );
+    assert_eq!(
+        drust::mgmt::quota_admin::submits_today(&conn, "t-nothing").unwrap(),
+        0
+    );
+}
+
+/// One janitor sweeps BOTH queues. Pinning it here is the point: the previous
+/// pass shipped a janitor that swept only the cap queue.
+#[test]
+fn the_janitor_sweeps_both_request_queues_in_one_pass() {
+    let (conn, _d) = plain_meta();
+    conn.execute(
+        "INSERT INTO admins (id, username, password_hash, role) \
+         VALUES (2, 'mem', 'h', 'member')",
+        [],
+    )
+    .unwrap();
+    insert_quota_request(&conn, "t-a", 2, "rejected", "-200 days", Some("-200 days"));
+    conn.execute(
+        "INSERT INTO tenant_cap_requests \
+             (requester_admin_id, requested_cap, status, created_at, \
+              decided_by_admin_id, decided_at) \
+         VALUES (2, 5, 'rejected', datetime('now','-200 days'), 1, datetime('now','-200 days'))",
+        [],
+    )
+    .unwrap();
+
+    let (cap, quota) = drust::mgmt::request_janitor::prune_once(&conn);
+    assert_eq!(cap, 1, "the cap queue is swept");
+    assert_eq!(quota, 1, "and so is the quota queue");
+}
+
+#[test]
+fn quota_env_knobs_have_the_documented_defaults() {
+    assert_eq!(
+        drust::mgmt::quota_admin::request_retention_days(),
+        drust::mgmt::quota_admin::DEFAULT_REQUEST_RETENTION_DAYS
+    );
+    assert_eq!(
+        drust::mgmt::quota_admin::daily_submit_limit(),
+        drust::mgmt::quota_admin::DEFAULT_DAILY_SUBMIT_LIMIT
+    );
+}
+
+/// The 409 only stops two OPEN requests on one tenant; the reject → refile loop
+/// walks straight past it and appends a row per iteration.
+#[tokio::test]
+async fn the_quota_reject_request_loop_is_rate_limited() {
+    let (app, dir, owner, member) = seed().await;
+    let limit = drust::mgmt::quota_admin::daily_submit_limit();
+    assert!(limit > 0, "the default limit must be enforcing");
+
+    for i in 0..limit {
+        let (st, body) = send(
+            &app,
+            "POST",
+            "/admin/tenants/t-member-b/quota/requests",
+            &member,
+            Some(serde_json::json!({"requested_tier": 2 + i})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "attempt {i}: {body}");
+        let id = body["id"].as_i64().unwrap();
+        let (st, body) = send(
+            &app,
+            "POST",
+            &format!("/admin/quota-requests/{id}/decide"),
+            &owner,
+            Some(serde_json::json!({"action": "reject"})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "rejection {i}: {body}");
+    }
+
+    let (st, body) = send(
+        &app,
+        "POST",
+        "/admin/tenants/t-member-b/quota/requests",
+        &member,
+        Some(serde_json::json!({"requested_tier": 2 + limit})),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the request after the day's budget must be refused: {body}"
+    );
+    assert_eq!(body["error_code"], "QUOTA_REQUEST_RATE_LIMITED");
+    assert_eq!(
+        count_quota_requests(&dir),
+        limit,
+        "the rate-limited attempt must not insert"
+    );
+}
+
+/// Keyed on the tenant, so exhausting one tenant's budget must not lock the
+/// same member out of another tenant they own.
+#[tokio::test]
+async fn the_quota_daily_limit_is_per_tenant() {
+    let (app, _dir, owner, member) = seed().await;
+    create_tenant_json(&app, &member, "t-member-c", "GammaCorp").await;
+    let limit = drust::mgmt::quota_admin::daily_submit_limit();
+
+    for i in 0..limit {
+        let (st, body) = send(
+            &app,
+            "POST",
+            "/admin/tenants/t-member-b/quota/requests",
+            &member,
+            Some(serde_json::json!({"requested_tier": 2 + i})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "attempt {i}: {body}");
+        let id = body["id"].as_i64().unwrap();
+        let (st, _) = send(
+            &app,
+            "POST",
+            &format!("/admin/quota-requests/{id}/decide"),
+            &owner,
+            Some(serde_json::json!({"action": "reject"})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+    }
+
+    let (st, _) = send(
+        &app,
+        "POST",
+        "/admin/tenants/t-member-b/quota/requests",
+        &member,
+        Some(serde_json::json!({"requested_tier": 50})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "t-member-b is spent");
+
+    let (st, body) = send(
+        &app,
+        "POST",
+        "/admin/tenants/t-member-c/quota/requests",
+        &member,
+        Some(serde_json::json!({"requested_tier": 2})),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "the other tenant's budget is untouched: {body}"
+    );
+}
+
+/// `remove_admin` deleted the removed admin's `tenant_cap_requests` but not
+/// their `quota_requests`, so the recycled-rowid misattribution that fix was
+/// written for was still live on the other queue.
+///
+/// `admins.id` is `INTEGER PRIMARY KEY` WITHOUT AUTOINCREMENT, so the next
+/// invited teammate inherits the removed admin's id — and
+/// `quota_requests_page` renders the requester by `LEFT JOIN admins a ON a.id =
+/// q.requester_admin_id`. `decide_quota_request` re-validates the TENANT on
+/// approve but never the requester, so on this queue there is no second layer:
+/// the owner would approve a stranger's tier request under the new hire's name.
+#[tokio::test]
+async fn removing_an_admin_takes_their_quota_requests_with_them() {
+    let (app, dir, owner, member) = seed().await;
+    let alice_id = admin_id_of(&dir, "alice@example.com");
+
+    let (st, body) = send(
+        &app,
+        "POST",
+        "/admin/tenants/t-member-b/quota/requests",
+        &member,
+        Some(serde_json::json!({"requested_tier": 5, "reason": "growing"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    assert_eq!(count_quota_requests(&dir), 1);
+
+    let (st, body) = send(
+        &app,
+        "DELETE",
+        &format!("/admin/team/{alice_id}"),
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "remove_admin must succeed: {body}");
+
+    assert_eq!(
+        count_quota_requests(&dir),
+        0,
+        "the orphan must not outlive its author"
+    );
+
+    // And prove the hazard it prevents: the next invited admin really does
+    // inherit the freed rowid.
+    let (bob_id, _bob) = insert_member(&dir, "bob@example.com");
+    assert_eq!(
+        bob_id, alice_id,
+        "SQLite recycles the top rowid — this is why the delete above is mandatory"
+    );
+    let attributed_to_bob: i64 = {
+        let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM quota_requests WHERE requester_admin_id = ?1",
+            params![bob_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        attributed_to_bob, 0,
+        "no queue row may be attributed to the new hire"
+    );
+}

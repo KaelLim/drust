@@ -822,6 +822,27 @@ pub async fn remove_admin(
                 .into_response();
         }
 
+        // 2026-08-02 review — and their QUOTA requests, for the identical
+        // reason. `quota_requests.requester_admin_id` has the same shape (no
+        // FK, plain INTEGER), and `quota_requests_page` renders
+        // `COALESCE(a.email, …)` off a LEFT JOIN on that column: after a rowid
+        // recycle the next invited teammate's address appears as the author of
+        // a stranger's pending tier request. `decide_quota_request`
+        // re-validates the TENANT on approve but never the requester, so there
+        // is no layer 2 on this queue — unlike the cap queue above, deleting
+        // here is the only defence. Both queues or neither: fixing one was the
+        // v1.57/v1.58 bug this repeats.
+        if let Err(e) = tx.execute(
+            "DELETE FROM quota_requests WHERE requester_admin_id = ?1",
+            params![target_id],
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
         if let Err(e) = tx.execute("DELETE FROM admins WHERE id = ?1", params![target_id]) {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,

@@ -67,6 +67,64 @@ fn prune_removes_old_decided_requests_and_keeps_pending() {
     assert_eq!(status, "pending");
 }
 
+/// Same as `insert_request`, but the filing time and the decision time are set
+/// independently — which is the whole point. Every other fixture in this file
+/// creates them at the same instant, which is exactly why the `created_at`
+/// anchor looked correct.
+fn insert_decided_request(
+    conn: &rusqlite::Connection,
+    admin_id: i64,
+    cap: i64,
+    status: &str,
+    filed: &str,
+    decided: &str,
+) {
+    conn.execute(
+        "INSERT INTO tenant_cap_requests \
+             (requester_admin_id, requested_cap, reason, status, created_at, \
+              decided_by_admin_id, decided_at) \
+         VALUES (?1, ?2, 'r', ?3, datetime('now', ?4), 1, datetime('now', ?5))",
+        params![admin_id, cap, status, filed, decided],
+    )
+    .unwrap();
+}
+
+/// Retention is a promise about how long the DECISION is kept, so the clock
+/// starts at `decided_at`.
+///
+/// A pending request is never auto-pruned and drust has no mail transport, so
+/// the queue only surfaces when an owner opens it — months of pending is a
+/// normal state, not a pathological one. Anchored on `created_at`, a request
+/// filed 135 days ago and rejected this morning was destroyed by the next 03:00
+/// pass: zero retention where the knob promises 90 days, and on the approve
+/// side a permanently raised `tenant_cap_bonus` with no queue record of who
+/// granted it or why.
+#[test]
+fn retention_runs_from_the_decision_not_the_filing() {
+    let (conn, _d) = setup();
+    insert_decided_request(&conn, 2, 5, "rejected", "-135 days", "-0 days");
+    insert_decided_request(&conn, 2, 6, "approved", "-400 days", "-1 days");
+
+    assert_eq!(
+        tenant_cap::prune_decided_requests(&conn, 90).unwrap(),
+        0,
+        "both were decided within the last 90 days — the filing date is not the clock"
+    );
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tenant_cap_requests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 2);
+}
+
+/// The other half of the same anchor: once the DECISION is older than the
+/// window the row goes, however recently it was filed.
+#[test]
+fn retention_prunes_once_the_decision_itself_is_old() {
+    let (conn, _d) = setup();
+    insert_decided_request(&conn, 2, 5, "rejected", "-400 days", "-91 days");
+    assert_eq!(tenant_cap::prune_decided_requests(&conn, 90).unwrap(), 1);
+}
+
 #[test]
 fn prune_keeps_decided_rows_inside_the_window() {
     let (conn, _d) = setup();
@@ -319,6 +377,51 @@ async fn the_request_reject_request_loop_is_rate_limited() {
         .query_row("SELECT COUNT(*) FROM tenant_cap_requests", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, limit, "the rate-limited attempt must not insert");
+}
+
+/// End-to-end version of `retention_runs_from_the_decision_not_the_filing`: the
+/// `decided_at` the janitor reads is the one `decide_cap_request` actually
+/// writes, not one a fixture invented.
+#[tokio::test]
+async fn a_long_pending_request_keeps_its_full_retention_after_a_decision() {
+    let (app, dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    let (_mid, member) = insert_member(&dir, "alice@example.com");
+
+    let (st, body) = send(
+        &app,
+        "POST",
+        "/admin/tenant-cap/requests",
+        &member,
+        Some(serde_json::json!({"requested_cap": tenant_cap::configured_default() + 1})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let req_id = body["id"].as_i64().unwrap();
+
+    // The owner does not open the review queue for 135 days.
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.execute(
+        "UPDATE tenant_cap_requests SET created_at = datetime('now', '-135 days') WHERE id = ?1",
+        params![req_id],
+    )
+    .unwrap();
+
+    let (st, body) = send(
+        &app,
+        "POST",
+        &format!("/admin/tenant-cap-requests/{req_id}/decide"),
+        &owner,
+        Some(serde_json::json!({"action": "reject"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+
+    assert_eq!(
+        tenant_cap::prune_decided_requests(&conn, 90).unwrap(),
+        0,
+        "a decision made minutes ago must survive a 90-day retention pass"
+    );
 }
 
 /// The limit is per-admin: one member exhausting the day must not lock another

@@ -152,15 +152,47 @@ next invited teammate could otherwise inherit an orphaned request.
 A `quota_tier` change **must** evict the tenant's auth-cache entries. A `tenant_cap_bonus`
 change must not — it never rides the bearer CTE.
 
-`tenant_cap_requests` is bounded on both ends. Inbound: the one-pending-per-admin 409 plus a
-per-admin daily budget (`DRUST_TENANT_CAP_DAILY_SUBMIT_LIMIT`, default 5; `0` unlimited) that
-counts **decided rows too**, because the loop it exists to stop is request → rejected →
-request; over budget is `429 CAP_REQUEST_RATE_LIMITED`, and an unreadable count fails closed.
-Outbound: `tenant_cap::spawn_request_retention_task` prunes **decided** rows older than
-`DRUST_TENANT_CAP_REQUEST_RETENTION_DAYS` (default 90; `0` keeps forever) at boot and daily at
-03:00 UTC. **`pending` rows are never auto-pruned** — a pending request is open work, and it is
-already bounded by the 409. The prune is its own task and not a call inside
+## Admin request queues
+
+There are **two**, same shape, and every lifetime rule below applies to both — the cap queue
+was written from the quota one, and each round of "fix the request queue" that touched only
+one left a live hole in the other.
+
+| Table | Subject | Pending gate keyed on |
+|---|---|---|
+| `tenant_cap_requests` | an admin's tenant allowance | the **admin** (`409 TENANT_CAP_REQUEST_PENDING`) |
+| `quota_requests` | a tenant's storage tier | the **tenant** (`409 QUOTA_REQUEST_PENDING`) |
+
+**Inbound**: the 409 stops two *open* requests at once, never the request → rejected →
+request loop. A daily budget does that — `DRUST_TENANT_CAP_DAILY_SUBMIT_LIMIT` /
+`DRUST_QUOTA_DAILY_SUBMIT_LIMIT` (both default 5; `0` unlimited), each keyed like its own
+409, each counting **decided rows too** (a rejection is what the loop produces), each
+`429 …_RATE_LIMITED`, each failing **closed** on an unreadable count.
+
+**Outbound**: `request_janitor::spawn_request_retention_task` sweeps both at boot and daily
+at 03:00 UTC, deleting **decided** rows older than
+`DRUST_TENANT_CAP_REQUEST_RETENTION_DAYS` / `DRUST_QUOTA_REQUEST_RETENTION_DAYS` (default 90;
+`0` keeps forever). It is one task over both queues on purpose: a janitor named after one
+table is how the other gets forgotten. It is also its own task and not a call inside
 `record_history::spawn_retention_task`, which returns early when its own knob is `0`.
+
+> [!CAUTION]
+> Retention is measured from **`COALESCE(decided_at, created_at)`**, never `created_at`.
+> drust has no mail transport, so a request surfaces only when an owner opens the queue and
+> can sit pending for months. Anchored on `created_at`, a request filed 135 days ago and
+> decided this morning is destroyed by the next 03:00 pass — zero retention where the knob
+> says 90 days, and for an approval that leaves a raised allowance with no record of who
+> granted it.
+
+**`pending` rows are never auto-pruned** — open work, not a record.
+
+**Nothing may outlive the id it points at.** Both queues carry a bare `requester_admin_id`
+with no FK, and `admins.id` is `INTEGER PRIMARY KEY` *without* AUTOINCREMENT, so `remove_admin`
+deletes the removed admin's rows in **both** tables or the next invited teammate inherits the
+rowid and the review page renders their address as the author. Tenant ids are caller-supplied
+and explicitly recyclable, so the id-recycle hard purge in `mgmt::tenants::crud` deletes that
+tenant's `quota_requests` too — `decide_quota_request` resolves the stored `tenant_id` live,
+so a survivor would raise the *new* tenant's tier.
 
 ## Provenance
 

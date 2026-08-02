@@ -38,6 +38,100 @@ use crate::mgmt::theme::{ResolvedPalette, ThemeHint, ThemeRenderCtx};
 /// stays sane; the UI never offers more than a handful).
 const MAX_TIER: i64 = 1000;
 
+// ─── request retention + submit rate limit (2026-08-02 review) ───────────────
+//
+// The parallel of `tenant_cap`'s pair, and the reason that pair exists at all:
+// `create_cap_request` was written from this handler. The cap queue got both
+// bounds first; this queue is strictly MORE exposed and had neither, because
+// its pending gate is keyed on the TENANT — a member at the default cap of 3
+// holds 3 concurrent pending rows, so one reject/refile cycle appends 3.
+
+/// Days a DECIDED quota request is kept before the daily janitor prunes it.
+/// `0` = keep forever. Pending requests are never auto-pruned.
+pub const DEFAULT_REQUEST_RETENTION_DAYS: i64 = 90;
+
+/// Quota requests one TENANT may accumulate per UTC day. `0` = unlimited.
+///
+/// Keyed on the tenant, not the admin, to match the one-pending-per-tenant gate
+/// exactly: the row is about a tenant, the 409 is about a tenant, so the budget
+/// is about a tenant. A per-admin key would instead punish an `owner`/`admin`,
+/// who sees every tenant and may legitimately file for many in one day.
+pub const DEFAULT_DAILY_SUBMIT_LIMIT: i64 = 5;
+
+/// Retention for decided rows, from `DRUST_QUOTA_REQUEST_RETENTION_DAYS`. Same
+/// `env_or` posture as the cap queue: unparseable or out-of-range → default,
+/// never clamped, so a typo cannot silently mean "prune everything".
+pub fn request_retention_days() -> i64 {
+    std::env::var("DRUST_QUOTA_REQUEST_RETENTION_DAYS")
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|v| (0..=36_500).contains(v))
+        .unwrap_or(DEFAULT_REQUEST_RETENTION_DAYS)
+}
+
+/// Per-tenant daily submit budget, from `DRUST_QUOTA_DAILY_SUBMIT_LIMIT`.
+pub fn daily_submit_limit() -> i64 {
+    std::env::var("DRUST_QUOTA_DAILY_SUBMIT_LIMIT")
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|v| (0..=1_000).contains(v))
+        .unwrap_or(DEFAULT_DAILY_SUBMIT_LIMIT)
+}
+
+/// Prune decided (`approved`/`rejected`) requests older than `days`, measured
+/// from the DECISION. Returns the number of rows removed.
+///
+/// Verbatim the cap queue's contract, including both of its edge readings:
+/// `days <= 0` keeps everything (`0` is "keep forever"; a negative is a caller
+/// bug, and deleting the table is the worst possible reading of one), and
+/// `pending` rows are never touched because a pending request is open work.
+///
+/// Anchored on `COALESCE(decided_at, created_at)`, never `created_at` alone: a
+/// request that sat pending past the window would otherwise be destroyed by the
+/// first pass after it was decided.
+pub fn prune_decided_requests(conn: &rusqlite::Connection, days: i64) -> rusqlite::Result<usize> {
+    if days <= 0 {
+        return Ok(0);
+    }
+    conn.execute(
+        "DELETE FROM quota_requests \
+         WHERE status IN ('approved','rejected') \
+           AND COALESCE(decided_at, created_at) < datetime('now', ?1)",
+        rusqlite::params![format!("-{days} days")],
+    )
+}
+
+/// Requests filed against this tenant today (UTC), whatever their status.
+///
+/// Decided rows count: the loop this bounds is request → rejected → request, so
+/// counting only the pending one would make the limit unreachable.
+pub fn submits_today(conn: &rusqlite::Connection, tenant_id: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM quota_requests \
+         WHERE tenant_id = ?1 AND date(created_at) = date('now')",
+        rusqlite::params![tenant_id],
+        |r| r.get(0),
+    )
+}
+
+/// Drop every request filed against `tenant_id`, in the caller's transaction.
+///
+/// Called from the id-recycle hard purge in `mgmt::tenants::crud`. That branch
+/// deletes the soft-deleted tenant's row and tokens and hands the id to a NEW
+/// tenant — and `decide_quota_request` resolves a request by its stored
+/// `tenant_id` string, so a surviving pending row would apply the old tenant's
+/// requested tier to the new one. The ids are caller-supplied and reusable by
+/// design, which is exactly why nothing may outlive them.
+pub fn delete_requests_for_tenant(
+    conn: &rusqlite::Connection,
+    tenant_id: &str,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM quota_requests WHERE tenant_id = ?1",
+        rusqlite::params![tenant_id],
+    )
+}
+
 // ─── member: file an upgrade request ─────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
@@ -139,6 +233,32 @@ pub async fn create_quota_request(
                 "QUOTA_REQUEST_PENDING",
                 "a pending upgrade request already exists for this tenant",
             );
+        }
+
+        // 2026-08-02 review — the 409 above only stops two OPEN requests on one
+        // tenant; it does nothing about request → rejected → request, which
+        // appends a row per iteration. Count today's rows for this tenant
+        // instead, so a rejection still costs budget. A read failure fails
+        // CLOSED: an unreadable count is not evidence that there is room left.
+        let limit = daily_submit_limit();
+        if limit > 0 {
+            match submits_today(&conn, &tid) {
+                Ok(n) if n >= limit => {
+                    return json_error(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "QUOTA_REQUEST_RATE_LIMITED",
+                        &format!("at most {limit} quota requests per day for one tenant"),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "DB_ERROR",
+                        &e.to_string(),
+                    );
+                }
+            }
         }
 
         if let Err(e) = conn.execute(

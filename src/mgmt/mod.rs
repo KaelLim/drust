@@ -18,6 +18,7 @@ pub mod metrics;
 pub mod oauth_login;
 pub mod public_files;
 pub mod quota_admin;
+pub mod request_janitor;
 pub mod routes;
 pub mod rpc_admin;
 pub mod script_json;

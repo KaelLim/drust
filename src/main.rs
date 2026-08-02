@@ -566,14 +566,14 @@ async fn main() -> anyhow::Result<()> {
         cfg.data_dir.clone(),
     ));
 
-    // v1.58 (#920) — tenant-cap request retention. Boot pass + daily at 03:00
-    // UTC, deleting DECIDED rows older than
-    // DRUST_TENANT_CAP_REQUEST_RETENTION_DAYS (default 90; 0 keeps forever).
-    // Pending rows are left alone — they are open work, and the
-    // one-pending-per-admin rule already bounds them. Its own task rather than
-    // a call inside the record-history janitor, which returns early when its
-    // own retention knob is 0.
-    tokio::spawn(drust::mgmt::tenant_cap::spawn_request_retention_task(
+    // v1.58 (#920) — admin request-queue retention: BOTH `tenant_cap_requests`
+    // and `quota_requests`. Boot pass + daily at 03:00 UTC, deleting DECIDED
+    // rows older than each queue's knob (default 90; 0 keeps forever), measured
+    // from the decision. Pending rows are left alone — they are open work, and
+    // each queue's pending gate already bounds them. Its own task rather than a
+    // call inside the record-history janitor, which returns early when its own
+    // retention knob is 0.
+    tokio::spawn(drust::mgmt::request_janitor::spawn_request_retention_task(
         meta.clone(),
     ));
 
