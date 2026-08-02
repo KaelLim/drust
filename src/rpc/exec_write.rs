@@ -251,7 +251,13 @@ pub fn execute_one(
 }
 
 fn classify(err: rusqlite::Error, statement_index: usize) -> RpcStatementError {
-    let msg = err.to_string();
+    // `sqlite_error_without_sql`, NOT `to_string()` — the write-arm twin of
+    // the read executor's classify. `RpcStatementError.message` is returned
+    // verbatim to the caller by `rpc/handler.rs` ("statement N failed: …"),
+    // and a write-mode RPC can be `anon_callable` too, so a prepare failure's
+    // `SqlInputError` Display would publish the stored UPDATE/DELETE body to
+    // an unauthenticated caller. See `crate::error::sqlite_error_without_sql`.
+    let msg = crate::error::sqlite_error_without_sql(&err);
     let lc = msg.to_lowercase();
     // "not authorized" is a substring of "authoriz" + "ed" — keep the
     // two distinct phrasings the codepath actually emits (drust's
@@ -701,6 +707,79 @@ mod tests {
             }));
             assert!(result.is_ok(), "execute_one panicked on: {sql:?}");
         }
+    }
+
+    /// v1.58 — the WRITE arm of the stored-RPC SQL leak (twin of
+    /// `a_prepare_failure_never_carries_the_stored_rpc_body` in
+    /// `query::executor`). A write-mode RPC can be `anon_callable` too, and
+    /// `rpc/handler.rs` returns `RpcStatementError.message` to that caller as
+    /// "statement N failed: …". A prepare failure's `SqlInputError` Display
+    /// embeds the whole UPDATE, so the stored body reached anon.
+    #[test]
+    fn statement_error_never_carries_the_stored_statement() {
+        use crate::rpc::params::BoundValue;
+        use std::collections::BTreeMap;
+        const SECRET: &str = "ts_7ab19";
+        let d = tempfile::tempdir().unwrap();
+        let conn = crate::storage::tenant_db::open_write(d.path(), "leak").unwrap();
+        conn.execute_batch("CREATE TABLE metrics (n INTEGER, tenant_secret TEXT);")
+            .unwrap();
+
+        let mut binds: BTreeMap<String, BoundValue> = BTreeMap::new();
+        binds.insert("d".into(), BoundValue::Text("2026-08-02".into()));
+        // `day` was dropped after the RPC was stored; the credential was not.
+        let e = execute_one(
+            &conn,
+            "UPDATE metrics SET n = n + 1 WHERE tenant_secret = 'ts_7ab19' AND day = :d",
+            &binds,
+            1,
+        )
+        .unwrap_err();
+
+        assert!(
+            !e.message.contains(SECRET),
+            "hardcoded credential leaked to the caller: {}",
+            e.message
+        );
+        assert!(
+            !e.message.contains("UPDATE metrics"),
+            "stored RPC body leaked to the caller: {}",
+            e.message
+        );
+        assert!(
+            e.message.contains("no such column"),
+            "the diagnostic must survive the redaction: {}",
+            e.message
+        );
+        assert!(
+            !e.authorizer_denied,
+            "schema drift is not an authorizer denial: {}",
+            e.message
+        );
+    }
+
+    /// Same guard as the read arm: `classify` reads the redacted text now, so
+    /// prove a real authorizer denial still sets `authorizer_denied` (which is
+    /// what makes the handler emit `INVALID_SQL_FOR_MODE`).
+    #[test]
+    fn authorizer_denial_still_flags_after_redaction() {
+        use crate::rpc::params::BoundValue;
+        use std::collections::BTreeMap;
+        let d = tempfile::tempdir().unwrap();
+        let conn = crate::storage::tenant_db::open_write(d.path(), "denied").unwrap();
+        conn.execute_batch("CREATE TABLE metrics (n INTEGER);")
+            .unwrap();
+        let binds: BTreeMap<String, BoundValue> = BTreeMap::new();
+
+        crate::query::authorizer::attach_writable_authorizer(&conn);
+        let e = execute_one(&conn, "DROP TABLE metrics", &binds, 1).unwrap_err();
+        crate::query::authorizer::detach_authorizer(&conn);
+
+        assert!(
+            e.authorizer_denied,
+            "DDL under the writable authorizer must stay INVALID_SQL_FOR_MODE: {}",
+            e.message
+        );
     }
 
     #[test]

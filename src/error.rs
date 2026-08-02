@@ -50,6 +50,40 @@ pub fn is_quota_exceeded(e: &rusqlite::Error) -> bool {
     e.to_string().contains("TENANT_QUOTA_EXCEEDED")
 }
 
+/// Stringify a rusqlite error WITHOUT the SQL text the error may embed.
+///
+/// rusqlite returns `Error::SqlInputError { msg, sql, offset }` whenever
+/// `sqlite3_prepare_v3` fails with a code that maps to `ErrorCode::Unknown`
+/// (i.e. plain `SQLITE_ERROR`: syntax error, `no such column`, `no such
+/// table` — exactly what schema drift produces on a statement that was valid
+/// when it was stored) and `sqlite3_error_offset` is non-negative. Its
+/// `Display` is `"{msg} in {sql} at offset {offset}"` — **the whole failing
+/// statement, verbatim, string literals included**.
+///
+/// That statement is not the caller's to see. A stored RPC body is tenant
+/// CONFIGURATION: `redact_rpc_obj` strips `sql` from the `rpcs` MCP resource
+/// and `redact_cron` strips the same text back out of the cron resource's
+/// `last_error`, both on purpose — yet an `anon_callable` RPC over a
+/// collection that has since lost a field would hand an UNAUTHENTICATED
+/// caller the entire body, hardcoded credentials and all, inside the 400 it
+/// returns. So every rusqlite error crossing an executor boundary is
+/// stringified through here instead of `to_string()`.
+///
+/// `msg` + `offset` survive, so the operator still reads "no such column:
+/// status at offset 63" and a service caller can fetch the body back with
+/// `list_rpc` — an explicit, authorized call.
+///
+/// Authorizer denials are unaffected: `SQLITE_AUTH` maps to
+/// `ErrorCode::AuthorizationForStatementDenied`, never `Unknown`, so they
+/// arrive as `SqliteFailure` ("not authorized" / "access to X.Y is
+/// prohibited") and pass through byte-identical.
+pub fn sqlite_error_without_sql(e: &rusqlite::Error) -> String {
+    match e {
+        rusqlite::Error::SqlInputError { msg, offset, .. } => format!("{msg} at offset {offset}"),
+        other => other.to_string(),
+    }
+}
+
 /// Canonical JSON error response. v1.26: auto-attaches `suggested_fix`
 /// from the static catalog when the code is known. Unknown codes
 /// produce a body without the field (omitted via JSON `Option` shape —
@@ -129,6 +163,65 @@ pub fn json_error_with_aliases(
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+
+    /// v1.58 — the SQL a prepare failure embeds must not survive
+    /// stringification. Also PINS the upstream behavior the helper exists for:
+    /// if a future rusqlite stops embedding the statement, the second assert
+    /// fires and the guard can be retired deliberately rather than rotting.
+    #[test]
+    fn sqlite_error_without_sql_strips_the_statement_rusqlite_embeds() {
+        const SECRET: &str = "sk-live-9f2c";
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE events (api_key TEXT);")
+            .unwrap();
+        // Shape of a stored RPC body after the collection lost a field.
+        let sql = "SELECT 1 FROM events WHERE api_key = 'sk-live-9f2c' AND status = 'ok'";
+        let e = c.prepare(sql).unwrap_err();
+        assert!(
+            matches!(e, rusqlite::Error::SqlInputError { .. }),
+            "prepare failure must still be SqlInputError: {e:?}"
+        );
+        assert!(
+            e.to_string().contains(SECRET),
+            "to_string() must still be the leaky one, else this helper is dead code: {e}"
+        );
+
+        let safe = sqlite_error_without_sql(&e);
+        assert!(
+            !safe.contains(SECRET),
+            "credential survived redaction: {safe}"
+        );
+        assert!(
+            !safe.contains("SELECT 1 FROM events"),
+            "statement survived redaction: {safe}"
+        );
+        assert!(
+            safe.contains("no such column: status"),
+            "the diagnostic must survive: {safe}"
+        );
+    }
+
+    /// Every other variant passes through byte-identical — `is_check_violation`,
+    /// `is_quota_exceeded` and the several `contains("no such table")` reader
+    /// tolerances all read `SqliteFailure` messages.
+    #[test]
+    fn sqlite_error_without_sql_passes_non_prepare_errors_through() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE t (n INTEGER CHECK(n >= 0));")
+            .unwrap();
+        let e = c.execute("INSERT INTO t(n) VALUES (-1)", []).unwrap_err();
+        assert_eq!(sqlite_error_without_sql(&e), e.to_string());
+        let sentinel =
+            quota_exceeded_error(crate::storage::quota::QuotaError::TenantQuotaExceeded {
+                usage: 1,
+                incoming: 0,
+                limit: 0,
+            });
+        assert!(
+            sqlite_error_without_sql(&sentinel).contains("TENANT_QUOTA_EXCEEDED"),
+            "the drust sentinel prefix must survive — 507 mapping reads it"
+        );
+    }
 
     #[test]
     fn is_check_violation_distinguishes_check_from_unique_on_check_named_col() {

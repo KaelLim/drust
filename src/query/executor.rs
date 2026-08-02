@@ -269,11 +269,26 @@ fn execute_read_query_with_named_inner(
 }
 
 fn classify(err: rusqlite::Error) -> ExecError {
-    let msg = err.to_string().to_lowercase();
+    // `sqlite_error_without_sql`, NOT `to_string()`: a prepare failure comes
+    // back as `SqlInputError`, whose Display embeds the WHOLE failing
+    // statement. This executor runs STORED RPC bodies, and `call_rpc` admits
+    // anon/user on an `anon_callable` RPC — so `to_string()` here publishes a
+    // tenant's RPC body (literals included) to an unauthenticated caller
+    // through the 400 that `handler.rs` builds from this string. Same text the
+    // `rpcs` / `cron` MCP resources are redacted to withhold from a SERVICE
+    // caller. See `crate::error::sqlite_error_without_sql`.
+    let text = crate::error::sqlite_error_without_sql(&err);
+    let msg = text.to_lowercase();
     // drust's authorizer surfaces its own "prohibited" phrasing (see
     // `src/query/authorizer.rs`); rusqlite's authorizer-reject uses "not
     // authorized". Accept both plus any message that references the
     // sqlite_master family (those are always authorizer hits).
+    //
+    // Classifying on the REDACTED text is also the more correct routing: an
+    // authorizer denial is `SqliteFailure` (SQLITE_AUTH), so it never carried
+    // an SQL body to begin with, whereas the old full-Display match promoted
+    // any plain SQL error whose *statement text* happened to mention
+    // `sqlite_master` into a 403.
     if msg.contains("authoriz")
         || msg.contains("not authorized")
         || msg.contains("prohibited")
@@ -281,9 +296,9 @@ fn classify(err: rusqlite::Error) -> ExecError {
         || msg.contains("sqlite_temp_master")
         || msg.contains("sqlite_schema")
     {
-        return ExecError::Forbidden(err.to_string());
+        return ExecError::Forbidden(text);
     }
-    ExecError::Sql(err.to_string())
+    ExecError::Sql(text)
 }
 
 #[cfg(test)]
@@ -439,5 +454,76 @@ mod named_tests {
              INSERT INTO posts (body, n) VALUES ('a', 1), ('b', 2), ('c', 3);",
         )
         .unwrap();
+    }
+
+    /// v1.58 — the READ arm of the stored-RPC SQL leak.
+    ///
+    /// `call_rpc` admits Anon on an `anon_callable` RPC and runs its body
+    /// through this executor. When the collection later loses a field the
+    /// `conn.prepare` fails with `SqlInputError`, whose Display embeds the
+    /// WHOLE statement — and `rpc/handler.rs` hands `ExecError`'s Display
+    /// straight to `json_error` with no role-based scrubbing. So an
+    /// unauthenticated caller received the RPC body, hardcoded credentials
+    /// included: the very text `redact_rpc_obj` strips from the `rpcs`
+    /// resource for a SERVICE caller.
+    #[test]
+    fn a_prepare_failure_never_carries_the_stored_rpc_body() {
+        const SECRET: &str = "sk-live-9f2c";
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE events (id INTEGER PRIMARY KEY, api_key TEXT);")
+            .unwrap();
+
+        let sql = "SELECT count(*) FROM events WHERE api_key = 'sk-live-9f2c' AND status = :st";
+        let mut binds = BTreeMap::new();
+        binds.insert(
+            "st".into(),
+            crate::rpc::params::BoundValue::Text("ok".into()),
+        );
+        let err = execute_read_query_with_named(&conn, sql, &binds, 100, 32_768).unwrap_err();
+
+        // `wire` is verbatim the `message` an anon caller reads out of the
+        // 400 SQL_ERROR body (rpc/handler.rs `ExecError::Sql` arm).
+        let wire = err.to_string();
+        assert!(
+            !wire.contains(SECRET),
+            "hardcoded credential leaked to the caller: {wire}"
+        );
+        assert!(
+            !wire.contains("SELECT count(*)"),
+            "stored RPC body leaked to the caller: {wire}"
+        );
+        assert!(
+            wire.contains("no such column"),
+            "the diagnostic must survive the redaction: {wire}"
+        );
+        assert!(
+            matches!(err, ExecError::Sql(_)),
+            "schema drift stays a 400 SQL_ERROR, not a 403: {err:?}"
+        );
+    }
+
+    /// Guards the other half of the same edit: `classify` now routes on the
+    /// REDACTED text, so an authorizer denial must still classify as
+    /// `Forbidden`. It does, because `SQLITE_AUTH` maps to
+    /// `AuthorizationForStatementDenied`, never `Unknown` — so it arrives as
+    /// `SqliteFailure` and was never carrying SQL in the first place.
+    #[test]
+    fn an_authorizer_denial_is_still_forbidden_after_redaction() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE _system_secrets (v TEXT);")
+            .unwrap();
+        let binds = BTreeMap::new();
+        let err = execute_read_query_with_named(
+            &conn,
+            "SELECT v FROM _system_secrets",
+            &binds,
+            100,
+            32_768,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ExecError::Forbidden(_)),
+            "a protected-table read must stay a 403 QUERY_FORBIDDEN: {err:?}"
+        );
     }
 }
