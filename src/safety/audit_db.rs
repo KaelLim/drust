@@ -42,8 +42,14 @@ CREATE TABLE IF NOT EXISTS _meta (
 ) STRICT;
 ";
 
+// `journal_size_limit` caps the WAL file after a checkpoint. Without it a
+// single full rewrite of the audit DB (the monthly VACUUM) leaves a WAL as
+// large as the database itself sitting on disk forever — 1.5 GB was measured
+// on the live host. Must come after `journal_mode = WAL`. 67108864 = 64 MiB;
+// `write_conn_caps_the_wal_size` pins the effective value.
 const PRAGMAS_WRITE: &str = "
 PRAGMA journal_mode = WAL;
+PRAGMA journal_size_limit = 67108864;
 PRAGMA synchronous = NORMAL;
 PRAGMA busy_timeout = 5000;
 PRAGMA foreign_keys = OFF;
@@ -420,16 +426,23 @@ async fn writer_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriterCmd>) {
                             if !buf.is_empty() {
                                 flush(&mut conn, &mut buf);
                             }
-                            run_retention(&mut conn, cutoff_ts.as_deref(), vacuum);
+                            let mut deferred_meta: Vec<(String, String)> = Vec::new();
+                            run_retention_pass(
+                                &mut conn,
+                                &mut rx,
+                                &mut buf,
+                                &mut deferred_meta,
+                                cutoff_ts.as_deref(),
+                                vacuum,
+                            )
+                            .await;
+                            for (key, value) in deferred_meta.drain(..) {
+                                set_meta(&conn, &key, &value);
+                            }
                             break;
                         }
                         Some(WriterCmd::SetMeta { key, value }) => {
-                            if let Err(e) = conn.execute(
-                                "INSERT OR REPLACE INTO _meta(key, value) VALUES (?1, ?2)",
-                                rusqlite::params![key, value],
-                            ) {
-                                tracing::warn!(error = %e, key = %key, "audit: _meta write failed");
-                            }
+                            set_meta(&conn, &key, &value);
                         }
                         None => {
                             // channel closed — drain and exit (shutdown path)
@@ -498,20 +511,189 @@ fn flush(conn: &mut Connection, buf: &mut Vec<crate::safety::audit::AuditEntry>)
     }
 }
 
-fn run_retention(conn: &mut Connection, cutoff_ts: Option<&str>, vacuum: bool) {
+/// Rows removed per retention DELETE statement. The audit DB is ~1.6 GB /
+/// 6M rows on the live host, so one unbounded `DELETE FROM audit WHERE ts < ?`
+/// blocks the writer task for seconds — long enough to fill the bounded
+/// command channel and silently drop inbound audit rows.
+pub const RETENTION_DELETE_CHUNK: usize = 10_000;
+
+/// Delete at most `chunk` expired rows. Returns how many went; `0` means the
+/// cutoff is exhausted.
+///
+/// `DELETE ... LIMIT` needs `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`, which the
+/// bundled build does not guarantee, so this bounds the delete through a rowid
+/// subquery instead — same semantics, no compile-flag dependency.
+pub fn delete_expired_chunk(
+    conn: &Connection,
+    cutoff: &str,
+    chunk: usize,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM audit WHERE rowid IN \
+         (SELECT rowid FROM audit WHERE ts < ?1 LIMIT ?2)",
+        params![cutoff, chunk as i64],
+    )
+}
+
+fn run_vacuum(conn: &Connection) {
+    if let Err(e) = conn.execute("VACUUM", []) {
+        tracing::error!(err=?e, "audit VACUUM");
+    } else {
+        tracing::info!("audit VACUUM complete");
+    }
+}
+
+fn set_meta(conn: &Connection, key: &str, value: &str) {
+    if let Err(e) = conn.execute(
+        "INSERT OR REPLACE INTO _meta(key, value) VALUES (?1, ?2)",
+        rusqlite::params![key, value],
+    ) {
+        tracing::warn!(error = %e, key = %key, "audit: _meta write failed");
+    }
+}
+
+/// Park a command that arrived while a retention pass was in progress.
+///
+/// Inserts buffer in memory. `SetMeta` is *deferred*, not dropped: the
+/// retention task sends `last_vacuum_ts` immediately after the retention
+/// command, so swallowing it would silently re-VACUUM every single day. A
+/// second `RunRetention` while one is already running is redundant.
+fn stash_cmd(
+    cmd: WriterCmd,
+    buf: &mut Vec<crate::safety::audit::AuditEntry>,
+    deferred_meta: &mut Vec<(String, String)>,
+) {
+    match cmd {
+        WriterCmd::Insert(e) => buf.push(e),
+        WriterCmd::SetMeta { key, value } => deferred_meta.push((key, value)),
+        WriterCmd::RunRetention { .. } => {
+            tracing::warn!("audit: retention requested while a pass is running; skipped");
+        }
+    }
+}
+
+/// Throwaway in-memory connection held by the writer while the real one is on
+/// a blocking thread for the VACUUM. `open_audit_db_memory` is test/debug-only,
+/// so the release build needs its own. Nothing is written to it on the normal
+/// path — it exists only so `conn` is never uninitialised — but it carries the
+/// schema anyway so the degraded path (VACUUM task lost the connection *and*
+/// the reopen failed) logs one loud error instead of one per flush.
+fn placeholder_conn() -> rusqlite::Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch(SCHEMA_SQL)?;
+    Ok(conn)
+}
+
+/// VACUUM cannot be chunked and rewrites the whole file — tens of seconds on
+/// the live 1.6 GB audit DB. Run it on a blocking thread and keep receiving
+/// into `buf` for its duration, so the loss point moves from a bounded channel
+/// to memory (a few thousand entries at the observed rate).
+async fn run_vacuum_offloaded(
+    conn: &mut Connection,
+    rx: &mut mpsc::Receiver<WriterCmd>,
+    buf: &mut Vec<crate::safety::audit::AuditEntry>,
+    deferred_meta: &mut Vec<(String, String)>,
+) {
+    // Captured before the move so the connection can be rebuilt if the
+    // blocking task never gives it back.
+    let db_path = conn
+        .path()
+        .map(|p| p.to_string())
+        .filter(|p| !p.is_empty() && p != ":memory:");
+    let placeholder = match placeholder_conn() {
+        Ok(c) => c,
+        Err(e) => {
+            // Cannot park the real connection safely — VACUUM inline rather
+            // than skip it. Blocks the loop, i.e. pre-v1.58 behaviour, but
+            // only in a case that does not happen in practice.
+            tracing::error!(err=?e, "audit VACUUM: placeholder connection failed, running inline");
+            run_vacuum(conn);
+            return;
+        }
+    };
+    let owned = std::mem::replace(conn, placeholder);
+    let handle = tokio::task::spawn_blocking(move || {
+        run_vacuum(&owned);
+        owned
+    });
+    tokio::pin!(handle);
+    loop {
+        tokio::select! {
+            biased;
+            joined = &mut handle => {
+                match joined {
+                    Ok(c) => *conn = c,
+                    Err(e) => {
+                        // `run_vacuum` swallows rusqlite errors, so reaching
+                        // here means the blocking task panicked or was
+                        // cancelled and took the connection with it. Rebuild
+                        // it — otherwise the writer keeps the throwaway
+                        // in-memory placeholder for the rest of the process
+                        // lifetime and every later audit row is lost.
+                        tracing::error!(err=?e, "audit VACUUM task did not return the connection");
+                        match db_path.as_deref().map(std::path::Path::new).map(open_audit_db_write) {
+                            Some(Ok(c)) => {
+                                *conn = c;
+                                tracing::info!("audit writer reopened the audit DB");
+                            }
+                            Some(Err(e2)) => tracing::error!(
+                                err=?e2,
+                                "audit writer could not reopen the audit DB; \
+                                 audit rows are lost until restart"
+                            ),
+                            None => tracing::error!(
+                                "audit writer has no on-disk path to reopen; \
+                                 audit rows are lost until restart"
+                            ),
+                        }
+                    }
+                }
+                break;
+            }
+            Some(cmd) = rx.recv() => stash_cmd(cmd, buf, deferred_meta),
+        }
+    }
+}
+
+/// One retention pass, restructured so the writer task never stops draining.
+///
+/// The DELETE is chunked and yields between chunks; the VACUUM cannot be
+/// chunked, so it is offloaded and inbound entries buffer in memory across it.
+/// Both halves used to run to completion inside the `select!` arm that owns
+/// `rx.recv()`, which is what dropped rows.
+async fn run_retention_pass(
+    conn: &mut Connection,
+    rx: &mut mpsc::Receiver<WriterCmd>,
+    buf: &mut Vec<crate::safety::audit::AuditEntry>,
+    deferred_meta: &mut Vec<(String, String)>,
+    cutoff_ts: Option<&str>,
+    vacuum: bool,
+) {
     match cutoff_ts {
-        Some(cutoff) => match conn.execute("DELETE FROM audit WHERE ts < ?1", params![cutoff]) {
-            Ok(n) => tracing::info!(deleted = n, cutoff = %cutoff, "audit retention"),
-            Err(e) => tracing::error!(err=?e, "audit retention DELETE"),
-        },
+        Some(cutoff) => {
+            let mut total = 0usize;
+            loop {
+                match delete_expired_chunk(conn, cutoff, RETENTION_DELETE_CHUNK) {
+                    Ok(0) => break,
+                    Ok(n) => total += n,
+                    Err(e) => {
+                        tracing::error!(err=?e, "audit retention DELETE");
+                        break;
+                    }
+                }
+                // Absorb whatever queued up while that chunk ran, then give
+                // the runtime a turn.
+                while let Ok(cmd) = rx.try_recv() {
+                    stash_cmd(cmd, buf, deferred_meta);
+                }
+                tokio::task::yield_now().await;
+            }
+            tracing::info!(deleted = total, cutoff = %cutoff, "audit retention");
+        }
         None => tracing::info!("audit retention: DELETE skipped (retention disabled)"),
     }
     if vacuum {
-        if let Err(e) = conn.execute("VACUUM", []) {
-            tracing::error!(err=?e, "audit VACUUM");
-        } else {
-            tracing::info!("audit VACUUM complete");
-        }
+        run_vacuum_offloaded(conn, rx, buf, deferred_meta).await;
     }
 }
 
@@ -562,6 +744,18 @@ mod tests {
             idx_count, 3,
             "expect 3 indexes (ts / tenant_ts / status_ts)"
         );
+    }
+
+    #[test]
+    fn write_conn_caps_the_wal_size() {
+        // A past VACUUM left a 1.5 GB WAL on the live host that SQLite never
+        // truncates on its own.
+        let (_dir, path) = tmp_db();
+        let conn = open_audit_db_write(&path).unwrap();
+        let limit: i64 = conn
+            .query_row("PRAGMA journal_size_limit", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(limit, 64 * 1024 * 1024, "WAL must be capped at 64 MiB");
     }
 
     #[test]
@@ -790,23 +984,118 @@ mod tests {
         assert_eq!(parse_audit_log_retention_days(Some("99999999999")), 90);
     }
 
+    #[tokio::test]
+    async fn retention_pass_defers_meta_writes_instead_of_dropping_them() {
+        // The retention task sends `last_vacuum_ts` immediately after the
+        // retention command, so it lands in the channel *while* the pass is
+        // running. Draining only `Insert` and discarding the rest would lose
+        // it — and losing it silently downgrades the monthly VACUUM to daily.
+        let mut conn = open_audit_db_memory().unwrap();
+        for _ in 0..10 {
+            conn.execute(
+                "INSERT INTO audit (ts, op, status) VALUES ('2020-01-01T00:00:00.000Z', 'old', 'ok')",
+                [],
+            )
+            .unwrap();
+        }
+        let (tx, mut rx) = mpsc::channel::<WriterCmd>(8);
+        tx.send(WriterCmd::SetMeta {
+            key: "last_vacuum_ts".into(),
+            value: "2026-08-02T03:00:00+00:00".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(WriterCmd::Insert(
+            crate::safety::audit::AuditEntry::success("t", "-", "inflight", 0),
+        ))
+        .await
+        .unwrap();
+
+        let mut buf = Vec::new();
+        let mut deferred = Vec::new();
+        run_retention_pass(
+            &mut conn,
+            &mut rx,
+            &mut buf,
+            &mut deferred,
+            Some("2026-01-01T00:00:00.000Z"),
+            false,
+        )
+        .await;
+
+        assert_eq!(
+            deferred,
+            vec![(
+                "last_vacuum_ts".to_string(),
+                "2026-08-02T03:00:00+00:00".to_string()
+            )],
+            "SetMeta arriving during the pass must be deferred, not dropped"
+        );
+        assert_eq!(buf.len(), 1, "inbound Insert must be buffered, not dropped");
+        assert_eq!(buf[0].op, "inflight");
+    }
+
     #[test]
-    fn run_retention_none_cutoff_skips_delete() {
+    fn delete_expired_chunk_stops_at_zero_and_matches_bulk_delete() {
+        let conn = open_audit_db_memory().unwrap();
+        for i in 0..25 {
+            conn.execute(
+                "INSERT INTO audit (ts, op, status, duration_ms) VALUES (?1, 'x', 200, 1)",
+                params![format!("2026-01-{:02}T00:00:00.000Z", i + 1)],
+            )
+            .unwrap();
+        }
+        // Cutoff excludes the first 10 rows (days 01..10).
+        let cutoff = "2026-01-11T00:00:00.000Z";
+        let mut total = 0usize;
+        loop {
+            let n = delete_expired_chunk(&conn, cutoff, 4).unwrap();
+            total += n;
+            if n == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            total, 10,
+            "chunked delete must remove exactly the expired rows"
+        );
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 15);
+    }
+
+    /// Drive the real writer-loop retention path with an idle channel. The
+    /// three tests below used to call a synchronous `run_retention` helper;
+    /// since v1.58 the production path is async (it yields between DELETE
+    /// chunks and offloads the VACUUM), so the tests exercise that directly
+    /// rather than a sync twin that nothing else calls.
+    async fn drive_retention(conn: &mut Connection, cutoff_ts: Option<&str>, vacuum: bool) {
+        let (_tx, mut rx) = mpsc::channel::<WriterCmd>(4);
+        let mut buf = Vec::new();
+        let mut deferred = Vec::new();
+        run_retention_pass(conn, &mut rx, &mut buf, &mut deferred, cutoff_ts, vacuum).await;
+        assert!(buf.is_empty(), "no inbound entries were sent");
+        assert!(deferred.is_empty(), "no deferred meta writes were sent");
+    }
+
+    #[tokio::test]
+    async fn run_retention_none_cutoff_skips_delete() {
         let mut conn = open_audit_db_memory().unwrap();
         conn.execute(
             "INSERT INTO audit (ts, op, status) VALUES ('2020-01-01T00:00:00.000Z', 'GET /x', 'ok')",
             [],
         )
         .unwrap();
-        run_retention(&mut conn, None, false);
+        drive_retention(&mut conn, None, false).await;
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM audit", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "None cutoff must not delete anything");
     }
 
-    #[test]
-    fn run_retention_some_cutoff_deletes_only_older_rows() {
+    #[tokio::test]
+    async fn run_retention_some_cutoff_deletes_only_older_rows() {
         let mut conn = open_audit_db_memory().unwrap();
         conn.execute(
             "INSERT INTO audit (ts, op, status) VALUES
@@ -815,7 +1104,7 @@ mod tests {
             [],
         )
         .unwrap();
-        run_retention(&mut conn, Some("2026-01-01T00:00:00.000Z"), false);
+        drive_retention(&mut conn, Some("2026-01-01T00:00:00.000Z"), false).await;
         let ops: Vec<String> = conn
             .prepare("SELECT op FROM audit ORDER BY ts")
             .unwrap()
@@ -826,8 +1115,8 @@ mod tests {
         assert_eq!(ops, vec!["GET /new".to_string()]);
     }
 
-    #[test]
-    fn run_retention_none_cutoff_still_vacuums() {
+    #[tokio::test]
+    async fn run_retention_none_cutoff_still_vacuums() {
         // Pins the documented `DRUST_AUDIT_LOG_RETENTION_DAYS=0` contract:
         // the DELETE is skipped but the monthly VACUUM still runs (WAL /
         // space reclaim on keep-forever deployments). Moving the vacuum
@@ -843,6 +1132,15 @@ mod tests {
         }
         conn.execute("DELETE FROM audit WHERE status = 'ok'", [])
             .unwrap();
+        // Survives the delete. The VACUUM runs on a blocking thread that owns
+        // the connection for its duration; this marker proves the connection
+        // that comes back is the real one and not the in-memory placeholder
+        // the writer holds in the meantime.
+        conn.execute(
+            "INSERT INTO audit (ts, op, status) VALUES ('2026-01-01T00:00:00.000Z', 'marker', 'error')",
+            [],
+        )
+        .unwrap();
         let free_before: i64 = conn
             .query_row("PRAGMA freelist_count", [], |r| r.get(0))
             .unwrap();
@@ -850,13 +1148,22 @@ mod tests {
             free_before > 0,
             "precondition: bulk delete must leave free pages, got {free_before}"
         );
-        run_retention(&mut conn, None, true);
+        drive_retention(&mut conn, None, true).await;
         let free_after: i64 = conn
             .query_row("PRAGMA freelist_count", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
             free_after, 0,
             "VACUUM must run even when cutoff is None (retention disabled)"
+        );
+        let marker: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit WHERE op = 'marker'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            marker, 1,
+            "the offloaded VACUUM must hand the real connection back"
         );
     }
 }

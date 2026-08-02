@@ -51,7 +51,12 @@ Known gap, fixed in v1.58: the webhook egress check runs once per **event**, not
 
 ## Audit writer (`src/safety/audit_db.rs`)
 
-`AuditWriter` (`OnceLock`). Writer task drains a `mpsc::channel(1000)`, batches INSERTs every 100ms or 100 rows. Channel-full drops + counter + sampled `tracing::warn!`. **Actively lossy today**: retention DELETE and the monthly VACUUM run synchronously in that same task, so nothing drains the channel while they run (962 rows measured dropped in two days on the live host). v1.58 fixes it.
+`AuditWriter` (`OnceLock`). Writer task drains a `mpsc::channel(1000)`, batches INSERTs every 100ms or 100 rows. Channel-full drops + counter + sampled `tracing::warn!`.
+
+> [!WARNING]
+> **The retention pass runs inside the writer task and must never stop it draining.** Until v1.58 the DELETE and the monthly VACUUM ran to completion inside the same `select!` arm that owns `rx.recv()`, so the bounded channel filled and inbound rows were dropped — 962 measured in two days on the live host, and the rows lost are exactly the ones worth keeping (denials, SSRF blocks, admin mutations). Now: the DELETE is chunked at `RETENTION_DELETE_CHUNK` rows with a `try_recv` drain and a `yield_now` between chunks, and the VACUUM — which cannot be chunked — is offloaded to `spawn_blocking` while the loop keeps receiving into the in-memory buffer. Anything added to that pass must preserve both properties.
+
+Commands arriving mid-pass are parked by `stash_cmd`: `Insert` buffers in memory, and **`SetMeta` is deferred, not dropped** — the retention task sends `last_vacuum_ts` immediately behind the retention command, so losing it silently downgrades the monthly VACUUM to a daily one. The offloaded VACUUM owns the connection for its duration; the writer holds a throwaway in-memory placeholder and reopens from `Connection::path()` if the blocking task never hands the real one back. The write connection caps `journal_size_limit` at 64 MiB, because SQLite never shrinks a WAL grown by a full-database rewrite.
 
 `DRUST_AUDIT_LOG_RETENTION_DAYS` (LOG = access log, host-wide) and `DRUST_AUDIT_HISTORY_RETENTION_DAYS` (HISTORY = record snapshots, per-tenant) are **deliberately independent windows** — do not collapse them.
 
