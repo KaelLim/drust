@@ -10,6 +10,7 @@ pub mod collection_list;
 pub mod cron_admin;
 pub mod docs;
 pub mod format;
+pub mod frame_guard;
 pub mod functions_admin;
 pub mod i18n;
 pub mod locale_layer;

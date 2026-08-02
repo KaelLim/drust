@@ -1462,19 +1462,24 @@ impl MgmtState {
             meta: self.meta.clone(),
             allow_db_fallback: false,
         };
-        public
-            .merge(legacy_redirects)
-            .merge(signed_router)
-            .merge(protected)
-            // v1.22 i18n — outermost layer so unauthenticated routes
-            // (`/login`, `/admin/oauth/<provider>/callback`) also resolve
-            // a locale and let users switch language before signing in.
-            .layer(axum::middleware::from_fn(
-                crate::mgmt::locale_layer::locale_layer,
-            ))
-            .layer(axum::middleware::from_fn_with_state(
-                outer_theme_state,
-                crate::mgmt::theme_layer::theme_layer,
-            ))
+        // v1.58 P1-11 — frame guard on the whole mgmt plane, including
+        // `/login` and the signed-bytes routes. Applied here rather than in
+        // main.rs so the tenant data plane, merged separately, stays untouched.
+        crate::mgmt::frame_guard::frame_guard_layers(
+            public
+                .merge(legacy_redirects)
+                .merge(signed_router)
+                .merge(protected)
+                // v1.22 i18n — outermost layer so unauthenticated routes
+                // (`/login`, `/admin/oauth/<provider>/callback`) also resolve
+                // a locale and let users switch language before signing in.
+                .layer(axum::middleware::from_fn(
+                    crate::mgmt::locale_layer::locale_layer,
+                ))
+                .layer(axum::middleware::from_fn_with_state(
+                    outer_theme_state,
+                    crate::mgmt::theme_layer::theme_layer,
+                )),
+        )
     }
 }
