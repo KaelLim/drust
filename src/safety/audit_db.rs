@@ -65,6 +65,24 @@ const CHANNEL_CAPACITY: usize = 1000;
 const FLUSH_INTERVAL_MS: u64 = 100;
 const FLUSH_BATCH_SIZE: usize = 100;
 
+/// Ceiling on entries parked in memory while a retention pass holds the
+/// connection. The VACUUM cannot be chunked and cannot flush — the real
+/// connection is on a blocking thread — so inbound entries have to sit
+/// somewhere for its duration, and the only two options are a bound or an
+/// unbounded `Vec`. Inbound volume is caller-driven (every 401 writes an audit
+/// row), so unbounded means a client can turn a tens-of-seconds VACUUM into
+/// hundreds of MB of resident heap on a 3 GB host. 50k entries at the ~0.5 KB
+/// an `AuditEntry` costs is ~25 MB — far above the few thousand a real pass
+/// buffers, far below anything that threatens the process.
+pub(crate) const STASH_MAX_ENTRIES: usize = 50_000;
+
+/// Entries dropped because `STASH_MAX_ENTRIES` was hit during a retention
+/// pass. Counted separately from the channel-full drops (which live on the
+/// `AuditWriter`, unreachable from the free `stash_cmd`) but surfaced through
+/// the same `dropped_total()` and the same Prometheus counter — an operator
+/// must never see zero drops while rows are being lost.
+static STASH_DROPPED: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) const INSERT_SQL: &str = "
 INSERT INTO audit (ts, tenant, token_hint, op, status, duration_ms,
                    error_code, auth_method, oauth_email, oauth_error_code,
@@ -295,14 +313,16 @@ pub fn writer_for_init_use() -> Option<&'static AuditWriter> {
     WRITER.get()
 }
 
-/// Process-lifetime counter: total number of audit entries dropped
-/// because the writer channel was full. Resets to 0 on restart.
-/// Returns 0 when no writer is initialised (test paths, pre-init).
+/// Process-lifetime counter: total number of audit entries dropped, whether
+/// because the writer channel was full or because the retention-pass stash hit
+/// `STASH_MAX_ENTRIES`. Resets to 0 on restart. The channel half returns 0 when
+/// no writer is initialised (test paths, pre-init).
 pub fn dropped_total() -> u64 {
-    WRITER
+    let channel = WRITER
         .get()
         .map(|w| w.dropped.load(std::sync::atomic::Ordering::Relaxed))
-        .unwrap_or(0)
+        .unwrap_or(0);
+    channel + STASH_DROPPED.load(Ordering::Relaxed)
 }
 
 /// v1.29.4 — invoke the global AuditWriter's drain. No-op when WRITER
@@ -554,17 +574,37 @@ fn set_meta(conn: &Connection, key: &str, value: &str) {
 
 /// Park a command that arrived while a retention pass was in progress.
 ///
-/// Inserts buffer in memory. `SetMeta` is *deferred*, not dropped: the
-/// retention task sends `last_vacuum_ts` immediately after the retention
-/// command, so swallowing it would silently re-VACUUM every single day. A
-/// second `RunRetention` while one is already running is redundant.
+/// Inserts buffer in memory, bounded by `STASH_MAX_ENTRIES` — the stash
+/// replaces the bounded channel as the loss point for the duration of the
+/// pass, so it must stay bounded too, or a caller-driven flood turns a lossy
+/// pass into an OOM. `SetMeta` is *deferred*, not dropped: the retention task
+/// sends `last_vacuum_ts` immediately after the retention command, so
+/// swallowing it would silently re-VACUUM every single day. A second
+/// `RunRetention` while one is already running is redundant.
 fn stash_cmd(
     cmd: WriterCmd,
     buf: &mut Vec<crate::safety::audit::AuditEntry>,
     deferred_meta: &mut Vec<(String, String)>,
 ) {
     match cmd {
-        WriterCmd::Insert(e) => buf.push(e),
+        WriterCmd::Insert(e) => {
+            if buf.len() >= STASH_MAX_ENTRIES {
+                let n = STASH_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                // Same threshold rate-limit as the channel-full path: a
+                // sustained flood would otherwise emit one identical WARN per
+                // dropped row and bury real errors in the journal.
+                if n == 1 || n.is_multiple_of(10_000) {
+                    tracing::warn!(
+                        total_stash_dropped = n,
+                        cap = STASH_MAX_ENTRIES,
+                        "audit: retention stash full, entry dropped (rate-limited log)"
+                    );
+                }
+                crate::mgmt::metrics::metrics().audit_drops_total.inc();
+                return;
+            }
+            buf.push(e);
+        }
         WriterCmd::SetMeta { key, value } => deferred_meta.push((key, value)),
         WriterCmd::RunRetention { .. } => {
             tracing::warn!("audit: retention requested while a pass is running; skipped");
@@ -681,10 +721,20 @@ async fn run_retention_pass(
                         break;
                     }
                 }
-                // Absorb whatever queued up while that chunk ran, then give
-                // the runtime a turn.
+                // Absorb whatever queued up while that chunk ran, write it
+                // straight through, then give the runtime a turn. The writer
+                // still owns the real connection here and it is idle between
+                // statements, so the whole DELETE phase costs no resident
+                // memory and cannot reach `STASH_MAX_ENTRIES` — only the
+                // VACUUM, which hands the connection away, genuinely needs to
+                // buffer. `cutoff` is always in the past (`now - retention
+                // days`), so a row flushed here is never a candidate for a
+                // later chunk and the loop still terminates.
                 while let Ok(cmd) = rx.try_recv() {
                     stash_cmd(cmd, buf, deferred_meta);
+                }
+                if !buf.is_empty() {
+                    flush(conn, buf);
                 }
                 tokio::task::yield_now().await;
             }
@@ -756,6 +806,88 @@ mod tests {
             .query_row("PRAGMA journal_size_limit", [], |r| r.get(0))
             .unwrap();
         assert_eq!(limit, 64 * 1024 * 1024, "WAL must be capped at 64 MiB");
+    }
+
+    /// The retention stash is the loss point while the VACUUM owns the
+    /// connection, so it has to be bounded — an unbounded `Vec` fed by
+    /// caller-driven traffic is an OOM, not a fix for the channel drops.
+    #[test]
+    fn stash_cmd_caps_the_in_memory_buffer() {
+        const OVERFLOW: usize = 10;
+        let mut buf = Vec::new();
+        let mut deferred_meta = Vec::new();
+        let dropped_before = STASH_DROPPED.load(Ordering::Relaxed);
+
+        for i in 0..STASH_MAX_ENTRIES + OVERFLOW {
+            let e = crate::safety::audit::AuditEntry::success("t1", "hint", "op", i as u64);
+            stash_cmd(WriterCmd::Insert(e), &mut buf, &mut deferred_meta);
+        }
+
+        assert_eq!(
+            buf.len(),
+            STASH_MAX_ENTRIES,
+            "stash must stop growing at the cap"
+        );
+        assert_eq!(
+            STASH_DROPPED.load(Ordering::Relaxed) - dropped_before,
+            OVERFLOW as u64,
+            "every entry past the cap must be counted, not silently vanish"
+        );
+    }
+
+    /// The writer owns a live, idle connection between DELETE chunks, so
+    /// nothing needs to sit in memory for that phase — only the VACUUM, which
+    /// hands the connection to a blocking thread, genuinely has to buffer.
+    #[tokio::test]
+    async fn retention_delete_phase_flushes_instead_of_buffering() {
+        let (_dir, path) = tmp_db();
+        let mut conn = open_audit_db_write(&path).unwrap();
+        conn.execute(
+            "INSERT INTO audit (ts, op, status, duration_ms) VALUES ('2020-01-01T00:00:00.000Z', 'old', 'ok', 0)",
+            [],
+        )
+        .unwrap();
+
+        // Queue inbound entries so the mid-chunk drain has something to pick
+        // up, exactly as a live flood would.
+        let (tx, mut rx) = mpsc::channel::<WriterCmd>(CHANNEL_CAPACITY);
+        const INBOUND: usize = 5;
+        for i in 0..INBOUND {
+            tx.try_send(WriterCmd::Insert(
+                crate::safety::audit::AuditEntry::success("t1", "hint", "live", i as u64),
+            ))
+            .unwrap();
+        }
+
+        let mut buf = Vec::new();
+        let mut deferred_meta = Vec::new();
+        run_retention_pass(
+            &mut conn,
+            &mut rx,
+            &mut buf,
+            &mut deferred_meta,
+            Some("2021-01-01T00:00:00.000Z"),
+            false,
+        )
+        .await;
+
+        assert!(
+            buf.is_empty(),
+            "DELETE phase must flush what it drained, not hold {} entries",
+            buf.len()
+        );
+        let landed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit WHERE op = 'live'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(landed as usize, INBOUND, "drained entries must be on disk");
+        let old_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit WHERE op = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(old_left, 0, "expired rows must still be deleted");
     }
 
     #[test]
@@ -1031,8 +1163,22 @@ mod tests {
             )],
             "SetMeta arriving during the pass must be deferred, not dropped"
         );
-        assert_eq!(buf.len(), 1, "inbound Insert must be buffered, not dropped");
-        assert_eq!(buf[0].op, "inflight");
+        // The Insert must survive the pass. During the DELETE phase the writer
+        // still owns a live connection, so "survive" means flushed to disk —
+        // strictly better than parked in memory, and it keeps the stash empty
+        // for the VACUUM phase, which is the only one that cannot flush.
+        assert!(
+            buf.is_empty(),
+            "DELETE phase should have flushed the inbound Insert, not held it"
+        );
+        let inflight: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE op = 'inflight'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(inflight, 1, "inbound Insert must be persisted, not dropped");
     }
 
     #[test]
