@@ -349,17 +349,13 @@ pub fn make_tenant_inner(
         if dir.exists() {
             let _ = std::fs::remove_dir_all(&dir);
         }
-        // Clear any matching _trash/<id>-<ts> subdirs left from soft-delete.
-        if let Ok(entries) = std::fs::read_dir(data_dir.join("_trash")) {
-            let prefix = format!("{id}-");
-            for entry in entries.flatten() {
-                if let Some(n) = entry.file_name().to_str()
-                    && n.starts_with(&prefix)
-                {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
-        }
+        // v1.58 P1-1 — `_trash/<id>-<ts>/` is deliberately LEFT ALONE. It is
+        // the soft-deleted tenant's 7-day recovery copy, and destroying it as a
+        // side effect of someone reusing the id is silent data loss. The
+        // janitor (deploy/drust-janitor.sh, 7-day sweep) expires it on
+        // schedule. Snapshot directories are timestamped to the second, so a
+        // later soft-delete of the recycled id lands in its own directory
+        // instead of clobbering this one.
     }
     // egress_backfill_done = 1: a tenant born after the v1.49 upgrade is
     // already under the deny-all regime with no legacy webhooks to backfill,
