@@ -554,6 +554,18 @@ async fn main() -> anyhow::Result<()> {
         tenants.clone(),
     ));
 
+    // v1.58 — `_trash` retention janitor. Boot sweep + daily, expiring
+    // soft-delete snapshots older than DRUST_TRASH_RETENTION_DAYS (default 7;
+    // 0 disables). `deploy/drust-janitor.sh` does the same on the bare-metal
+    // host, but its systemd timer does not exist in the published image or in
+    // docker-compose.yml — those run `drust` and nothing else — so without this
+    // task a compose operator's `_trash` grew without bound, holding whole
+    // tenant databases (argon2 hashes, live sessions) forever. Idempotent
+    // alongside the shell sweeper; both key on the same directory mtime.
+    tokio::spawn(drust::storage::janitor::spawn_trash_retention_task(
+        cfg.data_dir.clone(),
+    ));
+
     let tenant_stack = TenantStack {
         auth: TenantAuthState {
             meta: meta.clone(),
