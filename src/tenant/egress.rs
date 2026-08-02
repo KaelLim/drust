@@ -178,6 +178,13 @@ pub fn check_egress(allowlist_json: &str, system: EgressSystem, origin: &str) ->
 /// fail-CLOSED, since an empty allowlist denies every outbound path. The
 /// `Result` is retained for signature symmetry with the rest of the read path
 /// but this helper never surfaces an `Err`; every failure collapses to deny-all.
+///
+/// Config and boot surfaces keep using this one: it reads the row whatever its
+/// `deleted_at`, which is what the one-time `backfill_egress_allowlist` pass
+/// needs (it iterates `SELECT id FROM tenants`, soft-deleted rows included, and
+/// merges the stored list forward — a liveness filter there would silently
+/// blank a soft-deleted tenant's allowlist). Anything deciding whether traffic
+/// may LEAVE the host wants [`try_read_live_egress_allowlist`] instead.
 pub fn read_egress_allowlist(meta: &Connection, tenant_id: &str) -> rusqlite::Result<String> {
     let stored = meta
         .query_row(
@@ -187,6 +194,37 @@ pub fn read_egress_allowlist(meta: &Connection, tenant_id: &str) -> rusqlite::Re
         )
         .unwrap_or_else(|_| "[]".to_string());
     Ok(stored)
+}
+
+/// Three-way allowlist read for the LIVE egress gates, i.e. every caller that
+/// must tell a real denial apart from a meta it could not read at all.
+///
+/// * `Ok(Some(json))` — the tenant is live; this is its allowlist.
+/// * `Ok(None)` — **authoritative deny**: no such tenant, or it is
+///   soft-deleted. `deleted_at IS NULL` is load-bearing, not decoration: a
+///   soft-delete leaves the `tenants` row in place with `egress_allowlist_json`
+///   untouched, so a reader without the predicate keeps authorizing outbound
+///   traffic for a tenant an admin has already deleted. `dispatch_many` refuses
+///   to START a fan-out for a non-live tenant (`get_if_live`); this keeps the
+///   per-attempt gate agreeing with it for a delete that lands mid-flight.
+/// * `Err(e)` — meta could not be queried. **Not** a denial. A caller with
+///   retries left must fail closed for that attempt without concluding the
+///   origin was revoked; collapsing the two makes a transient hiccup
+///   indistinguishable from a revocation.
+pub fn try_read_live_egress_allowlist(
+    meta: &Connection,
+    tenant_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    match meta.query_row(
+        "SELECT COALESCE(egress_allowlist_json, '[]') FROM tenants \
+          WHERE id = ?1 AND deleted_at IS NULL",
+        [tenant_id],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(json) => Ok(Some(json)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

@@ -185,23 +185,71 @@ pub fn meta_connections_opened() -> u64 {
     META_CONNECTIONS_OPENED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Outcome of a dispatch-time allowlist read. The two variants exist because
+/// "the tenant does not allow this origin" and "meta.sqlite could not be read"
+/// are different facts, and only the first is a POLICY statement. Both fail
+/// closed — nothing is POSTed either way — but only the first may end a retry
+/// chain or be written into `last_failure_reason`.
+#[derive(Debug)]
+pub(crate) enum AllowlistRead {
+    /// Authoritative: this is the tenant's policy. `"[]"` here is a genuine
+    /// deny-all, including the "tenant is gone or soft-deleted" case.
+    Live(String),
+    /// meta.sqlite could not be opened or queried — infrastructure, not policy.
+    Unavailable,
+}
+
+impl AllowlistRead {
+    /// Fail-closed collapse for one-shot gates with no retry to preserve: an
+    /// unreadable meta denies, exactly as it always has.
+    fn or_deny_all(self) -> String {
+        match self {
+            AllowlistRead::Live(json) => json,
+            AllowlistRead::Unavailable => "[]".to_string(),
+        }
+    }
+}
+
 /// Read a tenant's egress allowlist JSON from `meta.sqlite` for the dispatch
-/// gate. Opens a short-lived READ-ONLY connection (dispatch runs on a spawned,
-/// off-hot-path task, so a per-fan-out open is acceptable — a per-ROW one is
-/// not, which is why `dispatch_many` calls this once per batch and only when
-/// the collection actually has subscriptions). Fail-CLOSED: any open/read
-/// failure yields the deny-all `"[]"`, so a transient meta hiccup denies
-/// delivery to non-loopback hosts rather than opening egress.
-fn read_tenant_egress_allowlist(registry: &TenantRegistry, tenant: &str) -> String {
+/// gate. Opens a short-lived READ-ONLY connection.
+///
+/// Cost rule: **one open per fan-out, never one per ROW of a batch** — that is
+/// why `dispatch_many` calls this once per batch and only when the collection
+/// actually has subscriptions (`tests/batch_webhook_fanout.rs` pins the exact
+/// count). The retry loop in `deliver_inner` calls it again before attempts
+/// 2..n, which IS per delivery; that is deliberate and does not reopen the cost
+/// the batch entry point closed. It runs only for a delivery that is already
+/// failing, at most three times, each separated by seconds of backoff and each
+/// amortized against a full HTTP attempt — and because this fn is synchronous,
+/// concurrent opens can never exceed the tokio worker count no matter how many
+/// deliveries wake at once.
+///
+/// Fail-CLOSED, but see [`AllowlistRead`]: a failed open/read reports
+/// `Unavailable`, not an empty allowlist, so a caller with attempts left can
+/// decline to send WITHOUT recording a revocation that did not happen.
+fn read_tenant_egress_allowlist(registry: &TenantRegistry, tenant: &str) -> AllowlistRead {
     META_CONNECTIONS_OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let meta_path = registry.data_root().join("meta.sqlite");
-    match rusqlite::Connection::open_with_flags(
+    let conn = match rusqlite::Connection::open_with_flags(
         &meta_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     ) {
-        Ok(conn) => crate::tenant::egress::read_egress_allowlist(&conn, tenant)
-            .unwrap_or_else(|_| "[]".to_string()),
-        Err(_) => "[]".to_string(),
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(tenant = %tenant, error = %e, "egress gate: meta.sqlite open failed — denying this attempt, NOT recording a revocation");
+            return AllowlistRead::Unavailable;
+        }
+    };
+    match crate::tenant::egress::try_read_live_egress_allowlist(&conn, tenant) {
+        Ok(Some(json)) => AllowlistRead::Live(json),
+        // No live row: the tenant is gone or soft-deleted. That is a real,
+        // authoritative deny-all — the allowlist column survives a soft-delete,
+        // so without the liveness predicate a deleted tenant keeps its egress.
+        Ok(None) => AllowlistRead::Live("[]".to_string()),
+        Err(e) => {
+            tracing::warn!(tenant = %tenant, error = %e, "egress gate: meta.sqlite read failed — denying this attempt, NOT recording a revocation");
+            AllowlistRead::Unavailable
+        }
     }
 }
 
@@ -336,11 +384,19 @@ impl WebhookDispatcher {
             // fan-out (fresh from meta, so a just-removed origin is honored;
             // a batch's deliveries are all spawned within the same instant, so
             // reading it once per batch is as fresh as once per row was). This
-            // read gates ATTEMPT 1 of every delivery it spawns; attempts 2..n
-            // are gated by the live re-read inside the retry loop (v1.58
-            // P1-12), so the pair covers every attempt without paying a
-            // meta.sqlite open per row.
-            let allowlist_json = read_tenant_egress_allowlist(&pool, &tenant);
+            // SNAPSHOT is what gates ATTEMPT 1 of every delivery spawned below;
+            // attempts 2..n get their own live re-read inside the retry loop
+            // (v1.58 P1-12). Attempt 1 is therefore gated by a read taken
+            // shortly BEFORE the spawn, not immediately before the POST — see
+            // the retry-loop comment in `deliver_inner` for what that window is
+            // and why buying it back would cost a meta open per row.
+            let allowlist_json = read_tenant_egress_allowlist(&pool, &tenant).or_deny_all();
+            // Denials are collected and written AFTER every allowed delivery is
+            // spawned. `record_failure` takes the per-tenant writer mutex, which
+            // a concurrent batch write can hold for seconds; awaiting it inside
+            // this loop pushed that wait into the attempt-1 window of every
+            // subscription queued behind the denied one.
+            let mut denied: Vec<(i64, String)> = Vec::new();
             for sub in subs {
                 // Which of this fan-out's events this subscription wants.
                 let matching: Vec<&Event> = events
@@ -361,11 +417,7 @@ impl WebhookDispatcher {
                 // identical writes under the writer lock leave exactly the
                 // state a single write leaves.
                 if !dispatch_egress_allowed(&allowlist_json, &sub.url) {
-                    let id = sub.id;
-                    let reason = format!("egress_not_allowlisted: {}", sub.url);
-                    let _ = tenant_pool
-                        .with_writer(move |c| record_failure(c, id, &reason))
-                        .await;
+                    denied.push((sub.id, sub.url.clone()));
                     continue;
                 }
                 for event in matching {
@@ -409,6 +461,16 @@ impl WebhookDispatcher {
                         }
                     });
                 }
+            }
+            // Second pass — the denied subscriptions. Same writes, same
+            // reasons, same once-per-subscription-per-fan-out shape as when
+            // they were inline; only the ORDER changed, so no allowed delivery
+            // waits behind a writer-mutex acquisition it has no stake in.
+            for (id, url) in denied {
+                let reason = format!("egress_not_allowlisted: {url}");
+                let _ = tenant_pool
+                    .with_writer(move |c| record_failure(c, id, &reason))
+                    .await;
             }
         });
     }
@@ -490,7 +552,12 @@ pub enum DeliveryError {
     /// The tenant's egress allowlist stopped covering this origin BETWEEN
     /// attempts — terminal, the remaining attempts are abandoned. Its
     /// `Display` is byte-identical to the reason the fan-out gate records, so
-    /// `last_failure_reason` reads the same whichever gate fired.
+    /// `last_failure_reason` reads the same whichever gate fired. Only a read
+    /// that actually SUCCEEDED can produce this (`AllowlistRead::Live`,
+    /// including the soft-deleted / absent tenant case); an unreadable meta
+    /// skips the attempt instead and ends as `Exhausted`, because a transient
+    /// infrastructure error is not a revocation and must not be recorded as
+    /// one.
     EgressRevoked { url: String },
 }
 
@@ -545,8 +612,9 @@ pub(crate) async fn deliver(
         resolver,
         None,
         // v1.58 P1-12 — the retry loop re-reads this tenant's allowlist before
-        // every attempt after the first, so a revocation lands on the NEXT
-        // attempt rather than after the ~36 s schedule finishes.
+        // every attempt after the first, so a revocation (or a soft-delete)
+        // lands on the NEXT attempt rather than after the ~36 s schedule
+        // finishes.
         Some((pool, tenant_id)),
         row,
         body_bytes,
@@ -736,30 +804,56 @@ async fn deliver_inner(
             tokio::time::sleep(Duration::from_secs(*wait_secs)).await;
         }
         // v1.58 P1-12 — egress is checked per ATTEMPT, fail-closed, which is
-        // how CLAUDE.md invariant 6 states the rule. Attempt 1 is already
-        // covered: the fan-out gate in `dispatch_many` reads the allowlist
-        // immediately before spawning this delivery, so re-reading here would
-        // only duplicate it — and would cost one meta.sqlite open per ROW on a
-        // batch, which is exactly what the per-batch read exists to avoid.
-        // Attempts 2..n are the gap this closes: the schedule spans ~36 s, and
-        // an origin removed from the allowlist mid-flight used to keep
-        // receiving POSTs until it ran out. The read is live by construction —
-        // a fresh read-only connection, nothing cached — and a denial is
-        // TERMINAL: `deliver` records the failure and no further attempt runs.
+        // how CLAUDE.md invariant 6 states the rule. Attempts 2..n are the gap
+        // this closes: the schedule spans ~36 s, and an origin removed from the
+        // allowlist mid-flight used to keep receiving POSTs until it ran out.
+        //
+        // Attempt 1 is NOT re-read here, and the honest statement of its cover
+        // is: it is gated by the fan-out snapshot `dispatch_many` took shortly
+        // before spawning this delivery — not by a read immediately before the
+        // POST. The residual window is spawn + `resolve_public` above (a slow
+        // nameserver stretches it to seconds). Closing it means one meta.sqlite
+        // open per ROW of a batch, which is exactly the cost the per-batch read
+        // exists to avoid, so it is bought back where it is free instead: the
+        // fan-out defers its denied-subscription `record_failure` writes until
+        // after every delivery is spawned, keeping a writer-mutex wait out of
+        // the window. Anything that adds a NEW attempt must re-check here.
+        //
+        // A denial is TERMINAL — `deliver` records the failure and no further
+        // attempt runs. An UNREADABLE meta is not a denial: it fails closed for
+        // this attempt (nothing is sent) but leaves the schedule alone, because
+        // ending the chain on a transient hiccup loses the event forever and
+        // writes `egress_not_allowlisted` against an origin that IS allowlisted.
         if attempt_idx > 0
             && let Some((registry, tenant)) = egress
         {
-            let allowlist_now = read_tenant_egress_allowlist(registry, tenant);
-            if !dispatch_egress_allowed(&allowlist_now, &row.url) {
-                tracing::warn!(
-                    webhook_id = %row.id,
-                    url = %row.url,
-                    attempt = attempt_idx + 1,
-                    "deliver: origin left the egress allowlist mid-retry — terminal"
-                );
-                return Err(DeliveryError::EgressRevoked {
-                    url: row.url.clone(),
-                });
+            match read_tenant_egress_allowlist(registry, tenant) {
+                AllowlistRead::Live(allowlist_now) => {
+                    if !dispatch_egress_allowed(&allowlist_now, &row.url) {
+                        tracing::warn!(
+                            webhook_id = %row.id,
+                            url = %row.url,
+                            attempt = attempt_idx + 1,
+                            "deliver: origin left the egress allowlist mid-retry — terminal"
+                        );
+                        return Err(DeliveryError::EgressRevoked {
+                            url: row.url.clone(),
+                        });
+                    }
+                }
+                AllowlistRead::Unavailable => {
+                    last_err = format!(
+                        "attempt {} skipped: egress allowlist unreadable",
+                        attempt_idx + 1
+                    );
+                    tracing::warn!(
+                        webhook_id = %row.id,
+                        url = %row.url,
+                        attempt = attempt_idx + 1,
+                        "deliver: egress allowlist unreadable — skipping this attempt, chain continues"
+                    );
+                    continue;
+                }
             }
         }
         // v1.32.4 D10 — production fast path: reuse the dispatcher's
