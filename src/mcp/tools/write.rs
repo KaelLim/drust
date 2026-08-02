@@ -701,12 +701,6 @@ pub(crate) fn upsert_row_in_tx(
         stmt.query_row(&refs[..], |r| materialize_row(r, &col_names, vector_names))
             .map_err(map_check_violation)?
     };
-    // v1.58 (P1-8) — post-write growth gate for the conflict-UPDATE branch. The
-    // INSERT branch was already gated above; re-checking it here would reject
-    // the very row it just admitted.
-    if matches!(op, HistoryOp::Update) {
-        crate::storage::quota::check_update_growth(tx, usage_before, quota_tier)?;
-    }
     let id = rec
         .get("id")
         .and_then(|v| v.as_i64())
@@ -721,6 +715,14 @@ pub(crate) fn upsert_row_in_tx(
         actor,
         schema.audit_enabled,
     )?;
+    // v1.58 (P1-8) — post-write growth gate for the conflict-UPDATE branch,
+    // AFTER `capture` so the history row's bytes are inside the measurement
+    // (see the twin comment in `tenant/records.rs::update_handler`). The INSERT
+    // branch was already gated up front; re-checking it here would reject the
+    // very row it just admitted.
+    if matches!(op, HistoryOp::Update) {
+        crate::storage::quota::check_update_growth(tx, usage_before, quota_tier)?;
+    }
     Ok((op, rec))
 }
 
@@ -985,10 +987,6 @@ pub async fn update_record_checked(
             };
             match updated {
                 Some(rec) => {
-                    // v1.58 (P1-8) — the UPDATE has run; refuse it only if it
-                    // BOTH grew the tenant AND left it over its cap. `?` rolls
-                    // the whole tx back, so a refusal writes nothing.
-                    crate::storage::quota::check_update_growth(tx, usage_before, quota_tier)?;
                     // Explicit-policy CHECK on the post-image row (enforcement
                     // core): a failing predicate rolls the UPDATE back, mirroring
                     // records.rs (REST). `None` for service/Privileged.
@@ -1007,6 +1005,16 @@ pub async fn update_record_checked(
                         &actor,
                         schema.audit_enabled,
                     )?;
+                    // v1.58 (P1-8) — growth gate, LAST thing in the tx, AFTER
+                    // `capture`. The history row carries the full old AND new
+                    // images, so a pre-capture measurement misses ~2× the
+                    // payload; combined with the fact that overwriting a row
+                    // with a same-length value moves no data pages, that let an
+                    // over-cap tenant grow without bound. See the twin comment
+                    // in `tenant/records.rs::update_handler` for why this does
+                    // not close the recovery shrink. `?` rolls the whole tx
+                    // back, so a refusal writes nothing.
+                    crate::storage::quota::check_update_growth(tx, usage_before, quota_tier)?;
                     Ok(rec)
                 }
                 None => Err(rusqlite::Error::QueryReturnedNoRows),

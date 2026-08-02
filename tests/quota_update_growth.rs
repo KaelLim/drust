@@ -139,6 +139,20 @@ fn medium(tag: char) -> String {
     tag.to_string().repeat(200 * 1024)
 }
 
+// ---------------------------------------------------------------------------
+// The same-length overwrite (adversarial review of the first cut).
+//
+// `huge('a')` and `huge('b')` differ in every byte and are byte-for-byte the
+// same LENGTH, so the UPDATE frees exactly the overflow pages it re-allocates
+// and `page_count` does not move. The growth is entirely the history row, which
+// stores the full old AND new image (audit defaults on) — roughly twice the
+// payload per request, forever, if the gate is measured before `capture`.
+//
+// Verified directly against sqlite3 before the fix: at the pre-capture
+// measurement point `after == before` on every iteration (1028 → 1028), while
+// the committed database grew 2050 pages (~8 MiB) each time.
+// ---------------------------------------------------------------------------
+
 // --- Site 1: MCP / edge (`update_record_checked`) --------------------------
 
 #[tokio::test]
@@ -176,6 +190,49 @@ async fn mcp_update_over_cap_allows_shrink_but_refuses_growth() {
         .await
         .unwrap();
     assert_eq!(after, "x", "a quota-refused update must roll back");
+}
+
+#[tokio::test]
+async fn mcp_same_length_overwrite_over_cap_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = svc(&dir).await;
+    create_collection(&s, "blobs", &[tf("v", "text")])
+        .await
+        .unwrap();
+    let rec = insert_record(&s, "blobs", serde_json::json!({ "v": huge('a') }))
+        .await
+        .unwrap();
+    let id = rec["id"].as_i64().unwrap();
+
+    push_over_cap(&dir, "blog").await;
+
+    let err = update_record(&s, "blobs", id, serde_json::json!({ "v": huge('b') }))
+        .await
+        .expect_err(
+            "a same-length overwrite still commits ~2x the payload as history \
+             and must be refused over the cap",
+        );
+    assert!(
+        err.to_string().contains("TENANT_QUOTA_EXCEEDED"),
+        "expected the quota sentinel, got: {err}"
+    );
+
+    // Rolled back: neither the row nor a history row survives.
+    let (v0, hist): (char, i64) = helpers::grab_pool("blog", &dir)
+        .await
+        .with_reader(move |c| {
+            let v: String = c.query_row("SELECT v FROM blobs WHERE id = ?1", [id], |r| r.get(0))?;
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM _system_record_history WHERE op = 'update'",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((v.chars().next().unwrap(), n))
+        })
+        .await
+        .unwrap();
+    assert_eq!(v0, 'a', "a quota-refused overwrite must roll back");
+    assert_eq!(hist, 0, "a rolled-back update must leave no history row");
 }
 
 #[tokio::test]
@@ -267,6 +324,55 @@ async fn rest_update_over_cap_allows_shrink_but_refuses_growth() {
 }
 
 #[tokio::test]
+async fn rest_same_length_overwrite_over_cap_is_refused() {
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode, header};
+    use tower::ServiceExt;
+
+    let (app, tok, dir) = helpers::spin_up_tenant("blog").await;
+    let pool = helpers::grab_pool("blog", &dir).await;
+    let seed = huge('a');
+    let id: i64 = pool
+        .with_writer(move |c| {
+            c.execute_batch(
+                "CREATE TABLE posts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );",
+            )?;
+            c.execute("INSERT INTO posts (title) VALUES (?1)", [&seed])?;
+            Ok(c.last_insert_rowid())
+        })
+        .await
+        .unwrap();
+
+    push_over_cap(&dir, "blog").await;
+
+    let r = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PATCH)
+                .uri(format!("/t/blog/records/posts/{id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "data": { "title": huge('b') } }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::INSUFFICIENT_STORAGE,
+        "a same-length overwrite over the cap must be 507 — the history row is the growth"
+    );
+}
+
+#[tokio::test]
 async fn rest_update_growth_under_cap_is_untouched() {
     use axum::body::Body;
     use axum::http::{Method, Request, header};
@@ -350,6 +456,39 @@ async fn upsert_conflict_update_over_cap_allows_shrink_but_refuses_growth() {
     let err = up(vec![serde_json::json!({ "sku": "s1", "name": huge('b') })])
         .await
         .expect_err("an upsert-update that grows past the cap must be refused");
+    assert!(
+        err.to_string().contains("TENANT_QUOTA_EXCEEDED"),
+        "expected the quota sentinel, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn upsert_same_length_overwrite_over_cap_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = svc(&dir).await;
+    create_collection(&s, "products", &[tfu("sku", "text"), tf("name", "text")])
+        .await
+        .unwrap();
+
+    let up = |rows: Vec<serde_json::Value>| {
+        batch_upsert(
+            &s,
+            "products",
+            rows,
+            vec!["sku".into()],
+            AuditActor::service(),
+        )
+    };
+
+    up(vec![serde_json::json!({ "sku": "s1", "name": huge('a') })])
+        .await
+        .unwrap();
+
+    push_over_cap(&dir, "blog").await;
+
+    let err = up(vec![serde_json::json!({ "sku": "s1", "name": huge('b') })])
+        .await
+        .expect_err("a same-length conflict-UPDATE over the cap must be refused");
     assert!(
         err.to_string().contains("TENANT_QUOTA_EXCEEDED"),
         "expected the quota sentinel, got: {err}"

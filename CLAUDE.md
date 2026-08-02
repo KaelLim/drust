@@ -144,10 +144,14 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    uploads, edge `put-file`. Deletes, reads, and the visibility bucket-move are deliberately
    exempt: a shrink or recovery write must never be blocked. An UPDATE is checked only when
    it BOTH grows the tenant AND leaves it over the cap (`quota::check_update_growth`, called
-   post-write inside the same tx at all three update sites: REST `update_handler`, MCP/edge
-   `update_record_checked`, and the upsert conflict branch in `upsert_row_in_tx`) — the old
-   blanket exemption justified "never block a shrink" but was also permitting unbounded
-   growth by repeated overwrite. Tier is admin-plane-only config.
+   at all three update sites: REST `update_handler`, MCP/edge `update_record_checked`, and
+   the upsert conflict branch in `upsert_row_in_tx`) — the old blanket exemption justified
+   "never block a shrink" but was also permitting unbounded growth by repeated overwrite.
+   **That gate is the LAST thing in the write tx, after `record_history::capture`**, because
+   the history row carries the full old AND new images and is on by default: measured before
+   capture it misses ~2× the payload, and a same-length overwrite moves no data pages at all,
+   so the pre-capture reading is `after == before` while the tx commits unbounded growth.
+   Tier is admin-plane-only config.
 
 3. **Every path that mutates tenant data-collection rows captures record history in the same
    transaction.** Three shapes: `record_history::capture()` for structured writes,

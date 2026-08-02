@@ -1383,10 +1383,6 @@ pub async fn update_handler(
                 Some(rec) => rec,
                 None => return Err(rusqlite::Error::QueryReturnedNoRows),
             };
-            // v1.58 (P1-8) — the UPDATE has run; refuse it only if it BOTH grew
-            // the tenant AND left it over its cap. The sentinel error rolls the
-            // whole tx back and maps to 507 in the match arms below.
-            crate::storage::quota::check_update_growth(tx, usage_before, quota_tier)?;
             if let Some(obj) = rec.as_object_mut() {
                 obj.retain(|k, _| !vector_names.contains(k));
             }
@@ -1427,6 +1423,25 @@ pub async fn update_handler(
                 &actor,
                 schema.audit_enabled,
             )?;
+            // v1.58 (P1-8) — growth gate, LAST thing in the tx. It must run
+            // after `capture` above, not before: the history row carries the
+            // full old AND new images (audit is on by default), so a gate
+            // measured pre-capture misses roughly twice the payload per
+            // request. Overwriting one row with a DIFFERENT value of the SAME
+            // length moves no data pages at all, so a pre-capture measurement
+            // reads as a no-op and admits ~2× payload of history growth per
+            // request, without bound. Measuring here counts the whole
+            // transaction's footprint, which is what the cap is about.
+            //
+            // This does NOT close the recovery shrink: SQLite reuses freelist
+            // pages within the same transaction, so the pages a shrinking
+            // UPDATE frees are exactly what the history row then allocates and
+            // `page_count` does not move (verified against sqlite3 directly and
+            // pinned by the over-cap shrink tests). An over-cap tenant whose
+            // update still nets a page of growth is refused, same as an INSERT
+            // over cap is — `set_audit_enabled(false)` stops new capture if the
+            // history rows themselves are what is in the way.
+            crate::storage::quota::check_update_growth(tx, usage_before, quota_tier)?;
             Ok(rec)
         })
         .await;

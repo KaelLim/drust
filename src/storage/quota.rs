@@ -92,10 +92,25 @@ pub fn decide_update_growth(before: u64, after: u64, tier: i64) -> Result<(), Qu
     check_tenant_quota(after, 0, tier)
 }
 
-/// Post-UPDATE quota gate. Call INSIDE the write transaction, AFTER the UPDATE,
-/// with the usage measured on the same connection before it. Returns the
+/// Post-UPDATE quota gate. Call INSIDE the write transaction as the LAST thing
+/// it does — after the UPDATE **and after `record_history::capture`** — with
+/// the usage measured on the same connection before any of it. Returns the
 /// `TENANT_QUOTA_EXCEEDED` sentinel (→ 507 on REST and MCP) so the caller can
 /// simply `?` it out of the `with_writer_tx` closure and roll the write back.
+///
+/// > The call site ordering is load-bearing, not stylistic. A history row
+/// > carries the full old AND new images and audit is on by default, so it is
+/// > roughly twice the payload; a gate measured before `capture` never sees it.
+/// > Because overwriting a row with a DIFFERENT value of the SAME length moves
+/// > no data pages, such a pre-capture measurement reads `after == before` and
+/// > takes the shrink branch while the transaction goes on to commit ~2×
+/// > payload of growth — unbounded across repeated requests. Measuring last
+/// > counts the whole transaction's footprint, which is what the cap is about.
+///
+/// The recovery shrink stays open: SQLite serves new page allocations from the
+/// freelist first, so within one transaction the pages a shrinking UPDATE frees
+/// are exactly the pages the history row then consumes and `page_count` does
+/// not move.
 ///
 /// Fails closed: a failed measurement propagates the `rusqlite::Error` and
 /// aborts the transaction rather than reading as "under quota".
