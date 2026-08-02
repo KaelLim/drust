@@ -1,0 +1,54 @@
+---
+paths:
+  - "Dockerfile"
+  - "Makefile"
+  - "Cargo.toml"
+  - "Cargo.lock"
+  - ".github/workflows/**"
+  - "deploy/**"
+---
+
+# drust — build, test & deploy landmines
+
+Fires on the build, packaging, CI, and deploy surface. Each item is a failure a green local build does NOT catch.
+
+## Build
+
+Building requires `clang` + `libclang`: the rusqlite `preupdate_hook` feature forces `libsqlite3-sys` into buildtime bindgen, which needs `libclang.so` and clang's builtin headers. The Dockerfile builder and CI install `clang libclang-dev` explicitly — a missing libclang fails the build with a misleading `stdarg.h not found`.
+
+Bumping `Cargo.toml`'s version requires updating **and staging `Cargo.lock` in the same commit**: local builds silently fix a stale lock, so local stays green while Docker's `cargo build --locked` exits 101. Reproduce without compiling via `cargo metadata --locked`.
+
+## Tests
+
+Cost here is COMPILE, not run: each `tests/*.rs` is its own binary statically linking the drust lib + wasmtime, so a bare `cargo test <name>` still compiles all of them — only `--test <name>` limits what compiles. The `Makefile` groups by the `tests/<prefix>_*.rs` convention: `make test-lib` (fast inner loop), `make test-functions` / `make test-auth` / any prefix (`make groups` lists them), `make test-all` (full gate). Glob-based, so new test files need no edits. Per-task workflow agents should run `make test-lib` + the relevant group; only the final review runs `make test-all`. (The Makefile header's "~142 binaries" at lines 5 and 18 is stale — 226 today; the advice stands.)
+
+Never `cargo test --release` — LTO + `codegen-units = 1` takes 40+ minutes. Sole exception: the argon2 timing test.
+
+Two CI gates live **outside** `make test-all`: `cargo fmt --all --check` (CI's first gate) and `cargo clippy --all-targets -- -D warnings`.
+
+## systemd
+
+> [!CAUTION]
+> **drust's systemd unit deliberately OMITS `MemoryDenyWriteExecute`.** wasmtime's Cranelift JIT must `mmap(PROT_EXEC)` to run guest wasm; re-adding W^X makes EVERY edge-function upload/invoke fail the compile gate with `WASM_COMPILE_FAILED: unable to make memory executable` (EPERM) — and the unsandboxed `cargo test` suite stays green, so ONLY a live smoke against the running service catches it. The guest sandbox is enforced inside wasmtime (epoch deadline + `ResourceLimiter` + empty `WasiCtx` + WIT import-absence), not by process-wide W^X — a conscious posture trade-off. Rationale is inline in `deploy/drust.service`; the top-level `tool/CLAUDE.md` "never skip the sandbox directives" WARNING does **not** apply to this one line. If W^X must return, move functions to an AOT/out-of-process model — do not just re-add the directive.
+
+## Caddy
+
+> [!WARNING]
+> **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects non-loopback Hosts with a 403/421 that looks like a WAF. Garage `/public/*` is the same family but routes by `Host: <bucket>.web.local`, so it needs `header_up Host "public.web.local"`, never `127.0.0.1:<port>`.
+
+The `/public/*` block's `handle_response` matcher (CSP-sandboxing script-executing content types served straight out of Garage) has two traps:
+
+- **`copy_response` is mandatory inside that `handle_response` block** — entering `handle_response` replaces the default passthrough, so a block with only a `header` directive silently discards the entire upstream body (caught live against a real 2.6 MB object before shipping: 200 OK with a 0-byte body). `caddy adapt` validates such a block happily.
+- Caddy 2.6.2's response-matcher allowlist has **no regex or case-insensitive option**, only a plain glob on `header`. The matcher's exact shape, and the fact that it must stay in lockstep with `storage::files::is_unsafe_inline_type`, are documented once in `.claude/rules/storage-files.md` — read that before editing the `@markup` matcher.
+
+The authoritative snippet for this block lives in `../garage/deploy/Caddyfile`, not in `drust/deploy/` — `/public/*` is Garage's route. Verified 2026-08-02 as byte-identical to the live `/etc/caddy/Caddyfile` apart from one space.
+
+That block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/`. Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
+
+## Deploy check
+
+`curl -sI http://127.0.0.1:47826/health | grep -i x-drust-version` after `cargo build --release && sudo systemctl restart drust`. Plain `/health` returns `ok` from the OLD binary too, so it proves nothing about which build is live; the version string is baked at compile time, so rebuild **and** restart before trusting the header. `DRUST_HIDE_VERSION=1` omits it.
+
+## Provenance
+
+Extracted from CLAUDE.md "Build & restart", "Tests", the W^X + Caddy Host invariants, and the Caddy `handle_response` notes in the per-tenant files section, during the 2026-08-02 restructure.

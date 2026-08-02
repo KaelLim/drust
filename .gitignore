@@ -4,7 +4,10 @@
 llms.md
 *.log
 /data
-.claude/
+# .claude/ is local-only EXCEPT rules/ — those carry load-bearing invariants that
+# must travel with the repo (a fresh clone without them loses the landmine map).
+.claude/*
+!.claude/rules/
 /.codegraph/
 /.mcp.json
 /meta.sqlite*
