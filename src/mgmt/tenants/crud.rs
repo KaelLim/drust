@@ -306,7 +306,10 @@ pub fn make_tenant_inner(
     //     parameter non-optional renders that bypass unrepresentable instead of
     //     merely unused. (A tenant can still BECOME unowned later, via
     //     remove_admin's `ON DELETE SET NULL`; that is orphaning, not creation.)
-    {
+    // Bound out of the gate block because the id-recycle branch below needs the
+    // same role to answer the ownership question — one DB read, one answer, so
+    // the cap gate and the recycle gate cannot disagree about who is calling.
+    let creator_role = {
         let admin_id = owner_admin_id;
         let owned = crate::mgmt::tenant_cap::owned_tenant_count(conn, admin_id)?;
         // A vanished admin fails CLOSED (cap 0) rather than inheriting the
@@ -320,7 +323,8 @@ pub fn make_tenant_inner(
                  Delete one, or request an increase from an owner."
             );
         }
-    }
+        role
+    };
     if let Err(e) = validate_tenant_id(id) {
         anyhow::bail!("invalid tenant id: {e}");
     }
@@ -328,15 +332,40 @@ pub fn make_tenant_inner(
     // free and hard-purge the old row + its tokens + on-disk data before
     // inserting. If the existing row is still active (deleted_at IS NULL),
     // reject with a clear error.
-    let existing: Option<Option<String>> = conn
-        .query_row(
-            "SELECT deleted_at FROM tenants WHERE id = ?1",
+    let existing: Option<(Option<String>, Option<i64>)> = {
+        use rusqlite::OptionalExtension;
+        conn.query_row(
+            "SELECT deleted_at, owner_admin_id FROM tenants WHERE id = ?1",
             rusqlite::params![id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok();
-    if let Some(deleted_at) = existing {
+        .optional()?
+    };
+    if let Some((deleted_at, existing_owner)) = existing {
         if deleted_at.is_none() {
+            anyhow::bail!("tenant '{id}' already exists");
+        }
+        // v1.58 — CLAUDE.md invariant #7: the branch below hard-DELETEs the
+        // soft-deleted tenant's row and tokens and wipes any live remnant, so
+        // it is a destructive act on SOMEONE ELSE'S tenant and must ask
+        // `tenant_access_for` first. This route (`POST /admin/api/tenants`)
+        // carries no `{id}`, so `tenant_ownership_layer` passes it straight
+        // through — there is no outer guard to inherit, and a member who
+        // learns an id (they leak through `/public/<tenant-id>/<key>` URLs)
+        // could otherwise destroy a foreign tenant's row mid-recovery-window
+        // and stamp themselves as its owner, making the un-delete impossible.
+        //
+        // A denied caller gets the SAME message as the live-tenant collision,
+        // so the two are indistinguishable: an invisible tenant must not
+        // report *why* the id is unavailable. (That an id is taken at all is
+        // inherent to caller-supplied ids and the UNIQUE constraint; the
+        // UUID-minting form face never exposes even that.)
+        if crate::mgmt::tenant_authz::tenant_access_for(
+            crate::mgmt::tenant_authz::sees_all_tenants(&creator_role),
+            owner_admin_id,
+            existing_owner,
+        ) == crate::mgmt::tenant_authz::TenantAccess::Deny
+        {
             anyhow::bail!("tenant '{id}' already exists");
         }
         tracing::info!(tenant_id = %id, "recycling id from soft-deleted tenant");
@@ -351,11 +380,19 @@ pub fn make_tenant_inner(
         }
         // v1.58 P1-1 — `_trash/<id>-<ts>/` is deliberately LEFT ALONE. It is
         // the soft-deleted tenant's 7-day recovery copy, and destroying it as a
-        // side effect of someone reusing the id is silent data loss. The
-        // janitor (deploy/drust-janitor.sh, 7-day sweep) expires it on
-        // schedule. Snapshot directories are timestamped to the second, so a
-        // later soft-delete of the recycled id lands in its own directory
-        // instead of clobbering this one.
+        // side effect of someone reusing the id is silent data loss.
+        //
+        // Two things had to become true before that was safe to say, because
+        // this purge was the only thing papering over both:
+        //   * expiry now runs IN-PROCESS (`storage::janitor::sweep_trash`,
+        //     boot + daily). `deploy/drust-janitor.sh` covers the bare-metal
+        //     host only — the published image's entrypoint is `drust` alone
+        //     and compose adds no timer, so leaning on the shell sweeper alone
+        //     would have meant "retained forever" for every GHCR operator.
+        //   * `move_tenant_to_trash` resolves destination collisions. The
+        //     timestamp is second-resolution, so a same-second
+        //     delete → create → delete on one id aimed the second rename at
+        //     this very directory; it is no longer free for the taking.
     }
     // egress_backfill_done = 1: a tenant born after the v1.49 upgrade is
     // already under the deny-all regime with no legacy webhooks to backfill,
@@ -505,6 +542,64 @@ pub async fn create_tenant_form(
     }
 }
 
+/// Move `tenants/<id>/` aside to `_trash/<id>-<ts>/`, the soft-delete recovery
+/// copy the janitor expires. Returns the destination, or `None` when there was
+/// nothing to move or the move failed.
+///
+/// The destination is **collision-resolved**, and that is load-bearing rather
+/// than defensive. `ts` has second resolution, and since v1.58 a create that
+/// recycles the id no longer purges the previous snapshot, so
+/// `delete → create → delete` on one id inside one wall-clock second aims the
+/// second rename at a path that already exists and is non-empty. `rename(2)`
+/// answers `ENOTEMPTY` there, and the old `let _ =` swallowed it — leaving the
+/// second generation's `data.sqlite` (argon2 hashes, unexpired
+/// `_system_sessions` rows) sitting in the LIVE tree, which no janitor sweeps,
+/// while `meta.sqlite` said the tenant was deleted. Not a race: all three calls
+/// serialize on the meta mutex, so it reproduces deterministically.
+///
+/// A residual failure is logged at ERROR, never discarded — the tenant row is
+/// already marked deleted by the time we get here, so a silent failure is
+/// indistinguishable from success from the caller's side.
+pub fn move_tenant_to_trash(
+    data_dir: &std::path::Path,
+    id: &str,
+    ts: &str,
+) -> Option<std::path::PathBuf> {
+    let src = tenant_dir(data_dir, id);
+    if !src.exists() {
+        return None;
+    }
+    let trash = data_dir.join("_trash");
+    if let Err(e) = std::fs::create_dir_all(&trash) {
+        tracing::error!(tenant = %id, error = %e, "soft-delete: cannot create _trash");
+        return None;
+    }
+    // `{id}-{ts}`, then `-1`, `-2`, … The bounded probe cannot spin: after 64
+    // same-second deletions of one id it falls back to a name that cannot
+    // collide. Both shapes still match the janitor's `_trash/*` sweep glob.
+    let mut dst = trash.join(format!("{id}-{ts}"));
+    for n in 1..=64u32 {
+        if !dst.exists() {
+            break;
+        }
+        dst = trash.join(format!("{id}-{ts}-{n}"));
+    }
+    if dst.exists() {
+        dst = trash.join(format!("{id}-{ts}-{}", uuid::Uuid::new_v4()));
+    }
+    match std::fs::rename(&src, &dst) {
+        Ok(()) => Some(dst),
+        Err(e) => {
+            tracing::error!(
+                tenant = %id, src = %src.display(), dst = %dst.display(), error = %e,
+                "soft-delete: could not move tenant directory to _trash — live data \
+                 remains in the tenants/ tree and no janitor sweeps it"
+            );
+            None
+        }
+    }
+}
+
 pub async fn soft_delete_tenant(
     State(state): State<TenantsState>,
     Path(id): Path<String>,
@@ -558,14 +653,7 @@ pub async fn soft_delete_tenant(
             return (StatusCode::NOT_FOUND, "no such tenant").into_response();
         }
         let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        let src = tenant_dir(&state.data_dir, &id);
-        let dst = state.data_dir.join("_trash").join(format!("{id}-{ts}"));
-        if let Some(parent) = dst.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if src.exists() {
-            let _ = std::fs::rename(&src, &dst);
-        }
+        move_tenant_to_trash(&state.data_dir, &id, &ts);
     }
     // Eviction order matters: pools first (release rusqlite Connection FDs
     // on the rename target so the inode + disk space release immediately),

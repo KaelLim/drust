@@ -183,11 +183,13 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
 
 7. **Tenant visibility is decided by `tenant_authz::tenant_access_for`, and role questions by
    `sees_all_tenants` / `can_manage_members` / `can_manage_privileged` — never by a bare
-   `is_owner`.** Six sites share the predicate: list filtering, the `tenant_ownership_layer`
+   `is_owner`.** Seven sites share the predicate: list filtering, the `tenant_ownership_layer`
    route guard, the `ensure_tenant_visible` handler choke point, the data-plane PAT deny in
-   the bearer CTE, creator-becomes-owner on create, and FK orphaning on `remove_admin`. The
-   management plane answers **404** for a non-visible tenant, never 403, so it is not an
-   existence oracle; the data-plane PAT deny is **403 `PAT_TENANT_DENIED`**. A new
+   the bearer CTE, creator-becomes-owner on create, FK orphaning on `remove_admin`, and the
+   id-recycle branch of `make_tenant_inner` — which hard-DELETEs a soft-deleted tenant's row
+   and tokens, sits on a route with no `{id}`, and therefore inherits nothing from the route
+   guard. The management plane answers **404** for a non-visible tenant, never 403, so it is
+   not an existence oracle; the data-plane PAT deny is **403 `PAT_TENANT_DENIED`**. A new
    tenant-scoped admin route joins a guarded sub-router or calls the choke point.
 
 8. **A new host-wide admin surface with no `{id}` in its path must join
