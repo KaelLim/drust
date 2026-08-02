@@ -269,15 +269,21 @@ pub async fn bearer_auth_layer(
                             "token expired",
                         );
                     } else {
-                        let pool = match state.registry.get_or_create(&tenant_id) {
-                            Ok(p) => p,
-                            Err(_) => {
-                                return json_error(
-                                    StatusCode::NOT_FOUND,
-                                    "TENANT_NOT_FOUND",
-                                    "tenant data missing",
-                                );
-                            }
+                        // `get_if_live`, NOT `get_or_create`: this branch runs
+                        // BEFORE the bearer CTE, so a cache hit carries no
+                        // `deleted_at IS NULL` check whatsoever. Soft-delete
+                        // renames the directory and evicts the pool before it
+                        // clears this cache, and a request that read its entry
+                        // earlier can arrive here at any later point — creating
+                        // on open would rebuild `tenants/<id>` outside `_trash`,
+                        // where the janitor never sweeps, and then serve the
+                        // request against the fresh DB.
+                        let Some(pool) = state.registry.get_if_live(&tenant_id) else {
+                            return json_error(
+                                StatusCode::NOT_FOUND,
+                                "TENANT_NOT_FOUND",
+                                "tenant data missing",
+                            );
                         };
                         let publish_policy = crate::tenant::rooms::policy::TenantPublishPolicy {
                             allow_user: publish_user_allowed,
@@ -331,15 +337,15 @@ pub async fn bearer_auth_layer(
                     if cached_tid != tenant_id {
                         // Cross-tenant: do not serve from cache; fall through.
                     } else if chrono::Utc::now() < expires_at {
-                        let pool = match state.registry.get_or_create(&tenant_id) {
-                            Ok(p) => p,
-                            Err(_) => {
-                                return json_error(
-                                    StatusCode::NOT_FOUND,
-                                    "TENANT_NOT_FOUND",
-                                    "tenant data missing",
-                                );
-                            }
+                        // `get_if_live` for the same reason as the Bearer arm
+                        // above: no CTE has run on this path, so nothing else
+                        // would stop a stale entry from recreating the tenant.
+                        let Some(pool) = state.registry.get_if_live(&tenant_id) else {
+                            return json_error(
+                                StatusCode::NOT_FOUND,
+                                "TENANT_NOT_FOUND",
+                                "tenant data missing",
+                            );
                         };
                         // PARITY with the CTE path (the user-session success block
                         // below): reconstruct the tenant publish policy from the

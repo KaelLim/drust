@@ -35,6 +35,13 @@ mutex and the bearer CTE. **Negatives are never cached.** A per-entry 10 s safet
 is also why the out-of-process `set_admin_role` break-glass CLI takes effect on the data
 plane within 10 s without any eviction call.
 
+Because the hit path skips the CTE, it skips the only `deleted_at IS NULL` filter in the
+request — so **both cache arms open the pool with `get_if_live`, never `get_or_create`**,
+and 404 on `None`. `soft_delete_tenant` renames the tenant directory and evicts the pool
+*before* it clears the cache, and a request that read its entry earlier can arrive at the
+open at any later point; creating on open there rebuilds `tenants/<id>` outside `_trash`,
+where the janitor never sweeps, and then serves the request against the fresh database.
+
 The bearer CTE's column numbering is load-bearing and **must not be renumbered**: cols 8/9
 carry the file caps, cols 11/12 the PAT admin `role` and the tenant `owner_admin_id`, col
 13 the `quota_tier`. Both `CachedAuth` variants carry `quota_tier`; the hit path
