@@ -152,6 +152,16 @@ next invited teammate could otherwise inherit an orphaned request.
 A `quota_tier` change **must** evict the tenant's auth-cache entries. A `tenant_cap_bonus`
 change must not — it never rides the bearer CTE.
 
+`tenant_cap_requests` is bounded on both ends. Inbound: the one-pending-per-admin 409 plus a
+per-admin daily budget (`DRUST_TENANT_CAP_DAILY_SUBMIT_LIMIT`, default 5; `0` unlimited) that
+counts **decided rows too**, because the loop it exists to stop is request → rejected →
+request; over budget is `429 CAP_REQUEST_RATE_LIMITED`, and an unreadable count fails closed.
+Outbound: `tenant_cap::spawn_request_retention_task` prunes **decided** rows older than
+`DRUST_TENANT_CAP_REQUEST_RETENTION_DAYS` (default 90; `0` keeps forever) at boot and daily at
+03:00 UTC. **`pending` rows are never auto-pruned** — a pending request is open work, and it is
+already bounded by the 409. The prune is its own task and not a call inside
+`record_history::spawn_retention_task`, which returns early when its own knob is `0`.
+
 ## Provenance
 
 Extracted from CLAUDE.md §Auth, §Per-tenant quota and §Per-member tenant creation cap during

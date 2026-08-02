@@ -104,6 +104,112 @@ pub fn lookup_admin_cap(
     Ok(row.map(|(role, bonus)| (role, effective_cap(configured_default(), bonus))))
 }
 
+// ─── request retention + submit rate limit (v1.58, #920) ─────────────────────
+
+/// Days a DECIDED cap request is kept before the daily janitor prunes it.
+/// `0` = keep forever. Pending requests are never auto-pruned.
+pub const DEFAULT_REQUEST_RETENTION_DAYS: i64 = 90;
+
+/// Cap requests one admin may submit per UTC day. `0` = unlimited.
+pub const DEFAULT_DAILY_SUBMIT_LIMIT: i64 = 5;
+
+/// Retention for decided rows, from `DRUST_TENANT_CAP_REQUEST_RETENTION_DAYS`.
+/// Same `env_or` posture as `DRUST_AUDIT_HISTORY_RETENTION_DAYS`: unparseable →
+/// default. Out-of-range (negative, or past a century) also takes the default
+/// rather than being clamped, so a typo cannot silently mean "prune everything".
+pub fn request_retention_days() -> i64 {
+    std::env::var("DRUST_TENANT_CAP_REQUEST_RETENTION_DAYS")
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|v| (0..=36_500).contains(v))
+        .unwrap_or(DEFAULT_REQUEST_RETENTION_DAYS)
+}
+
+/// Per-admin daily submit budget, from `DRUST_TENANT_CAP_DAILY_SUBMIT_LIMIT`.
+pub fn daily_submit_limit() -> i64 {
+    std::env::var("DRUST_TENANT_CAP_DAILY_SUBMIT_LIMIT")
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|v| (0..=1_000).contains(v))
+        .unwrap_or(DEFAULT_DAILY_SUBMIT_LIMIT)
+}
+
+/// Prune decided (`approved`/`rejected`) requests older than `days`. Returns the
+/// number of rows removed.
+///
+/// `days <= 0` keeps everything — `0` is the documented "keep forever" setting,
+/// and a negative can only arrive from a caller bug, where deleting the whole
+/// table is the worst possible reading. **`pending` rows are never touched**: a
+/// pending request is open work an owner still has to act on, not a record, and
+/// silently dropping one would look to the member like their request was
+/// ignored. They are bounded instead by the one-pending-per-admin rule in
+/// [`create_cap_request`].
+pub fn prune_decided_requests(conn: &rusqlite::Connection, days: i64) -> rusqlite::Result<usize> {
+    if days <= 0 {
+        return Ok(0);
+    }
+    conn.execute(
+        "DELETE FROM tenant_cap_requests \
+         WHERE status IN ('approved','rejected') \
+           AND created_at < datetime('now', ?1)",
+        rusqlite::params![format!("-{days} days")],
+    )
+}
+
+/// Requests this admin filed today (UTC), whatever their status.
+///
+/// Decided rows count: the loop this bounds is request → rejected → request, so
+/// counting only the pending one would make the limit unreachable.
+pub fn submits_today(conn: &rusqlite::Connection, admin_id: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM tenant_cap_requests \
+         WHERE requester_admin_id = ?1 AND date(created_at) = date('now')",
+        rusqlite::params![admin_id],
+        |r| r.get(0),
+    )
+}
+
+/// Daily prune of decided cap requests, plus one pass at boot.
+///
+/// Anchored to 03:00 UTC like the other `meta.sqlite` retention passes
+/// (`audit_db`, `record_history`). The boot pass exists for the same reason the
+/// `_trash` janitor has one: a deployment that restarts more often than daily
+/// would otherwise never reach its tick.
+///
+/// Deliberately its OWN task rather than a call inside
+/// `record_history::spawn_retention_task`: that task returns early when
+/// `DRUST_AUDIT_HISTORY_RETENTION_DAYS=0`, so hanging this off it would let one
+/// operator knob silently disable an unrelated retention.
+///
+/// `tokio::spawn(tenant_cap::spawn_request_retention_task(meta))`.
+pub async fn spawn_request_retention_task(
+    meta: std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+) {
+    let days = request_retention_days();
+    if days == 0 {
+        tracing::info!(
+            "tenant-cap request retention disabled (DRUST_TENANT_CAP_REQUEST_RETENTION_DAYS=0); keeping decided requests forever"
+        );
+        return;
+    }
+    loop {
+        {
+            let conn = meta.lock().await;
+            match prune_decided_requests(&conn, days) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(pruned = n, days, "tenant-cap requests pruned"),
+                Err(e) => tracing::warn!(error = ?e, "tenant-cap request prune failed"),
+            }
+        }
+        let now = chrono::Utc::now();
+        let next = crate::safety::audit_db::next_0300_utc(now);
+        let dur = (next - now)
+            .to_std()
+            .unwrap_or(std::time::Duration::from_secs(60));
+        tokio::time::sleep(dur).await;
+    }
+}
+
 // ─── member: file a cap-increase request ──────────────────────────────────────
 
 #[derive(serde::Deserialize)]
@@ -197,6 +303,33 @@ pub async fn create_cap_request(
                 "TENANT_CAP_REQUEST_PENDING",
                 "you already have a pending request",
             );
+        }
+
+        // v1.58 (#920) — the 409 above only stops two OPEN requests at once; it
+        // does nothing about request → rejected → request, which appends a row
+        // per iteration to a table nothing ever pruned. Count today's rows for
+        // this admin instead, so a rejection still costs the requester budget.
+        // A read failure fails CLOSED: an unreadable count is not evidence that
+        // there is room left.
+        let limit = daily_submit_limit();
+        if limit > 0 {
+            match submits_today(&conn, caller_id) {
+                Ok(n) if n >= limit => {
+                    return json_error(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "CAP_REQUEST_RATE_LIMITED",
+                        &format!("at most {limit} cap requests per day"),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "DB_ERROR",
+                        &e.to_string(),
+                    );
+                }
+            }
         }
 
         if let Err(e) = conn.execute(
