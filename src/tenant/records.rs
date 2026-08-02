@@ -1152,8 +1152,9 @@ pub async fn create_handler(
 pub async fn update_handler(
     Extension(t): Extension<TenantRef>,
     Extension(ctx): Extension<AuthCtx>,
-    // v1.50 (Spec B, adversarial F3) — UPDATE is NOT quota-gated (shrink/recovery
-    // must never be blocked), so no TenantQuotaTier extractor here.
+    // v1.58 (P1-8) — UPDATE is gated on GROWTH past the cap, so the tier is
+    // needed here too. It rides the bearer CTE (no extra meta.sqlite read).
+    Extension(TenantQuotaTier(quota_tier)): Extension<TenantQuotaTier>,
     Path((_tenant, coll, id)): Path<(String, String, i64)>,
     Json(body): Json<DataBody>,
     bus: EventBus,
@@ -1273,10 +1274,14 @@ pub async fn update_handler(
     let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
-            // v1.50 (Spec B, adversarial F3): UPDATE is NOT quota-gated — a
-            // shrink / in-place update must never be blocked so a tenant over
-            // cap (e.g. after a tier downgrade) can recover (spec §7). Growth
-            // is gated at INSERT / upload / write-RPC.
+            // v1.58 (P1-8): UPDATE is quota-gated ONLY on growth that leaves
+            // the tenant over its cap. v1.50 (adversarial F3) exempted updates
+            // wholesale so a tenant over cap (e.g. after a tier downgrade) could
+            // shrink to recover (spec §7) — that justifies never blocking a
+            // shrink, not accepting unbounded growth by repeated overwrite.
+            // Baseline measured on THIS writer connection inside the tx; the
+            // gate itself runs after the UPDATE, below.
+            let usage_before = crate::storage::quota::usage_on_conn(tx)?;
             let schema = match describe_collection(tx, &coll_clone)? {
                 Some(s) => s,
                 None => return Err(rusqlite::Error::InvalidQuery),
@@ -1365,15 +1370,23 @@ pub async fn update_handler(
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
             use rusqlite::OptionalExtension;
-            let mut stmt = tx.prepare(&sql)?;
-            let cols_out: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-            let mut rec = match stmt
-                .query_row(&refs[..], |r| row_to_json(r, &cols_out))
-                .optional()?
-            {
+            // Scoped so the statement is finalized before the growth gate
+            // re-queries this connection.
+            let updated = {
+                let mut stmt = tx.prepare(&sql)?;
+                let cols_out: Vec<String> =
+                    stmt.column_names().iter().map(|s| s.to_string()).collect();
+                stmt.query_row(&refs[..], |r| row_to_json(r, &cols_out))
+                    .optional()?
+            };
+            let mut rec = match updated {
                 Some(rec) => rec,
                 None => return Err(rusqlite::Error::QueryReturnedNoRows),
             };
+            // v1.58 (P1-8) — the UPDATE has run; refuse it only if it BOTH grew
+            // the tenant AND left it over its cap. The sentinel error rolls the
+            // whole tx back and maps to 507 in the match arms below.
+            crate::storage::quota::check_update_growth(tx, usage_before, quota_tier)?;
             if let Some(obj) = rec.as_object_mut() {
                 obj.retain(|k, _| !vector_names.contains(k));
             }

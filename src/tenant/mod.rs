@@ -430,13 +430,14 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     let b = bus.clone();
                     let wh = webhooks.clone();
                     let fns = functions.clone();
-                    // v1.50 (Spec B, adversarial F3) — UPDATE is not quota-gated
-                    // (shrink/recovery must never be blocked), so no
-                    // TenantQuotaTier extractor is threaded to `update_handler`.
-                    move |ext, ctx, p, body| {
+                    // v1.58 (P1-8) — UPDATE is gated on GROWTH past the cap, so
+                    // the TenantQuotaTier extractor IS threaded to
+                    // `update_handler` (a shrink or no-op still passes).
+                    move |ext, ctx, quota, p, body| {
                         records::update_handler(
                             ext,
                             ctx,
+                            quota,
                             p,
                             body,
                             b.clone(),

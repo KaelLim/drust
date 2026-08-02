@@ -69,6 +69,45 @@ pub fn check_tenant_quota(usage: u64, incoming: u64, tier: i64) -> Result<(), Qu
     Ok(())
 }
 
+/// Should this UPDATE be refused? (v1.58 P1-8)
+///
+/// Refuses only when the write BOTH grew the tenant AND left it over the cap.
+/// That keeps the two open cases open:
+///   * a shrink or no-op is always allowed, including from over the cap — a
+///     recovery write must never be blocked, which is the reason updates were
+///     exempt from quota in the first place;
+///   * growth that stays under the cap is untouched.
+///
+/// What it closes is repeatedly overwriting one row with a larger payload to
+/// grow a tenant without bound: the old blanket exemption justified "never
+/// block a shrink" but was also permitting exactly that.
+///
+/// Pure, so the whole matrix is testable without fabricating a 10 GiB database
+/// — `check_tenant_quota` clamps `tier` to a minimum of 1, so the smallest
+/// reachable cap is 10 GiB.
+pub fn decide_update_growth(before: u64, after: u64, tier: i64) -> Result<(), QuotaError> {
+    if after <= before {
+        return Ok(()); // shrink or no-op — never blocked
+    }
+    check_tenant_quota(after, 0, tier)
+}
+
+/// Post-UPDATE quota gate. Call INSIDE the write transaction, AFTER the UPDATE,
+/// with the usage measured on the same connection before it. Returns the
+/// `TENANT_QUOTA_EXCEEDED` sentinel (→ 507 on REST and MCP) so the caller can
+/// simply `?` it out of the `with_writer_tx` closure and roll the write back.
+///
+/// Fails closed: a failed measurement propagates the `rusqlite::Error` and
+/// aborts the transaction rather than reading as "under quota".
+///
+/// Cost: one extra `usage_on_conn`. `PRAGMA page_count` is a header read; the
+/// `_system_files` SUM is a table scan, but a record UPDATE cannot change
+/// `files_bytes`, so in practice the added work is the page-count delta.
+pub fn check_update_growth(conn: &Connection, before: u64, tier: i64) -> rusqlite::Result<()> {
+    let after = usage_on_conn(conn)?;
+    decide_update_growth(before, after, tier).map_err(crate::error::quota_exceeded_error)
+}
+
 /// Read a tenant's `quota_tier` from meta.sqlite for the low-frequency
 /// enforcement points (MCP write / edge enforce / write-RPC / tus finalize)
 /// that don't ride the bearer CTE. Missing tenant, soft-deleted tenant, or any

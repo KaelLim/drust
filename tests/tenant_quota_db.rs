@@ -116,8 +116,10 @@ async fn over_quota_service_rest_writes_507_reads_ok() {
     );
 
     // UPDATE → allowed even over quota (adversarial F3: a shrink / in-place
-    // update must never be blocked so an over-cap tenant can recover; UPDATE
-    // is not quota-gated — only INSERT / upload / write-RPC growth is).
+    // update must never be blocked so an over-cap tenant can recover). Since
+    // v1.58 an UPDATE IS gated, but only when it BOTH grows the tenant AND
+    // leaves it over the cap — this same-size overwrite must still pass, and
+    // tests/quota_update_growth.rs pins both halves of that rule.
     let r = app
         .clone()
         .oneshot(

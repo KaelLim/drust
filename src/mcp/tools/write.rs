@@ -533,9 +533,10 @@ pub(crate) fn validate_conflict_target(
 /// [`insert_row_in_tx`] but resolves an existing row by the `on_conflict` key
 /// first: a hit is an UPDATE (history `op=update`, old=pre-image), a miss is an
 /// INSERT (`op=insert`). Order: field allowlist → conflict-key presence →
-/// structured CHECK → pre-image probe → **quota gate ONLY on the insert branch**
-/// (a conflict UPDATE mirrors `update_record_checked`: not quota-gated, so a
-/// shrink/recovery is never blocked) → `INSERT ... ON CONFLICT(<cols>) DO UPDATE
+/// structured CHECK → pre-image probe → **pre-write quota gate on the insert
+/// branch only** (a conflict UPDATE mirrors `update_record_checked`: gated
+/// AFTER the write on growth only, so a shrink/recovery is never blocked) →
+/// `INSERT ... ON CONFLICT(<cols>) DO UPDATE
 /// SET <non-key col>=excluded.<col>, updated_at=datetime('now') RETURNING *` →
 /// in-tx history capture. Returns `(op, post-image)`; a rolled-back tx discards
 /// data AND history. Upsert is service-only (no policy CHECK; service bypasses).
@@ -626,15 +627,14 @@ pub(crate) fn upsert_row_in_tx(
     } else {
         HistoryOp::Insert
     };
-    // Quota gates the growth (INSERT) branch only — a conflict UPDATE is in
-    // lockstep with `update_record_checked` (v1.50 F3: never block a shrink).
+    // One measurement serves both branches. The INSERT branch is gated up front
+    // (any growth while at the cap is refused); the conflict-UPDATE branch stays
+    // in lockstep with `update_record_checked` — gated AFTER the write, on
+    // growth only, so a shrink or no-op is never blocked (v1.58 P1-8).
+    let usage_before = crate::storage::quota::usage_on_conn(tx)?;
     if matches!(op, HistoryOp::Insert) {
-        crate::storage::quota::check_tenant_quota(
-            crate::storage::quota::usage_on_conn(tx)?,
-            0,
-            quota_tier,
-        )
-        .map_err(crate::error::quota_exceeded_error)?;
+        crate::storage::quota::check_tenant_quota(usage_before, 0, quota_tier)
+            .map_err(crate::error::quota_exceeded_error)?;
     }
 
     let cols: Vec<&str> = data_map.keys().map(|k| k.as_str()).collect();
@@ -693,11 +693,20 @@ pub(crate) fn upsert_row_in_tx(
         .collect();
     let refs: Vec<&dyn rusqlite::ToSql> =
         params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-    let mut stmt = tx.prepare(&sql)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-    let rec = stmt
-        .query_row(&refs[..], |r| materialize_row(r, &col_names, vector_names))
-        .map_err(map_check_violation)?;
+    // Scoped so the statement is finalized before the growth gate re-queries
+    // this connection.
+    let rec = {
+        let mut stmt = tx.prepare(&sql)?;
+        let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        stmt.query_row(&refs[..], |r| materialize_row(r, &col_names, vector_names))
+            .map_err(map_check_violation)?
+    };
+    // v1.58 (P1-8) — post-write growth gate for the conflict-UPDATE branch. The
+    // INSERT branch was already gated above; re-checking it here would reject
+    // the very row it just admitted.
+    if matches!(op, HistoryOp::Update) {
+        crate::storage::quota::check_update_growth(tx, usage_before, quota_tier)?;
+    }
     let id = rec
         .get("id")
         .and_then(|v| v.as_i64())
@@ -855,12 +864,24 @@ pub async fn update_record_checked(
         .map(|v| v.name.clone())
         .collect();
 
-    // v1.50 (Spec B, adversarial F3): UPDATE is NOT quota-gated. A shrink or
-    // in-place update must never be blocked — a tenant already over cap (e.g.
-    // after an owner tier downgrade) has to be able to shrink to recover
-    // (spec §7). Growth is gated at INSERT / upload / write-RPC instead.
+    // v1.58 (P1-8) — UPDATE is quota-gated ONLY on growth that leaves the
+    // tenant over its cap. v1.50 (adversarial F3) exempted updates wholesale so
+    // a tenant already over cap (e.g. after an owner tier downgrade) could
+    // shrink to recover (spec §7); that reasoning justifies never blocking a
+    // shrink, not accepting unbounded growth by repeated overwrite. The gate
+    // runs POST-UPDATE inside the same tx (`check_update_growth`), so a shrink
+    // or no-op still passes untouched and a refusal rolls the UPDATE back.
+    let inner = s.inner();
+    let quota_tier = match inner.meta.as_ref() {
+        Some(m) => crate::storage::quota::read_tier(m, &inner.tenant_id).await,
+        None => 1,
+    };
     let record = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
+            // Baseline for the post-UPDATE growth gate, measured on THIS writer
+            // connection inside the tx (same no-TOCTOU property as the INSERT
+            // gate — the check serializes with the write it guards).
+            let usage_before = crate::storage::quota::usage_on_conn(tx)?;
             let schema = describe_collection(tx, &coll)?
                 .ok_or_else(|| invalid_input(format!("unknown collection: '{}'", coll)))?;
             let allowed: std::collections::HashSet<&str> =
@@ -952,15 +973,22 @@ pub async fn update_record_checked(
             params.push(Value::Integer(id));
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-            let mut stmt = tx.prepare(&sql)?;
-            let col_names: Vec<String> =
-                stmt.column_names().iter().map(|s| s.to_string()).collect();
-            match stmt
-                .query_row(&refs[..], |r| materialize_row(r, &col_names, &vector_names))
-                .map_err(map_check_violation)
-                .optional()?
-            {
+            // Scoped so the statement is finalized before the growth gate below
+            // re-queries this connection.
+            let updated = {
+                let mut stmt = tx.prepare(&sql)?;
+                let col_names: Vec<String> =
+                    stmt.column_names().iter().map(|s| s.to_string()).collect();
+                stmt.query_row(&refs[..], |r| materialize_row(r, &col_names, &vector_names))
+                    .map_err(map_check_violation)
+                    .optional()?
+            };
+            match updated {
                 Some(rec) => {
+                    // v1.58 (P1-8) — the UPDATE has run; refuse it only if it
+                    // BOTH grew the tenant AND left it over its cap. `?` rolls
+                    // the whole tx back, so a refusal writes nothing.
+                    crate::storage::quota::check_update_growth(tx, usage_before, quota_tier)?;
                     // Explicit-policy CHECK on the post-image row (enforcement
                     // core): a failing predicate rolls the UPDATE back, mirroring
                     // records.rs (REST). `None` for service/Privileged.

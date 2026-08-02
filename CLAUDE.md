@@ -142,7 +142,12 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
 2. **Every growth path calls `check_tenant_quota` before the growth, for all caller roles** —
    REST and MCP and edge writes, every `run_write_rpc` caller including cron, Mode-A and tus
    uploads, edge `put-file`. Deletes, reads, and the visibility bucket-move are deliberately
-   exempt: a shrink or recovery write must never be blocked. Tier is admin-plane-only config.
+   exempt: a shrink or recovery write must never be blocked. An UPDATE is checked only when
+   it BOTH grows the tenant AND leaves it over the cap (`quota::check_update_growth`, called
+   post-write inside the same tx at all three update sites: REST `update_handler`, MCP/edge
+   `update_record_checked`, and the upsert conflict branch in `upsert_row_in_tx`) — the old
+   blanket exemption justified "never block a shrink" but was also permitting unbounded
+   growth by repeated overwrite. Tier is admin-plane-only config.
 
 3. **Every path that mutates tenant data-collection rows captures record history in the same
    transaction.** Three shapes: `record_history::capture()` for structured writes,
