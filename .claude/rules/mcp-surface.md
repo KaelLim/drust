@@ -43,7 +43,7 @@ Every REST error JSON includes a `suggested_fix` field with a context-aware reme
 
 Destructive ops `delete_record` / `drop_collection` / `drop_index` accept `dry_run: true` and return `would_*` counts + blast radius without mutating.
 
-`recent_writes` (service-only) reads mutation rows from `meta_logs.sqlite` filtered to the calling tenant — lets a retrying model recover what its previous attempt already did. **Known code inconsistency being fixed in v1.58**: the handler passes `limit.unwrap_or(50)` while the tool description advertises the last 100 rows.
+`recent_writes` (service-only) reads mutation rows from `meta_logs.sqlite` filtered to the calling tenant — lets a retrying model recover what its previous attempt already did. Default limit is **100**, matching what the tool description and the MCP prologue tell the model; an explicit `limit` wins and is clamped to `1..=200`.
 
 ## Provenance
 

@@ -2393,7 +2393,11 @@ impl DrustMcpService {
         match crate::safety::recent_writes::query_recent(
             &self.state.inner().audit_meta_read,
             &tenant_id,
-            limit.unwrap_or(50),
+            // v1.58 — was 50 while both this tool's own description and the
+            // MCP prologue promised the last 100 mutations. The tool exists to
+            // reconcile after a retry, so under-returning silently invites
+            // duplicate writes. `query_recent` clamps to 1..=200.
+            limit.unwrap_or(100),
             collection.as_deref(),
             since_ts.as_deref(),
         )
