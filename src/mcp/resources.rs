@@ -431,8 +431,19 @@ fn redact_rpc_array(rpcs: &mut serde_json::Value) {
     }
 }
 
-/// Strip `payload_json` from the cron inventory — a cron payload is free-form
-/// tenant JSON that can carry a token/secret (spec §3). Shape: `{"jobs":[…]}`.
+/// Strip secrets from the cron inventory. Shape: `{"jobs":[…]}`.
+///
+/// `payload_json` is free-form tenant JSON and can carry a token (spec §3).
+/// `last_error` is worse: it is whatever the failed run stringified, and
+/// rusqlite's `SqlInputError` Display embeds the whole failing statement, so a
+/// cron job pointing at an RPC that fails to prepare would leak the RPC's SQL
+/// through a resource — and a resource is auto-fetchable into model context,
+/// unlike a tool the model has to decide to call. The `rpcs` resource strips
+/// that same SQL deliberately.
+///
+/// The signal survives as a boolean: the reader still learns the job is failing
+/// (and `last_status` is untouched) and can call `list_cron_jobs`, an explicit
+/// tool call, for the detail.
 fn redact_cron(jobs: &mut serde_json::Value) {
     let Some(arr) = jobs.get_mut("jobs").and_then(|j| j.as_array_mut()) else {
         return;
@@ -440,8 +451,20 @@ fn redact_cron(jobs: &mut serde_json::Value) {
     for j in arr {
         if let Some(obj) = j.as_object_mut() {
             obj.remove("payload_json");
+            let had_error = obj.remove("last_error").is_some_and(|v| !v.is_null());
+            obj.insert(
+                "last_error_present".into(),
+                serde_json::Value::Bool(had_error),
+            );
         }
     }
+}
+
+/// Test seam for `redact_cron`, which is otherwise private to the resource
+/// renderer.
+#[doc(hidden)]
+pub fn redact_cron_for_test(jobs: &mut serde_json::Value) {
+    redact_cron(jobs)
 }
 
 /// Render a parsed resource to `(body, mime)` by calling the existing reader fn
