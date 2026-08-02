@@ -21,7 +21,7 @@ mod helpers {
              INSERT INTO comments (id, post_id) VALUES (1, 1), (2, 1);"
         ).unwrap();
         let registry = drust::storage::pool::TenantRegistry::new(data_dir, 2);
-        let pool = registry.get_or_open("acme").unwrap();
+        let pool = registry.get_or_create("acme").unwrap();
         (pool, dir)
     }
 }

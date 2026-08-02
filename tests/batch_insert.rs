@@ -47,7 +47,7 @@ async fn make_notes(s: &drust::mcp::server::DrustMcp) {
 /// for direct data / history counts.
 async fn count_rows(dir: &tempfile::TempDir, table: &str) -> i64 {
     let tr = TenantRegistry::new(dir.path().to_path_buf(), 2);
-    let pool = tr.get_or_open("blog").unwrap();
+    let pool = tr.get_or_create("blog").unwrap();
     let sql = format!("SELECT COUNT(*) FROM \"{}\"", table.replace('"', "\"\""));
     pool.with_reader(move |c| c.query_row(&sql, [], |r| r.get::<_, i64>(0)))
         .await

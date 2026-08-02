@@ -693,7 +693,7 @@ mod tests {
             tmp.path().to_path_buf(),
             2,
         ));
-        let _pool = tenants.get_or_open(tenant_id).unwrap();
+        let _pool = tenants.get_or_create(tenant_id).unwrap();
         let garage = Arc::new(crate::storage::garage::GarageClient::from_store(
             Arc::new(object_store::memory::InMemory::new()),
             "unused",
@@ -702,7 +702,7 @@ mod tests {
         let bucket = rooms_cfg.bucket();
         let mcp = DrustMcp::new(
             tenant_id,
-            tenants.get_or_open(tenant_id).unwrap(),
+            tenants.get_or_create(tenant_id).unwrap(),
             crate::tenant::events::EventBus::new(),
             crate::tenant::WebhookDispatcher::new(tenants.clone(), None),
             Some(garage),

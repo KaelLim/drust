@@ -67,7 +67,7 @@ async fn build_app(tenant_id: &str) -> (Router, std::path::PathBuf, tempfile::Te
 /// checks pass.
 async fn seed_posts(data_dir: &std::path::Path, tenant_id: &str) {
     let pool = drust::storage::pool::TenantRegistry::new(data_dir.to_path_buf(), 2);
-    let pool = pool.get_or_open(tenant_id).unwrap();
+    let pool = pool.get_or_create(tenant_id).unwrap();
     pool.with_writer(|c| {
         c.execute_batch(
             "CREATE TABLE IF NOT EXISTS posts (

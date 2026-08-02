@@ -811,24 +811,18 @@ pub async fn spawn_retention_task(meta: Arc<Mutex<Connection>>, registry: Arc<Te
         for tid in ids {
             // Same guard as the session janitor: a live meta row whose
             // data.sqlite is already gone must not be re-created by the
-            // pool open.
-            let p = registry
-                .data_root()
-                .join("tenants")
-                .join(&tid)
-                .join("data.sqlite");
-            if !p.exists() {
-                continue;
-            }
-            match registry.get_or_open(&tid) {
-                Ok(pool) => match pool.with_writer(|c| prune_tenant(c, days)).await {
+            // pool open. `get_if_live` does the probe and the create-free
+            // open atomically, closing the check-then-act window the old
+            // `exists()`-then-create-on-open pair left open.
+            match registry.get_if_live(&tid) {
+                Some(pool) => match pool.with_writer(|c| prune_tenant(c, days)).await {
                     Ok(n) => total += n,
                     Err(e) => {
                         tracing::warn!(tenant = %tid, err = ?e, "record-history retention prune failed")
                     }
                 },
-                Err(e) => {
-                    tracing::warn!(tenant = %tid, err = ?e, "record-history retention: pool open failed")
+                None => {
+                    tracing::debug!(tenant = %tid, "record-history retention: tenant not live, skipping")
                 }
             }
         }

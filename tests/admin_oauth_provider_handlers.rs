@@ -1,5 +1,5 @@
 //! T1: zombie-tenant guard on the admin-UI `_oauth_providers` POST handlers
-//! (`upsert` and `<provider>/delete`). Both call `state.tenants.get_or_open`
+//! (`upsert` and `<provider>/delete`). Both call `state.tenants.get_or_create`
 //! which would otherwise materialise `tenants/<bogus_id>/data.sqlite` for
 //! any admin-typed path. The GET render already runs `load_tenant_shell`
 //! first; this test asserts the POST paths now share the same guard.

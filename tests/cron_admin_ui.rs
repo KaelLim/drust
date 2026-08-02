@@ -51,7 +51,7 @@ async fn app() -> (axum::Router, String, Arc<TenantRegistry>, tempfile::TempDir)
     let tenants = Arc::new(TenantRegistry::new(data_dir.clone(), 2));
     // Seed the function target the create form points at (ops::create_job
     // validates target existence through the same get_function REST uses).
-    let pool = tenants.get_or_open(TID).unwrap();
+    let pool = tenants.get_or_create(TID).unwrap();
     drust::functions::schema::create_function(
         &pool,
         drust::functions::schema::CreateFunctionParams {

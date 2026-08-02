@@ -146,7 +146,7 @@ async fn spin_up_egress(tid: &str) -> (axum::Router, String, String, String, tem
 
     // Seed a `_system_users` row + active session so the user-token 403 path is
     // exercised with a real `drust_user_*` bearer.
-    let pool = tenants.get_or_open(tid).unwrap();
+    let pool = tenants.get_or_create(tid).unwrap();
     let user_token = pool
         .with_writer(|c| {
             c.execute(

@@ -54,7 +54,7 @@ pub async fn list_oauth_providers_handler(
     State(state): State<TenantAuthState>,
     ServiceTid(tid): ServiceTid,
 ) -> Response {
-    let pool = match state.registry.get_or_open(&tid) {
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -125,7 +125,7 @@ pub async fn put_oauth_provider_handler(
         )
             .into_response();
     }
-    let pool = match state.registry.get_or_open(&tid) {
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -196,7 +196,7 @@ pub async fn put_oauth_redirect_uris_handler(
                 .into_response();
         }
     }
-    let pool = match state.registry.get_or_open(&tid) {
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -243,7 +243,7 @@ pub async fn delete_oauth_provider_handler(
         Ok(p) => p,
         Err(r) => return r,
     };
-    let pool = match state.registry.get_or_open(&tid) {
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };

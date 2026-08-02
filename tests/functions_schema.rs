@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 fn pool_for(dir: &std::path::Path) -> drust::storage::pool::SharedTenantPool {
     let reg = Arc::new(TenantRegistry::new(dir.to_path_buf(), 2));
-    reg.get_or_open("t-fn").expect("open tenant pool")
+    reg.get_or_create("t-fn").expect("open tenant pool")
 }
 
 #[tokio::test]

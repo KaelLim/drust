@@ -425,7 +425,7 @@ mod tests {
     async fn record_run_via_with_writer_tx_rolls_back_fully_on_err() {
         let tmp = tempfile::TempDir::new().unwrap();
         let registry = crate::storage::pool::TenantRegistry::new(tmp.path().to_path_buf(), 2);
-        let pool = registry.get_or_open("t-cron-store-tx").unwrap();
+        let pool = registry.get_or_create("t-cron-store-tx").unwrap();
         let job = pool
             .with_writer(|c| create_job(c, "j", "* * * * *", "function", "f", None, true))
             .await

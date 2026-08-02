@@ -76,7 +76,7 @@ const WEBHOOK_SECRET_ONCE_COOKIE: &str = "drust_webhook_secret_once";
 /// — the page just renders an empty table rather than 500-ing on a missing
 /// fresh tenant DB.
 async fn load_webhook_rows(state: &TenantsState, tenant_id: &str) -> Vec<TenantWebhookRow> {
-    let pool = match state.tenants.get_or_open(tenant_id) {
+    let pool = match state.tenants.get_or_create(tenant_id) {
         Ok(p) => p,
         Err(_) => return vec![],
     };
@@ -364,7 +364,7 @@ pub async fn tenant_webhook_create_form(
         .await;
     }
 
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => {
             return (StatusCode::NOT_FOUND, "no such tenant").into_response();
@@ -473,7 +473,7 @@ pub async fn tenant_webhook_delete_form(
     {
         return r;
     }
-    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+    if let Ok(pool) = state.tenants.get_or_create(&tenant_id) {
         let _ = pool
             .with_writer(move |c| {
                 c.execute(

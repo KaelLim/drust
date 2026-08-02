@@ -101,7 +101,7 @@ pub async fn register_handler(
             "self-registration disabled for this tenant",
         );
     }
-    let pool = match state.registry.get_or_open(&tenant_id) {
+    let pool = match state.registry.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -211,7 +211,7 @@ pub async fn login_handler(
             "invalid email or password",
         );
     }
-    let pool = match state.registry.get_or_open(&tenant_id) {
+    let pool = match state.registry.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => {
             let _ =
@@ -345,7 +345,7 @@ pub async fn logout_handler(
         Some(t) => t.clone(),
         None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
-    let pool = match state.registry.get_or_open(&tenant_id) {
+    let pool = match state.registry.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -383,7 +383,7 @@ pub async fn logout_all_handler(
         Some(t) => t.clone(),
         None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
-    let pool = match state.registry.get_or_open(&tenant_id) {
+    let pool = match state.registry.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -472,7 +472,7 @@ pub async fn me_get_handler(
         Some(t) => t.clone(),
         None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
-    let pool = match state.registry.get_or_open(&tenant_id) {
+    let pool = match state.registry.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -523,7 +523,7 @@ pub async fn me_patch_handler(
             "profile JSON exceeds 64 KB",
         );
     }
-    let pool = match state.registry.get_or_open(&tenant_id) {
+    let pool = match state.registry.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -596,7 +596,7 @@ pub async fn me_password_handler(
             "password too long",
         );
     }
-    let pool = match state.registry.get_or_open(&tenant_id) {
+    let pool = match state.registry.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };

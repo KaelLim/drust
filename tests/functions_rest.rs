@@ -168,7 +168,7 @@ async fn gc_keeps_referenced_artifact_removes_orphan() {
 
     let dir = tempfile::tempdir().unwrap();
     let reg = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
-    let pool = reg.get_or_open("t-gc").expect("open tenant pool");
+    let pool = reg.get_or_create("t-gc").expect("open tenant pool");
 
     let referenced = "aa".repeat(32);
     let orphan = "bb".repeat(32);

@@ -269,7 +269,7 @@ pub async fn bearer_auth_layer(
                             "token expired",
                         );
                     } else {
-                        let pool = match state.registry.get_or_open(&tenant_id) {
+                        let pool = match state.registry.get_or_create(&tenant_id) {
                             Ok(p) => p,
                             Err(_) => {
                                 return json_error(
@@ -331,7 +331,7 @@ pub async fn bearer_auth_layer(
                     if cached_tid != tenant_id {
                         // Cross-tenant: do not serve from cache; fall through.
                     } else if chrono::Utc::now() < expires_at {
-                        let pool = match state.registry.get_or_open(&tenant_id) {
+                        let pool = match state.registry.get_or_create(&tenant_id) {
                             Ok(p) => p,
                             Err(_) => {
                                 return json_error(
@@ -555,7 +555,7 @@ SELECT \
         }
         // Open the tenant pool. Needed regardless of bearer kind (user
         // session lookup, downstream handlers).
-        let pool = match state.registry.get_or_open(&tenant_id) {
+        let pool = match state.registry.get_or_create(&tenant_id) {
             Ok(p) => p,
             Err(_) => {
                 return json_error(

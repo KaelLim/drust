@@ -128,7 +128,7 @@ pub async fn spin_up_tenant_with_fn_runner(
     .unwrap();
 
     // One function row bound per `triggers_json`, then refresh the cache.
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
     drust::functions::schema::create_function(
         &pool,
         drust::functions::schema::CreateFunctionParams {
@@ -218,7 +218,7 @@ pub async fn spin_up_tenant_with_fn_seed(
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
 
     // Seed one function row `f1`, then refresh the binding cache.
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
     drust::functions::schema::create_function(
         &pool,
         drust::functions::schema::CreateFunctionParams {
@@ -270,7 +270,7 @@ pub async fn spin_up_tenant_with_fn_seed(
 
 pub async fn grab_pool(tenant: &str, dir: &tempfile::TempDir) -> SharedTenantPool {
     let reg = TenantRegistry::new(dir.path().to_path_buf(), 2);
-    reg.get_or_open(tenant).unwrap()
+    reg.get_or_create(tenant).unwrap()
 }
 
 /// Cron REST stack (tests/cron_rest.rs): like `spin_up_tenant_with_fn_seed`
@@ -318,7 +318,7 @@ pub async fn spin_up_cron_stack(
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
 
     // Seed one function row `f1` — the function-target the create tests use.
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
     drust::functions::schema::create_function(
         &pool,
         drust::functions::schema::CreateFunctionParams {
@@ -368,7 +368,7 @@ pub async fn spin_up_cron_stack(
 }
 
 /// Minimal stack for the cron dispatch tests (tests/cron_dispatch.rs): a
-/// registry over a tempdir with one opened tenant (`get_or_open` runs
+/// registry over a tempdir with one opened tenant (`get_or_create` runs
 /// `open_write` → full `_system_*` schema), one seeded `_system_functions`
 /// row `f1` (sha `00…`, triggers `[]` — the injected mock runner never reads
 /// the artifact), and an `Executor` wired to that runner. No router / meta /
@@ -385,7 +385,7 @@ pub async fn cron_test_stack(
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
 
     drust::functions::schema::create_function(
         &pool,
@@ -449,7 +449,7 @@ pub async fn spin_up_isolation_stack(
     // `fn_out` collection — the runner's host insert target AND the bound
     // trigger collection (the deliberate self-write loop the depth=1 guard
     // must break).
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
     create_collection_via_pool(&pool, "fn_out", &[("payload", "text")]).await;
 
     // One function row bound to fn_out/created, then prime the cache.
@@ -1007,7 +1007,7 @@ pub async fn seed_user_for_mcp(tenant: &str) -> (SharedTenantPool, tempfile::Tem
     let dir = tempfile::tempdir().unwrap();
     seed_tenant_fs(&dir, tenant);
     let tenants = TenantRegistry::new(dir.path().to_path_buf(), 2);
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
     let uid = "u-mcp-cache".to_string();
     let uid2 = uid.clone();
     pool.with_writer(move |c| {
@@ -1069,7 +1069,7 @@ pub async fn auth_state_with_seeded_user(
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data, 2));
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
     let uid = "u-del-cache".to_string();
     let uid2 = uid.clone();
     pool.with_writer(move |c| {

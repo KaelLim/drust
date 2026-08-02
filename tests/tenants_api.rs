@@ -127,7 +127,7 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
     )));
 
     // Populate all three caches.
-    let _ = tenants.get_or_open("blog").unwrap();
+    let _ = tenants.get_or_create("blog").unwrap();
     let _ = mcp.get_or_create("blog").await.unwrap();
     let _rx = bus.subscribe("blog", "items");
     assert_eq!(tenants.cached_count(), 1);

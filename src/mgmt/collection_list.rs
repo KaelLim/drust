@@ -298,7 +298,7 @@ async fn admin_list_inner(
     }
 
     // Load schema (need it for FilterAst::compile + column_names).
-    let pool = match state.tenants.get_or_open(tenant_id) {
+    let pool = match state.tenants.get_or_create(tenant_id) {
         Ok(p) => p,
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", e.to_string())),
     };

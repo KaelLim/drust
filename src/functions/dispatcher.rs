@@ -67,10 +67,12 @@ impl FunctionDispatcher {
         let dropped = self.dropped_total.clone();
         // Fire-and-forget — hot path must not await.
         tokio::spawn(async move {
-            let pool = match tenants.get_or_open(&me_tenant) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(error = ?e, tenant = %me_tenant, "function dispatch: get_or_open failed");
+            // Spawned task: `get_if_live` so a tenant soft-deleted between the
+            // emitting write and this fan-out is skipped, not resurrected.
+            let pool = match tenants.get_if_live(&me_tenant) {
+                Some(p) => p,
+                None => {
+                    tracing::debug!(tenant = %me_tenant, "function dispatch: tenant not live, skipping");
                     return;
                 }
             };
@@ -155,10 +157,12 @@ impl FunctionDispatcher {
         let queue_depth = self.cfg.queue_depth;
         let dropped = self.dropped_total.clone();
         tokio::spawn(async move {
-            let pool = match tenants.get_or_open(&me_tenant) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(error = ?e, tenant = %me_tenant, "function dispatch: get_or_open failed");
+            // Spawned task: `get_if_live` so a tenant soft-deleted between the
+            // emitting write and this fan-out is skipped, not resurrected.
+            let pool = match tenants.get_if_live(&me_tenant) {
+                Some(p) => p,
+                None => {
+                    tracing::debug!(tenant = %me_tenant, "function dispatch: tenant not live, skipping");
                     return;
                 }
             };
@@ -212,7 +216,9 @@ async fn enqueue(
                 "function queue full — invocation dropped (rate-limited log)"
             );
         }
-        if let Ok(pool) = tenants.get_or_open(&inv.tenant_id) {
+        // Overflow bookkeeping on a background queue: never create a tenant
+        // just to log that its invocation was dropped.
+        if let Some(pool) = tenants.get_if_live(&inv.tenant_id) {
             let _ = crate::functions::schema::insert_log(
                 &pool,
                 crate::functions::schema::LogRow {
@@ -245,7 +251,7 @@ mod tests {
         triggers: &str,
     ) -> (Arc<TenantRegistry>, crate::storage::pool::SharedTenantPool) {
         let reg = Arc::new(TenantRegistry::new(dir.to_path_buf(), 2));
-        let pool = reg.get_or_open("t-d").unwrap();
+        let pool = reg.get_or_create("t-d").unwrap();
         schema::create_function(
             &pool,
             CreateFunctionParams {

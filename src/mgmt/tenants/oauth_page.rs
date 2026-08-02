@@ -90,7 +90,7 @@ async fn render_oauth_providers_page(
 
     // Read the providers via the shared pool's reader (consistent with the
     // REST admin endpoints, and uses the same connection cache).
-    let providers: Vec<TenantOauthProviderRow> = match state.tenants.get_or_open(&tenant_id) {
+    let providers: Vec<TenantOauthProviderRow> = match state.tenants.get_or_create(&tenant_id) {
         Ok(pool) => match pool.with_reader(crate::tenant::oauth_config::list).await {
             Ok(rows) => rows
                 .into_iter()
@@ -152,7 +152,7 @@ pub async fn tenant_oauth_provider_upsert(
     Form(form): Form<OauthProviderUpsertForm>,
 ) -> Response {
     // Guard FIRST: a missing/soft-deleted tenant must not be re-materialised
-    // by the writer-mutex below via get_or_open → open_write → create_dir_all.
+    // by the writer-mutex below via get_or_create → open_write → create_dir_all.
     // GET path runs the same check via load_tenant_shell; DELETE and the
     // upsert error-leg need it too.
     if let Some(r) = common::ensure_tenant_visible(
@@ -192,7 +192,7 @@ pub async fn tenant_oauth_provider_upsert(
         .await;
     }
 
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
     };
@@ -237,7 +237,7 @@ pub async fn tenant_oauth_provider_delete(
     Path((tenant_id, provider)): Path<(String, String)>,
 ) -> Response {
     // Guard FIRST: a missing/soft-deleted tenant must not be re-materialised
-    // by get_or_open → open_write → create_dir_all. GET path runs the same
+    // by get_or_create → open_write → create_dir_all. GET path runs the same
     // check via load_tenant_shell.
     if let Some(r) = common::ensure_tenant_visible(
         &state,
@@ -249,7 +249,7 @@ pub async fn tenant_oauth_provider_delete(
     {
         return r;
     }
-    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+    if let Ok(pool) = state.tenants.get_or_create(&tenant_id) {
         let provider2 = provider.clone();
         let _ = pool
             .with_writer(move |c| crate::tenant::oauth_config::delete(c, &provider2))
@@ -324,7 +324,7 @@ pub async fn tenant_oauth_redirect_uris_update(
         }
     }
 
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
     };

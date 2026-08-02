@@ -596,7 +596,7 @@ async fn tenant_soft_delete_invalidates_cron_index() {
         drust::tenant::rooms::RoomBus::new(),
     );
 
-    let pool = tenants.get_or_open("t-cr-del").unwrap();
+    let pool = tenants.get_or_create("t-cr-del").unwrap();
     pool.with_writer(|c| {
         drust::cron::store::create_job(c, "j", "* * * * *", "function", "f", None, true)
     })

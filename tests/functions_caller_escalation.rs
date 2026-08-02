@@ -207,7 +207,7 @@ async fn build_probe(
     let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data.clone(), 2));
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
 
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
     // `notes` with a text body; default caps grant neither anon nor user INSERT.
     let mcp_reg = drust::mcp::server::McpRegistry::new(tenants.clone());
     let svc = mcp_reg.get_or_create(tenant).await.unwrap();

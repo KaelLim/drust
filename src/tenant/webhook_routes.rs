@@ -221,7 +221,7 @@ pub async fn create_handler(
              or the settings page before registering",
         );
     }
-    let pool = match state.registry.get_or_open(&tid) {
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -268,7 +268,7 @@ pub async fn list_handler(
     State(state): State<TenantAuthState>,
     ServiceTid(tid): ServiceTid,
 ) -> Response {
-    let pool = match state.registry.get_or_open(&tid) {
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -313,7 +313,7 @@ pub async fn get_handler(
         Ok(i) => i,
         Err(r) => return r,
     };
-    let pool = match state.registry.get_or_open(&tid) {
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -395,7 +395,7 @@ pub async fn patch_handler(
     {
         return r;
     }
-    let pool = match state.registry.get_or_open(&tid) {
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -453,7 +453,7 @@ pub async fn delete_handler(
         Ok(i) => i,
         Err(r) => return r,
     };
-    let pool = match state.registry.get_or_open(&tid) {
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };

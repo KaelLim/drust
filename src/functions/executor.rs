@@ -213,10 +213,10 @@ impl Executor {
     }
 
     async fn resolve_and_run(&self, inv: &Invocation) -> RunOutcome {
-        // `get_if_live`, never `get_or_open`: a soft-delete landing during
+        // `get_if_live`, never `get_or_create`: a soft-delete landing during
         // the permit/tenant-lock waits in run_one must not let this re-entry
         // resurrect the dead tenant's data.sqlite outside `_trash`
-        // (get_or_open's open_write = create_dir_all + SQLITE_OPEN_CREATE +
+        // (get_or_create's open_write = create_dir_all + SQLITE_OPEN_CREATE +
         // full schema). The create-free open is the atomic guard — no
         // check-then-act window.
         let pool = match self.tenants.get_if_live(&inv.tenant_id) {
@@ -348,7 +348,7 @@ mod tests {
     }
 
     async fn create_echo_fn(reg: &Arc<TenantRegistry>, tenant: &str) {
-        let pool = reg.get_or_open(tenant).unwrap();
+        let pool = reg.get_or_create(tenant).unwrap();
         schema::create_function(
             &pool,
             schema::CreateFunctionParams {
@@ -391,7 +391,7 @@ mod tests {
             })
             .await;
         assert_eq!(out.status, RunStatus::Ok);
-        let pool = reg.get_or_open("t-e").unwrap();
+        let pool = reg.get_or_create("t-e").unwrap();
         let logs = schema::list_logs(&pool, "echo", 10).await.unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].status, "ok");
@@ -402,7 +402,7 @@ mod tests {
     async fn inactive_function_records_error_not_run() {
         let dir = tempfile::tempdir().unwrap();
         let (exec, reg) = setup(dir.path()).await;
-        let pool = reg.get_or_open("t-e").unwrap();
+        let pool = reg.get_or_create("t-e").unwrap();
         schema::set_active(&pool, "echo", false).await.unwrap();
         let out = exec
             .run_one(Invocation {
@@ -442,7 +442,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert_eq!(exec.completed_total.load(Ordering::Relaxed), 5);
-        let pool = reg.get_or_open("t-e").unwrap();
+        let pool = reg.get_or_create("t-e").unwrap();
         assert_eq!(
             schema::list_logs(&pool, "echo", 100).await.unwrap().len(),
             5
@@ -634,7 +634,7 @@ mod tests {
     async fn non_privileged_caller_runs_when_flag_on() {
         let dir = tempfile::tempdir().unwrap();
         let (exec, reg) = setup(dir.path()).await;
-        let pool = reg.get_or_open("t-e").unwrap();
+        let pool = reg.get_or_create("t-e").unwrap();
         schema::set_invoke_acl(&pool, "echo", true, true)
             .await
             .unwrap();

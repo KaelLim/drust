@@ -168,7 +168,7 @@ pub async fn apply_audit_default_all(
         }
     };
     // 2. Bulk-apply on the tenant db through the serialized writer.
-    let pool = match state.tenants.get_or_open(&tid) {
+    let pool = match state.tenants.get_or_create(&tid) {
         Ok(p) => p,
         Err(e) => {
             return json_error(
@@ -485,7 +485,7 @@ pub async fn tenant_settings_page(
     // v1.50 — live usage for the storage-quota card. Measured off a pooled
     // reader (same source as the stats sampler); best-effort → 0 on error so a
     // fresh/unopenable tenant still renders. `pending` hides the request form.
-    let usage_bytes: u64 = match state.tenants.get_or_open(&tenant_id) {
+    let usage_bytes: u64 = match state.tenants.get_or_create(&tenant_id) {
         Ok(pool) => pool
             .with_reader(crate::storage::quota::usage_on_conn)
             .await

@@ -190,7 +190,15 @@ impl TenantRegistry {
         &self.data_root
     }
 
-    pub fn get_or_open(&self, tenant_id: &str) -> anyhow::Result<SharedTenantPool> {
+    /// Get the tenant's pool, **creating the database and its schema if
+    /// absent**.
+    ///
+    /// The old name (`get_or_open`) read as "get or open" while the behaviour
+    /// is "get or CREATE", which is how a row of background loops ended up
+    /// resurrecting soft-deleted tenants. Background and scheduled paths want
+    /// [`TenantRegistry::get_if_live`]; this one belongs to tenant creation and
+    /// to request paths that have already proved the tenant exists in `meta`.
+    pub fn get_or_create(&self, tenant_id: &str) -> anyhow::Result<SharedTenantPool> {
         if let Some(p) = self.pools.get(tenant_id) {
             return Ok(p.clone());
         }
@@ -209,7 +217,7 @@ impl TenantRegistry {
     /// `create_dir_all`, no `SQLITE_OPEN_CREATE`, no schema apply), so a
     /// tenant soft-deleted mid-flight can never have its `data.sqlite`
     /// resurrected outside `_trash`. `None` = tenant gone. Live tenants
-    /// cache on success exactly like `get_or_open`.
+    /// cache on success exactly like `get_or_create`.
     pub fn get_if_live(&self, tenant_id: &str) -> Option<SharedTenantPool> {
         if let Some(p) = self.pools.get(tenant_id) {
             return Some(p.clone());

@@ -79,7 +79,7 @@ fn setup_mode_a(
     let dir = tempfile::tempdir().unwrap();
     drust::storage::tenant_db::open_write(dir.path(), tid).unwrap();
     let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
-    let pool = registry.get_or_open(tid).unwrap();
+    let pool = registry.get_or_create(tid).unwrap();
     let garage = Arc::new(GarageClient::from_store(
         Arc::new(InMemory::new()),
         "private",
@@ -205,7 +205,7 @@ async fn tus_create_over_quota_507() {
     let dir = tempfile::tempdir().unwrap();
     drust::storage::tenant_db::open_write(dir.path(), "blog").unwrap();
     let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
-    let pool = registry.get_or_open("blog").unwrap();
+    let pool = registry.get_or_create("blog").unwrap();
     inflate_over_quota(&pool).await;
     let mut state = TenantFilesState::test_default(None, dir.path().to_path_buf(), registry);
     state.disk_min_free_pct = 0;
@@ -254,7 +254,7 @@ async fn tus_patch_cumulative_over_quota_507_and_not_charged() {
     let dir = tempfile::tempdir().unwrap();
     drust::storage::tenant_db::open_write(dir.path(), "blog").unwrap();
     let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
-    let pool = registry.get_or_open("blog").unwrap();
+    let pool = registry.get_or_create("blog").unwrap();
     let garage = Arc::new(GarageClient::from_store(
         Arc::new(InMemory::new()),
         "private",
@@ -337,7 +337,7 @@ async fn tus_finalize_over_quota_507() {
     let dir = tempfile::tempdir().unwrap();
     drust::storage::tenant_db::open_write(dir.path(), "blog").unwrap();
     let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
-    let pool = registry.get_or_open("blog").unwrap();
+    let pool = registry.get_or_create("blog").unwrap();
     let garage = Arc::new(GarageClient::from_store(
         Arc::new(InMemory::new()),
         "private",
@@ -423,7 +423,7 @@ async fn edge_put_file_over_quota_denied() {
     let data = dir.path().to_path_buf();
     drust::storage::tenant_db::open_write(&data, "blog").unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
-    let pool = tenants.get_or_open("blog").unwrap();
+    let pool = tenants.get_or_create("blog").unwrap();
     inflate_over_quota(&pool).await;
 
     let garage = Arc::new(GarageClient::from_store(

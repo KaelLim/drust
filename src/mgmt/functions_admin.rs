@@ -94,7 +94,7 @@ fn triggers_summary(triggers_json: &str) -> String {
 /// Load every function row + its 20 most-recent log rows. Swallows DB errors
 /// (a fresh tenant with no `_system_functions` table yet just renders empty).
 async fn load_function_views(state: &TenantsState, tenant_id: &str) -> Vec<FunctionView> {
-    let pool = match state.tenants.get_or_open(tenant_id) {
+    let pool = match state.tenants.get_or_create(tenant_id) {
         Ok(p) => p,
         Err(_) => return vec![],
     };
@@ -221,7 +221,7 @@ pub async fn toggle(
     {
         return r;
     }
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
     };
@@ -278,7 +278,7 @@ pub async fn set_invoke_acl(
     {
         return r;
     }
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
     };
@@ -315,7 +315,7 @@ pub async fn delete(
     {
         return r;
     }
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
     };
@@ -371,7 +371,7 @@ pub async fn invoke(
         return r;
     }
     // 404 before running anything if the function does not exist.
-    if let Ok(pool) = state.tenants.get_or_open(&tenant_id) {
+    if let Ok(pool) = state.tenants.get_or_create(&tenant_id) {
         match schema::get_function(&pool, &name).await {
             Ok(Some(_)) => {}
             Ok(None) => return (StatusCode::NOT_FOUND, "no such function").into_response(),

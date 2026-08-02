@@ -299,7 +299,8 @@ impl McpRegistry {
         if let Some(s) = self.services.get(tenant_id) {
             return Ok(s.clone());
         }
-        let pool = self.tenants.get_or_open(tenant_id)?;
+        // Request path: the bearer CTE already resolved this tenant as live.
+        let pool = self.tenants.get_or_create(tenant_id)?;
         let svc = DrustMcp::new(
             tenant_id,
             pool,

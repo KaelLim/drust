@@ -34,7 +34,7 @@ async fn mcp_for(tenant: &str) -> (DrustMcp, tempfile::TempDir) {
         2,
     ));
     // build_mcp resolves create-free (get_if_live): the tenant DB must exist.
-    tenants.get_or_open(tenant).unwrap();
+    tenants.get_or_create(tenant).unwrap();
     let rooms_cfg = drust::tenant::rooms::RoomsConfig::test_defaults();
     let bucket = rooms_cfg.bucket();
     let seed = HostStateSeed {

@@ -527,7 +527,10 @@ async fn main() -> anyhow::Result<()> {
                 let now = chrono::Utc::now().to_rfc3339();
                 let mut total = 0usize;
                 for tid in ids {
-                    if let Ok(pool) = registry_for_janitor.get_or_open(&tid) {
+                    // Background loop: `get_if_live` so a tenant soft-deleted
+                    // between the meta snapshot above and this iteration is
+                    // skipped, not rebuilt outside `_trash`.
+                    if let Some(pool) = registry_for_janitor.get_if_live(&tid) {
                         total += drust::tenant::uploads::session::sweep_tenant(
                             &pool, &tid, &data_root, &now,
                         )

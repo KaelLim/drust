@@ -252,7 +252,7 @@ async fn audit_default_flip_and_apply_all() {
     );
 
     // Prime the shared schema cache so apply-all's invalidation is observable.
-    let pool = tenants.get_or_open(TID).unwrap();
+    let pool = tenants.get_or_create(TID).unwrap();
     let cache = pool.schema_cache.clone();
     pool.with_reader(move |c| {
         cache.ensure_loaded(c, "c_one")?;
@@ -557,7 +557,7 @@ async fn admin_audit_toggle_invalidates_cache_and_rejects_system() {
         .await
         .unwrap();
 
-    let pool = tenants.get_or_open(TID).unwrap();
+    let pool = tenants.get_or_create(TID).unwrap();
     let cache = pool.schema_cache.clone();
     pool.with_reader(move |c| {
         cache.ensure_loaded(c, "c_gate")?;

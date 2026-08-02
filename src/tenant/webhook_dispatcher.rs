@@ -254,10 +254,12 @@ impl WebhookDispatcher {
             .unwrap_or_else(|| Arc::new(crate::tenant::webhook_resolver::PinnedPublicResolver));
         let client = self.cached_client.clone();
         tokio::spawn(async move {
-            let tenant_pool = match pool.get_or_open(&tenant) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!(error = ?e, tenant = %tenant, "webhook dispatch: get_or_open failed");
+            // Spawned fan-out: `get_if_live` so a tenant soft-deleted between
+            // the emitting write and this dispatch is skipped, not recreated.
+            let tenant_pool = match pool.get_if_live(&tenant) {
+                Some(p) => p,
+                None => {
+                    tracing::debug!(tenant = %tenant, "webhook dispatch: tenant not live, skipping");
                     return;
                 }
             };
@@ -482,14 +484,16 @@ pub(crate) async fn deliver(
     if let Err(ref e) = outcome {
         let reason = e.to_string();
         let id = row.id;
-        match pool.get_or_open(tenant_id) {
-            Ok(tenant_pool) => {
+        // Retry bookkeeping after an awaited delivery: never create a tenant
+        // just to record a failure against it.
+        match pool.get_if_live(tenant_id) {
+            Some(tenant_pool) => {
                 let _ = tenant_pool
                     .with_writer(move |conn| record_failure(conn, id, &reason))
                     .await;
             }
-            Err(err) => {
-                tracing::warn!(error = ?err, tenant = %tenant_id, "deliver: get_or_open failed, skipping record_failure");
+            None => {
+                tracing::debug!(tenant = %tenant_id, "deliver: tenant not live, skipping record_failure");
             }
         }
     }

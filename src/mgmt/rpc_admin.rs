@@ -349,7 +349,7 @@ pub async fn rpc_save(
     Path(tenant_id): Path<String>,
     axum::Form(form): axum::Form<RpcFormBody>,
 ) -> Response {
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -949,7 +949,7 @@ pub async fn rpc_test_run(
             // released before run_write_rpc's mutex acquisition.
             drop(conn);
 
-            let pool = match state.tenants.get_or_open(&tenant_id) {
+            let pool = match state.tenants.get_or_create(&tenant_id) {
                 Ok(p) => p,
                 Err(e) => {
                     return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -1234,7 +1234,7 @@ pub async fn rpc_delete(
         return (StatusCode::NOT_FOUND, "tenant not found").into_response();
     }
 
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };

@@ -43,7 +43,7 @@ async fn tenant_mcp(
         tmp.path().to_path_buf(),
         2,
     ));
-    let _ = tenants.get_or_open(tenant).unwrap();
+    let _ = tenants.get_or_create(tenant).unwrap();
     let garage = Arc::new(drust::storage::garage::GarageClient::from_store(
         Arc::new(object_store::memory::InMemory::new()),
         "unused",
@@ -52,7 +52,7 @@ async fn tenant_mcp(
     let bucket = rooms_cfg.bucket();
     let mcp = DrustMcp::new(
         tenant,
-        tenants.get_or_open(tenant).unwrap(),
+        tenants.get_or_create(tenant).unwrap(),
         drust::tenant::events::EventBus::new(),
         drust::tenant::WebhookDispatcher::new(tenants.clone(), None),
         Some(garage),
@@ -567,7 +567,7 @@ async fn god_mode_stack(
     let data = dir.path().to_path_buf();
     let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data.clone(), 2));
     let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
     let svc = drust::mcp::server::McpRegistry::new(tenants.clone())
         .get_or_create(tenant)
         .await

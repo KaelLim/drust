@@ -36,7 +36,7 @@ fn make_tref(tid: &str, role: TokenRole) -> (tempfile::TempDir, TenantRef) {
     let dir = tempfile::tempdir().unwrap();
     drust::storage::tenant_db::open_write(dir.path(), tid).unwrap();
     let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
-    let pool = registry.get_or_open(tid).unwrap();
+    let pool = registry.get_or_create(tid).unwrap();
     let tref = TenantRef {
         tenant_id: tid.to_string(),
         token_hint: "t".into(),
@@ -190,7 +190,7 @@ async fn files_stack(
     // `_system_files` is not created by migrations; the `list` handler SELECTs
     // it, so create an empty one for a clean 200 on service GET /files.
     {
-        let pool = tenants.get_or_open(tenant).unwrap();
+        let pool = tenants.get_or_create(tenant).unwrap();
         pool.with_writer(|c| {
             c.execute_batch(
                 "CREATE TABLE IF NOT EXISTS _system_files (

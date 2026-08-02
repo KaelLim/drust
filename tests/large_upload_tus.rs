@@ -14,7 +14,7 @@ fn setup(tid: &str) -> (tempfile::TempDir, TenantFilesState, TenantRef) {
     let dir = tempfile::tempdir().unwrap();
     drust::storage::tenant_db::open_write(dir.path(), tid).unwrap();
     let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
-    let pool = registry.get_or_open(tid).unwrap();
+    let pool = registry.get_or_create(tid).unwrap();
     let state = TenantFilesState::test_default(None, dir.path().to_path_buf(), registry);
     let tref = TenantRef {
         tenant_id: tid.to_string(),
@@ -254,7 +254,7 @@ async fn full_upload_finalizes_into_system_files() {
     let tid = "t-fin";
     drust::storage::tenant_db::open_write(dir.path(), tid).unwrap();
     let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
-    let pool = registry.get_or_open(tid).unwrap();
+    let pool = registry.get_or_create(tid).unwrap();
     // put_file_in (Task 3) branches on s3_endpoint.is_empty(): a from_store
     // client has an empty endpoint, so finalize streams into this InMemory
     // store directly — no real S3 needed.

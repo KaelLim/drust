@@ -94,7 +94,7 @@ here per OIDC Core §3.1.3.7: confidential client, token endpoint reached over T
 
 Allowlisted redirect URIs are exact-match and **re-checked at callback**, TOCTOU-safe.
 Both callbacks are per-IP rate-limited at 5/min. The per-tenant callback also validates that
-the tenant exists in `meta` **before** `get_or_open`, which is what prevents a disk-fill DoS.
+the tenant exists in `meta` **before** `get_or_create`, which is what prevents a disk-fill DoS.
 
 ## CLI device flow
 

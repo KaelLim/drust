@@ -131,7 +131,7 @@ impl CronIndex {
     /// `tenants WHERE deleted_at IS NULL` from meta, skip tenants whose
     /// `data.sqlite` is gone (a live meta row must not re-create the file),
     /// then read each through a TRANSIENT read-only connection. The registry
-    /// is a parameter for `data_root()` ONLY — `get_or_open` would cache
+    /// is a parameter for `data_root()` ONLY — `get_or_create` would cache
     /// every live tenant's full pool (writer + readers) forever, regressing
     /// the lazy-on-first-request pool opens (v1.47 behavior).
     pub async fn boot_scan(
@@ -184,21 +184,21 @@ mod tests {
     use crate::storage::pool::TenantRegistry;
     use std::sync::Arc;
 
-    /// Fresh registry over a tempdir with one opened tenant. `get_or_open`
+    /// Fresh registry over a tempdir with one opened tenant. `get_or_create`
     /// runs `open_write` → standard `_system_*` schema, NO cron tables (those
     /// are lazy, created only by cron writer fns).
     fn test_registry_with_tenant() -> (Arc<TenantRegistry>, String, tempfile::TempDir) {
         let tmp = tempfile::TempDir::new().unwrap();
         let registry = Arc::new(TenantRegistry::new(tmp.path().to_path_buf(), 2));
         let tenant = "t-cron-index".to_string();
-        registry.get_or_open(&tenant).unwrap();
+        registry.get_or_create(&tenant).unwrap();
         (registry, tenant, tmp)
     }
 
     #[tokio::test]
     async fn reload_indexes_only_active_jobs_and_empty_removes() {
         let (registry, tenant, _tmp) = test_registry_with_tenant();
-        let pool = registry.get_or_open(&tenant).unwrap();
+        let pool = registry.get_or_create(&tenant).unwrap();
         pool.with_writer(|c| {
             crate::cron::store::create_job(c, "on", "* * * * *", "function", "f", None, true)?;
             crate::cron::store::create_job(c, "off", "* * * * *", "function", "f", None, false)
@@ -228,7 +228,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_reloads_never_lose_the_newest_job() {
         let (registry, tenant, _tmp) = test_registry_with_tenant();
-        let pool = registry.get_or_open(&tenant).unwrap();
+        let pool = registry.get_or_create(&tenant).unwrap();
         let idx = Arc::new(CronIndex::new());
         let mut handles = Vec::new();
         for i in 0..8 {
@@ -279,7 +279,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reload_serializes_on_the_per_tenant_lock() {
         let (registry, tenant, _tmp) = test_registry_with_tenant();
-        let pool = registry.get_or_open(&tenant).unwrap();
+        let pool = registry.get_or_create(&tenant).unwrap();
         pool.with_writer(|c| {
             crate::cron::store::create_job(c, "first", "* * * * *", "function", "f", None, true)
         })
@@ -352,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn boot_scan_populates_index_via_transient_reads_not_pool_cache() {
         let (registry, tenant, _tmp) = test_registry_with_tenant();
-        let pool = registry.get_or_open(&tenant).unwrap();
+        let pool = registry.get_or_create(&tenant).unwrap();
         pool.with_writer(|c| {
             crate::cron::store::create_job(c, "boot", "* * * * *", "function", "f", None, true)
         })
@@ -418,7 +418,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn invalidate_blocks_on_reload_lock_then_removes_entry_and_lock() {
         let (registry, tenant, _tmp) = test_registry_with_tenant();
-        let pool = registry.get_or_open(&tenant).unwrap();
+        let pool = registry.get_or_create(&tenant).unwrap();
         pool.with_writer(|c| {
             crate::cron::store::create_job(c, "ghost", "* * * * *", "function", "f", None, true)
         })
@@ -463,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn reload_on_cronless_tenant_is_noop_and_creates_no_tables() {
         let (registry, tenant, _tmp) = test_registry_with_tenant();
-        let pool = registry.get_or_open(&tenant).unwrap();
+        let pool = registry.get_or_create(&tenant).unwrap();
         let idx = CronIndex::new();
         idx.reload(&tenant, &pool).await;
         assert!(idx.snapshot().is_empty());

@@ -74,7 +74,8 @@ pub async fn create_user_handler(
     ServiceTid(tid): ServiceTid,
     Json(body): Json<CreateUserBody>,
 ) -> Response {
-    let pool = match state.registry.get_or_open(&tid) {
+    // Request path: reached only through an authenticated tenant route.
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -122,7 +123,8 @@ pub async fn list_users_handler(
     ServiceTid(tid): ServiceTid,
     Query(q): Query<ListQuery>,
 ) -> Response {
-    let pool = match state.registry.get_or_open(&tid) {
+    // Request path: reached only through an authenticated tenant route.
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -184,7 +186,8 @@ pub async fn get_user_handler(
         Ok(u) => u,
         Err(r) => return r,
     };
-    let pool = match state.registry.get_or_open(&tid) {
+    // Request path: reached only through an authenticated tenant route.
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -230,7 +233,8 @@ pub async fn update_user_handler(
         Ok(u) => u,
         Err(r) => return r,
     };
-    let pool = match state.registry.get_or_open(&tid) {
+    // Request path: reached only through an authenticated tenant route.
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -307,7 +311,8 @@ pub async fn delete_user_handler(
         Ok(u) => u,
         Err(r) => return r,
     };
-    let pool = match state.registry.get_or_open(&tid) {
+    // Request path: reached only through an authenticated tenant route.
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };
@@ -401,7 +406,8 @@ pub async fn revoke_sessions_handler(
         Ok(u) => u,
         Err(r) => return r,
     };
-    let pool = match state.registry.get_or_open(&tid) {
+    // Request path: reached only through an authenticated tenant route.
+    let pool = match state.registry.get_or_create(&tid) {
         Ok(p) => p,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
     };

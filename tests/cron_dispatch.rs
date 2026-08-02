@@ -182,7 +182,7 @@ async fn function_target_runs_privileged_and_records_ok_run() {
     let hits = Arc::new(AtomicUsize::new(0));
     let (registry, executor, _tmp) =
         helpers::cron_test_stack("t-cron1", Arc::new(CountRunner(hits.clone()))).await;
-    let pool = registry.get_or_open("t-cron1").unwrap();
+    let pool = registry.get_or_create("t-cron1").unwrap();
     let job = pool
         .with_writer(|c| {
             store::create_job(
@@ -223,7 +223,7 @@ async fn reassert_blocks_disabled_and_deleted_jobs() {
     let hits = Arc::new(AtomicUsize::new(0));
     let (registry, executor, _tmp) =
         helpers::cron_test_stack("t-cron2", Arc::new(CountRunner(hits.clone()))).await;
-    let pool = registry.get_or_open("t-cron2").unwrap();
+    let pool = registry.get_or_create("t-cron2").unwrap();
 
     // Disabled under us: the IndexedJob still says active.
     let j_off = pool
@@ -278,7 +278,7 @@ async fn reassert_blocks_deleted_and_recreated_job_with_same_name() {
     let hits = Arc::new(AtomicUsize::new(0));
     let (registry, executor, _tmp) =
         helpers::cron_test_stack("t-cron7", Arc::new(CountRunner(hits.clone()))).await;
-    let pool = registry.get_or_open("t-cron7").unwrap();
+    let pool = registry.get_or_create("t-cron7").unwrap();
 
     let j_old = pool
         .with_writer(|c| store::create_job(c, "sync", "* * * * *", "function", "f1", None, true))
@@ -336,7 +336,7 @@ async fn overlap_second_fire_records_skipped_overlap() {
         }),
     )
     .await;
-    let pool = registry.get_or_open("t-cron3").unwrap();
+    let pool = registry.get_or_create("t-cron3").unwrap();
     let job = pool
         .with_writer(|c| store::create_job(c, "slow", "* * * * *", "function", "f1", None, true))
         .await
@@ -413,9 +413,9 @@ async fn dispatch_concurrency_is_bounded_by_cron_permits() {
         }),
     )
     .await;
-    let pool_a = registry.get_or_open("t-cron8").unwrap();
+    let pool_a = registry.get_or_create("t-cron8").unwrap();
     // Second tenant in the SAME registry/executor, with its own `f1` row.
-    let pool_b = registry.get_or_open("t-cron9").unwrap();
+    let pool_b = registry.get_or_create("t-cron9").unwrap();
     drust::functions::schema::create_function(
         &pool_b,
         drust::functions::schema::CreateFunctionParams {
@@ -512,10 +512,10 @@ async fn overlap_gate_precedes_permit_and_skip_records_without_permit() {
         }),
     )
     .await;
-    let pool_x = registry.get_or_open("t-cron14").unwrap();
+    let pool_x = registry.get_or_create("t-cron14").unwrap();
     // Tenant B carries job Y as a fast read-RPC — never touches the runner,
     // so once X's permit frees up, Y's queued fire completes on its own.
-    let pool_y = registry.get_or_open("t-cron15").unwrap();
+    let pool_y = registry.get_or_create("t-cron15").unwrap();
     create_rpc(&pool_y, "ping", "SELECT 1 AS x", "[]", "read").await;
 
     let j_x = pool_x
@@ -627,10 +627,10 @@ async fn tenant_single_flight_prevents_one_tenant_monopolizing_permits() {
         }),
     )
     .await;
-    let pool_a = registry.get_or_open("t-cron11").unwrap();
+    let pool_a = registry.get_or_create("t-cron11").unwrap();
     // Second tenant with a fast read-RPC job — never touches the runner, so
     // its completion is observable while tenant A's runner gate stays held.
-    let pool_b = registry.get_or_open("t-cron12").unwrap();
+    let pool_b = registry.get_or_create("t-cron12").unwrap();
     create_rpc(&pool_b, "ping", "SELECT 1 AS x", "[]", "read").await;
 
     let j_a1 = pool_a
@@ -722,7 +722,7 @@ async fn rpc_write_target_executes_and_captures_record_history() {
     let hits = Arc::new(AtomicUsize::new(0));
     let (registry, executor, _tmp) =
         helpers::cron_test_stack("t-cron4", Arc::new(CountRunner(hits.clone()))).await;
-    let pool = registry.get_or_open("t-cron4").unwrap();
+    let pool = registry.get_or_create("t-cron4").unwrap();
     create_items_collection(&registry, "t-cron4").await;
     create_rpc(
         &pool,
@@ -796,7 +796,7 @@ async fn dispatch_binds_fresh_payload_after_racing_patch() {
     let hits = Arc::new(AtomicUsize::new(0));
     let (registry, executor, _tmp) =
         helpers::cron_test_stack("t-cron13", Arc::new(CountRunner(hits.clone()))).await;
-    let pool = registry.get_or_open("t-cron13").unwrap();
+    let pool = registry.get_or_create("t-cron13").unwrap();
     create_items_collection(&registry, "t-cron13").await;
     create_rpc(
         &pool,
@@ -851,7 +851,7 @@ async fn dispatch_binds_fresh_payload_after_racing_patch() {
 
 // ── Soft-delete race: tenant dir moved to _trash (pool evicted) between the
 //    index snapshot and the fire. `run_due_job` must NOT re-create
-//    `data.sqlite` via `get_or_open` (open_write: create_dir_all +
+//    `data.sqlite` via `get_or_create` (open_write: create_dir_all +
 //    SQLITE_OPEN_CREATE + full schema) — the same hazard `boot_scan` guards
 //    in src/cron/index.rs. ────────────────────────────────────────────────────
 
@@ -860,7 +860,7 @@ async fn fire_after_tenant_soft_delete_skips_and_does_not_resurrect_db() {
     let hits = Arc::new(AtomicUsize::new(0));
     let (registry, executor, tmp) =
         helpers::cron_test_stack("t-cron6", Arc::new(CountRunner(hits.clone()))).await;
-    let pool = registry.get_or_open("t-cron6").unwrap();
+    let pool = registry.get_or_create("t-cron6").unwrap();
     let job = pool
         .with_writer(|c| store::create_job(c, "tick", "* * * * *", "function", "f1", None, true))
         .await
@@ -894,7 +894,7 @@ async fn fire_after_tenant_soft_delete_skips_and_does_not_resurrect_db() {
 // ── Executor-level closure of the same hazard: `run_one` re-enters the
 //    registry by tenant id (resolve_and_run + record), so a soft-delete
 //    landing during the permit/tenant-lock waits — AFTER `run_due_job`'s own
-//    exists() probe passed — must NOT let `get_or_open`'s `open_write`
+//    exists() probe passed — must NOT let `get_or_create`'s `open_write`
 //    (create_dir_all + SQLITE_OPEN_CREATE + full schema) resurrect the dead
 //    tenant outside `_trash`. Exercise `run_one` directly on a gone tenant:
 //    error outcome, no runner call, nothing re-created, no log row. ──────────
@@ -946,7 +946,7 @@ async fn rpc_declaring_user_id_records_error_and_does_not_execute() {
     let hits = Arc::new(AtomicUsize::new(0));
     let (registry, executor, _tmp) =
         helpers::cron_test_stack("t-cron5", Arc::new(CountRunner(hits.clone()))).await;
-    let pool = registry.get_or_open("t-cron5").unwrap();
+    let pool = registry.get_or_create("t-cron5").unwrap();
     create_items_collection(&registry, "t-cron5").await;
 
     // Read-mode RPC declaring :user_id (the plan's seed shape).

@@ -410,7 +410,7 @@ pub async fn upload(
     let object_key = crate::storage::files::compose_key(&Owner::Tenant(tenant_id.clone()), &key);
 
     // SQLite-first INSERT into tenant DB — through the writer mutex.
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "tenant pool open failed");
@@ -494,7 +494,7 @@ pub async fn upload(
         );
         // Compensating delete — through the writer mutex.
         let key_comp = key.clone();
-        if let Ok(pool_comp) = state.tenants.get_or_open(&tenant_id) {
+        if let Ok(pool_comp) = state.tenants.get_or_create(&tenant_id) {
             let _ = pool_comp
                 .with_writer(move |c| {
                     c.execute(
@@ -656,7 +656,7 @@ pub async fn delete_one(
     }
 
     // Delete the DB row — through the writer mutex.
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("db open: {e}")).into_response();
@@ -714,7 +714,7 @@ pub async fn set_visibility(
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
     };
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("db open: {e}")).into_response();
@@ -759,7 +759,7 @@ pub async fn set_visibility_admin(
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
     };
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("db open: {e}")).into_response();

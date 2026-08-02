@@ -122,7 +122,7 @@ fn audit_admin(tenant_id: &str, op: &str, name: &str) {
 /// that never used cron just renders the empty state (`list_jobs` rides the
 /// "no such table"-tolerant reader).
 async fn load_job_views(state: &TenantsState, tenant_id: &str) -> Vec<CronJobView> {
-    let pool = match state.tenants.get_or_open(tenant_id) {
+    let pool = match state.tenants.get_or_create(tenant_id) {
         Ok(p) => p,
         Err(_) => return vec![],
     };
@@ -241,7 +241,7 @@ pub async fn create(
     {
         return r;
     }
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -303,7 +303,7 @@ pub async fn toggle(
     {
         return r;
     }
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
     };
@@ -347,7 +347,7 @@ pub async fn delete(
     {
         return r;
     }
-    let pool = match state.tenants.get_or_open(&tenant_id) {
+    let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
     };

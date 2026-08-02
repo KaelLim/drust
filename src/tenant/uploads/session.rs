@@ -310,7 +310,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tid = "t-sess";
         drust_open(&dir, tid);
-        let pool = registry(&dir).get_or_open(tid).unwrap();
+        let pool = registry(&dir).get_or_create(tid).unwrap();
         let row = NewSession {
             upload_token: "tok-rt".into(),
             tenant_id: tid.into(),
@@ -336,7 +336,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tid = "t-sweep";
         crate::storage::tenant_db::open_write(dir.path(), tid).unwrap();
-        let pool = registry(&dir).get_or_open(tid).unwrap();
+        let pool = registry(&dir).get_or_create(tid).unwrap();
         // expired
         insert_session(
             &pool,

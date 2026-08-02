@@ -235,7 +235,7 @@ mod tests {
             dir.path().to_path_buf(),
             2,
         ));
-        let pool = reg.get_or_open("t-b").unwrap();
+        let pool = reg.get_or_create("t-b").unwrap();
         let cache = BindingCache::new();
         assert!(cache.get_or_load("t-b", &pool).await.is_empty());
 
@@ -271,7 +271,7 @@ mod tests {
             dir.path().to_path_buf(),
             2,
         ));
-        let pool = reg.get_or_open("t-ttl").unwrap();
+        let pool = reg.get_or_create("t-ttl").unwrap();
         let cache = BindingCache::with_safety_ttl(std::time::Duration::ZERO);
         assert!(cache.get_or_load("t-ttl", &pool).await.is_empty());
 
@@ -305,7 +305,7 @@ mod tests {
             dir.path().to_path_buf(),
             2,
         ));
-        let pool = reg.get_or_open("t-bad").unwrap();
+        let pool = reg.get_or_create("t-bad").unwrap();
         for (name, triggers) in [("good", r#"[{"file_uploaded":true}]"#), ("bad", "not json")] {
             crate::functions::schema::create_function(
                 &pool,

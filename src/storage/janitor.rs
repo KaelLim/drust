@@ -15,7 +15,10 @@ use std::path::Path;
 /// serialized by the per-tenant writer mutex, avoiding SQLITE_BUSY races
 /// when drust is running concurrently. The pool's `open_write` already
 /// applies `busy_timeout = 5000` via `apply_common_pragmas`, so a
-/// stale-process flock does not deadlock.
+/// stale-process flock does not deadlock. The create-free `get_if_live`
+/// open (`open_write_existing`) applies the same pragmas and the same
+/// idempotent `_system_*` catch-up, so only directory/file creation is
+/// dropped.
 pub async fn sweep_expired_sessions(data_dir: &Path, grace_days: i64) -> anyhow::Result<usize> {
     let meta = Connection::open(data_dir.join("meta.sqlite"))?;
     let mut stmt = meta.prepare("SELECT id FROM tenants WHERE deleted_at IS NULL")?;
@@ -28,11 +31,12 @@ pub async fn sweep_expired_sessions(data_dir: &Path, grace_days: i64) -> anyhow:
     let registry = TenantRegistry::new(data_dir.to_path_buf(), 1);
     let mut total = 0;
     for tid in tenant_ids {
-        let p = data_dir.join("tenants").join(&tid).join("data.sqlite");
-        if !p.exists() {
+        // Background sweep: `get_if_live` resolves atomically. The previous
+        // `exists()`-then-create-on-open pair left a check-then-act window in
+        // which a soft-delete rebuilt `tenants/<id>/` outside `_trash`.
+        let Some(pool) = registry.get_if_live(&tid) else {
             continue;
-        }
-        let pool = registry.get_or_open(&tid)?;
+        };
         let n = pool
             .with_writer(move |conn| {
                 conn.execute(

@@ -42,7 +42,7 @@ pub(crate) async fn load_tenant_shell(
 /// AND `tenant_authz::tenant_access_for` allows the caller (sees_all =
 /// owner OR admin: always; member: only tenants they own). Missing tenant
 /// and member-not-owned both return the SAME 404 so a member cannot probe
-/// for a foreign tenant's existence. Runs before `state.tenants.get_or_open(...)`
+/// for a foreign tenant's existence. Runs before `state.tenants.get_or_create(...)`
 /// so we don't materialise an empty `tenants/<bogus_id>/data.sqlite` for an
 /// admin-typed path. Cheaper than `load_tenant_shell` (no collection list).
 pub(crate) async fn ensure_tenant_visible(

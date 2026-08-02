@@ -64,7 +64,7 @@ async fn real_runner(
 #[tokio::test(flavor = "multi_thread")]
 async fn happy_fixture_writes_through_host_api() {
     let (runner, tenants, _tmp) = real_runner(FnConfig::test_default()).await;
-    let pool = tenants.get_or_open("t-w").unwrap();
+    let pool = tenants.get_or_create("t-w").unwrap();
     // the fixture inserts into fn_out — create that collection first
     helpers::create_collection_via_pool(&pool, "fn_out", &[("payload", "text")]).await;
 
@@ -96,7 +96,7 @@ async fn loop_fixture_hits_epoch_timeout() {
     let (runner, tenants, _tmp) = real_runner(cfg).await;
     // The runner resolves tenants create-free (get_if_live): the tenant DB
     // must exist first, as production guarantees for every invocation source.
-    tenants.get_or_open("t-w").unwrap();
+    tenants.get_or_create("t-w").unwrap();
     let started = std::time::Instant::now();
     let out = runner
         .run(
@@ -120,7 +120,7 @@ async fn membomb_fixture_hits_oom() {
     let (runner, tenants, _tmp) = real_runner(cfg).await;
     // The runner resolves tenants create-free (get_if_live): the tenant DB
     // must exist first, as production guarantees for every invocation source.
-    tenants.get_or_open("t-w").unwrap();
+    tenants.get_or_create("t-w").unwrap();
     let out = runner
         .run(
             "t-w",

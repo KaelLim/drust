@@ -54,7 +54,7 @@ fn setup() -> (
     let dir = tempfile::tempdir().unwrap();
     drust::storage::tenant_db::open_write(dir.path(), TID).unwrap();
     let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
-    let pool = registry.get_or_open(TID).unwrap();
+    let pool = registry.get_or_create(TID).unwrap();
     let garage = Arc::new(GarageClient::from_store(
         Arc::new(InMemory::new()),
         "public",

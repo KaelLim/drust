@@ -810,7 +810,7 @@ impl HostStateSeed {
 
     /// `functions: None` here is the depth=1 recursion guard (spec §4).
     pub fn build_mcp(&self, tenant_id: &str) -> anyhow::Result<DrustMcp> {
-        // `get_if_live`, NOT `get_or_open`: the runner resolves by tenant-id
+        // `get_if_live`, NOT `get_or_create`: the runner resolves by tenant-id
         // string after arbitrary queue/lock waits, so a soft-delete landing
         // in that window must fail the build — never re-create the dead
         // tenant's data.sqlite (the create-free open is the atomic guard;
@@ -1028,9 +1028,9 @@ mod tests {
     }
 
     /// The runner resolves tenants by id string AFTER arbitrary queue/lock
-    /// waits, so `build_mcp` must never take the create-happy `get_or_open`
+    /// waits, so `build_mcp` must never take the create-happy `get_or_create`
     /// path: a gone tenant fails the build and leaves no directory behind.
-    /// (Reverting `build_mcp` to `get_or_open` makes both assertions fail —
+    /// (Reverting `build_mcp` to `get_or_create` makes both assertions fail —
     /// the dir would be re-created with a fresh data.sqlite.)
     #[test]
     fn build_mcp_never_recreates_a_gone_tenant() {
@@ -1157,8 +1157,8 @@ mod tests {
             tmp.path().to_path_buf(),
             2,
         ));
-        // get_or_open bootstraps the tenant schema, including `_system_files`.
-        let pool = tenants.get_or_open(tenant_id).unwrap();
+        // get_or_create bootstraps the tenant schema, including `_system_files`.
+        let pool = tenants.get_or_create(tenant_id).unwrap();
         let garage = Arc::new(crate::storage::garage::GarageClient::from_store(
             Arc::new(object_store::memory::InMemory::new()),
             "unused",
@@ -1228,7 +1228,7 @@ mod tests {
             tmp.path().to_path_buf(),
             2,
         ));
-        let pool = tenants.get_or_open(tenant_id).unwrap();
+        let pool = tenants.get_or_create(tenant_id).unwrap();
         let garage = Arc::new(crate::storage::garage::GarageClient::from_store(
             Arc::new(object_store::memory::InMemory::new()),
             "unused",

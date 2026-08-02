@@ -142,7 +142,7 @@ pub async fn run_due_job(
     // the create-free, OS-atomic resolution — SQLite itself refuses to
     // create the missing file, so a dead tenant can never be resurrected
     // by this open (same primitive as the executor's guard; a plain
-    // exists()-then-get_or_open would reopen the check-then-act window).
+    // exists()-then-get_or_create would reopen the check-then-act window).
     // No run row — the tenant is gone.
     let pool = match deps.registry.get_if_live(&tenant) {
         Some(p) => p,

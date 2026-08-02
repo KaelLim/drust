@@ -1958,8 +1958,8 @@ async fn oauth_callback_rejects_state_minted_under_wrong_secret() {
 
 // ---------- M1: per-tenant OAuth start/callback gate on tenant existence ----------
 //
-// Both /start and /callback called `state.registry.get_or_open(&tid)` with
-// `tid` raw from the path. `get_or_open` → `open_write` does
+// Both /start and /callback called `state.registry.get_or_create(&tid)` with
+// `tid` raw from the path. `get_or_create` → `open_write` does
 // `std::fs::create_dir_all(tenants/<tid>/)` + `SQLITE_OPEN_CREATE`, so an
 // unauthenticated caller could spray arbitrary tenant ids to materialize junk
 // tenant DB directories (disk-fill DoS). The CORE of M1 is the filesystem

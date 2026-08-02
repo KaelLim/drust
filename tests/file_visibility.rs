@@ -45,7 +45,7 @@ fn make_tenant(dir: &tempfile::TempDir, tenant_id: &str) -> drust::storage::pool
     .unwrap();
     drop(conn);
     let reg = TenantRegistry::new(dir.path().to_path_buf(), 2);
-    reg.get_or_open(tenant_id).unwrap()
+    reg.get_or_create(tenant_id).unwrap()
 }
 
 async fn insert_row(pool: &drust::storage::pool::SharedTenantPool, key: &str, vis: &str) {
@@ -417,7 +417,7 @@ async fn rest_setup(
     let object_key = compose_key(&Owner::Tenant(tenant.to_string()), &key);
 
     // Seed a public file row.
-    let pool = tenants.get_or_open(tenant).unwrap();
+    let pool = tenants.get_or_create(tenant).unwrap();
     {
         let key = key.clone();
         pool.with_writer(move |c| {

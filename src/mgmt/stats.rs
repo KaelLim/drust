@@ -35,10 +35,12 @@ pub async fn sample_bytes(registry: &Arc<TenantRegistry>, tenant_id: &str) -> (i
     let db_bytes: i64 = std::fs::metadata(&db_path)
         .map(|m| m.len() as i64)
         .unwrap_or(0);
-    let pool = match registry.get_or_open(tenant_id) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(tenant_id, error = ?e, "stats sampler: get_or_open failed");
+    // Background sampler: `get_if_live` so a tenant soft-deleted between the
+    // cycle's tenant snapshot and this sample is skipped, not recreated.
+    let pool = match registry.get_if_live(tenant_id) {
+        Some(p) => p,
+        None => {
+            tracing::debug!(tenant_id, "stats sampler: tenant not live, skipping");
             return (db_bytes, 0);
         }
     };

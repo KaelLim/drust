@@ -207,7 +207,7 @@ async fn over_quota_mcp_insert_507() {
     let _ = drust::storage::tenant_db::open_write(&data, "blog").unwrap();
 
     let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data.clone(), 2));
-    let pool = tenants.get_or_open("blog").unwrap();
+    let pool = tenants.get_or_create("blog").unwrap();
     pool.with_writer(|c| {
         c.execute_batch(
             "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, \

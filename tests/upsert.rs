@@ -58,7 +58,7 @@ async fn make_products(s: &drust::mcp::server::DrustMcp) {
 
 async fn count_rows(dir: &tempfile::TempDir, table: &str) -> i64 {
     let tr = TenantRegistry::new(dir.path().to_path_buf(), 2);
-    let pool = tr.get_or_open("blog").unwrap();
+    let pool = tr.get_or_create("blog").unwrap();
     let sql = format!("SELECT COUNT(*) FROM \"{}\"", table.replace('"', "\"\""));
     pool.with_reader(move |c| c.query_row(&sql, [], |r| r.get::<_, i64>(0)))
         .await
@@ -68,7 +68,7 @@ async fn count_rows(dir: &tempfile::TempDir, table: &str) -> i64 {
 /// All `_system_record_history` rows as `(op, old_json, new_json)`, oldest first.
 async fn history(dir: &tempfile::TempDir) -> Vec<(String, Option<String>, Option<String>)> {
     let tr = TenantRegistry::new(dir.path().to_path_buf(), 2);
-    let pool = tr.get_or_open("blog").unwrap();
+    let pool = tr.get_or_create("blog").unwrap();
     pool.with_reader(|c| {
         let mut stmt =
             c.prepare("SELECT op, old_json, new_json FROM _system_record_history ORDER BY id ASC")?;
@@ -276,7 +276,7 @@ async fn upsert_empty_and_protected_rejected() {
 /// lost old image). No MCP tool builds a COLLATE index, so create it raw.
 async fn exec(dir: &tempfile::TempDir, sql: &str) {
     let tr = TenantRegistry::new(dir.path().to_path_buf(), 2);
-    let pool = tr.get_or_open("blog").unwrap();
+    let pool = tr.get_or_create("blog").unwrap();
     let sql = sql.to_string();
     pool.with_writer(move |c| c.execute_batch(&sql))
         .await
@@ -330,7 +330,7 @@ async fn upsert_honors_conflict_index_collation() {
 
 async fn read_id_created(dir: &tempfile::TempDir, sku: &str) -> (i64, String) {
     let tr = TenantRegistry::new(dir.path().to_path_buf(), 2);
-    let pool = tr.get_or_open("blog").unwrap();
+    let pool = tr.get_or_create("blog").unwrap();
     let sku = sku.to_string();
     pool.with_reader(move |c| {
         c.query_row(

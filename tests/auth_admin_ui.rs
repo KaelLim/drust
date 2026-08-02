@@ -189,7 +189,7 @@ async fn password_hash_is_masked_in_system_users_page() {
     let fake_phc = "$argon2id$v=19$m=65536,t=3,p=4$fakesaltsaltsalt$fakehashhashhash";
     {
         let reg = TenantRegistry::new(data_dir.clone(), 2);
-        let pool = reg.get_or_open(TENANT).unwrap();
+        let pool = reg.get_or_create(TENANT).unwrap();
         pool.with_writer(|c| {
             c.execute(
                 "INSERT INTO _system_users (id, email, password_hash, verified, profile, created_at, updated_at) \
