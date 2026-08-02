@@ -335,7 +335,11 @@ impl WebhookDispatcher {
             // v1.49 egress third gate — read the tenant's allowlist ONCE per
             // fan-out (fresh from meta, so a just-removed origin is honored;
             // a batch's deliveries are all spawned within the same instant, so
-            // reading it once per batch is as fresh as once per row was).
+            // reading it once per batch is as fresh as once per row was). This
+            // read gates ATTEMPT 1 of every delivery it spawns; attempts 2..n
+            // are gated by the live re-read inside the retry loop (v1.58
+            // P1-12), so the pair covers every attempt without paying a
+            // meta.sqlite open per row.
             let allowlist_json = read_tenant_egress_allowlist(&pool, &tenant);
             for sub in subs {
                 // Which of this fan-out's events this subscription wants.
@@ -483,6 +487,11 @@ pub enum DeliveryError {
     NonRetryable { status: u16, body: String },
     /// All retries exhausted on retryable errors (5xx / network / timeout).
     Exhausted { last_error: String, attempts: usize },
+    /// The tenant's egress allowlist stopped covering this origin BETWEEN
+    /// attempts — terminal, the remaining attempts are abandoned. Its
+    /// `Display` is byte-identical to the reason the fan-out gate records, so
+    /// `last_failure_reason` reads the same whichever gate fired.
+    EgressRevoked { url: String },
 }
 
 impl std::fmt::Display for DeliveryError {
@@ -497,9 +506,18 @@ impl std::fmt::Display for DeliveryError {
             } => {
                 write!(f, "all {} attempts failed: {}", attempts, last_error)
             }
+            DeliveryError::EgressRevoked { url } => {
+                write!(f, "egress_not_allowlisted: {}", url)
+            }
         }
     }
 }
+
+/// Live inputs for the per-attempt egress re-check inside the retry loop:
+/// the registry that owns `meta.sqlite` and the tenant whose allowlist to
+/// read. `deliver` always supplies one; `deliver_for_test` supplies `None`
+/// (its callers assert on the resolver/pre-check gates, not this one).
+pub type EgressRecheck<'a> = (&'a TenantRegistry, &'a str);
 
 /// Production entry: one delivery, 4 attempts, fail-then-record_failure.
 /// Uses the shared `TenantRegistry` pool so failure writes go through the
@@ -526,6 +544,10 @@ pub(crate) async fn deliver(
         Some(shared_client),
         resolver,
         None,
+        // v1.58 P1-12 — the retry loop re-reads this tenant's allowlist before
+        // every attempt after the first, so a revocation lands on the NEXT
+        // attempt rather than after the ~36 s schedule finishes.
+        Some((pool, tenant_id)),
         row,
         body_bytes,
         delivery_id,
@@ -540,6 +562,7 @@ pub(crate) async fn deliver(
             Err(DeliveryError::NonRetryable { status, .. }) if *status == 0 => "network",
             Err(DeliveryError::NonRetryable { status, .. }) if (400..500).contains(status) => "4xx",
             Err(DeliveryError::NonRetryable { .. }) => "5xx",
+            Err(DeliveryError::EgressRevoked { .. }) => "egress_denied",
             Err(DeliveryError::Exhausted { last_error, .. }) => {
                 if last_error.contains("timeout") || last_error.contains("timed out") {
                     "timeout"
@@ -611,6 +634,38 @@ pub async fn deliver_for_test(
         None,
         resolver,
         pre_check,
+        None,
+        row,
+        body_bytes,
+        delivery_id,
+        timestamp,
+        sched,
+    )
+    .await
+}
+
+/// [`deliver_for_test`] plus the per-attempt egress re-check the production
+/// [`deliver`] wires in (v1.58 P1-12). Exposed separately so the existing
+/// `deliver_for_test` call sites keep their signature; pass the same
+/// `(registry, tenant)` pair `deliver` builds and the loop consults the REAL
+/// `read_tenant_egress_allowlist` + `dispatch_egress_allowed` pair, so a test
+/// can revoke an origin in `meta.sqlite` mid-flight and observe the effect.
+#[allow(clippy::too_many_arguments)]
+pub async fn deliver_for_test_with_egress(
+    resolver: Arc<dyn reqwest::dns::Resolve + Send + Sync>,
+    pre_check: Option<PreCheckResolveFn>,
+    egress: Option<EgressRecheck<'_>>,
+    row: &WebhookRow,
+    body_bytes: Vec<u8>,
+    delivery_id: String,
+    timestamp: String,
+    sched: DeliverySchedule,
+) -> Result<(), DeliveryError> {
+    deliver_inner(
+        None,
+        resolver,
+        pre_check,
+        egress,
         row,
         body_bytes,
         delivery_id,
@@ -625,6 +680,7 @@ async fn deliver_inner(
     shared_client: Option<Arc<reqwest::Client>>,
     resolver: Arc<dyn reqwest::dns::Resolve + Send + Sync>,
     pre_check: Option<PreCheckResolveFn>,
+    egress: Option<EgressRecheck<'_>>,
     row: &WebhookRow,
     body_bytes: Vec<u8>,
     delivery_id: String,
@@ -678,6 +734,33 @@ async fn deliver_inner(
     for (attempt_idx, wait_secs) in sched.backoffs.iter().enumerate() {
         if *wait_secs > 0 {
             tokio::time::sleep(Duration::from_secs(*wait_secs)).await;
+        }
+        // v1.58 P1-12 — egress is checked per ATTEMPT, fail-closed, which is
+        // how CLAUDE.md invariant 6 states the rule. Attempt 1 is already
+        // covered: the fan-out gate in `dispatch_many` reads the allowlist
+        // immediately before spawning this delivery, so re-reading here would
+        // only duplicate it — and would cost one meta.sqlite open per ROW on a
+        // batch, which is exactly what the per-batch read exists to avoid.
+        // Attempts 2..n are the gap this closes: the schedule spans ~36 s, and
+        // an origin removed from the allowlist mid-flight used to keep
+        // receiving POSTs until it ran out. The read is live by construction —
+        // a fresh read-only connection, nothing cached — and a denial is
+        // TERMINAL: `deliver` records the failure and no further attempt runs.
+        if attempt_idx > 0
+            && let Some((registry, tenant)) = egress
+        {
+            let allowlist_now = read_tenant_egress_allowlist(registry, tenant);
+            if !dispatch_egress_allowed(&allowlist_now, &row.url) {
+                tracing::warn!(
+                    webhook_id = %row.id,
+                    url = %row.url,
+                    attempt = attempt_idx + 1,
+                    "deliver: origin left the egress allowlist mid-retry — terminal"
+                );
+                return Err(DeliveryError::EgressRevoked {
+                    url: row.url.clone(),
+                });
+            }
         }
         // v1.32.4 D10 — production fast path: reuse the dispatcher's
         // `cached_client` (built once at construction with
