@@ -45,6 +45,35 @@ The authoritative snippet for this block lives in `../garage/deploy/Caddyfile`, 
 
 That block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/`. Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
 
+## Three deployment targets
+
+The binary is shared; **everything around it is written three times** and nothing in the test
+suite compares them. The suite does not run under systemd, does not build the image, and does
+not render the chart, so divergence is invisible until a user hits it.
+
+| | Bare-metal (this host) | Docker Compose | k3s |
+|---|---|---|---|
+| Process supervision | `deploy/drust.service` | `docker-compose.yml` | `deploy/helm/drust/templates/drust-statefulset.yaml` |
+| Reverse proxy | `/etc/caddy/Caddyfile` (+ `deploy/Caddyfile`, `../garage/deploy/Caddyfile`) | `deploy/compose.Caddyfile` | chart Ingress |
+| Object store | host Garage | compose service | MinIO StatefulSet |
+| Scheduled work | `drust-backup.timer`, `drust-janitor.timer` | **nothing** | chart CronJobs |
+| Base path | `/drust` | `""` | `""` |
+
+> [!CAUTION]
+> **Anything scheduled outside the drust process exists on bare metal only.** `deploy/drust-janitor.sh` and `deploy/drust-backup.sh` are systemd timers with no Compose equivalent. A maintenance job that lives only in a timer does not run for Docker or k3s users. v1.58 moved `_trash` expiry in-process for exactly this reason (`src/storage/janitor.rs`) — before that, the id-recycle purge was the only thing sweeping `_trash` on those deployments, and removing it would have leaked tenant data forever. When adding recurring maintenance, put it in-process and treat the timer as a bare-metal accelerator, not the mechanism.
+
+Per-release checklist — run it before tagging, not after:
+
+1. `deploy/helm/drust/Chart.yaml` — bump `appVersion` to the release version, and `version` if the chart's own templates changed. **A stale `appVersion` is the cheapest possible detector of a skipped check**; it read `1.49.4` while 1.58.0 shipped.
+2. New env knob this release? It must appear in all three: `deploy/drust.service` `Environment=`/`EnvironmentFile`, `docker-compose.yml` `environment:`, and the chart's `values.yaml` + ConfigMap. A knob with a default only in Rust works everywhere but is undiscoverable in two of the three.
+3. New on-disk path, volume, or directory? Compose and the chart both need it mounted, and the chart needs it in the StatefulSet `volumeClaimTemplates` — a path drust creates at boot lands on ephemeral container storage otherwise.
+4. New recurring job? See the CAUTION above.
+5. New route or route prefix? Check the chart's Ingress and `deploy/compose.Caddyfile`, not just the host Caddyfile.
+6. Migration or first-boot behaviour change? It runs on every boot in all three, and containers restart far more often than this host does.
+7. `deploy/helm/drust/tests/render_test.sh` still passes (offline `helm template` + `kubeconform`).
+
+`deploy/helm/**` is engineer-owned: read it, report divergence, do not stage it in an automated commit.
+
 ## Deploy check
 
 `curl -sI http://127.0.0.1:47826/health | grep -i x-drust-version` after `cargo build --release && sudo systemctl restart drust`. Plain `/health` returns `ok` from the OLD binary too, so it proves nothing about which build is live; the version string is baked at compile time, so rebuild **and** restart before trusting the header. `DRUST_HIDE_VERSION=1` omits it.

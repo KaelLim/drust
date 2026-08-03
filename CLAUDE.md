@@ -253,6 +253,17 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     each request stays under the ingress limit — never raise a body limit to accommodate a
     large upload.
 
+17. **There are three parallel deployment targets, and a release is not done until all three
+    were re-checked.** Bare-metal systemd (this host), Docker Compose, and the k3s Helm chart
+    under `deploy/helm/drust/`. They share the binary and nothing else: unit files, timers,
+    volume paths, env, ingress and the operational sidecars are written three times. A change
+    that lands in one silently diverges from the other two, and no test sees it — the suite
+    does not run under systemd, does not build the image, and does not render the chart.
+    v1.58 is the worked example: `_trash` expiry lived only in `deploy/drust-janitor.timer`,
+    so for every Docker and k3s user nothing swept `_trash` at all, and that was found by a
+    code reviewer reading an unrelated fix rather than by any release step. The per-release
+    checklist is in `.claude/rules/build-deploy.md` §Three deployment targets.
+
 ## Where the rest lives
 
 Mechanism moved into path-scoped rule files. Each loads automatically when you read a file
