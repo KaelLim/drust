@@ -1,3 +1,15 @@
+## v1.58.1 — 2026-08-03
+
+### Security — wasmtime 45 → 46.0.2 (RUSTSEC-2026-0222)
+
+`cargo audit`, which is a CI gate and not part of the local test suite, went red on v1.58.0's tag: wasmtime 45.0.3 is affected by **RUSTSEC-2026-0222, "Stores can mix up type indices between engines."**
+
+**Not reachable in drust as written** — the advisory needs two `Engine`s, and there is exactly one, built once in a process-global `OnceLock` at `src/functions/runtime.rs:33`. Bumped anyway, for two reasons: a red audit gate stops being informative the moment it is normal, and "not reachable" is a property of today's code that a second `Engine` would silently invalidate.
+
+The bump is mechanical — 46.0.2 compiles with zero errors and zero warnings against the existing runtime, WIT bindings, `ResourceLimiter`, epoch ticker and `WasiCtx`. Verified with the functions group (888 passed / 0 failed across 11 binaries) plus a live edge-function invoke against the deployed binary, which is the only check that sees the Cranelift JIT running under the systemd sandbox.
+
+Released as **1.58.1 rather than a force-moved `v1.58.0`**: `ghcr.io/kaellim/drust:1.58.0` was already published, and a tag pointing at code the published image does not contain is worse than an extra patch number. The two prior force-moves in this repo were fmt-only and did not change the binary.
+
 ## v1.58.0 — 2026-08-03
 
 ### The P1 round of the 2026-07-29 audit — eleven corrections, no new surface
