@@ -726,16 +726,35 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     )?;
     meta.execute_batch(SQL_CREATE_TENANT_CAP_REQUESTS_IF_NOT_EXISTS)?;
 
-    // v1.29.0 — team management: role column + backfill
+    // v1.29.0 — team management: role column + ONE-TIME backfill.
+    //
+    // The marker is the column's ABSENCE, probed before it is added — the same
+    // shape as the `tenants.owner_admin_id` backfill below. It must NOT be a
+    // state probe ("is there an owner right now?"): `UPDATE admins SET
+    // role='owner'` carries no WHERE clause, so under a state probe any
+    // transient zero-owner state promotes EVERY admin to owner on the next
+    // boot — and run_migrations runs on every boot, so every deploy is a
+    // trigger. That is the v1.41.5 PAT-churn shape and what invariant #1
+    // forbids. The API's last-owner guards make zero-owner unreachable through
+    // the app, but a snapshot restore or a manual edit is not the app.
+    //
+    // Both paths that legitimately need the backfill see no role column:
+    //   - pre-v1.29 upgrade — every admin was effectively a full admin, so
+    //     lifting all of them is the intended one-time semantic;
+    //   - fresh install — SCHEMA_SQL creates `admins` WITHOUT `role` and
+    //     bootstrap_admin inserts before run_migrations, so id 1 lands on the
+    //     DEFAULT 'member' and this step is what makes the first admin owner.
+    //     Skipping it here would leave a new install with nobody who can
+    //     administer it.
+    let role_col_existed: bool = {
+        let mut stmt = meta.prepare("PRAGMA table_info(admins)")?;
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        cols.iter().any(|c| c == "role")
+    };
     add_column_if_missing(meta, "admins", "role", "TEXT NOT NULL DEFAULT 'member'")?;
-    let any_owner: bool = meta
-        .query_row(
-            "SELECT 1 FROM admins WHERE role='owner' LIMIT 1",
-            [],
-            |_| Ok(()),
-        )
-        .is_ok();
-    if !any_owner {
+    if !role_col_existed {
         meta.execute("UPDATE admins SET role='owner'", [])?;
     }
 
@@ -1070,6 +1089,63 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(roles, vec!["owner", "owner"]);
+    }
+
+    #[test]
+    fn role_backfill_never_repromotes_after_the_column_exists() {
+        // The v1.29.0 backfill is a ONE-TIME upgrade step: on a pre-role
+        // install every admin was effectively a full admin, so all of them
+        // are lifted to 'owner' once. The test above pins that path.
+        //
+        // This test pins the other half — that it happens exactly once. The
+        // backfill is `UPDATE admins SET role='owner'` with NO WHERE clause,
+        // so if its guard is a state probe ("is there an owner right now?")
+        // instead of a one-shot marker, ANY transient zero-owner state
+        // promotes EVERY admin on the next boot. run_migrations runs on every
+        // boot and every deploy restarts the service, so that is not a remote
+        // possibility — it is one restart away. Same shape as the v1.41.5 PAT
+        // churn, and forbidden by the "never resurrect on every boot"
+        // idempotency invariant.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
+            CREATE TABLE admins (
+                id            INTEGER PRIMARY KEY,
+                username      TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                email         TEXT,
+                role          TEXT NOT NULL DEFAULT 'member',
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO admins (username, password_hash, email, role) VALUES ('boss',  'h', 'o@x', 'owner');
+            INSERT INTO admins (username, password_hash, email, role) VALUES ('mem1',  'h', 'm@x', 'member');
+            INSERT INTO admins (username, password_hash, email, role) VALUES ('mem2',  'h', 'n@x', 'member');"
+        ).unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        run_migrations(&conn, tmp.path()).unwrap();
+
+        // Drive the table into a zero-owner state. The app's own guards
+        // ("cannot demote/remove the last owner") make this unreachable
+        // through the API today, so this stands in for the ways it can still
+        // happen off the API: a restore from a snapshot taken mid-operation,
+        // a manual DB edit, or a future bug in a role path.
+        conn.execute("UPDATE admins SET role='member'", []).unwrap();
+
+        run_migrations(&conn, tmp.path()).unwrap();
+
+        let roles: Vec<String> = conn
+            .prepare("SELECT role FROM admins ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            roles,
+            vec!["member", "member", "member"],
+            "a reboot must never mint owners; the backfill is one-shot on column creation"
+        );
     }
 
     #[test]
