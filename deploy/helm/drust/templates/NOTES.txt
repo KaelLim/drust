@@ -20,6 +20,24 @@ VERIFY (only a live request catches these):
 NOTE: backup.volumeSnapshotClassName is empty — NO automatic backup is scheduled.
 Set it to your cluster's VolumeSnapshotClass to enable daily CSI snapshots.
 {{- end }}
+{{- if .Values.backup.litestream.enabled }}
+
+LITESTREAM: continuous DB replication to bucket "{{ .Values.backup.external.bucket }}"
+(prefix {{ include "backup.prefix" . }}) is ON — covers meta.sqlite, meta_logs.sqlite, and
+EVERY tenants/*/data.sqlite, including tenants created after boot (native directory watch).
+  - Restore runs automatically ONLY on an empty /data (fresh PVC). After a disaster drill:
+      kubectl -n {{ .Release.Namespace }} logs sts/drust -c litestream-restore
+      kubectl -n {{ .Release.Namespace }} logs sts/drust -c litestream
+  - Independent of backup.volumeSnapshotClassName — run either, both, or neither.
+{{- if not .Values.backup.litestream.restore.enabled }}
+  - restore.enabled=false: a fresh PVC will NOT be rebuilt from S3 automatically.
+{{- end }}
+{{- end }}
+{{- if .Values.backup.objectMirror.enabled }}
+
+UPLOAD-BACKUP: hourly mc-mirror of this group's MinIO objects -> "{{ .Values.backup.external.bucket }}".
+  kubectl -n {{ .Release.Namespace }} get cronjob {{ .Release.Name }}-backup-mirror
+{{- end }}
 
 UNINSTALL: `helm uninstall {{ .Release.Name }}` retains the PVCs and the namespace
 (the PVC IS the database). To wipe a group for good: `kubectl delete namespace {{ .Release.Namespace }}`.

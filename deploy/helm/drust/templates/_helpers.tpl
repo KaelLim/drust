@@ -17,3 +17,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/name: minio
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
+{{- define "drust.backupSecretName" -}}{{ if .Values.backup.external.create }}{{ .Release.Name }}-backup-secret{{ else }}{{ required "backup.external.existingSecret required when backup.external.create=false" .Values.backup.external.existingSecret }}{{ end }}{{- end -}}
+{{- define "backup.prefix" -}}{{ .Values.backup.external.pathPrefix | default .Release.Namespace }}{{- end -}}
+{{- define "litestream.configName" -}}{{ .Release.Name }}-litestream{{- end -}}
+{{- define "backupMirror.selectorLabels" -}}
+app.kubernetes.io/name: backup-mirror
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}

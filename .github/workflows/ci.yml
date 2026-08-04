@@ -49,3 +49,30 @@ jobs:
 
       - name: cargo audit
         run: cargo audit
+
+  # The chart had zero CI coverage: `render_test.sh` only ever ran when someone
+  # remembered to. That is how appVersion sat at 1.49.4 for nine releases while
+  # values.yaml carried the real (also stale) image tag. Offline — `helm
+  # template` + `kubeconform`, no cluster — so it costs under a minute and runs
+  # in parallel with the Rust job.
+  helm-chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup helm
+        uses: azure/setup-helm@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSfL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+
+      # Reads Cargo.toml to assert Chart.yaml's appVersion matches it — that
+      # field is the image tag `helm install` actually pulls.
+      - name: helm render tests
+        run: bash deploy/helm/drust/tests/render_test.sh

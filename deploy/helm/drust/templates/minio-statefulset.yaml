@@ -17,6 +17,22 @@ spec:
       labels:
         {{- include "minio.selectorLabels" . | nindent 8 }}
     spec:
+      {{- with .Values.scheduling.minio.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.minio.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.minio.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.minio.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

@@ -16,6 +16,22 @@ spec:
       labels:
         {{- include "drust.selectorLabels" . | nindent 8 }}
     spec:
+      {{- with .Values.scheduling.drust.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.drust.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.drust.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.drust.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -23,9 +39,58 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      {{- if and .Values.backup.litestream.enabled .Values.backup.litestream.restore.enabled }}
+      initContainers:
+        - name: litestream-enumerate
+          image: {{ .Values.backup.litestream.mcImage | default .Values.storage.minio.mcImage | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: MC_CONFIG_DIR, value: /tmp/.mc }
+            - { name: DEST_ENDPOINT, value: {{ .Values.backup.external.endpoint | quote }} }
+            - { name: DEST_BUCKET, value: {{ .Values.backup.external.bucket | quote }} }
+            - { name: REPLICA_PREFIX, value: {{ include "backup.prefix" . | quote }} }
+            - name: AK
+              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-access-key } }
+            - name: SK
+              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-secret-key } }
+          command: ["/bin/sh", "/etc/litestream/enumerate.sh"]
+          volumeMounts:
+            - { name: data, mountPath: /data, readOnly: true }
+            - { name: litestream-scratch, mountPath: /scratch }
+            - { name: litestream-config, mountPath: /etc/litestream, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+        - name: litestream-restore
+          image: {{ .Values.backup.litestream.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          env:
+            - { name: REPLICA_PREFIX, value: {{ include "backup.prefix" . | quote }} }
+            - { name: LITESTREAM_BUCKET, value: {{ .Values.backup.external.bucket | quote }} }
+            - { name: LITESTREAM_ENDPOINT, value: {{ .Values.backup.external.endpoint | quote }} }
+            - { name: LITESTREAM_REGION, value: {{ .Values.backup.external.region | quote }} }
+            - { name: LITESTREAM_FORCE_PATH_STYLE, value: {{ .Values.backup.external.forcePathStyle | quote }} }
+            - name: LITESTREAM_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-access-key } }
+            - name: LITESTREAM_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-secret-key } }
+          command: ["/bin/sh", "/etc/litestream/restore.sh"]
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: litestream-scratch, mountPath: /scratch }
+            - { name: litestream-config, mountPath: /etc/litestream, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      {{- end }}
       containers:
         - name: drust
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -94,7 +159,7 @@ spec:
             - { name: tmp, mountPath: /tmp }
         {{- if .Values.maintenance.sidecar.enabled }}
         - name: maintenance
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -121,9 +186,44 @@ spec:
             - { name: data, mountPath: /data }
             - { name: tmp, mountPath: /tmp }
         {{- end }}
+        {{- if .Values.backup.litestream.enabled }}
+        - name: litestream
+          image: {{ .Values.backup.litestream.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              mkdir -p /data/tenants /data/.litestream/tenants
+              exec litestream replicate -config /etc/litestream/litestream.yml
+          env:
+            - name: LITESTREAM_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-access-key } }
+            - name: LITESTREAM_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-secret-key } }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: litestream-config, mountPath: /etc/litestream, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          resources:
+            {{- toYaml .Values.backup.litestream.resources | nindent 12 }}
+        {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.backup.litestream.enabled }}
+        - name: litestream-config
+          configMap:
+            name: {{ include "litestream.configName" . }}
+            defaultMode: 0555
+        {{- if .Values.backup.litestream.restore.enabled }}
+        - name: litestream-scratch
+          emptyDir: {}
+        {{- end }}
+        {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data

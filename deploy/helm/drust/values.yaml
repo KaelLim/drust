@@ -7,7 +7,12 @@ createNamespace: false
 
 image:
   repository: ghcr.io/kaellim/drust
-  tag: "1.49.4"
+  # Empty = follow Chart.yaml's appVersion, which render_test.sh pins to
+  # Cargo.toml's version. Leave it empty: a second hardcoded version here is
+  # what shipped a nine-release-old image (1.49.4) while 1.58.1 was current,
+  # because `helm install` reads THIS field, not appVersion. Set it only to pin
+  # a specific build for a rollback or a canary.
+  tag: ""
   pullPolicy: IfNotPresent
 
 # External hostname for this group's drust. base_path is ALWAYS root ("").
@@ -68,6 +73,58 @@ backup:
   retain: 7                      # keep newest N snapshots (janitor in the same CronJob)
   kubectlImage: "bitnami/kubectl:1.30"
 
+  # ── B1/B2 shared external offsite backup destination (single S3) ──
+  # The CSI VolumeSnapshot keys above and these sub-trees are all opt-in / default-off.
+  #
+  # CROSS-GROUP ISOLATION (read before pointing multiple groups at one bucket): the replicated
+  # meta.sqlite carries PLAINTEXT tokens (tokens.plaintext / _admin_tokens.plaintext). pathPrefix
+  # (default = namespace) is only a SOFT boundary — if two groups target the same bucket with
+  # bucket-wide credentials, group A can list/read group B's prefix = full data-plane + admin-PAT
+  # compromise of the other group. Give each group EITHER a distinct bucket OR credentials whose
+  # IAM policy is scoped to this group's prefix only.
+  external:
+    create: true                 # true => render <release>-backup-secret; false => use existingSecret
+    existingSecret: ""           # pre-built Secret; key names MUST be backup-s3-access-key / backup-s3-secret-key
+    accessKey: ""                # required when create=true AND any backup feature enabled
+    secretKey: ""
+    endpoint: ""                 # required when a backup feature is on, e.g. https://s3.us-west-2.amazonaws.com
+    region: "us-east-1"
+    bucket: ""                   # required when a backup feature is on
+    forcePathStyle: true         # MinIO / most S3-compatible = true; AWS vhost = false
+    port: 443                    # NP egress port to the backup S3; offsite MinIO usually 9000
+    pathPrefix: ""               # per-group replica prefix; empty => .Release.Namespace (isolation key)
+    destinationCIDRs: []         # optional NP tightening; empty => 0.0.0.0/0 except clusterCIDRs
+
+  # ── B1: Litestream continuous DB replication (opt-in; independent of the CSI snapshot) ──
+  litestream:
+    enabled: false
+    image: "litestream/litestream:0.5.15"   # floor >=0.5.13 (meta-dir); dir-mode + watch since 0.5.3
+    mcImage: ""                  # enumerate init image; empty => storage.minio.mcImage
+    watch: true                  # native watcher enrolls post-boot tenants without a restart — DO NOT disable
+    tenantPattern: "*.sqlite"        # basename glob under /data/tenants (recursive:true walks <id>/ subdirs).
+                                     # VERIFIED against the real litestream 0.5.15 binary: a slash-form like
+                                     # "*/data.sqlite" or "**/data.sqlite" enrolls ZERO tenant DBs, so every
+                                     # tenant's data.sqlite would be SILENTLY unbacked. Keep it a basename glob.
+    syncInterval: "1s"
+    snapshotInterval: "24h"
+    retention: "720h"            # 30d; MUST exceed the audit DB monthly VACUUM cycle
+    resources:
+      requests: { cpu: 25m, memory: 32Mi }
+      limits:   { cpu: 250m, memory: 128Mi }
+    restore:
+      enabled: true              # enumerate + restore initContainers rebuild an empty /data from S3
+
+  # ── B2: hourly mc-mirror of this group's MinIO objects -> external backup S3 ──
+  objectMirror:
+    enabled: false               # also needs storage.enabled
+    schedule: "0 * * * *"        # hourly UTC
+    image: ""                    # empty => storage.minio.mcImage
+    connectRetries: 30           # first-connect retries (CNI NP allow-set propagation lag)
+    connectRetrySleep: 2
+    backoffLimit: 3
+    successfulJobsHistoryLimit: 2
+    failedJobsHistoryLimit: 2
+
 networkPolicy:
   enabled: true
   # Namespace of the ingress controller. k3s Traefik = kube-system;
@@ -91,3 +148,16 @@ secrets:
   adminPassword: ""              # DRUST_INIT_ADMIN_PASSWORD (first boot only)
 
 extraEnv: []                     # arbitrary DRUST_*/GARAGE_* overrides: [{name, value}]
+
+# ── B3: scheduling passthrough (empty => zero behavior change) ──
+scheduling:
+  drust:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  minio:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []

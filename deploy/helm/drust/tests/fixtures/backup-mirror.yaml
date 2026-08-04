@@ -1,0 +1,13 @@
+ingress: { host: mb.example.test, controller: traefik }
+storage:
+  enabled: true
+  minio: { rootUser: u, rootPassword: p }
+backup:
+  objectMirror:
+    enabled: true
+  external:
+    bucket: obj-backup
+    endpoint: https://s3.backup.example.test
+    accessKey: DAK
+    secretKey: DSK
+secrets: { create: true, adminPassword: pw }

@@ -1,0 +1,125 @@
+{{- if .Values.backup.litestream.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "litestream.configName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+data:
+  litestream.yml: |
+    # Credentials come from env LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY —
+    # this file NEVER contains AK/SK.
+    dbs:
+      - path: /data/meta.sqlite
+        replica:
+          type: s3
+          bucket: {{ required "backup.external.bucket required when backup.litestream.enabled" .Values.backup.external.bucket | quote }}
+          path: {{ printf "%s/meta" (include "backup.prefix" .) | quote }}
+          endpoint: {{ required "backup.external.endpoint required when backup.litestream.enabled" .Values.backup.external.endpoint | quote }}
+          region: {{ .Values.backup.external.region | quote }}
+          force-path-style: {{ .Values.backup.external.forcePathStyle }}
+          sync-interval: {{ .Values.backup.litestream.syncInterval | quote }}
+          snapshot-interval: {{ .Values.backup.litestream.snapshotInterval | quote }}
+          retention: {{ .Values.backup.litestream.retention | quote }}
+      - path: /data/meta_logs.sqlite
+        replica:
+          type: s3
+          bucket: {{ .Values.backup.external.bucket | quote }}
+          path: {{ printf "%s/meta_logs" (include "backup.prefix" .) | quote }}
+          endpoint: {{ .Values.backup.external.endpoint | quote }}
+          region: {{ .Values.backup.external.region | quote }}
+          force-path-style: {{ .Values.backup.external.forcePathStyle }}
+          sync-interval: {{ .Values.backup.litestream.syncInterval | quote }}
+          snapshot-interval: {{ .Values.backup.litestream.snapshotInterval | quote }}
+          retention: {{ .Values.backup.litestream.retention | quote }}
+      # ↓ dynamic tenants: native directory watcher enrolls post-boot tenants ↓
+      - dir: /data/tenants
+        pattern: {{ .Values.backup.litestream.tenantPattern | quote }}
+        recursive: true
+        watch: {{ .Values.backup.litestream.watch }}
+        meta-dir: /data/.litestream/tenants
+        replica:
+          type: s3
+          bucket: {{ .Values.backup.external.bucket | quote }}
+          path: {{ printf "%s/tenants" (include "backup.prefix" .) | quote }}
+          endpoint: {{ .Values.backup.external.endpoint | quote }}
+          region: {{ .Values.backup.external.region | quote }}
+          force-path-style: {{ .Values.backup.external.forcePathStyle }}
+          sync-interval: {{ .Values.backup.litestream.syncInterval | quote }}
+          snapshot-interval: {{ .Values.backup.litestream.snapshotInterval | quote }}
+          retention: {{ .Values.backup.litestream.retention | quote }}
+  enumerate.sh: |
+    #!/bin/sh
+    set -u
+    # Restore-gate: if /data is already populated, do not enumerate or restore — signal SKIP.
+    if [ -f /data/meta.sqlite ]; then echo "[enumerate] /data populated — skip"; : > /scratch/SKIP; exit 0; fi
+    mc alias set bk "$DEST_ENDPOINT" "$AK" "$SK" --api s3v4 >/dev/null 2>&1 || { echo "[enumerate] mc alias failed"; exit 1; }
+    # Reachability / CNI-lag probe MUST target this group's own prefix, NOT the alias root: a
+    # least-privilege credential scoped to <prefix>/ (as the README/values CAUTION recommends) cannot
+    # ListAllMyBuckets, so `mc ls bk` would AccessDenied on every attempt and crashloop restore on
+    # exactly that config. `mc ls <prefix>/` needs only the (prefix-conditioned) ListBucket the creds have.
+    i=0
+    until mc ls "bk/${DEST_BUCKET}/${REPLICA_PREFIX}/" >/dev/null 2>&1; do
+      i=$((i+1)); [ "$i" -ge 30 ] && { echo "[enumerate] backup S3 prefix unreachable"; exit 1; }
+      echo "[enumerate] waiting for backup S3 ($i)"; sleep 2
+    done
+    : > /scratch/tenants.txt
+    # List tenant prefixes with retry. `mc ls` returns 0 for an empty prefix (fresh install =>
+    # proceed with no tenants); a NON-zero exit is a transient failure => retry, then FAIL LOUD
+    # rather than silently restoring meta+meta_logs onto an empty /data/tenants (silent half-restore
+    # on the disaster path). stderr is kept, not swallowed.
+    k=0
+    until listing=$(mc ls "bk/${DEST_BUCKET}/${REPLICA_PREFIX}/tenants/" 2>/tmp/lserr); do
+      k=$((k+1)); [ "$k" -ge 5 ] && { echo "[enumerate] tenant listing failed after retries:"; cat /tmp/lserr; exit 1; }
+      echo "[enumerate] tenant listing retry ($k)"; sleep 2
+    done
+    # Only uuid-v4 ids (drust tenant id shape) are accepted — a crafted directory name in a poisoned
+    # backup prefix (e.g. containing '..') must never flow into the restore filesystem path.
+    echo "$listing" | awk '{print $NF}' | sed 's#/##' | while read -r id; do
+      [ -n "$id" ] || continue
+      # Tenant id grammar mirrors drust's validate_tenant_id (src/storage/tenant_db.rs): [a-z0-9-]{1,52}.
+      # This accepts BOTH uuids AND caller-supplied slug ids (e.g. "acme", "my-app-prod" — POST /admin/tenants
+      # honors a supplied id), so no live tenant is silently skipped on restore; '.' and '/' stay OUTSIDE the
+      # class, so a poisoned "../"-style prefix name is still rejected.
+      if echo "$id" | grep -Eq '^[a-z0-9-]{1,52}$'; then
+        echo "$id" >> /scratch/tenants.txt
+      else
+        echo "[enumerate] skip malformed tenant id: $id"
+      fi
+    done
+    echo "[enumerate] tenants to restore:"; cat /scratch/tenants.txt
+  restore.sh: |
+    #!/bin/sh
+    set -u
+    [ -f /scratch/SKIP ] && { echo "[restore] skip marker — nothing to do"; exit 0; }
+    [ -f /data/meta.sqlite ] && { echo "[restore] /data populated — skip"; exit 0; }   # gate 2 (DiD)
+    restore_one() {   # $1 final db path, $2 replica sub-path under REPLICA_PREFIX
+      target="$1"; sub="$2"; tmp="${target}.tmp"
+      [ -f "$target" ] && { echo "[restore] have $target — skip"; return 0; }
+      mkdir -p "$(dirname "$target")"; rm -f "$tmp"
+      cat > /tmp/r.yml <<EOF
+    dbs:
+      - path: ${tmp}
+        replica:
+          type: s3
+          bucket: ${LITESTREAM_BUCKET}
+          path: ${REPLICA_PREFIX}/${sub}
+          endpoint: ${LITESTREAM_ENDPOINT}
+          region: ${LITESTREAM_REGION}
+          force-path-style: ${LITESTREAM_FORCE_PATH_STYLE}
+    EOF
+      if litestream restore -config /tmp/r.yml -if-replica-exists "$tmp"; then
+        if [ -f "$tmp" ]; then mv -f "$tmp" "$target"; echo "[restore] restored $target";
+        else echo "[restore] no replica for $target (fresh / within RPO window)"; fi
+      else echo "[restore] FAILED $target"; exit 1; fi
+    }
+    restore_one /data/meta.sqlite      meta
+    restore_one /data/meta_logs.sqlite meta_logs
+    if [ -f /scratch/tenants.txt ]; then
+      while read -r id; do [ -n "$id" ] || continue
+        restore_one "/data/tenants/${id}/data.sqlite" "tenants/${id}/data.sqlite"
+      done < /scratch/tenants.txt
+    fi
+    echo "[restore] done"
+{{- end }}

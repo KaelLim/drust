@@ -4,7 +4,19 @@ set -uo pipefail
 CHART="$(cd "$(dirname "$0")/.." && pwd)"
 FIX="$CHART/tests/fixtures"
 FAILS=0
-_render() { helm template testrel "$CHART" -f "$FIX/$1" --namespace testns 2>/tmp/helmerr || { echo "RENDER-ERROR ($1):"; cat /tmp/helmerr; return 1; }; }
+RENDER_DIR="$(mktemp -d)"
+trap 'rm -rf "$RENDER_DIR"' EXIT
+# Pre-render every fixture ONCE (fast: no re-render per assertion) and HARD-ABORT loudly on any render
+# error, so a transient/real helm failure can never masquerade as a silent "needle absent" assertion.
+_prerender() {
+  local f
+  for f in "$@"; do
+    if ! helm template testrel "$CHART" -f "$FIX/$f" --namespace testns >"$RENDER_DIR/$f" 2>"$RENDER_DIR/$f.err"; then
+      echo "RENDER-ERROR ($f):"; cat "$RENDER_DIR/$f.err"; echo "== ABORT: fixture failed to render =="; exit 2
+    fi
+  done
+}
+_render() { cat "$RENDER_DIR/$1"; }
 
 assert_contains() { # <fixture> <needle> <label>
   if _render "$1" | grep -qF -- "$2"; then echo "ok: $3"; else echo "FAIL: $3 — '$2' absent in $1"; FAILS=$((FAILS+1)); fi; }
@@ -15,6 +27,26 @@ assert_kubeconform() { # <fixture>
   if echo "$out" | grep -q "Invalid: 0" && echo "$out" | grep -q "Errors: 0"; then echo "ok: kubeconform $1"; else echo "FAIL: kubeconform $1"; echo "$out"; FAILS=$((FAILS+1)); fi; }
 
 echo "== lint =="; helm lint "$CHART" || FAILS=$((FAILS+1))
+_prerender minimal.yaml full.yaml nginx.yaml storage-noPublic.yaml no-sidecar.yaml notls.yaml litestream.yaml backup-mirror.yaml placement.yaml
+
+# --- version sync: appVersion IS the deployed image tag ---
+# values.yaml ships image.tag:"" so both drust containers fall back to
+# .Chart.AppVersion. That makes appVersion load-bearing rather than decorative:
+# `helm install` pulls whatever it says. It read 1.49.4 for nine releases while
+# 1.58.x shipped, because the real tag was a second hardcoded field nobody
+# thought to bump. These two assertions are the whole automation — without them
+# the fallback just moves the drift to one field instead of two.
+REPO_ROOT="$(cd "$CHART/../../.." && pwd)"
+APPV="$(awk -F'"' '/^appVersion:/{print $2; exit}' "$CHART/Chart.yaml")"
+CARGOV="$(awk -F'"' '/^version *=/{print $2; exit}' "$REPO_ROOT/Cargo.toml")"
+if [ -n "$APPV" ] && [ "$APPV" = "$CARGOV" ]; then
+  echo "ok: Chart appVersion ($APPV) matches Cargo.toml"
+else
+  echo "FAIL: Chart appVersion '$APPV' != Cargo.toml version '$CARGOV' — helm install would deploy the wrong binary"
+  FAILS=$((FAILS+1))
+fi
+assert_contains minimal.yaml "drust:$APPV" "image tag follows appVersion when values.image.tag is empty"
+assert_absent   minimal.yaml "drust:\"\""  "empty image.tag never renders literally"
 
 # --- Task 1 / Issue #2: namespace lifecycle (default OFF; opt-in Namespace is deletion-protected) ---
 assert_absent   minimal.yaml "kind: Namespace" "no Namespace by default (createNamespace omitted => false)"
@@ -128,8 +160,107 @@ if _render notls.yaml | awk '/name: DRUST_PUBLIC_BASE_URL$/{getline; if($0 ~ /"h
   echo "ok: DRUST_PUBLIC_BASE_URL uses http (exact value) when TLS off"; else echo "FAIL: DRUST_PUBLIC_BASE_URL wrong value/scheme when TLS off"; FAILS=$((FAILS+1)); fi
 assert_absent   full.yaml   "name: DRUST_DEV_NO_SECURE_COOKIES" "no dev-cookie env when TLS on"
 
+# --- B1: Litestream sidecar + restore init (opt-in; default OFF) ---
+assert_contains litestream.yaml "name: litestream"                              "litestream sidecar rendered"
+assert_contains litestream.yaml "litestream/litestream"                         "litestream image wired"
+assert_contains litestream.yaml "replicate -config /etc/litestream/litestream.yml" "sidecar runs native dir-mode replicate"
+assert_contains litestream.yaml "kind: ConfigMap"                               "litestream config ConfigMap rendered"
+assert_contains litestream.yaml "dir: /data/tenants"                            "config covers tenants dir (dynamic discovery)"
+assert_contains litestream.yaml "watch: true"                                   "directory watcher on (post-boot tenants, no restart)"
+# CRITICAL regression guard — the tenant glob MUST be a basename pattern. VERIFIED against the real
+# litestream 0.5.15 binary: a slash-form ("*/data.sqlite" / "**/data.sqlite") enrolls ZERO tenant DBs,
+# so every tenant's data.sqlite is silently unbacked while meta.sqlite still ships (restore looks
+# healthy but every tenant comes back empty — worst-case disaster recovery).
+assert_contains litestream.yaml 'pattern: "*.sqlite"'      "tenant glob is basename *.sqlite (enrolls tenant DBs)"
+assert_absent   litestream.yaml 'pattern: "*/data.sqlite"' "tenant glob is NOT the broken slash-form"
+assert_contains litestream.yaml "name: litestream-restore"                      "restore initContainer rendered"
+assert_contains litestream.yaml "name: litestream-enumerate"                    "enumerate initContainer rendered"
+assert_contains litestream.yaml "LITESTREAM_ACCESS_KEY_ID"                      "litestream creds via env (secretKeyRef)"
+assert_contains litestream.yaml "backup-s3-access-key"                          "backup Secret creds key present"
+# scope RO-root to the litestream SIDECAR container (not the always-present drust container / init
+# containers) — a whole-file grep would stay green even if the sidecar alone lost readOnlyRootFilesystem.
+if _render litestream.yaml | awk '/^[[:space:]]*- name: litestream$/{s=1;next} s&&/^[[:space:]]*- name: [a-z]/{s=0} s&&/readOnlyRootFilesystem: true/{f=1} END{exit f?0:1}'; then
+  echo "ok: litestream SIDECAR container has readOnlyRootFilesystem"; else echo "FAIL: litestream sidecar container missing readOnlyRootFilesystem"; FAILS=$((FAILS+1)); fi
+# creds must NOT leak into the ConfigMap — scope to the ConfigMap doc
+if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: ConfigMap/{print}' | grep -q "LSAK"; then
+  echo "FAIL: backup creds leaked into litestream ConfigMap"; FAILS=$((FAILS+1)); else echo "ok: no creds in litestream ConfigMap"; fi
+# NP egress present EVEN WITH allowInternetEgress:false (decoupling) — scope to drust NP doc. With
+# egress OFF the fixture sets destinationCIDRs, so the rule must be SCOPED to that CIDR and must NOT
+# punch a 0.0.0.0/0 hole on the drust pod (which shares netns with the sidecar / WASM / webhooks).
+assert_contains litestream.yaml "external backup S3"                            "litestream egress rule present"
+if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust\n/{print}' | grep -q "port: 443"; then
+  echo "ok: litestream egress opens 443 with internet egress OFF"; else echo "FAIL: litestream egress missing 443"; FAILS=$((FAILS+1)); fi
+if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust\n/{print}' | grep -q "203.0.113.0/24"; then
+  echo "ok: litestream egress SCOPED to destinationCIDRs when egress off"; else echo "FAIL: litestream egress not scoped to destinationCIDRs"; FAILS=$((FAILS+1)); fi
+if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust\n/{print}' | grep -q "cidr: 0.0.0.0/0"; then
+  echo "FAIL: drust NP punches 0.0.0.0/0 egress with allowInternetEgress:false (SSRF surface reopened)"; FAILS=$((FAILS+1)); else echo "ok: no 0.0.0.0/0 egress hole on drust pod when egress off"; fi
+# fail-closed POSITIVE tests: these insecure configs MUST refuse to render (helm template must fail).
+if helm template testrel "$CHART" -f "$FIX/litestream.yaml" --set-json 'backup.external.destinationCIDRs=[]' --namespace testns >/dev/null 2>&1; then
+  echo "FAIL: litestream + egress off + no destinationCIDRs was accepted (should fail-closed)"; FAILS=$((FAILS+1)); else echo "ok: fail-closed — litestream + egress off + no CIDRs is refused"; fi
+if helm template testrel "$CHART" -f "$FIX/litestream.yaml" --set-json 'backup.external.destinationCIDRs=["0.0.0.0/0"]' --namespace testns >/dev/null 2>&1; then
+  echo "FAIL: destinationCIDRs=[0.0.0.0/0] was accepted (unrestricted egress, defeats scoping)"; FAILS=$((FAILS+1)); else echo "ok: destinationCIDRs=0.0.0.0/0 is refused"; fi
+assert_absent minimal.yaml "name: litestream"          "no litestream sidecar by default"
+assert_absent full.yaml    "name: litestream"          "no litestream in full fixture (default off)"
+assert_absent minimal.yaml "backup-s3-access-key"      "no backup Secret keys by default"
+assert_absent full.yaml    "name: litestream-restore"  "no restore init in full fixture (default off)"
+
+# --- B2: upload-backup mc-mirror CronJob (opt-in; needs storage) ---
+assert_contains backup-mirror.yaml "kind: CronJob"                             "objectMirror CronJob rendered"
+assert_contains backup-mirror.yaml "mc mirror --overwrite"                     "mc mirror command present"
+assert_contains backup-mirror.yaml 'schedule: "0 * * * *"'                     "hourly mirror schedule"
+assert_contains backup-mirror.yaml "until mc ls src"                           "first-connect retry loop (CNI NP lag)"
+assert_contains backup-mirror.yaml "backup-s3-access-key"                      "dest creds via backup Secret"
+assert_contains backup-mirror.yaml "app.kubernetes.io/name: backup-mirror"     "mirror Job carries dedicated labels"
+assert_contains backup-mirror.yaml "automountServiceAccountToken: false"       "mirror pod drops SA token"
+# env order: SRC_AK/SRC_SK before MC_HOST_src (kubelet $(VAR) gotcha)
+if _render backup-mirror.yaml | awk '/name: SRC_AK$/{a=NR} /name: SRC_SK$/{s=NR} /name: MC_HOST_src$/{m=NR} END{exit (a&&s&&m&&a<m&&s<m)?0:1}'; then
+  echo "ok: SRC_AK/SRC_SK precede MC_HOST_src"; else echo "FAIL: SRC creds not before MC_HOST_src"; FAILS=$((FAILS+1)); fi
+# mirror POD TEMPLATE must not wear drust/minio selector labels (would join a Service). The CronJob's
+# OWN metadata legitimately carries drust.labels, and the drust STS (also in this render) has its own
+# pod template — so isolate the CronJob record, then walk ONLY its pod template (template: -> spec:).
+if _render backup-mirror.yaml | awk 'BEGIN{RS="---\n"} /kind: CronJob/{
+    n=split($0,L,"\n"); t=0;
+    for(i=1;i<=n;i++){
+      if(L[i] ~ /^[[:space:]]*template:[[:space:]]*$/){t=1; continue}
+      if(t && L[i] ~ /^[[:space:]]*spec:[[:space:]]*$/){t=0}
+      if(t && L[i] ~ /app\.kubernetes\.io\/name: (drust|minio)([[:space:]]|$)/){bad=1}
+    }
+  } END{exit bad?1:0}'; then
+  echo "ok: mirror pod template wears only its dedicated label (not drust/minio)"; else echo "FAIL: mirror pod template carries drust/minio selector labels — joins a Service"; FAILS=$((FAILS+1)); fi
+# dedicated scoped NP exists
+if _render backup-mirror.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-backup-mirror\n/{f=1} END{exit f?0:1}'; then
+  echo "ok: dedicated backup-mirror NetworkPolicy rendered"; else echo "FAIL: no backup-mirror NetworkPolicy"; FAILS=$((FAILS+1)); fi
+# minio NP admits the EXACT backup-mirror label (scope to minio NP doc)
+if _render backup-mirror.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-minio\n/{print}' | grep -qE '^[[:space:]]+app\.kubernetes\.io/name: backup-mirror$'; then
+  echo "ok: minio NP admits backup-mirror label to 9000"; else echo "FAIL: minio NP does not admit backup-mirror"; FAILS=$((FAILS+1)); fi
+assert_absent litestream.yaml "kind: CronJob"          "objectMirror absent when storage off"
+assert_absent minimal.yaml    "backup-mirror"          "no objectMirror by default"
+assert_absent full.yaml       "backup-mirror"          "no objectMirror in full fixture (default off)"
+
+# --- B3: scheduling passthrough (default empty => absent) ---
+assert_contains placement.yaml "nodeSelector"               "scheduling.nodeSelector rendered when set"
+assert_contains placement.yaml "topologySpreadConstraints"  "scheduling.topologySpread rendered when set"
+assert_contains placement.yaml "tolerations"                "scheduling.tolerations rendered when set"
+# The drust/minio StatefulSet metadata.name renders BARE (`drust` / `minio`), but every record also
+# carries `app.kubernetes.io/name: drust` (labels helper) and a `- name: drust` container. Isolate each
+# STS record, then require the EXACT 2-space metadata.name line AND a nodeSelector in that same record.
+if _render placement.yaml | awk 'BEGIN{RS="---\n"} /kind: StatefulSet/{
+    n=split($0,L,"\n"); me=0; ns=0;
+    for(i=1;i<=n;i++){ if(L[i]=="  name: drust") me=1; if(L[i] ~ /nodeSelector:/) ns=1 }
+    if(me&&ns) ok=1
+  } END{exit ok?0:1}'; then
+  echo "ok: drust STS honors scheduling.drust"; else echo "FAIL: drust nodeSelector not wired"; FAILS=$((FAILS+1)); fi
+if _render placement.yaml | awk 'BEGIN{RS="---\n"} /kind: StatefulSet/{
+    n=split($0,L,"\n"); me=0; ns=0;
+    for(i=1;i<=n;i++){ if(L[i]=="  name: minio") me=1; if(L[i] ~ /nodeSelector:/) ns=1 }
+    if(me&&ns) ok=1
+  } END{exit ok?0:1}'; then
+  echo "ok: minio STS honors scheduling.minio"; else echo "FAIL: minio nodeSelector not wired"; FAILS=$((FAILS+1)); fi
+assert_absent minimal.yaml "nodeSelector"               "no nodeSelector by default (empty {} => omitted)"
+assert_absent full.yaml    "topologySpreadConstraints"  "no topologySpread by default"
+
 # --- Task 10: full-matrix kubeconform ---
-for f in minimal full nginx storage-noPublic no-sidecar notls; do assert_kubeconform "$f.yaml"; done
+for f in minimal full nginx storage-noPublic no-sidecar notls litestream backup-mirror placement; do assert_kubeconform "$f.yaml"; done
 # README exists
 [ -f "$CHART/README.md" ] && echo "ok: README present" || { echo "FAIL: README missing"; FAILS=$((FAILS+1)); }
 

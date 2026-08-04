@@ -91,7 +91,9 @@ You **must** provide `secrets.adminPassword`, and (when `storage.enabled`)
 otherwise. If you manage credentials outside Helm, set `secrets.create=false`
 and point `secrets.existingSecret` at a pre-created Secret carrying the same
 keys (`admin-username`, `admin-password`, and when storage is on `s3-access-key`,
-`s3-secret-key`, `admin-endpoint`, `admin-token`).
+`s3-secret-key`, `admin-endpoint`, `admin-token`). When a backup feature (B1/B2) is
+enabled with `backup.external.create=false`, also pre-create the backup Secret named by
+`backup.external.existingSecret` with keys `backup-s3-access-key` / `backup-s3-secret-key`.
 
 ## CRITICAL — MCP Host rewrite live-verify
 
@@ -190,6 +192,97 @@ promoting.
 > same filesystem/RBAC controls you would to the bootstrap Secret; never copy a
 > snapshot off-cluster unencrypted; reroll tokens after any suspected leak.
 
+## Continuous DB backup (Litestream, B1)
+
+The CSI-snapshot backup above needs a cluster `VolumeSnapshotClass`. **k3s's default
+`local-path` provisioner ships none**, so on a stock k3s cluster the snapshot CronJob
+cannot render — that leaves the SQLite databases with **zero automated protection**.
+`backup.litestream.*` fills that gap: a Litestream sidecar in the drust pod continuously
+streams every database to an external S3 bucket.
+
+It covers all three DB classes — `meta.sqlite`, `meta_logs.sqlite`, and **every**
+`tenants/<id>/data.sqlite`. The tenant coverage is dynamic: the sidecar config uses
+Litestream's native directory mode with `watch: true`, so a tenant DB created **after
+boot** is enrolled within seconds without restarting the sidecar. **Do not set
+`backup.litestream.watch: false`** — that is a correctness switch, not a tuning knob; with
+it off a new tenant is unprotected until the next sidecar restart.
+
+RPO is three-part and honest:
+1. Existing tenant DBs + meta + meta_logs: RPO ≈ `syncInterval` (1s) + flush ≈ **1–2s**.
+2. New-tenant enrollment window: from `data.sqlite` landing to its first frame reaching S3
+   (watcher discovery "seconds" + first sync) that tenant's writes are not yet protected.
+   Its `meta.sqlite.tenants` row survives via the continuous meta replication. This is the
+   one structural RPO gap — narrowable, not zero.
+3. Restore rebuilds an empty `/data` from S3; a tenant created inside window 2 whose
+   `data.sqlite` never uploaded is restored as an empty DB (schema self-heals on first
+   access; only that window's data is lost).
+
+Restore is automatic and runs **only when `/data` is empty** (fresh PVC / new node). Two
+initContainers run before drust starts: `litestream-enumerate` (lists tenant prefixes in
+the backup bucket via `mc`), then `litestream-restore` (restores each DB via `litestream
+restore`, atomic `.tmp`→`mv`, `-if-replica-exists`, never `-force`). A populated `/data`
+hits two independent skip gates plus a per-file existence check — live data is never
+overwritten. After restore, drust sees an existing `meta.sqlite`, so first-boot bootstrap
+is a no-op: **tokens survive verbatim, the admin is not re-seeded.**
+
+- Independent of `backup.volumeSnapshotClassName` — enable either, both, or neither.
+- The audit DB's monthly full VACUUM rolls the Litestream generation; the 720h (30d)
+  retention default is comfortably wider than that cycle, so a restorable snapshot always
+  exists across a VACUUM. Keep `retention` above one month.
+- Credentials live in `<release>-backup-secret` (or set `backup.external.existingSecret`).
+- **Backup egress is fail-closed when general egress is off.** With
+  `networkPolicy.allowInternetEgress: false` you MUST set `backup.external.destinationCIDRs`
+  (+ `backup.external.port`) to scope the NetworkPolicy egress to your S3 provider's ranges —
+  otherwise the template REFUSES to render, rather than silently punching a `0.0.0.0/0` hole on
+  the pod that also runs untrusted edge-function WASM and outbound webhooks. With general egress
+  already on, CIDRs are optional (the pod already has broad egress by your choice).
+- The sidecar/init run under `readOnlyRootFilesystem: true` at uid 10001 (must match drust
+  so it can read the DBs it wrote). `mc` and `litestream` both run fine on a read-only root
+  — confirm with one live restore drill.
+
+> [!CAUTION]
+> **Cross-group backup isolation is the operator's job.** The replicated `meta.sqlite` carries
+> PLAINTEXT tokens (`tokens.plaintext` / `_admin_tokens.plaintext`). `pathPrefix` (default = the
+> group's namespace) is only a SOFT boundary — if two groups target the SAME bucket with
+> bucket-wide credentials, group A can list/read group B's prefix = full data-plane + admin-PAT
+> compromise of the other group. Give each group EITHER a distinct bucket OR credentials whose
+> IAM policy is scoped to that group's `<prefix>/` only.
+
+## Object-file backup (B2)
+
+`backup.objectMirror.*` adds an hourly CronJob that `mc mirror`s this group's MinIO
+`public` + `private` buckets to the same external S3 under `<prefix>/objects/`. Litestream
+handles the databases; this handles only the object files. It uses `--overwrite` but **not
+`--remove`**: an accidental source delete does not propagate into the backup, so a deleted
+object stays recoverable — the trade-off is the backup only grows, so prune it with a
+bucket lifecycle policy on the S3 side. The Job retries its first connection (a new Job pod
+IP takes seconds to enter the CNI NetworkPolicy allow-set, same cause as `minio-init`),
+wears a dedicated label with its own scoped NetworkPolicy, and drops its ServiceAccount
+token. Needs `storage.enabled`.
+
+## Scheduling / placement (B3)
+
+`scheduling.drust.*` and `scheduling.minio.*` pass `nodeSelector` / `tolerations` /
+`affinity` / `topologySpreadConstraints` straight through to the respective StatefulSet pod
+spec. All default empty, so leaving them unset is zero behavior change.
+
+## Cross-group backup isolation
+
+The external backup destination is shared-by-prefix: each group replicates under
+`backup.external.pathPrefix` (default `.Release.Namespace`). **Two groups must never share a
+prefix** — a shared prefix is cross-group shared-fate. Prefer a **per-group bucket** or
+IAM-scoped credentials pinned to the prefix. **Never** reuse `s3-access-key` /
+`s3-secret-key` (this group's MinIO root) as the backup credentials — the backup S3 is a
+different trust domain; use `backup.external.accessKey`/`secretKey`. In-cluster shared
+backup MinIO across groups is a deliberate non-goal (it would require a namespaceSelector
+egress to another group); use a dedicated backup namespace or an off-cluster S3.
+
+> **`storage.enabled` and node binding.** On k3s `local-path`, a PV is pinned to its node
+> (nodeAffinity), so a pod cannot fail over to another node. True pod mobility needs a
+> networked RWO CSI (Longhorn / Ceph), at the cost of SQLite fsync traversing the network.
+> B1 Litestream is the recommended recovery path on `local-path`: after deleting the pod +
+> PVC, a fresh volume is rebuilt from S3 (RTO in the tens of seconds).
+
 ## Trash cleanup
 
 drust soft-deletes tenants into `/data/_trash/<dir>`. The maintenance sidecar's
@@ -256,3 +349,8 @@ rewrite, storage/ingress gating, NetworkPolicy, backup), and validates each
 rendered manifest set with `kubeconform -ignore-missing-schemas` (CRDs such as
 Traefik `Middleware` and `VolumeSnapshot` are skipped). A clean run prints
 `0 failure(s)` and `0 chart(s) failed`.
+
+The fixture matrix includes `litestream.yaml` (B1 sidecar + restore init, storage off to
+prove independence, `allowInternetEgress:false` to prove egress decoupling),
+`backup-mirror.yaml` (B2 hourly object mirror), and `placement.yaml` (B3 scheduling
+passthrough on both StatefulSets), alongside the base fixtures.

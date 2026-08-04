@@ -1,0 +1,83 @@
+{{- if and .Values.storage.enabled .Values.backup.objectMirror.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-backup-mirror
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.objectMirror.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.backup.objectMirror.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.objectMirror.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backup.objectMirror.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            # Dedicated label (NOT drust/minio selectorLabels) — same reason as minio-init:
+            # keeps this probeless Job pod out of every Service's endpoints.
+            {{- include "backupMirror.selectorLabels" . | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: mc
+              image: {{ .Values.backup.objectMirror.image | default .Values.storage.minio.mcImage | quote }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: MC_CONFIG_DIR, value: /tmp/.mc }
+                - { name: DST_ENDPOINT, value: {{ .Values.backup.external.endpoint | quote }} }
+                # AK/SK MUST precede MC_HOST_src — kubelet $(VAR) only expands variables
+                # declared EARLIER (the minio-init gotcha), else a literal "$(VAR)" leaks
+                # into the URL and mc auth-loops.
+                - name: SRC_AK
+                  valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-access-key } }
+                - name: SRC_SK
+                  valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-secret-key } }
+                - name: DST_AK
+                  valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-access-key } }
+                - name: DST_SK
+                  valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-secret-key } }
+                - name: MC_HOST_src
+                  value: "http://$(SRC_AK):$(SRC_SK)@minio.{{ .Release.Namespace }}.svc:9000"
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # First-connect retry: a new Job pod IP takes seconds to enter the CNI NP
+                  # allow-set (same cause as minio-init `until mc ls`).
+                  i=0
+                  until mc ls src >/dev/null 2>&1; do
+                    i=$((i+1)); [ "$i" -ge {{ .Values.backup.objectMirror.connectRetries }} ] && { echo "own minio unreachable"; exit 1; }
+                    echo "waiting for own minio ($i)"; sleep {{ .Values.backup.objectMirror.connectRetrySleep }}
+                  done
+                  # External dest via `mc alias set` (NOT MC_HOST) — avoids URL-encoding an
+                  # arbitrary S3 secret-key containing '/' or '='.
+                  mc alias set dst "$DST_ENDPOINT" "$DST_AK" "$DST_SK" --api s3v4
+                  j=0
+                  until mc ls dst >/dev/null 2>&1; do
+                    j=$((j+1)); [ "$j" -ge {{ .Values.backup.objectMirror.connectRetries }} ] && { echo "backup S3 unreachable"; exit 1; }
+                    echo "waiting for backup S3 ($j)"; sleep {{ .Values.backup.objectMirror.connectRetrySleep }}
+                  done
+                  # Litestream handles the DBs; this only mirrors the object buckets. No --remove:
+                  # an accidental source delete must not propagate into the backup.
+                  mc mirror --overwrite src/public  "dst/{{ .Values.backup.external.bucket }}/{{ include "backup.prefix" . }}/objects/public"
+                  mc mirror --overwrite src/private "dst/{{ .Values.backup.external.bucket }}/{{ include "backup.prefix" . }}/objects/private"
+                  echo "upload-backup mirror done"
+              volumeMounts:
+                - { name: tmp, mountPath: /tmp }
+          volumes:
+            - name: tmp
+              emptyDir: {}
+{{- end }}

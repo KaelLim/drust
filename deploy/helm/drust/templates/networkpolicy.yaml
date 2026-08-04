@@ -1,4 +1,7 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- if has "0.0.0.0/0" .Values.backup.external.destinationCIDRs }}
+{{- fail "backup.external.destinationCIDRs must list your S3 provider's SPECIFIC ranges, not 0.0.0.0/0 — a scoped ipBlock cannot carry an 'except: clusterCIDRs', so 0.0.0.0/0 there is an unrestricted egress hole that also reaches co-tenant pods (and it would satisfy the fail-closed guard while defeating its purpose). Use the provider's published CIDRs, or set allowInternetEgress=true to accept broad egress explicitly." }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -49,6 +52,31 @@ spec:
               - {{ . }}
               {{- end }}
     {{- end }}
+    {{- if .Values.backup.litestream.enabled }}
+    {{- if and (not .Values.networkPolicy.allowInternetEgress) (not .Values.backup.external.destinationCIDRs) }}
+    {{- fail "backup.litestream.enabled with networkPolicy.allowInternetEgress=false REQUIRES backup.external.destinationCIDRs (scope the backup egress to your S3 provider's IP ranges). Otherwise the Litestream sidecar — which shares the drust pod netns — would need a 0.0.0.0/0 egress hole, silently reopening the egress you closed on the pod that runs untrusted edge-function WASM (http-fetch) and outbound webhooks." }}
+    {{- end }}
+    # Litestream sidecar/init (same pod as drust) -> external backup S3. DECOUPLED from
+    # allowInternetEgress: a group may close general egress yet still require offsite backup.
+    # When general egress is OFF, destinationCIDRs is REQUIRED (fail above) so this never widens to a
+    # cluster-wide egress hole on the drust pod; only external.port to those CIDRs is opened. (With
+    # general egress ON the pod already has broad egress by the operator's choice, so this is moot.)
+    - to:
+        {{- if .Values.backup.external.destinationCIDRs }}
+        {{- range .Values.backup.external.destinationCIDRs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+        {{- else }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range .Values.networkPolicy.clusterCIDRs }}
+              - {{ . }}
+              {{- end }}
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.backup.external.port }} }
+    {{- end }}
 {{- if .Values.storage.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -84,6 +112,16 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressControllerNamespace }}
+      ports:
+        - { protocol: TCP, port: 9000 }
+    {{- end }}
+    {{- if .Values.backup.objectMirror.enabled }}
+    # Hourly mc-mirror Job reads this group's MinIO:9000. It wears a dedicated label,
+    # so admit it explicitly or it is black-holed.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "backupMirror.selectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 9000 }
     {{- end }}
@@ -126,5 +164,56 @@ spec:
               {{- include "minio.selectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 9000 }
+{{- if .Values.backup.objectMirror.enabled }}
+{{- if and (not .Values.networkPolicy.allowInternetEgress) (not .Values.backup.external.destinationCIDRs) }}
+{{- fail "backup.objectMirror.enabled with networkPolicy.allowInternetEgress=false REQUIRES backup.external.destinationCIDRs (scope the mirror's backup egress). Otherwise the mirror pod silently gets a broad-internet egress rule even though you closed general egress — same fail-closed discipline as the Litestream sidecar." }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-backup-mirror
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "backupMirror.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress: []                       # default-deny inbound
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "minio.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 9000 }
+    {{- if .Values.backup.external.destinationCIDRs }}
+    - to:
+        {{- range .Values.backup.external.destinationCIDRs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.backup.external.port }} }
+    {{- else }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range .Values.networkPolicy.clusterCIDRs }}
+              - {{ . }}
+              {{- end }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.backup.external.port }} }
+    {{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
