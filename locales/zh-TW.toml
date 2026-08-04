@@ -259,7 +259,7 @@ status = "狀態"
 duration = "耗時"
 collection = "資料表"
 record_id = "資料列 ID"
-sql_hash = "SQL hash"
+sql_hash = "SQL 雜湊"
 error_code = "錯誤代碼"
 error_message = "錯誤訊息"
 auth_method = "驗證方式"
@@ -429,6 +429,7 @@ failed_body = "變更未儲存 — 請確認權限與連線後再試一次。"
 [collection_rows.explain]
 run_btn = "▶ 解析"
 title = "執行 EXPLAIN QUERY PLAN"
+running = "執行中…"
 [collection_rows.indexes]
 add_field_btn = "+ 新增欄位"
 col_description = "描述"
@@ -445,6 +446,7 @@ force_check = "強制（略過大表保護）"
 remove_field_title = "移除此欄位"
 select_field_placeholder = "— 選擇欄位 —"
 title = "索引"
+drop_failed = "刪除索引失敗："
 
 [collection_rows.rows]
 per_page_label = "每頁筆數"
@@ -700,9 +702,9 @@ delete_selected = "刪除所選"
 retry_selected = "重試所選"
 
 [files_reconcile.col]
-bucket = "bucket"
+bucket = "儲存桶"
 detected = "偵測時間"
-key = "key"
+key = "物件鍵"
 last_error = "上次錯誤"
 original_name = "原始檔名"
 reason = "原因"
@@ -983,13 +985,14 @@ upload_title = "上傳函式"
 
 [tenant_oauth_providers.callback_banner]
 title = "Callback URL 為各租戶固定值"
+hint = "— 請原封不動貼進你的 OAuth 供應商主控台。"
 
 [tenant_oauth_providers.delete]
 button = "停用"
 confirm = "刪除 {provider} 的 OAuth 設定？此租戶的終端使用者將無法再透過 {provider} 登入。"
 
 [tenant_oauth_providers.edit_redirects]
-label = "Redirect URIs"
+label = "重新導向 URI"
 save = "儲存 redirect URIs"
 
 [tenant_oauth_providers.empty]
@@ -1001,26 +1004,32 @@ title = "儲存失敗"
 
 [tenant_oauth_providers.field]
 allow_redirects = "允許的 redirect"
-callback = "Callback"
-client_id = "Client ID"
-client_secret = "Client secret"
+callback = "回呼網址"
+client_id = "用戶端 ID"
+client_secret = "用戶端密鑰"
+secret_rotate_hint = "（送出下方表單即可更換）"
 
 [tenant_oauth_providers.form]
-client_id_label = "client id"
-client_secret_label = "client secret"
-provider_label = "provider"
-redirects_label = "allowed redirect uris"
+client_id_label = "用戶端 ID"
+client_secret_label = "用戶端密鑰"
+provider_label = "提供者"
+redirects_label = "允許的重新導向 URI"
 submit = "儲存 provider"
+client_id_placeholder = "例如 1234567890-abc.apps.googleusercontent.com"
+client_secret_hint = "一律留空 · 送出即取代已儲存的密鑰"
+redirects_hint = "每行一個網址 · 須為 https:// 或 http://localhost"
+redirects_placeholder = "https://app.example.com/auth/callback\nhttp://localhost:5173/auth/callback"
 
 [tenant_oauth_providers.head]
 sub = "終端使用者可透過 Google 或 GitHub 登入此租戶。每個 provider 各自擁有 client credentials 與 callback URL — host 管理者 OAuth 另行設定。"
-title = "OAuth providers"
+title = "OAuth 供應商"
 
 [tenant_oauth_providers.meta]
 description = "drust 管理 — 租戶 {tenant_name}：個別租戶 OAuth provider 設定（Google · GitHub），供終端使用者登入。"
 
 [tenant_oauth_providers.upsert]
 title = "新增 / 更新 provider"
+sub = "Upsert — 送出已存在的供應商會直接覆蓋原設定"
 
 [tenant_overview.activity_card]
 empty_body = "此租戶閒置中 — 沒有 REST 或 MCP 流量。"
@@ -1418,7 +1427,7 @@ subtitle = "儲存時產生 64 字元 hex 密鑰 · 僅顯示一次"
 submit = "儲存 webhook"
 title = "新增 webhook"
 url_hint = "僅允許 https:// 或 http:// 迴環位址"
-url_label = "url"
+url_label = "網址"
 
 [tenant_webhooks_admin.page]
 meta_description = "drust 管理 — 租戶 {tenant_name}：對外 webhook 訂閱。每筆記錄 CRUD 事件會向訂閱 URL 廣播。"
@@ -1494,6 +1503,9 @@ using_label = "USING（套用於哪些既有資料列）"
 check_label = "CHECK（是否允許新／更新後的資料列）"
 saved = "政策已儲存。"
 save_failed = "儲存失敗"
+advanced = "進階運算式 — 請以 PUT …/policies 編輯"
+value_option = "值…"
+value_placeholder = "值"
 
 [collection_page.toolbar]
 add_filter = "+ 篩選"
@@ -1541,12 +1553,12 @@ btn_pause = "暫停"
 btn_resume = "繼續"
 empty = "（還沒有訊息 — 請先連線到一個房間）"
 new_pill = "▼ {n} 筆新訊息"
-self_tag = "me"
+self_tag = "我"
 lagged_row = "⚠ LAGGED — 漏掉 {n} 則；已自動重新訂閱"
 paused_drop = "暫停期間丟掉 {n} 則"
 col_time = "時間"
 col_source = "來源"
-col_payload = "Payload"
+col_payload = "內容"
 col_delivered = "→"
 
 [system_users.col]
@@ -1658,3 +1670,33 @@ title = "建立租戶"
 [tenants_list.empty]
 body = "點選上方的<b>新增租戶</b>來建立第一個。"
 title = "尚無租戶"
+
+[collection_page.table]
+empty = "沒有資料列。"
+
+[collection_page.aria]
+remove = "移除"
+
+[collection_page.op]
+between = "介於"
+contains = "包含"
+ends_with = "結尾是"
+is_false = "為假"
+is_not_null = "不是 null"
+is_null = "是 null"
+is_true = "為真"
+like = "LIKE"
+starts_with = "開頭是"
+
+[collection_page.filter]
+add = "新增"
+apply = "套用"
+from_placeholder = "從"
+to_placeholder = "到"
+value_placeholder = "值"
+
+[collection_page.pager]
+page_of = "第 <b>{page}</b> 頁／共 {pages} 頁 · 共 <b>{total}</b> 筆"
+
+[collection_page.list]
+fetch_failed = "讀取資料列失敗"

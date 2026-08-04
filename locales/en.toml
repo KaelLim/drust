@@ -414,6 +414,7 @@ failed_body = "The change was not saved — check your permissions and connectio
 [collection_rows.explain]
 run_btn = "▶ Explain"
 title = "Run EXPLAIN QUERY PLAN"
+running = "Running…"
 [collection_rows.indexes]
 add_field_btn = "+ add field"
 col_description = "description"
@@ -430,6 +431,7 @@ force_check = "force (skip large-table guard)"
 remove_field_title = "remove this field"
 select_field_placeholder = "— select field —"
 title = "Indexes"
+drop_failed = "Drop failed:"
 
 [collection_rows.rows]
 per_page_label = "per page"
@@ -965,6 +967,7 @@ upload_title = "Upload a function"
 
 [tenant_oauth_providers.callback_banner]
 title = "Callback URL is fixed per tenant"
+hint = "— copy this into your provider console exactly."
 
 [tenant_oauth_providers.delete]
 button = "disable"
@@ -986,6 +989,7 @@ allow_redirects = "Allow redirects"
 callback = "Callback"
 client_id = "Client ID"
 client_secret = "Client secret"
+secret_rotate_hint = "(rotate by submitting form below)"
 
 [tenant_oauth_providers.form]
 client_id_label = "client id"
@@ -993,6 +997,10 @@ client_secret_label = "client secret"
 provider_label = "provider"
 redirects_label = "allowed redirect uris"
 submit = "save provider"
+client_id_placeholder = "e.g. 1234567890-abc.apps.googleusercontent.com"
+client_secret_hint = "always blank · submitting replaces stored secret"
+redirects_hint = "one URL per line · https:// or http://localhost"
+redirects_placeholder = "https://app.example.com/auth/callback\nhttp://localhost:5173/auth/callback"
 
 [tenant_oauth_providers.head]
 sub = "End-users can sign in to this tenant via Google or GitHub. Each provider has its own client credentials and callback URL — host admin OAuth is configured separately."
@@ -1003,6 +1011,7 @@ description = "drust admin — tenant {tenant_name}: per-tenant OAuth provider c
 
 [tenant_oauth_providers.upsert]
 title = "Add / update provider"
+sub = "Upsert — submitting an existing provider overwrites it"
 
 [tenant_overview.activity_card]
 empty_body = "This tenant is idle — no REST or MCP traffic."
@@ -1468,6 +1477,9 @@ using_label = "USING (which existing rows)"
 check_label = "CHECK (allow new/updated row)"
 saved = "Policies saved."
 save_failed = "Save failed"
+advanced = "advanced expression — edit via PUT …/policies"
+value_option = "value…"
+value_placeholder = "value"
 
 [collection_page.toolbar]
 add_filter = "+ Filter"
@@ -1636,3 +1648,33 @@ title = "Create a tenant"
 [tenants_list.empty]
 body = "Click <b>New tenant</b> above to create one."
 title = "No tenants yet"
+
+[collection_page.table]
+empty = "No rows."
+
+[collection_page.aria]
+remove = "remove"
+
+[collection_page.op]
+between = "between"
+contains = "contains"
+ends_with = "ends with"
+is_false = "is false"
+is_not_null = "is not null"
+is_null = "is null"
+is_true = "is true"
+like = "LIKE"
+starts_with = "starts with"
+
+[collection_page.filter]
+add = "Add"
+apply = "Apply"
+from_placeholder = "from"
+to_placeholder = "to"
+value_placeholder = "value"
+
+[collection_page.pager]
+page_of = "Page <b>{page}</b> of {pages} · <b>{total}</b> total"
+
+[collection_page.list]
+fetch_failed = "list fetch failed"

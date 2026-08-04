@@ -15,7 +15,7 @@
           <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
           <div class="b-body">
             <div class="b-title">{{ t.s("tenant_oauth_providers.callback_banner.title") }}</div>
-            <p><code>{{ crate::base_path::base_path() }}/t/<b style="color:var(--accent);">{{ tenant_id }}</b>/oauth/&lt;provider&gt;/callback</code> — copy this into your provider console exactly.</p>
+            <p><code>{{ crate::base_path::base_path() }}/t/<b style="color:var(--accent);">{{ tenant_id }}</b>/oauth/&lt;provider&gt;/callback</code> {{ t.s("tenant_oauth_providers.callback_banner.hint") }}</p>
           </div>
         </div>
 
@@ -50,7 +50,7 @@
               <div class="lbl">{{ t.s("tenant_oauth_providers.field.client_id") }}</div>
               <div class="val" title="{{ p.client_id }}">{{ p.client_id_short }}</div>
               <div class="lbl">{{ t.s("tenant_oauth_providers.field.client_secret") }}</div>
-              <div class="val" style="color:var(--muted-2);">●●●●●●●●●●●●●●●●●●●●  (rotate by submitting form below)</div>
+              <div class="val" style="color:var(--muted-2);">●●●●●●●●●●●●●●●●●●●●  {{ t.s("tenant_oauth_providers.field.secret_rotate_hint") }}</div>
               <div class="lbl">{{ t.s("tenant_oauth_providers.field.callback") }}</div>
               <div class="val">{{ crate::base_path::base_path() }}/t/{{ tenant_id }}/oauth/{{ p.provider }}/callback</div>
               <div class="lbl">{{ t.s("tenant_oauth_providers.field.allow_redirects") }}</div>
@@ -83,7 +83,7 @@
           <div class="card-head">
             <div>
               <div class="card-title">{{ t.s("tenant_oauth_providers.upsert.title") }}</div>
-              <div class="card-sub">Upsert — submitting an existing provider overwrites it</div>
+              <div class="card-sub">{{ t.s("tenant_oauth_providers.upsert.sub") }}</div>
             </div>
           </div>
           <div class="card-body">
@@ -100,18 +100,18 @@
                 <label>{{ t.s("tenant_oauth_providers.form.client_id_label") }}</label>
                 <input class="input" name="client_id" required maxlength="256"
                        autocomplete="off" spellcheck="false"
-                       placeholder="e.g. 1234567890-abc.apps.googleusercontent.com">
+                       placeholder="{{ t.s("tenant_oauth_providers.form.client_id_placeholder") }}">
               </div>
               <div class="field">
-                <label>{{ t.s("tenant_oauth_providers.form.client_secret_label") }} <span class="hint">always blank · submitting replaces stored secret</span></label>
+                <label>{{ t.s("tenant_oauth_providers.form.client_secret_label") }} <span class="hint">{{ t.s("tenant_oauth_providers.form.client_secret_hint") }}</span></label>
                 <input class="input" name="client_secret" type="password" required maxlength="256"
                        autocomplete="off" spellcheck="false">
               </div>
               <div class="field">
-                <label>{{ t.s("tenant_oauth_providers.form.redirects_label") }} <span class="hint">one URL per line · https:// or http://localhost</span></label>
+                <label>{{ t.s("tenant_oauth_providers.form.redirects_label") }} <span class="hint">{{ t.s("tenant_oauth_providers.form.redirects_hint") }}</span></label>
                 <textarea class="textarea" name="allowed_redirect_uris" rows="4" required
                           spellcheck="false"
-                          placeholder="https://app.example.com/auth/callback&#10;http://localhost:5173/auth/callback"></textarea>
+                          placeholder="{{ t.s("tenant_oauth_providers.form.redirects_placeholder") }}"></textarea>
               </div>
               <div>
                 <button type="submit" class="btn primary"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>{{ t.s("tenant_oauth_providers.form.submit") }}</button>

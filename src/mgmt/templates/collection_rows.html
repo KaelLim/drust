@@ -70,7 +70,7 @@
             </table>
             <div id="rows-empty" hidden style="padding:56px 24px 40px;text-align:center;color:var(--muted);">
               <canvas class="pix" data-chonk="curious" data-size="96" style="margin-bottom:18px;"></canvas>
-              <div>No rows.</div>
+              <div>{{ t.s("collection_page.table.empty") }}</div>
             </div>
           </div>
         </div>
@@ -198,7 +198,7 @@
                   <option value="{{ f.name }}">{{ f.name }}</option>
                   {% endfor %}
                 </select>
-                <button type="button" class="btn sm ghost idx-remove" title="{{ t.s("collection_rows.indexes.remove_field_title") }}" aria-label="remove">×</button>
+                <button type="button" class="btn sm ghost idx-remove" title="{{ t.s("collection_rows.indexes.remove_field_title") }}" aria-label="{{ t.s("collection_page.aria.remove") }}">×</button>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap;">
@@ -233,7 +233,7 @@
         { method: 'DELETE' }
       ).then(function(r) {
         if (r.ok) { location.reload(); }
-        else { r.text().then(function(tx) { alert('Drop failed: ' + tx); }); }
+        else { r.text().then(function(tx) { alert('{{ t.s("collection_rows.indexes.drop_failed")|safe }} ' + tx); }); }
       }).catch(function(e) { alert(e); });
     });
   });
@@ -500,7 +500,7 @@ for (;;) {
             <textarea id="explain-sql" rows="4" style="width:100%;padding:8px;font-family:var(--font-mono);font-size:13px;" placeholder="SELECT * FROM {{ coll_name }} WHERE ..."></textarea>
             <div style="margin-top:8px;display:flex;gap:8px;">
               <button type="button" id="explain-run" class="btn sm primary">{{ t.s("collection_rows.explain.run_btn") }}</button>
-              <button type="button" id="explain-close" class="btn sm ghost">Close</button>
+              <button type="button" id="explain-close" class="btn sm ghost">{{ t.s("common.button.close") }}</button>
             </div>
             <pre id="explain-output" class="explain" hidden style="margin-top:10px;max-height:300px;overflow:auto;"></pre>
           </div>
@@ -512,7 +512,7 @@ for (;;) {
             <h2 style="font:600 16px/1 var(--font-sans);margin:0 0 12px;">{{ t.s("collection_page.history.title") }} <span id="history-rec-label" style="color:var(--muted);font-family:var(--font-mono);font-weight:400;"></span></h2>
             <div id="history-timeline" style="max-height:60vh;overflow:auto;"></div>
             <div style="margin-top:10px;display:flex;gap:8px;">
-              <button type="button" id="history-close" class="btn sm ghost">Close</button>
+              <button type="button" id="history-close" class="btn sm ghost">{{ t.s("common.button.close") }}</button>
             </div>
           </div>
         </div>
@@ -608,7 +608,8 @@ for (;;) {
       }).join('');
     }
     document.getElementById('pager-page-of').innerHTML =
-      'Page <b>' + resp.page + '</b> of ' + resp.total_pages + ' &middot; <b>' + resp.total + '</b> total';
+      '{{ t.s("collection_page.pager.page_of")|safe }}'
+        .replace('{page}', resp.page).replace('{pages}', resp.total_pages).replace('{total}', resp.total);
     document.getElementById('pager-prev').disabled = resp.page <= 1;
     document.getElementById('pager-next').disabled = resp.page >= resp.total_pages;
     var def = document.getElementById('def-row-count');
@@ -670,7 +671,7 @@ for (;;) {
       var pi = document.getElementById('pager-info');
       if (pi) pi.style.visibility = 'visible';
       try { renderRows(await fetchList()); }
-      catch(e) { console.error('list fetch failed', e); alert(e.message || 'fetch failed'); }
+      catch(e) { console.error('list fetch', e); alert(e.message || '{{ t.s("collection_page.list.fetch_failed")|safe }}'); }
     }
     document.querySelectorAll('.view-tabs button').forEach(function(b){
       b.classList.toggle('active', b.dataset.view === state.view);
@@ -702,11 +703,18 @@ for (;;) {
     timestamp: ['eq','ne','gt','gte','lt','lte','between','is_null','is_not_null'],
     boolean:   ['is_true','is_false','is_null','is_not_null'],
   };
+  {# Symbolic operators stay as-is — they are notation, not words. Only the
+     word-form ones carry copy, so only those come from the bundle. #}
   const OP_LABELS = {
     eq:'=', ne:'≠', gt:'>', gte:'≥', lt:'<', lte:'≤',
-    contains:'contains', starts_with:'starts with', ends_with:'ends with',
-    between:'between', is_null:'is null', is_not_null:'is not null',
-    is_true:'is true', is_false:'is false',
+    contains:'{{ t.s("collection_page.op.contains")|safe }}',
+    starts_with:'{{ t.s("collection_page.op.starts_with")|safe }}',
+    ends_with:'{{ t.s("collection_page.op.ends_with")|safe }}',
+    between:'{{ t.s("collection_page.op.between")|safe }}',
+    is_null:'{{ t.s("collection_page.op.is_null")|safe }}',
+    is_not_null:'{{ t.s("collection_page.op.is_not_null")|safe }}',
+    is_true:'{{ t.s("collection_page.op.is_true")|safe }}',
+    is_false:'{{ t.s("collection_page.op.is_false")|safe }}',
   };
 
   function inferType(field){
@@ -724,7 +732,7 @@ for (;;) {
     row.innerHTML = state.filters.map((f, i) => {
       const valDisplay = (f.op === 'is_null' || f.op === 'is_not_null' || f.op === 'is_true' || f.op === 'is_false')
         ? '' : ` ${JSON.stringify(f.value)}`;
-      return `<span class="coll-chip">${escapeHtml(f.field)} ${escapeHtml(OP_LABELS[f.op] || f.op)}${escapeHtml(valDisplay)}<button type="button" class="chip-x" data-chip-idx="${i}" aria-label="remove">×</button></span>`;
+      return `<span class="coll-chip">${escapeHtml(f.field)} ${escapeHtml(OP_LABELS[f.op] || f.op)}${escapeHtml(valDisplay)}<button type="button" class="chip-x" data-chip-idx="${i}" aria-label="{{ t.s("collection_page.aria.remove")|safe }}">×</button></span>`;
     }).join('');
     row.querySelectorAll('.chip-x').forEach(b => {
       b.addEventListener('click', () => {
@@ -748,10 +756,10 @@ for (;;) {
         <select id="f-field">${filterableFields.map(f => `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)}</option>`).join('')}</select>
         <select id="f-op"></select>
       </div>
-      <div class="row" id="f-value-wrap"><input id="f-value" type="text" placeholder="value" style="flex:1;"></div>
+      <div class="row" id="f-value-wrap"><input id="f-value" type="text" placeholder="{{ t.s("collection_page.filter.value_placeholder")|safe }}" style="flex:1;"></div>
       <div class="row" style="justify-content:flex-end;">
-        <button class="btn sm ghost" id="f-cancel">Cancel</button>
-        <button class="btn sm primary" id="f-add">Add</button>
+        <button class="btn sm ghost" id="f-cancel">{{ t.s("common.button.cancel")|safe }}</button>
+        <button class="btn sm primary" id="f-add">{{ t.s("collection_page.filter.add")|safe }}</button>
       </div>`;
     document.body.appendChild(pop);
 
@@ -771,10 +779,10 @@ for (;;) {
         valWrap.style.display = 'none';
       } else if (op === 'between') {
         valWrap.style.display = '';
-        valWrap.innerHTML = '<input id="f-value-lo" type="text" placeholder="from" style="flex:1;"><input id="f-value-hi" type="text" placeholder="to" style="flex:1;">';
+        valWrap.innerHTML = '<input id="f-value-lo" type="text" placeholder="{{ t.s("collection_page.filter.from_placeholder")|safe }}" style="flex:1;"><input id="f-value-hi" type="text" placeholder="{{ t.s("collection_page.filter.to_placeholder")|safe }}" style="flex:1;">';
       } else {
         valWrap.style.display = '';
-        valWrap.innerHTML = '<input id="f-value" type="text" placeholder="value" style="flex:1;">';
+        valWrap.innerHTML = '<input id="f-value" type="text" placeholder="{{ t.s("collection_page.filter.value_placeholder")|safe }}" style="flex:1;">';
       }
     }
     fieldSel.addEventListener('change', refreshOps);
@@ -836,7 +844,7 @@ for (;;) {
       `<option value="${escapeHtml(f.name)}|desc">${escapeHtml(f.name)} ↓</option>`,
     ]).join('');
     pop.innerHTML = `<div class="row"><select id="sort-sel">${opts}</select></div>
-      <div class="row" style="justify-content:flex-end;"><button class="btn sm primary" id="sort-apply">Apply</button></div>`;
+      <div class="row" style="justify-content:flex-end;"><button class="btn sm primary" id="sort-apply">{{ t.s("collection_page.filter.apply")|safe }}</button></div>`;
     document.body.appendChild(pop);
     pop.querySelector('#sort-sel').value = `${state.sort.field}|${state.sort.dir}`;
     pop.querySelector('#sort-apply').addEventListener('click', () => {
@@ -948,7 +956,7 @@ for (;;) {
   document.getElementById('explain-run').addEventListener('click', async () => {
     const sql = document.getElementById('explain-sql').value;
     const out = document.getElementById('explain-output');
-    out.textContent = 'Running...'; out.hidden = false;
+    out.textContent = '{{ t.s("collection_rows.explain.running")|safe }}'; out.hidden = false;
     const r = await fetch(`{{ crate::base_path::base_path() }}/admin/tenants/${tenantId}/collections/${collName}/_explain`, {
       method: 'POST', headers: {'content-type':'application/json'},
       body: JSON.stringify({ sql }),
@@ -1061,7 +1069,10 @@ for (;;) {
     // Leaf comparison ops the policy engine accepts (bare form — policy.rs
     // also accepts the $-prefixed aliases, but the bare form is canonical).
     const POL_OPS = ['eq','ne','gt','gte','lt','lte','like','is_null','is_not_null'];
-    const POL_OP_LABELS = { eq:'=', ne:'≠', gt:'>', gte:'≥', lt:'<', lte:'≤', like:'LIKE', is_null:'is null', is_not_null:'is not null' };
+    const POL_OP_LABELS = { eq:'=', ne:'≠', gt:'>', gte:'≥', lt:'<', lte:'≤',
+      like:'{{ t.s("collection_page.op.like")|safe }}',
+      is_null:'{{ t.s("collection_page.op.is_null")|safe }}',
+      is_not_null:'{{ t.s("collection_page.op.is_not_null")|safe }}' };
     // Field names available as leaf keys (id/created_at/updated_at are always
     // valid per validate_field; exclude vector columns — they can't be filtered).
     const policyFields = ['id'].concat(fields.filter(f => f.sql_type !== 'vector').map(f => f.name))
@@ -1159,8 +1170,8 @@ for (;;) {
       } else {
         const fieldSel = '<select class="p-field">' + policyFields.map(f => '<option value="'+escapeHtml(f)+'"'+(f===rule.field?' selected':'')+'>'+escapeHtml(f)+'</option>').join('') + '</select>';
         const opSel = '<select class="p-op">' + POL_OPS.map(o => '<option value="'+o+'"'+(o===rule.op?' selected':'')+'>'+escapeHtml(POL_OP_LABELS[o])+'</option>').join('') + '</select>';
-        const kindSel = '<select class="p-kind"><option value="literal"'+(rule.operandKind==='literal'?' selected':'')+'>value…</option><option value="auth"'+(rule.operandKind==='auth'?' selected':'')+'>@request.auth.id</option></select>';
-        const valIn = '<input class="p-val" type="text" placeholder="value" value="'+escapeHtml(rule.value==null?'':String(rule.value))+'" style="flex:1;min-width:80px;">';
+        const kindSel = '<select class="p-kind"><option value="literal"'+(rule.operandKind==='literal'?' selected':'')+'>{{ t.s("collection_page.policies.value_option")|safe }}</option><option value="auth"'+(rule.operandKind==='auth'?' selected':'')+'>@request.auth.id</option></select>';
+        const valIn = '<input class="p-val" type="text" placeholder="{{ t.s("collection_page.policies.value_placeholder")|safe }}" value="'+escapeHtml(rule.value==null?'':String(rule.value))+'" style="flex:1;min-width:80px;">';
         wrap.innerHTML = fieldSel + opSel + kindSel + valIn;
       }
       const x = document.createElement('button');
@@ -1192,7 +1203,7 @@ for (;;) {
       if (adv) {
         const note = document.createElement('div');
         note.style.cssText = 'font:400 12px/1.4 var(--font-sans);color:var(--muted);';
-        note.textContent = 'advanced expression — edit via PUT …/policies';
+        note.textContent = '{{ t.s("collection_page.policies.advanced")|safe }}';
         block.appendChild(note);
         return block;
       }
