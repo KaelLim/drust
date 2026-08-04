@@ -1,3 +1,88 @@
+## v1.58.2 — 2026-08-04
+
+### Fixed — the boot-time owner backfill could promote every admin
+
+`run_migrations` runs on every boot, and its v1.29.0 step was
+`UPDATE admins SET role='owner'` with **no WHERE clause**, guarded by a state
+probe: "is there an owner right now?". Any transient zero-owner state therefore
+promoted *every* admin to owner on the next restart — and every deploy is a
+restart.
+
+The API's last-owner guards ("cannot demote the last owner", "cannot remove the
+last owner", both inside the transaction) make zero-owner unreachable through
+the app, so this was latent rather than live. It is not hypothetical
+historically: this host's `meta.sqlite` carries two admins at `owner` who both
+predate v1.29.0, and the blanket `UPDATE` is what lifted them.
+
+The guard is now the role column's **absence**, probed before it is added — the
+same one-shot marker the `tenants.owner_admin_id` backfill 200 lines below
+already uses, and what `.claude/rules/migrations-boot.md` prescribes: *inside
+the column-create branch, NOT every boot*. Both paths that legitimately need
+the backfill see no role column: a pre-v1.29 upgrade (where every admin was
+effectively a full admin) and a fresh install, where `SCHEMA_SQL` creates
+`admins` without `role` and `bootstrap_admin` inserts before `run_migrations`,
+so this step is what makes the first admin an owner.
+
+The existing test re-ran migrations while an owner still existed, so the probe
+was true and nothing happened — it believed it was checking idempotency and
+never exercised the failing branch. The new test drives the table to zero
+owners first and reproduces `["owner","owner","owner"]` against the old code.
+
+**No behaviour change for OAuth sign-in or invites.** A Google Workspace first
+login cannot self-provision at all — the callback requires an existing `admins`
+row and answers `oauth_not_allowed` otherwise — and both invite paths already
+defaulted to `member`, with the `admin`/`owner` options rendered only for an
+owner.
+
+### Fixed — admin UI copy that never entered the i18n bundle
+
+`build.rs` validated one direction only: every key referenced by `t.s(…)` must
+exist. A string that never *became* a key was invisible to it, and so was an
+entire page authored without one.
+
+- **The login failure banner.** Its title was `t.s("login.error.password_title")`
+  while its body came from a hardcoded `unauthorized("Invalid credentials", …)`
+  — a translated heading over an English sentence, in the same banner, on the
+  first screen drust shows anyone. `[login.error]` already carried eight fully
+  translated OAuth keys; the password path just never got one. `unauthorized`
+  now takes an i18n key, so passing raw copy is unrepresentable.
+- **`files.html`.** 371 lines, 21 `t.s()` calls, English through the whole
+  upload flow, table, pager and all five modals. Its per-tenant twin already had
+  the matching key set, so this is the host page catching up. Two keys it needed
+  already existed and it hardcoded them anyway.
+- **The collection browser's JS.** Filter and policy builders were built from
+  hardcoded operator words ("contains", "starts with", "is null"), plus the
+  pager line, filter/sort controls and empty state — on the most-used page in
+  the admin UI. Symbolic operators (`=`, `≠`, `≥`) stay untranslated: notation,
+  not words.
+- **zh-TW.** 15 values were still their English source, 9 of them on the OAuth
+  providers page, the least-translated surface in the product. 33 identical
+  values remain and all are deliberate (proper nouns, API contract values,
+  badges, example URLs).
+
+Both bundles now hold 1042 keys with identical key sets and zero orphans.
+
+### Added — gate 8: `untranslated-copy`
+
+The seven existing UI gates cover colour, layout, class names, buttons, `|safe`
+producers, CSS variables and inline handlers. None covered where copy came
+from. Gate 8 requires that anything handed to the two component APIs — the
+`_ui.html` macros and `drustUI.confirm/alert/prompt/confirmTyped` — reads from
+the bundle.
+
+Granularity is the **field**, not the call: the recurring defect was a
+translated `title` beside a hardcoded `body` in one call (27 of them across
+seven templates), which a call-level check reports as clean because the call
+does contain `t.s(`. The macro rule is a per-macro argument-index table rather
+than "every string argument", because `empty_state`'s first argument is a
+sprite id, and a gate that cries wolf on an asset name is one people learn to
+route around.
+
+Scope is bounded and stated: text nodes and attributes are not covered, so a
+green build means "no component was handed raw copy", not "this page is
+translated". The largest English block left is the SSE quickstart panel in
+`collection_rows.html`.
+
 ## v1.58.1 — 2026-08-03
 
 ### Security — wasmtime 45 → 46.0.2 (RUSTSEC-2026-0222)
