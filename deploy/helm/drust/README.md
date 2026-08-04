@@ -29,6 +29,19 @@ through Helm values.
   `helm install --create-namespace`; `createNamespace` defaults to false.
 - An **ingress controller**: **Traefik** (the k3s default, and this chart's
   default) or **nginx-ingress**. Select with `ingress.controller`.
+  > [!CAUTION]
+  > **If the controller runs `hostNetwork: true` — the norm on bare metal, where
+  > there is no LoadBalancer — you must set `networkPolicy.hostNetworkIngressCIDRs`
+  > or every request 502s.** A hostNetwork pod has no CNI pod IP, so
+  > `networkPolicy.ingressControllerNamespace` can never match it and the traffic is
+  > refused. The source is *not* simply the node IP: cross-node, the packet carries
+  > the ingress node's flannel address. Run `ip route get <drust pod IP>` **on the
+  > ingress node** and use the `src` it reports, plus the node IP for the same-node
+  > case. Both the admin plane and `/public/*` are affected, and they fail
+  > independently. Symptom is `Connection refused` (kube-router REJECTs rather than
+  > DROPs), so it reads like the app is down rather than like a firewall.
+  > Note this stays invisible on clusters that ship `disable-network-policy: true`
+  > (several k3s distributions do): the policies render and enforce nothing.
 - **cert-manager** with a `ClusterIssuer`, only if you enable TLS
   (`ingress.tls.enabled=true`). The issuer name goes in `ingress.tls.issuer`.
 - A **CSI `VolumeSnapshotClass`**, only if you enable backups
@@ -265,6 +278,23 @@ token. Needs `storage.enabled`.
 `scheduling.drust.*` and `scheduling.minio.*` pass `nodeSelector` / `tolerations` /
 `affinity` / `topologySpreadConstraints` straight through to the respective StatefulSet pod
 spec. All default empty, so leaving them unset is zero behavior change.
+
+> [!IMPORTANT]
+> **`tolerations` is a recovery-time control, not just placement.** Kubernetes injects
+> `node.kubernetes.io/not-ready` and `.../unreachable` at `tolerationSeconds: 300`. drust
+> runs `replicas: 1` — SQLite, single writer — so nothing serves during those 300 seconds.
+> Measured on a real node failure with Longhorn RWO volumes: **~396s total RTO on the
+> default, ~193s at `tolerationSeconds: 60`**, i.e. the default accounted for about
+> three-quarters of the outage. `values.yaml` carries a ready-to-paste block. This only
+> helps where the pod has somewhere to fail over to — see the node-binding note below.
+
+> [!CAUTION]
+> **StatefulSet on replicated storage: Longhorn's `node-down-pod-deletion-policy` defaults
+> to `do-nothing`.** With that default the old pod stays `Terminating` on the dead node, the
+> RWO volume reports `Multi-Attach error`, and the replacement pod never starts — the
+> failover hangs indefinitely rather than being slow. Set it to
+> `delete-both-statefulset-and-deployment-pod` for the drift to complete. This is a Longhorn
+> setting, not a chart value.
 
 ## Cross-group backup isolation
 

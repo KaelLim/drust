@@ -1,0 +1,13 @@
+ingress: { host: hn.example.test, controller: nginx }
+storage:
+  enabled: true
+  minio: { rootUser: u, rootPassword: p }
+publicFiles: { enabled: true }
+secrets: { create: true, adminPassword: pw }
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: ingress-nginx
+  # Cross-node source (ingress node's flannel.1) + same-node source (node IP).
+  hostNetworkIngressCIDRs:
+    - 10.42.0.0/32
+    - 10.0.2.218/32

@@ -2,6 +2,47 @@
 
 ## [Unreleased] — Deploy
 
+## [0.1.4] — 2026-08-04
+
+### Fixed
+- **A `hostNetwork` ingress controller was black-holed, 502 on every request**
+  (issue #8). The ingress rules gated solely on `namespaceSelector`, and a
+  hostNetwork pod has no CNI pod IP — so there is no pod → namespace mapping to
+  resolve and the selector can never match, however
+  `ingressControllerNamespace` is set. That is the normal shape on bare metal,
+  where there is no LoadBalancer to hand out an external IP.
+  `networkPolicy.hostNetworkIngressCIDRs` (default `[]`, so no rendered output
+  changes) adds `ipBlock` peers to **both** affected rules: the admin plane on
+  `drust:47826` and, when `publicFiles.enabled`, `/public/*` on `minio:9000`.
+  They fail independently — `/login` can be green while every public file 502s
+  — so the render tests assert both.
+
+  Two traps worth stating, both reported from the field:
+  the source is **not** the node IP for a cross-node connection (the packet
+  carries the ingress node's flannel address; find it with `ip route get <drust
+  pod IP>` **on the ingress node**), and the symptom is `Connection refused`
+  rather than a timeout, because kube-router REJECTs — so it reads like the app
+  is down, not like a firewall. It also stays invisible on distributions that
+  ship `disable-network-policy: true`: the policies render and enforce nothing.
+
+  `0.0.0.0/0` is rejected at template time. This rule fronts the admin plane,
+  and a catch-all there admits every pod in the cluster including other groups'
+  — same fail-closed discipline as `backup.external.destinationCIDRs`.
+
+### Changed
+- **`scheduling.drust.tolerations` documented as a recovery-time control**, not
+  a placement passthrough. Kubernetes injects `node.kubernetes.io/not-ready`
+  and `.../unreachable` at `tolerationSeconds: 300`; drust is `replicas: 1`
+  (SQLite, single writer), so nothing serves during those 300 seconds. Measured
+  on a real node failure with Longhorn RWO volumes: **~396s total RTO on the
+  default vs ~193s at 60s**, i.e. the default was about three-quarters of the
+  outage. `values.yaml` now carries the rationale and a ready-to-paste block.
+- **README** gained the hostNetwork prerequisite above, and a CAUTION that
+  Longhorn's `node-down-pod-deletion-policy` defaults to `do-nothing` — with
+  which the old pod stays `Terminating`, the RWO volume reports `Multi-Attach
+  error`, and the replacement pod never starts, so failover hangs rather than
+  merely being slow.
+
 ## [0.1.3] — 2026-08-04
 
 ### Fixed

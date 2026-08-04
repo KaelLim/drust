@@ -2,6 +2,9 @@
 {{- if has "0.0.0.0/0" .Values.backup.external.destinationCIDRs }}
 {{- fail "backup.external.destinationCIDRs must list your S3 provider's SPECIFIC ranges, not 0.0.0.0/0 — a scoped ipBlock cannot carry an 'except: clusterCIDRs', so 0.0.0.0/0 there is an unrestricted egress hole that also reaches co-tenant pods (and it would satisfy the fail-closed guard while defeating its purpose). Use the provider's published CIDRs, or set allowInternetEgress=true to accept broad egress explicitly." }}
 {{- end }}
+{{- if has "0.0.0.0/0" .Values.networkPolicy.hostNetworkIngressCIDRs }}
+{{- fail "networkPolicy.hostNetworkIngressCIDRs must list your ingress node's SPECIFIC source addresses, not 0.0.0.0/0 — this rule fronts the ADMIN PLANE, and 0.0.0.0/0 there admits every pod in the cluster, including other groups', defeating the ingress isolation this policy exists to provide. Run `ip route get <drust pod IP>` on the ingress node and use the /32 it reports (plus the node IP for the same-node case)." }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -15,10 +18,17 @@ spec:
       {{- include "drust.selectorLabels" . | nindent 6 }}
   policyTypes: [Ingress, Egress]
   ingress:
+    # Separate list ITEMS, so the peers are OR'd. Folding the ipBlock into the
+    # namespaceSelector entry would AND them and match nothing at all.
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressControllerNamespace }}
+        {{- range .Values.networkPolicy.hostNetworkIngressCIDRs }}
+        # hostNetwork ingress controller: no pod IP, so the selector above can
+        # never resolve it. See values.yaml for how to find these.
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 47826 }
   egress:
@@ -107,11 +117,17 @@ spec:
         - { protocol: TCP, port: 9000 }
     {{- if .Values.publicFiles.enabled }}
     # public-file GETs arrive from the ingress controller via the /public path,
-    # not from drust — allow that source too when public serving is on.
+    # not from drust — allow that source too when public serving is on. This is
+    # the SECOND path a hostNetwork controller black-holes, and it fails
+    # independently of the drust policy above: /login can be green while every
+    # /public/<tenant>/<key> is 502.
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressControllerNamespace }}
+        {{- range .Values.networkPolicy.hostNetworkIngressCIDRs }}
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
       ports:
         - { protocol: TCP, port: 9000 }
     {{- end }}

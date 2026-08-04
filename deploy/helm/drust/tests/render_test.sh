@@ -27,7 +27,7 @@ assert_kubeconform() { # <fixture>
   if echo "$out" | grep -q "Invalid: 0" && echo "$out" | grep -q "Errors: 0"; then echo "ok: kubeconform $1"; else echo "FAIL: kubeconform $1"; echo "$out"; FAILS=$((FAILS+1)); fi; }
 
 echo "== lint =="; helm lint "$CHART" || FAILS=$((FAILS+1))
-_prerender minimal.yaml full.yaml nginx.yaml storage-noPublic.yaml no-sidecar.yaml notls.yaml litestream.yaml backup-mirror.yaml placement.yaml
+_prerender minimal.yaml full.yaml nginx.yaml storage-noPublic.yaml no-sidecar.yaml notls.yaml litestream.yaml backup-mirror.yaml placement.yaml hostnetwork-ingress.yaml
 
 # --- version sync: appVersion IS the deployed image tag ---
 # values.yaml ships image.tag:"" so both drust containers fall back to
@@ -259,8 +259,36 @@ if _render placement.yaml | awk 'BEGIN{RS="---\n"} /kind: StatefulSet/{
 assert_absent minimal.yaml "nodeSelector"               "no nodeSelector by default (empty {} => omitted)"
 assert_absent full.yaml    "topologySpreadConstraints"  "no topologySpread by default"
 
+# --- Issue #8: hostNetwork ingress controller needs an ipBlock peer ---
+# A hostNetwork controller carries no pod IP, so `namespaceSelector` can never
+# resolve it and every request is REJECTed — 502 that reads like the app is down.
+# Two independent paths break: the admin plane (drust:47826) and /public/*
+# (minio:9000). Assert BOTH policies carry the CIDRs, because fixing only the
+# one you happened to test leaves the other silently black-holed.
+assert_absent   minimal.yaml            "ipBlock: { cidr:" "no hostNetwork ipBlock by default (empty list => omitted)"
+if _render hostnetwork-ingress.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust/{
+    if ($0 ~ /10\.42\.0\.0\/32/ && $0 ~ /10\.0\.2\.218\/32/ && $0 ~ /port: 47826/) ok=1
+  } END{exit ok?0:1}'; then
+  echo "ok: drust NetworkPolicy admits hostNetworkIngressCIDRs on 47826"
+else echo "FAIL: drust NetworkPolicy missing hostNetwork ipBlock peers"; FAILS=$((FAILS+1)); fi
+if _render hostnetwork-ingress.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-minio/{
+    if ($0 ~ /10\.42\.0\.0\/32/ && $0 ~ /10\.0\.2\.218\/32/ && $0 ~ /port: 9000/) ok=1
+  } END{exit ok?0:1}'; then
+  echo "ok: minio NetworkPolicy admits hostNetworkIngressCIDRs on 9000 (/public path)"
+else echo "FAIL: minio NetworkPolicy missing hostNetwork ipBlock peers"; FAILS=$((FAILS+1)); fi
+# The namespaceSelector peer must SURVIVE — the ipBlock widens the allowed
+# sources, it does not replace them. A pod-network controller must keep working.
+assert_contains hostnetwork-ingress.yaml "kubernetes.io/metadata.name: ingress-nginx" "namespaceSelector peer retained alongside the ipBlock"
+# Fail-closed: this rule fronts the admin plane, so a catch-all is refused —
+# same discipline as backup.external.destinationCIDRs.
+if helm template t "$CHART" --namespace testns \
+     --set ingress.host=x.test \
+     --set 'networkPolicy.hostNetworkIngressCIDRs={0.0.0.0/0}' >/dev/null 2>&1; then
+  echo "FAIL: hostNetworkIngressCIDRs accepted 0.0.0.0/0 — that admits every pod in the cluster"; FAILS=$((FAILS+1))
+else echo "ok: hostNetworkIngressCIDRs rejects 0.0.0.0/0 (fail-closed)"; fi
+
 # --- Task 10: full-matrix kubeconform ---
-for f in minimal full nginx storage-noPublic no-sidecar notls litestream backup-mirror placement; do assert_kubeconform "$f.yaml"; done
+for f in minimal full nginx storage-noPublic no-sidecar notls litestream backup-mirror placement hostnetwork-ingress; do assert_kubeconform "$f.yaml"; done
 # README exists
 [ -f "$CHART/README.md" ] && echo "ok: README present" || { echo "FAIL: README missing"; FAILS=$((FAILS+1)); }
 

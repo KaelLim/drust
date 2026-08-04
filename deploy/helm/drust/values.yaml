@@ -130,6 +130,26 @@ networkPolicy:
   # Namespace of the ingress controller. k3s Traefik = kube-system;
   # nginx-ingress usually = ingress-nginx (set it when controller: nginx).
   ingressControllerNamespace: kube-system
+  # Source CIDRs for a hostNetwork ingress controller — the norm on bare metal,
+  # where there is no LoadBalancer to hand out an external IP.
+  #
+  # A hostNetwork pod has no CNI pod IP, so there is no pod → namespace mapping
+  # for the netpol implementation to resolve and `ingressControllerNamespace`
+  # above can NEVER match it, however it is set. Every request is then refused
+  # and the admin UI (and /public/* when publicFiles is on) returns 502.
+  #
+  # The source is NOT simply the node IP. For a cross-node connection the packet
+  # leaves with the ingress node's flannel address, so both usually belong here:
+  #   ingress node != drust node  → the ingress node's flannel.1 `src`
+  #   ingress node == drust node  → the node IP
+  # Find both with `ip route get <drust pod IP>` ON THE INGRESS NODE and read the
+  # `src` field.
+  #
+  # Leave empty when the controller runs as an ordinary pod — the default costs
+  # nothing and changes no rendered output. Use the narrowest prefixes that work
+  # (/32 each); this opens the admin plane to those addresses, so 0.0.0.0/0 is
+  # rejected outright, same discipline as backup.external.destinationCIDRs.
+  hostNetworkIngressCIDRs: []
   dnsNamespace: kube-system      # namespace running cluster DNS (coredns)
   # WARNING: cross-group egress isolation depends on these matching the cluster's
   # REAL pod+service CIDRs. Defaults are k3s-only (10.42/16 pod, 10.43/16 svc). On
@@ -150,6 +170,33 @@ secrets:
 extraEnv: []                     # arbitrary DRUST_*/GARAGE_* overrides: [{name, value}]
 
 # ── B3: scheduling passthrough (empty => zero behavior change) ──
+#
+# `tolerations` is NOT just placement — on a multi-node cluster it is the single
+# largest lever on drust's recovery time, and the default is bad for this shape.
+#
+# Kubernetes injects `node.kubernetes.io/not-ready` and `.../unreachable` with
+# `tolerationSeconds: 300`. drust runs `replicas: 1` (SQLite, single writer), so
+# there is no second pod to serve during those 300 seconds — it is pure downtime,
+# and it dominates the budget. Measured on a real node failure (k3s stopped on
+# the node hosting drust, Longhorn RWO volumes):
+#
+#   default 300s ................ ~396s total RTO   (300s of it just waiting)
+#   tolerationSeconds: 60 ....... ~193s total RTO
+#
+# Same drill, one values change, roughly half the recovery time. Set it when the
+# cluster has somewhere to fail over TO; on a single-node cluster it changes
+# nothing, and on node-pinned storage (local-path) the pod cannot move anyway —
+# see the README's storage prerequisites.
+#
+#   tolerations:
+#     - key: node.kubernetes.io/not-ready
+#       operator: Exists
+#       effect: NoExecute
+#       tolerationSeconds: 60
+#     - key: node.kubernetes.io/unreachable
+#       operator: Exists
+#       effect: NoExecute
+#       tolerationSeconds: 60
 scheduling:
   drust:
     nodeSelector: {}
