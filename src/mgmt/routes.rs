@@ -487,7 +487,7 @@ async fn login_submit(
             entry.auth_method = Some("password".to_string());
             entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
             crate::safety::audit::write_entry(&state.log_dir, &entry).await;
-            return unauthorized("Invalid credentials", &state, locale, theme);
+            return unauthorized("login.error.invalid_credentials", &state, locale, theme);
         }
     };
     match verify_password(&phc, &form.password) {
@@ -498,7 +498,7 @@ async fn login_submit(
             entry.auth_method = Some("password".to_string());
             entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
             crate::safety::audit::write_entry(&state.log_dir, &entry).await;
-            return unauthorized("Invalid credentials", &state, locale, theme);
+            return unauthorized("login.error.invalid_credentials", &state, locale, theme);
         }
     }
     let ttl_secs = (state.session_ttl_days * 86_400) as i64;
@@ -574,15 +574,24 @@ async fn root_redirect() -> Redirect {
     Redirect::to(&crate::base_path::base("/admin/tenants"))
 }
 
+/// Renders the login page with an error banner.
+///
+/// Takes an i18n KEY, not a message. The banner's title is already
+/// `t.s("login.error.password_title")` while its body was a hardcoded English
+/// literal from here — one translated line above one untranslated line, in the
+/// same banner, on the first screen every admin sees. Resolving the key here
+/// (the Translator is built for the page anyway) makes the raw-copy version
+/// unrepresentable rather than merely fixed.
 fn unauthorized(
-    msg: &str,
+    error_key: &str,
     state: &MgmtState,
     locale: Locale,
     theme: crate::mgmt::theme::Theme,
 ) -> Response {
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
+    let t = Translator::new(locale);
     let body = LoginPage {
-        error: Some(msg.to_string()),
+        error: Some(t.s(error_key).into_owned()),
         version: env!("CARGO_PKG_VERSION"),
         show_version: std::env::var("DRUST_HIDE_VERSION").is_err(),
         oauth_providers: state
@@ -592,7 +601,7 @@ fn unauthorized(
             .map(String::from)
             .collect(),
         oauth_error: None,
-        t: Translator::new(locale),
+        t,
         palette_resolved: trc.palette_resolved,
         mascot_json_static: trc.mascot_json_static,
         mascot_json_light: trc.mascot_json_light,

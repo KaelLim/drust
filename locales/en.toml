@@ -708,6 +708,7 @@ submit = "Sign in →"
 or_continue = "or continue with"
 
 [login.error]
+invalid_credentials = "Wrong username or password."
 oauth_admin_email_missing = "Your admin record has no email — run drust_set_admin_password --email."
 oauth_email_unverified = "Your provider email is not verified."
 oauth_generic = "Login failed."

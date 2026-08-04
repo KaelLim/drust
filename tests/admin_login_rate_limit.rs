@@ -1,4 +1,12 @@
-//! v1.19.2 regression — admin login enforces a per-IP rate limit (5/min).
+//! Admin login POST path.
+//!
+//! - v1.19.2 regression — enforces a per-IP rate limit (5/min).
+//! - the failure banner is translated (it was a hardcoded English literal
+//!   under an already-translated title until v1.58.2).
+//!
+//! Both live here rather than in a file of their own: each `tests/*.rs` is its
+//! own binary statically linking the drust lib + wasmtime, and this one already
+//! builds exactly the router they need.
 
 use axum::Router;
 use axum::body::Body;
@@ -83,4 +91,55 @@ async fn admin_login_rate_limit_isolated_per_ip() {
     assert_eq!(post_login(&app, xff_a).await, StatusCode::UNAUTHORIZED);
     assert_eq!(post_login(&app, xff_a).await, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(post_login(&app, xff_b).await, StatusCode::UNAUTHORIZED);
+}
+
+/// POST a bad login under `locale` and return the rendered page.
+async fn failed_login_body(app: &Router, locale: Option<&str>) -> String {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if let Some(l) = locale {
+        builder = builder.header(header::COOKIE, format!("drust_locale={l}"));
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            builder
+                .body(Body::from("username=admin&password=wrong"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn failed_login_banner_is_translated_not_hardcoded_english() {
+    // The banner renders a title and a body. The title has always been
+    // `t.s("login.error.password_title")`; the body came from a literal
+    // `unauthorized("Invalid credentials", …)` in the handler — so a zh-TW
+    // admin saw a translated heading over an English sentence, on the first
+    // screen drust shows anyone. `unauthorized` now takes an i18n key.
+    let app = build_login_router(50).await;
+
+    let zh = failed_login_body(&app, Some("zh-TW")).await;
+    assert!(
+        zh.contains("帳號或密碼錯誤"),
+        "zh-TW login failure should render the zh-TW body"
+    );
+    assert!(
+        !zh.contains("Invalid credentials"),
+        "the old hardcoded English literal must not survive anywhere in the page"
+    );
+
+    let en = failed_login_body(&app, Some("en")).await;
+    assert!(
+        en.contains("Wrong username or password."),
+        "en login failure should render the en body"
+    );
 }

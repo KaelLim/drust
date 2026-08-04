@@ -728,6 +728,7 @@ submit = "登入 →"
 or_continue = "或使用以下方式繼續"
 
 [login.error]
+invalid_credentials = "帳號或密碼錯誤。"
 oauth_admin_email_missing = "您的管理員紀錄沒有電子郵件 — 請執行 drust_set_admin_password --email。"
 oauth_email_unverified = "您在 OAuth 提供者的電子郵件尚未驗證。"
 oauth_generic = "登入失敗。"
