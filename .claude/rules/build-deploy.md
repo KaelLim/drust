@@ -56,21 +56,21 @@ not render the chart, so divergence is invisible until a user hits it.
 | Process supervision | `deploy/drust.service` | `docker-compose.yml` | `deploy/helm/drust/templates/drust-statefulset.yaml` |
 | Reverse proxy | `/etc/caddy/Caddyfile` (+ `deploy/Caddyfile`, `../garage/deploy/Caddyfile`) | `deploy/compose.Caddyfile` | chart Ingress |
 | Object store | host Garage | compose service | MinIO StatefulSet |
-| Scheduled work | `drust-backup.timer`, `drust-janitor.timer` | **nothing** | chart CronJobs |
+| Scheduled work | `drust-backup.timer`, `drust-janitor.timer` | **nothing** | chart CronJobs **+ the `maintenance` sidecar** (default on, opt-out) |
 | Base path | `/drust` | `""` | `""` |
 
 > [!CAUTION]
-> **Anything scheduled outside the drust process exists on bare metal only.** `deploy/drust-janitor.sh` and `deploy/drust-backup.sh` are systemd timers with no Compose equivalent. A maintenance job that lives only in a timer does not run for Docker or k3s users. v1.58 moved `_trash` expiry in-process for exactly this reason (`src/storage/janitor.rs`) — before that, the id-recycle purge was the only thing sweeping `_trash` on those deployments, and removing it would have leaked tenant data forever. When adding recurring maintenance, put it in-process and treat the timer as a bare-metal accelerator, not the mechanism.
+> **Anything scheduled outside the drust process is a per-target coin flip.** `deploy/drust-janitor.sh` and `deploy/drust-backup.sh` are systemd timers with **no Compose equivalent at all**; the chart re-implements *some* of that work in its `maintenance` sidecar, so k3s coverage depends on which half you look at. `deploy/drust-janitor.sh` does two jobs — `_trash` expiry and `drust_session_janitor` — and each was fixed in a different release, for the same reason, a release apart: v1.58 moved trash in-process, and only the follow-up caught that sessions were still swept nowhere on Compose. **Enumerate every job a timer performs, not the timer.** When adding recurring maintenance, put it in-process and treat both the timer and the sidecar as accelerators, not the mechanism.
 
 Per-release checklist — run it before tagging, not after:
 
-1. `deploy/helm/drust/Chart.yaml` — bump `appVersion` to the release version, and `version` if the chart's own templates changed. **A stale `appVersion` is the cheapest possible detector of a skipped check**; it read `1.49.4` while 1.58.0 shipped.
+1. `deploy/helm/drust/Chart.yaml` — bump `appVersion` to the release version, and `version` if the chart's own templates changed. **`appVersion` is the image tag `helm install` pulls**: `values.yaml` ships `image.tag: ""` and both drust containers fall back to it. This item is now mechanized — `render_test.sh` asserts `appVersion == Cargo.toml version` and CI's `helm-chart` job runs it, so a skipped bump is a red build rather than a silent gap. It was not always: `appVersion` read `1.49.4` for nine releases while `image.tag` carried a second, equally stale hardcoded version, so default installs shipped a binary missing two intra-tenant fixes and the stored-XSS sandbox.
 2. New env knob this release? It must appear in all three: `deploy/drust.service` `Environment=`/`EnvironmentFile`, `docker-compose.yml` `environment:`, and the chart's `values.yaml` + ConfigMap. A knob with a default only in Rust works everywhere but is undiscoverable in two of the three.
 3. New on-disk path, volume, or directory? Compose and the chart both need it mounted, and the chart needs it in the StatefulSet `volumeClaimTemplates` — a path drust creates at boot lands on ephemeral container storage otherwise.
 4. New recurring job? See the CAUTION above.
 5. New route or route prefix? Check the chart's Ingress and `deploy/compose.Caddyfile`, not just the host Caddyfile.
 6. Migration or first-boot behaviour change? It runs on every boot in all three, and containers restart far more often than this host does.
-7. `deploy/helm/drust/tests/render_test.sh` still passes (offline `helm template` + `kubeconform`).
+7. `deploy/helm/drust/tests/render_test.sh` still passes (offline `helm template` + `kubeconform`). CI's `helm-chart` job runs it on every push to main, so this is a pre-push convenience rather than the only line of defence — but it needs `helm` + `kubeconform` on PATH locally.
 
 `deploy/helm/**` is engineer-owned: read it, report divergence, do not stage it in an automated commit.
 
