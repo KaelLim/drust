@@ -119,13 +119,21 @@ pub async fn spawn_trash_retention_task(data_dir: std::path::PathBuf) {
 /// idempotent `_system_*` catch-up, so only directory/file creation is
 /// dropped.
 pub async fn sweep_expired_sessions(data_dir: &Path, grace_days: i64) -> anyhow::Result<usize> {
-    let meta = Connection::open(data_dir.join("meta.sqlite"))?;
-    let mut stmt = meta.prepare("SELECT id FROM tenants WHERE deleted_at IS NULL")?;
-    let tenant_ids: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<Result<_, _>>()?;
-    drop(stmt);
-    drop(meta);
+    // On a blocking thread, and in its own scope, for two reasons: it is a
+    // synchronous SQLite open that has no business on the reactor, and keeping
+    // the `Connection`/`Statement` out of this future's state is what makes the
+    // future `Send` — without it `tokio::spawn` rejects the retention task,
+    // since neither rusqlite type crosses threads.
+    let dir = data_dir.to_path_buf();
+    let tenant_ids: Vec<String> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let meta = Connection::open(dir.join("meta.sqlite"))?;
+        let mut stmt = meta.prepare("SELECT id FROM tenants WHERE deleted_at IS NULL")?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    })
+    .await??;
 
     let registry = TenantRegistry::new(data_dir.to_path_buf(), 1);
     let mut total = 0;
@@ -147,6 +155,82 @@ pub async fn sweep_expired_sessions(data_dir: &Path, grace_days: i64) -> anyhow:
         total += n;
     }
     Ok(total)
+}
+
+/// Buffer past `expires_at` before a session row is deleted, in days.
+/// `DRUST_SESSION_GRACE_DAYS`, default 1 — matching what
+/// `bin/drust_session_janitor.rs` has always used, so the in-process sweep and
+/// the bare-metal timer agree. Unlike `DRUST_TRASH_RETENTION_DAYS`, `0` does
+/// **not** disable: it sweeps rows the moment they expire. Expiry is enforced
+/// in the auth query itself, so there is no window in which a longer grace
+/// grants access — the knob only decides how long dead rows stay legible to
+/// debugging tools.
+fn parse_session_grace_days(raw: Option<&str>) -> i64 {
+    raw.and_then(|s| s.parse::<i64>().ok()).unwrap_or(1)
+}
+
+pub fn session_grace_days() -> i64 {
+    parse_session_grace_days(std::env::var("DRUST_SESSION_GRACE_DAYS").ok().as_deref())
+}
+
+/// Sweep expired admin browser sessions from `meta.sqlite.sessions`.
+/// Synchronous: admin sessions are one table with no per-tenant fan-out.
+///
+/// A missing `meta.sqlite` is `Ok(0)`, not an error — the boot sweep can race
+/// a first-run process that has not created it yet.
+pub fn sweep_meta_sessions(data_dir: &Path, grace_days: i64) -> anyhow::Result<usize> {
+    let meta_path = data_dir.join("meta.sqlite");
+    if !meta_path.exists() {
+        return Ok(0);
+    }
+    let conn = Connection::open(&meta_path)?;
+    let n = conn.execute(
+        "DELETE FROM sessions WHERE expires_at <= datetime('now', ?1)",
+        rusqlite::params![format!("-{grace_days} day")],
+    )?;
+    Ok(n)
+}
+
+/// Daily session janitor — admin rows in `meta.sqlite.sessions` plus every live
+/// tenant's `_system_sessions` — with one sweep at boot.
+/// `tokio::spawn(janitor::spawn_session_retention_task(data_dir))`.
+///
+/// **Why this lives in-process**, for the same reason `spawn_trash_retention_task`
+/// does and as the other half of the same gap: `deploy/drust-janitor.sh` runs the
+/// trash sweep *and* `drust_session_janitor`, but its systemd timer exists only on
+/// bare metal. The published image installs the `drust_session_janitor` binary
+/// (Dockerfile) yet its `ENTRYPOINT` is `drust` alone, and `docker-compose.yml`
+/// adds no cron — so for every GHCR, compose and k3s operator, expired sessions
+/// were never swept at all. v1.58 moved the trash half in and left this one
+/// behind. Rows accumulate `token_hash`, `user_id` and `ip_at_login` forever;
+/// it is a retention problem, not an access one, because both auth paths filter
+/// on `expires_at` themselves (`auth/user_session.rs` `AND expires_at > ?2`).
+///
+/// Idempotent alongside the shell janitor: a DELETE of already-deleted rows
+/// affects 0 rows, so running both on bare metal is harmless.
+pub async fn spawn_session_retention_task(data_dir: std::path::PathBuf) {
+    let grace = session_grace_days();
+    let mut tick = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await; // fires immediately on the first pass — the boot sweep
+
+        let dir = data_dir.clone();
+        let admin = tokio::task::spawn_blocking(move || sweep_meta_sessions(&dir, grace))
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!(e)));
+        match admin {
+            Ok(n) if n > 0 => tracing::info!(removed = n, "session janitor swept admin sessions"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "session janitor: admin sweep failed"),
+        }
+
+        match sweep_expired_sessions(&data_dir, grace).await {
+            Ok(n) if n > 0 => tracing::info!(removed = n, "session janitor swept user sessions"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "session janitor: per-tenant sweep failed"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -216,5 +300,63 @@ mod tests {
         let long_ago = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
         assert_eq!(sweep_trash(data, 7, long_ago), 0);
         assert!(snap.exists());
+    }
+
+    fn meta_with_sessions(dir: &Path) {
+        let c = Connection::open(dir.join("meta.sqlite")).unwrap();
+        c.execute_batch(
+            "CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL);
+             INSERT INTO sessions VALUES ('live',    datetime('now', '+7 day'));
+             INSERT INTO sessions VALUES ('justnow', datetime('now', '-1 hour'));
+             INSERT INTO sessions VALUES ('stale',   datetime('now', '-30 day'));",
+        )
+        .unwrap();
+    }
+
+    fn remaining(dir: &Path) -> Vec<String> {
+        let c = Connection::open(dir.join("meta.sqlite")).unwrap();
+        let mut stmt = c
+            .prepare("SELECT token_hash FROM sessions ORDER BY token_hash")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    /// Admin sessions live in `meta.sqlite.sessions`, a different table shape
+    /// from the per-tenant `_system_sessions` that `sweep_expired_sessions`
+    /// handles — so closing the Docker/k3s gap needs BOTH sweeps in the lib.
+    /// This one only ever ran inside `bin/drust_session_janitor.rs`, which the
+    /// published image installs but never invokes (`ENTRYPOINT ["drust"]`).
+    #[test]
+    fn meta_sweep_expires_past_the_grace_window_and_keeps_the_rest() {
+        let dir = tempdir().unwrap();
+        meta_with_sessions(dir.path());
+
+        // grace_days = 1: `justnow` expired an hour ago but is inside the
+        // one-day debugging buffer, so only `stale` goes.
+        assert_eq!(sweep_meta_sessions(dir.path(), 1).unwrap(), 1);
+        assert_eq!(remaining(dir.path()), vec!["justnow", "live"]);
+
+        // grace_days = 0 sweeps immediately-expired rows; it does NOT mean
+        // "disabled" (unlike DRUST_TRASH_RETENTION_DAYS=0). `live` survives.
+        assert_eq!(sweep_meta_sessions(dir.path(), 0).unwrap(), 1);
+        assert_eq!(remaining(dir.path()), vec!["live"]);
+    }
+
+    #[test]
+    fn meta_sweep_tolerates_a_missing_meta_db() {
+        let dir = tempdir().unwrap();
+        assert_eq!(sweep_meta_sessions(dir.path(), 1).unwrap(), 0);
+    }
+
+    #[test]
+    fn session_grace_days_defaults_to_one_and_survives_garbage() {
+        // Same env_or posture as trash_retention_days: unparseable → default.
+        assert_eq!(parse_session_grace_days(None), 1);
+        assert_eq!(parse_session_grace_days(Some("not a number")), 1);
+        assert_eq!(parse_session_grace_days(Some("0")), 0);
+        assert_eq!(parse_session_grace_days(Some("30")), 30);
     }
 }

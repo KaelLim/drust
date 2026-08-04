@@ -577,6 +577,19 @@ async fn main() -> anyhow::Result<()> {
         meta.clone(),
     ));
 
+    // Session janitor: expired admin rows in `meta.sqlite.sessions` plus every
+    // live tenant's `_system_sessions`. Boot sweep + daily, grace window
+    // `DRUST_SESSION_GRACE_DAYS` (default 1). The other half of the `_trash`
+    // gap above — `deploy/drust-janitor.sh` sweeps trash AND runs
+    // `drust_session_janitor`, but only v1.58's trash half moved in-process, so
+    // compose and the bare image swept no sessions at all. (k3s was covered:
+    // the chart's `maintenance` sidecar shells out to the same binary daily,
+    // though it is opt-out.) Idempotent alongside both external sweepers — a
+    // re-DELETE affects 0 rows.
+    tokio::spawn(drust::storage::janitor::spawn_session_retention_task(
+        cfg.data_dir.clone(),
+    ));
+
     let tenant_stack = TenantStack {
         auth: TenantAuthState {
             meta: meta.clone(),
