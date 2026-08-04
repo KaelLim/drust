@@ -1,5 +1,26 @@
 ## v1.58.2 — 2026-08-04
 
+### Fixed — k3s chart: a hostNetwork ingress controller was black-holed (issue #8)
+
+The chart's NetworkPolicy gated ingress solely on `namespaceSelector`. A
+`hostNetwork` ingress controller has no CNI pod IP, so there is no pod →
+namespace mapping to resolve and the selector can never match it, however
+`ingressControllerNamespace` is set — every request refused, 502 on the admin
+plane and on `/public/*`. hostNetwork is the normal shape on bare metal, where
+there is no LoadBalancer to hand out an external IP.
+
+`networkPolicy.hostNetworkIngressCIDRs` (default `[]`, so existing installs
+render byte-identically) adds `ipBlock` peers to both affected rules; `0.0.0.0/0`
+is rejected at template time because this rule fronts the admin plane. Chart
+0.1.4, with the full reasoning and the field-reported traps — the source is not
+the node IP for a cross-node connection, and the symptom is `Connection refused`
+rather than a timeout — in `deploy/helm/drust/CHANGELOG.md`.
+
+Also from the same rollout: `scheduling.drust.tolerations` is now documented as
+a recovery-time control rather than a placement passthrough. Kubernetes injects
+not-ready/unreachable at `tolerationSeconds: 300` and drust is `replicas: 1`, so
+that is pure downtime — measured ~396s total RTO on the default vs ~193s at 60s.
+
 ### Fixed — the boot-time owner backfill could promote every admin
 
 `run_migrations` runs on every boot, and its v1.29.0 step was
