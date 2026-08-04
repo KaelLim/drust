@@ -289,7 +289,7 @@
         if (!ok) return;
         fetch(f.getAttribute('action'), { method: 'POST' }).then(function (r) {
           if (r.ok) window.location.reload();
-          else drustUI.alert({title:'Error', body:'HTTP ' + r.status});
+          else drustUI.alert({title:'{{ t.s("common.modal.title_error")|safe }}', body:'{{ t.s("common.error.http_status")|safe }}'.replace('{status}', r.status)});
         });
       });
     });

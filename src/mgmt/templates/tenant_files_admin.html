@@ -233,7 +233,8 @@
         if (!resp.ok) {
           var msg = await resp.text();
           hint.className = 'upload-hint error';
-          hint.textContent = 'upload failed (' + resp.status + '): ' + (msg || resp.statusText);
+          hint.textContent = '{{ t.s("tenant_files_admin.upload.failed")|safe }}'
+            .replace('{status}', resp.status).replace('{message}', msg || resp.statusText);
           btn.disabled = false;
           if (window.chonkReact) window.chonkReact('oops', 1100);
           return;
@@ -242,7 +243,7 @@
         window.location.reload();
       } catch (err) {
         hint.className = 'upload-hint error';
-        hint.textContent = 'network error: ' + err.message;
+        hint.textContent = '{{ t.s("tenant_files_admin.upload.network_error")|safe }}'.replace('{message}', err.message);
         btn.disabled = false;
         if (window.chonkReact) window.chonkReact('oops', 1100);
       }
@@ -271,7 +272,7 @@
       if (ttl === null) return;
       var expires_in = parseInt(ttl, 10);
       if (!Number.isFinite(expires_in) || expires_in < 1 || expires_in > 604800) {
-        drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.invalid_title") }}", body: 'Must be an integer between 1 and 604800.', danger: true});
+        drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.invalid_title") }}", body: '{{ t.s("tenant_files_admin.sign.invalid_body")|safe }}', danger: true});
         return;
       }
       var tid = '{{ tenant_id }}';
@@ -281,12 +282,12 @@
       });
       if (!resp.ok) {
         if (window.chonkReact) window.chonkReact('oops', 900);
-        drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.failed_title") }}", body: 'HTTP ' + resp.status, danger: true});
+        drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.failed_title") }}", body: '{{ t.s("common.error.http_status")|safe }}'.replace('{status}', resp.status), danger: true});
         return;
       }
       var j = await resp.json();
       if (window.chonkReact) window.chonkReact('happy');
-      drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.success_title") }}", body: 'Copy the URL below. It expires in ' + expires_in + ' seconds.', codeBlock: j.url});
+      drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.success_title") }}", body: '{{ t.s("tenant_files_admin.sign.success_body")|safe }}'.replace('{secs}', expires_in), codeBlock: j.url});
     });
   });
 
@@ -294,7 +295,12 @@
     btn.addEventListener('click', async function() {
       var key = btn.dataset.deleteKey;
       var name = btn.dataset.deleteName || key;
-      var ok = await drustUI.confirm({title: "{{ t.s("tenant_files_admin.delete.confirm_title") }}", body: 'Delete "' + name + '"? This cannot be undone.', okText: 'Delete', danger: true});
+      var ok = await drustUI.confirm({
+        title: "{{ t.s("tenant_files_admin.delete.confirm_title") }}",
+        body: '{{ t.s("tenant_files_admin.delete.confirm_body")|safe }}'.replace('{name}', name),
+        okText: '{{ t.s("tenant_files_admin.delete.confirm_ok")|safe }}',
+        danger: true,
+      });
       if (!ok) return;
       if (window.chonkReact) window.chonkReact('working', 1200);
       var tid = '{{ tenant_id }}';
@@ -303,7 +309,7 @@
       });
       if (!resp.ok && resp.status !== 204) {
         if (window.chonkReact) window.chonkReact('oops', 900);
-        drustUI.alert({title: "{{ t.s("tenant_files_admin.delete.failed_title") }}", body: 'HTTP ' + resp.status, danger: true});
+        drustUI.alert({title: "{{ t.s("tenant_files_admin.delete.failed_title") }}", body: '{{ t.s("common.error.http_status")|safe }}'.replace('{status}', resp.status), danger: true});
         return;
       }
       if (window.chonkReact) window.chonkReact('happy', 700);

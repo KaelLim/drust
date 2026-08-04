@@ -12,14 +12,17 @@
       {% endcall %}
       {# Rich subtitle: the macro's `sub` argument is a plain value, so a
          conditional subtitle carrying markup stays a sibling of the header. #}
-      <p class="view-sub">{% if storage_available %}Host-level Garage bucket — anonymous read at <code>/public/&lt;key&gt;</code>. Per-tenant buckets live inside each tenant's Files page.{% else %}Garage S3 not configured. Set <code>GARAGE_S3_ENDPOINT</code> in <code>.env</code> and restart drust.{% endif %}</p>
+      <p class="view-sub">{% if storage_available %}{{ t.s("files.head.sub_configured")|safe }}{% else %}{{ t.s("files.head.sub_unconfigured")|safe }}{% endif %}</p>
 
       {% if disk.free_pct < 20.0 %}
       <div class="banner danger" style="margin-bottom:18px;">
         <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg></span>
         <div class="b-body">
           <div class="b-title">{{ t.fmt1("files.disk.banner_title", "pct", disk.free_pct_display) }}</div>
-          <p>{{ disk.used_gb }} GB used of {{ disk.total_gb }} GB total. Free up <code>/var/lib/garage</code> or scale the disk.</p>
+          {# Split at the sentence boundary, not mid-sentence: the usage figures
+             need two arguments while the advice carries markup, and there is no
+             two-argument escaping formatter to do both in one key. #}
+          <p>{{ t.fmt2("files.disk.banner_usage", "used", disk.used_gb, "total", disk.total_gb) }} {{ t.s("files.disk.banner_action")|safe }}</p>
         </div>
       </div>
       {% else %}
@@ -32,7 +35,7 @@
         <div class="stat">
           <div class="label">{{ t.s("files.stats.disk_used_label") }}</div>
           <div class="val">{{ disk.used_gb }} <span class="unit">GB</span></div>
-          <div class="meta">of {{ disk.total_gb }} GB</div>
+          <div class="meta">{{ t.fmt1("files.stats.disk_of_total", "total", disk.total_gb) }}</div>
         </div>
         <div class="stat">
           <div class="label">{{ t.s("files.stats.disk_free_label") }}</div>
@@ -44,20 +47,20 @@
 
       {% if storage_available %}
       <div class="card">
-        <div class="card-head"><span>Upload</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin-only</span></div>
+        <div class="card-head"><span>{{ t.s("files.upload.card_title") }}</span><span class="card-head-actions">{{ t.fmt1("files.upload.card_meta", "max", max_upload_mb) }}</span></div>
         <div class="card-body">
           <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/upload" enctype="multipart/form-data" id="upload-form">
             <div class="dropzone" id="dropzone">
               <div class="dropzone-inner">
                 <div class="dropzone-prompt">
                   <span class="dz-arrow">↓</span>
-                  <span class="dz-text">drag &amp; drop a file here</span>
-                  <span class="dz-or">or</span>
+                  <span class="dz-text">{{ t.s("files.upload.dropzone_prompt") }}</span>
+                  <span class="dz-or">{{ t.s("common.upload.or") }}</span>
                   <label class="filepick-btn" for="upload-file" id="upload-btn">
-                    <span class="filepick-btn-label">browse…</span>
+                    <span class="filepick-btn-label">{{ t.s("files.upload.browse") }}</span>
                   </label>
                 </div>
-                <div class="dropzone-name" id="upload-name" data-empty="1">— no file chosen —</div>
+                <div class="dropzone-name" id="upload-name" data-empty="1">{{ t.s("files.upload.no_file") }}</div>
               </div>
               <input type="file" name="file" id="upload-file" required class="filepick-input"
                      data-max-mb="{{ max_upload_mb }}">
@@ -66,7 +69,7 @@
             <div class="upload-fields">
               <div class="field">
                 <span class="field-label">{{ t.s("files.form.visibility") }}</span>
-                <div class="pill-toggle" role="radiogroup" aria-label="Visibility">
+                <div class="pill-toggle" role="radiogroup" aria-label="{{ t.s("files.form.visibility") }}">
                   <input type="radio" id="adm-vis-public" name="visibility" value="public" checked>
                   <label for="adm-vis-public">{{ t.s("files.form.public") }}</label>
                   <input type="radio" id="adm-vis-private" name="visibility" value="private">
@@ -74,8 +77,8 @@
                 </div>
               </div>
               <div class="field">
-                <span class="field-label">disposition</span>
-                <div class="pill-toggle" role="radiogroup" aria-label="Disposition">
+                <span class="field-label">{{ t.s("files.form.disposition_label") }}</span>
+                <div class="pill-toggle" role="radiogroup" aria-label="{{ t.s("files.form.disposition_label") }}">
                   <input type="radio" id="adm-disp-inline" name="disposition" value="inline" checked>
                   <label for="adm-disp-inline">{{ t.s("files.form.inline") }}</label>
                   <input type="radio" id="adm-disp-attachment" name="disposition" value="attachment">
@@ -86,7 +89,7 @@
 
             <div class="upload-row">
               <span class="upload-hint" id="upload-hint"></span>
-              <button type="submit" class="btn primary" id="upload-submit" disabled>Upload <span class="kbd">↵</span></button>
+              <button type="submit" class="btn primary" id="upload-submit" disabled>{{ t.s("files.upload.submit") }} <span class="kbd">↵</span></button>
             </div>
           </form>
         </div>
@@ -94,29 +97,32 @@
 
       <div class="card" style="margin-top:24px;">
         <div class="card-head">
-          <span>Files</span>
+          <span>{{ t.s("files.list.card_title") }}</span>
           <span class="card-head-actions">
             <a href="{{ crate::base_path::base_path() }}/admin/files/reconcile" class="btn sm ghost"
-               title="Compare Garage bucket contents with drust's metadata — find orphan objects (in Garage, not tracked) and dangling rows (tracked but missing). Usually empty; run after network glitches or manual S3 edits.">
+               title="{{ t.s("files.list.reconcile_hint") }}">
               <svg class="icon" aria-hidden="true" style="width:0.9em;height:0.9em;vertical-align:-2px;margin-right:4px;"><use href="#i-refresh"/></svg>
-              sync audit ⋯
+              {{ t.s("files.list.reconcile_btn") }}
             </a>
           </span>
         </div>
 
         <div class="vis-tabs">
-          <a href="?vis=all" class="vis-tab{% if filter == "all" %} active{% endif %}">All ({{ counts.total }})</a>
-          <a href="?vis=public" class="vis-tab{% if filter == "public" %} active{% endif %}">Public ({{ counts.public }})</a>
-          <a href="?vis=private" class="vis-tab{% if filter == "private" %} active{% endif %}">Private ({{ counts.private }})</a>
+          <a href="?vis=all" class="vis-tab{% if filter == "all" %} active{% endif %}">{{ t.fmt1("files.tab.all", "n", counts.total) }}</a>
+          <a href="?vis=public" class="vis-tab{% if filter == "public" %} active{% endif %}">{{ t.fmt1("files.tab.public", "n", counts.public) }}</a>
+          <a href="?vis=private" class="vis-tab{% if filter == "private" %} active{% endif %}">{{ t.fmt1("files.tab.private", "n", counts.private) }}</a>
         </div>
 
         <div class="pub-scroll">
           {% if files.is_empty() %}
           {% if counts.total == 0 %}
-          {% call ui::empty_state("sleep", "No files yet", "Upload the first one with the form above.") %}{% endcall %}
+          {% call ui::empty_state("sleep", t.s("files.empty.none_title"), t.s("files.empty.none_body")) %}{% endcall %}
           {% else %}
-          {% call ui::empty_state("sleep", "Nothing on this page", "") %}
-            <p>Try page 1 or <a href="{{ crate::base_path::base_path() }}/admin/files">reset</a>.</p>
+          {% call ui::empty_state("sleep", t.s("files.empty.page_title"), "") %}
+            {# The reset link is a sibling of the sentence rather than embedded
+               in it: splitting a sentence around an <a> forces a fixed word
+               order that zh-TW does not share. #}
+            <p>{{ t.s("files.empty.page_body") }} <a href="{{ crate::base_path::base_path() }}/admin/files">{{ t.s("files.empty.page_reset") }}</a></p>
           {% endcall %}
           {% endif %}
           {% else %}
@@ -151,12 +157,12 @@
                 <td class="cell-time mono-cell">{{ f.uploaded_at }}</td>
                 <td class="cell-actions">
                   {% if f.visibility == "public" %}
-                  <button type="button" class="btn sm ghost" data-copy-url="{{ f.public_url }}" title="copy {{ f.public_url }}">copy URL</button>
+                  <button type="button" class="btn sm ghost" data-copy-url="{{ f.public_url }}" title="{{ t.fmt1("files.row.copy_title", "url", f.public_url) }}">{{ t.s("files.row.copy_url") }}</button>
                   {% else %}
-                  <button type="button" class="btn sm ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">Sign URL</button>
+                  <button type="button" class="btn sm ghost" data-sign-key="{{ f.key }}" data-sign-original="{{ f.original_name }}">{{ t.s("files.row.sign_url") }}</button>
                   {% endif %}
                   <form method="post" action="{{ crate::base_path::base_path() }}/admin/files/{{ f.id }}/delete" class="delete-form" style="display:inline;" data-name="{{ f.original_name }}">
-                    <button type="submit" class="btn sm ghost" style="color:var(--danger);">delete</button>
+                    <button type="submit" class="btn sm ghost" style="color:var(--danger);">{{ t.s("files.row.delete_btn") }}</button>
                   </form>
                 </td>
               </tr>
@@ -169,20 +175,20 @@
         {% if total_files > 0 %}
         <div class="pager">
           <div class="page-of">
-            page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_files }}</b> total
+            {{ t.fmt3("files.pager.page_of", "page", page, "pages", total_pages, "total", total_files) }}
           </div>
           <div class="pager-group">
-            {% if let Some(url) = prev_url %}<a class="btn sm ghost" href="{{ url }}">← prev</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">← prev</span>{% endif %}
+            {% if let Some(url) = prev_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("files.pager.prev") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("files.pager.prev") }}</span>{% endif %}
             <form method="get" class="pager-form">
               <input type="hidden" name="vis" value="{{ filter }}">
-              <span class="pager-label">per page</span>
-              <select name="per_page" onchange="this.form.submit()" class="pager-select" aria-label="rows per page">
+              <span class="pager-label">{{ t.s("files.pager.per_page") }}</span>
+              <select name="per_page" onchange="this.form.submit()" class="pager-select" aria-label="{{ t.s("files.pager.rows_per_page_aria") }}">
                 {% for opt in per_page_options %}
                 <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
                 {% endfor %}
               </select>
             </form>
-            {% if let Some(url) = next_url %}<a class="btn sm ghost" href="{{ url }}">next →</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">next →</span>{% endif %}
+            {% if let Some(url) = next_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("files.pager.next") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("files.pager.next") }}</span>{% endif %}
           </div>
         </div>
         {% endif %}
@@ -190,8 +196,8 @@
       {% else %}
       <div class="card">
         <div class="card-body">
-          {% call ui::empty_state("curious", "Storage not configured", "") %}
-            <p>Set <code>GARAGE_S3_ENDPOINT</code> (and the full key set) in drust's <code>.env</code> and restart. See <code>docs/superpowers/specs/2026-04-21-garage-object-store-integration.md</code>.</p>
+          {% call ui::empty_state("curious", t.s("files.unconfigured.title"), "") %}
+            <p>{{ t.s("files.unconfigured.body")|safe }}</p>
           {% endcall %}
         </div>
       </div>
@@ -226,7 +232,7 @@
 
     function setState(f) {
       if (!f) {
-        nameEl.textContent = '— no file chosen —';
+        nameEl.textContent = '{{ t.s("files.upload.no_file")|safe }}';
         nameEl.setAttribute('data-empty', '1');
         nameEl.removeAttribute('data-state');
         btn.disabled = true;
@@ -237,17 +243,17 @@
       nameEl.removeAttribute('data-empty');
       if (f.size > MAX_BYTES) {
         nameEl.setAttribute('data-state', 'error');
-        nameEl.textContent = f.name + '  (' + humanBytes(f.size) + ' — exceeds ' + (MAX_BYTES / 1024 / 1024) + ' MB limit)';
+        nameEl.textContent = f.name + '  (' + humanBytes(f.size) + ' — {{ t.fmt1_html("files.upload.exceeds", "max", max_upload_mb)|safe }})';
         btn.disabled = true;
         hint.className = 'upload-hint error';
-        hint.textContent = 'pick a smaller file (limit ' + (MAX_BYTES / 1024 / 1024) + ' MB)';
+        hint.textContent = '{{ t.fmt1_html("files.upload.too_big_hint", "max", max_upload_mb)|safe }}';
         return;
       }
       nameEl.removeAttribute('data-state');
       nameEl.textContent = f.name + '  ·  ' + humanBytes(f.size);
       btn.disabled = false;
       hint.className = 'upload-hint ready';
-      hint.textContent = 'ready · press Upload ↵';
+      hint.textContent = '{{ t.s("files.upload.ready")|safe }}';
     }
 
     inp.addEventListener('change', function () {
@@ -300,8 +306,16 @@
     document.querySelectorAll('form.delete-form').forEach(function (f) {
       f.addEventListener('submit', async function (e) {
         e.preventDefault();
-        var name = f.getAttribute('data-name') || 'this file';
-        var ok = await drustUI.confirm({title: 'Delete file', body: 'Delete "' + name + '"? This cannot be undone.', okText: 'Delete', danger: true});
+        var name = f.getAttribute('data-name') || '{{ t.s("files.delete.fallback_name")|safe }}';
+        {# `{name}` is substituted at runtime rather than split into a prefix and
+           a suffix: the filename sits mid-sentence in en and zh-TW alike, but
+           not at the same offset. drustUI.confirm renders body via textContent. #}
+        var ok = await drustUI.confirm({
+          title: '{{ t.s("files.delete.confirm_title")|safe }}',
+          body: '{{ t.s("files.delete.confirm_body")|safe }}'.replace('{name}', name),
+          okText: '{{ t.s("files.delete.confirm_ok")|safe }}',
+          danger: true,
+        });
         if (ok) f.submit();
       });
     });
@@ -312,7 +326,7 @@
         var url = b.getAttribute('data-copy-url');
         navigator.clipboard.writeText(url).then(function () {
           var orig = b.textContent;
-          b.textContent = 'copied ✓';
+          b.textContent = '{{ t.s("files.row.copied")|safe }}';
           if (window.chonkReact) window.chonkReact('happy');
           setTimeout(function () { b.textContent = orig; }, 1500);
         });
@@ -342,14 +356,14 @@
     btn.addEventListener('click', async function() {
       var key = btn.dataset.signKey;
       var ttl = await drustUI.prompt({
-        title: 'Sign URL',
-        body: 'Expiry in seconds (1–604800). Default 3600 = 1 hour.',
-        default: '3600', placeholder: '3600', okText: 'Sign',
+        title: '{{ t.s("files.row.sign_url")|safe }}',
+        body: '{{ t.s("files.sign.prompt_body")|safe }}',
+        default: '3600', placeholder: '3600', okText: '{{ t.s("files.sign.prompt_ok")|safe }}',
       });
       if (ttl === null) return;
       var expires_in = parseInt(ttl, 10);
       if (!Number.isFinite(expires_in) || expires_in < 1 || expires_in > 604800) {
-        drustUI.alert({title: 'Invalid TTL', body: 'Must be an integer between 1 and 604800.', danger: true});
+        drustUI.alert({title: '{{ t.s("files.sign.invalid_title")|safe }}', body: '{{ t.s("files.sign.invalid_body")|safe }}', danger: true});
         return;
       }
       var resp = await fetch('{{ crate::base_path::base_path() }}/admin/files/' + encodeURIComponent(key) + '/sign', {
@@ -359,12 +373,12 @@
       });
       if (!resp.ok) {
         if (window.chonkReact) window.chonkReact('oops', 900);
-        drustUI.alert({title: 'Sign failed', body: 'HTTP ' + resp.status, danger: true});
+        drustUI.alert({title: '{{ t.s("files.sign.failed_title")|safe }}', body: '{{ t.s("common.error.http_status")|safe }}'.replace('{status}', resp.status), danger: true});
         return;
       }
       var j = await resp.json();
       if (window.chonkReact) window.chonkReact('happy');
-      drustUI.alert({title: 'Signed URL', body: 'Copy the URL below. It expires in ' + expires_in + ' seconds.', codeBlock: j.url});
+      drustUI.alert({title: '{{ t.s("files.sign.success_title")|safe }}', body: '{{ t.s("files.sign.success_body")|safe }}'.replace('{secs}', expires_in), codeBlock: j.url});
     });
   });
 </script>

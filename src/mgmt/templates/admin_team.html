@@ -97,12 +97,12 @@
     res.json().then(function (j) {
       drustUI.alert({
         title: '{{ t.s("common.modal.title_notice") }}',
-        body:  (j && (j.message || j.error_code)) || ('HTTP ' + res.status)
+        body:  (j && (j.message || j.error_code)) || '{{ t.s("common.error.http_status")|safe }}'.replace('{status}', res.status)
       });
     }).catch(function () {
       drustUI.alert({
         title: '{{ t.s("common.modal.title_notice") }}',
-        body:  'HTTP ' + res.status
+        body:  '{{ t.s("common.error.http_status")|safe }}'.replace('{status}', res.status)
       });
     });
   }

@@ -456,7 +456,7 @@
           cb.checked = !newVal;
           tile.classList.toggle('on', !newVal);
           _setSelfRegPill(!newVal);
-          drustUI.alert({title:'{{ t.s("tenant_api_keys.alert.update_failed_title") }}', body:'Could not update self-registration setting.'});
+          drustUI.alert({title:'{{ t.s("tenant_api_keys.alert.update_failed_title") }}', body:'{{ t.s("tenant_api_keys.alert.update_failed_body")|safe }}'});
         } else if (window.chonkReact) {
           window.chonkReact('happy', 600);
         }
@@ -464,7 +464,7 @@
         cb.checked = !newVal;
         tile.classList.toggle('on', !newVal);
         _setSelfRegPill(!newVal);
-        drustUI.alert({title:'{{ t.s("tenant_api_keys.alert.update_failed_title") }}', body:'Could not update self-registration setting.'});
+        drustUI.alert({title:'{{ t.s("tenant_api_keys.alert.update_failed_title") }}', body:'{{ t.s("tenant_api_keys.alert.update_failed_body")|safe }}'});
       });
     });
   })();

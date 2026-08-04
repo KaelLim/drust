@@ -84,6 +84,7 @@ none = "None"
 
 [common.error]
 fallback = "ERROR"
+http_status = "HTTP {status}"
 
 
 [common.field]
@@ -112,6 +113,7 @@ title_confirm = "Confirm"
 title_details = "Details"
 title_input = "Input"
 title_notice = "Notice"
+title_error = "Error"
 [common.pager]
 next = "next →"
 page_fmt = "Page {cur} of {total}"
@@ -147,6 +149,7 @@ tenants = "tenants"
 
 [common.upload]
 or = "or"
+
 [admin_sidebar.brand]
 subtitle = "admin console"
 
@@ -324,6 +327,7 @@ title = "drust admin — {tenant_name} / _logs"
 [backup_inspect.confirm]
 ok = "Extract"
 title = "Restore tenant from snapshot"
+body = "Extract {name} data.sqlite from this snapshot to _trash/<id>-restored-<ts>/ ? The live tenant directory is NOT overwritten."
 
 [backup_inspect.empty]
 body = "This archive may be empty or from before the first tenant was provisioned."
@@ -640,25 +644,36 @@ heading = "Color tokens"
 heading = "Typography"
 [files.disk]
 banner_title = "Disk at {pct}% free — uploads paused"
+banner_action = "Free up <code>/var/lib/garage</code> or scale the disk."
+banner_usage = "{used} GB used of {total} GB total."
 [files.head]
 eyebrow = "Admin · storage"
 pill_files_unit = "files"
 pill_not_configured = "not configured"
 title = "Host files"
+sub_configured = "Host-level Garage bucket — anonymous read at <code>/public/&lt;key&gt;</code>. Per-tenant buckets live inside each tenant's Files page."
+sub_unconfigured = "Garage S3 not configured. Set <code>GARAGE_S3_ENDPOINT</code> in <code>.env</code> and restart drust."
 
 [files.list]
 card_title = "Files"
+reconcile_btn = "sync audit ⋯"
+reconcile_hint = "Compare Garage bucket contents with drust's metadata — find orphan objects (in Garage, not tracked) and dangling rows (tracked but missing). Usually empty; run after network glitches or manual S3 edits."
 
 [files.page]
 meta_description = "drust admin — host-level file storage. Upload, browse, and manage public and private files backed by Garage S3."
 title = "drust admin — files"
 [files.row]
 delete_btn = "delete"
+copied = "copied ✓"
+copy_title = "copy {url}"
+copy_url = "copy URL"
+sign_url = "Sign URL"
 [files.stats]
 disk_free_label = "Disk free"
 disk_healthy = "healthy"
 disk_used_label = "Disk used"
 total_suffix = "total"
+disk_of_total = "of {total} GB"
 [files_reconcile.action]
 apply_selected = "Apply selected"
 delete_selected = "Delete selected"
@@ -778,6 +793,7 @@ never = "never"
 
 [tenant_api_keys.alert]
 update_failed_title = "Update failed"
+update_failed_body = "Could not update self-registration setting."
 
 [tenant_api_keys.banner]
 service_admin_title = "Service token is full admin of this tenant."
@@ -852,6 +868,8 @@ heading = "on this page"
 [tenant_files_admin.delete]
 confirm_title = "Delete file"
 failed_title = "Delete failed"
+confirm_body = "Delete {name}? This cannot be undone."
+confirm_ok = "Delete"
 
 [tenant_files_admin.disk]
 banner_title = "Host disk at {pct}% free — uploads paused"
@@ -882,6 +900,8 @@ invalid_title = "Invalid TTL"
 prompt_body = "Expiry in seconds (1–604800). Default 3600 = 1 hour."
 prompt_ok = "Sign"
 success_title = "Signed URL"
+invalid_body = "Must be an integer between 1 and 604800."
+success_body = "Copy the URL below. It expires in {secs} seconds."
 
 [tenant_files_admin.stats]
 disk_healthy = "healthy"
@@ -913,6 +933,8 @@ no_file = "— no file chosen —"
 uploading = "uploading…"
 vis_private = "private"
 vis_public = "public"
+failed = "upload failed ({status}): {message}"
+network_error = "network error: {message}"
 
 [tenant_functions]
 active_off = "off"
@@ -1554,3 +1576,63 @@ inline = "inline"
 private = "private"
 public = "public"
 visibility = "visibility"
+disposition_label = "disposition"
+
+[files.upload]
+browse = "browse…"
+card_meta = "max {max} MB · admin-only"
+card_title = "Upload"
+dropzone_prompt = "drag & drop a file here"
+exceeds = "exceeds {max} MB limit"
+no_file = "— no file chosen —"
+ready = "ready · press Upload ↵"
+submit = "Upload"
+too_big_hint = "pick a smaller file (limit {max} MB)"
+
+[files.sign]
+failed_title = "Sign failed"
+invalid_body = "Must be an integer between 1 and 604800."
+invalid_title = "Invalid TTL"
+prompt_body = "Expiry in seconds (1–604800). Default 3600 = 1 hour."
+prompt_ok = "Sign"
+success_body = "Copy the URL below. It expires in {secs} seconds."
+success_title = "Signed URL"
+
+[files.delete]
+confirm_body = "Delete {name}? This cannot be undone."
+confirm_ok = "Delete"
+confirm_title = "Delete file"
+fallback_name = "this file"
+
+[files.empty]
+none_body = "Upload the first one with the form above."
+none_title = "No files yet"
+page_body = "This page has no files."
+page_reset = "Back to page 1"
+page_title = "Nothing on this page"
+
+[files.pager]
+next = "next →"
+page_of = "page {page} of {pages} · {total} total"
+per_page = "per page"
+prev = "← prev"
+rows_per_page_aria = "rows per page"
+
+[files.tab]
+all = "All ({n})"
+private = "Private ({n})"
+public = "Public ({n})"
+
+[files.unconfigured]
+body = "Set <code>GARAGE_S3_ENDPOINT</code> (and the full key set) in drust's <code>.env</code> and restart. See <code>docs/superpowers/specs/2026-04-21-garage-object-store-integration.md</code>."
+title = "Storage not configured"
+
+[tenants_list.create]
+body = "Provisions data.sqlite + per-tenant S3 buckets + anon/service tokens. Choose a display name."
+ok = "Create"
+placeholder = "Event Registration"
+title = "Create a tenant"
+
+[tenants_list.empty]
+body = "Click <b>New tenant</b> above to create one."
+title = "No tenants yet"

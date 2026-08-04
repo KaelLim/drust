@@ -94,8 +94,10 @@
 
       <div class="card" style="overflow:hidden;">
         {% if tenants.is_empty() %}
-        {% call ui::empty_state("working", "No tenants yet", "") %}
-          <p>Click <b>New tenant</b> above to create one.</p>
+        {% call ui::empty_state("working", t.s("tenants_list.empty.title"), "") %}
+          {# `sub` is auto-escaped, so the bolded button name stays in the
+             caller body where markup survives. #}
+          <p>{{ t.s("tenants_list.empty.body")|safe }}</p>
         {% endcall %}
         {% else %}
         <table class="data">
@@ -262,10 +264,10 @@
         if (!btn || !form || !nameInput) return;
         btn.addEventListener('click', async function () {
           var name = await drustUI.prompt({
-            title: 'Create a tenant',
-            body: 'Provisions data.sqlite + per-tenant S3 buckets + anon/service tokens. Choose a display name.',
-            placeholder: 'Event Registration',
-            okText: 'Create',
+            title: '{{ t.s("tenants_list.create.title")|safe }}',
+            body: '{{ t.s("tenants_list.create.body")|safe }}',
+            placeholder: '{{ t.s("tenants_list.create.placeholder")|safe }}',
+            okText: '{{ t.s("tenants_list.create.ok")|safe }}',
           });
           if (name === null) return;
           name = name.trim();

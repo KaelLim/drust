@@ -109,7 +109,7 @@
       var name = f.getAttribute('data-tenant-name');
       var ok = await drustUI.confirm({
         title: '{{ t.s("backup_inspect.confirm.title")|safe }}',
-        body: 'Extract "' + name + '" data.sqlite from this snapshot to _trash/<id>-restored-<ts>/ ? The live tenant directory is NOT overwritten.',
+        body: '{{ t.s("backup_inspect.confirm.body")|safe }}'.replace('{name}', name),
         okText: '{{ t.s("backup_inspect.confirm.ok")|safe }}',
       });
       if (ok) f.submit();
