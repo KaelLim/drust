@@ -279,7 +279,7 @@ the glob fires, just read the file.
 | `.claude/rules/mcp-surface.md` | `src/mcp/{handler,resources,prompts,http_registry,server}.rs` | tool/resource/prompt surface, URI parser hardening, why credential-bearing reads stay behind tools |
 | `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage}.rs`, `src/tenant/{uploads/**,file_caps.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | Garage integration, upload/delete ordering, file caps, tus, the stored-XSS defense |
 | `.claude/rules/background-jobs.md` | `src/{functions,cron,rpc,safety}/**`, `src/tenant/{webhook*,egress,rooms}` | edge functions, cron semantics, stored-RPC guards, webhooks, egress, audit writer, SSE |
-| `.claude/rules/admin-ui.md` | `src/mgmt/**`, `build.rs`, `build_support/**`, `locales/**`, `themes/**` | 頁面解剖學 (the six `_ui.html` macros and the **seven `build.rs` gates that will fail your build**), `script_json`, i18n, theming |
+| `.claude/rules/admin-ui.md` | `src/mgmt/**`, `build.rs`, `build_support/**`, `locales/**`, `themes/**` | 頁面解剖學 (the six `_ui.html` macros and the **eight `build.rs` gates that will fail your build**), `script_json`, i18n, theming |
 
 ## Directory map
 

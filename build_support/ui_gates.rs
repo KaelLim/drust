@@ -1318,6 +1318,268 @@ pub fn check_inline_handler_interp(file: &str, content: &str) -> Vec<Violation> 
     out
 }
 
+/// Which POSITIONAL arguments of each `_ui.html` macro carry human copy.
+///
+/// `empty_state`'s first argument is a chonk sprite id (`"sleep"`, `"curious"`)
+/// — an asset name, not copy — which is exactly why this is a per-macro index
+/// list and not "every string argument". `toolbar()` takes none.
+const UI_MACRO_COPY_ARGS: &[(&str, &[usize])] = &[
+    ("ui::view_head", &[0, 1, 2]), // eyebrow, title, sub
+    ("ui::data_table", &[0]),      // caption
+    ("ui::empty_state", &[1, 2]),  // (chonk), title, sub
+    ("ui::card", &[0, 1]),         // title, sub
+    ("ui::form_row", &[0, 1]),     // label, hint
+];
+
+/// `drustUI` modal entry points and the object fields of theirs that render as
+/// copy. `default`/`danger`/`codeBlock`/`okText` differ: `okText` IS a button
+/// label, the others are values or flags.
+const DRUST_UI_METHODS: &[&str] = &["confirm", "alert", "prompt", "confirmTyped"];
+const DRUST_UI_COPY_FIELDS: &[&str] = &["title", "body", "okText", "placeholder", "label"];
+
+/// Split a call's argument text on top-level commas, quote- and depth-aware.
+///
+/// `quoted_call_args` cannot serve here: it returns only the arguments that
+/// happened to be quoted, so position is lost — and position is the whole
+/// point when argument 0 of `empty_state` is an asset id and arguments 1–2 are
+/// copy. Depth tracking is required because a copy argument is frequently
+/// itself a call (`t.fmt1("k", "n", v)`), whose commas must not split it.
+fn split_call_args(s: &str) -> Vec<&str> {
+    let bytes = s.as_bytes();
+    let (mut out, mut start, mut depth, mut i) = (Vec::new(), 0usize, 0i32, 0usize);
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            // Inside a literal only its own closing quote matters; `\"` escapes.
+            Some(q) => {
+                if b == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' | b'`' => quote = Some(b),
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b',' if depth == 0 => {
+                    out.push(s[start..i].trim());
+                    start = i + 1;
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    out.push(s[start..].trim());
+    out
+}
+
+/// True iff `expr` reads from the compile-time i18n bundle.
+///
+/// Deliberately a `contains` rather than a shape test: an operand may be
+/// wrapped (`'{{ t.s("k")|safe }}'.replace('{n}', n)`, `a || t.s("k")`), and
+/// the question this gate asks is "did the author route this through the
+/// bundle at all", not "is the expression safe". `|safe` safety is gate 5's
+/// job and it runs on the same text.
+fn reads_i18n_bundle(expr: &str) -> bool {
+    expr.contains("t.s(") || expr.contains("t.fmt")
+}
+
+/// True iff `expr` BEGINS with a string literal holding real words.
+///
+/// Anchored at the start so `resp.status + " bytes"` — a runtime value with a
+/// unit suffix — is not treated as copy, while `'Delete file'` is. Three
+/// letters filters out punctuation, single-letter markers and symbol strings
+/// (`'—'`, `'↵'`, `'='`), which are notation rather than translatable text.
+fn starts_with_copy_literal(expr: &str) -> bool {
+    let e = expr.trim_start();
+    let Some(q) = e.as_bytes().first().copied() else {
+        return false;
+    };
+    if !matches!(q, b'"' | b'\'' | b'`') {
+        return false;
+    }
+    let rest = &e[1..];
+    let Some(end) = rest.find(q as char) else {
+        return false;
+    };
+    rest[..end]
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .count()
+        >= 3
+}
+
+/// Gate 8 — copy handed to a component must come from the i18n bundle.
+///
+/// The two component layers both take plain strings, so nothing structurally
+/// prevents an author from passing English straight through, and nothing else
+/// notices: `build.rs`'s i18n validator only checks that keys REFERENCED by
+/// `t.s(…)` exist, so a string that never became a key is invisible to it, and
+/// so is a whole page authored without one. `files.html` shipped that way.
+///
+/// Granularity is the FIELD, not the call. The recurring shape is a translated
+/// `title` beside a hardcoded `body` in one `drustUI.confirm({…})` — 27 of them
+/// across seven templates — and a call-level check reports those as clean,
+/// because the call does contain a `t.s(`.
+///
+/// Askama comments are blanked first. Gate 5 does not do this, and quoting a
+/// forbidden pattern in a comment to explain why it was avoided fails that
+/// gate; the same trap would apply here, where a comment naming a macro
+/// argument is natural.
+///
+/// The gate is bounded on purpose. It governs the two component APIs, not
+/// every string in the file: text nodes and attributes are not covered, so a
+/// green build means "no component was handed raw copy", not "this page is
+/// fully translated".
+pub fn check_untranslated_copy(file: &str, content: &str) -> Vec<Violation> {
+    if file == "_ui.html" {
+        return Vec::new(); // the macro definitions themselves
+    }
+    let mut out = Vec::new();
+    let live = blank_block_comments(content);
+    let mut exec = live.clone().into_bytes();
+    for (s, e) in delimited_spans(&live, "{#", "#}") {
+        for b in &mut exec[s..e] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    }
+    let exec = String::from_utf8(exec).expect("blanking replaces whole spans with ASCII");
+    let bytes = exec.as_bytes();
+    let line_of = |off: usize| bytes[..off].iter().filter(|&&b| b == b'\n').count() + 1;
+
+    // 1. `{% call ui::<macro>(…) %}` positional copy arguments.
+    for (s, e) in delimited_spans(&exec, "{%", "%}") {
+        let inner = span_inner(&exec[s..e], "{%", "%}");
+        let Some(target) = call_target(inner) else {
+            continue;
+        };
+        let Some((_, spec)) = UI_MACRO_COPY_ARGS.iter().find(|(m, _)| *m == target) else {
+            continue;
+        };
+        let Some(open) = inner.find('(') else {
+            continue;
+        };
+        let Some(close) = inner.rfind(')') else {
+            continue;
+        };
+        let args = split_call_args(&inner[open + 1..close]);
+        for &ix in *spec {
+            let Some(arg) = args.get(ix) else { continue };
+            if reads_i18n_bundle(arg) || !starts_with_copy_literal(arg) {
+                continue;
+            }
+            out.push(Violation::new(
+                file,
+                line_of(s),
+                "untranslated-copy",
+                format!(
+                    "`{target}` argument {ix} is raw copy ({arg}). Add a key to \
+                     locales/en.toml + locales/zh-TW.toml and pass `t.s(\"…\")`. \
+                     Pass `\"\"` to omit the line."
+                ),
+            ));
+        }
+    }
+
+    // 2. `drustUI.<method>({ title: …, body: …, okText: … })` fields.
+    let mut from = 0usize;
+    while let Some(rel) = exec[from..].find("drustUI.") {
+        let at = from + rel;
+        from = at + "drustUI.".len();
+        let after = &exec[from..];
+        let Some(method) = DRUST_UI_METHODS
+            .iter()
+            .find(|m| after.starts_with(**m) && after[m.len()..].trim_start().starts_with('('))
+        else {
+            continue;
+        };
+        let Some(open) = call_open_paren(&exec[from..], method.len()).map(|o| from + o) else {
+            continue;
+        };
+        // Balanced scan to the call's closing paren; the argument object spans
+        // lines in most call sites, so a line-scoped read would see `title:`
+        // and miss the `body:` under it.
+        //
+        // `call_open_paren` returns the index AFTER the `(`, so the scan starts
+        // already one level deep. Starting at depth 0 here made the first `)`
+        // take depth to -1, the break never fired, the scan ran to EOF and every
+        // drustUI call was silently skipped — a gate reporting green while not
+        // looking. `drust_ui_field_gate_actually_scans` pins it.
+        let (mut i, mut depth) = (open, 1i32);
+        let mut quote: Option<u8> = None;
+        while i < bytes.len() {
+            let b = bytes[i];
+            match quote {
+                Some(q) => {
+                    if b == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if b == q {
+                        quote = None;
+                    }
+                }
+                None => match b {
+                    b'"' | b'\'' | b'`' => quote = Some(b),
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                },
+            }
+            i += 1;
+        }
+        if i >= bytes.len() {
+            continue;
+        }
+        let arg_text = &exec[open..i];
+        // The object's own top level: a nested object's `label:` belongs to a
+        // different component and is not this call's copy.
+        let Some(brace) = arg_text.find('{') else {
+            continue;
+        };
+        let Some(brace_end) = arg_text.rfind('}') else {
+            continue;
+        };
+        for field in split_call_args(&arg_text[brace + 1..brace_end]) {
+            let Some((name, value)) = field.split_once(':') else {
+                continue;
+            };
+            let name = name.trim().trim_matches(|c| c == '"' || c == '\'');
+            if !DRUST_UI_COPY_FIELDS.contains(&name) {
+                continue;
+            }
+            if reads_i18n_bundle(value) || !starts_with_copy_literal(value) {
+                continue;
+            }
+            out.push(Violation::new(
+                file,
+                line_of(at),
+                "untranslated-copy",
+                format!(
+                    "`drustUI.{method}` field `{name}` is raw copy ({}). Add a key and \
+                     interpolate `'{{{{ t.s(\"…\")|safe }}}}'`; substitute runtime values \
+                     with `.replace('{{n}}', v)` rather than concatenating around the \
+                     sentence.",
+                    value.trim()
+                ),
+            ));
+        }
+    }
+    out
+}
+
 /// Collect every CSS custom property this text DEFINES (`--name:`), across the
 /// whole template — CSS variables can be defined both in `<style>` blocks and
 /// in inline `style="--x: …"` attributes, so (unlike `defined_classes`, which
@@ -1484,6 +1746,7 @@ pub fn scan_all(templates: &[(String, String)], css: &str) -> Vec<Violation> {
         out.extend(check_safe_filter(file, body));
         out.extend(check_view_head(file, body));
         out.extend(check_inline_handler_interp(file, body));
+        out.extend(check_untranslated_copy(file, body));
     }
     out.extend(check_ghost_classes(templates, css));
     out.extend(check_ghost_css_vars(templates));
@@ -1724,6 +1987,112 @@ mod tests {
         let clean = "{% call ui::view_head(a, b, c) %}{% endcall %}\n<div>ok</div>";
         let templates = vec![("page.html".to_string(), clean.to_string())];
         assert!(scan_all(&templates, ".btn{}").is_empty());
+    }
+
+    // ---- gate 8: untranslated-copy -------------------------------------
+
+    #[test]
+    fn ui_macro_copy_args_flagged_but_asset_arg_is_not() {
+        // `empty_state`'s first argument is a chonk sprite id, not copy. A
+        // gate that flagged every string argument would fire on it, and the
+        // only way to silence that is to stop trusting the gate.
+        let v = check_untranslated_copy(
+            "page.html",
+            "{% call ui::empty_state(\"sleep\", \"No files yet\", \"Upload one above.\") %}{% endcall %}",
+        );
+        assert_eq!(v.len(), 2, "title and sub only, not the sprite id: {v:?}");
+        assert!(v.iter().all(|x| x.rule == "untranslated-copy"));
+        assert!(v.iter().any(|x| x.message.contains("argument 1")));
+        assert!(v.iter().any(|x| x.message.contains("argument 2")));
+        assert!(
+            !v.iter().any(|x| x.message.contains("sleep")),
+            "the sprite id must never be reported"
+        );
+    }
+
+    #[test]
+    fn ui_macro_bundle_args_and_empty_strings_pass() {
+        let clean = "{% call ui::empty_state(\"sleep\", t.s(\"a.b\"), \"\") %}{% endcall %}\n\
+                     {% call ui::card(t.fmt1(\"a.c\", \"n\", x), \"\") %}{% endcall %}";
+        assert!(
+            check_untranslated_copy("page.html", clean).is_empty(),
+            "bundle reads and omitted lines are the intended shapes"
+        );
+    }
+
+    #[test]
+    fn drust_ui_field_gate_actually_scans() {
+        // Regression: `call_open_paren` returns the index AFTER the `(`, so a
+        // scan starting at depth 0 never balanced, ran to EOF, and skipped
+        // EVERY drustUI call while the build stayed green. The gate looked
+        // installed and inspected nothing.
+        let v = check_untranslated_copy(
+            "page.html",
+            "var ok = await drustUI.confirm({\n  \
+               title: '{{ t.s(\"a.b\")|safe }}',\n  \
+               body: 'Delete this? It cannot be undone.',\n  \
+               okText: 'Delete',\n});",
+        );
+        assert_eq!(v.len(), 2, "body and okText are raw, title is not: {v:?}");
+        assert!(v.iter().any(|x| x.message.contains("`body`")));
+        assert!(v.iter().any(|x| x.message.contains("`okText`")));
+        assert!(
+            !v.iter().any(|x| x.message.contains("`title`")),
+            "a bundle-backed field must not be reported"
+        );
+    }
+
+    #[test]
+    fn drust_ui_runtime_values_and_notation_pass() {
+        // `body` built from a runtime value is not copy; a symbol-only okText
+        // is notation. Both must stay quiet or authors will route around the
+        // gate rather than through it.
+        let clean = "drustUI.alert({title: '{{ t.s(\"a.b\")|safe }}', body: resp.statusText});\n\
+                     drustUI.confirm({body: f.getAttribute('data-confirm-msg') || '', okText: '↵'});";
+        assert!(
+            check_untranslated_copy("page.html", clean).is_empty(),
+            "got {:?}",
+            check_untranslated_copy("page.html", clean)
+        );
+    }
+
+    #[test]
+    fn untranslated_copy_ignores_askama_comments() {
+        // Gate 5 scans comments, so quoting a forbidden pattern to explain why
+        // it was avoided fails the build. That trap is worse here, where
+        // documenting a macro's arguments in a comment is the natural thing to
+        // do, so comments are blanked before scanning.
+        let commented = "{# {% call ui::card(\"Raw title\", \"Raw sub\") %} — do not do this #}\n\
+                         {% call ui::card(t.s(\"a.b\"), \"\") %}{% endcall %}";
+        assert!(check_untranslated_copy("page.html", commented).is_empty());
+    }
+
+    #[test]
+    fn untranslated_copy_survives_multiline_and_window_prefix() {
+        // Both shapes appear in the real templates; a line-scoped scan sees the
+        // translated `title` and never reaches the raw `body` beneath it.
+        let v = check_untranslated_copy(
+            "page.html",
+            "window.drustUI.alert({\n  title: '{{ t.s(\"a.b\")|safe }}',\n  \
+               body: 'Could not update the setting.'\n});",
+        );
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].message.contains("`body`"));
+    }
+
+    #[test]
+    fn split_call_args_is_depth_and_quote_aware() {
+        // A copy argument is often itself a call, and its commas must not
+        // split it — the whole reason `quoted_call_args` could not be reused.
+        assert_eq!(
+            split_call_args("\"sleep\", t.fmt1(\"k\", \"n\", v), \"\""),
+            vec!["\"sleep\"", "t.fmt1(\"k\", \"n\", v)", "\"\""]
+        );
+        assert_eq!(
+            split_call_args("\"a, b\", \"c\""),
+            vec!["\"a, b\"", "\"c\""],
+            "a comma inside a literal is not a separator"
+        );
     }
 
     #[test]
