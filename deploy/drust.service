@@ -12,6 +12,14 @@ EnvironmentFile=/home/kaelsohappy1/tool/drust/.env
 ExecStart=/home/kaelsohappy1/tool/drust/target/release/drust
 Restart=on-failure
 RestartSec=5s
+# Backstop, not the mechanism. drust bounds its own connection drain at
+# DRUST_SHUTDOWN_GRACE_SECS (default 10) and then flushes the audit buffer, so
+# it should exit well inside this. The default 90s mattered because before
+# v1.58.3 shutdown waited forever on long-lived streams (MCP sessions, SSE, WS)
+# and every stop ended in SIGKILL — which skips the audit flush entirely. Keep
+# this comfortably ABOVE the in-process grace; lowering it under that value just
+# reinstates the SIGKILL.
+TimeoutStopSec=30s
 UMask=0077
 
 NoNewPrivileges=yes

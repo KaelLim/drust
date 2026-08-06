@@ -66,6 +66,11 @@ services:
       timeout: 3s
       retries: 3
       start_period: 15s
+    # Compose defaults this to 10s, which is EXACTLY drust's own connection-drain
+    # window (DRUST_SHUTDOWN_GRACE_SECS) — so Docker would SIGKILL at the very
+    # moment drust stops waiting and starts flushing its audit buffer, losing it
+    # on every single `compose down`. Must stay comfortably above that window.
+    stop_grace_period: 30s
 
   # Optional S3-compatible object store for file features. Enable with:
   #   docker compose --profile storage up -d

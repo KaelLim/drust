@@ -73,6 +73,21 @@ async fn main() -> anyhow::Result<()> {
     for (tid, err) in &migration_report.tenants_failed {
         tracing::warn!(tenant = %tid, error = %err, "tenant migration failed; tenant will return 503");
     }
+    // Best-effort boot work that missed. These tenants serve normally and the work
+    // retries next boot, so this is not an error — but it is also not nothing, and
+    // a per-tenant ERROR line scrolling past in journald is how one of these
+    // (#926) stayed broken for two months. One aggregated line, plus the header
+    // set just below, which is what actually gets looked at.
+    let boot_degraded = migration_report.degraded.len();
+    if boot_degraded > 0 {
+        for (tid, job, err) in &migration_report.degraded {
+            tracing::warn!(tenant = %tid, job = %job, error = %err, "boot maintenance degraded");
+        }
+        tracing::warn!(
+            count = boot_degraded,
+            "boot completed with degraded maintenance; see x-drust-boot-degraded"
+        );
+    }
     let meta = Arc::new(Mutex::new(meta));
 
     let audit_db_path = cfg.data_dir.join("meta_logs.sqlite");
@@ -635,10 +650,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(|| async { "ok" }))
         .merge(mgmt_router)
         .merge(tenant_router);
-    // DEPLOY-4: emit `x-drust-version` by default; suppress it only when
+    // DEPLOY-4: emit `x-drust-*` diagnostics by default; suppress them only when
     // the operator opts out via DRUST_HIDE_VERSION (fingerprint reduction).
     // Both arms are `Router` — axum's `Router::layer` is type-preserving.
-    let app = if version_header_enabled(std::env::var("DRUST_HIDE_VERSION").is_ok()) {
+    let expose_diagnostics = version_header_enabled(std::env::var("DRUST_HIDE_VERSION").is_ok());
+    let app = if expose_diagnostics {
         app.layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("x-drust-version"),
             HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
@@ -646,18 +662,115 @@ async fn main() -> anyhow::Result<()> {
     } else {
         app
     };
+    // Boot maintenance that missed, advertised where the deploy ritual already
+    // looks: `curl -sI /health | grep -i x-drust`. ABSENT when the count is zero,
+    // so a healthy boot is byte-identical to before and nothing has to learn a new
+    // check — the header exists only when there is something to say.
+    //
+    // Two deliberate constraints. It is NOT in the `/health` body: that string is
+    // a liveness contract for k8s and Compose probes and this must never be able
+    // to fail one. And it rides the SAME opt-out as the version header rather than
+    // getting its own: an operator who set DRUST_HIDE_VERSION asked not to
+    // advertise internal state to unauthenticated callers on a public endpoint,
+    // and "which build" versus "some tenant's maintenance is behind" are the same
+    // kind of disclosure. They still get the aggregated boot WARN in the log.
+    let app = if expose_diagnostics && boot_degraded > 0 {
+        app.layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-drust-boot-degraded"),
+            HeaderValue::from_str(&boot_degraded.to_string())
+                .expect("decimal count is always a valid header value"),
+        ))
+    } else {
+        app
+    };
 
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     tracing::info!(addr = %cfg.bind, "drust listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+
+    // `with_graceful_shutdown` waits for EVERY in-flight connection to close, and
+    // several of ours never close on their own: MCP Streamable HTTP sessions,
+    // `/subscribe` SSE, WS rooms. Left unbounded, SIGTERM hung until systemd's
+    // TimeoutStopSec fired and SIGKILLed us — 8 of 10 stops on this host took
+    // exactly 90s. The cost is not the wait: SIGKILL skips `drain_writer()`
+    // below, so the audit buffer this shutdown path exists to flush was lost on
+    // precisely the restarts it was written to protect. Containers hard-kill even
+    // sooner (k8s terminationGracePeriodSeconds 30s, Compose stop_grace_period 10s).
+    //
+    // So: let connections drain, but only for a bounded window, then move on and
+    // flush regardless. Two consumers need the same signal — `with_graceful_shutdown`
+    // consumes its future — and this is `watch`, not `Notify`, on purpose:
+    // `notify_waiters()` stores no permit, so a consumer not yet parked at the
+    // instant SIGTERM lands misses it forever. `watch` holds the state and
+    // `wait_for` returns immediately when the predicate already holds.
+    let (sig_tx, sig_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = sig_tx.send(true);
+    });
+    let drain_grace = shutdown_grace();
+    let server = axum::serve(listener, app).with_graceful_shutdown({
+        let mut rx = sig_rx.clone();
+        async move {
+            let _ = rx.wait_for(|fired| *fired).await;
+        }
+    });
+    tokio::select! {
+        r = server => r?,
+        _ = async {
+            let mut rx = sig_rx.clone();
+            let _ = rx.wait_for(|fired| *fired).await;
+            tokio::time::sleep(drain_grace).await;
+        } => tracing::warn!(
+            grace_secs = drain_grace.as_secs(),
+            "shutdown grace expired with connections still open (long-lived streams \
+             do not close on their own); proceeding to flush"
+        ),
+    }
     tracing::info!("drust http server stopped; draining audit queues");
     // v1.32.1 — JSONL writer retired (D1). Only the SQLite writer remains;
     // flush its in-flight buffer before exit.
     drust::safety::audit_db::drain_writer().await;
     tracing::info!("audit drain complete; exit");
     Ok(())
+}
+
+/// Default connection-drain window, in seconds, after the shutdown signal.
+///
+/// The ceiling is not ours to pick: every supervisor kills harder than we can
+/// negotiate. systemd `TimeoutStopSec` and Compose `stop_grace_period` are set
+/// to 30s by our own deploy files, and Kubernetes
+/// `terminationGracePeriodSeconds` defaults to 30s. Overshooting the tightest of
+/// those puts us straight back where we started — SIGKILLed before the audit
+/// flush — so this must stay comfortably under 30s, and raising it means raising
+/// all three in the same change.
+const SHUTDOWN_GRACE_DEFAULT_SECS: u64 = 10;
+
+/// Compile-time, not a test: a default at or above the supervisor deadlines is a
+/// SIGKILL before the audit flush — exactly the bug this replaced — and it would
+/// not fail any behavioural test, because nothing in the suite runs under a
+/// supervisor. `deploy/drust.service` sets `TimeoutStopSec=30s`,
+/// `docker-compose.yml` sets `stop_grace_period: 30s`, and the chart takes
+/// Kubernetes' 30s default. Raising this means raising all three first.
+const _: () = assert!(
+    SHUTDOWN_GRACE_DEFAULT_SECS < 30,
+    "shutdown grace must leave room under the 30s supervisor deadlines"
+);
+
+/// Pure half of the knob, so the parse rules are testable without an env var.
+/// A malformed or zero value falls back to the default rather than being taken
+/// literally: `0` would mean "never drain", quietly reinstating the abrupt-exit
+/// behaviour this whole mechanism exists to remove, and a typo should not be a
+/// silent behaviour change.
+fn shutdown_grace_from(raw: Option<&str>) -> std::time::Duration {
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(SHUTDOWN_GRACE_DEFAULT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+fn shutdown_grace() -> std::time::Duration {
+    shutdown_grace_from(std::env::var("DRUST_SHUTDOWN_GRACE_SECS").ok().as_deref())
 }
 
 /// Graceful-shutdown trigger. Resolves on SIGINT (Ctrl-C) or SIGTERM
@@ -702,5 +815,47 @@ mod deploy4_version_header_tests {
             !version_header_enabled(true),
             "DRUST_HIDE_VERSION set MUST suppress the x-drust-version header"
         );
+    }
+}
+
+#[cfg(test)]
+mod shutdown_grace_tests {
+    use super::{SHUTDOWN_GRACE_DEFAULT_SECS, shutdown_grace_from};
+
+    #[test]
+    fn unset_uses_the_default() {
+        assert_eq!(
+            shutdown_grace_from(None).as_secs(),
+            SHUTDOWN_GRACE_DEFAULT_SECS
+        );
+    }
+
+    #[test]
+    fn a_valid_value_is_honoured() {
+        assert_eq!(shutdown_grace_from(Some("25")).as_secs(), 25);
+        assert_eq!(shutdown_grace_from(Some("  25 ")).as_secs(), 25);
+    }
+
+    #[test]
+    fn zero_falls_back_instead_of_disabling_the_drain() {
+        // Taking `0` literally would mean "stop waiting immediately", i.e. cut
+        // every in-flight request the instant SIGTERM lands — the abrupt exit
+        // this mechanism exists to remove, reintroduced by a config value that
+        // reads like it just means "no delay".
+        assert_eq!(
+            shutdown_grace_from(Some("0")).as_secs(),
+            SHUTDOWN_GRACE_DEFAULT_SECS
+        );
+    }
+
+    #[test]
+    fn garbage_falls_back_rather_than_changing_behaviour_silently() {
+        for raw in ["", "abc", "10s", "-5", "1e3"] {
+            assert_eq!(
+                shutdown_grace_from(Some(raw)).as_secs(),
+                SHUTDOWN_GRACE_DEFAULT_SECS,
+                "{raw:?} must fall back to the default"
+            );
+        }
     }
 }

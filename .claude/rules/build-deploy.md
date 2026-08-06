@@ -76,7 +76,12 @@ Per-release checklist — run it before tagging, not after:
 
 ## Deploy check
 
-`curl -sI http://127.0.0.1:47826/health | grep -i x-drust-version` after `cargo build --release && sudo systemctl restart drust`. Plain `/health` returns `ok` from the OLD binary too, so it proves nothing about which build is live; the version string is baked at compile time, so rebuild **and** restart before trusting the header. `DRUST_HIDE_VERSION=1` omits it.
+`curl -sI http://127.0.0.1:47826/health | grep -i x-drust` after `cargo build --release && sudo systemctl restart drust`. Plain `/health` returns `ok` from the OLD binary too, so it proves nothing about which build is live; the version string is baked at compile time, so rebuild **and** restart before trusting the header. `DRUST_HIDE_VERSION=1` omits it.
+
+Grep the `x-drust` prefix, not `x-drust-version`. **`x-drust-boot-degraded: <n>`** is emitted only when best-effort boot maintenance missed on some tenant — a STRICT rebuild that held a table back, an egress backfill that failed. Those tenants serve normally and the job retries next boot, so this is not an outage and never fails a probe; it is deliberately a header and not part of the `/health` body, which is a liveness contract for k8s and Compose. Absent means clean. It exists because a per-tenant `tracing::error!` is not a signal anyone receives: one tenant's STRICT rebuild failed on 18 consecutive boots and was found by accident.
+
+> [!CAUTION]
+> **Shutdown grace is bounded in-process, and the bound must stay under the tightest supervisor's.** `axum::serve(..).with_graceful_shutdown(..)` waits for every in-flight connection, and MCP Streamable HTTP sessions, `/subscribe` SSE and WS rooms never close on their own — so before v1.58.3 SIGTERM hung until `TimeoutStopSec` fired and SIGKILLed the process (8 of 10 stops on this host took exactly 90s). The damage was not the wait: SIGKILL skips the post-`serve()` `drain_writer()`, so the audit buffer that the graceful path exists to flush was lost on precisely the restarts it was written to protect. `DRUST_SHUTDOWN_GRACE_SECS` (default 10) now caps the drain. Raising it above the tightest supervisor deadline — Compose `stop_grace_period` 10s, k8s `terminationGracePeriodSeconds` 30s, systemd `TimeoutStopSec` 90s — silently restores the old bug on that target.
 
 ## Provenance
 

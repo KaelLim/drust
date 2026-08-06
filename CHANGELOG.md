@@ -1,3 +1,117 @@
+## v1.58.3 — 2026-08-06
+
+### Fixed — SIGTERM was ignored whenever a long-lived stream was open
+
+`axum::serve(..).with_graceful_shutdown(..)` waits for **every** in-flight
+connection to close, and several of drust's never close on their own: MCP
+Streamable HTTP sessions, `/subscribe` SSE, WS rooms. Shutdown therefore hung
+until the supervisor's kill timer fired — 8 of the last 10 `systemctl stop`s on
+the reference host took exactly 90s and ended in SIGKILL. (The two fast ones had
+no streaming client attached, which is why this looked intermittent.)
+
+The wait was not the damage. `drain_writer()` runs *after* `serve()` returns, so
+SIGKILL skipped it — the audit buffer that the graceful-shutdown path exists to
+flush was lost on precisely the restarts it was written to protect. WAL means no
+corruption, but the `-wal` was left uncheckpointed every time. Containers were
+worse, not better: Compose's default `stop_grace_period` is 10s and Kubernetes'
+`terminationGracePeriodSeconds` 30s, so the kill landed sooner.
+
+The drain is now bounded by `DRUST_SHUTDOWN_GRACE_SECS` (default 10); when it
+expires drust logs a warning, stops waiting, and flushes anyway. `0` and
+malformed values fall back to the default rather than being honoured — `0` would
+read like "no delay" while actually meaning "cut every request instantly",
+reinstating the abrupt exit. Signal fan-out uses `watch`, not `Notify`:
+`notify_waiters()` stores no permit, so a consumer not yet parked when SIGTERM
+lands would miss it forever.
+
+Deploy files raised in the same change, because the in-process bound is useless
+if the supervisor still kills under it: `TimeoutStopSec=30s` on the systemd unit
+(was the 90s default), `stop_grace_period: 30s` in Compose (was the 10s default —
+exactly equal to the drain window, so Docker would have killed at the very
+instant drust started flushing). The chart already inherits Kubernetes' 30s.
+
+### Fixed — boot maintenance could fail on every boot with nobody the wiser
+
+One production tenant's `uploads.sort_order` held the empty string in a column
+declared `INTEGER DEFAULT 0`, left by a 2026-05-14 PocketBase import. A
+non-STRICT table accepts that happily — INTEGER is an affinity and `''` does not
+convert, so the value simply stays TEXT — while the STRICT copy rejects it. That
+table failed its rebuild on **18 consecutive boots** across two months, logging
+an ERROR each time, and was found only because an unrelated task required
+stopping the service.
+
+The rows were repaired by hand. The reason it stayed hidden is now fixed:
+
+- `strict_rebuild_tenant` returns the tables it **held back** instead of only
+  logging them. A per-table failure keeps the function on its `Ok` path —
+  correctly, since the tenant still serves — so the caller's `if let Err(..)`
+  never fired. Misses have to travel back as a value or they are invisible.
+- `MigrationReport` gained `degraded`, collecting best-effort boot work that did
+  not succeed on a tenant that is otherwise fine (STRICT rebuild, egress
+  backfill). Kept strictly separate from `tenants_failed`, which gates the 503
+  path and must keep meaning "additive migration failed".
+- **`x-drust-boot-degraded: <n>`** is emitted when that list is non-empty, and
+  absent otherwise, so it surfaces in the deploy check that already runs
+  (`curl -sI /health | grep -i x-drust` — note the shortened grep). It is a
+  header, not part of the `/health` body, because that body is a liveness
+  contract for k8s and Compose probes. It rides the existing
+  `DRUST_HIDE_VERSION` opt-out: an operator who suppressed the version header
+  asked not to advertise internal state to unauthenticated callers, and this is
+  the same kind of disclosure.
+
+No behaviour change to the jobs themselves — still best-effort, still retried
+next boot, still never blocking a tenant from serving.
+
+### Fixed — backup retention: 31 days now costs 11 snapshots instead of 30
+
+`deploy/drust-backup.sh` kept a flat 30 days, which on the reference host meant
+30 archives and 13 GB. Each one carries `tokens.plaintext` and
+`_admin_tokens.plaintext` verbatim, so a single archive grants full data-plane
+access to every tenant plus cross-tenant admin access until those tokens are
+rerolled — copy count is blast radius.
+
+Retention is now tiered: 7 dailies plus one per ISO week for 4 weeks, both
+tunable (`DRUST_BACKUP_KEEP_DAILY` / `DRUST_BACKUP_KEEP_WEEKLY`). Measured
+against the real 30-file directory: 11 files kept, oldest 31 days back — the same
+reach as the window it replaces, at roughly a third of the copies. Two bugs the
+fixture test caught: reverse-*name* ordering put any archive sorting above `'2'`
+at the front where it spent a daily slot and evicted a real snapshot (dates are
+now parsed before tiering, and an unparseable name is kept without consuming a
+slot — never deleted), and letting the weekly tier re-claim a week the dailies
+already covered cost a full week of reach for no extra safety.
+
+Compose still has no backup job at all and k3s uses a different mechanism (CSI
+snapshots + Litestream); neither runs this script.
+
+### Fixed — the admin copy that never entered the i18n bundle
+
+Build gate 8 covers `ui::` macro arguments and `drustUI.*` fields; it cannot see
+a text node or an HTML attribute, so what survived v1.58.2 was exactly the copy
+living in those two places — 40 strings across 11 templates, led by the SSE
+quickstart panel and the backups pair. The dominant shape is a sentence broken up
+by inline `<code>`, which is why they could not be a single `t.s()` call; they now
+use the convention the bundle already applies in nine places (full sentence
+including markup in the locale value, `t.s("key")|safe`), or `t.fmt1_html(..)`
+where a runtime value is interpolated. Bundle 1042 → 1074 keys, `en` and `zh-TW`
+identical, 0 orphans.
+
+Two defects surfaced that were not missing translations. `tenants_list.html`
+looped `{% for t in tenants %}`, shadowing the `Translator` field — any `t.s()`
+inside that block resolves to `TenantRow::s`, which is how it announced itself;
+the loop binding is renamed rather than the strings hoisted, because the shadow
+is a trap for every future translated string there. And `tenant_api_keys.html`
+carried a translated `title` beside an untranslated English `aria-label` on nine
+controls: `aria-label` wins for screen readers, so the translation was inert for
+exactly the users who most needed it.
+
+Deliberately still English: `/admin/_design` (internal component showcase, not
+product copy), literal code inside `<pre>`, and five example values that are data
+rather than prose.
+
+### Changed
+- `.gitignore` names `/.codebase-memory/` instead of the long-retired
+  `/.codegraph/`.
+
 ## v1.58.2 — 2026-08-04
 
 ### Fixed — k3s chart: a hostNetwork ingress controller was black-holed (issue #8)

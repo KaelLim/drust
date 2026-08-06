@@ -31,13 +31,19 @@ per-file index is in [`docs/architecture.md`](docs/architecture.md)
 ```bash
 cargo build --release
 sudo systemctl restart drust
-curl -sI http://127.0.0.1:47826/health | grep -i x-drust-version
+curl -sI http://127.0.0.1:47826/health | grep -i x-drust
 ```
 
 `/health` returns `ok` from the **old** binary too, and the version string is baked in at
 compile time — so a build without a restart, or a restart without a build, both look
 healthy while serving stale code. The version header is the only honest deploy check
 (`DRUST_HIDE_VERSION=1` omits it).
+
+Grep `x-drust`, not `x-drust-version`: a second header, **`x-drust-boot-degraded: <n>`**,
+appears only when best-effort boot maintenance missed on some tenant (STRICT rebuild held
+a table back, egress backfill failed). Those tenants serve normally and the work retries
+next boot, so it is not an outage — but nothing else surfaces it, and that is how one
+tenant's STRICT rebuild failed on 18 consecutive boots unnoticed. Absent means clean.
 
 Building needs `clang` + `libclang`: the rusqlite `preupdate_hook` feature forces
 `libsqlite3-sys` into buildtime bindgen. A missing libclang fails with a misleading

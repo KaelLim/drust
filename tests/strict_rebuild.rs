@@ -206,7 +206,21 @@ fn type_violating_value_holds_one_table_back_without_touching_its_rows() {
     drop(c);
 
     // Ok, not Err: one bad table must not abort the pass for the whole tenant.
-    drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-badtype").unwrap();
+    // But Ok must still CARRY the miss — for two months it did not, so the
+    // caller's `if let Err(..)` never fired and the failure lived only in a log
+    // line nobody read.
+    let held_back = drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-badtype").unwrap();
+    assert_eq!(
+        held_back.len(),
+        1,
+        "the held-back table must come back as a value, not just a log line"
+    );
+    assert_eq!(held_back[0].0, "uploads");
+    assert!(
+        held_back[0].1.contains("cannot store TEXT value"),
+        "the reported error must name the actual cause, got: {}",
+        held_back[0].1
+    );
 
     let c = Connection::open(dir.path().join("tenants/t-badtype/data.sqlite")).unwrap();
     let strict = |t: &str| -> i64 {
@@ -246,8 +260,15 @@ fn type_violating_value_holds_one_table_back_without_touching_its_rows() {
         "held-back table keeps every row with its value untouched"
     );
 
-    // Idempotent: re-running must not accumulate debris from the failed attempt.
-    drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-badtype").unwrap();
+    // Idempotent: re-running must not accumulate debris from the failed attempt,
+    // and must keep reporting the same miss rather than going quiet on retry.
+    let again = drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-badtype").unwrap();
+    assert_eq!(
+        again.len(),
+        1,
+        "a retried miss must stay reported; going quiet on the second boot is how \
+         this became invisible in the first place"
+    );
     let leftovers: i64 = c
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE name LIKE '_system_strict_tmp_%'",
@@ -256,6 +277,35 @@ fn type_violating_value_holds_one_table_back_without_touching_its_rows() {
         )
         .unwrap();
     assert_eq!(leftovers, 0, "no temp table survives a rolled-back rebuild");
+}
+
+/// A clean tenant must report NOTHING. The header this feeds is absent when the
+/// count is zero, so a false positive here would make every healthy boot look
+/// degraded and train the operator to ignore the signal.
+#[test]
+fn a_clean_tenant_holds_nothing_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("tenants").join("t-clean");
+    std::fs::create_dir_all(&p).unwrap();
+    let c = Connection::open(p.join("data.sqlite")).unwrap();
+    c.execute_batch(
+        r#"CREATE TABLE "notes" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "body" TEXT);
+           INSERT INTO "notes"(body) VALUES ('hello');"#,
+    )
+    .unwrap();
+    drop(c);
+
+    let first = drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-clean").unwrap();
+    assert!(first.is_empty(), "a successful rebuild reports no misses");
+    // Second pass takes the already-STRICT skip branch — also silent.
+    let second = drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-clean").unwrap();
+    assert!(second.is_empty(), "the idempotent no-op reports no misses");
+    // And a tenant with no database at all is not a miss either.
+    let missing = drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-absent").unwrap();
+    assert!(
+        missing.is_empty(),
+        "an absent tenant db is not a degradation"
+    );
 }
 
 /// Regression: a tenant collection literally named `<x>__strict_tmp` must NOT

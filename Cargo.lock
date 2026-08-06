@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "drust"
-version = "1.58.2"
+version = "1.58.3"
 dependencies = [
  "anyhow",
  "argon2",

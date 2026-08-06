@@ -483,11 +483,23 @@ fn make_strict_ddl(original_sql: &str, tmp: &str) -> Option<String> {
 /// and is logged, others continue. MUST run before any pool opens (it uses a
 /// dedicated bare `Connection` with `foreign_keys=OFF`, bypassing the per-tenant
 /// writer mutex — only safe at boot, before any pool exists).
-pub fn strict_rebuild_tenant(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> {
+///
+/// Returns the tables that were **held back**, as `(table, error)`. `Err` is
+/// reserved for a failure to even examine the database. That distinction is the
+/// whole point of the return type: a per-table failure keeps this function on
+/// its happy path — correctly, since the tenant still serves — so for two months
+/// the caller's `if let Err(..)` never fired while one table failed its rebuild
+/// on all 18 boots in the window. Held-back tables have to travel back to the
+/// caller as a value, or they are invisible outside the log.
+pub fn strict_rebuild_tenant(
+    tenants_dir: &Path,
+    tid: &str,
+) -> rusqlite::Result<Vec<(String, String)>> {
     let path = tenants_dir.join("tenants").join(tid).join("data.sqlite");
     if !path.exists() {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let mut held_back = Vec::new();
     let conn = Connection::open(&path)?;
     // Must be OUTSIDE any transaction; bare connection defaults foreign_keys=OFF
     // but set it explicitly so DROP of an FK-referenced table is permitted.
@@ -519,9 +531,10 @@ pub fn strict_rebuild_tenant(tenants_dir: &Path, tid: &str) -> rusqlite::Result<
         if let Err(e) = rebuild_one_table_strict(&conn, &name) {
             tracing::error!(tenant = %tid, table = %name, error = ?e, "STRICT rebuild of table failed; left original intact");
             // continue with other tables — per-table tx already rolled back.
+            held_back.push((name, e.to_string()));
         }
     }
-    Ok(())
+    Ok(held_back)
 }
 
 /// Per-table rebuild inside one transaction. On any error the tx rolls back
@@ -617,6 +630,17 @@ pub struct MigrationReport {
     pub meta_done: bool,
     pub tenants_ok: Vec<String>,
     pub tenants_failed: Vec<(String, String)>,
+    /// Best-effort boot work that did NOT succeed on a tenant that is otherwise
+    /// serving normally: `(tenant_id, job, error)`.
+    ///
+    /// Deliberately separate from `tenants_failed`, which gates the 503 path and
+    /// must keep meaning strictly "additive migration failed". These jobs are
+    /// retried every boot and never block serving — which is exactly how one of
+    /// them stayed broken for two months: `strict_rebuild_tenant` logged an ERROR
+    /// on every single boot (18 of them) and nothing aggregated it, so it was
+    /// found by accident rather than by anyone looking. Collecting them here is
+    /// what lets `/health` advertise the count; the jobs' behaviour is unchanged.
+    pub degraded: Vec<(String, &'static str, String)>,
 }
 
 pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Result<MigrationReport> {
@@ -1003,20 +1027,40 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         // is logged, NOT added to tenants_failed (which gates the 503 path).
         if let Err(e) = backfill_egress_allowlist(meta, tenants_root, &tid) {
             tracing::error!(tenant = %tid, error = ?e, "egress allowlist backfill failed (tenant still serves; retries next boot)");
+            report
+                .degraded
+                .push((tid.clone(), "egress_backfill", e.to_string()));
         }
         // v1.43 — boot-time STRICT rebuild of pre-STRICT tenant collections.
         // Runs AFTER migrate_tenant_db, on a dedicated bare connection (the
         // additive migration above already committed + closed its own conn).
         // Idempotent: tables already STRICT are skipped.
-        if let Err(e) = strict_rebuild_tenant(tenants_root, &tid) {
-            // The additive migration already SUCCEEDED (tid is in tenants_ok and
-            // the tenant serves normally). A STRICT-rebuild failure is a
-            // best-effort maintenance miss retried next boot, NOT a
-            // serving-blocking migration failure — so it is logged but NOT added
-            // to tenants_failed, which gates the 503 path and must mean strictly
-            // "additive migration failed" (else a tenant would be double-counted
-            // in both tenants_ok and tenants_failed and wrongly flagged for 503).
-            tracing::error!(tenant = %tid, error = ?e, "STRICT rebuild pass failed (tenant still serves; retries next boot)");
+        // The additive migration already SUCCEEDED (tid is in tenants_ok and the
+        // tenant serves normally). A STRICT-rebuild miss is best-effort
+        // maintenance retried next boot, NOT a serving-blocking migration
+        // failure — so neither arm below touches tenants_failed, which gates the
+        // 503 path and must keep meaning strictly "additive migration failed"
+        // (else a tenant lands in both tenants_ok and tenants_failed and is
+        // wrongly flagged for 503).
+        match strict_rebuild_tenant(tenants_root, &tid) {
+            // Ok does NOT mean nothing went wrong: a per-table failure keeps the
+            // pass on its happy path. This is the arm that was missing, and it is
+            // the one #926 lived in for 18 consecutive boots.
+            Ok(held_back) => {
+                for (table, err) in held_back {
+                    report.degraded.push((
+                        tid.clone(),
+                        "strict_rebuild",
+                        format!("table {table}: {err}"),
+                    ));
+                }
+            }
+            Err(e) => {
+                tracing::error!(tenant = %tid, error = ?e, "STRICT rebuild pass failed (tenant still serves; retries next boot)");
+                report
+                    .degraded
+                    .push((tid.clone(), "strict_rebuild", e.to_string()));
+            }
         }
     }
     Ok(report)
