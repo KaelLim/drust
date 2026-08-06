@@ -50,6 +50,16 @@ jobs:
       - name: cargo audit
         run: cargo audit
 
+      # The retention pass in deploy/drust-backup.sh is the only code in the repo
+      # that DELETES production backup archives, and each archive carries every
+      # tenant's service key and admin PAT in plaintext. It shipped its first
+      # release with zero coverage behind a comment claiming a fixture test
+      # existed; two real defects (an archive-counting daily tier, and a run
+      # deleting its own output) went out under that claim. Pure bash + coreutils,
+      # so it costs seconds.
+      - name: backup retention fixtures
+        run: bash deploy/tests/backup_retention_test.sh
+
   # The chart had zero CI coverage: `render_test.sh` only ever ran when someone
   # remembered to. That is how appVersion sat at 1.49.4 for nine releases while
   # values.yaml carried the real (also stale) image tag. Offline — `helm

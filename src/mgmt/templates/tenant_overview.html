@@ -43,7 +43,7 @@
           </div>
           <div class="stat">
             <div class="label">{{ t.s("tenant_overview.stat.webhooks_label") }}</div>
-            <div class="val">{{ webhook_active_count }}{% if webhook_total_count > webhook_active_count %} <span class="unit">/ {{ webhook_total_count }} total</span>{% endif %}</div>
+            <div class="val">{{ webhook_active_count }}{% if webhook_total_count > webhook_active_count %} <span class="unit">{{ t.fmt1("tenant_overview.stat.webhook_total_suffix", "n", webhook_total_count) }}</span>{% endif %}</div>
             <div class="meta">{{ t.s("tenant_overview.stat.webhooks_meta") }}</div>
           </div>
           <div class="stat">
@@ -106,7 +106,7 @@
             <div class="card-head">
               <div>
                 <div class="card-title">{{ t.s("collection_sidebar.section.collections") }}</div>
-                <div class="card-sub">{{ collection_count }} tables · click to open the editor</div>
+                <div class="card-sub">{{ t.fmt1("tenant_overview.collections.card_sub", "n", collection_count) }}</div>
               </div>
               <div class="card-head-actions"><a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections">{{ t.s("common.card.view_all") }}</a></div>
             </div>
@@ -117,7 +117,7 @@
                  style="border-bottom:1px solid var(--border-strong);padding:11px 18px;border-radius:0;">
                 <span class="dot"></span>
                 <span>{{ c.name }}</span>
-                <span class="count">{{ c.row_count }} rows</span>
+                <span class="count">{{ t.fmt1("tenant_overview.collections.row_count", "n", c.row_count) }}</span>
               </a>
               {% endfor %}
             </div>

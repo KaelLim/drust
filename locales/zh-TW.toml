@@ -120,6 +120,8 @@ title_error = "錯誤"
 [common.pager]
 next = "下一頁 →"
 page_fmt = "第 {cur} / {total} 頁"
+page_of = "第 <b>{page}</b> / {pages} 頁"
+page_of_total = "第 <b>{page}</b> / {pages} 頁 · 共 <b>{total}</b> 筆"
 prev = "← 上一頁"
 
 [common.pill]
@@ -436,6 +438,7 @@ title = "執行 EXPLAIN QUERY PLAN"
 running = "執行中…"
 [collection_rows.indexes]
 add_field_btn = "+ 新增欄位"
+card_sub = "已定義 {n} 個 · 自動命名為 idx_&lt;coll&gt;_&lt;f1&gt;_&lt;f2&gt;…"
 col_description = "描述"
 col_fields = "欄位"
 col_name = "名稱"
@@ -540,7 +543,7 @@ title = "外送 webhook 訂閱"
 
 [collections.empty]
 body = "當你的客戶端寫入第一筆記錄後，資料表會自動出現在此處。"
-hint = "透過 REST <code>/v1/records</code> 端點，或該租戶專屬的 MCP server 寫入（需 service key）。"
+hint = "透過 REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> 端點，或該租戶專屬的 MCP server 寫入（需 service key）。"
 title = "此資料庫沒有任何資料表"
 
 [collections.head]
@@ -945,6 +948,7 @@ col_size = "大小"
 col_type = "類型"
 col_uploaded = "上傳時間"
 col_visibility = "可見性"
+row_count = "· {n} 列"
 
 [tenant_files_admin.unconfigured]
 body = "在 drust 的 <code>.env</code> 設定 <code>GARAGE_S3_ENDPOINT</code> 後重啟。"
@@ -952,17 +956,21 @@ title = "尚未設定儲存空間"
 
 [tenant_files_admin.upload]
 browse = "瀏覽…"
+card_head_meta = "上限 {mb} MB · admin → tenant-{tid}-*"
 card_title = "上傳"
 disp_attachment = "附件"
 disp_inline = "內嵌"
 disposition_label = "處置方式"
 dropzone_prompt = "將檔案拖放至此"
+exceeds = "超過 {max} MB 上限"
 no_file = "— 尚未選擇檔案 —"
 uploading = "上傳中…"
 vis_private = "私人"
 vis_public = "公開"
 failed = "上傳失敗（{status}）：{message}"
 network_error = "網路錯誤：{message}"
+ready = "就緒 · 按下上傳 ↵"
+too_big_hint = "請改選較小的檔案（上限 {max} MB）"
 
 [tenant_functions]
 active_off = "停用"
@@ -1076,6 +1084,7 @@ rpcs_meta = "具名 SELECT 函式"
 storage_meta = "磁碟上的 data.sqlite"
 total_rows_label = "總列數"
 total_rows_meta = "橫跨所有資料表"
+webhook_total_suffix = "/ 共 {n} 個"
 webhooks_label = "Webhook"
 webhooks_meta = "啟用中的訂閱"
 
@@ -1141,6 +1150,7 @@ meta = "具名函式"
 
 [tenant_rpc_form.actions]
 back = "← 返回 RPC 列表"
+create = "建立"
 
 [tenant_rpc_form.confirm_anon]
 body = "任何呼叫者（無 service key）都可呼叫此 RPC。要繼續嗎？"
@@ -1180,6 +1190,7 @@ heading = "查詢計畫（EXPLAIN QUERY PLAN）"
 title = "drust 管理 — {tenant_name} / _rpc / {name} / 測試"
 
 [tenant_rpc_test.params]
+declared = "· 已宣告 {n} 個"
 empty = "無參數 — 按下「執行」以執行。"
 heading = "參數"
 
@@ -1392,6 +1403,7 @@ total = "共 {n} 個租戶"
 # REVIEW (low confidence): contains template var {pct}, verify wording
 banner_body = "剩餘空間低於 20% 時，Garage 物件上傳會被擋下。請清出 <code>/var/lib/garage</code> 的空間，或擴充磁碟。"
 banner_title = "磁碟剩餘 {pct}% — 上傳已暫停"
+total_meta = "／共 {gb} GB"
 [tenants_list.delete]
 body = "這會永久刪除該租戶的資料庫、tokens 與任何已存檔案。輸入名稱以確認。"
 confirm = "刪除"
@@ -1411,6 +1423,8 @@ disk_free = "磁碟剩餘"
 gb_used = "GB · 已使用"
 # REVIEW (low confidence): contains template var {n}, verify wording
 healthy_count = "{n} 個正常"
+refresh_every = "每 {min} 分鐘更新"
+stats_sampled = "統計取樣於 {age}"
 storage = "儲存空間"
 storage_healthy = "正常"
 storage_low = "偏低"
@@ -1431,6 +1445,12 @@ body = "在下方新增一筆，開始接收記錄 CRUD 通知。"
 title = "尚未設定 webhook"
 
 [tenant_webhooks_admin.error]
+collection_empty = "collection 不可留空。"
+egress_denied = "目標 origin 不在本租戶的 egress 白名單內（system=webhook）。請先到設定頁加入。"
+encode_events = "events 清單編碼失敗。"
+insert_failed = "寫入失敗：{error}"
+invalid_events = "events 必須是 created、updated、deleted 的非空子集合。"
+invalid_url = "端點 URL 不可接受。必須是 https://、可解析到公開位址，且不得指向私有、loopback 或 link-local IP。"
 save_failed = "儲存失敗"
 
 [tenant_webhooks_admin.form]
@@ -1736,3 +1756,23 @@ toggle_label = "SSE 廣播"
 
 [tenant_api_keys.register]
 card_sub = "啟用後，未經認證的使用者可以 <code>POST /t/{tenant_id}/auth/register</code>"
+
+[collection_rows.definition]
+rows_suffix = "列"
+
+[tenant_overview.collections]
+card_sub = "{n} 張表 · 點擊開啟編輯器"
+row_count = "{n} 列"
+
+[tenant_rpc.pager]
+summary = "共 {total} 個 · 第 {page} / {pages} 頁"
+
+[tenant_rpc.table]
+last_called = "最後 {ts}"
+
+[tenant_rpc_form.head]
+subtitle_edit = "編輯已儲存的 SELECT function。僅 service 可編寫，內容存於 <code>_system_rpc</code>。"
+subtitle_new = "建立一個可由 REST 與 MCP 呼叫的 SELECT function。僅 service 可編寫；可透過 <code>allow_anon_callers</code> 旗標開放 anon 呼叫。"
+
+[tenant_webhooks_admin.table]
+last_fail = "最後失敗 {ts}"

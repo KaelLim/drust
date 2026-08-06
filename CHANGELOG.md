@@ -1,3 +1,120 @@
+## v1.58.4 — 2026-08-06
+
+Everything here was found by adversarially auditing v1.58.3 **after** it shipped —
+two independent engines, one of which caught defects the other missed, and both of
+which caught defects introduced by the release they were auditing. Nothing in this
+entry was reported by a user.
+
+### Fixed — backup retention deleted recovery points, including its own output
+
+Two independent data-loss defects in `deploy/drust-backup.sh`, both in code that
+shipped one release earlier.
+
+**The daily tier counted archives, not days.** Identical behaviour while the timer
+is the only writer — one run per day — and it collapses the moment it is not. With
+eight runs in one day, all seven daily slots go to that single day; the day then
+claims its ISO week, so every other day in the same week falls through both tiers
+and is deleted. Reproduced: eight archives today plus one per day for the preceding
+week left today plus four weeklies, having deleted the three days before it. A
+manual snapshot taken before a risky operation is enough to trigger it — precisely
+when the recovery points matter most.
+
+**A run could delete the archive it had just written, and exit 0.** Reverse-name
+order is byte order, and `.` (0x2E) sorts above `-` (0x2D), so a stray
+`drust-YYYY-MM-DD.tar.zst` — an operator copy, a rename, a restore artifact — sorts
+ABOVE the canonical `drust-YYYY-MM-DD-HHMMSS.tar.zst`, claims the day, and pushes
+the real archive into the weekly tier where its week is already taken. The timer
+VACUUMs every tenant DB, writes the tar, deletes it, and systemd records success.
+
+The daily tier now counts distinct days (newest archive per day wins), and the
+archive from the current run is kept unconditionally before any tiering. Also
+fixed: a non-numeric `DRUST_BACKUP_KEEP_DAILY` made `(( daily < KEEP_DAILY ))`
+permanently false — the daily tier switched off and the pass deleted nearly
+everything while exiting 0 — so the knobs are now validated and a bad value stops
+the run; and a future-dated archive (one NTP jump forward) used to sort first and
+win a daily slot on every run forever, so it is now kept without consuming one.
+
+**`deploy/tests/backup_retention_test.sh`** — 36 assertions, wired into `make
+test-all` and CI. The script previously carried a comment claiming a fixture test
+existed when the fixtures had only ever been run by hand; a comment asserting
+coverage that does not exist is worse than no comment, because it stops the next
+reader from writing one. Every fix above was confirmed to turn the suite red when
+reverted.
+
+### Fixed — the STRICT rebuild would drop a virtual table and its shadows
+
+`sqlite_master.type` is `'table'` for an fts5 virtual table AND for every one of its
+shadow tables, and the shadows are named after the virtual table (`search_data`,
+`search_idx`, …) with no `_system_` prefix — contrary to the scan's own comment. So
+the name filter let all six through. Most fail loudly (STRICT demands a datatype per
+column, which shadow DDL omits), but `search_data(id INTEGER PRIMARY KEY, block
+BLOB)` is fully typed and rebuilt "successfully", dropping a live FTS index's
+storage out from under it. Scope is now `pragma_table_list.type`, and out-of-scope
+tables are skipped silently rather than reported — a tenant with an FTS index would
+otherwise keep `x-drust-boot-degraded` permanently non-zero and teach the operator
+to ignore it.
+
+drust never creates a virtual table and both authorizers deny `CreateVtable`, so the
+only route is an imported or restored database — which is exactly how the #926 data
+arrived. Latent since v1.43; zero affected tenants on the reference host.
+
+### Fixed — `DRUST_SHUTDOWN_GRACE_SECS` could reinstate the bug it was added for
+
+The knob rejected `0` but accepted any `u64`. Setting it to 60 makes drust wait 60s
+before reaching `drain_writer()` while every shipped supervisor kills at 30 — SIGKILL
+lands first and the audit buffer is lost, which is precisely the failure v1.58.3
+removed, wearing a config value. The only ceiling was a `const` assert, which by
+construction cannot see an env var. Values above 25s are now clamped with a loud
+`ERROR`, and two further const asserts pin the ceiling itself under the supervisor
+deadlines. (This also closes the k3s variant: the in-process grace can no longer
+exceed Kubernetes' 30s default, so the chart needs no matching knob.)
+
+### Fixed — one more silent branch in the STRICT rebuild
+
+`make_strict_ddl` returning `None` left `rebuild_one_table_strict` on its `Ok` path,
+so the table stayed non-STRICT, re-warned on every boot, and never reached
+`degraded`. It now returns `Ok(Some(reason))`. Currently unreachable in practice —
+SQLite stores an expanded, parenthesised DDL even for `CREATE TABLE … AS SELECT` —
+but closing one silent branch and leaving its neighbour open is not closing it.
+
+### Fixed — the #926 fix itself had no test on the hop that mattered
+
+Every test called `strict_rebuild_tenant` directly; nothing asserted that
+`run_migrations` forwards held-back tables into `MigrationReport.degraded`.
+Reverting the caller to `if let Err(e) = strict_rebuild_tenant(..)` — its exact
+shape for the two months the bug lived — still compiles and left the whole suite
+green. Both review engines flagged the same hole independently.
+`run_migrations_forwards_held_back_tables_into_degraded` now covers it, and was
+confirmed to fail against the reverted caller.
+
+### Fixed — i18n round 3: the strings round 2's scan could not see
+
+Round 2 claimed completeness. It was wrong, and the reason is mechanical: the scan
+matched text nodes with `>([^<>{}]+)<`, and that character class excludes `{` and
+`}` — so every text node containing an interpolation was invisible to it. That is
+exactly the set that survived: pagers, counters and stat suffixes across eight
+templates, plus the whole `tenant_rpc_form` page subtitle. Same failure shape as a
+build gate reporting green while not looking.
+
+Nineteen sites, plus three defects of a different kind:
+
+- **JavaScript overwrote translated labels with hardcoded English** on the two pages
+  the previous round had just edited. A zh-TW admin picking then clearing a file saw
+  the dropzone label flip permanently to English; the copy-id button flashed
+  "copied" instead of 「已複製 ✓」, a key that already existed.
+- **`collections.empty.hint` told operators to write to `/v1/records`**, an endpoint
+  drust has never served. The wrong path was pre-existing in the template; round 2
+  faithfully copied it into two locales. Now `/t/{tenant_id}/records/&lt;collection&gt;`.
+- **Webhook form error banners were hardcoded English under a translated title.**
+  Now keyed off the validator's stable error CODE — the message half stays English
+  because it is part of the REST/MCP contract that clients match on — with an
+  unknown code logging a warning rather than falling back silently.
+
+`fmt2_html` was added: the two-argument pager string carries `<b>` markup, and both
+alternatives were worse than a new function (plain `fmt2` + `|safe` is the shape
+gate 5 exists to reject; dropping the markup would change the rendering to satisfy a
+missing API). Bundle 1074 → 1105 keys, `en` and `zh-TW` identical, 0 orphans.
+
 ## v1.58.3 — 2026-08-06
 
 ### Fixed — SIGTERM was ignored whenever a long-lived stream was open

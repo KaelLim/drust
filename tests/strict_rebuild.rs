@@ -279,6 +279,101 @@ fn type_violating_value_holds_one_table_back_without_touching_its_rows() {
     assert_eq!(leftovers, 0, "no temp table survives a rolled-back rebuild");
 }
 
+/// An FTS5 virtual table and its shadow tables must be left completely alone.
+///
+/// `sqlite_master.type` is `'table'` for a virtual table AND for every one of its
+/// shadow tables, and the shadows are named after the virtual table
+/// (`search_data`, `search_idx`, ...) — NOT with any `_system_` prefix, contrary
+/// to what the scan's own comment claimed. So the name-prefix filter let all six
+/// through: the rebuild would DROP and recreate them.
+///
+/// Most fail loudly (STRICT demands a datatype per column, which fts5 shadow DDL
+/// omits, and `search_idx` would additionally lose its `WITHOUT ROWID` clause —
+/// that clause sits after the last `)` that `make_strict_ddl` slices on). But
+/// `search_data(id INTEGER PRIMARY KEY, block BLOB)` is fully typed and would
+/// rebuild "successfully", dropping a live FTS index's storage out from under it.
+///
+/// drust never creates a virtual table itself and both authorizers deny
+/// `CreateVtable`, so the only way one arrives is an imported or restored
+/// database — which is exactly how the #926 data arrived. Scope by
+/// `pragma_table_list.type`, not by name.
+#[test]
+fn a_virtual_table_and_its_shadows_are_out_of_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("tenants").join("t-fts");
+    std::fs::create_dir_all(&p).unwrap();
+    let c = Connection::open(p.join("data.sqlite")).unwrap();
+    c.execute_batch(
+        r#"
+        CREATE TABLE "notes" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "body" TEXT);
+        INSERT INTO "notes"(body) VALUES ('hello'),('world');
+        CREATE VIRTUAL TABLE "search" USING fts5(body);
+        INSERT INTO "search"(body) VALUES ('hello'),('world');
+    "#,
+    )
+    .unwrap();
+    drop(c);
+
+    let held = drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-fts").unwrap();
+    assert!(
+        held.is_empty(),
+        "out-of-scope tables are skipped silently, not reported as degraded — \
+         reporting them would make x-drust-boot-degraded permanently non-zero on \
+         any tenant with an FTS index, training the operator to ignore it. got {held:?}"
+    );
+
+    let c = Connection::open(dir.path().join("tenants/t-fts/data.sqlite")).unwrap();
+    // The ordinary collection still migrates.
+    let strict: i64 = c
+        .query_row(
+            "SELECT strict FROM pragma_table_list WHERE name='notes'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(strict, 1, "the real collection must still go STRICT");
+
+    // The virtual table is intact and still a virtual table.
+    let kind: String = c
+        .query_row(
+            "SELECT type FROM pragma_table_list WHERE name='search'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        kind, "virtual",
+        "the virtual table must not become a plain one"
+    );
+
+    // And it still functions — the shadow storage was not rebuilt underneath it.
+    let hits: i64 = c
+        .query_row(
+            "SELECT count(*) FROM search WHERE search MATCH 'hello'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 1, "the FTS index must still answer a MATCH query");
+
+    // Every shadow table is untouched (still non-STRICT, still present).
+    for shadow in [
+        "search_data",
+        "search_idx",
+        "search_content",
+        "search_config",
+    ] {
+        let n: i64 = c
+            .query_row(
+                "SELECT count(*) FROM pragma_table_list WHERE name=?1 AND strict=0",
+                [shadow],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "{shadow} must be present and untouched");
+    }
+}
+
 /// A clean tenant must report NOTHING. The header this feeds is absent when the
 /// count is zero, so a false positive here would make every healthy boot look
 /// degraded and train the operator to ignore the signal.

@@ -46,7 +46,7 @@
             <option value="{{ opt.value }}"{% if opt.selected %} selected{% endif %}>{{ opt.value }}</option>
             {% endfor %}
           </select>
-          <span class="right mono">{{ total_rpcs }} total · page {{ page }} / {{ total_pages }}</span>
+          <span class="right mono">{{ t.fmt3("tenant_rpc.pager.summary", "total", total_rpcs, "page", page, "pages", total_pages) }}</span>
         </form>
 
         <div class="rpc-list">
@@ -74,7 +74,7 @@
             <div class="rpc-meta">
               <b>{{ r.anon_calls }}</b> {{ t.s("tenant_rpc.row_meta.anon") }}<br>
               <b>{{ r.service_calls }}</b> {{ t.s("tenant_rpc.row_meta.service") }}
-              {% if let Some(ts) = r.last_called_at %}<br><span style="color:var(--muted-2);">last {{ ts }}</span>{% endif %}
+              {% if let Some(ts) = r.last_called_at %}<br><span style="color:var(--muted-2);">{{ t.fmt1("tenant_rpc.table.last_called", "ts", ts) }}</span>{% endif %}
             </div>
           </div>
           {% endfor %}
@@ -82,7 +82,7 @@
 
         <div class="card" style="margin-top:14px;">
           <div class="card-foot">
-            <span class="mono">page {{ page }} of {{ total_pages }} · {{ total_rpcs }} total</span>
+            <span class="mono">{{ t.fmt3_html("common.pager.page_of_total", "page", page, "pages", total_pages, "total", total_rpcs)|safe }}</span>
             <span class="right" style="display:inline-flex;gap:6px;">
               {% if let Some(url) = prev_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("common.pager.prev") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.prev") }}</span>{% endif %}
               {% if let Some(url) = next_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("common.pager.next") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.next") }}</span>{% endif %}

@@ -506,7 +506,17 @@ pub fn strict_rebuild_tenant(
     conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
 
     // User collections only: exclude sqlite_* and _system_* (same predicate as
-    // codegen/ir.rs build_collections). FTS shadows are _system_fts_* → excluded.
+    // codegen/ir.rs build_collections).
+    //
+    // The name filter is NOT sufficient on its own, and the comment that used to
+    // sit here claiming "FTS shadows are _system_fts_* → excluded" was simply
+    // wrong: `sqlite_master.type` is `'table'` for a virtual table AND for each of
+    // its shadow tables, and the shadows are named after the virtual table
+    // (`search_data`, `search_idx`, …) with no `_system_` prefix at all. So an
+    // fts5 index arriving in an imported or restored database — the same route the
+    // #926 data took — put all six through this loop, where the rebuild would DROP
+    // and recreate them. Type is the real predicate; see the pragma_table_list
+    // gate below.
     let tables: Vec<String> = {
         let mut stmt = conn.prepare(
             "SELECT name FROM sqlite_master \
@@ -517,21 +527,36 @@ pub fn strict_rebuild_tenant(
     };
 
     for name in tables {
-        // Idempotency gate: skip tables already STRICT.
-        let is_strict: i64 = conn
+        // One query for both gates. `pragma_table_list.type` is 'table' | 'view' |
+        // 'shadow' | 'virtual'; anything but 'table' is out of scope and is skipped
+        // SILENTLY — not recorded as held back, because a tenant with an FTS index
+        // would then keep x-drust-boot-degraded permanently non-zero and teach the
+        // operator to ignore the one signal this release added.
+        let (kind, is_strict): (String, i64) = conn
             .query_row(
-                "SELECT strict FROM pragma_table_list WHERE name=?1",
+                "SELECT type, strict FROM pragma_table_list WHERE name=?1",
                 [&name],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .unwrap_or(0);
+            .unwrap_or_else(|_| ("table".to_string(), 0));
+        if kind != "table" {
+            tracing::debug!(tenant = %tid, table = %name, kind = %kind, "not an ordinary table; out of STRICT-rebuild scope");
+            continue;
+        }
+        // Idempotency gate: skip tables already STRICT.
         if is_strict == 1 {
             continue;
         }
-        if let Err(e) = rebuild_one_table_strict(&conn, &name) {
-            tracing::error!(tenant = %tid, table = %name, error = ?e, "STRICT rebuild of table failed; left original intact");
-            // continue with other tables — per-table tx already rolled back.
-            held_back.push((name, e.to_string()));
+        match rebuild_one_table_strict(&conn, &name) {
+            Ok(None) => {}
+            // Skipped, not failed — no error to log here, the skip site already
+            // warned. It still counts as held back: the table stays non-STRICT.
+            Ok(Some(reason)) => held_back.push((name, reason)),
+            Err(e) => {
+                tracing::error!(tenant = %tid, table = %name, error = ?e, "STRICT rebuild of table failed; left original intact");
+                // continue with other tables — per-table tx already rolled back.
+                held_back.push((name, e.to_string()));
+            }
         }
     }
     Ok(held_back)
@@ -539,7 +564,17 @@ pub fn strict_rebuild_tenant(
 
 /// Per-table rebuild inside one transaction. On any error the tx rolls back
 /// (DROP-after-copy ordering means the original always survives a failure).
-fn rebuild_one_table_strict(conn: &Connection, name: &str) -> rusqlite::Result<()> {
+///
+/// `Ok(None)` — rebuilt. `Ok(Some(reason))` — deliberately NOT rebuilt; the table
+/// stays non-STRICT and the caller must report it. `Err` — the attempt failed and
+/// rolled back.
+///
+/// The `Ok(Some(..))` arm exists because a skip is indistinguishable from a
+/// success to a caller that only inspects `Err`. Returning bare `Ok(())` from the
+/// unparseable-DDL branch left a table permanently non-STRICT, retried and warned
+/// about on every boot, and invisible to `MigrationReport.degraded` — the exact
+/// blind spot that report was added to close, still open one branch over.
+fn rebuild_one_table_strict(conn: &Connection, name: &str) -> rusqlite::Result<Option<String>> {
     let original_sql: String = conn.query_row(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
         [name],
@@ -557,7 +592,11 @@ fn rebuild_one_table_strict(conn: &Connection, name: &str) -> rusqlite::Result<(
         Some(s) => s,
         None => {
             tracing::warn!(table = %name, "unexpected CREATE TABLE shape; skipping STRICT rebuild");
-            return Ok(());
+            return Ok(Some(
+                "unexpected CREATE TABLE shape (no parenthesised column body); \
+                 cannot derive a STRICT form"
+                    .to_string(),
+            ));
         }
     };
 
@@ -622,7 +661,8 @@ fn rebuild_one_table_strict(conn: &Connection, name: &str) -> rusqlite::Result<(
             ));
         }
     }
-    tx.commit()
+    tx.commit()?;
+    Ok(None)
 }
 
 #[derive(Debug, Default)]
@@ -1956,6 +1996,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    /// The hop that #926 actually lived in, and the one every other test misses.
+    ///
+    /// `strict_rebuild_tenant`'s return value is pinned in
+    /// `tests/strict_rebuild.rs`, but nothing asserted that `run_migrations`
+    /// forwards it into `report.degraded`. That gap matters because reverting the
+    /// caller to `if let Err(e) = strict_rebuild_tenant(..)` — its exact shape for
+    /// the two months the bug lived — still COMPILES (the `Result<Vec<_>>` binds
+    /// fine) and leaves the whole suite green, because the leaf tests call the
+    /// function directly. Two independent reviewers flagged the same hole.
+    ///
+    /// Asserted here: a dirty tenant lands in `degraded`, does NOT land in
+    /// `tenants_failed` (which gates the 503 path and must keep meaning "additive
+    /// migration failed"), still lands in `tenants_ok`, and a clean tenant beside
+    /// it contributes nothing — a false positive would make the
+    /// `x-drust-boot-degraded` header permanently non-zero and worthless.
+    #[test]
+    fn run_migrations_forwards_held_back_tables_into_degraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        meta.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY); \
+             INSERT INTO tenants VALUES ('t-dirty'), ('t-clean'); \
+             CREATE TABLE admins (id INTEGER PRIMARY KEY, username TEXT, password_hash TEXT NOT NULL, email TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));",
+        )
+        .unwrap();
+
+        // The production shape: '' in a column declared INTEGER. Non-STRICT takes
+        // it (INTEGER is an affinity and '' does not convert), the STRICT copy
+        // rejects it, and the table is held back.
+        let dirty = dir.path().join("tenants").join("t-dirty");
+        std::fs::create_dir_all(&dirty).unwrap();
+        Connection::open(dirty.join("data.sqlite"))
+            .unwrap()
+            .execute_batch(
+                // `_system_collection_meta` must pre-exist or migrate_tenant_db
+                // fails and the loop `continue`s BEFORE the rebuild — the fixture
+                // would then pass/fail for a reason unrelated to what it tests.
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT); \
+                 CREATE TABLE uploads (id INTEGER PRIMARY KEY AUTOINCREMENT, sort_order INTEGER DEFAULT 0); \
+                 INSERT INTO uploads(sort_order) VALUES ('');",
+            )
+            .unwrap();
+
+        let clean = dir.path().join("tenants").join("t-clean");
+        std::fs::create_dir_all(&clean).unwrap();
+        Connection::open(clean.join("data.sqlite"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT); \
+                 CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT);",
+            )
+            .unwrap();
+
+        let report = run_migrations(&meta, dir.path()).unwrap();
+
+        let dirty_entries: Vec<_> = report
+            .degraded
+            .iter()
+            .filter(|(tid, _, _)| tid == "t-dirty")
+            .collect();
+        assert_eq!(
+            dirty_entries.len(),
+            1,
+            "the held-back table must reach report.degraded — this is the hop that \
+             was silent for 18 boots. got {:?}",
+            report.degraded
+        );
+        assert_eq!(dirty_entries[0].1, "strict_rebuild");
+        assert!(
+            dirty_entries[0].2.contains("uploads"),
+            "the entry must name the table so it is actionable, got {:?}",
+            dirty_entries[0].2
+        );
+
+        assert!(
+            !report.degraded.iter().any(|(tid, _, _)| tid == "t-clean"),
+            "a clean tenant must contribute nothing; a false positive here makes \
+             the header permanently non-zero and teaches the operator to ignore it"
+        );
+        assert!(
+            report.tenants_failed.is_empty(),
+            "a held-back table is NOT an additive-migration failure and must never \
+             reach tenants_failed, which gates the 503 path. got {:?}",
+            report.tenants_failed
+        );
+        assert!(
+            report.tenants_ok.contains(&"t-dirty".to_string()),
+            "the tenant still serves normally"
+        );
     }
 
     #[test]

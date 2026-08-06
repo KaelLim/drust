@@ -31,8 +31,14 @@ test: test-all
 test-lib:
 	cargo test --lib
 
-test-all:
+test-all: test-shell
 	cargo test
+
+# Fixture tests for the deploy scripts. Not Rust, so `cargo test` cannot see
+# them — and deploy/drust-backup.sh is the only code here that deletes
+# credential-bearing production archives, so it must not be the untested half.
+test-shell:
+	bash deploy/tests/backup_retention_test.sh
 
 groups:
 	@ls tests/*.rs | sed 's#tests/##; s/_.*//' | sort | uniq -c | sort -rn

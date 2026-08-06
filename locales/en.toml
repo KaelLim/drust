@@ -117,6 +117,8 @@ title_error = "Error"
 [common.pager]
 next = "next →"
 page_fmt = "Page {cur} of {total}"
+page_of = "page <b>{page}</b> / {pages}"
+page_of_total = "page <b>{page}</b> of {pages} · <b>{total}</b> total"
 prev = "← prev"
 
 [common.pill]
@@ -421,6 +423,7 @@ title = "Run EXPLAIN QUERY PLAN"
 running = "Running…"
 [collection_rows.indexes]
 add_field_btn = "+ add field"
+card_sub = "{n} defined · auto-named idx_&lt;coll&gt;_&lt;f1&gt;_&lt;f2&gt;…"
 col_description = "description"
 col_fields = "fields"
 col_name = "name"
@@ -525,7 +528,7 @@ title = "outbound webhook subscriptions"
 
 [collections.empty]
 body = "Once your client writes its first record, collections will appear here automatically."
-hint = "Write via the REST <code>/v1/records</code> endpoint or via the per-tenant MCP server (service key required)."
+hint = "Write via the REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> endpoint or via the per-tenant MCP server (service key required)."
 title = "This database has no tables"
 
 [collections.head]
@@ -927,6 +930,7 @@ col_size = "size"
 col_type = "type"
 col_uploaded = "uploaded"
 col_visibility = "visibility"
+row_count = "· {n} rows"
 
 [tenant_files_admin.unconfigured]
 body = "Set <code>GARAGE_S3_ENDPOINT</code> in drust's <code>.env</code> and restart."
@@ -934,17 +938,21 @@ title = "Storage not configured"
 
 [tenant_files_admin.upload]
 browse = "browse…"
+card_head_meta = "max {mb} MB · admin → tenant-{tid}-*"
 card_title = "Upload"
 disp_attachment = "attachment"
 disp_inline = "inline"
 disposition_label = "disposition"
 dropzone_prompt = "drag & drop a file here"
+exceeds = "exceeds {max} MB limit"
 no_file = "— no file chosen —"
 uploading = "uploading…"
 vis_private = "private"
 vis_public = "public"
 failed = "upload failed ({status}): {message}"
 network_error = "network error: {message}"
+ready = "ready · press Upload ↵"
+too_big_hint = "pick a smaller file (limit {max} MB)"
 
 [tenant_functions]
 active_off = "off"
@@ -1055,6 +1063,7 @@ rpcs_meta = "named SELECT functions"
 storage_meta = "data.sqlite on disk"
 total_rows_label = "Total rows"
 total_rows_meta = "across every collection"
+webhook_total_suffix = "/ {n} total"
 webhooks_label = "Webhooks"
 webhooks_meta = "active subscriptions"
 
@@ -1119,6 +1128,7 @@ meta = "named functions"
 
 [tenant_rpc_form.actions]
 back = "← back to rpc"
+create = "create"
 
 [tenant_rpc_form.confirm_anon]
 body = "Any caller (no service key) can invoke this RPC. Continue?"
@@ -1158,6 +1168,7 @@ heading = "EXPLAIN QUERY PLAN"
 title = "drust admin — {tenant_name} / _rpc / {name} / test"
 
 [tenant_rpc_test.params]
+declared = "· {n} declared"
 empty = "No parameters — press Run to execute."
 heading = "params"
 
@@ -1367,6 +1378,7 @@ total = "{n} tenants"
 [tenants_list.disk]
 banner_body = "Garage object uploads are blocked below 20% free space. Free up <code>/var/lib/garage</code> or scale the disk."
 banner_title = "Disk at {pct}% free — uploads paused"
+total_meta = "of {gb} GB total"
 [tenants_list.delete]
 body = "This permanently removes the tenant's database, tokens, and any stored files. Type the name to confirm."
 confirm = "Delete"
@@ -1385,6 +1397,8 @@ active = "Active"
 disk_free = "Disk free"
 gb_used = "GB · used"
 healthy_count = "{n} healthy"
+refresh_every = "refresh every {min} min"
+stats_sampled = "stats sampled {age}"
 storage = "Storage"
 storage_healthy = "healthy"
 storage_low = "low"
@@ -1405,6 +1419,12 @@ body = "Add one below to start receiving record-CRUD notifications."
 title = "No webhooks configured"
 
 [tenant_webhooks_admin.error]
+collection_empty = "Collection must not be empty."
+egress_denied = "The target origin is not on this tenant's egress allowlist (system=webhook). Add it on the Settings page first."
+encode_events = "Failed to encode the events list."
+insert_failed = "Insert failed: {error}"
+invalid_events = "Events must be a non-empty subset of created, updated, deleted."
+invalid_url = "The endpoint URL is not acceptable. It must be https://, resolve to a public address, and not point at a private, loopback or link-local IP."
 save_failed = "Save failed"
 
 [tenant_webhooks_admin.form]
@@ -1714,3 +1734,23 @@ toggle_label = "SSE broadcast"
 
 [tenant_api_keys.register]
 card_sub = "When enabled, unauthenticated users can <code>POST /t/{tenant_id}/auth/register</code>"
+
+[collection_rows.definition]
+rows_suffix = "rows"
+
+[tenant_overview.collections]
+card_sub = "{n} tables · click to open the editor"
+row_count = "{n} rows"
+
+[tenant_rpc.pager]
+summary = "{total} total · page {page} / {pages}"
+
+[tenant_rpc.table]
+last_called = "last {ts}"
+
+[tenant_rpc_form.head]
+subtitle_edit = "Edit a stored SELECT function. Service-only authoring; persisted in <code>_system_rpc</code>."
+subtitle_new = "Create a stored SELECT function callable by REST + MCP. Service-only authoring; optional anon access via the <code>allow_anon_callers</code> flag."
+
+[tenant_webhooks_admin.table]
+last_fail = "last fail {ts}"

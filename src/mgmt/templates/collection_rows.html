@@ -139,7 +139,7 @@
           <div class="card-head">
             <div>
               <div class="card-title">{{ t.s("collection_rows.indexes.title") }}</div>
-              <div class="card-sub">{{ indices.len() }} defined · auto-named idx_&lt;coll&gt;_&lt;f1&gt;_&lt;f2&gt;…</div>
+              <div class="card-sub">{{ t.fmt1_html("collection_rows.indexes.card_sub", "n", indices.len())|safe }}</div>
             </div>
           </div>
           <table class="data">
@@ -340,7 +340,7 @@
         <div style="padding:14px 18px;border-top:1px solid var(--border-strong);font:400 12px/1.4 var(--font-sans);color:var(--muted);">
           {{ fields.len() }} {{ t.s("collection_page.definition.fields_heading") }} ·
           {{ indices.len() }} {{ t.s("collection_page.definition.indexes_heading") }} ·
-          <span id="def-row-count">…</span> rows
+          <span id="def-row-count">…</span> {{ t.s("collection_rows.definition.rows_suffix") }}
         </div>
         </div>
 

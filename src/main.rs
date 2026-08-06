@@ -755,17 +755,54 @@ const _: () = assert!(
     SHUTDOWN_GRACE_DEFAULT_SECS < 30,
     "shutdown grace must leave room under the 30s supervisor deadlines"
 );
+const _: () = assert!(
+    SHUTDOWN_GRACE_MAX_SECS < 30,
+    "the clamp ceiling must itself stay under the 30s supervisor deadlines, or the \
+     clamp permits exactly the misconfiguration it exists to prevent"
+);
+const _: () = assert!(
+    SHUTDOWN_GRACE_DEFAULT_SECS <= SHUTDOWN_GRACE_MAX_SECS,
+    "a default above the ceiling would be clamped on every boot"
+);
+
+/// Hard ceiling on the configured drain window.
+///
+/// Every shipped supervisor kills at 30s (`deploy/drust.service` TimeoutStopSec,
+/// `docker-compose.yml` stop_grace_period, Kubernetes' default
+/// terminationGracePeriodSeconds). A drain longer than that does not extend the
+/// wait — it just guarantees SIGKILL lands first and `drain_writer()` never runs,
+/// which is the precise failure this mechanism exists to prevent. So the knob is
+/// clamped rather than trusted: a misconfiguration degrades to safe-and-loud
+/// instead of silently reinstating the bug it was written to fix.
+const SHUTDOWN_GRACE_MAX_SECS: u64 = 25;
 
 /// Pure half of the knob, so the parse rules are testable without an env var.
-/// A malformed or zero value falls back to the default rather than being taken
-/// literally: `0` would mean "never drain", quietly reinstating the abrupt-exit
-/// behaviour this whole mechanism exists to remove, and a typo should not be a
-/// silent behaviour change.
+///
+/// The knob's legitimate use is LOWERING the window for a tighter supervisor.
+/// Raising it past [`SHUTDOWN_GRACE_MAX_SECS`] is never correct with the shipped
+/// deploy files, so it is clamped. A malformed or zero value falls back to the
+/// default rather than being taken literally: `0` reads like "no delay" but means
+/// "cut every in-flight request instantly", which is the abrupt exit this
+/// mechanism removes, wearing a config value.
 fn shutdown_grace_from(raw: Option<&str>) -> std::time::Duration {
-    let secs = raw
+    let parsed = raw
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|s| *s > 0)
-        .unwrap_or(SHUTDOWN_GRACE_DEFAULT_SECS);
+        .filter(|s| *s > 0);
+    let secs = match parsed {
+        Some(s) if s > SHUTDOWN_GRACE_MAX_SECS => {
+            tracing::error!(
+                requested = s,
+                clamped_to = SHUTDOWN_GRACE_MAX_SECS,
+                "DRUST_SHUTDOWN_GRACE_SECS exceeds every supervisor's kill deadline (30s); \
+                 clamping. A longer drain cannot extend the wait — it only guarantees SIGKILL \
+                 before the audit flush. Raise TimeoutStopSec / stop_grace_period / \
+                 terminationGracePeriodSeconds first if you truly need a longer window."
+            );
+            SHUTDOWN_GRACE_MAX_SECS
+        }
+        Some(s) => s,
+        None => SHUTDOWN_GRACE_DEFAULT_SECS,
+    };
     std::time::Duration::from_secs(secs)
 }
 
@@ -846,6 +883,28 @@ mod shutdown_grace_tests {
             shutdown_grace_from(Some("0")).as_secs(),
             SHUTDOWN_GRACE_DEFAULT_SECS
         );
+    }
+
+    #[test]
+    fn a_value_above_every_supervisor_deadline_is_clamped() {
+        // Honouring 60 here would make drust wait 60s before reaching
+        // drain_writer(), while systemd/Compose/k8s all kill at 30 — SIGKILL
+        // lands first and the audit buffer is lost. That is the exact bug this
+        // mechanism replaced, reachable purely by setting the knob it introduced.
+        for raw in ["31", "60", "600", "18446744073709551615"] {
+            assert_eq!(
+                shutdown_grace_from(Some(raw)).as_secs(),
+                super::SHUTDOWN_GRACE_MAX_SECS,
+                "{raw:?} must clamp, not be honoured"
+            );
+        }
+    }
+
+    #[test]
+    fn lowering_the_window_is_still_allowed() {
+        // The knob's legitimate purpose: a tighter supervisor than ours.
+        assert_eq!(shutdown_grace_from(Some("3")).as_secs(), 3);
+        assert_eq!(shutdown_grace_from(Some("1")).as_secs(), 1);
     }
 
     #[test]

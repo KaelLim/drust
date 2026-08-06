@@ -19,7 +19,7 @@
         {% endif %}
         {# Rich subtitle: the macro's `sub` argument is a plain value, so a
            conditional subtitle carrying markup stays a sibling of the header. #}
-        <p class="view-sub">{% if editing %}Edit a stored SELECT function. Service-only authoring; persisted in <code>_system_rpc</code>.{% else %}Create a stored SELECT function callable by REST + MCP. Service-only authoring; optional anon access via the <code>allow_anon_callers</code> flag.{% endif %}</p>
+        <p class="view-sub">{% if editing %}{{ t.s("tenant_rpc_form.head.subtitle_edit")|safe }}{% else %}{{ t.s("tenant_rpc_form.head.subtitle_new")|safe }}{% endif %}</p>
         {% if let Some(err) = error %}
         <div class="banner danger" style="margin-bottom:14px;"{% if let Some(code) = error_code %} data-error-code="{{ code }}"{% endif %}>
           <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
@@ -62,7 +62,7 @@
             <label><input type="checkbox" name="anon_callable" value="1"{% if form_anon_callable %} checked{% endif %}> {{ t.s("tenant_rpc_form.field.anon_callable") }}</label>
           </div>
           <div style="display:flex;gap:8px;">
-            <button class="btn primary" type="submit">{% if editing %}<svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>{{ t.s("common.action.save") }}{% else %}<svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>create{% endif %}</button>
+            <button class="btn primary" type="submit">{% if editing %}<svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>{{ t.s("common.action.save") }}{% else %}<svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>{{ t.s("tenant_rpc_form.actions.create") }}{% endif %}</button>
             <a class="btn ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc">{{ t.s("common.action.cancel") }}</a>
           </div>
         </form>

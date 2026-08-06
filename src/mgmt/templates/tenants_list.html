@@ -67,7 +67,7 @@
         <div class="ten-pulse">
           <div class="head"><span>{{ t.s("tenants_list.pulse.storage") }}</span>{% if disk.free_pct < 20.0 %}<span class="pill danger">{{ t.s("tenants_list.pulse.storage_low") }}</span>{% else %}<span class="pill mint">{{ t.s("tenants_list.pulse.storage_healthy") }}</span>{% endif %}</div>
           <div class="body">{{ disk.used_gb }} <span class="unit">{{ t.s("tenants_list.pulse.gb_used") }}</span></div>
-          <div class="meta">of {{ disk.total_gb }} GB total</div>
+          <div class="meta">{{ t.fmt1("tenants_list.disk.total_meta", "gb", disk.total_gb) }}</div>
         </div>
         <div class="ten-pulse">
           <div class="head"><span>{{ t.s("tenants_list.pulse.disk_free") }}</span></div>
@@ -154,8 +154,8 @@
           <button type="button" class="btn sm ghost" id="ten-next">{{ t.s("common.pager.next") }}</button>
         </div>
         <div class="card-foot mono" style="justify-content:flex-end;gap:14px;">
-          {% if !stats_age_display.is_empty() %}<span>stats sampled {{ stats_age_display }}</span>{% endif %}
-          <span>refresh every {{ stats_interval_min }} min</span>
+          {% if !stats_age_display.is_empty() %}<span>{{ t.fmt1("tenants_list.pulse.stats_sampled", "age", stats_age_display) }}</span>{% endif %}
+          <span>{{ t.fmt1("tenants_list.pulse.refresh_every", "min", stats_interval_min) }}</span>
         </div>
         <script>
           document.querySelectorAll('[data-copy-id]').forEach(function (b) {
@@ -166,7 +166,7 @@
                 var icon = b.querySelector('svg use');
                 var orig = label ? label.textContent : '';
                 var origHref = icon ? icon.getAttribute('href') : '';
-                if (label) label.textContent = 'copied';
+                if (label) label.textContent = '{{ t.s("common.button.copied")|safe }}';
                 if (icon) icon.setAttribute('href', '#i-check');
                 if (window.chonkReact) window.chonkReact('happy');
                 setTimeout(function () {

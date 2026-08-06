@@ -210,6 +210,26 @@ impl Translator {
         substitute_placeholders(&template, &[(name, esc.as_str())])
     }
 
+    /// HTML-escaping sibling of `fmt2`. Added because the two-argument pager
+    /// string carries `<b>` markup, and the alternatives were both worse: plain
+    /// `fmt2` + `|safe` is exactly the shape gate 5 exists to reject (the
+    /// interpolated value would reach the page unescaped), while dropping the
+    /// markup would change the rendering to satisfy a missing function. See
+    /// `fmt1_html`.
+    pub fn fmt2_html(
+        &self,
+        key: &str,
+        n1: &str,
+        v1: impl std::fmt::Display,
+        n2: &str,
+        v2: impl std::fmt::Display,
+    ) -> String {
+        let template = self.s(key).into_owned();
+        let s1 = escape_html_min(&v1.to_string()).into_owned();
+        let s2 = escape_html_min(&v2.to_string()).into_owned();
+        substitute_placeholders(&template, &[(n1, s1.as_str()), (n2, s2.as_str())])
+    }
+
     /// HTML-escaping sibling of `fmt3` for a `|safe`-rendered sink — each
     /// interpolated value is HTML-escaped (e.g. a tenant whose display name is
     /// `<img src=x onerror=…>` renders as inert text, not executable markup),

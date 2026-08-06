@@ -71,7 +71,7 @@
             <div class="hk-name">
               <b>{{ r.collection }}</b>
               {% if r.active %}<span class="pill mint"><span class="dot"></span>{{ t.s("tenant_webhooks_admin.pill.on") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_webhooks_admin.pill.off") }}</span>{% endif %}
-              {% if let Some(at) = r.last_failure_at %}<span class="pill danger" title="{% if let Some(reason) = r.last_failure_reason %}{{ reason }}{% endif %}"><span class="dot"></span>last fail {{ at }}</span>{% endif %}
+              {% if let Some(at) = r.last_failure_at %}<span class="pill danger" title="{% if let Some(reason) = r.last_failure_reason %}{{ reason }}{% endif %}"><span class="dot"></span>{{ t.fmt1("tenant_webhooks_admin.table.last_fail", "ts", at) }}</span>{% endif %}
             </div>
             <div class="hk-url" title="{{ r.url }}">{{ r.url }}</div>
             <div class="hk-tags">

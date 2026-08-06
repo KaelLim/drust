@@ -213,6 +213,27 @@ async fn render_webhooks_page(
     resp
 }
 
+/// Map a shared validator's stable error CODE to a translated banner message.
+///
+/// The `msg` half of `check_url`/`check_events` is part of the REST/MCP error
+/// contract and must NOT be translated — clients match on it. The admin form is
+/// a different audience, so it renders the code's translation instead. An
+/// unknown code keeps the English and WARNS rather than falling back silently:
+/// a new validator code should surface as a missing translation someone notices,
+/// not as one untranslated line under a translated banner title.
+fn webhook_error_message(t: &Translator, code: &str, msg: &str) -> String {
+    match code {
+        "INVALID_URL" => t.s("tenant_webhooks_admin.error.invalid_url").into_owned(),
+        "INVALID_EVENTS" => t
+            .s("tenant_webhooks_admin.error.invalid_events")
+            .into_owned(),
+        other => {
+            tracing::warn!(code = %other, "webhook validation code has no translation; showing English");
+            msg.to_string()
+        }
+    }
+}
+
 /// `GET /admin/tenants/{id}/_webhooks` — render the management page.
 /// Pops the secret-once cookie (if present) into the banner + clears it on
 /// the response.
@@ -279,12 +300,13 @@ pub async fn tenant_webhook_create_form(
         .collect();
 
     // Validation — use the shared pure helpers from T7.
-    if let Err((_, msg)) = crate::tenant::webhook_routes::check_url(&form.url) {
+    let t = Translator::new(locale);
+    if let Err((code, msg)) = crate::tenant::webhook_routes::check_url(&form.url) {
         return render_webhooks_page(
             &state,
             tenant_id,
             WebhookPageContext {
-                error: Some(msg.to_string()),
+                error: Some(webhook_error_message(&t, code, msg)),
                 form_collection: form.collection,
                 form_events: form.events,
                 form_url: form.url,
@@ -297,12 +319,12 @@ pub async fn tenant_webhook_create_form(
         )
         .await;
     }
-    if let Err((_, msg)) = crate::tenant::webhook_routes::check_events(&events) {
+    if let Err((code, msg)) = crate::tenant::webhook_routes::check_events(&events) {
         return render_webhooks_page(
             &state,
             tenant_id,
             WebhookPageContext {
-                error: Some(msg.to_string()),
+                error: Some(webhook_error_message(&t, code, msg)),
                 form_collection: form.collection,
                 form_events: form.events,
                 form_url: form.url,
@@ -328,9 +350,8 @@ pub async fn tenant_webhook_create_form(
             tenant_id,
             WebhookPageContext {
                 error: Some(
-                    "target origin is not on this tenant's egress allowlist \
-                     (system=webhook); add it in the Settings page first"
-                        .to_string(),
+                    t.s("tenant_webhooks_admin.error.egress_denied")
+                        .into_owned(),
                 ),
                 form_collection: form.collection,
                 form_events: form.events,
@@ -350,7 +371,10 @@ pub async fn tenant_webhook_create_form(
             &state,
             tenant_id,
             WebhookPageContext {
-                error: Some("collection must not be empty".to_string()),
+                error: Some(
+                    t.s("tenant_webhooks_admin.error.collection_empty")
+                        .into_owned(),
+                ),
                 form_collection: form.collection,
                 form_events: form.events,
                 form_url: form.url,
@@ -377,7 +401,10 @@ pub async fn tenant_webhook_create_form(
                 &state,
                 tenant_id,
                 WebhookPageContext {
-                    error: Some("failed to encode events".to_string()),
+                    error: Some(
+                        t.s("tenant_webhooks_admin.error.encode_events")
+                            .into_owned(),
+                    ),
                     form_collection: form.collection,
                     form_events: form.events,
                     form_url: form.url,
@@ -437,7 +464,7 @@ pub async fn tenant_webhook_create_form(
                 &state,
                 tenant_id,
                 WebhookPageContext {
-                    error: Some(format!("insert failed: {e}")),
+                    error: Some(t.fmt1("tenant_webhooks_admin.error.insert_failed", "error", e)),
                     form_collection: form.collection,
                     form_events: form.events,
                     form_url: form.url,

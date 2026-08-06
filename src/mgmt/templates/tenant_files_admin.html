@@ -43,7 +43,7 @@
 
       {% if storage_available %}
       <div class="card">
-        <div class="card-head"><span>{{ t.s("tenant_files_admin.upload.card_title") }}</span><span class="card-head-actions">max {{ max_upload_mb }} MB · admin → tenant-{{ tenant_id }}-*</span></div>
+        <div class="card-head"><span>{{ t.s("tenant_files_admin.upload.card_title") }}</span><span class="card-head-actions">{{ t.fmt2("tenant_files_admin.upload.card_head_meta", "mb", max_upload_mb, "tid", tenant_id) }}</span></div>
         <div class="card-body">
           <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/files/upload" enctype="multipart/form-data" id="upload-form">
             <div class="dropzone" id="dropzone">
@@ -93,7 +93,7 @@
 
       <div class="card" style="margin-top:24px;">
         <div class="card-head">
-          <span>_system_files <span class="count">· {{ total_files }} rows</span></span>
+          <span>_system_files <span class="count">{{ t.fmt1("tenant_files_admin.table.row_count", "n", total_files) }}</span></span>
           <form method="get" style="display:inline-flex;gap:8px;align-items:center;">
             <span class="muted" style="font-size:13px;">{{ t.s("collection_rows.rows.per_page_label") }}</span>
             <select class="input" name="per_page" onchange="this.form.submit()" style="height:32px;width:80px;font-size:13px;">
@@ -160,10 +160,10 @@
           </table>
         </div>
         <div class="pager">
-          <div class="page-of">page <b>{{ page }}</b> of {{ total_pages }} · <b>{{ total_files }}</b> total</div>
+          <div class="page-of">{{ t.fmt3_html("common.pager.page_of_total", "page", page, "pages", total_pages, "total", total_files)|safe }}</div>
           <div class="pager-group">
             {% if let Some(url) = prev_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("common.pager.prev") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.prev") }}</span>{% endif %}
-            <span style="color:var(--muted);">page <b style="color:var(--fg);">{{ page }}</b> / {{ total_pages }}</span>
+            <span style="color:var(--muted);">{{ t.fmt2_html("common.pager.page_of", "page", page, "pages", total_pages)|safe }}</span>
             {% if let Some(url) = next_url %}<a class="btn sm ghost" href="{{ url }}">{{ t.s("common.pager.next") }}</a>{% else %}<span class="btn sm ghost" style="opacity:0.4;cursor:default;">{{ t.s("common.pager.next") }}</span>{% endif %}
           </div>
         </div>
@@ -206,10 +206,10 @@
       return (n / K / K / K).toFixed(2) + ' GB';
     }
     function setState(f) {
-      if (!f) { nameEl.textContent = '— no file chosen —'; nameEl.setAttribute('data-empty', '1'); nameEl.removeAttribute('data-state'); btn.disabled = true; hint.className = 'upload-hint'; hint.textContent = ''; return; }
+      if (!f) { nameEl.textContent = '{{ t.s("tenant_files_admin.upload.no_file")|safe }}'; nameEl.setAttribute('data-empty', '1'); nameEl.removeAttribute('data-state'); btn.disabled = true; hint.className = 'upload-hint'; hint.textContent = ''; return; }
       nameEl.removeAttribute('data-empty');
-      if (f.size > MAX_BYTES) { nameEl.setAttribute('data-state', 'error'); nameEl.textContent = f.name + '  (' + humanBytes(f.size) + ' — exceeds ' + (MAX_BYTES / 1024 / 1024) + ' MB limit)'; btn.disabled = true; hint.className = 'upload-hint error'; hint.textContent = 'pick a smaller file (limit ' + (MAX_BYTES / 1024 / 1024) + ' MB)'; return; }
-      nameEl.removeAttribute('data-state'); nameEl.textContent = f.name + '  ·  ' + humanBytes(f.size); btn.disabled = false; hint.className = 'upload-hint ready'; hint.textContent = 'ready · press Upload ↵';
+      if (f.size > MAX_BYTES) { nameEl.setAttribute('data-state', 'error'); nameEl.textContent = f.name + '  (' + humanBytes(f.size) + ' — {{ t.fmt1_html("tenant_files_admin.upload.exceeds", "max", max_upload_mb)|safe }})'; btn.disabled = true; hint.className = 'upload-hint error'; hint.textContent = '{{ t.fmt1_html("tenant_files_admin.upload.too_big_hint", "max", max_upload_mb)|safe }}'; return; }
+      nameEl.removeAttribute('data-state'); nameEl.textContent = f.name + '  ·  ' + humanBytes(f.size); btn.disabled = false; hint.className = 'upload-hint ready'; hint.textContent = '{{ t.s("tenant_files_admin.upload.ready")|safe }}';
     }
 
     inp.addEventListener('change', function () { setState(inp.files && inp.files[0]); });
