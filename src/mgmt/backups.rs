@@ -1,9 +1,13 @@
 //! Admin-UI handlers for `drust-backup` snapshot inspection + download.
 //!
 //! Read-only on top of the existing `drust-backup.timer` output. Snapshots
-//! live at `<data_dir>/backups/drust-*.tar.zst` (rotated 30 days by the
-//! shell script). This module never writes — restore lives outside this
-//! UI for now (extract manually via `tar --zstd -xf ...`).
+//! live at `<data_dir>/backups/drust-*.tar.zst`, rotated by the shell script
+//! on a tiered policy — 7 dailies plus one per ISO week for 4 weeks, which
+//! reaches as far back as the flat 30-day window it replaced while holding
+//! roughly a third as many copies. That matters because each snapshot carries
+//! `tokens.plaintext` verbatim, so copy count is blast radius. This module
+//! never writes — restore lives outside this UI for now (extract manually via
+//! `tar --zstd -xf ...`).
 
 use crate::mgmt::i18n::{Locale, LocaleHint, Translator};
 use askama::Template;
