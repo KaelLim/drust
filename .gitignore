@@ -8,7 +8,9 @@ llms.md
 # must travel with the repo (a fresh clone without them loses the landmine map).
 .claude/*
 !.claude/rules/
-/.codegraph/
+# Local code-knowledge-graph index. codegraph was retired 2026-06-29 in favour of
+# codebase-memory-mcp; both write a repo-local store that is rebuilt on demand.
+/.codebase-memory/
 /.mcp.json
 /meta.sqlite*
 /meta_logs.sqlite*
