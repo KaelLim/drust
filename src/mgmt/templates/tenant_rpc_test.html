@@ -45,7 +45,7 @@
             <div style="display:grid;grid-template-columns:160px 90px 1fr;gap:10px 14px;align-items:center;">
               <div class="muted" style="font-size:12px;">{{ t.s("tenant_rpc_test.params_col.name") }}</div>
               <div class="muted" style="font-size:12px;">{{ t.s("tenant_rpc_test.params_col.type") }}</div>
-              <div class="muted" style="font-size:12px;">{{ t.s("tenant_rpc_test.params_col.value") }}{% if !params.is_empty() %} <span class="muted-cell" style="font-size:11px;margin-left:8px;">empty → null/default</span>{% endif %}</div>
+              <div class="muted" style="font-size:12px;">{{ t.s("tenant_rpc_test.params_col.value") }}{% if !params.is_empty() %} <span class="muted-cell" style="font-size:11px;margin-left:8px;">{{ t.s("tenant_rpc_test.params_col.empty_hint") }}</span>{% endif %}</div>
               {% for p in params %}
               <label for="p_{{ p.name }}" style="font-family:var(--font-mono);">
                 {{ p.name }}{% if p.required %} <span style="color:var(--danger);">*</span>{% endif %}

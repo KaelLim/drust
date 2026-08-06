@@ -11,7 +11,7 @@
       {% call ui::view_head(t.s("backups.head.eyebrow"), t.s("backups.head.title"), "") %}{% endcall %}
       {# Rich subtitle: the macro's `sub` argument is escaped by design, so a
          subtitle carrying markup stays a sibling of the header block. #}
-      <p class="view-sub">Daily <code>VACUUM INTO</code> snapshots driven by <code>drust-backup.timer</code>, compressed with zstd, retained 30 days. Inspect a snapshot before restoring to see which tenants are inside.</p>
+      <p class="view-sub">{{ t.s("backups.head.subtitle")|safe }}</p>
 
       {% if backups.len() > 0 %}
       <div class="stat-grid" style="margin-bottom:20px;">
@@ -37,14 +37,14 @@
         <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
         <div class="b-body">
           <div class="b-title">{{ t.s("backups.banner.inspect_title") }}</div>
-          <p>Each <code>.tar.zst</code> contains <code>meta.sqlite</code> + every tenant's <code>data.sqlite</code>. From the shell: <code>tar --zstd -tf &lt;file&gt;</code> to list, <code>tar --zstd -xf &lt;file&gt; -C /tmp/restore</code> to extract.</p>
+          <p>{{ t.s("backups.banner.inspect_body")|safe }}</p>
         </div>
       </div>
 
       {% if backups.is_empty() %}
       <div class="card">
         {% call ui::empty_state("curious", t.s("backups.empty.title"), "") %}
-          <p>The first run of <code>drust-backup.timer</code> will populate this list.</p>
+          <p>{{ t.s("backups.empty.hint")|safe }}</p>
         {% endcall %}
       </div>
       {% else %}

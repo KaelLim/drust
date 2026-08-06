@@ -21,14 +21,14 @@
     {% if let Some(pt) = info.plaintext %}
   <code class="key-val" id="key-{{ role }}" data-plain="{{ pt }}" data-revealed="0">••••••••••••••••••••••••••••••••</code>
   <div class="row" style="gap:6px;">
-    <button class="btn sm icon ghost" type="button" data-key-target="key-{{ role }}" data-key-action="toggle" title="{{ t.s("tenant_api_keys.btn.show_hide_title") }}" aria-label="show or hide key">
+    <button class="btn sm icon ghost" type="button" data-key-target="key-{{ role }}" data-key-action="toggle" title="{{ t.s("tenant_api_keys.btn.show_hide_title") }}" aria-label="{{ t.s("tenant_api_keys.btn.show_hide_title") }}">
       <svg aria-hidden="true"><use href="#i-eye"/></svg>
     </button>
-    <button class="btn sm icon" type="button" data-key-target="key-{{ role }}" data-key-action="copy" title="{{ t.s("tenant_api_keys.btn.copy_key_title") }}" aria-label="copy key">
+    <button class="btn sm icon" type="button" data-key-target="key-{{ role }}" data-key-action="copy" title="{{ t.s("tenant_api_keys.btn.copy_key_title") }}" aria-label="{{ t.s("tenant_api_keys.btn.copy_key_title") }}">
       <svg aria-hidden="true"><use href="#i-copy"/></svg>
     </button>
     <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="{{ t.fmt1("tenant_api_keys.confirm.reroll_text", "role", role) }}" class="reroll-form" style="margin:0;display:inline;">
-      <button class="btn sm icon danger" type="submit" title="{{ t.s("tenant_api_keys.btn.reroll_title") }}" aria-label="reroll key">
+      <button class="btn sm icon danger" type="submit" title="{{ t.s("tenant_api_keys.btn.reroll_title") }}" aria-label="{{ t.s("tenant_api_keys.btn.reroll_title") }}">
         <svg aria-hidden="true"><use href="#i-refresh"/></svg>
       </button>
     </form>
@@ -36,7 +36,7 @@
     {% else %}
   <code class="key-val muted">{{ t.s("tenant_api_keys.state.key_not_stored") }}</code>
   <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" data-confirm-text="{{ t.fmt1("tenant_api_keys.confirm.reroll_text", "role", role) }}" class="reroll-form" style="margin:0;">
-    <button class="btn sm icon danger" type="submit" title="{{ t.s("tenant_api_keys.btn.reroll_title") }}" aria-label="reroll key">
+    <button class="btn sm icon danger" type="submit" title="{{ t.s("tenant_api_keys.btn.reroll_title") }}" aria-label="{{ t.s("tenant_api_keys.btn.reroll_title") }}">
       <svg aria-hidden="true"><use href="#i-refresh"/></svg>
     </button>
   </form>
@@ -44,7 +44,7 @@
   {% else %}
   <code class="key-val muted">{{ t.fmt1("tenant_api_keys.state.no_key_yet", "role", role) }}</code>
   <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/tokens/{{ role }}/reroll" style="margin:0;">
-    <button class="btn sm icon" type="submit" title="{{ t.s("tenant_api_keys.btn.generate_title") }}" aria-label="generate key">
+    <button class="btn sm icon" type="submit" title="{{ t.s("tenant_api_keys.btn.generate_title") }}" aria-label="{{ t.s("tenant_api_keys.btn.generate_title") }}">
       <svg aria-hidden="true"><use href="#i-refresh"/></svg>
     </button>
   </form>
@@ -92,10 +92,10 @@
                 {% endmatch %}>
           </span>
           <div class="row" style="gap:6px;">
-            <button class="btn sm icon" type="button" onclick="copyMcpCommand(this)" title="{{ t.s("tenant_api_keys.mcp.copy_title") }}" aria-label="copy mcp add command">
+            <button class="btn sm icon" type="button" onclick="copyMcpCommand(this)" title="{{ t.s("tenant_api_keys.mcp.copy_title") }}" aria-label="{{ t.s("tenant_api_keys.mcp.copy_title") }}">
               <svg aria-hidden="true"><use href="#i-braces"/></svg>
             </button>
-            <button class="btn sm icon" type="button" onclick="openMcpSetup()" title="{{ t.s("mcp_setup.button_more_clients") }}" aria-label="open MCP server setup modal">
+            <button class="btn sm icon" type="button" onclick="openMcpSetup()" title="{{ t.s("mcp_setup.button_more_clients") }}" aria-label="{{ t.s("mcp_setup.button_more_clients") }}">
               <svg aria-hidden="true"><use href="#i-external-link"/></svg>
             </button>
           </div>
@@ -112,7 +112,7 @@
                 <span id="self-reg-pill" class="pill muted"><span class="dot"></span>{{ t.s("common.state.disabled") }}</span>
                 {% endif %}
               </div>
-              <div class="card-sub">When enabled, unauthenticated users can <code>POST /t/{{ tenant_id }}/auth/register</code></div>
+              <div class="card-sub">{{ t.fmt1_html("tenant_api_keys.register.card_sub", "tenant_id", tenant_id)|safe }}</div>
             </div>
           </div>
           <div class="card-body">
@@ -168,12 +168,12 @@
         <div class="modal modal-wide modal-mcp-setup" id="mcp-setup-modal" data-os="macos" role="dialog" aria-modal="true" aria-labelledby="mcp-setup-title">
           <div class="modal-mcp-head">
             <h2 class="modal-title" id="mcp-setup-title">{{ t.s("mcp_setup.modal_title") }}</h2>
-            <button type="button" class="btn sm icon" onclick="closeMcpSetup()" aria-label="close">
+            <button type="button" class="btn sm icon" onclick="closeMcpSetup()" aria-label="{{ t.s("mcp_setup.close") }}">
               <svg aria-hidden="true"><use href="#i-x"/></svg>
             </button>
           </div>
 
-          <div class="mcp-os-tabs" role="tablist" aria-label="operating system">
+          <div class="mcp-os-tabs" role="tablist" aria-label="{{ t.s("mcp_setup.os_tablist_label") }}">
             <button class="mcp-os-tab" role="tab" data-os="windows" onclick="setMcpOs('windows')">{{ t.s("mcp_setup.tab.windows") }}</button>
             <button class="mcp-os-tab" role="tab" data-os="macos" onclick="setMcpOs('macos')">{{ t.s("mcp_setup.tab.macos") }}</button>
             <button class="mcp-os-tab" role="tab" data-os="linux" onclick="setMcpOs('linux')">{{ t.s("mcp_setup.tab.linux") }}</button>

@@ -44,7 +44,7 @@
           <div class="stat accent-edge">
             <div class="label">{{ t.s("tenant_webhooks_admin.stats.subscriptions") }}</div>
             <div class="val">{{ webhooks.len() }}</div>
-            <div class="meta">total · this tenant</div>
+            <div class="meta">{{ t.s("tenant_webhooks_admin.stats.subscriptions_meta") }}</div>
           </div>
           <div class="stat">
             <div class="label">{{ t.s("tenant_webhooks_admin.stats.active") }}</div>
@@ -111,10 +111,10 @@
                 <input class="input" name="collection" required maxlength="64"
                        autocomplete="off" spellcheck="false"
                        value="{{ form_collection }}"
-                       placeholder="e.g. notes">
+                       placeholder="{{ t.s("tenant_webhooks_admin.form.collection_placeholder") }}">
               </div>
               <div class="field">
-                <label>{{ t.s("tenant_webhooks_admin.form.events_label") }} <span class="hint">comma-separated subset of created, updated, deleted</span></label>
+                <label>{{ t.s("tenant_webhooks_admin.form.events_label") }} <span class="hint">{{ t.s("tenant_webhooks_admin.form.events_hint") }}</span></label>
                 <input class="input" name="events" required maxlength="64"
                        autocomplete="off" spellcheck="false"
                        value="{{ form_events }}"

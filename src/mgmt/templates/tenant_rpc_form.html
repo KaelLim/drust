@@ -47,7 +47,7 @@
             <textarea class="textarea" name="sql" rows="10" required>{{ form_sql }}</textarea>
           </div>
           <div class="field">
-            <label>params (JSON array, e.g. <code>[{"name":"id","type":"integer","required":true}]</code>)</label>
+            <label>{{ t.s("tenant_rpc_form.field.params_label")|safe }}</label>
             <textarea class="textarea" name="params_json" rows="6" required>{{ form_params_json }}</textarea>
           </div>
           <div class="field">

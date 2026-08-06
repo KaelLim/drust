@@ -339,8 +339,8 @@ title = "No active tenants in this snapshot"
 title = "Restore failed"
 
 [backup_inspect.flash]
-tenant_prefix = "Tenant"
-tenant_suffix = "restored"
+body = "Extracted to <code>{destination}</code>. Inspect, then <code>mv</code> the <code>data.sqlite</code> back into <code>tenants/&lt;id&gt;/</code> when you're ready. The current live database is untouched."
+tenant_restored = "Tenant {name} restored"
 
 [backup_inspect.head]
 back_all = "← all snapshots"
@@ -349,6 +349,7 @@ eyebrow = "Admin · backup snapshot"
 sub_suffix = "· listing every tenant whose data.sqlite is inside this archive."
 
 [backup_inspect.info]
+body = "The selected tenant's <code>data.sqlite</code> extracts to <code>_trash/&lt;id&gt;-restored-&lt;ts&gt;/</code> — the live tenant is <b>not</b> overwritten. Review, then <code>mv</code> manually."
 title = "How restore works"
 
 [backup_inspect.page]
@@ -366,13 +367,16 @@ sub = "active tenants when this snapshot was taken"
 title = "Tenants in snapshot"
 
 [backups.banner]
+inspect_body = "Each <code>.tar.zst</code> contains <code>meta.sqlite</code> + every tenant's <code>data.sqlite</code>. From the shell: <code>tar --zstd -tf &lt;file&gt;</code> to list, <code>tar --zstd -xf &lt;file&gt; -C /tmp/restore</code> to extract."
 inspect_title = "Inspecting a snapshot"
 
 [backups.empty]
+hint = "The first run of <code>drust-backup.timer</code> will populate this list."
 title = "No backups yet"
 
 [backups.head]
 eyebrow = "Admin · resilience"
+subtitle = "Daily <code>VACUUM INTO</code> snapshots driven by <code>drust-backup.timer</code>, compressed with zstd. The last 7 days are kept, plus one snapshot per week for 4 weeks. Inspect a snapshot before restoring to see which tenants are inside."
 title = "Backups"
 
 [backups.page]
@@ -389,7 +393,7 @@ inspect_title = "inspect tenants in snapshot"
 snapshots_label = "Snapshots"
 snapshots_meta = "on disk"
 storage_path_label = "Storage path"
-storage_path_meta = "30-day retention"
+storage_path_meta = "7 daily + 4 weekly"
 total_size_label = "Total size"
 total_size_meta = ".tar.zst combined"
 
@@ -432,6 +436,7 @@ remove_field_title = "remove this field"
 select_field_placeholder = "— select field —"
 title = "Indexes"
 drop_failed = "Drop failed:"
+order_hint = "Row order is the index column order (matters for composite indexes)."
 
 [collection_rows.rows]
 per_page_label = "per page"
@@ -520,10 +525,12 @@ title = "outbound webhook subscriptions"
 
 [collections.empty]
 body = "Once your client writes its first record, collections will appear here automatically."
+hint = "Write via the REST <code>/v1/records</code> endpoint or via the per-tenant MCP server (service key required)."
 title = "This database has no tables"
 
 [collections.head]
 eyebrow = "Tenant · collections"
+subtitle = "Auto-discovered from <code>sqlite_master</code> — collections appear automatically once your client writes the first record. Or use the MCP <code>create_collection</code> tool."
 title = "Empty tenant"
 
 [collections.page]
@@ -922,6 +929,7 @@ col_uploaded = "uploaded"
 col_visibility = "visibility"
 
 [tenant_files_admin.unconfigured]
+body = "Set <code>GARAGE_S3_ENDPOINT</code> in drust's <code>.env</code> and restart."
 title = "Storage not configured"
 
 [tenant_files_admin.upload]
@@ -1039,6 +1047,7 @@ api_tokens_label = "API tokens"
 api_tokens_meta = "anon + service"
 collections_meta = "user collections in this tenant"
 end_users_label = "End-users"
+end_users_meta = "_system_users rows"
 oauth_label = "OAuth providers"
 oauth_meta = "per-tenant Google · GitHub"
 rpcs_label = "Stored RPCs"
@@ -1123,6 +1132,7 @@ save_failed = "Save failed"
 anon_callable = "allow anon callers"
 description = "description (optional)"
 name = "name (snake_case, unique)"
+params_label = "params (JSON array, e.g. <code>[{\"name\":\"id\",\"type\":\"integer\",\"required\":true}]</code>)"
 sql = "sql (use :name for params)"
 
 [tenant_rpc_form.field.mode]
@@ -1152,6 +1162,7 @@ empty = "No parameters — press Run to execute."
 heading = "params"
 
 [tenant_rpc_test.params_col]
+empty_hint = "empty → null/default"
 name = "name"
 type = "type"
 value = "value"
@@ -1354,6 +1365,7 @@ tenants_meta = "live tenants you own, against your allowance"
 [tenants_list.count]
 total = "{n} tenants"
 [tenants_list.disk]
+banner_body = "Garage object uploads are blocked below 20% free space. Free up <code>/var/lib/garage</code> or scale the disk."
 banner_title = "Disk at {pct}% free — uploads paused"
 [tenants_list.delete]
 body = "This permanently removes the tenant's database, tokens, and any stored files. Type the name to confirm."
@@ -1380,6 +1392,7 @@ tagline = "multi-tenant SQLite BaaS"
 uploads_paused = "uploads paused (< 20% threshold)"
 well_above_threshold = "well above 20% threshold"
 [tenants_list.search]
+no_matches = "no matches for"
 title = "Filter by tenant name or id ( / to focus )"
 [tenant_webhooks_admin.actions]
 new_subscription = "New subscription"
@@ -1396,6 +1409,8 @@ save_failed = "Save failed"
 
 [tenant_webhooks_admin.form]
 collection_label = "collection"
+collection_placeholder = "e.g. notes"
+events_hint = "comma-separated subset of created, updated, deleted"
 events_label = "events"
 subtitle = "64-hex secret minted on save · shown once"
 submit = "save webhook"
@@ -1422,6 +1437,7 @@ all_on = "all on"
 needs_attention = "needs attention"
 paused_suffix = "paused"
 subscriptions = "Subscriptions"
+subscriptions_meta = "total · this tenant"
 with_failure = "With failure"
 
 [tenant_webhooks_admin.view]
@@ -1551,8 +1567,10 @@ updated_at = "Updated"
 [mcp_setup]
 modal_title = "MCP server setup"
 button_more_clients = "More clients"
+close = "close"
 path_label = "Paste into:"
 linux_unsupported = "Claude Desktop is not officially supported on Linux."
+os_tablist_label = "operating system"
 
 [mcp_setup.tab]
 windows = "Windows"
@@ -1567,12 +1585,17 @@ claude_desktop = "Claude Desktop"
 gemini = "Gemini CLI"
 
 [tenants_list.table]
+copy_id_label = "copy id"
+copy_id_title = "copy full id"
 created = "created"
 db = "db"
+db_title = "data.sqlite file size"
 files = "files"
 owner = "Owner"
+owner_title = "owning admin (email)"
 tenant = "Tenant"
 total = "total"
+total_title = "db + files combined"
 
 [files.table]
 actions = "actions"
@@ -1678,3 +1701,16 @@ page_of = "Page <b>{page}</b> of {pages} · <b>{total}</b> total"
 
 [collection_page.list]
 fetch_failed = "list fetch failed"
+
+[collection_page.realtime]
+quickstart_browser_note = "native <code>EventSource</code> can't send <code>Authorization</code> — proxy through a BFF, or use <code>fetch</code> + <code>ReadableStream</code>"
+quickstart_curl_note = "works with anon (needs <code>select</code> cap) or service token"
+quickstart_node_note = "native <code>EventSource</code> can't send headers — use the <code>eventsource</code> npm package"
+quickstart_summary = "SSE quickstart (curl / Node / Browser)"
+role_anon = "anon ✓ needs <code style=\"background:transparent;border:0;padding:0;color:inherit;\">select</code> cap"
+role_service = "service ✓ always allowed"
+role_user = "user ✕ always 403 SSE_USER_DENIED"
+toggle_label = "SSE broadcast"
+
+[tenant_api_keys.register]
+card_sub = "When enabled, unauthenticated users can <code>POST /t/{tenant_id}/auth/register</code>"

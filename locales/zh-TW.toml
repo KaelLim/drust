@@ -354,8 +354,8 @@ title = "此快照中沒有活躍的租戶"
 title = "還原失敗"
 
 [backup_inspect.flash]
-tenant_prefix = "租戶"
-tenant_suffix = "已還原"
+body = "已解開到 <code>{destination}</code>。確認無誤後，再把 <code>data.sqlite</code> <code>mv</code> 回 <code>tenants/&lt;id&gt;/</code>。目前線上的資料庫完全沒有被動到。"
+tenant_restored = "租戶 {name} 已還原"
 
 [backup_inspect.head]
 back_all = "← 全部快照"
@@ -364,6 +364,7 @@ eyebrow = "管理 · 備份快照"
 sub_suffix = "· 列出此封存中包含 data.sqlite 的所有租戶。"
 
 [backup_inspect.info]
+body = "選定租戶的 <code>data.sqlite</code> 會解開到 <code>_trash/&lt;id&gt;-restored-&lt;ts&gt;/</code>——線上的租戶<b>不會</b>被覆蓋。請先檢查，再自行 <code>mv</code>。"
 title = "還原的運作方式"
 
 [backup_inspect.page]
@@ -381,13 +382,16 @@ sub = "個活躍租戶（拍下此快照時）"
 title = "快照中的租戶"
 
 [backups.banner]
+inspect_body = "每份 <code>.tar.zst</code> 內含 <code>meta.sqlite</code> 與每個租戶的 <code>data.sqlite</code>。在 shell 中：<code>tar --zstd -tf &lt;file&gt;</code> 列出內容，<code>tar --zstd -xf &lt;file&gt; -C /tmp/restore</code> 解開。"
 inspect_title = "檢視快照"
 
 [backups.empty]
+hint = "<code>drust-backup.timer</code> 第一次執行後，這份清單就會有內容。"
 title = "尚無備份"
 
 [backups.head]
 eyebrow = "管理 · 容災"
+subtitle = "由 <code>drust-backup.timer</code> 驅動的每日 <code>VACUUM INTO</code> 快照，以 zstd 壓縮。保留最近 7 天，另外每週留一份、共 4 份。還原前可先檢視快照內含哪些租戶。"
 title = "備份"
 
 [backups.page]
@@ -404,7 +408,7 @@ inspect_title = "檢視快照內的租戶"
 snapshots_label = "快照"
 snapshots_meta = "於磁碟上"
 storage_path_label = "儲存路徑"
-storage_path_meta = "保留 30 天"
+storage_path_meta = "每日 7 份 + 每週 4 份"
 total_size_label = "總大小"
 total_size_meta = ".tar.zst 合計"
 
@@ -447,6 +451,7 @@ remove_field_title = "移除此欄位"
 select_field_placeholder = "— 選擇欄位 —"
 title = "索引"
 drop_failed = "刪除索引失敗："
+order_hint = "列的順序就是索引欄位的順序（複合索引會受影響）。"
 
 [collection_rows.rows]
 per_page_label = "每頁筆數"
@@ -535,10 +540,12 @@ title = "外送 webhook 訂閱"
 
 [collections.empty]
 body = "當你的客戶端寫入第一筆記錄後，資料表會自動出現在此處。"
+hint = "透過 REST <code>/v1/records</code> 端點，或該租戶專屬的 MCP server 寫入（需 service key）。"
 title = "此資料庫沒有任何資料表"
 
 [collections.head]
 eyebrow = "租戶 · 資料表"
+subtitle = "自 <code>sqlite_master</code> 自動探索——用戶端寫入第一筆記錄後，collection 就會自動出現。也可以用 MCP 的 <code>create_collection</code> 工具建立。"
 title = "空租戶"
 
 [collections.page]
@@ -940,6 +947,7 @@ col_uploaded = "上傳時間"
 col_visibility = "可見性"
 
 [tenant_files_admin.unconfigured]
+body = "在 drust 的 <code>.env</code> 設定 <code>GARAGE_S3_ENDPOINT</code> 後重啟。"
 title = "尚未設定儲存空間"
 
 [tenant_files_admin.upload]
@@ -1060,6 +1068,7 @@ api_tokens_label = "API 權杖"
 api_tokens_meta = "匿名 + 服務"
 collections_meta = "此租戶的使用者資料表"
 end_users_label = "終端使用者"
+end_users_meta = "_system_users 列數"
 oauth_label = "OAuth 提供者"
 oauth_meta = "每租戶 Google · GitHub"
 rpcs_label = "已儲存的 RPC"
@@ -1145,6 +1154,7 @@ save_failed = "儲存失敗"
 anon_callable = "允許匿名呼叫者"
 description = "描述（選填）"
 name = "名稱（snake_case，需唯一）"
+params_label = "params（JSON 陣列，例如 <code>[{\"name\":\"id\",\"type\":\"integer\",\"required\":true}]</code>）"
 sql = "SQL（使用 :name 代表參數）"
 
 [tenant_rpc_form.field.mode]
@@ -1174,6 +1184,7 @@ empty = "無參數 — 按下「執行」以執行。"
 heading = "參數"
 
 [tenant_rpc_test.params_col]
+empty_hint = "留空 → null／預設值"
 name = "名稱"
 type = "型別"
 value = "值"
@@ -1379,6 +1390,7 @@ tenants_meta = "你擁有的租戶數，對比你的額度上限"
 total = "共 {n} 個租戶"
 [tenants_list.disk]
 # REVIEW (low confidence): contains template var {pct}, verify wording
+banner_body = "剩餘空間低於 20% 時，Garage 物件上傳會被擋下。請清出 <code>/var/lib/garage</code> 的空間，或擴充磁碟。"
 banner_title = "磁碟剩餘 {pct}% — 上傳已暫停"
 [tenants_list.delete]
 body = "這會永久刪除該租戶的資料庫、tokens 與任何已存檔案。輸入名稱以確認。"
@@ -1406,6 +1418,7 @@ tagline = "多租戶 SQLite BaaS"
 uploads_paused = "上傳已暫停（低於 20% 門檻）"
 well_above_threshold = "遠高於 20% 門檻"
 [tenants_list.search]
+no_matches = "找不到符合的"
 title = "依租戶名稱或 ID 篩選（按 / 聚焦）"
 [tenant_webhooks_admin.actions]
 new_subscription = "新增訂閱"
@@ -1422,6 +1435,8 @@ save_failed = "儲存失敗"
 
 [tenant_webhooks_admin.form]
 collection_label = "資料表"
+collection_placeholder = "例如 notes"
+events_hint = "以逗號分隔，可從 created、updated、deleted 中選取"
 events_label = "事件"
 subtitle = "儲存時產生 64 字元 hex 密鑰 · 僅顯示一次"
 submit = "儲存 webhook"
@@ -1448,6 +1463,7 @@ all_on = "全部啟用"
 needs_attention = "需要關注"
 paused_suffix = "已暫停"
 subscriptions = "訂閱數"
+subscriptions_meta = "總數 · 本租戶"
 with_failure = "有失敗"
 
 [tenant_webhooks_admin.view]
@@ -1573,8 +1589,10 @@ updated_at = "更新時間"
 [mcp_setup]
 modal_title = "MCP 設定指引"
 button_more_clients = "更多 client"
+close = "關閉"
 path_label = "貼到："
 linux_unsupported = "Claude Desktop 官方不支援 Linux。"
+os_tablist_label = "作業系統"
 
 [mcp_setup.tab]
 windows = "Windows"
@@ -1589,12 +1607,17 @@ claude_desktop = "Claude Desktop"
 gemini = "Gemini CLI"
 
 [tenants_list.table]
+copy_id_label = "複製 id"
+copy_id_title = "複製完整 id"
 created = "建立時間"
 db = "資料庫"
+db_title = "data.sqlite 檔案大小"
 files = "檔案"
 owner = "擁有者"
+owner_title = "擁有者管理員（email）"
 tenant = "租戶"
 total = "合計"
+total_title = "資料庫 + 檔案合計"
 
 [files.table]
 actions = "操作"
@@ -1700,3 +1723,16 @@ page_of = "第 <b>{page}</b> 頁／共 {pages} 頁 · 共 <b>{total}</b> 筆"
 
 [collection_page.list]
 fetch_failed = "讀取資料列失敗"
+
+[collection_page.realtime]
+quickstart_browser_note = "原生 <code>EventSource</code> 無法送 <code>Authorization</code>——請透過 BFF 代理，或改用 <code>fetch</code> + <code>ReadableStream</code>"
+quickstart_curl_note = "anon 可用（需 <code>select</code> cap），service token 亦可"
+quickstart_node_note = "原生 <code>EventSource</code> 無法送 header——請改用 <code>eventsource</code> npm 套件"
+quickstart_summary = "SSE 快速上手（curl / Node / 瀏覽器）"
+role_anon = "anon ✓ 需要 <code style=\"background:transparent;border:0;padding:0;color:inherit;\">select</code> cap"
+role_service = "service ✓ 一律允許"
+role_user = "user ✕ 一律 403 SSE_USER_DENIED"
+toggle_label = "SSE 廣播"
+
+[tenant_api_keys.register]
+card_sub = "啟用後，未經認證的使用者可以 <code>POST /t/{tenant_id}/auth/register</code>"

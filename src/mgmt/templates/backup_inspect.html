@@ -21,8 +21,8 @@
       <div class="banner success" style="margin-bottom:18px;">
         <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/></svg></span>
         <div class="b-body">
-          <div class="b-title">{{ t.s("backup_inspect.flash.tenant_prefix") }} {{ f.tenant_name }} {{ t.s("backup_inspect.flash.tenant_suffix") }}</div>
-          <p>Extracted to <code>{{ f.destination }}</code>. Inspect, then <code>mv</code> the <code>data.sqlite</code> back into <code>tenants/&lt;id&gt;/</code> when you're ready. The current live database is untouched.</p>
+          <div class="b-title">{{ t.fmt1("backup_inspect.flash.tenant_restored", "name", f.tenant_name) }}</div>
+          <p>{{ t.fmt1_html("backup_inspect.flash.body", "destination", f.destination)|safe }}</p>
         </div>
       </div>
       {% endif %}
@@ -41,7 +41,7 @@
         <span class="b-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 17h.01"/></svg></span>
         <div class="b-body">
           <div class="b-title">{{ t.s("backup_inspect.info.title") }}</div>
-          <p>The selected tenant's <code>data.sqlite</code> extracts to <code>_trash/&lt;id&gt;-restored-&lt;ts&gt;/</code> — the live tenant is <b>not</b> overwritten. Review, then <code>mv</code> manually.</p>
+          <p>{{ t.s("backup_inspect.info.body")|safe }}</p>
         </div>
       </div>
 

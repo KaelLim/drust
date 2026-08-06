@@ -65,7 +65,7 @@
             <div class="upload-fields">
               <div class="field">
                 <span class="field-label">{{ t.s("tenant_files_admin.table.col_visibility") }}</span>
-                <div class="pill-toggle" role="radiogroup" aria-label="Visibility">
+                <div class="pill-toggle" role="radiogroup" aria-label="{{ t.s("tenant_files_admin.table.col_visibility") }}">
                   <input type="radio" id="tv-vis-public" name="visibility" value="public" checked>
                   <label for="tv-vis-public">{{ t.s("tenant_files_admin.upload.vis_public") }}</label>
                   <input type="radio" id="tv-vis-private" name="visibility" value="private">
@@ -74,7 +74,7 @@
               </div>
               <div class="field">
                 <span class="field-label">{{ t.s("tenant_files_admin.upload.disposition_label") }}</span>
-                <div class="pill-toggle" role="radiogroup" aria-label="Disposition">
+                <div class="pill-toggle" role="radiogroup" aria-label="{{ t.s("tenant_files_admin.upload.disposition_label") }}">
                   <input type="radio" id="tv-disp-inline" name="disposition" value="inline" checked>
                   <label for="tv-disp-inline">{{ t.s("tenant_files_admin.upload.disp_inline") }}</label>
                   <input type="radio" id="tv-disp-attachment" name="disposition" value="attachment">
@@ -173,7 +173,7 @@
       <div class="card">
         <div class="card-body">
           {% call ui::empty_state("curious", t.s("tenant_files_admin.unconfigured.title"), "") %}
-            <p>Set <code>GARAGE_S3_ENDPOINT</code> in drust's <code>.env</code> and restart.</p>
+            <p>{{ t.s("tenant_files_admin.unconfigured.body")|safe }}</p>
           {% endcall %}
         </div>
       </div>

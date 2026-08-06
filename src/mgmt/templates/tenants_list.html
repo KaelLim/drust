@@ -53,7 +53,7 @@
         <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg></span>
         <div class="b-body">
           <div class="b-title">{{ t.fmt1("tenants_list.disk.banner_title", "pct", disk.free_pct_display) }}</div>
-          <p>Garage object uploads are blocked below 20% free space. Free up <code>/var/lib/garage</code> or scale the disk.</p>
+          <p>{{ t.s("tenants_list.disk.banner_body")|safe }}</p>
         </div>
       </div>
       {% endif %}
@@ -104,38 +104,38 @@
           <thead>
             <tr>
               <th>{{ t.s("tenants_list.table.tenant") }}</th>
-              {% if admin.is_owner %}<th style="width:200px;" data-col="owner" title="owning admin (email)">{{ t.s("tenants_list.table.owner") }}</th>{% endif %}
+              {% if admin.is_owner %}<th style="width:200px;" data-col="owner" title="{{ t.s("tenants_list.table.owner_title") }}">{{ t.s("tenants_list.table.owner") }}</th>{% endif %}
               <th style="width:180px;">{{ t.s("tenants_list.table.created") }}</th>
-              <th class="num" style="width:100px;" title="data.sqlite file size">{{ t.s("tenants_list.table.db") }}</th>
+              <th class="num" style="width:100px;" title="{{ t.s("tenants_list.table.db_title") }}">{{ t.s("tenants_list.table.db") }}</th>
               <th class="num" style="width:100px;" title="_system_files SUM(size_bytes)">{{ t.s("tenants_list.table.files") }}</th>
-              <th class="num" style="width:100px;" title="db + files combined">{{ t.s("tenants_list.table.total") }}</th>
+              <th class="num" style="width:100px;" title="{{ t.s("tenants_list.table.total_title") }}">{{ t.s("tenants_list.table.total") }}</th>
               <th class="actions" style="width:170px;"></th>
             </tr>
           </thead>
           <tbody id="tenants-tbody">
-            {% for t in tenants %}
-            <tr class="tenant-row" data-name="{{ t.name }}" data-id="{{ t.id }}">
+            {% for row in tenants %}
+            <tr class="tenant-row" data-name="{{ row.name }}" data-id="{{ row.id }}">
               <td>
-                <a class="ten-cell" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ t.id }}" style="text-decoration:none;color:inherit;">
-                  <span class="ten-avatar av-{{ loop.index0 % 6 + 1 }}">{{ t.initial }}</span>
+                <a class="ten-cell" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ row.id }}" style="text-decoration:none;color:inherit;">
+                  <span class="ten-avatar av-{{ loop.index0 % 6 + 1 }}">{{ row.initial }}</span>
                   <span class="ten-meta">
-                    <span class="ten-name">{{ t.name }}</span>
-                    <span class="ten-id">#{{ t.id_short }}</span>
+                    <span class="ten-name">{{ row.name }}</span>
+                    <span class="ten-id">#{{ row.id_short }}</span>
                   </span>
                 </a>
               </td>
-              {% if admin.is_owner %}<td class="muted-cell">{{ t.owner_display }}</td>{% endif %}
-              <td class="muted-cell">{{ t.created_at }}</td>
-              <td class="num">{{ t.db_display }}</td>
-              <td class="num"><a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ t.id }}/files" style="color:inherit;">{{ t.files_display }}</a></td>
-              <td class="num"><b>{{ t.total_display }}</b></td>
+              {% if admin.is_owner %}<td class="muted-cell">{{ row.owner_display }}</td>{% endif %}
+              <td class="muted-cell">{{ row.created_at }}</td>
+              <td class="num">{{ row.db_display }}</td>
+              <td class="num"><a href="{{ crate::base_path::base_path() }}/admin/tenants/{{ row.id }}/files" style="color:inherit;">{{ row.files_display }}</a></td>
+              <td class="num"><b>{{ row.total_display }}</b></td>
               <td class="actions">
-                <button type="button" class="btn sm ghost" data-copy-id="{{ t.id }}" title="copy full id">
-                  <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span class="label">copy id</span>
+                <button type="button" class="btn sm ghost" data-copy-id="{{ row.id }}" title="{{ t.s("tenants_list.table.copy_id_title") }}">
+                  <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span class="label">{{ t.s("tenants_list.table.copy_id_label") }}</span>
                 </button>
-                <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ t.id }}/delete" class="tenant-delete-form" style="display:inline;" data-name="{{ t.name }}">
+                <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ row.id }}/delete" class="tenant-delete-form" style="display:inline;" data-name="{{ row.name }}">
                   <button class="btn sm danger" type="submit">
-                    <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>Delete
+                    <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>{{ t.s("tenants_list.delete.confirm") }}
                   </button>
                 </form>
               </td>
@@ -143,7 +143,7 @@
             {% endfor %}
             <tr id="tenants-empty-row" hidden>
               <td colspan="{% if admin.is_owner %}7{% else %}6{% endif %}" class="muted-cell" style="text-align:center;padding:32px 16px;font-family:var(--font-mono);">
-                no matches for <code id="tenants-empty-q" style="color:var(--fg);"></code>
+                {{ t.s("tenants_list.search.no_matches") }} <code id="tenants-empty-q" style="color:var(--fg);"></code>
               </td>
             </tr>
           </tbody>

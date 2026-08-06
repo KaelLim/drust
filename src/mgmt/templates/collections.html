@@ -10,12 +10,12 @@
       {% call ui::view_head(t.s("collections.head.eyebrow"), t.s("collections.head.title"), "") %}{% endcall %}
       {# Rich subtitle: the macro's `sub` argument is escaped by design, so a
          subtitle carrying markup stays a sibling of the header block. #}
-      <p class="view-sub">Auto-discovered from <code>sqlite_master</code> — collections appear automatically once your client writes the first record. Or use the MCP <code>create_collection</code> tool.</p>
+      <p class="view-sub">{{ t.s("collections.head.subtitle")|safe }}</p>
 
       <div class="card">
         {% call ui::empty_state("sleep", t.s("collections.empty.title"), t.s("collections.empty.body")) %}
           <p style="margin-top:14px;">
-            Write via the REST <code>/v1/records</code> endpoint or via the per-tenant MCP server (service key required).
+            {{ t.s("collections.empty.hint")|safe }}
           </p>
         {% endcall %}
       </div>

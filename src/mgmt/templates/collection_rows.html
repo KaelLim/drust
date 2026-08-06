@@ -187,7 +187,7 @@
           <div class="card-body-tight" style="border-top:1px solid var(--border-mid);">
             <div style="font:600 11px/1 var(--font-sans);color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">{{ t.s("collection_rows.indexes.create_heading") }}</div>
             <div style="font:400 12px/1.5 var(--font-sans);color:var(--muted);margin-bottom:12px;">
-              Row order is the index column order (matters for composite indexes).
+              {{ t.s("collection_rows.indexes.order_hint") }}
             </div>
             <div id="idx-rows" style="display:flex;flex-direction:column;gap:8px;">
               <div class="idx-row" style="display:flex;gap:8px;align-items:center;">
@@ -393,15 +393,15 @@
             <form id="realtime-form" method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections/{{ coll_name }}/realtime">
               <label class="check">
                 <input type="checkbox" name="enabled" value="1"{% if realtime_enabled %} checked{% endif %}>
-                <span>SSE broadcast</span>
+                <span>{{ t.s("collection_page.realtime.toggle_label") }}</span>
               </label>
             </form>
             <details style="margin-top:8px;">
-              <summary style="cursor:pointer;color:var(--muted);font:400 12px/1.4 var(--font-sans);">SSE quickstart (curl / Node / Browser)</summary>
+              <summary style="cursor:pointer;color:var(--muted);font:400 12px/1.4 var(--font-sans);">{{ t.s("collection_page.realtime.quickstart_summary") }}</summary>
               <div style="font:400 12px/1.5 var(--font-mono);color:var(--muted);margin-top:6px;">
                 <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px;">
                   <span class="pill accent"><span class="dot"></span>curl</span>
-                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--font-sans);">works with anon (needs <code>select</code> cap) or service token</span>
+                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--font-sans);">{{ t.s("collection_page.realtime.quickstart_curl_note")|safe }}</span>
                 </div>
 <pre class="code">curl -N \
   -H "Authorization: Bearer drust_service_…" \
@@ -409,7 +409,7 @@
 
                 <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
                   <span class="pill lilac"><span class="dot"></span>Node.js</span>
-                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--font-sans);">native <code>EventSource</code> can't send headers — use the <code>eventsource</code> npm package</span>
+                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--font-sans);">{{ t.s("collection_page.realtime.quickstart_node_note")|safe }}</span>
                 </div>
 <pre class="code">import EventSource from 'eventsource'; // npm i eventsource
 
@@ -424,7 +424,7 @@ es.addEventListener('deleted', e =&gt; console.log('-', JSON.parse(e.data).id));
 
                 <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
                   <span class="pill warn"><span class="dot"></span>Browser</span>
-                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--font-sans);">native <code>EventSource</code> can't send <code>Authorization</code> — proxy through a BFF, or use <code>fetch</code> + <code>ReadableStream</code></span>
+                  <span style="color:var(--muted);font:400 11.5px/1.4 var(--font-sans);">{{ t.s("collection_page.realtime.quickstart_browser_note")|safe }}</span>
                 </div>
 <pre class="code">// Anon tokens in URLs are unsafe — keep the bearer server-side and proxy the
 // stream from your BFF. Direct fetch shown here for completeness.
@@ -451,9 +451,9 @@ for (;;) {
 }</pre>
 
                 <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;">
-                  <span class="pill mint"><span class="dot"></span>service ✓ always allowed</span>
-                  <span class="pill accent"><span class="dot"></span>anon ✓ needs <code style="background:transparent;border:0;padding:0;color:inherit;">select</code> cap</span>
-                  <span class="pill muted"><span class="dot"></span>user ✕ always 403 SSE_USER_DENIED</span>
+                  <span class="pill mint"><span class="dot"></span>{{ t.s("collection_page.realtime.role_service") }}</span>
+                  <span class="pill accent"><span class="dot"></span>{{ t.s("collection_page.realtime.role_anon")|safe }}</span>
+                  <span class="pill muted"><span class="dot"></span>{{ t.s("collection_page.realtime.role_user") }}</span>
                 </div>
                 <script>
                   document.querySelectorAll('.rt-origin').forEach(function (el) { el.textContent = window.location.origin; });
