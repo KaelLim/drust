@@ -175,6 +175,89 @@ fn one_orphan_does_not_block_strict_rebuild_of_clean_tables() {
     assert_eq!(n, 1, "held-back table's row is preserved");
 }
 
+/// The shape that actually bit production (#926): a legacy import wrote the
+/// empty string into an `INTEGER DEFAULT 0` column. A non-STRICT table accepts
+/// that happily — INTEGER is an affinity, and `''` does not convert, so the
+/// value simply stays TEXT — but the STRICT copy rejects it with
+/// `cannot store TEXT value in INTEGER column`.
+///
+/// The contract under test is the fail-safe, NOT the rebuild: the dirty table
+/// keeps every row and its original values, its clean siblings still migrate,
+/// and the pass returns Ok so boot continues. Nothing here may coerce the
+/// value — a boot migration that silently rewrites tenant data to satisfy a
+/// schema change is a worse failure than the one it is fixing.
+#[test]
+fn type_violating_value_holds_one_table_back_without_touching_its_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("tenants").join("t-badtype");
+    std::fs::create_dir_all(&p).unwrap();
+    let c = Connection::open(p.join("data.sqlite")).unwrap();
+    c.execute_batch(
+        r#"
+        CREATE TABLE "uploads" ("id" INTEGER PRIMARY KEY AUTOINCREMENT,
+            "label" TEXT, "sort_order" INTEGER DEFAULT 0);
+        CREATE TABLE "sites" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "name" TEXT);
+        INSERT INTO "uploads"(label, sort_order) VALUES ('legacy', '');
+        INSERT INTO "uploads"(label, sort_order) VALUES ('clean', 3);
+        INSERT INTO "sites"(name) VALUES ('s');
+    "#,
+    )
+    .unwrap();
+    drop(c);
+
+    // Ok, not Err: one bad table must not abort the pass for the whole tenant.
+    drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-badtype").unwrap();
+
+    let c = Connection::open(dir.path().join("tenants/t-badtype/data.sqlite")).unwrap();
+    let strict = |t: &str| -> i64 {
+        c.query_row(
+            "SELECT strict FROM pragma_table_list WHERE name=?1",
+            [t],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        strict("uploads"),
+        0,
+        "table holding a type-violating value stays non-STRICT"
+    );
+    assert_eq!(
+        strict("sites"),
+        1,
+        "clean sibling still migrates despite the bad value next door"
+    );
+
+    // Rows AND values survive verbatim — the copy-then-swap rolled back, so the
+    // original table is still the one being read here.
+    let rows: Vec<(String, String)> = c
+        .prepare("SELECT label, quote(sort_order) FROM uploads ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("legacy".to_string(), "''".to_string()),
+            ("clean".to_string(), "3".to_string()),
+        ],
+        "held-back table keeps every row with its value untouched"
+    );
+
+    // Idempotent: re-running must not accumulate debris from the failed attempt.
+    drust::db::migrations::strict_rebuild_tenant(dir.path(), "t-badtype").unwrap();
+    let leftovers: i64 = c
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name LIKE '_system_strict_tmp_%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leftovers, 0, "no temp table survives a rolled-back rebuild");
+}
+
 /// Regression: a tenant collection literally named `<x>__strict_tmp` must NOT
 /// collide with the STRICT-rebuild temp table for `<x>`. The temp now uses a
 /// `_system_`-prefixed name that no user collection can occupy, so both tables
