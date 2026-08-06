@@ -1,7 +1,77 @@
 use rusqlite::{Connection, types::ValueRef};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::time::{Duration, Instant};
 use thiserror::Error;
+
+/// Wall-clock ceiling on a single caller-controlled read query, in milliseconds.
+///
+/// Read once. `DRUST_QUERY_DEADLINE_MS=0` disables the deadline (do not, in
+/// production). Default 5000ms — comfortably above any legitimate report query
+/// and far under the 60s HTTP timeout.
+///
+/// This exists because caller-controlled SQL (raw `/query` + `/query/explain`,
+/// stored RPC, the legacy raw-filter path) had NO instruction budget, deadline,
+/// progress handler, or interrupt — only a row-count cap that a recursive CTE or
+/// a cartesian product blows past while consuming unbounded CPU. `with_reader`
+/// runs the synchronous closure directly on a Tokio worker (no `spawn_blocking`),
+/// and the box defaults to 2 workers on 2 cores, so three expensive queries
+/// froze even the unauthenticated `/health` endpoint for 25s (reproduced against
+/// the running service before this fix). `ExecError::Timeout` existed with ZERO
+/// constructors; the deadline is what finally builds it.
+fn query_deadline() -> Option<Duration> {
+    use std::sync::OnceLock;
+    static D: OnceLock<Option<Duration>> = OnceLock::new();
+    *D.get_or_init(|| {
+        let ms = std::env::var("DRUST_QUERY_DEADLINE_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(5000);
+        (ms > 0).then(|| Duration::from_millis(ms))
+    })
+}
+
+/// Approximate VM instructions between progress-handler checks. Small enough
+/// that the deadline is honoured to well within a tenth of a second, large
+/// enough that the per-check `Instant::now()` (a vDSO clock read) is noise.
+const VM_OPS_PER_CHECK: std::os::raw::c_int = 10_000;
+
+/// RAII: arms a SQLite progress handler that aborts the running statement once
+/// `budget` elapses, and REMOVES it on drop. Removal is mandatory — these are
+/// pooled, long-lived reader connections, so a handler left installed would keep
+/// firing (and keep a stale `Instant` alive) on every future query that
+/// connection serves. Same discipline as the authorizer install/detach pattern.
+struct DeadlineGuard<'c> {
+    conn: &'c Connection,
+    armed: bool,
+}
+
+impl<'c> DeadlineGuard<'c> {
+    fn arm(conn: &'c Connection, budget: Option<Duration>) -> Self {
+        let armed = match budget {
+            Some(b) => {
+                let deadline = Instant::now() + b;
+                // Returning true from the handler interrupts the statement; the
+                // next `step()` then fails with SQLITE_INTERRUPT, which `classify`
+                // maps to ExecError::Timeout.
+                conn.progress_handler(VM_OPS_PER_CHECK, Some(move || Instant::now() >= deadline))
+                    .is_ok()
+            }
+            None => false,
+        };
+        DeadlineGuard { conn, armed }
+    }
+}
+
+impl Drop for DeadlineGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // Clearing needs a concrete F for the type parameter even though the
+            // value is None.
+            let _ = self.conn.progress_handler(0, None::<fn() -> bool>);
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct QueryResult {
@@ -143,6 +213,16 @@ fn execute_read_query_inner(
     sql: &str,
     row_cap: usize,
 ) -> Result<QueryResult, ExecError> {
+    // Arm the wall-clock deadline for the whole prepare+step lifetime. Dropped at
+    // the end of this function (or on any early return), which removes the handler
+    // from the pooled connection. This covers the non-bound entry points —
+    // `execute_read_query` (raw /query + /query/explain, the legacy raw-filter read
+    // path) and `execute_read_query_admin`. The named-bind path (stored RPC, cron
+    // RPC, MCP RPC) runs through the SEPARATE `execute_read_query_with_named_inner`
+    // below, which arms its OWN guard — the two are parallel sites and a runaway
+    // recursive CTE reaches the tenant via EITHER, so both must arm. Do not assume
+    // one funnels through the other; they do not.
+    let _deadline = DeadlineGuard::arm(conn, query_deadline());
     let hash = sql_hash(sql);
     let mut stmt = conn.prepare(sql).map_err(classify)?;
     let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
@@ -209,6 +289,12 @@ fn execute_read_query_with_named_inner(
     binds: &std::collections::BTreeMap<String, crate::rpc::params::BoundValue>,
     row_cap: usize,
 ) -> Result<QueryResult, ExecError> {
+    // Same wall-clock deadline as the non-bound path (see `execute_read_query_inner`).
+    // This is the stored-RPC / cron-RPC / MCP-RPC entry: an RPC body is
+    // caller-supplied SQL that can hold a recursive CTE, and RPC is anon/user
+    // callable when `anon_callable`, so it needs the CPU ceiling just as much as
+    // raw /query. Dropped on return → handler removed from the pooled connection.
+    let _deadline = DeadlineGuard::arm(conn, query_deadline());
     let hash = sql_hash(sql);
     // Plain `prepare`, NOT `prepare_cached` (matches the non-named variant
     // above): a stored RPC / named-bind query body can be `SELECT *`, whose
@@ -269,6 +355,18 @@ fn execute_read_query_with_named_inner(
 }
 
 fn classify(err: rusqlite::Error) -> ExecError {
+    // The deadline handler aborts the statement, so the next step fails with
+    // SQLITE_INTERRUPT. Map it to Timeout BEFORE the redaction/authorizer
+    // routing below — an interrupt is neither a forbidden query nor an SQL error,
+    // and it must not be misrouted into either. The reported ms is the budget,
+    // not the elapsed time (the elapsed time is not threaded down here and the
+    // budget is what the operator configured).
+    if let rusqlite::Error::SqliteFailure(e, _) = &err
+        && e.code == rusqlite::ErrorCode::OperationInterrupted
+    {
+        let ms = query_deadline().map(|d| d.as_millis() as u64).unwrap_or(0);
+        return ExecError::Timeout(ms);
+    }
     // `sqlite_error_without_sql`, NOT `to_string()`: a prepare failure comes
     // back as `SqlInputError`, whose Display embeds the WHOLE failing
     // statement. This executor runs STORED RPC bodies, and `call_rpc` admits

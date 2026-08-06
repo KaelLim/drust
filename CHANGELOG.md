@@ -1,3 +1,66 @@
+## v1.58.5 — 2026-08-06
+
+Found by a whole-codebase adversarial review (two engines from complementary
+angles), and the fix was verified by reproducing the attack against the live
+service both before and after.
+
+### Fixed (HIGH, DoS) — a caller-controlled query could freeze the whole process
+
+Raw caller SQL — `/query`, `/query/explain`, stored RPC, the legacy raw-filter
+read path — had a row-count cap but no instruction budget, deadline, progress
+handler, or interrupt. A recursive CTE, a cartesian product, or an expensive
+function runs unbounded CPU while returning a single row, so the cap never
+engages. `with_reader` runs the synchronous SQLite closure directly on a Tokio
+worker (no `spawn_blocking`), and the process defaults to one worker per core.
+
+Reproduced against the running service on a 2-core box: three concurrent
+`POST /t/<id>/query` recursive CTEs took **`/health` — unauthenticated, normally
+1.7ms — to 24.9 seconds**. The blast radius is host-wide, not tenant-local:
+blocked workers stall every other tenant, the admin plane, the janitors, webhook
+scheduling, and graceful shutdown. `ExecError::Timeout(u64)` existed in the enum
+with three match arms and **zero constructors** — the timeout was typed but never
+built.
+
+Every caller-controlled read now runs under a SQLite progress handler with a
+wall-clock deadline (`DRUST_QUERY_DEADLINE_MS`, default 5000, `0` disables). On
+expiry the statement is interrupted, `classify` maps `SQLITE_INTERRUPT` to
+`ExecError::Timeout`, and the caller gets the timeout envelope the three match
+arms already had wired. The handler is armed and removed per query via an RAII
+guard — these are pooled long-lived reader connections, so a handler left
+installed would fire on the next innocent query. The executor has **two** parallel
+inner paths and both arm the guard: `execute_read_query_inner` (raw `/query` +
+`/query/explain` + the legacy raw-filter read) and the separate
+`execute_read_query_with_named_inner` (stored RPC, cron RPC, MCP RPC — bodies that
+are equally caller-supplied and anon/user-callable when `anon_callable`). They do
+not funnel through one another, so each is a site the deadline must reach. By
+contrast, structured `/list` / `/search` / `/aggregate` and single-record CRUD —
+schema-bounded and legitimately heavy (e.g. a large `create_index`) — do not run
+through this executor and are unaffected.
+
+After the fix, the same three-query attack against the live service bounds the
+damage to the deadline instead of the query's natural runtime. Measured on prod
+(default 5000 ms deadline): the runaway queries return `408 QUERY_TIMEOUT` at
+~5 s (5.00 s / 5.00 s, and 10.01 s for the third, which queues behind the first
+two), and `/health` — frozen ~25 s before — now blocks for at most one deadline
+(4.99 s peak, then straight back to ~1.5 ms). This is a MITIGATION, not the whole
+fix: reads run inline on the Tokio worker (`with_reader` calls the closure
+directly, no `spawn_blocking`), so the deadline caps how long a query can hold a
+worker but not that it holds one — an attacker firing batches back-to-back keeps
+re-triggering a bounded ~5 s stall. Eliminating the worker-starvation window
+means moving caller-controlled reads onto bounded `spawn_blocking` workers (see
+below). `tests/query_executor.rs` pins the interrupt on the non-bound path, the
+interrupt on the named-bind (stored-RPC) path, and the handler-removal on the
+pooled connection afterward; reverting either `arm` leaves that path's runaway
+running until the harness kills it, which is the point.
+
+This bounds the acute vector — an unbounded hold (minutes to hours per query)
+becomes a hold of at most one deadline. The deeper structural item the review
+named — moving all caller-controlled SQL onto bounded `spawn_blocking` workers so
+a slow query cannot hold a runtime worker at all, rather than only bounding how
+long it holds it — is filed, not done here, and it shares a root with the
+edge-function compute-loop finding (a guest wasm loop pins a worker the same way)
+surfaced by the same review.
+
 ## v1.58.4 — 2026-08-06
 
 Everything here was found by adversarially auditing v1.58.3 **after** it shipped —
