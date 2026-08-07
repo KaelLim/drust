@@ -48,6 +48,13 @@ Destructive ops `delete_record` / `drop_collection` / `drop_index` accept `dry_r
 > [!CAUTION]
 > **A `///` doc comment on any `*Args` field in `src/mcp/handler.rs` is model-facing, not prose.** Those structs derive `schemars::JsonSchema`, so each doc comment is published verbatim as that property's `description` in the `tools/list` inputSchema — the surface the prologue itself designates canonical and that most MCP clients render into the system prompt. Changing a default or a range in the handler body means changing the doc comment in the same commit; a prose-only sweep leaves the machine-readable number stale and the model holding two answers. `tests/mcp_recent_writes_limit.rs` pins this for `recent_writes`.
 
+## FilterAst arguments (`filter` / `using` / `check` / `where`)
+
+Every structured-filter argument — `list_records.filter`, `aggregate.filter`, `search_collection.where`, `set_policy.using`/`check` — is typed `Option<serde_json::Value>` and parsed through the single `crate::query::vector_filter::parse_filter_value`, never a bare `serde_json::from_value`. That helper tolerates a **double-encoded JSON string** (many MCP clients stringify object-typed arguments) by decoding one layer, and on failure returns `filter_shape_hint()` instead of serde's opaque "did not match any variant of untagged enum FilterAst". A new filter entry point MUST route through it, and each field carries `#[schemars(schema_with = "…::filter_arg_json_schema")]` so the advertised inputSchema is an `object`, not schemars' untyped "any" (which is what invited the stringifying).
+
+> [!CAUTION]
+> **The wire shape is `{field: scalar}` / `{field: {op: operand}}` / `{and|or|not}` — NOT `{op, field, value}`.** Operators: eq, ne, gt, gte, lt, lte, like, in, nin, is_null, is_not_null (`ne`, not `neq`). `src/codegen/filter_ast_schema.rs` (OpenAPI/TS/Zod) once described the `{op,field,value}` shape the parser never accepted, so every generated client built filters that always failed and the golden fixtures pinned the lie. Two guard tests keep the two sides honest: `src/query/vector_filter.rs::documented_shapes_match_the_real_parser` compiles the documented examples against the real compiler (parser side), and `src/codegen/filter_ast_schema.rs::codegen_ops_match_parser_and_drop_the_drifted_shape` asserts the operator names in every renderer match the parser's and that `neq` / the `{op,field,value}` keys are gone (codegen side). Neither cross-validates the generated JSON-Schema against the Rust parser end-to-end, so a change touching both still needs eyes.
+
 ## Provenance
 
 Extracted from CLAUDE.md "Tools & endpoints" (MCP bullets, Resources+Prompts, AI introspection helpers) during the 2026-08-02 restructure.

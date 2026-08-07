@@ -2,7 +2,7 @@ use crate::mcp::server::DrustMcp;
 use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
 use crate::query::executor::{ExecError, execute_read_query};
 use crate::query::list_builder::{self, ListError, ListRequest, SortSpec};
-use crate::query::vector_filter::{FilterAst, FilterError};
+use crate::query::vector_filter::{FilterAst, FilterError, parse_filter_value};
 use crate::storage::schema::is_protected_collection;
 use rusqlite::types::{Value, ValueRef};
 use serde_json::json;
@@ -72,9 +72,11 @@ pub struct ListRecordsArgs {
     /// Optional structured filter. Tree of `{and:[...]}` / `{or:[...]}`
     /// / `{not:...}` over leaves `{field: scalar}` (eq shorthand) or
     /// `{field: {op: operand}}`. Same shape as `search_collection`'s
-    /// `where`. Operators: eq, ne, gt, gte, lt, lte, like, in, nin.
-    /// Vector fields cannot appear in the filter.
+    /// `where`. Operators: eq, ne, gt, gte, lt, lte, like, in, nin,
+    /// is_null, is_not_null. Vector fields cannot appear in the filter.
+    /// Pass as a JSON object, not a JSON-encoded string.
     #[serde(default)]
+    #[schemars(schema_with = "crate::query::vector_filter::filter_arg_json_schema")]
     pub filter: Option<serde_json::Value>,
     /// Optional sort spec: `{"field": "<name>", "dir": "asc"|"desc"}`.
     /// Field must be declared on the collection (or `id` / `created_at`
@@ -121,11 +123,13 @@ pub async fn list_records(
         })?;
 
     // Parse the JSON filter into FilterAst now so we surface FILTER_*
-    // errors with the same codes as REST.
+    // errors with the same codes as REST. `parse_filter_value` tolerates a
+    // double-encoded string (common MCP-client behaviour) and returns a
+    // teaching hint instead of serde's opaque variant error.
     let filter_ast: Option<FilterAst> = match args.filter {
         None => None,
         Some(raw) => Some(
-            serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("FILTER_PARSE_ERROR: {e}"))?,
+            parse_filter_value(raw).map_err(|msg| anyhow::anyhow!("FILTER_PARSE_ERROR: {msg}"))?,
         ),
     };
 
@@ -220,7 +224,9 @@ pub struct AggregateArgs {
     /// Collection name.
     pub collection: String,
     /// Optional structured filter (same shape as `list_records`).
+    /// Pass as a JSON object, not a JSON-encoded string.
     #[serde(default)]
+    #[schemars(schema_with = "crate::query::vector_filter::filter_arg_json_schema")]
     pub filter: Option<serde_json::Value>,
     /// Optional columns to GROUP BY (declared/system fields, non-vector).
     #[serde(default)]
@@ -267,7 +273,7 @@ pub async fn aggregate(s: &DrustMcp, args: AggregateArgs) -> anyhow::Result<serd
     let filter_ast: Option<FilterAst> = match args.filter {
         None => None,
         Some(raw) => Some(
-            serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("FILTER_PARSE_ERROR: {e}"))?,
+            parse_filter_value(raw).map_err(|msg| anyhow::anyhow!("FILTER_PARSE_ERROR: {msg}"))?,
         ),
     };
 

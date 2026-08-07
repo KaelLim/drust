@@ -183,12 +183,16 @@ pub struct SetPolicyArgs {
     /// leaves) selecting WHICH existing rows the op may touch. Operands may
     /// reference `{"$auth":"id"}` (the caller's user id), `{"$data":"<field>"}`
     /// (the new/post-image row, CHECK only), or `{"$authenticated":true}`.
-    /// Omit to leave the op's `using` clause unset.
+    /// Omit to leave the op's `using` clause unset. Pass as a JSON object,
+    /// not a JSON-encoded string.
     #[serde(default)]
+    #[schemars(schema_with = "crate::query::vector_filter::filter_arg_json_schema")]
     pub using: Option<serde_json::Value>,
     /// `check` clause: a FilterAst asserting the NEW row (post-image) is
     /// allowed (insert/update). Omit to leave the op's `check` clause unset.
+    /// Pass as a JSON object, not a JSON-encoded string.
     #[serde(default)]
+    #[schemars(schema_with = "crate::query::vector_filter::filter_arg_json_schema")]
     pub check: Option<serde_json::Value>,
 }
 

@@ -131,6 +131,108 @@ async fn list_records_filter_and_sort_same_rows_as_rest() {
 }
 
 #[tokio::test]
+async fn list_records_accepts_double_encoded_string_filter() {
+    // Regression (v1.58.6): many MCP clients serialize the object-typed
+    // `filter` argument to a JSON *string*. Before the fix this failed with
+    // "did not match any variant of untagged enum FilterAst"; now the tool
+    // decodes one string layer and filters identically to the object form.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    make_posts(&s).await;
+    for (title, score) in &[("alpha", 5i64), ("beta", 10), ("gamma", 15)] {
+        insert_record(&s, "posts", json!({"title": title, "score": score}))
+            .await
+            .unwrap();
+    }
+    let out = list_records(
+        &s,
+        ListRecordsArgs {
+            collection: "posts".into(),
+            // A JSON string, not an object — the double-encoding case.
+            filter: Some(json!("{\"score\":{\"gte\":10}}")),
+            sort: Some(SortSpec {
+                field: "score".into(),
+                dir: "desc".into(),
+            }),
+            page: None,
+            per_page: None,
+            select: None,
+        },
+    )
+    .await
+    .unwrap();
+    let rows = out["records"].as_array().unwrap();
+    let titles: Vec<&str> = rows.iter().map(|r| r["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, vec!["gamma", "beta"], "got {out:?}");
+}
+
+#[tokio::test]
+async fn list_records_unparseable_string_filter_gives_shape_hint() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    make_posts(&s).await;
+    let err = list_records(
+        &s,
+        ListRecordsArgs {
+            collection: "posts".into(),
+            filter: Some(json!("not a filter")),
+            sort: None,
+            page: None,
+            per_page: None,
+            select: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("FILTER_PARSE_ERROR"), "got: {msg}");
+    assert!(
+        msg.contains("JSON object"),
+        "want teaching hint, got: {msg}"
+    );
+    assert!(
+        !msg.contains("did not match any variant"),
+        "raw serde noise leaked: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn aggregate_accepts_double_encoded_string_filter() {
+    // aggregate.filter shares the identical rewired parse as list_records.filter;
+    // prove the double-encoded-string path end-to-end on the aggregate tool too.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    make_posts(&s).await;
+    for (title, score) in &[("alpha", 5i64), ("beta", 10), ("gamma", 15)] {
+        insert_record(&s, "posts", json!({"title": title, "score": score}))
+            .await
+            .unwrap();
+    }
+    let out = drust::mcp::tools::read::aggregate(
+        &s,
+        drust::mcp::tools::read::AggregateArgs {
+            collection: "posts".into(),
+            // A JSON string, not an object.
+            filter: Some(json!("{\"score\":{\"gte\":10}}")),
+            group_by: None,
+            metrics: vec![drust::query::list_builder::AggregateMetric {
+                op: "count".into(),
+                field: None,
+                alias: Some("n".into()),
+            }],
+            sort: None,
+            page: None,
+            per_page: None,
+        },
+    )
+    .await
+    .unwrap();
+    let rows = out["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "got {out:?}");
+    assert_eq!(rows[0]["n"], 2, "score>=10 matches beta+gamma; got {out:?}");
+}
+
+#[tokio::test]
 async fn list_records_protected_collection_is_collection_not_found() {
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;

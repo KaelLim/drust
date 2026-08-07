@@ -2,11 +2,22 @@
 // Re-fetch from https://example.com/drust/t/demo/zod.ts to refresh.
 import { z } from 'zod';
 
+export const FilterScalarSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+export const FilterOpSchema = z.union([
+  z.object({ eq: FilterScalarSchema }).strict(), z.object({ ne: FilterScalarSchema }).strict(),
+  z.object({ gt: FilterScalarSchema }).strict(), z.object({ gte: FilterScalarSchema }).strict(),
+  z.object({ lt: FilterScalarSchema }).strict(), z.object({ lte: FilterScalarSchema }).strict(),
+  z.object({ like: z.string() }).strict(),
+  z.object({ in: z.array(FilterScalarSchema) }).strict(), z.object({ nin: z.array(FilterScalarSchema) }).strict(),
+  z.object({ is_null: z.boolean() }).strict(), z.object({ is_not_null: z.boolean() }).strict(),
+]);
 export const FilterAstSchema: z.ZodType<unknown> = z.lazy(() =>
   z.union([
-    z.object({ op: z.enum(['eq','neq','lt','lte','gt','gte','like','in']), field: z.string(), value: z.unknown() }),
-    z.object({ op: z.enum(['and','or']), filters: z.array(FilterAstSchema) }),
-    z.object({ op: z.literal('not'), filter: FilterAstSchema }),
+    z.object({ and: z.array(FilterAstSchema) }),
+    z.object({ or: z.array(FilterAstSchema) }),
+    z.object({ not: FilterAstSchema }),
+    z.record(z.union([FilterScalarSchema, FilterOpSchema]))
+      .refine((o) => Object.keys(o).length === 1, { message: 'filter leaf must name exactly one field' }),
   ])
 );
 

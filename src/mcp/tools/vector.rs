@@ -31,9 +31,11 @@ pub struct SearchInput {
     /// Optional structured filter. Tree of `{and:[...]}` / `{or:[...]}`
     /// / `{not:...}` over leaves `{field: scalar}` (eq shorthand) or
     /// `{field: {op: operand}}`. Operators: eq, ne, gt, gte, lt, lte,
-    /// like, in (array), nin (array). Vector fields cannot appear in
-    /// the filter.
+    /// like, in (array), nin (array), is_null, is_not_null. Vector fields
+    /// cannot appear in the filter. Pass as a JSON object, not a
+    /// JSON-encoded string.
     #[serde(default)]
+    #[schemars(schema_with = "crate::query::vector_filter::filter_arg_json_schema")]
     pub r#where: Option<serde_json::Value>,
     /// Fields to include in each row. Defaults to all non-vector
     /// columns. The injected `_distance` column is always returned.
@@ -86,8 +88,8 @@ pub async fn search_collection(
     let (where_sql, mut binds): (String, Vec<Value>) = match &input.r#where {
         None => ("1=1".into(), vec![]),
         Some(raw) => {
-            let ast: FilterAst = serde_json::from_value(raw.clone())
-                .map_err(|e| anyhow::anyhow!("FILTER_PARSE_ERROR: {e}"))?;
+            let ast: FilterAst = vector_filter::parse_filter_value(raw.clone())
+                .map_err(|msg| anyhow::anyhow!("FILTER_PARSE_ERROR: {msg}"))?;
             vector_filter::compile(&schema, &ast).map_err(|e| match e {
                 FilterError::UnknownField(f) => anyhow::anyhow!("FILTER_UNKNOWN_FIELD: {f}"),
                 FilterError::VectorField(f) => anyhow::anyhow!("FILTER_VECTOR_FIELD: {f}"),

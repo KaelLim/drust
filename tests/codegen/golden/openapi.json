@@ -12,49 +12,15 @@
   "components": {
     "schemas": {
       "FilterAst": {
-        "oneOf": [
+        "anyOf": [
           {
             "type": "object",
             "required": [
-              "op",
-              "field",
-              "value"
+              "and"
             ],
+            "additionalProperties": false,
             "properties": {
-              "op": {
-                "type": "string",
-                "enum": [
-                  "eq",
-                  "neq",
-                  "lt",
-                  "lte",
-                  "gt",
-                  "gte",
-                  "like",
-                  "in"
-                ]
-              },
-              "field": {
-                "type": "string"
-              },
-              "value": {}
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "op",
-              "filters"
-            ],
-            "properties": {
-              "op": {
-                "type": "string",
-                "enum": [
-                  "and",
-                  "or"
-                ]
-              },
-              "filters": {
+              "and": {
                 "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/FilterAst"
@@ -65,19 +31,76 @@
           {
             "type": "object",
             "required": [
-              "op",
-              "filter"
+              "or"
             ],
+            "additionalProperties": false,
             "properties": {
-              "op": {
-                "type": "string",
-                "enum": [
-                  "not"
-                ]
-              },
-              "filter": {
+              "or": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/FilterAst"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "not"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "not": {
                 "$ref": "#/components/schemas/FilterAst"
               }
+            }
+          },
+          {
+            "type": "object",
+            "description": "leaf: exactly one {field: operand}, where operand is a scalar (eq shorthand) or a one-key {op: value} object.",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "description": "one operator: {op: operand}. op ∈ eq|ne|gt|gte|lt|lte|like|in|nin|is_null|is_not_null. in/nin take arrays.",
+                  "minProperties": 1,
+                  "maxProperties": 1,
+                  "properties": {
+                    "eq": {},
+                    "ne": {},
+                    "gt": {},
+                    "gte": {},
+                    "lt": {},
+                    "lte": {},
+                    "like": {
+                      "type": "string"
+                    },
+                    "in": {
+                      "type": "array"
+                    },
+                    "nin": {
+                      "type": "array"
+                    },
+                    "is_null": {
+                      "type": "boolean"
+                    },
+                    "is_not_null": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
             }
           }
         ]

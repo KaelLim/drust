@@ -55,6 +55,63 @@ pub fn compile(
     Ok((sql, binds))
 }
 
+/// Caller-facing description of the accepted filter shapes. Surfaced whenever
+/// a filter value fails to parse — a wrong JSON type, or a double-encoded
+/// string that is not valid JSON — in place of serde's opaque
+/// "data did not match any variant of untagged enum FilterAst".
+pub fn filter_shape_hint() -> String {
+    "filter must be a JSON object: a leaf like {\"status\":\"published\"} \
+     (equality) or {\"views\":{\"gte\":10}} (operator — one of eq, ne, gt, \
+     gte, lt, lte, like, in, nin, is_null, is_not_null), or a boolean node \
+     {\"and\":[...]} / {\"or\":[...]} / {\"not\":{...}}. Pass it as an object, \
+     not a JSON-encoded string."
+        .to_string()
+}
+
+/// Parse a caller-supplied JSON value into a [`FilterAst`], tolerating the
+/// common MCP-client behaviour of double-encoding a structured argument as a
+/// JSON *string*. Several MCP hosts serialize object-typed tool arguments to
+/// strings; without this rescue a well-formed filter arrives as
+/// `Value::String("{...}")` and fails the `untagged` enum with an opaque
+/// "did not match any variant" error. On failure returns the human-facing
+/// [`filter_shape_hint`], never the raw serde message.
+///
+/// Every caller-supplied-filter entry point (`list_records`, `aggregate`,
+/// `search_collection`'s `where`, `set_policy`'s `using`/`check`) routes
+/// through here so the tolerance and the error text stay in lockstep.
+pub fn parse_filter_value(v: Json) -> Result<FilterAst, String> {
+    // One layer of string-decoding: a JSON string that itself encodes an
+    // object/array is the double-encoding case. A string that is not valid
+    // JSON, or that decodes to a scalar, still fails below with the hint.
+    let decoded = match v {
+        Json::String(s) => serde_json::from_str::<Json>(&s).map_err(|_| filter_shape_hint())?,
+        other => other,
+    };
+    // A JSON object always deserializes as `Leaf(map)`; only a non-object
+    // (array, scalar, null) reaches the error arm — exactly the inputs that
+    // produced the opaque variant error before.
+    serde_json::from_value::<FilterAst>(decoded).map_err(|_| filter_shape_hint())
+}
+
+/// `schemars` override for the `filter` / `using` / `check` / `where` MCP tool
+/// arguments. The runtime field stays `serde_json::Value` (any JSON — so a
+/// double-encoded string still deserializes and [`parse_filter_value`] rescues
+/// it), but the advertised inputSchema is an `object`: a bare `Value` renders
+/// as schemars' untyped "any", which strict MCP clients (e.g. Zod-validating
+/// hosts) reject or coerce into a string — the very double-encoding this
+/// module now tolerates. Steering the schema to `object` stops it at the
+/// source. Shape detail lives in `src/codegen/filter_ast_schema.rs`.
+pub fn filter_arg_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "description": "Structured filter (FilterAst). A boolean node \
+            {\"and\":[...]} / {\"or\":[...]} / {\"not\":{...}}, or a leaf \
+            {field: scalar} (equality) or {field: {op: operand}} where op is \
+            one of eq, ne, gt, gte, lt, lte, like, in, nin, is_null, \
+            is_not_null. Pass as a JSON object, not a JSON-encoded string."
+    })
+}
+
 fn compile_node(
     schema: &CollectionSchema,
     node: &FilterAst,
@@ -368,5 +425,93 @@ mod tests {
         let (sql, binds) = compile(&s, &ast).unwrap();
         assert_eq!(sql, r#""a" IS NOT NULL"#);
         assert!(binds.is_empty());
+    }
+
+    // --- parse_filter_value: string-double-encoding tolerance (v1.58.6) ---
+
+    #[test]
+    fn parse_filter_value_accepts_plain_object() {
+        let ast = parse_filter_value(serde_json::json!({"status": "published"})).unwrap();
+        assert!(matches!(ast, FilterAst::Leaf(_)));
+    }
+
+    #[test]
+    fn parse_filter_value_accepts_double_encoded_leaf_string() {
+        // The MCP footgun: an object serialized to a JSON *string*. Before the
+        // rescue this failed with "did not match any variant".
+        let ast = parse_filter_value(serde_json::json!("{\"status\":\"published\"}")).unwrap();
+        assert!(matches!(ast, FilterAst::Leaf(_)));
+    }
+
+    #[test]
+    fn parse_filter_value_accepts_double_encoded_bool_tree_string() {
+        let ast = parse_filter_value(serde_json::json!("{\"and\":[{\"a\":1},{\"b\":2}]}")).unwrap();
+        assert!(matches!(ast, FilterAst::And { .. }));
+    }
+
+    #[test]
+    fn parse_filter_value_scalar_yields_shape_hint_not_serde_noise() {
+        let err = parse_filter_value(serde_json::json!(true)).unwrap_err();
+        assert!(
+            err.contains("JSON object"),
+            "want teaching hint, got: {err}"
+        );
+        // The opaque serde message must never leak to the caller.
+        assert!(
+            !err.contains("did not match any variant"),
+            "leaked raw serde message: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_filter_value_non_json_string_yields_hint() {
+        let err = parse_filter_value(serde_json::json!("not json at all")).unwrap_err();
+        assert!(err.contains("JSON object"), "got: {err}");
+    }
+
+    /// Anti-drift guard: the shapes the tool descriptions and the codegen
+    /// schema (`src/codegen/filter_ast_schema.rs`) advertise must be exactly
+    /// the shapes the real parser accepts. The historically mis-documented
+    /// `{op, field, value}` form is NOT a valid leaf — it must fail to compile.
+    #[test]
+    fn documented_shapes_match_the_real_parser() {
+        let s = schema_with(&[("status", "text"), ("views", "integer")], &[]);
+        for j in [
+            r#"{"status":"published"}"#,
+            r#"{"views":{"gte":10}}"#,
+            r#"{"and":[{"status":"published"},{"views":{"gte":10}}]}"#,
+            r#"{"or":[{"status":"a"},{"status":"b"}]}"#,
+            r#"{"not":{"status":"draft"}}"#,
+        ] {
+            let ast = parse_filter_value(serde_json::from_str(j).unwrap())
+                .unwrap_or_else(|e| panic!("{j} must parse: {e}"));
+            compile(&s, &ast).unwrap_or_else(|e| panic!("{j} must compile: {e}"));
+        }
+        // {op, field, value} parses as a 3-key leaf, which compile rejects.
+        let wrong = parse_filter_value(serde_json::json!({"op":"eq","field":"status","value":"x"}))
+            .unwrap();
+        assert!(
+            compile(&s, &wrong).is_err(),
+            "{{op,field,value}} must NOT be a valid leaf — codegen must document {{field:{{op}}}}"
+        );
+    }
+
+    /// The "stop it at the source" half of the fix: the schemars override must
+    /// advertise an `object` schema, not schemars' untyped "any" (which is what
+    /// invited strict MCP clients to stringify the argument).
+    #[test]
+    fn filter_arg_schema_advertises_object_not_any() {
+        let mut g = schemars::SchemaGenerator::default();
+        let schema = filter_arg_json_schema(&mut g);
+        let v = serde_json::to_value(&schema).unwrap();
+        assert_eq!(
+            v.get("type").and_then(|t| t.as_str()),
+            Some("object"),
+            "filter arg must advertise an object schema, got {v}"
+        );
+        assert!(
+            v.get("description").is_some(),
+            "filter arg schema should carry a model-facing description"
+        );
     }
 }

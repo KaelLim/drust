@@ -2,10 +2,22 @@
 // Do not edit by hand. Re-fetch from https://example.com/drust/t/demo/types.ts to refresh.
 // Schema source: service
 
+export type FilterScalar = string | number | boolean | null;
+export type FilterOp =
+  | { eq: FilterScalar } | { ne: FilterScalar }
+  | { gt: FilterScalar } | { gte: FilterScalar }
+  | { lt: FilterScalar } | { lte: FilterScalar }
+  | { like: string }
+  | { in: FilterScalar[] } | { nin: FilterScalar[] }
+  | { is_null: boolean } | { is_not_null: boolean };
+// A leaf names EXACTLY ONE field; a TS index signature cannot express that
+// bound, so the runtime parser (not this type) enforces it — {} and multi-field
+// objects type-check here but are rejected server-side.
 export type FilterAst =
-  | { op: 'eq' | 'neq' | 'lt' | 'lte' | 'gt' | 'gte' | 'like' | 'in'; field: string; value: unknown }
-  | { op: 'and' | 'or'; filters: FilterAst[] }
-  | { op: 'not'; filter: FilterAst };
+  | { and: FilterAst[] }
+  | { or: FilterAst[] }
+  | { not: FilterAst }
+  | { [field: string]: FilterScalar | FilterOp };
 
 /** Blog posts */
 export interface Posts {

@@ -66,6 +66,53 @@ async fn mcp_set_get_policy_round_trip() {
 }
 
 #[tokio::test]
+async fn mcp_set_policy_accepts_double_encoded_using_string() {
+    // Regression (v1.58.6): a client that serializes the `using` argument to a
+    // JSON *string* used to hit "invalid `using` filter: data did not match any
+    // variant of untagged enum FilterAst". It now decodes one string layer and
+    // stores the same policy as the object-arg path.
+    let d = tempfile::tempdir().unwrap();
+    let mcp = svc(&d, "mcppol-str").await;
+    make_posts(&mcp).await;
+
+    // A JSON string encoding {"owner":{"$auth":"id"}}.
+    let using_str = json!("{\"owner\":{\"$auth\":\"id\"}}");
+    let v = drust::mcp::tools::policy::set_policy(&mcp, "posts", "select", Some(using_str), None)
+        .await
+        .unwrap();
+    assert_eq!(v["ok"], true);
+
+    // Stored form is the decoded object, identical to the object-arg path.
+    let got = drust::mcp::tools::policy::get_policies(&mcp, "posts")
+        .await
+        .unwrap();
+    assert_eq!(
+        got["stored"]["select"]["using"],
+        json!({ "owner": { "$auth": "id" } })
+    );
+}
+
+#[tokio::test]
+async fn mcp_set_policy_accepts_double_encoded_check_string() {
+    // Cover the second clause (`check`) of the same rewired path: a stringified
+    // FilterAst must decode and store, just like `using`.
+    let d = tempfile::tempdir().unwrap();
+    let mcp = svc(&d, "mcppol-chk").await;
+    make_posts(&mcp).await;
+
+    let check_str = json!("{\"title\":\"x\"}");
+    let v = drust::mcp::tools::policy::set_policy(&mcp, "posts", "insert", None, Some(check_str))
+        .await
+        .unwrap();
+    assert_eq!(v["ok"], true);
+
+    let got = drust::mcp::tools::policy::get_policies(&mcp, "posts")
+        .await
+        .unwrap();
+    assert_eq!(got["stored"]["insert"]["check"], json!({ "title": "x" }));
+}
+
+#[tokio::test]
 async fn mcp_set_policy_bad_field_errors() {
     let d = tempfile::tempdir().unwrap();
     let mcp = svc(&d, "mcppol-bad").await;

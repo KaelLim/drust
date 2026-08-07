@@ -11,7 +11,7 @@
 
 use crate::mcp::server::DrustMcp;
 use crate::query::policy::{Policy, validate_policy};
-use crate::query::vector_filter::FilterAst;
+use crate::query::vector_filter::{FilterAst, parse_filter_value};
 use crate::storage::schema::{
     DmlVerb, collection_exists, describe_collection, is_protected_collection, read_policies,
     write_policy,
@@ -30,12 +30,15 @@ fn parse_op(op: &str) -> anyhow::Result<DmlVerb> {
 }
 
 /// Parse one optional clause (`using` or `check`) JSON into a `FilterAst`.
+/// Routes through `parse_filter_value`, which tolerates a double-encoded JSON
+/// string (common MCP-client behaviour) and returns a teaching hint instead
+/// of serde's opaque "did not match any variant" error.
 fn parse_clause(label: &str, raw: Option<serde_json::Value>) -> anyhow::Result<Option<FilterAst>> {
     match raw {
         None => Ok(None),
         Some(v) => {
-            let ast: FilterAst = serde_json::from_value(v)
-                .map_err(|e| anyhow::anyhow!("invalid `{label}` filter: {e}"))?;
+            let ast = parse_filter_value(v)
+                .map_err(|msg| anyhow::anyhow!("invalid `{label}` filter: {msg}"))?;
             Ok(Some(ast))
         }
     }

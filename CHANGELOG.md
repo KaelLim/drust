@@ -1,3 +1,63 @@
+## v1.58.6 — 2026-08-07
+
+Found by a user driving the live per-tenant MCP tools: every `set_policy`
+`using` clause and every `list_records` `filter` — including the exact examples
+in the tool descriptions and the shape read out of the tenant's own
+`openapi.json` — was rejected with `data did not match any variant of untagged
+enum FilterAst`. Reproduced against the running service before the fix (a
+`using` object parsed fine; the same object sent as a JSON *string* produced the
+error), which isolated two independent bugs.
+
+### Fixed — a double-encoded (stringified) filter was rejected outright
+
+Every structured-filter entry point deserialized the argument with
+`serde_json::from_value::<FilterAst>`. That accepts a JSON object (the format is
+`{field: scalar}` / `{field: {op: operand}}` / `{and|or|not}`) but not a JSON
+*string*. Several MCP clients serialize object-typed tool arguments to strings —
+encouraged here because the `filter`/`using`/`check`/`where` arguments were bare
+`serde_json::Value`, which `schemars` renders as an untyped "any" that strict
+clients coerce. So a perfectly well-formed filter arrived as
+`Value::String("{...}")` and failed the untagged enum with an opaque error, on
+`list_records`, `aggregate`, `search_collection` (`where`) and `set_policy`
+(`using`/`check`) alike.
+
+All four now route through one `vector_filter::parse_filter_value`, which decodes
+a single JSON-string layer before matching and, on real failure, returns a
+teaching hint (the accepted shapes) instead of the raw serde message. The four
+arguments now advertise an `object` inputSchema rather than "any", so
+well-behaved clients stop stringifying in the first place. Runtime type is
+unchanged (`Value`), so an object filter behaves exactly as before — this is
+purely additive tolerance.
+
+### Fixed — the generated FilterAst schema described a shape the parser never accepted
+
+`src/codegen/filter_ast_schema.rs` emitted the OpenAPI (`openapi.json`), TS
+(`types.ts`) and Zod (`zod.ts`) FilterAst as `{op, field, value}` /
+`{op:'and'|'or', filters}` / `{op:'not', filter}` — with operator names like
+`neq` — none of which the real parser has ever accepted (it wants `{field:{op}}`
+with `ne`, and boolean nodes keyed `and`/`or`/`not`). Any client generating types
+from the served schema built filters that always failed. The golden codegen
+fixtures pinned the wrong output, so no test caught it. The three renderers now
+describe the true shape (operators eq, ne, gt, gte, lt, lte, like, in, nin,
+is_null, is_not_null); golden fixtures regenerated. Two guard tests were added:
+`documented_shapes_match_the_real_parser` compiles the documented example
+filters against the real compiler and asserts the old `{op,field,value}` form is
+*not* a valid leaf (so a parser change reintroducing it fails), and
+`codegen_ops_match_parser_and_drop_the_drifted_shape` asserts the operator names
+emitted by the TS/Zod/OpenAPI renderers match the parser's and that `neq` / the
+`{op,field,value}` keys are gone from every renderer. (Neither cross-checks the
+generated JSON-Schema against the Rust parser end-to-end.) The generated Zod op
+objects are `.strict()` and the leaf refined to exactly one field, so a client
+validator rejects — rather than silently strips — an extra operator the server
+rejects anyway; the OpenAPI branches use `anyOf` (not `oneOf`) to match the
+untagged enum's first-fit semantics.
+
+Not a security issue — MCP is service-only and the filter still compiles to
+`?`-bound SQL. Verified by unit tests, integration tests (a stringified filter
+round-trips identically to the object form on both `list_records` and
+`set_policy`), and a live MCP smoke against the running service for both the
+object and the string encodings.
+
 ## v1.58.5 — 2026-08-06
 
 Found by a whole-codebase adversarial review (two engines from complementary
