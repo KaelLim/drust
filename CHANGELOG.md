@@ -1,3 +1,50 @@
+## v1.59.0 — 2026-08-07
+
+Three operator-facing hardening changes for the live external k3s deployer
+(GitHub #10 / #4), unified by CLAUDE.md invariant #17 — the three deployment
+targets (bare-metal systemd, Docker Compose, k3s Helm chart) must not silently
+diverge.
+
+### Added — object-storage usage on the owner dashboard (#10)
+
+The admin storage widget read `statvfs(data_dir)` — the SQLite **database**
+filesystem only. Under the Helm chart's default split topology the object store
+is a separate pod's PVC, so the widget under-reported (it omitted the bulk of
+tenant storage) and read as if it were total storage. The existing disk card is
+now labelled **"Database disk"**, and a new owner-only **"Object storage"** card
+surfaces host-wide usage from `SUM(tenants.files_bytes)` (drust's own
+accounting; *used* only — drust cannot see the object store's PVC capacity). Like
+the disk card, it renders only for owner/admin (the privileged `cap_view` arm); a
+capped member does not see it, and `object_store` carries a redacted `"?"` value
+on the member path purely as defense-in-depth. The low-disk write guard is unchanged
+and still watches the database filesystem only; an actual object-store guard
+(aggregate-quota or S3/Garage admin API) is a separate, deferred change, and the
+DB-only scope is now documented.
+
+### Fixed — `_trash` retention was hardcoded on two of three deployment targets (#935)
+
+`deploy/drust-janitor.sh` and the k3s maintenance sidecar each swept `_trash`
+with a hardcoded `find … -mtime +7`, overriding `DRUST_TRASH_RETENTION_DAYS`: a
+longer setting was capped at 7 days and `0` (keep-forever) was defeated. Docker
+Compose already honored the knob (it has no scheduled `find`). Both hardcoded
+finds are removed; the in-process janitor — which runs on every target — is now
+the sole `_trash` sweeper, so the knob is honored everywhere. Guarded by a
+render-test assertion (`assert_absent full.yaml "-mtime"`) and a bare-metal grep
+guard (`deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh`). This was a
+v1.58.0 regression.
+
+### Docs — a backup snapshot is database-only (#933)
+
+The `*.tar.zst` snapshot contains the SQLite databases (and plaintext
+credentials) but **not** the object bytes, so a cold restore to an empty object
+store leaves `_system_files` rows dangling. This is now stated on the admin
+backup page, in `docker-compose.yml`, both READMEs, the Helm `values.yaml`
+(`objectMirror`), and `.claude/rules/storage-files.md`: pair every DB backup
+with an object-store backup (bare-metal `garage-backup.timer`, k3s
+`objectMirror` (Litestream is DB-only), docker-compose the `minio-data` volume).
+No change to
+the tar contents.
+
 ## v1.58.6 — 2026-08-07
 
 Found by a user driving the live per-tenant MCP tools: every `set_policy`

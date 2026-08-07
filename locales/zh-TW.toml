@@ -392,6 +392,8 @@ hint = "<code>drust-backup.timer</code> 第一次執行後，這份清單就會�
 title = "尚無備份"
 
 [backups.head]
+dr_body = "快照包含 SQLite 資料庫（與明文憑證），不含上傳檔。上傳檔存於物件儲存、需另行備份——冷還原到空的物件儲存會留下無效的檔案引用。切勿未加密將快照複製離機。"
+dr_title = "快照僅含資料庫"
 eyebrow = "管理 · 容災"
 subtitle = "由 <code>drust-backup.timer</code> 驅動的每日 <code>VACUUM INTO</code> 快照，以 zstd 壓縮。保留最近 7 天，另外每週留一份、共 4 份。還原前可先檢視快照內含哪些租戶。"
 title = "備份"
@@ -675,7 +677,7 @@ heading = "色彩 token"
 heading = "字體排印"
 [files.disk]
 banner_title = "磁碟剩餘 {pct}% — 已暫停上傳"
-banner_action = "請清出 <code>/var/lib/garage</code> 空間或擴充磁碟。"
+banner_action = "請清出資料庫磁碟的空間或擴充磁碟。"
 banner_usage = "已使用 {used} GB／共 {total} GB。"
 [files.head]
 eyebrow = "管理 · 儲存"
@@ -703,7 +705,7 @@ sign_url = "簽署網址"
 [files.stats]
 disk_free_label = "磁碟可用"
 disk_healthy = "正常"
-disk_used_label = "磁碟已用"
+disk_used_label = "資料庫磁碟"
 total_suffix = "合計"
 disk_of_total = "／共 {total} GB"
 [files_reconcile.action]
@@ -903,7 +905,7 @@ confirm_ok = "刪除"
 
 [tenant_files_admin.disk]
 banner_title = "主機磁碟剩 {pct}% — 暫停上傳"
-banner_body = "請清理主機上的 <code>/var/lib/garage</code> 或擴充磁碟空間。"
+banner_body = "請清理主機資料庫磁碟的空間或擴充磁碟。"
 
 [tenant_files_admin.empty]
 body = "使用上方表單上傳第一個檔案。"
@@ -935,7 +937,7 @@ success_body = "請複製下方網址，將在 {secs} 秒後失效。"
 
 [tenant_files_admin.stats]
 disk_healthy = "正常"
-disk_label = "主機磁碟剩餘"
+disk_label = "資料庫磁碟剩餘"
 disk_paused = "暫停上傳"
 files_label = "檔案"
 files_meta = "_system_files 列數"
@@ -1401,7 +1403,7 @@ tenants_meta = "你擁有的租戶數，對比你的額度上限"
 total = "共 {n} 個租戶"
 [tenants_list.disk]
 # REVIEW (low confidence): contains template var {pct}, verify wording
-banner_body = "剩餘空間低於 20% 時，Garage 物件上傳會被擋下。請清出 <code>/var/lib/garage</code> 的空間，或擴充磁碟。"
+banner_body = "資料庫磁碟剩餘空間低於 20% 時，上傳會暫停。請清出空間或擴充磁碟。"
 banner_title = "磁碟剩餘 {pct}% — 上傳已暫停"
 total_meta = "／共 {gb} GB"
 [tenants_list.delete]
@@ -1425,6 +1427,9 @@ gb_used = "GB · 已使用"
 healthy_count = "{n} 個正常"
 refresh_every = "每 {min} 分鐘更新"
 stats_sampled = "統計取樣於 {age}"
+db_disk = "資料庫磁碟"
+object_meta = "共 {n} 個租戶"
+object_storage = "物件儲存"
 storage = "儲存空間"
 storage_healthy = "正常"
 storage_low = "偏低"

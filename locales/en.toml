@@ -377,6 +377,8 @@ hint = "The first run of <code>drust-backup.timer</code> will populate this list
 title = "No backups yet"
 
 [backups.head]
+dr_body = "A snapshot contains the SQLite databases (and plaintext credentials), not uploaded files. Uploaded files live in object storage and are backed up separately — a cold restore to an empty object store leaves file references dangling. Never copy a snapshot off-host unencrypted."
+dr_title = "Snapshots are database-only"
 eyebrow = "Admin · resilience"
 subtitle = "Daily <code>VACUUM INTO</code> snapshots driven by <code>drust-backup.timer</code>, compressed with zstd. The last 7 days are kept, plus one snapshot per week for 4 weeks. Inspect a snapshot before restoring to see which tenants are inside."
 title = "Backups"
@@ -656,7 +658,7 @@ heading = "Color tokens"
 heading = "Typography"
 [files.disk]
 banner_title = "Disk at {pct}% free — uploads paused"
-banner_action = "Free up <code>/var/lib/garage</code> or scale the disk."
+banner_action = "Free up space on the database disk or scale it."
 banner_usage = "{used} GB used of {total} GB total."
 [files.head]
 eyebrow = "Admin · storage"
@@ -683,7 +685,7 @@ sign_url = "Sign URL"
 [files.stats]
 disk_free_label = "Disk free"
 disk_healthy = "healthy"
-disk_used_label = "Disk used"
+disk_used_label = "Database disk"
 total_suffix = "total"
 disk_of_total = "of {total} GB"
 [files_reconcile.action]
@@ -885,7 +887,7 @@ confirm_ok = "Delete"
 
 [tenant_files_admin.disk]
 banner_title = "Host disk at {pct}% free — uploads paused"
-banner_body = "Free up <code>/var/lib/garage</code> on the host or scale the disk."
+banner_body = "Free up space on the host database disk or scale it."
 
 [tenant_files_admin.empty]
 body = "Upload the first one with the form above."
@@ -917,7 +919,7 @@ success_body = "Copy the URL below. It expires in {secs} seconds."
 
 [tenant_files_admin.stats]
 disk_healthy = "healthy"
-disk_label = "Host disk free"
+disk_label = "Database disk free"
 disk_paused = "uploads paused"
 files_label = "Files"
 files_meta = "_system_files rows"
@@ -1376,7 +1378,7 @@ tenants_meta = "live tenants you own, against your allowance"
 [tenants_list.count]
 total = "{n} tenants"
 [tenants_list.disk]
-banner_body = "Garage object uploads are blocked below 20% free space. Free up <code>/var/lib/garage</code> or scale the disk."
+banner_body = "Uploads pause below 20% free space on the database disk. Free up space or scale it."
 banner_title = "Disk at {pct}% free — uploads paused"
 total_meta = "of {gb} GB total"
 [tenants_list.delete]
@@ -1399,6 +1401,9 @@ gb_used = "GB · used"
 healthy_count = "{n} healthy"
 refresh_every = "refresh every {min} min"
 stats_sampled = "stats sampled {age}"
+db_disk = "Database disk"
+object_meta = "across {n} tenants"
+object_storage = "Object storage"
 storage = "Storage"
 storage_healthy = "healthy"
 storage_low = "low"

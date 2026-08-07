@@ -65,9 +65,14 @@
           <div class="meta">{{ t.s("tenants_list.pulse.tagline") }}</div>
         </div>
         <div class="ten-pulse">
-          <div class="head"><span>{{ t.s("tenants_list.pulse.storage") }}</span>{% if disk.free_pct < 20.0 %}<span class="pill danger">{{ t.s("tenants_list.pulse.storage_low") }}</span>{% else %}<span class="pill mint">{{ t.s("tenants_list.pulse.storage_healthy") }}</span>{% endif %}</div>
+          <div class="head"><span>{{ t.s("tenants_list.pulse.db_disk") }}</span>{% if disk.free_pct < 20.0 %}<span class="pill danger">{{ t.s("tenants_list.pulse.storage_low") }}</span>{% else %}<span class="pill mint">{{ t.s("tenants_list.pulse.storage_healthy") }}</span>{% endif %}</div>
           <div class="body">{{ disk.used_gb }} <span class="unit">{{ t.s("tenants_list.pulse.gb_used") }}</span></div>
           <div class="meta">{{ t.fmt1("tenants_list.disk.total_meta", "gb", disk.total_gb) }}</div>
+        </div>
+        <div class="ten-pulse">
+          <div class="head"><span>{{ t.s("tenants_list.pulse.object_storage") }}</span></div>
+          <div class="body">{{ object_store.used_gb }} <span class="unit">{{ t.s("tenants_list.pulse.gb_used") }}</span></div>
+          <div class="meta">{{ t.fmt1("tenants_list.pulse.object_meta", "n", object_store.tenant_count) }}</div>
         </div>
         <div class="ten-pulse">
           <div class="head"><span>{{ t.s("tenants_list.pulse.disk_free") }}</span></div>

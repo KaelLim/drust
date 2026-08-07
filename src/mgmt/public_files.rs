@@ -188,6 +188,48 @@ pub fn build_disk_view() -> DiskView {
     }
 }
 
+/// Host-wide object-storage USAGE, from drust's own per-tenant accounting
+/// (`tenants.files_bytes`, maintained from `_system_files`). Reports *used*
+/// only — drust cannot see the object store's PVC capacity (under the Helm
+/// split topology it is a separate pod's PVC that `statvfs` cannot reach), so
+/// there is no total/free here. This is recorded upload bytes and may drift
+/// slightly from actual bucket bytes (orphaned objects, aborted cleanups).
+#[derive(Clone)]
+pub struct ObjectStoreView {
+    pub used_gb: String,
+    pub tenant_count: String,
+}
+
+impl ObjectStoreView {
+    /// Redacted shape for a capped (non-privileged) caller — byte-identical to
+    /// the query-error branch, so no new rendering case is introduced. Mirrors
+    /// the `DiskView` redaction the tenants-list handler already applies.
+    pub fn redacted() -> Self {
+        Self {
+            used_gb: "?".into(),
+            tenant_count: "?".into(),
+        }
+    }
+}
+
+/// Sum `files_bytes` across all non-deleted tenants in `meta.sqlite`. On any
+/// query error (e.g. a unit-test connection without the `tenants` table) it
+/// returns the redacted shape, same as `build_disk_view` on `statvfs` failure.
+pub fn build_object_store_view(conn: &rusqlite::Connection) -> ObjectStoreView {
+    match conn.query_row(
+        "SELECT COALESCE(SUM(files_bytes), 0), COUNT(*) \
+         FROM tenants WHERE deleted_at IS NULL",
+        [],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    ) {
+        Ok((bytes, count)) => ObjectStoreView {
+            used_gb: format!("{:.1}", bytes as f64 / 1_073_741_824.0),
+            tenant_count: count.to_string(),
+        },
+        Err(_) => ObjectStoreView::redacted(),
+    }
+}
+
 pub async fn list_page(
     State(state): State<PublicFilesState>,
     LocaleHint(locale): LocaleHint,
@@ -1233,5 +1275,51 @@ mod reconcile_key_tests {
         assert!(!is_admin_level_key("."), "dot must be refused");
         assert!(!is_admin_level_key("a\\b"), "backslash key must be refused");
         assert!(!is_admin_level_key("a\0b"), "NUL key must be refused");
+    }
+}
+
+#[cfg(test)]
+mod object_store_view_tests {
+    use super::build_object_store_view;
+
+    fn mem_tenants(rows: &[(i64, Option<&str>)]) -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute(
+            "CREATE TABLE tenants (files_bytes INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)",
+            [],
+        )
+        .unwrap();
+        for (bytes, del) in rows {
+            c.execute(
+                "INSERT INTO tenants (files_bytes, deleted_at) VALUES (?1, ?2)",
+                rusqlite::params![bytes, del],
+            )
+            .unwrap();
+        }
+        c
+    }
+
+    #[test]
+    fn object_store_view_sums_live_tenant_files_bytes() {
+        // 2 live tenants (1 GiB + 3 GiB) and one soft-deleted (99 GiB, excluded).
+        let gib = 1_073_741_824i64;
+        let c = mem_tenants(&[
+            (gib, None),
+            (3 * gib, None),
+            (99 * gib, Some("2026-01-01T00:00:00Z")),
+        ]);
+        let v = build_object_store_view(&c);
+        assert_eq!(v.used_gb, "4.0"); // 1 + 3; soft-deleted 99 excluded
+        assert_eq!(v.tenant_count, "2");
+    }
+
+    #[test]
+    fn object_store_view_redacts_on_query_error() {
+        // No `tenants` table -> query fails -> redacted "?" (mirrors DiskView on
+        // statvfs error), so the template renders an existing case.
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        let v = build_object_store_view(&c);
+        assert_eq!(v.used_gb, "?");
+        assert_eq!(v.tenant_count, "?");
     }
 }

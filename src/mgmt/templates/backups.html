@@ -13,6 +13,14 @@
          subtitle carrying markup stays a sibling of the header block. #}
       <p class="view-sub">{{ t.s("backups.head.subtitle")|safe }}</p>
 
+      <div class="banner warn" style="margin-bottom:18px;">
+        <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/></svg></span>
+        <div class="b-body">
+          <div class="b-title">{{ t.s("backups.head.dr_title") }}</div>
+          <p>{{ t.s("backups.head.dr_body") }}</p>
+        </div>
+      </div>
+
       {% if backups.len() > 0 %}
       <div class="stat-grid" style="margin-bottom:20px;">
         <div class="stat accent-edge">

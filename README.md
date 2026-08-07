@@ -147,13 +147,22 @@ Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `use
 | `DRUST_BIND` | optional (`127.0.0.1:47826`) | Listen address — set `0.0.0.0:47826` in a container |
 | `DRUST_PUBLIC_URL` | optional | Public base URL — required for OAuth redirect/callback links |
 | `DRUST_CORS_ORIGINS` | optional | Comma-separated allow-list; supports `https://*.example.com`, `http://localhost:*` |
-| `DRUST_DISK_MIN_FREE_PCT` | optional (20) | Upload guard for tenant file storage |
+| `DRUST_DISK_MIN_FREE_PCT` | optional (20) | Low-disk upload guard — watches the **database** filesystem only, not a separate object-store PVC |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables S3 storage features |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | optional | Garage-only: auto-provision buckets |
 
 The S3 data path uses `object_store::aws::AmazonS3`, so any S3-compatible service works (Garage, MinIO, R2, AWS S3, B2). Auto-bucket provisioning is Garage-specific; for other backends, pre-create the buckets.
 
 </details>
+
+> [!IMPORTANT]
+> **A backup snapshot is database-only.** drust's `*.tar.zst` snapshots (and the
+> k3s DB VolumeSnapshot / Litestream) cover the SQLite databases, not uploaded
+> objects. For a restorable disaster-recovery unit, pair every DB backup with an
+> object-store backup: bare-metal `garage-backup.timer`, k3s `objectMirror`
+> (Litestream backs up databases only, not objects), docker-compose the
+> `minio-data` volume. Snapshots
+> also contain plaintext credentials — never store them off-host unencrypted.
 
 ## :books: Learn more
 

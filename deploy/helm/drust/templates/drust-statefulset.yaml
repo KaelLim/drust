@@ -177,10 +177,10 @@ spec:
                 sleep $(( tgt - now ))
                 echo "[maintenance] running drust_session_janitor"
                 drust_session_janitor || echo "[maintenance] janitor exited non-zero"
-                # reclaim soft-deleted tenant dirs (spec §9 trash sweep). Non-fatal:
-                # if the slim image lacks `find`, the loop keeps running the janitor.
-                find /data/_trash -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null \
-                  || echo "[maintenance] trash sweep skipped"
+                # NOTE (#935): _trash retention is handled IN-PROCESS by drust
+                # (DRUST_TRASH_RETENTION_DAYS, default 7, 0 = keep forever). Do NOT
+                # re-add a hardcoded time-based trash sweep here — it caps a longer
+                # setting and defeats 0 (the v1.58.0 regression #935 removed).
               done
           volumeMounts:
             - { name: data, mountPath: /data }

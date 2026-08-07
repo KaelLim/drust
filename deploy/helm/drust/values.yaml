@@ -115,6 +115,10 @@ backup:
       enabled: true              # enumerate + restore initContainers rebuild an empty /data from S3
 
   # ── B2: hourly mc-mirror of this group's MinIO objects -> external backup S3 ──
+  # DR completeness (#933): enable objectMirror (or provide an external object
+  # backup) for a RESTORABLE unit — the DB VolumeSnapshot/Litestream alone does
+  # NOT capture uploaded objects, so a cold restore to an empty object store
+  # leaves _system_files rows pointing at absent objects.
   objectMirror:
     enabled: false               # also needs storage.enabled
     schedule: "0 * * * *"        # hourly UTC

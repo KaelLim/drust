@@ -26,6 +26,10 @@ struct TenantsListPage {
     /// (owner/admin) — see `CapView`. For a member this carries the redacted
     /// `"?"` shape, so even a template mistake cannot leak host state.
     disk: crate::mgmt::public_files::DiskView,
+    /// v1.59 — host-wide object-storage USAGE (`SUM(files_bytes)` across live
+    /// tenants). Same gate as `disk`: real figure for owner/admin, redacted
+    /// `"?"` for a capped member, so a template mistake cannot leak host state.
+    object_store: crate::mgmt::public_files::ObjectStoreView,
     /// v1.57 — `Some` for a capped caller (`member`), `None` for `owner`/`admin`.
     /// Doubles as the template's role switch for the stat cards.
     cap_view: Option<CapView>,
@@ -223,6 +227,17 @@ pub async fn list_page_axum(
     } else {
         crate::mgmt::public_files::build_disk_view()
     };
+    // v1.59 — object-storage usage, gated exactly like `disk`: only a
+    // privileged (owner/admin) caller sees the host-wide figure; a capped
+    // member gets the redacted `"?"` shape. The meta lock acquired here is
+    // fresh — the `rows` and `cap_view` guards were both released above, so
+    // this cannot re-enter the tokio mutex.
+    let object_store = if cap_view.is_some() {
+        crate::mgmt::public_files::ObjectStoreView::redacted()
+    } else {
+        let conn = state.session.meta.lock().await;
+        crate::mgmt::public_files::build_object_store_view(&conn)
+    };
     let stats_interval_min: u64 = std::env::var("DRUST_STATS_SAMPLE_INTERVAL_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -235,6 +250,7 @@ pub async fn list_page_axum(
             tenants: rows,
             version: env!("CARGO_PKG_VERSION"),
             disk,
+            object_store,
             cap_view,
             stats_interval_min,
             stats_age_display,

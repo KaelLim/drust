@@ -127,7 +127,10 @@ assert_contains full.yaml "MC_CONFIG_DIR"          "minio-init mc has a writable
 assert_contains full.yaml "runAsGroup: 1000"       "minio runAsGroup pinned"
 assert_contains full.yaml "public-file GETs arrive" "minio NetworkPolicy admits ingress-controller when publicFiles on"
 assert_absent storage-noPublic.yaml "public-file GETs arrive" "no ingress-controller MinIO rule when publicFiles off"
-assert_contains full.yaml "/data/_trash"           "maintenance sidecar sweeps trash"
+# #935 — sidecar no longer hardcodes _trash retention; the in-process janitor
+# (DRUST_TRASH_RETENTION_DAYS) is the sole sweeper on every target.
+assert_absent full.yaml "/data/_trash" "sidecar no longer sweeps _trash by path (#935)"
+assert_absent full.yaml "-mtime"       "sidecar has no hardcoded trash retention flag (#935)"
 assert_contains full.yaml "mc mb --ignore-existing drust/public" "minio-init creates the literal public bucket"
 
 # --- Issue #1: minio-init Job must not break install (env order) or eat live traffic (labels) ---

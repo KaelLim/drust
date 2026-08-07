@@ -93,6 +93,11 @@ services:
     volumes:
       - minio-data:/data
 
+# BACKUP / DR: this compose file ships NO scheduled backup. For disaster
+# recovery you must back up BOTH named volumes — `drust-data` (SQLite DBs +
+# in-app snapshots under /data/backups) AND `minio-data` (uploaded objects).
+# The in-app admin snapshot is DB-only and is NOT a complete DR unit; it also
+# contains plaintext credentials — store it encrypted, off-host.
 volumes:
   drust-data:
   drust-logs:

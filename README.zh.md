@@ -147,13 +147,20 @@ flowchart LR
 | `DRUST_BIND` | 選用（`127.0.0.1:47826`） | 監聽位址 —— 容器內設 `0.0.0.0:47826` |
 | `DRUST_PUBLIC_URL` | 選用 | 對外 base URL —— OAuth redirect/callback 連結需要 |
 | `DRUST_CORS_ORIGINS` | 選用 | 逗號分隔允許清單；支援 `https://*.example.com`、`http://localhost:*` |
-| `DRUST_DISK_MIN_FREE_PCT` | 選用（20） | 租戶檔案儲存的上傳守門 |
+| `DRUST_DISK_MIN_FREE_PCT` | 選用（20） | 低磁碟上傳守門——僅監看**資料庫**檔案系統，不含獨立的物件儲存 PVC |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | 選用 | 啟用 S3 儲存功能 |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | 選用 | 僅 Garage：自動建立 bucket |
 
 S3 資料路徑走 `object_store::aws::AmazonS3`，所以任何 S3 相容服務都能用（Garage、MinIO、R2、AWS S3、B2）。自動建 bucket 是 Garage 專屬；其他後端請預先建好 bucket。
 
 </details>
+
+> [!IMPORTANT]
+> **備份快照僅含資料庫。** drust 的 `*.tar.zst` 快照（以及 k3s 的 DB VolumeSnapshot /
+> Litestream）只涵蓋 SQLite 資料庫，不含上傳的物件。要成為可還原的災難復原單位，每份 DB
+> 備份都須搭配物件儲存備份：bare-metal `garage-backup.timer`、k3s `objectMirror`
+>（Litestream 只備份資料庫、不含物件）、docker-compose 則備份 `minio-data` volume。快照亦含明文憑證——
+> 切勿未加密存放於機外。
 
 ## :books: 深入了解
 
