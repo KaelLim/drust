@@ -3,6 +3,7 @@ pub mod batch;
 pub mod cron;
 pub mod exploration;
 pub mod files;
+pub mod fts;
 pub mod functions;
 pub mod index;
 pub mod oauth;

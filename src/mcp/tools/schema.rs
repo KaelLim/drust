@@ -645,6 +645,27 @@ pub async fn drop_field(
     .await
     .map_err(|_| anyhow::anyhow!("unknown collection or field: {collection}.{field}"))?;
 
+    // Wave 2 M3 — refuse dropping a column that an fts index still covers; the
+    // sync triggers reference `new.<field>`/`old.<field>`, so the DROP would
+    // otherwise leave dangling trigger bodies. Caller must drop the index first.
+    {
+        let coll_fts = collection.to_string();
+        let fld_fts = field.to_string();
+        let indexed_in: Option<String> = pool
+            .with_reader(move |c| {
+                for idx in crate::storage::schema::read_fts_indexes(c, &coll_fts)? {
+                    if idx.fields.iter().any(|f| f == &fld_fts) {
+                        return Ok::<Option<String>, rusqlite::Error>(Some(idx.name));
+                    }
+                }
+                Ok(None)
+            })
+            .await?;
+        if let Some(idx_name) = indexed_in {
+            anyhow::bail!("FTS_FIELD_INDEXED: drop index {idx_name} first");
+        }
+    }
+
     let sql = format!(
         "ALTER TABLE \"{}\" DROP COLUMN \"{}\"",
         collection.replace('"', "\"\""),
@@ -714,6 +735,7 @@ pub async fn drop_collection(s: &DrustMcp, name: &str) -> anyhow::Result<serde_j
     }
     let table = name.to_string();
     let meta_name = name.to_string();
+    let coll_for_sweep = name.to_string();
     // The trigger name matches what create_collection installs.
     let ddl = format!(
         "DROP TRIGGER IF EXISTS \"{trig}\"; DROP TABLE \"{tbl}\";",
@@ -721,7 +743,33 @@ pub async fn drop_collection(s: &DrustMcp, name: &str) -> anyhow::Result<serde_j
         tbl = table.replace('"', "\"\""),
     );
     pool.with_writer(move |c| {
+        // Wave 2 M3 — sweep this collection's fts heads. Sourced from
+        // `snapshot_search_tables` (the AUTHORITATIVE pragma_table_list, never
+        // the registry, which could disagree), filtered to this collection's
+        // `_system_search_fts$<coll>$` prefix. Every DROP is `IF EXISTS` so a
+        // partial-retry after a mid-sweep failure is clean.
+        let prefix = format!("_system_search_fts${coll_for_sweep}$");
+        let heads =
+            crate::storage::search_names::snapshot_search_tables(c)?.heads_with_prefix(&prefix);
         c.execute_batch(&ddl)?;
+        for head in &heads {
+            // Reconstruct the 3 sync-trigger names from the index component of
+            // the head; dropping the parent already drops them, but IF EXISTS
+            // keeps this idempotent and correct even if that ever changes.
+            let index = head.strip_prefix(&prefix).unwrap_or("");
+            let [ai, ad, au] =
+                crate::storage::search_names::fts_trigger_names(&coll_for_sweep, index);
+            for trg in [&ai, &ad, &au] {
+                c.execute_batch(&format!(
+                    "DROP TRIGGER IF EXISTS \"{}\";",
+                    trg.replace('"', "\"\"")
+                ))?;
+            }
+            c.execute_batch(&format!(
+                "DROP TABLE IF EXISTS \"{}\";",
+                head.replace('"', "\"\"")
+            ))?;
+        }
         // Drop the anon_caps row in the same writer transaction so meta
         // and table go together.
         delete_collection_meta(c, &meta_name)

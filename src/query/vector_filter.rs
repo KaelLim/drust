@@ -286,6 +286,7 @@ mod tests {
                     dim: *d,
                 })
                 .collect(),
+            fts_indexes: vec![],
             realtime_enabled: true,
             audit_enabled: true,
             description: None,

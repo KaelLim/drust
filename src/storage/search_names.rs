@@ -87,6 +87,16 @@ impl SearchTables {
     pub fn is_internal(&self, table: &str) -> bool {
         self.internals.contains(table)
     }
+    /// Every vtable HEAD whose name starts with `prefix`. `drop_collection`
+    /// uses this to enumerate one collection's fts heads AUTHORITATIVELY from
+    /// `pragma_table_list` (never from the registry, which could disagree).
+    pub fn heads_with_prefix(&self, prefix: &str) -> Vec<String> {
+        self.heads
+            .iter()
+            .filter(|h| h.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]

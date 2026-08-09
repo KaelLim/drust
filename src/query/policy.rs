@@ -694,6 +694,7 @@ mod tests {
             owner_field: None,
             read_scope: None,
             vector_fields: vec![],
+            fts_indexes: vec![],
             realtime_enabled: true,
             audit_enabled: true,
             description: None,

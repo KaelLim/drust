@@ -95,6 +95,11 @@ CREATE TABLE IF NOT EXISTS "_system_collection_meta" (
   owner_field              TEXT,
   read_scope               TEXT,
   vector_fields_json       TEXT NOT NULL DEFAULT '[]',
+  -- Wave 2 M3: per-collection FTS5 index registry (list of
+  -- {name, fields, tokenizer}). Kept in lockstep with the migrate_tenant_db
+  -- add_column_if_missing (runtime-created tenants only see this CREATE,
+  -- never the boot migration pass, so the column must exist in both).
+  fts_indexes_json         TEXT NOT NULL DEFAULT '[]',
   realtime_enabled         INTEGER NOT NULL DEFAULT 1,
   description              TEXT,
   field_descriptions_json  TEXT NOT NULL DEFAULT '{}',
@@ -318,6 +323,23 @@ mod schema_tests {
         assert!(
             cols.contains(&"vector_fields_json".to_string()),
             "fresh tenant missing vector_fields_json; cols = {cols:?}"
+        );
+    }
+
+    #[test]
+    fn new_tenant_meta_has_fts_indexes_json_column() {
+        let tmp = TempDir::new().unwrap();
+        let conn = open_write(tmp.path(), "newtenant").unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(_system_collection_meta)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            cols.contains(&"fts_indexes_json".to_string()),
+            "fresh tenant missing fts_indexes_json; cols = {cols:?}"
         );
     }
 

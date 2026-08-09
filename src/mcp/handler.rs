@@ -114,6 +114,31 @@ pub struct DropIndexArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateFtsIndexArgs {
+    pub collection: String,
+    /// Index name (identifier grammar). May not end in an fts5 shadow suffix
+    /// (`_data`/`_idx`/`_docsize`/`_config`/`_content`).
+    pub name: String,
+    /// One or more TEXT fields to index. Non-TEXT, vector, and
+    /// id/created_at/updated_at fields are rejected (FTS_FIELD_INVALID).
+    pub fields: Vec<String>,
+    /// `"trigram"` (default) or `"unicode61"`.
+    #[serde(default)]
+    pub tokenizer: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DropFtsIndexArgs {
+    pub collection: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListFtsIndexesArgs {
+    pub collection: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RecentWritesArgs {
     // NOT prose: schemars publishes the doc line below verbatim as this
     // parameter's `description` in `tools/list` — the surface the prologue
@@ -957,6 +982,72 @@ impl DrustMcpService {
         )
         .await
         {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = false),
+        description = "Create a full-text-search (FTS5) index over one or more \
+        TEXT fields of a collection. `name` is the index identifier; `fields` is \
+        a non-empty list of TEXT column names (id/created_at/updated_at, vector, \
+        and non-TEXT fields are rejected). `tokenizer` is \"trigram\" (default) \
+        or \"unicode61\". Builds an external-content FTS5 vtable + three sync \
+        triggers and runs a corpus rebuild in one transaction — this holds the \
+        tenant writer lock for the whole collection and is the documented DDL \
+        quota carve-out (a service key can transiently exceed its cap building \
+        one index; the next record/upload write then blocks)."
+    )]
+    async fn create_fts_index(
+        &self,
+        Parameters(CreateFtsIndexArgs {
+            collection,
+            name,
+            fields,
+            tokenizer,
+        }): Parameters<CreateFtsIndexArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::fts::create_fts_index(
+            &self.state,
+            &collection,
+            &name,
+            &fields,
+            tokenizer.as_deref(),
+        )
+        .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "Drop a full-text-search index by name: removes its sync \
+        triggers and the underlying FTS5 vtable (row data in the collection is \
+        untouched) and unregisters it. Returns FTS_INDEX_NOT_FOUND if absent."
+    )]
+    async fn drop_fts_index(
+        &self,
+        Parameters(DropFtsIndexArgs { collection, name }): Parameters<DropFtsIndexArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::fts::drop_fts_index(&self.state, &collection, &name).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "List the full-text-search indexes registered on a \
+        collection, each with its name, indexed fields, and tokenizer."
+    )]
+    async fn list_fts_indexes(
+        &self,
+        Parameters(ListFtsIndexesArgs { collection }): Parameters<ListFtsIndexesArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::mcp::tools::fts::list_fts_indexes(&self.state, &collection).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -3306,8 +3397,8 @@ mod instructions_tests {
 mod annotation_tests {
     use super::*;
 
-    // Wire name == fn name (no `name=` overrides). Buckets sum to 68; call_rpc &
-    // invoke_function are special-cased below. Total must equal tool_count() (70).
+    // Wire name == fn name (no `name=` overrides). Buckets sum to 71; call_rpc &
+    // invoke_function are special-cased below. Total must equal tool_count() (73).
     const READONLY: &[&str] = &[
         "list_collections",
         "whoami",
@@ -3332,11 +3423,13 @@ mod annotation_tests {
         "list_functions",
         "get_function_logs",
         "list_cron_jobs",
+        "list_fts_indexes",
     ];
     const DESTRUCTIVE: &[&str] = &[
         "drop_field",
         "drop_collection",
         "drop_index",
+        "drop_fts_index",
         "delete_record",
         "delete_file",
         "delete_rpc",
@@ -3378,6 +3471,7 @@ mod annotation_tests {
         "create_collection",
         "add_field",
         "create_index",
+        "create_fts_index",
         "create_rpc",
         "create_user",
         "create_webhook",
@@ -3397,14 +3491,14 @@ mod annotation_tests {
             .unwrap_or_else(|| panic!("tool {name} has no annotations"))
     }
 
-    /// Completeness anchor: proves wire name == fn name, the count is 70, and the
+    /// Completeness anchor: proves wire name == fn name, the count is 73, and the
     /// classification below covers EXACTLY the real tool set (catches renames/adds/typos).
     #[test]
-    fn wire_names_match_classification_and_count_is_70() {
+    fn wire_names_match_classification_and_count_is_73() {
         let names: Vec<String> = tools().iter().map(|t| t.name.to_string()).collect();
         assert_eq!(
             names.len(),
-            70,
+            73,
             "tool count changed — update tool_count assertions too"
         );
         let mut covered: Vec<&str> = READONLY

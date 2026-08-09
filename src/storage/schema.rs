@@ -428,6 +428,18 @@ pub struct VectorField {
     pub dim: u32,
 }
 
+/// A full-text-search index registered on a collection (Wave 2 M3). Backs an
+/// external-content FTS5 vtable named `fts_head_name(coll, name)` maintained by
+/// sync triggers; the registry (`fts_indexes_json` on `_system_collection_meta`)
+/// records the operator-visible identity so `describe_collection` and the `$fts`
+/// operand can resolve `index` → head + indexed columns without re-reading DDL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FtsIndex {
+    pub name: String,
+    pub fields: Vec<String>,
+    pub tokenizer: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CollectionSchema {
     pub name: String,
@@ -459,6 +471,11 @@ pub struct CollectionSchema {
     /// `_system_collection_meta.vector_fields_json`.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub vector_fields: Vec<VectorField>,
+    /// Full-text-search indexes registered on this collection (Wave 2 M3).
+    /// Empty for collections with no `$fts` index. Sourced from
+    /// `_system_collection_meta.fts_indexes_json`.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub fts_indexes: Vec<FtsIndex>,
     /// Whether SSE realtime broadcast is enabled for this collection.
     /// Defaults to `true` for legacy collections (no meta row) and for
     /// rows present before v1.16 (column default 1). New collections
@@ -892,6 +909,7 @@ pub fn describe_collection(
     let user_caps = read_user_caps(conn, name)?;
     let (owner_field, read_scope) = read_owner_field(conn, name)?;
     let vector_fields = read_vector_fields(conn, name)?;
+    let fts_indexes = read_fts_indexes(conn, name)?;
     let realtime_enabled = read_realtime_enabled(conn, name)?;
     let audit_enabled = read_audit_enabled(conn, name)?;
     let description = read_collection_description(conn, name)?;
@@ -906,6 +924,7 @@ pub fn describe_collection(
         owner_field,
         read_scope,
         vector_fields,
+        fts_indexes,
         realtime_enabled,
         audit_enabled,
         description,
@@ -1219,6 +1238,47 @@ pub fn read_vector_fields(conn: &Connection, coll: &str) -> rusqlite::Result<Vec
         None => return Ok(Vec::new()),
     };
     Ok(serde_json::from_str::<Vec<VectorField>>(&raw).unwrap_or_default())
+}
+
+/// Write the full set of FTS indexes for a collection. Caller holds the
+/// writer mutex. Overwrites whatever was there. Upserts so legacy
+/// collections get a meta row on first fts index. Mirrors
+/// `write_vector_fields`.
+pub fn write_fts_indexes(
+    conn: &Connection,
+    coll: &str,
+    indexes: &[FtsIndex],
+) -> rusqlite::Result<()> {
+    let json = serde_json::to_string(indexes).expect("FtsIndex slice serialises");
+    conn.execute(
+        "INSERT INTO _system_collection_meta \
+              (collection_name, anon_caps_json, fts_indexes_json, updated_at) \
+              VALUES (?1, '[\"select\"]', ?2, datetime('now')) \
+         ON CONFLICT(collection_name) DO UPDATE SET \
+              fts_indexes_json = excluded.fts_indexes_json, \
+              updated_at       = excluded.updated_at",
+        rusqlite::params![coll, json],
+    )?;
+    Ok(())
+}
+
+/// Read the FTS indexes registered against a collection. Returns an empty
+/// Vec when the meta row is absent (legacy / non-fts collections). Mirrors
+/// `read_vector_fields`.
+pub fn read_fts_indexes(conn: &Connection, coll: &str) -> rusqlite::Result<Vec<FtsIndex>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT fts_indexes_json FROM _system_collection_meta \
+             WHERE collection_name = ?1",
+            rusqlite::params![coll],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    let raw = match raw {
+        Some(s) => s,
+        None => return Ok(Vec::new()),
+    };
+    Ok(serde_json::from_str::<Vec<FtsIndex>>(&raw).unwrap_or_default())
 }
 
 /// Drop the metadata row for a collection. Called from drop_collection.
@@ -1738,6 +1798,7 @@ mod cap_gate_tests {
             owner_field: None,
             read_scope: None,
             vector_fields: vec![],
+            fts_indexes: vec![],
             realtime_enabled: true,
             audit_enabled: true,
             description: None,
@@ -1763,6 +1824,7 @@ mod cap_gate_tests {
             owner_field: owner_field.map(|s| s.to_string()),
             read_scope: read_scope.map(|s| s.to_string()),
             vector_fields: vec![],
+            fts_indexes: vec![],
             realtime_enabled: true,
             audit_enabled: true,
             description: None,

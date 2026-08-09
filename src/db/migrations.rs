@@ -209,6 +209,15 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         "vector_fields_json",
         "TEXT NOT NULL DEFAULT '[]'",
     )?;
+    // Wave 2 M3 — per-collection FTS5 index registry. Parity with the
+    // SCHEMA_SQL column so existing tenants gain it at boot and runtime-created
+    // tenants get it from CREATE. Additive + idempotent.
+    add_column_if_missing(
+        &tx,
+        "_system_collection_meta",
+        "fts_indexes_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
     add_column_if_missing(
         &tx,
         "_system_collection_meta",
