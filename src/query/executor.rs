@@ -19,7 +19,12 @@ use thiserror::Error;
 /// froze even the unauthenticated `/health` endpoint for 25s (reproduced against
 /// the running service before this fix). `ExecError::Timeout` existed with ZERO
 /// constructors; the deadline is what finally builds it.
-fn query_deadline() -> Option<Duration> {
+///
+/// `pub(crate)` so the bound-select read faces (`records_list`, `vector_search`,
+/// the MCP `read` mirror, edge `enforce`) can arm the SAME guard on their own
+/// reader closures — the deadline is a parallel-enforcement concern and every
+/// anon-reachable reader must carry it, not just this executor's two entries.
+pub(crate) fn query_deadline() -> Option<Duration> {
     use std::sync::OnceLock;
     static D: OnceLock<Option<Duration>> = OnceLock::new();
     *D.get_or_init(|| {
@@ -41,13 +46,13 @@ const VM_OPS_PER_CHECK: std::os::raw::c_int = 10_000;
 /// pooled, long-lived reader connections, so a handler left installed would keep
 /// firing (and keep a stale `Instant` alive) on every future query that
 /// connection serves. Same discipline as the authorizer install/detach pattern.
-struct DeadlineGuard<'c> {
+pub(crate) struct DeadlineGuard<'c> {
     conn: &'c Connection,
     armed: bool,
 }
 
 impl<'c> DeadlineGuard<'c> {
-    fn arm(conn: &'c Connection, budget: Option<Duration>) -> Self {
+    pub(crate) fn arm(conn: &'c Connection, budget: Option<Duration>) -> Self {
         let armed = match budget {
             Some(b) => {
                 let deadline = Instant::now() + b;

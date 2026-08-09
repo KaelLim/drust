@@ -11,11 +11,15 @@ export const FilterOpSchema = z.union([
   z.object({ in: z.array(FilterScalarSchema) }).strict(), z.object({ nin: z.array(FilterScalarSchema) }).strict(),
   z.object({ is_null: z.boolean() }).strict(), z.object({ is_not_null: z.boolean() }).strict(),
 ]);
+export const FilterFtsSchema = z.object({
+  '$fts': z.object({ index: z.string(), query: z.string() }).strict(),
+}).strict();
 export const FilterAstSchema: z.ZodType<unknown> = z.lazy(() =>
   z.union([
     z.object({ and: z.array(FilterAstSchema) }),
     z.object({ or: z.array(FilterAstSchema) }),
     z.object({ not: FilterAstSchema }),
+    FilterFtsSchema,
     z.record(z.union([FilterScalarSchema, FilterOpSchema]))
       .refine((o) => Object.keys(o).length === 1, { message: 'filter leaf must name exactly one field' }),
   ])

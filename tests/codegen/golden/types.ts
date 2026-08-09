@@ -13,10 +13,14 @@ export type FilterOp =
 // A leaf names EXACTLY ONE field; a TS index signature cannot express that
 // bound, so the runtime parser (not this type) enforces it — {} and multi-field
 // objects type-check here but are rejected server-side.
+// A `$fts` leaf runs a full-text MATCH against a named fts index; it is a
+// reserved key, distinct from the {field: operand} leaf below.
+export type FilterFts = { "$fts": { index: string; query: string } };
 export type FilterAst =
   | { and: FilterAst[] }
   | { or: FilterAst[] }
   | { not: FilterAst }
+  | FilterFts
   | { [field: string]: FilterScalar | FilterOp };
 
 /** Blog posts */

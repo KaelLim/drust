@@ -57,6 +57,32 @@
           },
           {
             "type": "object",
+            "required": [
+              "$fts"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "$fts": {
+                "type": "object",
+                "description": "full-text search: MATCH the named fts index (create_fts_index) for `query`. Yields candidate rows AND-ed under the same owner/policy/caps filter as any other operand.",
+                "required": [
+                  "index",
+                  "query"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "index": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "leaf: exactly one {field: operand}, where operand is a scalar (eq shorthand) or a one-key {op: value} object.",
             "minProperties": 1,
             "maxProperties": 1,

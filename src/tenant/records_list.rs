@@ -15,7 +15,7 @@ use crate::query::authorizer::{attach_search_readonly_authorizer, detach_authori
 use crate::query::list_builder::{
     AggregateRequest, ListError, ListRequest, build_aggregate_sql, build_structured_list_sql,
 };
-use crate::query::vector_filter::FilterError;
+use crate::query::vector_filter::{FilterAst, FilterError};
 use crate::storage::schema::{CollectionSchema, DmlVerb, is_protected_collection};
 use crate::tenant::router::{TenantRef, TokenRole};
 use axum::extract::Path;
@@ -204,12 +204,25 @@ pub async fn post_list(
         .map(|v| v.name.clone())
         .collect();
 
+    // ── FTS_QUERY_INVALID structural pre-probe ───────────────────────
+    // A malformed fts5 MATCH would otherwise surface as a generic 500 from the
+    // list/count statement failing mid-scan; probe the isolated MATCH first so it
+    // maps to 400 FTS_QUERY_INVALID. No-op unless the filter carries a MATCH-path
+    // `$fts` operand.
+    if let Err(resp) = fts_probe_guard(&pool, &schema, req.filter.as_ref()).await {
+        return resp;
+    }
+
     // ── Execute list ─────────────────────────────────────────────────
     let pool_list = t.pool.clone();
     let list_sql_owned = list_sql.clone();
     let binds_for_list = binds.clone();
     let records_res: rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> = pool_list
         .with_reader(move |c| {
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             attach_search_readonly_authorizer(c);
             let r = run_bound_select(c, &list_sql_owned, &binds_for_list);
             detach_authorizer(c);
@@ -248,6 +261,10 @@ pub async fn post_list(
     let binds_for_count = binds.clone();
     let count_res: rusqlite::Result<i64> = pool_count
         .with_reader(move |c| -> rusqlite::Result<i64> {
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             attach_search_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<i64> {
                 let mut stmt = c.prepare_cached(&count_sql_owned)?;
@@ -340,11 +357,21 @@ pub async fn post_aggregate(
         Err(e) => return map_list_error(e),
     };
 
+    // Same structural FTS_QUERY_INVALID pre-probe as /list — /aggregate shares
+    // the FilterAst → `$fts` compile path.
+    if let Err(resp) = fts_probe_guard(&pool, &schema, req.filter.as_ref()).await {
+        return resp;
+    }
+
     let pool_run = t.pool.clone();
     let sql_owned = sql.clone();
     let binds_owned = binds.clone();
     let rows_res: rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> = pool_run
         .with_reader(move |c| {
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             attach_search_readonly_authorizer(c);
             let r = run_bound_select(c, &sql_owned, &binds_owned);
             detach_authorizer(c);
@@ -550,6 +577,32 @@ fn map_list_error(e: ListError) -> Response {
             "AGG_ALIAS_DUPLICATE",
             &format!("aggregate output column name is duplicated: {a:?}"),
         ),
+    }
+}
+
+/// Run the structural `FTS_QUERY_INVALID` pre-probe for every `$fts` MATCH
+/// operand in `filter` on a reader, mapping the outcome to a `Response`. `Ok(())`
+/// when there is nothing to probe or every MATCH is well-formed; a `400
+/// FTS_QUERY_INVALID` when a MATCH is malformed; `500 DB_ERROR` only on a genuine
+/// reader failure. Shared verbatim by `/list` and `/aggregate` (and reused by
+/// `/search` via `probe_fts_queries`) so the mapping is written once.
+pub(crate) async fn fts_probe_guard(
+    pool: &crate::storage::pool::SharedTenantPool,
+    schema: &CollectionSchema,
+    filter: Option<&FilterAst>,
+) -> Result<(), Response> {
+    match crate::query::vector_filter::probe_fts_queries(pool, schema, filter).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "FTS_QUERY_INVALID",
+            &msg,
+        )),
+        Err(e) => Err(json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DB_ERROR",
+            &e.to_string(),
+        )),
     }
 }
 

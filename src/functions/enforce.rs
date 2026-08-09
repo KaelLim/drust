@@ -333,6 +333,10 @@ pub async fn enforced_list(
     let binds_list = binds.clone();
     let rows: Vec<serde_json::Value> = pool
         .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             attach_search_readonly_authorizer(c);
             let r = run_list_rows(c, &list_sql_owned, &binds_list);
             detach_authorizer(c);
@@ -355,6 +359,10 @@ pub async fn enforced_list(
     let binds_count = binds.clone();
     let total: i64 = pool
         .with_reader(move |c| -> rusqlite::Result<i64> {
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             attach_search_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<i64> {
                 // COUNT(*) text is stable for a given (schema, filter) shape and

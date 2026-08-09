@@ -7,7 +7,7 @@
 //! Vector fields cannot appear in the filter; that returns a typed
 //! error so the handler maps to `400 FILTER_VECTOR_FIELD`.
 
-use crate::storage::schema::CollectionSchema;
+use crate::storage::schema::{CollectionSchema, FtsIndex};
 use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -215,11 +215,16 @@ fn like_escape(s: &str) -> String {
 /// PARENT via the owner/RLS/caps WHERE this fragment is AND-ed into, so a User
 /// only ever searches their own rows. This keeps `$fts` in the STRUCTURED camp
 /// (anon/user-safe by construction).
-fn compile_fts(
-    schema: &CollectionSchema,
-    body: &Json,
-    binds: &mut Vec<Value>,
-) -> Result<String, FilterError> {
+/// Resolve a `$fts` operand body to its validated index entry + query string,
+/// WITHOUT emitting SQL or binds. Shared by [`compile_fts`] and [`fts_probes`]
+/// so the "which index / MATCH-vs-fallback" decision can never drift between the
+/// compiler and the FTS_QUERY_INVALID pre-probe walker. Enforces the exact
+/// `{index, query}` shape (`fts_shape_error` on a violation) and resolves the
+/// name in `schema.fts_indexes` (`FTS_INDEX_NOT_FOUND` when absent).
+fn resolve_fts<'a>(
+    schema: &'a CollectionSchema,
+    body: &'a Json,
+) -> Result<(&'a FtsIndex, &'a str), FilterError> {
     let obj = body.as_object().ok_or_else(fts_shape_error)?;
     // Exactly {index, query}; reject missing/extra keys or non-string values.
     let index = obj
@@ -246,19 +251,35 @@ fn compile_fts(
                 schema.name
             ),
         })?;
+    Ok((entry, query))
+}
+
+/// Whether a resolved `$fts` operand compiles to an fts5 MATCH subquery (true)
+/// or the trigram short-term LIKE fallback (false).
+///
+/// Tokenizer rule (Wave 2 M3 Global Constraint): a MATCH is correct when the
+/// tokenizer is unicode61, OR when every whitespace-separated term is ≥ 3 chars.
+/// A trigram index cannot satisfy a term shorter than one trigram, and fts5
+/// silently treats such a term as a satisfied no-op — so ANY sub-3-char term
+/// (measured in CHARS, not bytes, for CJK) forces the substring fallback. An
+/// empty / all-whitespace query is vacuously all-≥3 → MATCH. This is the SINGLE
+/// authority the compiler and the probe walker both consult.
+fn fts_uses_match(entry: &FtsIndex, query: &str) -> bool {
+    entry.tokenizer != "trigram" || query.split_whitespace().all(|t| t.chars().count() >= 3)
+}
+
+fn compile_fts(
+    schema: &CollectionSchema,
+    body: &Json,
+    binds: &mut Vec<Value>,
+) -> Result<String, FilterError> {
+    let (entry, query) = resolve_fts(schema, body)?;
     let head_q = q(&crate::storage::search_names::fts_head_name(
         &schema.name,
         &entry.name,
     ));
 
-    // Tokenizer rule (Wave 2 M3 Global Constraint): a MATCH is correct when the
-    // tokenizer is unicode61, OR when every whitespace-separated term is ≥ 3
-    // chars. A trigram index cannot satisfy a term shorter than one trigram, and
-    // fts5 silently treats such a term as a satisfied no-op — so ANY sub-3-char
-    // term (measured in CHARS, not bytes, for CJK) forces the substring fallback
-    // below. An empty / all-whitespace query is vacuously all-≥3 → MATCH.
-    let all_terms_trigrammable = query.split_whitespace().all(|t| t.chars().count() >= 3);
-    if entry.tokenizer != "trigram" || all_terms_trigrammable {
+    if fts_uses_match(entry, query) {
         binds.push(Value::Text(query.to_string()));
         return Ok(format!(
             "\"id\" IN (SELECT rowid FROM {head_q} WHERE {head_q} MATCH ?)"
@@ -278,6 +299,128 @@ fn compile_fts(
         binds.push(Value::Text(pattern.clone()));
     }
     Ok(format!("({})", ors.join(" OR ")))
+}
+
+/// A structural `FTS_QUERY_INVALID` pre-probe: the head table and the `?`-bound
+/// query string for a single `$fts` MATCH operand. Only MATCH-path operands
+/// yield a probe — the trigram short-term LIKE fallback cannot carry an fts5
+/// MATCH syntax error, so there is nothing to pre-validate there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FtsProbe {
+    /// Unquoted head name (`_system_search_fts$<coll>$<index>`); the runner
+    /// double-quotes it.
+    pub head: String,
+    /// The raw `?`-bound MATCH query text (caller-supplied).
+    pub query: String,
+}
+
+/// Walk a [`FilterAst`] and collect the MATCH-path `$fts` probes.
+///
+/// Mirrors [`compile_node`]'s traversal and [`compile_fts`]'s resolution +
+/// MATCH/LIKE branch EXACTLY (via the shared [`resolve_fts`] / [`fts_uses_match`]),
+/// so a probe is emitted for precisely the operands that will reach fts5's MATCH
+/// parser at STEP time. A malformed operand *shape* or an unknown index is
+/// ignored here — `compile` surfaces those as `Parse` / `Fts` before the probe
+/// would ever run; this walker's sole job is to expose the MATCH expressions so a
+/// caller can validate their syntax on a reader and map a failure to
+/// `400 FTS_QUERY_INVALID` (STRUCTURAL, never message-substring — see
+/// `.claude/rules/write-path.md`).
+pub fn fts_probes(schema: &CollectionSchema, ast: &FilterAst) -> Vec<FtsProbe> {
+    let mut out = Vec::new();
+    collect_fts_probes(schema, ast, 0, &mut out);
+    out
+}
+
+fn collect_fts_probes(
+    schema: &CollectionSchema,
+    node: &FilterAst,
+    depth: usize,
+    out: &mut Vec<FtsProbe>,
+) {
+    if depth >= MAX_FILTER_DEPTH {
+        return;
+    }
+    match node {
+        FilterAst::And { and } => {
+            for n in and {
+                collect_fts_probes(schema, n, depth + 1, out);
+            }
+        }
+        FilterAst::Or { or } => {
+            for n in or {
+                collect_fts_probes(schema, n, depth + 1, out);
+            }
+        }
+        FilterAst::Not { not } => collect_fts_probes(schema, not, depth + 1, out),
+        FilterAst::Leaf(obj) => {
+            if obj.len() != 1 {
+                return;
+            }
+            let (key, body) = obj.iter().next().unwrap();
+            if key != "$fts" {
+                return;
+            }
+            if let Ok((entry, query)) = resolve_fts(schema, body)
+                && fts_uses_match(entry, query)
+            {
+                out.push(FtsProbe {
+                    head: crate::storage::search_names::fts_head_name(&schema.name, &entry.name),
+                    query: query.to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Run one MATCH probe on a reader connection:
+/// `SELECT rowid FROM "<head>" WHERE "<head>" MATCH ? LIMIT 1`. fts5 parses the
+/// MATCH expression only at STEP time and raises a plain SQLITE_ERROR, so this
+/// forces one `step()` to surface a malformed query STRUCTURALLY. `Ok(())` means
+/// the MATCH is well-formed; the caller maps `Err` to `400 FTS_QUERY_INVALID`.
+pub fn run_fts_probe(conn: &rusqlite::Connection, probe: &FtsProbe) -> rusqlite::Result<()> {
+    let head_q = q(&probe.head);
+    let sql = format!("SELECT rowid FROM {head_q} WHERE {head_q} MATCH ? LIMIT 1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(rusqlite::params![probe.query])?;
+    // Step once to force fts5 to parse the MATCH expression.
+    let _ = rows.next()?;
+    Ok(())
+}
+
+/// Pre-validate every `$fts` MATCH operand in `filter` on a reader BEFORE the
+/// main list/count/aggregate/search statement runs, so a malformed fts5 MATCH
+/// becomes a clean `400 FTS_QUERY_INVALID` instead of a generic 500 from the main
+/// statement failing mid-scan. Shared by every anon-reachable read face (`/list`
+/// rows+count, `/aggregate`, `/search`, and the MCP list/aggregate mirror) so the
+/// mapping is written once, not five times.
+///
+/// Returns `Ok(Ok(()))` when there is nothing to probe or every MATCH is
+/// well-formed; `Ok(Err(msg))` with the redacted sqlite message when a MATCH is
+/// malformed (caller → 400 `FTS_QUERY_INVALID`); `Err(e)` only on a genuine
+/// reader/DB failure (caller → 500 `DB_ERROR`). The probe head is guaranteed to
+/// exist (it is derived from a resolved `schema.fts_indexes` entry), so in
+/// practice the only way a probe errors is a malformed MATCH.
+pub async fn probe_fts_queries(
+    pool: &crate::storage::pool::SharedTenantPool,
+    schema: &CollectionSchema,
+    filter: Option<&FilterAst>,
+) -> rusqlite::Result<Result<(), String>> {
+    let probes = match filter {
+        Some(ast) => fts_probes(schema, ast),
+        None => return Ok(Ok(())),
+    };
+    if probes.is_empty() {
+        return Ok(Ok(()));
+    }
+    pool.with_reader(move |c| {
+        for p in &probes {
+            if let Err(e) = run_fts_probe(c, p) {
+                return Ok(Err(crate::error::sqlite_error_without_sql(&e)));
+            }
+        }
+        Ok(Ok(()))
+    })
+    .await
 }
 
 fn validate_field(schema: &CollectionSchema, field: &str) -> Result<(), FilterError> {
@@ -634,6 +777,70 @@ mod tests {
         assert!(
             v.get("description").is_some(),
             "filter arg schema should carry a model-facing description"
+        );
+    }
+
+    // --- FTS_QUERY_INVALID pre-probe walker (Task 6) ---
+
+    fn fts_idx(name: &str, fields: &[&str], tok: &str) -> FtsIndex {
+        FtsIndex {
+            name: name.into(),
+            fields: fields.iter().map(|s| s.to_string()).collect(),
+            tokenizer: tok.into(),
+        }
+    }
+
+    fn schema_with_fts(index: FtsIndex) -> CollectionSchema {
+        let mut s = schema_with(&[("title", "text"), ("body", "text")], &[]);
+        s.name = "notes".into();
+        s.fts_indexes = vec![index];
+        s
+    }
+
+    /// The lockstep pin: `fts_probes` emits a probe for EXACTLY the operands
+    /// `compile` renders as a MATCH subquery, and none for the LIKE fallback.
+    #[test]
+    fn fts_probes_track_the_compile_match_branch() {
+        // trigram, all-long term → MATCH path → one probe with derived head+query.
+        let s = schema_with_fts(fts_idx("main", &["title", "body"], "trigram"));
+        let a = leaf(r#"{"$fts":{"index":"main","query":"hospital"}}"#);
+        let (sql, _) = compile(&s, &a).unwrap();
+        assert!(sql.contains("MATCH"), "expected MATCH compile: {sql}");
+        let probes = fts_probes(&s, &a);
+        assert_eq!(probes.len(), 1);
+        assert_eq!(probes[0].head, "_system_search_fts$notes$main");
+        assert_eq!(probes[0].query, "hospital");
+
+        // trigram, short CJK term → LIKE fallback → NO probe (LIKE can't hold a
+        // MATCH syntax error).
+        let short = leaf(r#"{"$fts":{"index":"main","query":"慈濟"}}"#);
+        let (sql2, _) = compile(&s, &short).unwrap();
+        assert!(!sql2.contains("MATCH"), "expected LIKE fallback: {sql2}");
+        assert!(fts_probes(&s, &short).is_empty());
+
+        // unicode61 short term still MATCHes → one probe.
+        let u = schema_with_fts(fts_idx("uni", &["title"], "unicode61"));
+        let ua = leaf(r#"{"$fts":{"index":"uni","query":"慈濟"}}"#);
+        assert_eq!(fts_probes(&u, &ua).len(), 1);
+    }
+
+    #[test]
+    fn fts_probes_walk_boolean_nodes_and_skip_non_fts() {
+        let s = schema_with_fts(fts_idx("main", &["title", "body"], "trigram"));
+        let nested: FilterAst = serde_json::from_str(
+            r#"{"and":[{"title":"x"},{"or":[{"$fts":{"index":"main","query":"hospital"}}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(fts_probes(&s, &nested).len(), 1);
+        // A plain leaf carries no probe.
+        assert!(fts_probes(&s, &leaf(r#"{"title":"x"}"#)).is_empty());
+        // An unknown index resolves to no probe (compile surfaces the sentinel).
+        assert!(
+            fts_probes(
+                &s,
+                &leaf(r#"{"$fts":{"index":"ghost","query":"hospital"}}"#)
+            )
+            .is_empty()
         );
     }
 }

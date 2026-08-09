@@ -58,6 +58,18 @@ pub fn filter_ast_openapi_schema() -> serde_json::Value {
             { "type": "object", "required": ["not"], "additionalProperties": false, "properties": {
                 "not": { "$ref": "#/components/schemas/FilterAst" }
             }},
+            { "type": "object", "required": ["$fts"], "additionalProperties": false, "properties": {
+                "$fts": {
+                    "type": "object",
+                    "description": "full-text search: MATCH the named fts index (create_fts_index) for `query`. Yields candidate rows AND-ed under the same owner/policy/caps filter as any other operand.",
+                    "required": ["index", "query"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "index": { "type": "string" },
+                        "query": { "type": "string" }
+                    }
+                }
+            }},
             {
                 "type": "object",
                 "description": "leaf: exactly one {field: operand}, where operand is a scalar (eq shorthand) or a one-key {op: value} object.",
@@ -82,10 +94,14 @@ export type FilterOp =
 // A leaf names EXACTLY ONE field; a TS index signature cannot express that
 // bound, so the runtime parser (not this type) enforces it — {} and multi-field
 // objects type-check here but are rejected server-side.
+// A `$fts` leaf runs a full-text MATCH against a named fts index; it is a
+// reserved key, distinct from the {field: operand} leaf below.
+export type FilterFts = { \"$fts\": { index: string; query: string } };
 export type FilterAst =
   | { and: FilterAst[] }
   | { or: FilterAst[] }
   | { not: FilterAst }
+  | FilterFts
   | { [field: string]: FilterScalar | FilterOp };
 ";
 
@@ -103,11 +119,15 @@ export const FilterOpSchema = z.union([
   z.object({ in: z.array(FilterScalarSchema) }).strict(), z.object({ nin: z.array(FilterScalarSchema) }).strict(),
   z.object({ is_null: z.boolean() }).strict(), z.object({ is_not_null: z.boolean() }).strict(),
 ]);
+export const FilterFtsSchema = z.object({
+  '$fts': z.object({ index: z.string(), query: z.string() }).strict(),
+}).strict();
 export const FilterAstSchema: z.ZodType<unknown> = z.lazy(() =>
   z.union([
     z.object({ and: z.array(FilterAstSchema) }),
     z.object({ or: z.array(FilterAstSchema) }),
     z.object({ not: FilterAstSchema }),
+    FilterFtsSchema,
     z.record(z.union([FilterScalarSchema, FilterOpSchema]))
       .refine((o) => Object.keys(o).length === 1, { message: 'filter leaf must name exactly one field' }),
   ])
@@ -160,5 +180,14 @@ mod tests {
         for good in ["\"and\"", "\"or\"", "\"not\""] {
             assert!(oa.contains(good), "OpenAPI missing boolean node `{good}`");
         }
+
+        // The `$fts` reserved-key operand (Wave 2 M3) is advertised by every
+        // renderer with its `index`/`query` shape — codegen stays in lockstep
+        // with the parser's `compile_fts`.
+        for piece in ["$fts", "index", "query"] {
+            assert!(oa.contains(piece), "OpenAPI missing $fts piece `{piece}`");
+        }
+        assert!(FILTER_AST_TS.contains("$fts"), "TS missing $fts operand");
+        assert!(FILTER_AST_ZOD.contains("$fts"), "Zod missing $fts operand");
     }
 }

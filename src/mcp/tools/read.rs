@@ -153,12 +153,21 @@ pub async fn list_records(
         .map(|v| v.name.clone())
         .collect();
 
+    // Structural FTS_QUERY_INVALID pre-probe — a malformed fts5 MATCH maps to a
+    // typed error here (the MCP mirror of the REST /list 400) instead of a raw
+    // 500 from the list/count statement failing mid-scan.
+    fts_probe_or_bail(&pool, &schema, req.filter.as_ref()).await?;
+
     // Run list query.
     let pool_list = s.inner().pool.clone();
     let list_sql_owned = list_sql.clone();
     let binds_for_list = binds.clone();
     let rows: Vec<serde_json::Value> = pool_list
         .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             attach_search_readonly_authorizer(c);
             let result = run_bound_select(c, &list_sql_owned, &binds_for_list);
             detach_authorizer(c);
@@ -184,6 +193,10 @@ pub async fn list_records(
     let binds_for_count = binds.clone();
     let total: i64 = pool_count
         .with_reader(move |c| -> rusqlite::Result<i64> {
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             attach_search_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<i64> {
                 let mut stmt = c.prepare(&count_sql_owned)?;
@@ -292,11 +305,18 @@ pub async fn aggregate(s: &DrustMcp, args: AggregateArgs) -> anyhow::Result<serd
     let (sql, binds) =
         list_builder::build_aggregate_sql(&schema, &req, None, None).map_err(map_list_error)?;
 
+    // Same structural FTS_QUERY_INVALID pre-probe as list_records.
+    fts_probe_or_bail(&pool, &schema, req.filter.as_ref()).await?;
+
     let pool_run = s.inner().pool.clone();
     let sql_owned = sql.clone();
     let binds_owned = binds.clone();
     let rows: Vec<serde_json::Value> = pool_run
         .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             attach_search_readonly_authorizer(c);
             let r = run_bound_select(c, &sql_owned, &binds_owned);
             detach_authorizer(c);
@@ -357,6 +377,21 @@ fn map_list_error(e: ListError) -> anyhow::Error {
         ListError::GroupVectorField(f) => anyhow::anyhow!("AGG_GROUP_VECTOR: {f}"),
         ListError::AliasInvalid(a) => anyhow::anyhow!("AGG_ALIAS_INVALID: {a}"),
         ListError::AliasDuplicate(a) => anyhow::anyhow!("AGG_ALIAS_DUPLICATE: {a}"),
+    }
+}
+
+/// Run the structural `FTS_QUERY_INVALID` pre-probe for the MCP list/aggregate
+/// mirror and bail with the typed sentinel on a malformed fts5 MATCH — the MCP
+/// analogue of the REST 400. A genuine reader failure propagates as-is.
+async fn fts_probe_or_bail(
+    pool: &crate::storage::pool::SharedTenantPool,
+    schema: &crate::storage::schema::CollectionSchema,
+    filter: Option<&FilterAst>,
+) -> anyhow::Result<()> {
+    match crate::query::vector_filter::probe_fts_queries(pool, schema, filter).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => anyhow::bail!("FTS_QUERY_INVALID: {msg}"),
+        Err(e) => Err(e.into()),
     }
 }
 

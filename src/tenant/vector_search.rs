@@ -244,10 +244,23 @@ pub async fn search_handler(
     binds.extend(where_binds);
     binds.push(Value::Integer(body.k as i64));
 
+    // Structural FTS_QUERY_INVALID pre-probe — `/search`'s `where` FilterAst
+    // carries `$fts` via the same `vector_filter::compile`, so a malformed fts5
+    // MATCH must map to 400 here too, not a 500 from the search statement.
+    if let Err(resp) =
+        crate::tenant::records_list::fts_probe_guard(&pool, &schema, body.r#where.as_ref()).await
+    {
+        return resp;
+    }
+
     let metric_owned = body.metric.clone();
     let k_owned = body.k;
     let exec_res: rusqlite::Result<Vec<serde_json::Value>> = pool
         .with_reader(move |c| {
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             let mut stmt = c.prepare(&sql)?;
             let col_names: Vec<String> =
                 stmt.column_names().iter().map(|s| s.to_string()).collect();
