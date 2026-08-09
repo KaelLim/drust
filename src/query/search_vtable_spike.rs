@@ -932,56 +932,18 @@ fn suffix_grammar_misclassifies_user_named_index_ending_in_data() {
     );
 }
 
-/// FACT (both engines converged, one executed it): the "reader backstop"
-/// justification for the readonly arm's write-action allowance is NOT a
-/// property of the authorizer — it is a property of the CONNECTION, and
-/// production attaches the readonly authorizer to the WRITER too:
-/// `validate_rpc_sql` (src/rpc/prepare.rs) runs inside `pool.with_writer`
-/// at MCP `create_rpc` / `update_rpc` (src/mcp/handler.rs). On such a
-/// connection — no SQLITE_OPEN_READONLY, no query_only, and (today) no
-/// DEFENSIVE — the spiked arms alone let top-level SQL write the
-/// module-internal shadows. Pinned here so Plan C MUST pair the arm with
-/// its guards: DEFENSIVE on every writer open (`open_write`,
-/// `open_write_existing`, and the bare migration/rebuild opens in
-/// src/db/migrations.rs), and/or keep the strict arm on validation
-/// call sites.
-#[test]
-fn spiked_arms_are_unguarded_on_a_writer_without_defensive() {
-    let tmp = fts_fixture();
-
-    // Production writer posture today: open_write, no DEFENSIVE.
-    let conn = open_write(tmp.path(), TENANT).unwrap();
-    let log: Arc<Mutex<Vec<ShadowWrite>>> = Arc::new(Mutex::new(Vec::new()));
-    conn.execute_batch("SAVEPOINT spike_rpc").unwrap();
-    attach_spiked_writable_authorizer(&conn, log.clone());
-    let hole = conn.execute(
-        r#"INSERT INTO "_system_search_fts_notes_main_config"(k, v) VALUES ('evil', 1)"#,
-        [],
-    );
-    detach_and_release(&conn);
-    assert!(
-        hole.is_ok(),
-        "on an unguarded writer the internal-shadow allowance EXECUTES a direct \
-         write (the hole Plan C must close with DEFENSIVE); got {hole:?}"
-    );
-
-    // Same hazard through the READONLY arm attached to a writer (the
-    // validate_rpc_sql shape). DEFENSIVE closes both.
-    let conn2 = open_write(tmp.path(), TENANT).unwrap();
-    conn2
-        .set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
-        .unwrap();
-    let log2 = Arc::new(Mutex::new(Vec::new()));
-    attach_spiked_readonly_authorizer(&conn2, log2.clone());
-    let guarded = conn2.execute(
-        r#"INSERT INTO "_system_search_fts_notes_main_config"(k, v) VALUES ('evil2', 2)"#,
-        [],
-    );
-    crate::query::authorizer::detach_authorizer(&conn2);
-    let msg = format!("{:?}", guarded.as_ref().unwrap_err());
-    assert!(
-        msg.contains("may not be modified"),
-        "with DEFENSIVE on the writer, the same direct shadow write must be \
-         refused by xShadowName, got {msg}"
-    );
-}
+// RETIRED by Wave 2 M3 Task 2 (DEFENSIVE on every writer open).
+//
+// This slot held `spiked_arms_are_unguarded_on_a_writer_without_defensive`,
+// which pinned the pre-fix hole: on a writer with no DEFENSIVE, the spiked
+// arms' by-name internal-shadow allowance let top-level SQL write the
+// module-internal shadows (the `validate_rpc_sql`-on-a-writer shape). It
+// asserted `hole.is_ok()`, so it is logically incompatible with the fix —
+// `open_write` now sets DEFENSIVE, and the plan's Task 3 accounting lists
+// this test for deletion by name.
+//
+// The surviving half (with DEFENSIVE, the same direct shadow write is refused
+// by xShadowName) is covered by
+// `defensive_blocks_direct_internal_shadow_writes_but_not_module_writes` above
+// and by `tests/defensive_writer.rs`, which proves the guard holds on EVERY
+// writer open rather than on a manually-configured connection.

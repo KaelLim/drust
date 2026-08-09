@@ -193,6 +193,8 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         return Ok(());
     }
     let mut conn = Connection::open(&path)?;
+    // Same DEFENSIVE posture as pooled writers — a rebuild/migration must not be the one door left open.
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     let tx = conn.transaction()?;
     tx.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)?;
@@ -501,6 +503,8 @@ pub fn strict_rebuild_tenant(
     }
     let mut held_back = Vec::new();
     let conn = Connection::open(&path)?;
+    // Same DEFENSIVE posture as pooled writers — a rebuild/migration must not be the one door left open.
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     // Must be OUTSIDE any transaction; bare connection defaults foreign_keys=OFF
     // but set it explicitly so DROP of an FK-referenced table is permitted.
     conn.execute_batch("PRAGMA foreign_keys=OFF;")?;

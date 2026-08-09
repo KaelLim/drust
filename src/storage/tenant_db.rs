@@ -202,6 +202,13 @@ pub fn open_write(data_root: &Path, tenant_id: &str) -> anyhow::Result<Connectio
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
     )?;
     apply_common_pragmas(&conn)?;
+    // Wave 2 (spike contract): module shadow tables (`_system_search_*_data`
+    // etc.) are writable-by-name at the authorizer layer, so DEFENSIVE is the
+    // layer that refuses direct SQL on them (xShadowName). Also hardens
+    // writable_schema / schema_version against raw RPC SQL. Verified against
+    // the bundled amalgamation: sqlite_sequence DML and all writer behavior
+    // are unaffected.
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     apply_schema(&conn)?;
     Ok(conn)
 }
@@ -224,6 +231,13 @@ pub fn open_write_existing(data_root: &Path, tenant_id: &str) -> anyhow::Result<
     let path = tenant_data_path(data_root, tenant_id);
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     apply_common_pragmas(&conn)?;
+    // Wave 2 (spike contract): module shadow tables (`_system_search_*_data`
+    // etc.) are writable-by-name at the authorizer layer, so DEFENSIVE is the
+    // layer that refuses direct SQL on them (xShadowName). Also hardens
+    // writable_schema / schema_version against raw RPC SQL. Verified against
+    // the bundled amalgamation: sqlite_sequence DML and all writer behavior
+    // are unaffected.
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     apply_schema(&conn)?;
     Ok(conn)
 }
