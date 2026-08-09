@@ -413,6 +413,13 @@ pub async fn probe_fts_queries(
         return Ok(Ok(()));
     }
     pool.with_reader(move |c| {
+        // The MATCH probe steps a caller-controlled fts5 expression on this
+        // Tokio worker; a pathological phrase can walk a huge posting list even
+        // under LIMIT 1, so arm the same wall-clock deadline every other read
+        // face uses (v1.58.5 DoS). Without this, the probe is the one $fts
+        // reader that could pin a worker (2 workers on this host).
+        let _deadline =
+            crate::query::executor::DeadlineGuard::arm(c, crate::query::executor::query_deadline());
         for p in &probes {
             if let Err(e) = run_fts_probe(c, p) {
                 return Ok(Err(crate::error::sqlite_error_without_sql(&e)));

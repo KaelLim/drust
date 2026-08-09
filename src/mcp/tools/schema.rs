@@ -742,7 +742,15 @@ pub async fn drop_collection(s: &DrustMcp, name: &str) -> anyhow::Result<serde_j
         trig = format!("{}_updated_at", table).replace('"', "\"\""),
         tbl = table.replace('"', "\"\""),
     );
-    pool.with_writer(move |c| {
+    // ATOMIC (codex v1.60 review): parent DROP + fts-head sweep + meta delete
+    // run in ONE `with_writer_tx`, not autocommit `with_writer`. Otherwise a
+    // failure after the parent DROP but before the meta delete left an orphan
+    // fts head + a stale `fts_indexes_json` row; recreating the same-name
+    // collection then inherited that registry and an external-content head that
+    // still answered MATCH with pre-drop rowids (a false-positive / deleted-term
+    // existence oracle, though owner/RLS still gated returned rows). A tx makes
+    // the drop all-or-nothing, so the divergent state can never exist.
+    pool.with_writer_tx(move |c| {
         // Wave 2 M3 — sweep this collection's fts heads. Sourced from
         // `snapshot_search_tables` (the AUTHORITATIVE pragma_table_list, never
         // the registry, which could disagree), filtered to this collection's

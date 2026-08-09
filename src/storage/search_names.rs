@@ -9,7 +9,15 @@
 use std::collections::HashSet;
 
 pub const SEARCH_PREFIX: &str = "_system_search_";
-const RESERVED_SUFFIXES: [&str; 5] = ["_data", "_idx", "_docsize", "_config", "_content"];
+/// Suffixes an index name must not END in. `_data`/`_idx`/`_docsize`/`_config`/
+/// `_content` are fts5 module shadow suffixes (SQLite reserves those names too).
+/// `_ai`/`_ad`/`_au` are our own sync-trigger suffixes: an index named `<X>_ai`
+/// would produce a HEAD table name equal to index `X`'s AFTER-INSERT trigger
+/// name — benign today (drop paths are type-specific), but a latent
+/// naming-grammar collision, so forbid it up front.
+const RESERVED_SUFFIXES: [&str; 8] = [
+    "_data", "_idx", "_docsize", "_config", "_content", "_ai", "_ad", "_au",
+];
 
 pub fn fts_head_name(coll: &str, index: &str) -> String {
     format!("_system_search_fts${coll}${index}")
@@ -24,7 +32,7 @@ pub fn validate_fts_index_name(name: &str) -> anyhow::Result<()> {
     crate::mcp::tools::schema::identifier(name)?;
     if RESERVED_SUFFIXES.iter().any(|s| name.ends_with(s)) {
         anyhow::bail!(
-            "FTS_NAME_RESERVED: index name must not end in a module shadow suffix ({})",
+            "FTS_NAME_RESERVED: index name must not end in a reserved module/trigger suffix ({})",
             RESERVED_SUFFIXES.join(", ")
         );
     }
@@ -119,7 +127,16 @@ mod tests {
 
     #[test]
     fn reserved_suffixes_are_rejected() {
-        for bad in ["main_data", "x_idx", "a_docsize", "b_config", "c_content"] {
+        for bad in [
+            "main_data",
+            "x_idx",
+            "a_docsize",
+            "b_config",
+            "c_content",
+            "m_ai",
+            "m_ad",
+            "m_au",
+        ] {
             let e = validate_fts_index_name(bad).unwrap_err().to_string();
             assert!(e.contains("FTS_NAME_RESERVED"), "{bad}: {e}");
         }

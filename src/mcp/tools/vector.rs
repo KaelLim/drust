@@ -135,6 +135,14 @@ pub async fn search_collection(
 
     let rows: Vec<serde_json::Value> = pool
         .with_reader(move |c| {
+            // Arm the query deadline: this face compiles a caller `$fts`/vector
+            // filter and steps it on a Tokio worker, so it needs the same
+            // wall-clock bound as every other read face (v1.58.5 DoS). Service-
+            // only via MCP transport, but a bounded worker is the invariant.
+            let _deadline = crate::query::executor::DeadlineGuard::arm(
+                c,
+                crate::query::executor::query_deadline(),
+            );
             let mut stmt = c.prepare(&sql)?;
             let col_names: Vec<String> =
                 stmt.column_names().iter().map(|s| s.to_string()).collect();
