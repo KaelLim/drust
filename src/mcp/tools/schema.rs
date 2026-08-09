@@ -321,6 +321,16 @@ pub async fn create_collection_with_desc(
     description: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
     identifier(name)?;
+    // Defense-in-depth (codex Task-3 review): never let a user collection take
+    // a `_system_`/`sqlite_` name. The writable authorizer's search-shadow arm
+    // classifies by `pragma_table_list.type`, so an ordinary table here would
+    // already be denied writes — but forbidding the name outright is the second
+    // layer, and keeps the protected namespace exclusively drust's.
+    if crate::storage::schema::is_protected_collection(name) {
+        anyhow::bail!(
+            "PROTECTED_COLLECTION: collection name must not start with '_system_' or 'sqlite_'"
+        );
+    }
     // Validate all foreign-key targets exist before running the DDL —
     // SQLite's own error for a missing FK table is cryptic.
     let fk_targets: Vec<String> = fields

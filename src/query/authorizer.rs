@@ -637,4 +637,42 @@ mod search_arm_tests {
             ));
         }
     }
+
+    /// Regression (codex adversarial review of Task 3): the by-name internal
+    /// allowance must NOT reach an ORDINARY table that merely shares the
+    /// `_system_search_` prefix. Such a table is `type='table'` (not a module
+    /// shadow), so the classifier leaves it neither head nor internal and the
+    /// writable arm denies it — restoring the "caller SQL cannot write
+    /// `_system_*`" invariant that the first cut of the arm had broken.
+    #[test]
+    fn a_write_rpc_cannot_reach_an_ordinary_prefixed_table() {
+        use crate::rpc::prepare::validate_rpc_sql;
+        use crate::rpc::registry::RpcMode;
+
+        let tmp = fts_fixture();
+        let conn = open_write(tmp.path(), TENANT).unwrap();
+        // A real table under the protected prefix (what a service could create
+        // before the create-time guard; the authorizer must deny it regardless).
+        conn.execute_batch(
+            r#"CREATE TABLE "_system_search_leak" (id INTEGER PRIMARY KEY, secret TEXT)"#,
+        )
+        .unwrap();
+
+        for sql in [
+            r#"UPDATE "_system_search_leak" SET secret = 'x'"#,
+            r#"INSERT INTO "_system_search_leak"(secret) VALUES ('x')"#,
+            r#"DELETE FROM "_system_search_leak""#,
+        ] {
+            validate_rpc_sql(&conn, sql, RpcMode::Write).expect_err(&format!(
+                "a write RPC must not reach an ordinary _system_search_ table: {sql}"
+            ));
+        }
+        // And a READ of it is denied at validation too (strict read arm).
+        validate_rpc_sql(
+            &conn,
+            r#"SELECT secret FROM "_system_search_leak""#,
+            RpcMode::Read,
+        )
+        .expect_err("a read RPC must not reach an ordinary _system_search_ table");
+    }
 }
