@@ -9,6 +9,7 @@ pub mod quota;
 pub mod record_history;
 pub mod schema;
 pub mod schema_cache;
+pub mod search_names;
 pub mod signed_url;
 pub mod tenant_db;
 pub mod visibility;
