@@ -269,7 +269,7 @@ pub async fn enforced_list(
     coll: &str,
     req: ListRequest,
 ) -> anyhow::Result<serde_json::Value> {
-    use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
+    use crate::query::authorizer::{attach_search_readonly_authorizer, detach_authorizer};
     let schema = load_schema(mcp, coll).await?;
 
     // ── Auth matrix (lockstep with records_list.rs::post_list) ──────────
@@ -333,7 +333,7 @@ pub async fn enforced_list(
     let binds_list = binds.clone();
     let rows: Vec<serde_json::Value> = pool
         .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
-            attach_readonly_authorizer(c);
+            attach_search_readonly_authorizer(c);
             let r = run_list_rows(c, &list_sql_owned, &binds_list);
             detach_authorizer(c);
             r
@@ -355,7 +355,7 @@ pub async fn enforced_list(
     let binds_count = binds.clone();
     let total: i64 = pool
         .with_reader(move |c| -> rusqlite::Result<i64> {
-            attach_readonly_authorizer(c);
+            attach_search_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<i64> {
                 // COUNT(*) text is stable for a given (schema, filter) shape and
                 // re-derives on DDL, so `prepare_cached` is allowed here (matches

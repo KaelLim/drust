@@ -11,7 +11,7 @@
 
 use crate::auth::middleware::AuthCtx;
 use crate::error::json_error;
-use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
+use crate::query::authorizer::{attach_search_readonly_authorizer, detach_authorizer};
 use crate::query::list_builder::{
     AggregateRequest, ListError, ListRequest, build_aggregate_sql, build_structured_list_sql,
 };
@@ -210,7 +210,7 @@ pub async fn post_list(
     let binds_for_list = binds.clone();
     let records_res: rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> = pool_list
         .with_reader(move |c| {
-            attach_readonly_authorizer(c);
+            attach_search_readonly_authorizer(c);
             let r = run_bound_select(c, &list_sql_owned, &binds_for_list);
             detach_authorizer(c);
             r
@@ -248,7 +248,7 @@ pub async fn post_list(
     let binds_for_count = binds.clone();
     let count_res: rusqlite::Result<i64> = pool_count
         .with_reader(move |c| -> rusqlite::Result<i64> {
-            attach_readonly_authorizer(c);
+            attach_search_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<i64> {
                 let mut stmt = c.prepare_cached(&count_sql_owned)?;
                 let refs: Vec<&dyn rusqlite::ToSql> = binds_for_count
@@ -345,7 +345,7 @@ pub async fn post_aggregate(
     let binds_owned = binds.clone();
     let rows_res: rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> = pool_run
         .with_reader(move |c| {
-            attach_readonly_authorizer(c);
+            attach_search_readonly_authorizer(c);
             let r = run_bound_select(c, &sql_owned, &binds_owned);
             detach_authorizer(c);
             r
@@ -428,7 +428,7 @@ pub async fn post_list_explain(
     let plan_sql = format!("EXPLAIN QUERY PLAN {list_sql}");
     let plan: Vec<String> = pool
         .with_reader(move |c| -> rusqlite::Result<Vec<String>> {
-            attach_readonly_authorizer(c);
+            attach_search_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<Vec<String>> {
                 let mut stmt = c.prepare(&plan_sql)?;
                 let refs: Vec<&dyn rusqlite::ToSql> =

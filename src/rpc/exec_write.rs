@@ -411,6 +411,22 @@ pub async fn run_write_rpc(
                 }
             };
 
+            // ── STEP 1c (Wave 2 M3): snapshot the `_system_search_*`
+            //    head-vs-internal classifier, ALSO while the connection is
+            //    unrestricted (`pragma_table_list` is not readable once the
+            //    writable authorizer is attached). Fail-closed for the same
+            //    reason the audited set is: an empty head-set would classify
+            //    every search table as a module internal, which is the
+            //    fail-OPEN direction, so the error propagates instead.
+            let search_tables = match crate::storage::search_names::snapshot_search_tables(conn) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(Err(TxCommitError(format!(
+                        "search-table classifier precompute failed: {e}"
+                    ))));
+                }
+            };
+
             // ── STEP 2: SAVEPOINT (raw, no authorizer). If this
             //    fails we have nothing to roll back; surface as
             //    TxCommitError so the caller's 500 path is uniform.
@@ -420,7 +436,7 @@ pub async fn run_write_rpc(
 
             // ── STEP 3: attach writable authorizer. From here,
             //    every conn.prepare is gated.
-            crate::query::authorizer::attach_writable_authorizer(conn);
+            crate::query::authorizer::attach_writable_authorizer(conn, &search_tables);
 
             // ── STEP 3b: install the scoped preupdate capture hook —
             //    ONLY when something can actually be captured (audited
@@ -771,7 +787,8 @@ mod tests {
             .unwrap();
         let binds: BTreeMap<String, BoundValue> = BTreeMap::new();
 
-        crate::query::authorizer::attach_writable_authorizer(&conn);
+        let search = crate::storage::search_names::snapshot_search_tables(&conn).unwrap();
+        crate::query::authorizer::attach_writable_authorizer(&conn, &search);
         let e = execute_one(&conn, "DROP TABLE metrics", &binds, 1).unwrap_err();
         crate::query::authorizer::detach_authorizer(&conn);
 

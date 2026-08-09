@@ -71,10 +71,29 @@ pub fn validate_rpc_sql(conn: &Connection, sql: &str, mode: RpcMode) -> Result<(
         ));
     }
 
+    // Wave 2 M3: the write branch's authorizer needs the AUTHORITATIVE
+    // `_system_search_*` head-vs-internal classifier, and `pragma_table_list`
+    // is only readable while the connection is unrestricted — so snapshot once
+    // here, before the first attach. Fail-closed: an empty head-set would
+    // classify heads as module internals (fail-OPEN), so a snapshot error is
+    // propagated as a rejection rather than substituted with a blank.
+    //
+    // The READ branch deliberately keeps the UNCHANGED strict
+    // `attach_readonly_authorizer`. That is the whole leak fix: a stored read
+    // RPC's body is CALLER-authored and is never rewritten, so if the strict
+    // arm admitted `_system_search_*`, an `anon_callable` RPC
+    // `SELECT title, body FROM "<head>"` would validate here, slip past
+    // `guard_anon_owner_scoped_rpc` (whose `referenced_user_tables` skips
+    // `_system_*` precisely *because* this function denies them), and leak
+    // every user's indexed columns to anon.
+    let search = crate::storage::search_names::snapshot_search_tables(conn).map_err(|e| {
+        PrepareError::Rejected(format!("search-table classifier probe failed: {e}"))
+    })?;
+
     for stmt in &stmts {
         match mode {
             RpcMode::Read => attach_readonly_authorizer(conn),
-            RpcMode::Write => attach_writable_authorizer(conn),
+            RpcMode::Write => attach_writable_authorizer(conn, &search),
         }
         let res = conn
             .prepare(stmt)

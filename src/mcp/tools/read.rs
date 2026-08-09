@@ -1,5 +1,7 @@
 use crate::mcp::server::DrustMcp;
-use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
+use crate::query::authorizer::{
+    attach_readonly_authorizer, attach_search_readonly_authorizer, detach_authorizer,
+};
 use crate::query::executor::{ExecError, execute_read_query};
 use crate::query::list_builder::{self, ListError, ListRequest, SortSpec};
 use crate::query::vector_filter::{FilterAst, FilterError, parse_filter_value};
@@ -157,7 +159,7 @@ pub async fn list_records(
     let binds_for_list = binds.clone();
     let rows: Vec<serde_json::Value> = pool_list
         .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
-            attach_readonly_authorizer(c);
+            attach_search_readonly_authorizer(c);
             let result = run_bound_select(c, &list_sql_owned, &binds_for_list);
             detach_authorizer(c);
             result
@@ -182,7 +184,7 @@ pub async fn list_records(
     let binds_for_count = binds.clone();
     let total: i64 = pool_count
         .with_reader(move |c| -> rusqlite::Result<i64> {
-            attach_readonly_authorizer(c);
+            attach_search_readonly_authorizer(c);
             let r = (|| -> rusqlite::Result<i64> {
                 let mut stmt = c.prepare(&count_sql_owned)?;
                 let refs: Vec<&dyn rusqlite::ToSql> = binds_for_count
@@ -295,7 +297,7 @@ pub async fn aggregate(s: &DrustMcp, args: AggregateArgs) -> anyhow::Result<serd
     let binds_owned = binds.clone();
     let rows: Vec<serde_json::Value> = pool_run
         .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
-            attach_readonly_authorizer(c);
+            attach_search_readonly_authorizer(c);
             let r = run_bound_select(c, &sql_owned, &binds_owned);
             detach_authorizer(c);
             r
@@ -397,6 +399,10 @@ pub async fn explain(s: &DrustMcp, sql: &str, _analyze: bool) -> anyhow::Result<
     let sql_owned = sql.to_string();
     let plan: String = pool
         .with_reader(move |c| -> rusqlite::Result<String> {
+            // STRICT arm, deliberately: `sql` here is CALLER-authored (the
+            // `explain` tool takes a raw statement, same camp as `/query`), so
+            // it never carries a drust-compiled `$fts` and must not be able to
+            // name a `_system_search_*` table by hand.
             attach_readonly_authorizer(c);
             let explain_sql = format!("EXPLAIN QUERY PLAN {sql_owned}");
             let result = (|| -> rusqlite::Result<String> {

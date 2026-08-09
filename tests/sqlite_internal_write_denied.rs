@@ -118,7 +118,8 @@ fn authorizer_receives_the_canonical_table_spelling() {
 fn writable_authorizer_denies_sqlite_sequence_writes() {
     let conn = seeded_conn();
     conn.execute_batch("SAVEPOINT drust_rpc_v2").unwrap();
-    drust::query::authorizer::attach_writable_authorizer(&conn);
+    let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
+    drust::query::authorizer::attach_writable_authorizer(&conn, &search);
 
     for sql in [
         "UPDATE sqlite_sequence SET seq = 9223372036854775807 WHERE name = 'things'",
@@ -136,7 +137,8 @@ fn writable_authorizer_denies_sqlite_sequence_writes() {
     conn.execute_batch("ROLLBACK TO drust_rpc_v2; RELEASE drust_rpc_v2")
         .unwrap();
     conn.execute_batch("SAVEPOINT drust_rpc_v2").unwrap();
-    drust::query::authorizer::attach_writable_authorizer(&conn);
+    let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
+    drust::query::authorizer::attach_writable_authorizer(&conn, &search);
     conn.execute("UPDATE things SET v = 'b' WHERE id = 1", [])
         .expect("a normal collection must still be writable");
 
