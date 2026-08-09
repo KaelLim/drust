@@ -36,6 +36,7 @@
 | :lock: **per-user 受保護資料** | 宣告 `owner_field`，或寫 PocketBase 風格的 row-level policy —— 每次讀、寫、realtime 事件都自動過濾。 |
 | :zap: **Realtime 應用** | 用 SSE 訂閱，或在單一 WebSocket 上多工多個 room 並廣播 JSON。 |
 | :brain: **語意搜尋** | 加一個 `vector` 欄位，對結構化 filter 做 cosine / L2 / L1 top-k。 |
+| :mag: **全文搜尋** | 對 TEXT 欄位建立 trigram（對中文友善、預設）或 `unicode61` FTS5 索引，再於任何 `/list` / `/search` / `/aggregate` filter 加上 `{"$fts":{"index":"…","query":"…"}}` —— 命中結果與其他讀取一樣受 owner / RLS 範圍限制。 |
 | :hook: **事件驅動自動化** | 上傳一支小 WebAssembly edge function，在 record 變更或檔案上傳時 in-process 執行。 |
 
 ## :bulb: 為何選 drust
@@ -160,7 +161,8 @@ S3 資料路徑走 `object_store::aws::AmazonS3`，所以任何 S3 相容服務�
 > Litestream）只涵蓋 SQLite 資料庫，不含上傳的物件。要成為可還原的災難復原單位，每份 DB
 > 備份都須搭配物件儲存備份：bare-metal `garage-backup.timer`、k3s `objectMirror`
 >（Litestream 只備份資料庫、不含物件）、docker-compose 則備份 `minio-data` volume。快照亦含明文憑證——
-> 切勿未加密存放於機外。
+> 切勿未加密存放於機外。含 **trigram** FTS 索引的租戶 DB 需主機 `sqlite3` ≥ 3.34 才能 `VACUUM`／還原
+>（trigram tokenizer 的最低版本），內建引擎較新，但主機工具未必。
 
 ## :books: 深入了解
 

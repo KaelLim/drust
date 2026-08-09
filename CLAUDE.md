@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-08-02
+updated: 2026-08-09
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -97,6 +97,7 @@ reachable by an untrusted caller.
 | `/t/<id>/rpc/<name>` | service; anon/user only when `anon_callable` and the collection is not row-access-restricted |
 | `/t/<id>/functions/<name>/invoke` | service always; anon/user only when the per-function invoke ACL allows it |
 | `/t/<id>/mcp` | **service only** — anon `WRITE_DENIED`, user `MCP_USER_DENIED` |
+| `create_fts_index`, `drop_fts_index`, `list_fts_indexes` (MCP tools) | **service only** — full-text index lifecycle, reachable only through `/t/<id>/mcp` |
 | `/t/<id>/openapi.json`, `types.ts`, `zod.ts` | service and anon (different shapes; `X-Drust-Schema-Source` records which) |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
 | `/public/*` | unauthenticated — served by Caddy straight from Garage, never through drust |
@@ -113,7 +114,10 @@ audit toggle) are **service-only** on every face. Storage tier and per-member te
 > tokens across tenants; never commit `.env`. `src/query/authorizer.rs` is the in-SQL
 > cross-tenant guarantee — if you loosen it, re-prove that (a) ATTACH stays denied,
 > (b) `sqlite_master` reads stay denied, (c) all write actions stay denied on read
-> connections.
+> connections, and (d) the `$fts` search allowance lives in a SEPARATE
+> `attach_search_readonly_authorizer` used only on drust-built SQL — the caller-SQL sites
+> (`validate_rpc_sql`, `execute_read_query_with_named`) keep the strict arm, and every
+> writer open carries `SQLITE_DBCONFIG_DEFENSIVE`.
 
 > [!CAUTION]
 > **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for
@@ -222,8 +226,9 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     schema cache and the SSE bus but never the reader's statement cache. Only an explicit
     schema-derived projection (whose SQL text changes on DDL, so the cache self-heals) or
     `COUNT(*)` may be `prepare_cached`. The `RETURNING *` read-back equals the committed row
-    only because the sole `updated_at` AFTER trigger is convergent and tenants cannot create
-    triggers.
+    only because the only AFTER trigger that MODIFIES THE PARENT ROW is the convergent
+    `updated_at` one (the fts5 sync triggers write only the shadow, never the parent) and
+    tenants cannot create triggers.
 
 12. **Explicit RLS policies AND-compose with the unchanged owner clause.** The two evaluators
     — `compile_policy_using` (SQL) and `eval_policy` (in-memory) — must stay in lockstep, and
@@ -269,6 +274,15 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     so for every Docker and k3s user nothing swept `_trash` at all, and that was found by a
     code reviewer reading an unrelated fix rather than by any release step. The per-release
     checklist is in `.claude/rules/build-deploy.md` §Three deployment targets.
+
+18. **A search-index shadow head is writable only via its own sync triggers; its module
+    internals only via the module.** An fts5 index HEAD (`_system_search_fts$<coll>$<name>`)
+    accepts INSERT/UPDATE/DELETE only when the authorizer `accessor` is one of its
+    `_system_search_`-prefixed sync triggers — top-level SQL (accessor `None`) is denied, so
+    no caller can poison an index by hand; the module's shadow internals are allowed by name
+    but only because `SQLITE_DBCONFIG_DEFENSIVE` (on every writer open) refuses direct SQL on
+    them. Head-vs-internal is decided by `pragma_table_list.type` (`virtual` vs `shadow`),
+    never by name suffix.
 
 ## Where the rest lives
 

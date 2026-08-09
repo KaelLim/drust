@@ -36,6 +36,7 @@ Spinning up a Postgres or Supabase per project is overkill for the hundreds of s
 | :lock: **Per-user secured data** | Declare an `owner_field`, or write PocketBase-style row-level policies — every read, write, and realtime event is filtered for you. |
 | :zap: **Realtime apps** | Subscribe over SSE, or multiplex many rooms over one WebSocket and broadcast JSON. |
 | :brain: **Semantic search** | Add a `vector` field, query cosine / L2 / L1 top-k over a structured filter. |
+| :mag: **Full-text search** | Create a trigram (CJK-friendly, the default) or `unicode61` FTS5 index over TEXT fields, then add `{"$fts":{"index":"…","query":"…"}}` to any `/list` / `/search` / `/aggregate` filter — matches are owner-/RLS-scoped like every other read. |
 | :hook: **Event-driven automation** | Upload a small WebAssembly edge function that runs in-process on record changes or file uploads. |
 
 ## :bulb: Why drust
@@ -162,7 +163,9 @@ The S3 data path uses `object_store::aws::AmazonS3`, so any S3-compatible servic
 > object-store backup: bare-metal `garage-backup.timer`, k3s `objectMirror`
 > (Litestream backs up databases only, not objects), docker-compose the
 > `minio-data` volume. Snapshots
-> also contain plaintext credentials — never store them off-host unencrypted.
+> also contain plaintext credentials — never store them off-host unencrypted. A tenant DB
+> that carries a **trigram** FTS index needs host `sqlite3` ≥ 3.34 to `VACUUM`/restore it
+> (the trigram tokenizer floor) — the bundled engine is newer, but the host tools may not be.
 
 ## :books: Learn more
 

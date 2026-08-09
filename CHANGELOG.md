@@ -1,3 +1,56 @@
+## v1.60.0 — 2026-08-10
+
+Wave 2 M3: tenant-scoped **FTS5 full-text search**. Grounded in the 2026-08-09 Phase 0
+spike (`src/query/search_vtable_spike.rs`), whose contract every landmine here traces back
+to; the prototypes it proved are now retired in favour of the production arms.
+
+### Added — full-text search via `$fts`
+
+Three **service-only** MCP tools — `create_fts_index`, `drop_fts_index`, `list_fts_indexes`
+(MCP tool count 70 → 73) — build external-content FTS5 vtables named
+`_system_search_fts$<coll>$<name>`, maintained by SQLite triggers in the same writer
+transaction. A new `$fts` filter operand — shape `{"$fts":{"index":"<name>","query":"<text>"}}`
+— searches them on `/list`, `/search`, `/aggregate` and their MCP mirrors. The default
+tokenizer is **`trigram`** (CJK-friendly; `unicode61` is also offered); a query containing any
+sub-3-char whitespace term falls back per-term to a `?`-bound `LIKE` over the indexed columns,
+because fts5 treats a short trigram term as a satisfied no-op and would otherwise over-match
+(documented v1.60 semantic simplification). Index creation runs a mandatory `('rebuild')`
+backfill in-tx (without it a later delete/update on a pre-index row raises `SQLITE_CORRUPT`);
+that rebuild is the documented DDL trusted-caller quota carve-out.
+
+### Security — additive, owner-scoped by construction
+
+Row authorization stays on the **parent**: `$fts` compiles to `"id" IN (SELECT rowid FROM
+"<head>" WHERE "<head>" MATCH ?)` and the unchanged owner/RLS/caps `WHERE` decides row access,
+so a User only ever searches their own rows. The read allowance is a **separate**
+`attach_search_readonly_authorizer` used only where drust itself built the SQL; the
+caller-SQL sites (`validate_rpc_sql`, `execute_read_query_with_named`) keep the strict arm, so
+an `anon_callable` read-RPC cannot `SELECT … FROM "<head>"` to dodge owner-scope. Writers now
+open with `SQLITE_DBCONFIG_DEFENSIVE`, which is what refuses direct SQL on the module's shadow
+tables (the writable authorizer allows those only by name, and an index head only via its own
+accessor-scoped sync triggers). `$fts` is **rejected in RLS policies** on all three entry
+points (`POLICY_OPERAND_UNSUPPORTED`) — drust cannot enforce row-access on a policy that reads
+a shadow. `FTS_QUERY_INVALID` is decided by a structural pre-probe, never a message substring.
+A codex adversarial review caught a classifier hole pre-merge — an ordinary
+`_system_search_`-prefixed *table* a service could create classified as a module internal
+under the old "prefix-and-not-a-head" rule, which the by-name writable allowance would have
+let caller SQL write; head/internal is now classified positively by `pragma_table_list.type`
+(`virtual`/`shadow`), so an ordinary table is neither and falls through to the deny.
+A second, full two-engine review of the complete diff (codex + a 4-lens workflow) then
+independently judged injection and owner-scope SAFE and surfaced three more fixes, all
+applied pre-tag: `drop_collection`'s fts teardown is now one `with_writer_tx` (a non-atomic
+sweep could orphan a head + stale registry and let a same-name recreate answer a stale
+MATCH); the fts MATCH pre-probe and the MCP search reader now arm the query deadline (they
+were the one `$fts` reader pair that stepped a caller MATCH on a worker uncapped —
+v1.58.5 DoS shape); and index names now also reserve the `_ai`/`_ad`/`_au` sync-trigger
+suffixes.
+
+### Docs — trigram backup caveat
+
+A tenant DB carrying a **trigram** FTS index needs host `sqlite3` ≥ 3.34 to `VACUUM`/restore
+it (the trigram tokenizer floor; the bundled engine is newer than the host tools may be). Now
+stated in both READMEs. No change to snapshot contents.
+
 ## v1.59.0 — 2026-08-07
 
 Three operator-facing hardening changes for the live external k3s deployer

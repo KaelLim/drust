@@ -19,6 +19,7 @@ The same discipline elsewhere:
 - **`strict_rebuild_tenant`**: boot-time **idempotent** migration (gated on `pragma_table_list.strict`) rebuilding pre-STRICT collections via per-table copy-then-swap, reconstructing DDL verbatim from `sqlite_master.sql` (temp table `_system_strict_tmp_<name>`, collision-proof; the pre-commit `foreign_key_check` is scoped to the rebuilt table so one orphan can't block clean siblings).
 - **`scan_unsafe_anon_rpcs`**: startup migration that neutralizes pre-guard legacy rows fail-closed (`anon_callable=0`), including `:user_id` RPCs over policy-protected collections.
 - **Boot scans use the reader lane and never create tables** — e.g. the cron boot scan repopulates `CronIndex` that way.
+- **`SQLITE_DBCONFIG_DEFENSIVE` is set on every tenant writer open** (v1.60): the two `tenant_db` writer opens (`open_write`/`open_write_existing`), the `migrate_tenant_db` bare open, and the `strict_rebuild_tenant` open. It is what refuses direct SQL on fts5 module shadow tables (the writable authorizer allows those by name). The egress-backfill reader open is deliberately left untouched (a harmless no-op there, outside scope). `sqlite_sequence` DML (the AUTOINCREMENT fix-up) and all drust writer behavior are verified unaffected.
 
 ## Three databases
 

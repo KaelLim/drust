@@ -93,6 +93,75 @@ The `RETURNING *` read-back also feeds the post-image policy CHECK; it equals th
 
 Existence checks are done INSIDE the same `pool.with_writer` closure as the write to close TOCTOU vs `drop_collection`; sentinels `COLLECTION_NOT_FOUND` / `FIELD_NOT_FOUND` / `INDEX_NOT_FOUND` are distinct.
 
+## FTS search (`$fts`, `_system_search_*`)
+
+Tenant-scoped FTS5 full-text search (v1.60). Three service-only MCP tools
+(`create_fts_index` / `drop_fts_index` / `list_fts_indexes`, `src/mcp/tools/fts.rs`) build
+external-content fts5 vtables; a `$fts` filter operand searches them on `/list`, `/search`,
+`/aggregate` and their MCP mirrors.
+
+**Naming grammar** (`src/storage/search_names.rs`): the delimiter is `$`, which
+`identifier()`'s `[a-z0-9_]` grammar can never emit — head `_system_search_fts$<coll>$<name>`,
+sync triggers `<head>_ai|_ad|_au`. `validate_fts_index_name` rejects the reserved module
+suffixes (`_data`/`_idx`/`_docsize`/`_config`/`_content`, `FTS_NAME_RESERVED`) up front for a
+clean message; SQLite also reserves those shadow names process-wide as a bonus defense.
+
+**Head-vs-internal classification is POSITIVE by `pragma_table_list.type`, never by name**
+(`snapshot_search_tables` → `SearchTables`): `type='virtual'` → head, `type='shadow'` →
+module internal. `is_internal` is deliberately NOT "prefix-and-not-a-head" — that negation
+classified an ORDINARY table a service could create under the `_system_search_` prefix (a
+leading `_` is a legal identifier) as internal, and the writable arm's by-name allowance
+would then let caller-authored write-RPC SQL write it (a cross-owner hole DEFENSIVE does not
+cover, since it is a real table, not a module shadow — codex caught this pre-merge). An
+ordinary `_system_search_`-prefixed table is `type='table'` → in NEITHER set → falls through
+to the `is_protected_collection` deny. `SearchTables` has **no `empty()`/`Default`** — an
+empty head-set is fail-OPEN, so callers propagate a snapshot error, never substitute a blank.
+
+**Two authorizer arms** (`src/query/authorizer.rs`), both resting on
+`SQLITE_DBCONFIG_DEFENSIVE` (on every writer open — see migrations-boot.md):
+- The **writable arm** takes a `&SearchTables`. Two writable clauses: (1) an index HEAD is
+  writable only when the authorizer `accessor` is one of its own `_system_search_`-prefixed
+  sync triggers — top-level RPC SQL (accessor `None`) is denied, so no caller can poison an
+  index by hand; (2) a real module internal (`is_internal`, `type='shadow'`) is writable
+  by-name, safe only because DEFENSIVE refuses direct SQL on shadows.
+- The **additive search-reader** is a SEPARATE `attach_search_readonly_authorizer`, used
+  ONLY at drust-built read sites (`/list`, `/search`, `/aggregate` + MCP mirrors + edge
+  list). Caller-SQL sites (`validate_rpc_sql`, `execute_read_query_with_named`) keep the
+  strict `attach_readonly_authorizer` — widening the shared reader would let an
+  `anon_callable` read-RPC `SELECT … FROM "<head>"` dodge owner-scope and leak indexed
+  columns to anon.
+
+**Row authorization is on the PARENT.** `$fts` compiles to `"id" IN (SELECT rowid FROM
+"<head>" WHERE "<head>" MATCH ?)`; the unchanged owner/RLS/caps `WHERE` on the parent decides
+row access, so a User only searches their own rows. The head name is always
+`fts_head_name(coll, entry.name)`, never caller input; `index` unknown → `FTS_INDEX_NOT_FOUND`.
+
+**Mandatory `('rebuild')` backfill + DDL quota carve-out.** `create_fts_index` runs
+`INSERT INTO "<head>"("<head>") VALUES('rebuild')` inside the same `with_writer_tx` — without
+it, later deleting/updating a pre-index row raises `SQLITE_CORRUPT`. The rebuild holds the
+writer mutex for the whole corpus and is unbounded growth with **no `check_tenant_quota`** —
+the documented DDL trusted-caller carve-out (a service/admin key can transiently exceed the
+cap by building one index; the next record/upload write then blocks). Untrusted anon/user
+cannot reach the tool.
+
+**Per-term trigram fallback.** Default tokenizer is `trigram` (CJK-friendly). If ANY
+whitespace-separated term in the query is < 3 chars, the whole operand compiles to
+`?`-bound `LIKE '%<raw query>%' ESCAPE '\'` over the concatenation of the indexed columns
+(phrase-substring semantics) — because fts5 silently treats a short trigram term as a
+satisfied no-op and would otherwise return over-broad rows (`'zz 醫院年度'` would match rows
+lacking `zz`). A documented v1.60 semantic simplification. `unicode61` never falls back.
+
+**`FTS_QUERY_INVALID` is STRUCTURAL, never message-substring.** A malformed MATCH is decided
+by a pre-probe `SELECT rowid FROM "<head>" WHERE "<head>" MATCH ? LIMIT 1` before the main
+statement, mapped to `400 FTS_QUERY_INVALID`. Substring-classifying a native SQLite error is
+banned here.
+
+**`$fts` is a reserved Leaf KEY, rejected in policies.** It is special-cased in `compile_leaf`
+(like `$auth`/`$data`), NOT a `FilterAst` variant. All three policy entry points —
+`compile_policy_using`, `eval_policy`, and the save-time `check_ast_operand_classes` — reject
+it with `POLICY_OPERAND_UNSUPPORTED` (CLAUDE.md invariant 12; drust cannot enforce row-access
+on a policy that searches a shadow).
+
 ## Provenance
 
-Extracted from CLAUDE.md "Per-collection schema metadata", "Record history", the /list + /aggregate + batch/upsert bullets of "Tools & endpoints", "Per-tenant quota", and the write-path invariants during the 2026-08-02 restructure.
+Extracted from CLAUDE.md "Per-collection schema metadata", "Record history", the /list + /aggregate + batch/upsert bullets of "Tools & endpoints", "Per-tenant quota", and the write-path invariants during the 2026-08-02 restructure. FTS search section added for v1.60.

@@ -1391,11 +1391,13 @@ pub async fn update_handler(
             //
             // SAFETY (RETURNING vs AFTER trigger): `rec` is the `RETURNING *`
             // image, which SQLite evaluates BEFORE any AFTER UPDATE trigger
-            // fires. This equals the COMMITTED row here ONLY because the sole
-            // trigger drust emits (`<coll>_updated_at`) re-writes `updated_at`
-            // to `datetime('now')` — the SAME statement-stable value this
-            // UPDATE's own SET clause already wrote — and tenants cannot create
-            // triggers (the authorizer denies CreateTrigger). If a future
+            // fires. This equals the COMMITTED row here ONLY because the only
+            // AFTER trigger that MODIFIES THE PARENT ROW (`<coll>_updated_at`)
+            // re-writes `updated_at` to `datetime('now')` — the SAME
+            // statement-stable value this UPDATE's own SET clause already wrote
+            // — and tenants cannot create triggers (the authorizer denies
+            // CreateTrigger). The fts5 sync triggers write only their own shadow
+            // tables, never the parent, so they do not perturb this image. If a future
             // drust-authored AFTER INSERT/UPDATE trigger ever mutates a
             // policy-relevant column to a DIFFERENT value, this CHECK must
             // instead re-read the committed row (a post-statement SELECT inside

@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-07-29
+updated: 2026-08-09
 generated_by: docs/gen-architecture.py
 ---
 
@@ -21,21 +21,21 @@ generated_by: docs/gen-architecture.py
 
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
-| [`(root)/`](#srcroot) | 6 | 33 | 3 | 27 |
+| [`(root)/`](#srcroot) | 6 | 34 | 3 | 28 |
 | [`auth/`](#srcauth) | 10 | 53 | 3 | 42 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
-| [`db/`](#srcdb) | 2 | 15 | 1 | 0 |
+| [`db/`](#srcdb) | 2 | 16 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 69 | 38 | 20 |
-| [`mcp/`](#srcmcp) | 24 | 189 | 75 | 39 |
-| [`mgmt/`](#srcmgmt) | 39 | 326 | 110 | 51 |
+| [`mcp/`](#srcmcp) | 25 | 197 | 79 | 41 |
+| [`mgmt/`](#srcmgmt) | 42 | 367 | 113 | 53 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
-| [`query/`](#srcquery) | 8 | 52 | 8 | 30 |
-| [`rpc/`](#srcrpc) | 6 | 37 | 17 | 9 |
-| [`safety/`](#srcsafety) | 8 | 39 | 1 | 12 |
-| [`storage/`](#srcstorage) | 15 | 130 | 16 | 90 |
-| [`tenant/`](#srctenant) | 36 | 248 | 112 | 67 |
+| [`query/`](#srcquery) | 9 | 62 | 12 | 30 |
+| [`rpc/`](#srcrpc) | 6 | 37 | 17 | 11 |
+| [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
+| [`storage/`](#srcstorage) | 16 | 155 | 17 | 95 |
+| [`tenant/`](#srctenant) | 36 | 255 | 112 | 67 |
 
 ## Group dependency graph
 
@@ -75,6 +75,7 @@ graph LR
   mgmt --> storage
   mgmt --> tenant
   query --> auth
+  query --> rpc
   query --> storage
   rpc --> root
   rpc --> auth
@@ -106,7 +107,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`base_path.rs`](../src/base_path.rs) — Configurable external URL prefix. Every browser-facing path (redirect · 5 pub
 - [`bin_helpers.rs`](../src/bin_helpers.rs) — Shared between bin/set_admin_password.rs and tests. · 2 pub
 - [`config.rs`](../src/config.rs) — 3 pub
-- [`error.rs`](../src/error.rs) — 6 pub
+- [`error.rs`](../src/error.rs) — 7 pub
 - [`lib.rs`](../src/lib.rs) — 17 pub
 - [`main.rs`](../src/main.rs)
 
@@ -137,7 +138,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/codegen/`
 
-- [`filter_ast_schema.rs`](../src/codegen/filter_ast_schema.rs) — v1.27 — Neutral schema descriptions of FilterAst, shared across all · 3 pub
+- [`filter_ast_schema.rs`](../src/codegen/filter_ast_schema.rs) — Neutral schema descriptions of FilterAst, shared across all collections in · 3 pub
 - [`handlers.rs`](../src/codegen/handlers.rs) — v1.27 — Route handlers for /openapi.json, /types.ts, /zod.ts. · 3 pub
 - [`ir.rs`](../src/codegen/ir.rs) — v1.27 — Neutral intermediate representation. Same shape for OpenAPI, · 7 pub
 - [`mod.rs`](../src/codegen/mod.rs) — v1.27 — Schema codegen module. Emits OpenAPI 3.1 / TypeScript / · 10 pub
@@ -161,7 +162,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/db/`
 
-- [`migrations.rs`](../src/db/migrations.rs) — 14 pub
+- [`migrations.rs`](../src/db/migrations.rs) — 15 pub
 - [`mod.rs`](../src/db/mod.rs) — 1 pub
 
 <a id="srcfunctions"></a>
@@ -183,20 +184,21 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/mcp/`
 
-- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler for the per-tenant MCP endpoint — the drust · 52 pub
+- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler for the per-tenant MCP endpoint — the drust · 55 pub
 - [`http_registry.rs`](../src/mcp/http_registry.rs) — Per-tenant cache of `StreamableHttpService` instances. · 2 pub
 - [`mod.rs`](../src/mcp/mod.rs) — 6 pub
 - [`prompts.rs`](../src/mcp/prompts.rs) — v1.56 M3 — MCP Prompts. Hand-written (rmcp's `#[prompt_router]` macro would · 2 pub
-- [`resources.rs`](../src/mcp/resources.rs) — MCP Resources (v1.56, M2) — the URI parser + a thin router that projects · 9 pub
+- [`resources.rs`](../src/mcp/resources.rs) — MCP Resources (v1.56, M2) — the URI parser + a thin router that projects · 10 pub
 - [`server.rs`](../src/mcp/server.rs) — 3 pub
 - [`tools/audit.rs`](../src/mcp/tools/audit.rs) — v1.46 — MCP audit tools over the per-tenant record-history trail. · 2 pub
 - [`tools/batch.rs`](../src/mcp/tools/batch.rs) — M2 — batch insert (+ upsert, next task), service-only on both faces. · 8 pub
 - [`tools/cron.rs`](../src/mcp/tools/cron.rs) — v1.48 — MCP cron tools. Service-only by MCP dispatch (transport rejects · 4 pub
 - [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 4 pub
 - [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url. · 8 pub
+- [`tools/fts.rs`](../src/mcp/tools/fts.rs) — Wave 2 M3 — service-only FTS5 index lifecycle tools (create/drop/list). · 3 pub
 - [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by MCP dispatch (transport · 6 pub
 - [`tools/index.rs`](../src/mcp/tools/index.rs) — 6 pub
-- [`tools/mod.rs`](../src/mcp/tools/mod.rs) — 17 pub
+- [`tools/mod.rs`](../src/mcp/tools/mod.rs) — 18 pub
 - [`tools/oauth.rs`](../src/mcp/tools/oauth.rs) — Pure async helpers for the per-tenant OAuth-provider admin MCP tools · 4 pub
 - [`tools/owner_field.rs`](../src/mcp/tools/owner_field.rs) — Pure async helpers for T25 MCP owner-field + set_self_register tools. · 4 pub
 - [`tools/policy.rs`](../src/mcp/tools/policy.rs) — RLS Phase 8 (Config) — MCP delegate fns for per-collection, · 3 pub
@@ -224,14 +226,16 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`cron_admin.rs`](../src/mgmt/cron_admin.rs) — v1.48 — admin UI for the `⏰ _cron` virtual sidebar entry. · 5 pub
 - [`docs.rs`](../src/mgmt/docs.rs) — Admin-UI handler for the on-disk CHANGELOG viewer. · 2 pub
 - [`format.rs`](../src/mgmt/format.rs) — Small formatting helpers shared across the admin UI. · 1 pub
+- [`frame_guard.rs`](../src/mgmt/frame_guard.rs) — v1.58 P1-11 — deny framing of the admin plane. · 1 pub
 - [`functions_admin.rs`](../src/mgmt/functions_admin.rs) — v1.36 — admin UI for the `ƒ _functions` virtual sidebar entry. · 7 pub
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 9 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
-- [`mod.rs`](../src/mgmt/mod.rs) — 32 pub
+- [`mod.rs`](../src/mgmt/mod.rs) — 35 pub
 - [`oauth_login.rs`](../src/mgmt/oauth_login.rs) — Admin-specific OAuth glue. Calls into src/oauth/ (provider-agnostic · 4 pub
-- [`public_files.rs`](../src/mgmt/public_files.rs) — Admin UI for the host-level public bucket. Provides list, upload, delete, · 20 pub
-- [`quota_admin.rs`](../src/mgmt/quota_admin.rs) — v1.50 (Spec B, Task 6) — quota upgrade request / review admin plane. · 8 pub
+- [`public_files.rs`](../src/mgmt/public_files.rs) — Admin UI for the host-level public bucket. Provides list, upload, delete, · 22 pub
+- [`quota_admin.rs`](../src/mgmt/quota_admin.rs) — v1.50 (Spec B, Task 6) — quota upgrade request / review admin plane. · 15 pub
+- [`request_janitor.rs`](../src/mgmt/request_janitor.rs) — Retention for the admin-plane request queues in `meta.sqlite`. · 2 pub
 - [`routes.rs`](../src/mgmt/routes.rs) — 2 pub
 - [`rpc_admin.rs`](../src/mgmt/rpc_admin.rs) — Admin-UI handlers for the `_rpc` virtual collection page. · 10 pub
 - [`script_json.rs`](../src/mgmt/script_json.rs) — HTML-`<script>`-safe JSON serialization — single canonical escaper. · 2 pub
@@ -239,11 +243,12 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`stats.rs`](../src/mgmt/stats.rs) — Tenant-stats denormalization sampler. · 4 pub
 - [`tenant_authz.rs`](../src/mgmt/tenant_authz.rs) — v1.50 — single ownership predicate shared by every enforcement site · 11 pub
 - [`tenant_broadcast.rs`](../src/mgmt/tenant_broadcast.rs) — v1.31.5 — Admin Broadcast Inspector page. · 1 pub
+- [`tenant_cap.rs`](../src/mgmt/tenant_cap.rs) — v1.57 — per-member tenant creation cap. · 22 pub
 - [`tenant_files.rs`](../src/mgmt/tenant_files.rs) — Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign). · 17 pub
 - [`tenant_settings.rs`](../src/mgmt/tenant_settings.rs) — v1.46 — per-tenant Settings backend (spec §5.6): display-name rename + · 11 pub
-- [`tenants.rs`](../src/mgmt/tenants.rs) — 8 pub
+- [`tenants.rs`](../src/mgmt/tenants.rs) — 9 pub
 - [`tenants/common.rs`](../src/mgmt/tenants/common.rs) — Cross-page helpers shared by the OAuth-providers and Webhooks admin pages. · 2 pub
-- [`tenants/crud.rs`](../src/mgmt/tenants/crud.rs) — Tenant CRUD / lifecycle (group B): list page, create/delete, self-register · 13 pub
+- [`tenants/crud.rs`](../src/mgmt/tenants/crud.rs) — Tenant CRUD / lifecycle (group B): list page, create/delete, self-register · 16 pub
 - [`tenants/files_page.rs`](../src/mgmt/tenants/files_page.rs) — Tenant-files admin page (group D). Relocated from `tenants.rs` by Finding #4. · 3 pub
 - [`tenants/oauth_page.rs`](../src/mgmt/tenants/oauth_page.rs) — OAuth-providers admin page (group E). Relocated from `tenants.rs` by Finding #4. · 6 pub
 - [`tenants/overview.rs`](../src/mgmt/tenants/overview.rs) — Tenant overview admin page (group C). Relocated from `tenants.rs` by Finding #4. · 1 pub
@@ -267,14 +272,15 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/query/`
 
-- [`authorizer.rs`](../src/query/authorizer.rs) — 3 pub
-- [`executor.rs`](../src/query/executor.rs) — 9 pub
+- [`authorizer.rs`](../src/query/authorizer.rs) — 4 pub
+- [`executor.rs`](../src/query/executor.rs) — 11 pub
 - [`filter.rs`](../src/query/filter.rs) — 5 pub
 - [`list_builder.rs`](../src/query/list_builder.rs) — Structured list-SQL builder for `POST /t/<id>/collections/<c>/list` · 8 pub
 - [`mod.rs`](../src/query/mod.rs) — 7 pub
 - [`policy.rs`](../src/query/policy.rs) — Row-level security policy engine. A `Policy` is a per-operation pair of · 12 pub
+- [`search_vtable_spike.rs`](../src/query/search_vtable_spike.rs) — FTS5 / R-tree vtables × the SQL authorizers — the surviving regression
 - [`vector_codec.rs`](../src/query/vector_codec.rs) — JSON ↔ packed-f32 BLOB codec for vector fields. · 3 pub
-- [`vector_filter.rs`](../src/query/vector_filter.rs) — Filter AST used by /search. Intentionally minimal: a tenant-supplied · 5 pub
+- [`vector_filter.rs`](../src/query/vector_filter.rs) — Filter AST used by /search. Intentionally minimal: a tenant-supplied · 12 pub
 
 <a id="srcrpc"></a>
 
@@ -292,7 +298,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 ### `src/safety/`
 
 - [`audit.rs`](../src/safety/audit.rs) — 5 pub
-- [`audit_db.rs`](../src/safety/audit_db.rs) — v1.24 — SQLite-backed audit log storage. See spec · 17 pub
+- [`audit_db.rs`](../src/safety/audit_db.rs) — v1.24 — SQLite-backed audit log storage. See spec · 20 pub
 - [`error_fixes.rs`](../src/safety/error_fixes.rs) — v1.26 — Static suggested_fix catalog. Maps every error_code drust · 4 pub
 - [`ip.rs`](../src/safety/ip.rs) — 1 pub
 - [`mod.rs`](../src/safety/mod.rs) — 7 pub
@@ -306,16 +312,17 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 - [`blast_radius.rs`](../src/storage/blast_radius.rs) — v1.26 — Pure read helpers that compute the side effects of a · 8 pub
 - [`disk.rs`](../src/storage/disk.rs) — Filesystem statistics helper used by upload handlers to enforce the · 4 pub
-- [`files.rs`](../src/storage/files.rs) — Shared file-storage helpers used by both admin and tenant upload flows. · 10 pub
+- [`files.rs`](../src/storage/files.rs) — Shared file-storage helpers used by both admin and tenant upload flows. · 17 pub
 - [`garage.rs`](../src/storage/garage.rs) — Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the · 5 pub
-- [`janitor.rs`](../src/storage/janitor.rs) — 1 pub
+- [`janitor.rs`](../src/storage/janitor.rs) — 7 pub
 - [`meta.rs`](../src/storage/meta.rs) — 3 pub
-- [`mod.rs`](../src/storage/mod.rs) — 14 pub
+- [`mod.rs`](../src/storage/mod.rs) — 15 pub
 - [`pool.rs`](../src/storage/pool.rs) — 3 pub
-- [`quota.rs`](../src/storage/quota.rs) — Per-tenant unified quota (v1.50, Spec B). · 5 pub
+- [`quota.rs`](../src/storage/quota.rs) — Per-tenant unified quota (v1.50, Spec B). · 7 pub
 - [`record_history.rs`](../src/storage/record_history.rs) — v1.46 — supa_audit-style record-history capture. One shared helper wired · 19 pub
-- [`schema.rs`](../src/storage/schema.rs) — 43 pub
+- [`schema.rs`](../src/storage/schema.rs) — 46 pub
 - [`schema_cache.rs`](../src/storage/schema_cache.rs) — 1 pub
+- [`search_names.rs`](../src/storage/search_names.rs) — Naming grammar + authoritative classification for the `_system_search_*` · 6 pub
 - [`signed_url.rs`](../src/storage/signed_url.rs) — Drust-minted, drust-served signed URLs for private file downloads. · 4 pub
 - [`tenant_db.rs`](../src/storage/tenant_db.rs) — 8 pub
 - [`visibility.rs`](../src/storage/visibility.rs) — In-place file visibility toggle (public <-> private). · 2 pub
@@ -328,7 +335,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`auth_cache.rs`](../src/tenant/auth_cache.rs) — v1.35 — process-local invalidate-on-write auth cache for `bearer_auth_layer`. · 4 pub
 - [`auth_routes.rs`](../src/tenant/auth_routes.rs) — 11 pub
 - [`collections.rs`](../src/tenant/collections.rs) — 11 pub
-- [`egress.rs`](../src/tenant/egress.rs) — Per-tenant egress allowlist (v1.49). · 7 pub
+- [`egress.rs`](../src/tenant/egress.rs) — Per-tenant egress allowlist (v1.49). · 8 pub
 - [`egress_config.rs`](../src/tenant/egress_config.rs) — v1.49 — transport-agnostic egress-allowlist config core (spec §Config). · 10 pub
 - [`events.rs`](../src/tenant/events.rs) — 2 pub
 - [`file_caps.rs`](../src/tenant/file_caps.rs) — Per-tenant file-storage capabilities (v1.42). · 7 pub
@@ -342,7 +349,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`query_endpoint.rs`](../src/tenant/query_endpoint.rs) — 4 pub
 - [`realtime_routes.rs`](../src/tenant/realtime_routes.rs) — v1.16 — service-only endpoint to toggle SSE realtime broadcast on · 2 pub
 - [`records.rs`](../src/tenant/records.rs) — 19 pub
-- [`records_list.rs`](../src/tenant/records_list.rs) — `POST /t/<id>/collections/<c>/list` — structured list endpoint. · 4 pub
+- [`records_list.rs`](../src/tenant/records_list.rs) — `POST /t/<id>/collections/<c>/list` — structured list endpoint. · 5 pub
 - [`rooms/audit.rs`](../src/tenant/rooms/audit.rs) — v1.31 audit emit for broadcast.publish. · 2 pub
 - [`rooms/bus.rs`](../src/tenant/rooms/bus.rs) — 2 pub
 - [`rooms/envelope.rs`](../src/tenant/rooms/envelope.rs) — v1.31 wire envelope. Client → Server uses `op`-tagged objects; · 3 pub
@@ -357,7 +364,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`uploads/mod.rs`](../src/tenant/uploads/mod.rs) — v1.33 — Mode B large-file upload: tus 1.0 server + spool-to-Garage. · 9 pub
 - [`uploads/session.rs`](../src/tenant/uploads/session.rs) — _system_upload_sessions row CRUD + tus metadata/derivation helpers + · 12 pub
 - [`vector_search.rs`](../src/tenant/vector_search.rs) — POST /t/{tenant}/collections/{coll}/search · 2 pub
-- [`webhook_dispatcher.rs`](../src/tenant/webhook_dispatcher.rs) — WebhookDispatcher — record-CRUD event → subscribed URLs. · 15 pub
+- [`webhook_dispatcher.rs`](../src/tenant/webhook_dispatcher.rs) — WebhookDispatcher — record-CRUD event → subscribed URLs. · 20 pub
 - [`webhook_resolver.rs`](../src/tenant/webhook_resolver.rs) — Per-dispatch DNS resolver. See spec · 5 pub
 - [`webhook_routes.rs`](../src/tenant/webhook_routes.rs) — Service-only admin endpoints for managing this tenant's outbound webhook · 11 pub
 
