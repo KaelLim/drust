@@ -131,6 +131,8 @@ pub fn list_error_code(e: &ListError) -> &'static str {
         ListError::Filter(FilterError::UnknownField(_)) => "FILTER_UNKNOWN_FIELD",
         ListError::Filter(FilterError::VectorField(_)) => "FILTER_VECTOR_FIELD",
         ListError::Filter(FilterError::TooDeep) => "FILTER_TOO_DEEP",
+        // `$fts` operand carries its own stable sentinel (FTS_INDEX_NOT_FOUND).
+        ListError::Filter(FilterError::Fts { code, .. }) => code,
         // BadOperand + any future Filter variant fall under the parse bucket,
         // matching map_list_error's `Filter(other)` arm.
         ListError::Filter(_) => "FILTER_PARSE_ERROR",

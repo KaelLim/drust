@@ -90,6 +90,12 @@ pub enum PolicyError {
     TooDeep,
     #[error("$data ref {0:?} not available in this context")]
     DataUnavailable(String),
+    /// A `$fts` operand appeared in a policy. `$fts` references a search shadow
+    /// the two policy evaluators cannot reason about, so it is refused on all
+    /// three entry points (compile, in-memory eval fail-closed, save-time
+    /// validate). CLAUDE.md invariant 12; spec non-goal.
+    #[error("POLICY_OPERAND_UNSUPPORTED: {0}")]
+    OperandUnsupported(String),
 }
 
 /// Resolve a leaf operand that may be a literal, `{"$auth":"id"}`, or
@@ -173,6 +179,14 @@ fn compile_node(
                 } else {
                     "1=0".into()
                 });
+            }
+            // `$fts` is not usable in a policy (entry point 1 of 3).
+            if key == "$fts" {
+                return Err(PolicyError::OperandUnsupported(
+                    "$fts references a search shadow the policy evaluators cannot \
+                     reason about"
+                        .into(),
+                ));
             }
             compile_leaf(schema, key, body, ctx, binds)
         }
@@ -297,6 +311,12 @@ fn eval_node(
             if key == "$authenticated" {
                 let want = body.as_bool().unwrap_or(true);
                 return ctx.auth_id.is_some() == want;
+            }
+            // `$fts` is not usable in a policy (entry point 2 of 3). It is
+            // rejected at save time (validate_policy) and by compile_policy_using;
+            // if one somehow reaches in-memory eval, fail closed (deny).
+            if key == "$fts" {
+                return false;
             }
             eval_leaf(key, body, row, ctx)
         }
@@ -528,6 +548,16 @@ fn check_ast_operand_classes(
             };
             if key == "$authenticated" {
                 return Ok(());
+            }
+            // `$fts` is not usable in a policy (entry point 3 of 3, the save-time
+            // path). compile_policy_using already rejects it, but this keeps
+            // check_ast_operand_classes independently correct.
+            if key == "$fts" {
+                return Err(PolicyError::OperandUnsupported(
+                    "$fts references a search shadow the policy evaluators cannot \
+                     reason about"
+                        .into(),
+                ));
             }
             // eq shorthand: {field: <scalar-or-dynamic-ref>}
             let op_obj = match body {

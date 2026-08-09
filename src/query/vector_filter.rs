@@ -35,6 +35,14 @@ pub enum FilterError {
     },
     #[error("filter nesting exceeds max depth ({MAX_FILTER_DEPTH})")]
     TooDeep,
+    /// A `$fts` reserved-key operand error that already carries its stable
+    /// SCREAMING_SNAKE sentinel code (e.g. `FTS_INDEX_NOT_FOUND`). Kept distinct
+    /// from `Parse` so the read faces can surface the exact code instead of the
+    /// generic `FILTER_PARSE_ERROR` bucket. A malformed `$fts` *shape* (missing
+    /// keys / wrong types) stays a `Parse` — only a resolved-but-invalid operand
+    /// (unknown index) becomes `Fts`.
+    #[error("{code}: {message}")]
+    Fts { code: &'static str, message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,11 +160,124 @@ fn compile_node(
                     "leaf node must have exactly one field key".into(),
                 ));
             }
-            let (field, body) = obj.iter().next().unwrap();
-            validate_field(schema, field)?;
-            compile_leaf(field, body, binds)
+            let (key, body) = obj.iter().next().unwrap();
+            // Reserved leaf key: full-text search. Handled here (like policy.rs's
+            // `$authenticated`) so it never reaches validate_field / compile_leaf,
+            // which would treat "$fts" as a column name. A `$fts` mixed with other
+            // keys is already rejected above by the `obj.len() != 1` guard.
+            if key == "$fts" {
+                return compile_fts(schema, body, binds);
+            }
+            validate_field(schema, key)?;
+            compile_leaf(key, body, binds)
         }
     }
+}
+
+/// Double-quote an identifier for interpolation. Every id passed here is
+/// drust-controlled — a schema field name or a `fts_head_name`-derived head —
+/// so this only guards the pathological embedded quote.
+fn q(id: &str) -> String {
+    format!("\"{}\"", id.replace('"', "\"\""))
+}
+
+/// The caller-facing shape hint for a malformed `$fts` operand (missing/extra
+/// keys, wrong value types). Surfaced as a `Parse` error, in the same
+/// teaching-hint style as [`filter_shape_hint`] / the v1.58.6 double-encoding
+/// fix — never serde's opaque variant noise.
+fn fts_shape_error() -> FilterError {
+    FilterError::Parse(
+        "$fts operand must be an object {\"index\":\"<name>\",\"query\":\"<text>\"} \
+         with exactly those two string keys"
+            .to_string(),
+    )
+}
+
+/// Escape a LIKE pattern's metacharacters (`\` `%` `_`) so a `$fts` trigram
+/// fallback matches the query literally under `ESCAPE '\'`.
+fn like_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Compile a `$fts` reserved-key operand `{"index":"<name>","query":"<text>"}`.
+///
+/// SECURITY: the head table is derived ONLY from `fts_head_name(schema.name,
+/// entry.name)` after resolving `index` in `schema.fts_indexes` — never from
+/// caller input. The MATCH string and every LIKE pattern are `?`-bound. The
+/// emitted subquery yields candidate rowids only; row authorization stays on the
+/// PARENT via the owner/RLS/caps WHERE this fragment is AND-ed into, so a User
+/// only ever searches their own rows. This keeps `$fts` in the STRUCTURED camp
+/// (anon/user-safe by construction).
+fn compile_fts(
+    schema: &CollectionSchema,
+    body: &Json,
+    binds: &mut Vec<Value>,
+) -> Result<String, FilterError> {
+    let obj = body.as_object().ok_or_else(fts_shape_error)?;
+    // Exactly {index, query}; reject missing/extra keys or non-string values.
+    let index = obj
+        .get("index")
+        .and_then(Json::as_str)
+        .ok_or_else(fts_shape_error)?;
+    let query = obj
+        .get("query")
+        .and_then(Json::as_str)
+        .ok_or_else(fts_shape_error)?;
+    if obj.len() != 2 {
+        return Err(fts_shape_error());
+    }
+    // Resolve the index by NAME in the registry — the head is derived, never
+    // taken from caller input.
+    let entry = schema
+        .fts_indexes
+        .iter()
+        .find(|i| i.name == index)
+        .ok_or_else(|| FilterError::Fts {
+            code: "FTS_INDEX_NOT_FOUND",
+            message: format!(
+                "no fts index named {index:?} on collection {:?}",
+                schema.name
+            ),
+        })?;
+    let head_q = q(&crate::storage::search_names::fts_head_name(
+        &schema.name,
+        &entry.name,
+    ));
+
+    // Tokenizer rule (Wave 2 M3 Global Constraint): a MATCH is correct when the
+    // tokenizer is unicode61, OR when every whitespace-separated term is ≥ 3
+    // chars. A trigram index cannot satisfy a term shorter than one trigram, and
+    // fts5 silently treats such a term as a satisfied no-op — so ANY sub-3-char
+    // term (measured in CHARS, not bytes, for CJK) forces the substring fallback
+    // below. An empty / all-whitespace query is vacuously all-≥3 → MATCH.
+    let all_terms_trigrammable = query.split_whitespace().all(|t| t.chars().count() >= 3);
+    if entry.tokenizer != "trigram" || all_terms_trigrammable {
+        binds.push(Value::Text(query.to_string()));
+        return Ok(format!(
+            "\"id\" IN (SELECT rowid FROM {head_q} WHERE {head_q} MATCH ?)"
+        ));
+    }
+
+    // Trigram short-term fallback (a deliberate v1.60 simplification): the WHOLE
+    // query is one phrase-substring `%…%` LIKE per indexed field, `?`-bound and
+    // `\`-escaped. Phrase-substring — NOT per-term — semantics: a per-term MATCH
+    // would silently satisfy the sub-3-char term as a no-op and over-match (e.g.
+    // 'zz 醫院年度' would match rows lacking 'zz'), so the short term is never
+    // dropped. A sub-3-char CJK 2-gram like 慈濟 thus still matches.
+    let pattern = format!("%{}%", like_escape(query));
+    let mut ors = Vec::with_capacity(entry.fields.len());
+    for f in &entry.fields {
+        ors.push(format!("{} LIKE ? ESCAPE '\\'", q(f)));
+        binds.push(Value::Text(pattern.clone()));
+    }
+    Ok(format!("({})", ors.join(" OR ")))
 }
 
 fn validate_field(schema: &CollectionSchema, field: &str) -> Result<(), FilterError> {

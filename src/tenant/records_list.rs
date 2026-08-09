@@ -471,6 +471,9 @@ fn map_list_error(e: ListError) -> Response {
             "FILTER_TOO_DEEP",
             "filter nesting exceeds max depth",
         ),
+        ListError::Filter(FilterError::Fts { code, message }) => {
+            json_error(StatusCode::BAD_REQUEST, code, &message)
+        }
         ListError::Filter(other) => json_error(
             StatusCode::BAD_REQUEST,
             "FILTER_PARSE_ERROR",

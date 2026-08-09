@@ -3,9 +3,9 @@
 //! throwaway in-memory table, and check whether the row survives the WHERE;
 //! (b) run eval_policy in memory. They must return the same bool.
 
-use drust::query::policy::{PolicyCtx, compile_policy_using, eval_policy};
+use drust::query::policy::{Policy, PolicyCtx, compile_policy_using, eval_policy, validate_policy};
 use drust::query::vector_filter::FilterAst;
-use drust::storage::schema::{CollectionSchema, Field};
+use drust::storage::schema::{CollectionSchema, DmlVerb, Field};
 use rusqlite::Connection;
 use std::collections::BTreeSet;
 
@@ -293,5 +293,55 @@ fn evaluators_agree_on_data_operand() {
     assert!(
         err.to_string().contains("$data"),
         "expected a $data-unavailable error, got: {err}"
+    );
+}
+
+/// Wave 2 M3 Task 5: `$fts` is a reserved leaf key that must NEVER be usable in
+/// an RLS policy — it references a search shadow the policy evaluators cannot
+/// reason about. All three entry points reject it (compile + in-memory eval
+/// fail-closed + save-time validate), on both the USING and CHECK clauses.
+#[test]
+fn fts_operand_is_rejected_in_policies() {
+    let s = schema(&[("title", "TEXT")]);
+    let fts_ast: FilterAst =
+        serde_json::from_str(r#"{"$fts":{"index":"main","query":"hospital"}}"#).unwrap();
+    let ctx = PolicyCtx {
+        auth_id: Some("u-1".into()),
+        data: None,
+    };
+
+    // (1) compile path — compile_policy_using rejects with the sentinel.
+    let cerr = compile_policy_using(&s, &fts_ast, &ctx)
+        .expect_err("compile_policy_using must reject $fts");
+    assert!(
+        cerr.to_string().contains("POLICY_OPERAND_UNSUPPORTED"),
+        "compile: {cerr}"
+    );
+
+    // (1b) in-memory eval fails closed (deny) — never matches a row.
+    let row: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(r#"{"title":"hospital"}"#).unwrap();
+    assert!(
+        !eval_policy(&fts_ast, &row, &ctx),
+        "$fts must eval to deny (fail-closed)"
+    );
+
+    // (2) save-time path — validate_policy rejects $fts in BOTH USING and CHECK.
+    let using_policy: Policy =
+        serde_json::from_str(r#"{"using":{"$fts":{"index":"main","query":"hospital"}}}"#).unwrap();
+    let uerr = validate_policy(&s, DmlVerb::Select, &using_policy)
+        .expect_err("validate_policy must reject $fts in USING");
+    assert!(
+        uerr.to_string().contains("POLICY_OPERAND_UNSUPPORTED"),
+        "save USING: {uerr}"
+    );
+
+    let check_policy: Policy =
+        serde_json::from_str(r#"{"check":{"$fts":{"index":"main","query":"hospital"}}}"#).unwrap();
+    let verr = validate_policy(&s, DmlVerb::Insert, &check_policy)
+        .expect_err("validate_policy must reject $fts in CHECK");
+    assert!(
+        verr.to_string().contains("POLICY_OPERAND_UNSUPPORTED"),
+        "save CHECK: {verr}"
     );
 }
