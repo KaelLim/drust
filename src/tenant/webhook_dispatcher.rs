@@ -253,6 +253,25 @@ fn read_tenant_egress_allowlist(registry: &TenantRegistry, tenant: &str) -> Allo
     }
 }
 
+/// Global bound on concurrently-executing webhook deliveries (task #932
+/// HIGH #2): without it, one bulk write into a well-subscribed collection
+/// spawns an unbounded task + socket per (row × subscription). Permits are
+/// acquired INSIDE the spawned task — the fan-out loop itself must stay
+/// await-free between the allowlist snapshot and the spawn (see the egress
+/// gate comment above), so queueing happens in the delivery task, never in
+/// the dispatch loop.
+pub(crate) fn delivery_permits() -> &'static Arc<tokio::sync::Semaphore> {
+    static PERMITS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    PERMITS.get_or_init(|| {
+        let n = std::env::var("DRUST_WEBHOOK_MAX_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n >= 1)
+            .unwrap_or(64);
+        Arc::new(tokio::sync::Semaphore::new(n))
+    })
+}
+
 #[derive(Clone)]
 pub struct WebhookDispatcher {
     pool: Arc<TenantRegistry>,
@@ -443,7 +462,20 @@ impl WebhookDispatcher {
                     let timestamp2 = timestamp.clone();
                     let client2 = client.clone();
                     let sub2 = sub.clone();
+                    // Cloning the handle is await-free, exactly like the clones
+                    // above; the WAIT for a permit happens inside the task.
+                    let permits = delivery_permits().clone();
                     tokio::spawn(async move {
+                        // Task #932 HIGH #2 — bound how many deliveries (and
+                        // therefore sockets/FDs) are in flight at once. Held
+                        // for the whole retry chain, so a subscriber that is
+                        // merely slow cannot be made to look concurrent by a
+                        // large batch. Queued deliveries are delayed, never
+                        // dropped.
+                        let _permit = permits
+                            .acquire_owned()
+                            .await
+                            .expect("delivery semaphore is never closed");
                         if let Err(e) = deliver(
                             client2,
                             resolver2,

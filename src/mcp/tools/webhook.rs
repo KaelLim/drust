@@ -37,6 +37,36 @@ pub async fn create_webhook(
 
     let id = pool
         .with_writer(move |c| {
+            // Task #932 HIGH #2 — cap how many subscriptions one tenant can
+            // hold. Every registration multiplies the fan-out of EVERY write to
+            // its collection, so an uncapped tenant is an uncapped task/socket
+            // amplifier even with the delivery semaphore in place. Counted
+            // inside the writer critical section, immediately before the INSERT,
+            // so two concurrent creates cannot straddle the limit.
+            let cap: i64 = std::env::var("DRUST_WEBHOOK_MAX_PER_TENANT")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .filter(|n| *n >= 1)
+                .unwrap_or(32);
+            let count: i64 = c.query_row("SELECT COUNT(*) FROM \"_system_webhooks\"", [], |r| {
+                r.get(0)
+            })?;
+            if count >= cap {
+                // Counts ALL rows, not just active — inactive rows still cost
+                // dispatch-scan and storage; delete, don't hoard.
+                //
+                // Sentinel `rusqlite::Error` in the same `<CODE>: <message>`
+                // shape as the INVALID_URL / INVALID_EVENTS bails above (same
+                // idiom as `error::quota_exceeded_error`); the `map_err` below
+                // re-emits it verbatim instead of burying it under DB_ERROR.
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(1),
+                    Some(format!(
+                        "WEBHOOK_LIMIT_EXCEEDED: tenant already has {count} webhooks \
+                         (limit {cap}); delete one before registering another"
+                    )),
+                ));
+            }
             c.execute(
                 "INSERT INTO _system_webhooks \
                  (collection, events, url, secret, active, created_at) \
@@ -46,7 +76,14 @@ pub async fn create_webhook(
             Ok::<_, rusqlite::Error>(c.last_insert_rowid())
         })
         .await
-        .map_err(|e| anyhow::anyhow!("DB_ERROR: {e}"))?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.starts_with("WEBHOOK_LIMIT_EXCEEDED") {
+                anyhow::anyhow!("{msg}")
+            } else {
+                anyhow::anyhow!("DB_ERROR: {e}")
+            }
+        })?;
 
     Ok(json!({
         "id": id,

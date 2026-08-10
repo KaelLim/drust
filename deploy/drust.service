@@ -21,6 +21,9 @@ RestartSec=5s
 # reinstates the SIGKILL.
 TimeoutStopSec=30s
 UMask=0077
+# Webhook deliveries are semaphore-bounded (DRUST_WEBHOOK_MAX_CONCURRENCY,
+# default 64); this floor keeps FD headroom for SQLite handles + SSE/WS.
+LimitNOFILE=65536
 
 NoNewPrivileges=yes
 ProtectSystem=strict
