@@ -2554,6 +2554,30 @@ async fn admin_edit_form_prefills_the_template_and_kind_for_a_query_row() {
         form.contains(r#"value="query" selected"#),
         "kind must be pre-selected to query"
     );
+    // A slice of the rendered kind field, so any mismatch below is self-
+    // documenting (attribute order / quoting is what these asserts pin).
+    let kind_region: String = form
+        .find("id=\"rpc-kind\"")
+        .map(|i| form[i.saturating_sub(24)..(i + 200).min(form.len())].to_string())
+        .unwrap_or_default();
+    // The visible <select> is DISABLED on the edit form — a disabled control is
+    // NOT submitted, so it carries no `kind`. This is HALF of why the hidden
+    // input below is load-bearing (the other half: kind is immutable).
+    assert!(
+        form.contains(r#"<select class="input" id="rpc-kind" disabled>"#),
+        "the kind <select> must be disabled on the edit form (so it submits no \
+         kind and cannot switch an immutable kind); got: {kind_region}"
+    );
+    // THE carrier. Because the <select> is disabled, this hidden input is the
+    // SOLE thing that puts `kind=query` back on a real-browser edit POST. Delete
+    // it and every query-row edit (even a description change) submits no kind →
+    // default Sql → check_new_rpc_shape rejects it as RPC_KIND_INVALID. The
+    // fabricated round-trip POST cannot see that regression; this assert can.
+    assert!(
+        form.contains(r#"<input type="hidden" name="kind" value="query">"#),
+        "the edit form must carry kind=query on a hidden input (the disabled \
+         <select> submits nothing); got: {kind_region}"
+    );
     assert!(
         form.contains(r#"name="query_json""#),
         "query_json textarea must render"
