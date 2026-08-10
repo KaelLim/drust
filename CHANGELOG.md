@@ -43,6 +43,12 @@ function).
   cross-storage-class `$auth`/`$param` operand (the #954 class check, extended to templates).
 
 ### Fixed
+- **MCP `update_rpc` now re-validates a query template on a params-only change** (both
+  final-audit engines found this independently). A `$param`'s declared type feeds the storage-
+  class check, so changing an `integer` param to `text` on a validated `score < :n` template
+  turned it into `score < 'text'` — which SQLite makes match every integer row, a full-table
+  read for an anon-callable query RPC. `params` is now a revalidation trigger alongside a new
+  template and the `anon_callable` flip; the disarm path (`anon_callable=false`) still skips.
 - Admin RPC **edit** route (`/_rpc/{name}/save`) extracted only one of its two path params —
   every save from the edit form had been failing with "Wrong number of path arguments".
   Pre-existing, independent of #950; fixed because the query-editor tests reach that route.

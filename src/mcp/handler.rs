@@ -1899,7 +1899,19 @@ impl DrustMcpService {
                 // would brick a row whose collection was dropped: the author
                 // could no longer even set anon_callable=false to disarm it.
                 crate::rpc::registry::RpcKind::Query => {
-                    let widening = query_json.is_some() || anon_callable == Some(true);
+                    // A params change is ALSO a widening trigger: a `$param`'s
+                    // declared TYPE feeds the #954 storage-class check, so an
+                    // Integer→Text swap on `col < :n` turns the template into
+                    // `col < 'text'` — which SQLite makes match every integer
+                    // row (all integers sort before all text), a full-table
+                    // read for an anon-callable query RPC where `RpcGrant` skips
+                    // caps. Both final-audit engines caught this independently.
+                    // The disarm path (anon_callable=false, no params/query
+                    // change) still skips, so a dropped-collection row stays
+                    // repairable.
+                    let widening = query_json.is_some()
+                        || params_for_guard.is_some()
+                        || anon_callable == Some(true);
                     if widening {
                         let effective = query_json
                             .as_deref()

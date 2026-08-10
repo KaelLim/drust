@@ -1645,6 +1645,76 @@ async fn update_rpc_revalidates_the_stored_template_on_an_anon_callable_flip() {
     );
 }
 
+/// FINAL-AUDIT (codex + the cross-task workflow, INDEPENDENTLY): a params-only
+/// `update_rpc` must re-run the #954 storage-class check. A template
+/// `score < :n` validated with `n:integer` (same class as the INTEGER column)
+/// is silently widened to match-all by changing ONLY the param type to `text`
+/// — SQLite orders every integer before every text, so `score < 'x'` is true
+/// for every row, and `RpcGrant` skips the anon cap → the anon-callable query
+/// RPC leaks the whole collection. The two-trigger revalidation (query_json
+/// changed OR anon_callable flipped) missed a params-only change; the trigger
+/// now includes `params`.
+#[tokio::test]
+async fn update_rpc_revalidates_on_a_params_only_type_change() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-params-reval").await;
+    // anon_caps=[] — the RPC's own anon_callable flag is the only grant.
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let sid = mcp_init(&app, &tid, &svc).await;
+
+    // Validated at create: Integer param vs the INTEGER `score` column = same class.
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "feed",
+        json!([{"name": "n", "type": "integer", "required": true}]),
+        json!({"collection": "posts", "filter": {"score": {"lt": {"$param": "n"}}}}),
+        true,
+    )
+    .await;
+    assert!(!out.contains("error"), "create must pass: {out}");
+
+    // The attack: change ONLY the param type to text — no `query`, no
+    // `anon_callable`. Before the fix, `widening` was false and the row landed.
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "update_rpc",
+        json!({"name": "feed", "params": [{"name": "n", "type": "text", "required": true}]}),
+    )
+    .await;
+    assert!(
+        !out.contains("updated"),
+        "a params-only type change on an anon-callable query RPC must be re-validated and refused: {out}"
+    );
+
+    // Prove the widening did not land: the stored param is still integer.
+    let params_json: String = {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        pool.with_writer(move |c| {
+            let s: String = c
+                .query_row(
+                    "SELECT params_json FROM _system_rpc WHERE name = 'feed'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let _ = tx.send(s);
+            Ok::<_, rusqlite::Error>(())
+        })
+        .await
+        .unwrap();
+        rx.await.unwrap()
+    };
+    assert!(
+        params_json.contains("integer"),
+        "the type-changed params must NOT have been written: {params_json}"
+    );
+}
+
 /// A PUT of the policy SET replaces it, so omitting `select` CLEARS a stored
 /// select policy — the same widening `DELETE /policies/select` is guarded
 /// against, reached by a different verb. Guarding only the DELETE would leave
