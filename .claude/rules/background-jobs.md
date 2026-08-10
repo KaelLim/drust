@@ -8,7 +8,6 @@ paths:
   - "src/tenant/webhook_resolver.rs"
   - "src/tenant/egress.rs"
   - "src/tenant/rooms/**"
-updated: 2026-08-11
 ---
 
 # Background work: functions, cron, RPC execution, webhooks, egress, audit writer, realtime
