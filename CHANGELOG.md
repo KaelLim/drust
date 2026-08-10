@@ -1,3 +1,54 @@
+## v1.61.0 — 2026-08-10
+
+Hardening round: three workflow-confirmed **HIGH resource-exhaustion** fixes plus two
+intra-tenant **security MEDIUMs** and a CI release-race fix. No new surface — every change
+tightens an existing one.
+
+### Fixed — resource exhaustion (HIGH)
+
+- **Edge-function compute loops no longer pin a Tokio worker (#932).** The per-invoke wasm
+  epoch budget armed a single deadline of `timeout_secs × 10` ticks, so a compute-only guest
+  (no await points) held its worker for the whole budget — two such invokes on a 2-core host
+  starved every other future. `arm_epoch_budget` now yields the worker on every 100 ms tick
+  and interrupts only when the budget is spent; expiry still raises `Trap::Interrupt`, so the
+  Timeout classification is unchanged (`src/functions/runtime.rs`).
+- **Wasm memory/table caps are now cumulative per Store (#932).** `MemLimiter` checked
+  `desired > cap` per linear memory; a component holds one memory per core instance and
+  `wasm_multi_memory` was default-on, so a guest could allocate N × the cap. The limiter now
+  tracks a single per-Store byte budget (and a 1 M-element table budget), caps
+  instances/tables/memories at 64 (down from wasmtime's 10 000 default), and multi-memory is
+  disabled.
+- **Webhook fan-out is bounded on both axes (#932).** `dispatch_many` spawned one task +
+  socket per (row × subscription) with no ceiling; a bulk write into a well-subscribed
+  collection opened unbounded FDs. A process-wide delivery semaphore
+  (`DRUST_WEBHOOK_MAX_CONCURRENCY`, default 64) bounds deliveries in flight — the permit is
+  acquired inside the spawned task so the fan-out loop stays await-free between the egress
+  snapshot and the spawn. A per-tenant registration cap (`DRUST_WEBHOOK_MAX_PER_TENANT`,
+  default 32) is enforced at **all three** create faces (REST, MCP, admin UI) via one shared
+  `check_registration_cap` — the first cut guarded only MCP, a parallel-site gap. `NOFILE`
+  floors added to the systemd unit + Compose (k8s inherits a higher runtime default).
+
+### Fixed — intra-tenant security (MEDIUM)
+
+- **Token reroll now drops in-flight realtime subscribers (#934, invariant 5).**
+  `reroll_token_json` revoked the old bearer and cleared the auth cache but never evicted the
+  SSE/rooms buses, so a subscriber that connected on the old token kept streaming until
+  restart. Now a tenant-wide `bus.evict_tenant` + `bus_rooms.evict_tenant` after the cache
+  clear.
+- **`FilterAst::Not` over NULL now matches SQL three-valued logic (#934, invariant 12).** The
+  in-memory policy evaluator negated booleans (`!eval_node`), but SQL negates three-valued:
+  `NOT(NULL)` is NULL → excluded, while `!false` → included. A `not:` policy over rows with
+  NULL fields was **fail-open on the anon SSE face**. `eval_policy` is now Kleene
+  three-valued (`Tri::{True,False,Unknown}`); the lockstep corpus grew to 144 cases, each
+  checked against real SQLite.
+
+### Fixed — CI
+
+- **Release-CLI jobs no longer race to create the GitHub Release (#938).** All four platform
+  matrix jobs raced `softprops` to create the release; losers hit `already_exists → Too many
+  retries` and dropped that platform's binary until a manual rerun. A single upstream
+  `create-release` job now owns creation; the matrix only uploads.
+
 ## v1.60.0 — 2026-08-10
 
 Wave 2 M3: tenant-scoped **FTS5 full-text search**. Grounded in the 2026-08-09 Phase 0

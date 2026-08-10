@@ -121,6 +121,12 @@ spec:
             {{- if .Values.hideVersion }}
             - { name: DRUST_HIDE_VERSION, value: "1" }
             {{- end }}
+            # v1.61 — webhook fan-out bounds (delivery semaphore + per-tenant
+            # registration cap). NOFILE has no chart equivalent: pods inherit the
+            # container runtime default (containerd 1048576), already above the
+            # systemd/compose 65536 floor, so only these two knobs surface here.
+            - { name: DRUST_WEBHOOK_MAX_CONCURRENCY, value: {{ .Values.webhook.maxConcurrency | quote }} }
+            - { name: DRUST_WEBHOOK_MAX_PER_TENANT,  value: {{ .Values.webhook.maxPerTenant  | quote }} }
             - { name: RUST_LOG, value: {{ .Values.logLevel | quote }} }
             {{- if .Values.publicUrl }}
             - { name: DRUST_PUBLIC_URL, value: {{ .Values.publicUrl | quote }} }

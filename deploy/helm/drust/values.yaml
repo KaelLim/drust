@@ -32,6 +32,15 @@ publicUrl: ""                    # e.g. https://drust.example.tw
 logLevel: "info,drust=info"      # RUST_LOG
 hideVersion: true                # DRUST_HIDE_VERSION
 
+# v1.61 — webhook fan-out bounds. maxConcurrency caps deliveries in flight
+# process-wide (a semaphore; latched at first delivery, so a change needs a pod
+# restart — a StatefulSet env change rolls pods anyway). maxPerTenant caps
+# registrations per tenant (read per create). NOFILE is not set here: pods
+# inherit the container-runtime default, already above the 65536 floor.
+webhook:
+  maxConcurrency: 64             # DRUST_WEBHOOK_MAX_CONCURRENCY
+  maxPerTenant: 32               # DRUST_WEBHOOK_MAX_PER_TENANT
+
 publicFiles:
   enabled: false                 # true => extra ingress path /public/* -> MinIO public bucket (anon read)
 
