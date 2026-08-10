@@ -69,22 +69,14 @@ pub(crate) fn compute_read_auth(
     compute_read_auth_inner(CapMode::Collection, ctx, schema, coll)
 }
 
-/// [`compute_read_auth`] under the RPC-as-grant cap regime (#950).
-///
-/// Only the stored `kind='query'` RPC arm may call this. It differs from
-/// [`compute_read_auth`] in exactly two arms — Anon and User on a
-/// NON-owner-scoped collection, where the cap is a blanket door the RPC's
-/// `anon_callable` flag replaces. Owner clauses and RLS policies are produced
-/// identically, and every arm where the cap itself is the row filter keeps it.
-#[allow(dead_code)] // wired up by the query-RPC arm in #950 T4.
-pub(crate) fn compute_read_auth_rpc_grant(
-    ctx: &AuthCtx,
-    schema: &CollectionSchema,
-    coll: &str,
-) -> Result<(Option<(String, String)>, Option<(String, Vec<Value>)>), Response> {
-    compute_read_auth_inner(CapMode::RpcGrant, ctx, schema, coll)
-}
-
+/// The RPC-as-grant cap regime (#950) has **no wrapper of its own here on
+/// purpose**: [`run_structured_list_rpc_grant`] is the single door to
+/// [`CapMode::RpcGrant`]. A bare `compute_read_auth_rpc_grant` would be a
+/// cap-relaxing entry point reachable WITHOUT the rest of the pipeline the
+/// relaxation assumes (the protected-collection gate, the FTS probe, the query
+/// deadline) — the same "an outside caller can pick the wrong value" shape
+/// [`CapMode`] is private to avoid. The lib tests below drive
+/// `compute_read_auth_inner` directly, so both regimes stay pinned per arm.
 fn compute_read_auth_inner(
     cap: CapMode,
     ctx: &AuthCtx,
@@ -231,11 +223,12 @@ pub(crate) async fn run_structured_list(
     run_structured_list_inner(CapMode::Collection, pool, ctx, coll, req).await
 }
 
-/// [`run_structured_list`] under the RPC-as-grant cap regime (#950) — see
-/// [`compute_read_auth_rpc_grant`] for exactly which cap checks that relaxes.
-/// Everything else (owner clause, RLS policy, protected-collection gate, FTS
-/// probe, deadline, authorizer) is identical.
-#[allow(dead_code)] // wired up by the query-RPC arm in #950 T4.
+/// [`run_structured_list`] under the RPC-as-grant cap regime (#950) — the ONLY
+/// door to [`CapMode::RpcGrant`], and the reason there is no bare
+/// `compute_read_auth_rpc_grant`. See [`compute_read_auth_inner`]'s per-arm
+/// table for exactly which cap checks that relaxes; everything else (owner
+/// clause, RLS policy, protected-collection gate, FTS probe, deadline,
+/// authorizer) is identical. Called from `crate::rpc::exec_query`.
 pub(crate) async fn run_structured_list_rpc_grant(
     pool: &crate::storage::pool::SharedTenantPool,
     ctx: &AuthCtx,
@@ -601,7 +594,12 @@ pub async fn post_list_explain(
 }
 
 /// Map a `ListError` to an HTTP response per spec §3.
-fn map_list_error(e: ListError) -> Response {
+///
+/// `pub(crate)` so the query-RPC arm (`crate::rpc::exec_query`) can reuse the
+/// one case where a template failure is still the CALLER's fault —
+/// `PageRangeInvalid`, which comes from the caller's `?page=/?per_page=` — and
+/// therefore keeps `/list`'s 422 rather than becoming a template 409.
+pub(crate) fn map_list_error(e: ListError) -> Response {
     match e {
         ListError::Filter(FilterError::Parse(msg)) => {
             json_error(StatusCode::BAD_REQUEST, "FILTER_PARSE_ERROR", &msg)

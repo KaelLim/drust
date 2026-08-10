@@ -32,6 +32,9 @@ const MAX_BYTES: usize = 1_048_576;
 enum RpcOutcome {
     Ok(QueryResult),
     OkWrite(crate::rpc::exec_write::WriteRpcOutcome),
+    /// `kind='query'` success — one page of the `/list` pipeline. A different
+    /// envelope from `Ok`, keyed by kind (spec §Wire 契約).
+    OkQuery(crate::tenant::records_list::ListPage),
     NotFound,
     /// Role denial on a Read-mode RPC. Wire code: `ANON_DENIED`.
     AnonDenied,
@@ -52,6 +55,15 @@ enum RpcOutcome {
 pub struct DryRunQs {
     #[serde(default)]
     pub dry_run: Option<bool>,
+    /// `kind='query'` paging. Deliberately on the QUERY STRING, not in the
+    /// body: the body is the RPC's declared-param map, so a template free to
+    /// declare a param named `page` must not collide with the wire contract.
+    /// Out-of-range values are a typed 422 `PAGE_RANGE_INVALID`, never a
+    /// silent clamp. Ignored by the sql arms.
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub per_page: Option<u32>,
 }
 
 pub async fn call_rpc(
@@ -113,6 +125,42 @@ pub async fn call_rpc(
             );
         }
     };
+
+    // ── kind='query' arm (#950) ─────────────────────────────────────
+    // Branch on KIND before mode: a query row's `sql` is empty by contract
+    // and its `mode` is always Read, so falling through to the read arm
+    // would execute an empty body. The row-access decision is NOT made here
+    // — `run_query_rpc` runs the `/list` pipeline under this same ctx, so
+    // owner_field, RLS and the cap-retention rules apply inside it.
+    if stored.kind == crate::rpc::registry::RpcKind::Query {
+        // Role gate, identical in shape to the read arm's: service always,
+        // anon/user only when the author flipped `anon_callable` on. That
+        // flag is the GRANT the RpcGrant cap regime rests on.
+        let allowed = matches!(&ctx_for_lookup, AuthCtx::Service { .. }) || stored.anon_callable;
+        if !allowed {
+            return outcome_to_response(RpcOutcome::AnonDenied, &t, &name);
+        }
+        if qs.dry_run.unwrap_or(false) {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "RPC_KIND_INVALID",
+                "dry_run is not supported on kind='query' (a template only reads)",
+            );
+        }
+        return match crate::rpc::exec_query::run_query_rpc(
+            &pool,
+            &ctx_for_lookup,
+            &stored,
+            body_map,
+            qs.page,
+            qs.per_page,
+        )
+        .await
+        {
+            Ok(pg) => outcome_to_response(RpcOutcome::OkQuery(pg), &t, &name),
+            Err(resp) => resp,
+        };
+    }
 
     let dry_run =
         matches!(stored.mode, crate::rpc::registry::RpcMode::Write) && qs.dry_run.unwrap_or(false);
@@ -343,6 +391,37 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
             resp.extensions_mut()
                 .insert(crate::safety::audit::AuditExtra(
                     json!({"rpc_mode": "read"}),
+                ));
+            resp
+        }
+        RpcOutcome::OkQuery(p) => {
+            // Same fire-and-forget counter bump as the read arm — a query-kind
+            // call counts as a call (spec §周邊面: counters unchanged).
+            let pool_for_counter = t.pool.clone();
+            let role_for_counter = t.role;
+            let name_for_counter = name.to_string();
+            tokio::spawn(async move {
+                let res = pool_for_counter
+                    .with_writer(move |c| {
+                        registry::increment(c, &name_for_counter, role_for_counter)
+                    })
+                    .await;
+                if let Err(e) = res {
+                    tracing::warn!(error = %e, "rpc counter bump failed");
+                }
+            });
+            // The `/list` envelope, verbatim (records_list::post_list) — the
+            // response shape is keyed by KIND, not by mode.
+            let mut resp = Json(json!({
+                "records": p.records,
+                "total": p.total,
+                "page": p.page,
+                "perPage": p.per_page,
+            }))
+            .into_response();
+            resp.extensions_mut()
+                .insert(crate::safety::audit::AuditExtra(
+                    json!({"rpc_mode": "query"}),
                 ));
             resp
         }

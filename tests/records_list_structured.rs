@@ -188,6 +188,40 @@ async fn service_token_empty_body_returns_all_rows() {
     assert_eq!(v["records"].as_array().unwrap().len(), 2);
 }
 
+/// The `{records,total,page,perPage}` envelope IS the wire contract — the
+/// stored `kind='query'` RPC arm (#950) renders the same four keys from the
+/// same `ListPage`, so a silent change to the defaults or to the camelCase
+/// `perPage` spelling would break both faces at once.
+#[tokio::test]
+async fn envelope_echoes_the_page_window() {
+    let (app, tok, dir) = spin_up_tenant_with_role("envelope-pins", "service").await;
+    seed_plain_posts(&dir, "envelope-pins").await;
+    for i in 0..3 {
+        insert_post(&app, "envelope-pins", &tok, &format!("p{i}"), i).await;
+    }
+
+    // Defaults: page 1, 20 per page.
+    let (status, v) = post_list(&app, "envelope-pins", &tok, "posts", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["page"], 1);
+    assert_eq!(v["perPage"], 20);
+    assert_eq!(v["total"], 3);
+
+    // An explicit window echoes back verbatim (snake_case in, camelCase out).
+    let (status, v) = post_list(
+        &app,
+        "envelope-pins",
+        &tok,
+        "posts",
+        json!({"page": 2, "per_page": 5}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["page"], 2);
+    assert_eq!(v["perPage"], 5);
+    assert_eq!(v["total"], 3);
+}
+
 #[tokio::test]
 async fn service_token_with_filter_returns_matching_rows() {
     let (app, tok, dir) = spin_up_tenant_with_role("svc-filter", "service").await;

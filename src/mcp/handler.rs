@@ -312,6 +312,10 @@ pub struct GetFunctionLogsArgs {
 #[derive(Debug, Clone, schemars::JsonSchema, Deserialize)]
 pub struct CreateRpcParams {
     pub name: String,
+    /// The SQL body, using `:name` placeholders. Required for kind="sql"
+    /// (the default); must be omitted or empty for kind="query", whose body
+    /// is `query` instead.
+    #[serde(default)]
     pub sql: String,
     pub params: Vec<crate::rpc::params::ParamSpec>,
     #[serde(default)]
@@ -323,6 +327,19 @@ pub struct CreateRpcParams {
     /// refused at create time.
     #[serde(default)]
     pub mode: Option<String>,
+    /// "sql" (default) or "query". A "query" RPC stores a structured filter
+    /// template in `query` instead of SQL and runs through the /list pipeline
+    /// under the CALLER's identity, so owner_field + RLS policies apply.
+    /// Immutable after create.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The template for kind="query": `{collection, filter?, sort?, select?}`.
+    /// `filter` is a FilterAst that may additionally use the two
+    /// template-only leaf operands `{"$param":"<declared param>"}` and
+    /// `{"$auth":"id"}`. Validated (and dry-compiled) at create time.
+    #[serde(default)]
+    #[schemars(with = "Option<crate::rpc::query_template::QueryTemplate>")]
+    pub query: Option<Value>,
 }
 
 #[derive(Debug, Clone, schemars::JsonSchema, Deserialize)]
@@ -342,6 +359,21 @@ pub struct UpdateRpcParams {
     /// stored row's).
     #[serde(default)]
     pub mode: Option<String>,
+}
+
+/// Parse the optional `kind` param on create_rpc (#950). `None` means "not
+/// supplied" — create defaults to Sql. `kind` is immutable after create, so
+/// update_rpc deliberately has no such param.
+fn parse_rpc_kind(raw: Option<&str>) -> Result<Option<crate::rpc::registry::RpcKind>, McpError> {
+    match raw {
+        None => Ok(None),
+        Some("sql") => Ok(Some(crate::rpc::registry::RpcKind::Sql)),
+        Some("query") => Ok(Some(crate::rpc::registry::RpcKind::Query)),
+        Some(_) => Err(McpError::invalid_params(
+            "RPC_KIND_INVALID: kind must be \"sql\" or \"query\"",
+            None,
+        )),
+    }
 }
 
 /// Parse the optional `mode` param shared by create_rpc / update_rpc.
@@ -1620,7 +1652,11 @@ impl DrustMcpService {
         INSERT/UPDATE/DELETE, while DDL, transaction control, and \
         _system_* writes are refused. MCP call_rpc always executes on the \
         read-only connection regardless of mode — write RPCs run via REST \
-        POST /t/<tenant>/rpc/<name>, the admin playground, or cron."
+        POST /t/<tenant>/rpc/<name>, the admin playground, or cron. \
+        Pass kind:\"query\" + `query` (and no sql) for a structured query RPC: \
+        a stored filter template that runs through the /list pipeline under \
+        the CALLER's identity, so owner_field and RLS policies apply and it is \
+        safe to set anon_callable on one."
     )]
     async fn create_rpc(
         &self,
@@ -1636,24 +1672,66 @@ impl DrustMcpService {
         let params_for_guard = p.params.clone();
         let mode =
             parse_rpc_mode(p.mode.as_deref())?.unwrap_or(crate::rpc::registry::RpcMode::Read);
+        let kind = parse_rpc_kind(p.kind.as_deref())?.unwrap_or(crate::rpc::registry::RpcKind::Sql);
+        // Shape half of the kind contract, before any DB work (#950). The
+        // registry re-judges the finished row.
+        crate::rpc::prepare::check_new_rpc_shape(kind, &sql, mode, p.query.is_some())
+            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        // A query row's `sql` column is EXACTLY `''` (spec §儲存). The shape
+        // check above already refused any non-blank body, so this only
+        // normalizes whitespace — the registry's own rule is `is_empty()`, and
+        // a stray "\n" would otherwise fail there with a worse message.
+        let sql = match kind {
+            crate::rpc::registry::RpcKind::Query => String::new(),
+            crate::rpc::registry::RpcKind::Sql => sql,
+        };
+        // Store the CANONICAL serialization of the template — it is what
+        // `parse_template` re-reads on every call (and what the 64 KiB cap is
+        // measured against).
+        let query_json: Option<String> = match &p.query {
+            Some(v) => Some(
+                serde_json::to_string(v)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?,
+            ),
+            None => None,
+        };
+        let cache = pool.schema_cache.clone();
 
         pool.with_writer(move |c| {
-            crate::rpc::prepare::validate_rpc_sql(c, &sql, mode).map_err(|e| {
+            let reject = |e: crate::rpc::prepare::PrepareError| {
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
-            })?;
-            // v1.41.3: refuse an anon-callable read RPC that reads an
-            // owner-scoped collection without binding :user_id — drust does not
-            // rewrite stored-RPC SQL, so it would return every user's rows.
-            crate::rpc::prepare::guard_anon_owner_scoped_rpc(
-                c,
-                &sql,
-                &params_for_guard,
-                anon_callable,
-                mode,
-            )
-            .map_err(|e| {
-                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
-            })?;
+            };
+            match kind {
+                crate::rpc::registry::RpcKind::Sql => {
+                    crate::rpc::prepare::validate_rpc_sql(c, &sql, mode).map_err(reject)?;
+                    // v1.41.3: refuse an anon-callable read RPC that reads an
+                    // owner-scoped collection without binding :user_id — drust does not
+                    // rewrite stored-RPC SQL, so it would return every user's rows.
+                    crate::rpc::prepare::guard_anon_owner_scoped_rpc(
+                        c,
+                        &sql,
+                        &params_for_guard,
+                        anon_callable,
+                        mode,
+                    )
+                    .map_err(reject)?;
+                }
+                // #950: a template is not raw SQL, so the two sql guards do not
+                // apply — row access is re-derived per call from the caller's
+                // identity by `exec_query::run_query_rpc`. What replaces them is
+                // the save-time template validation (existence, protected
+                // collection, declared↔referenced params, dry compile).
+                crate::rpc::registry::RpcKind::Query => {
+                    let tpl = crate::rpc::query_template::parse_template(
+                        query_json.as_deref().unwrap_or(""),
+                    )
+                    .map_err(|e| {
+                        reject(crate::rpc::prepare::PrepareError::Rejected(e.to_string()))
+                    })?;
+                    crate::rpc::prepare::validate_new_query_rpc(c, &cache, &tpl, &params_for_guard)
+                        .map_err(reject)?;
+                }
+            }
             crate::rpc::registry::create(
                 c,
                 crate::rpc::registry::RpcCreate {
@@ -1663,8 +1741,8 @@ impl DrustMcpService {
                     description: description.as_deref(),
                     anon_callable,
                     mode,
-                    kind: crate::rpc::registry::RpcKind::Sql,
-                    query_json: None,
+                    kind,
+                    query_json: query_json.as_deref(),
                 },
             )
             .map_err(|e| {

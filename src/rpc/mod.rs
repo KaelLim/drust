@@ -1,5 +1,6 @@
 //! RPC subsystem: stored Supabase-style named SQL functions.
 //!
+//! - `exec_query` — `kind='query'` execution arm (template → `/list` pipeline).
 //! - `exec_write` — v1.30 mutation executor (split_statements + execute_one).
 //! - `handler` — REST handler `POST /drust/t/<tenant>/rpc/<name>`.
 //! - `params` — param schema declaration + JSON validation.
@@ -7,6 +8,7 @@
 //! - `query_template` — `kind='query'` FilterAst template parse/substitute/validate.
 //! - `registry` — persistence + counter increments over `_system_rpc`.
 
+pub mod exec_query;
 pub mod exec_write;
 pub mod handler;
 pub mod params;

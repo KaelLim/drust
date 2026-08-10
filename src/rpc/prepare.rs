@@ -492,11 +492,124 @@ pub fn guard_anon_owner_scoped_rpc_update(
     guard_anon_owner_scoped_rpc(conn, eff_sql, eff_params, eff_anon, stored.mode)
 }
 
+/// Rejection sentinel for the kind-shape rules (#950). Callers map a
+/// `PrepareError::Rejected` carrying it to `400 RPC_KIND_INVALID`.
+pub const RPC_KIND_INVALID: &str = "RPC_KIND_INVALID";
+
+/// The kind-SHAPE rules as a CREATE FACE sees them — before a template is
+/// parsed or a row is built.
+///
+/// `registry::check_kind_rules` re-judges the finished row, so this is the
+/// second door of a pair, not the only one. It exists because a face can fail
+/// EARLIER and more precisely: `kind='sql'` + a `query` object never reaches
+/// the registry at all (that face would simply drop the field on the floor),
+/// and `kind='query'` with no template must be refused before we try to parse
+/// one. Keep the two in agreement — they encode the same contract.
+pub fn check_new_rpc_shape(
+    kind: crate::rpc::registry::RpcKind,
+    sql: &str,
+    mode: RpcMode,
+    has_query: bool,
+) -> Result<(), PrepareError> {
+    use crate::rpc::registry::RpcKind;
+    match kind {
+        RpcKind::Query => {
+            if !has_query {
+                return Err(PrepareError::Rejected(format!(
+                    "{RPC_KIND_INVALID}: kind='query' requires a `query` template object"
+                )));
+            }
+            if !sql.trim().is_empty() {
+                return Err(PrepareError::Rejected(format!(
+                    "{RPC_KIND_INVALID}: kind='query' carries no sql body; its body is `query`"
+                )));
+            }
+            if mode != RpcMode::Read {
+                return Err(PrepareError::Rejected(format!(
+                    "{RPC_KIND_INVALID}: kind='query' is always mode='read' (a template only reads)"
+                )));
+            }
+        }
+        RpcKind::Sql => {
+            if has_query {
+                return Err(PrepareError::Rejected(format!(
+                    "{RPC_KIND_INVALID}: kind='sql' carries no `query` template; its body is sql"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Save-time validation of a `kind='query'` body, shared by every create face
+/// (MCP `create_rpc`, the admin form) so they cannot drift.
+///
+/// This REPLACES `validate_rpc_sql` + [`guard_anon_owner_scoped_rpc`] for query
+/// rows — deliberately, and only because the query arm re-derives row access at
+/// RUNTIME from the caller's identity (`exec_query::run_query_rpc` →
+/// `records_list::run_structured_list_rpc_grant`). The sql guards exist
+/// precisely because drust cannot rewrite raw SQL; a template is not raw SQL,
+/// it is `?`-bound operands the list builder compiles under the caller's
+/// owner_field + RLS. Skipping them for a row that did NOT get that runtime
+/// gate would be the leak the guards were written for.
+///
+/// It LOADS the schema itself (rather than taking a `&CollectionSchema`) so no
+/// face can hand it the schema of a different collection — a mismatch makes
+/// every check inside `validate_template` vacuous, and that function's own
+/// name-equality guard would then be the only thing standing between a
+/// template for `posts` and a dry compile against `_system_users`.
+pub fn validate_new_query_rpc(
+    conn: &Connection,
+    cache: &crate::storage::schema_cache::SchemaCache,
+    tpl: &crate::rpc::query_template::QueryTemplate,
+    specs: &[ParamSpec],
+) -> Result<(), PrepareError> {
+    // Typed code for the protected case before the generic load, so the face
+    // reports `PROTECTED_COLLECTION` rather than a template shape message.
+    // `validate_template` refuses it a second time (double door).
+    if crate::storage::schema::is_protected_collection(&tpl.collection) {
+        return Err(PrepareError::Rejected(format!(
+            "PROTECTED_COLLECTION: '{}' is not addressable by a query template",
+            tpl.collection
+        )));
+    }
+    let schema = cache
+        .ensure_loaded(conn, &tpl.collection)
+        .map_err(|e| PrepareError::Rejected(format!("schema probe failed: {e}")))?
+        .ok_or_else(|| {
+            PrepareError::Rejected(format!(
+                "COLLECTION_NOT_FOUND: no such collection: {}",
+                tpl.collection
+            ))
+        })?;
+    crate::rpc::query_template::validate_template(&schema, tpl, specs)
+        .map_err(|e| PrepareError::Rejected(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::tenant_db::open_write;
     use tempfile::TempDir;
+
+    #[test]
+    fn new_rpc_shape_rules() {
+        use crate::rpc::registry::RpcKind;
+        // Happy: each kind with its own body.
+        check_new_rpc_shape(RpcKind::Sql, "SELECT 1", RpcMode::Read, false).unwrap();
+        check_new_rpc_shape(RpcKind::Query, "", RpcMode::Read, true).unwrap();
+        // Every violation names the wire code so a face can map it blind.
+        for (kind, sql, mode, has_query) in [
+            (RpcKind::Query, "", RpcMode::Read, false),
+            (RpcKind::Query, "SELECT 1", RpcMode::Read, true),
+            (RpcKind::Query, "", RpcMode::Write, true),
+            (RpcKind::Sql, "SELECT 1", RpcMode::Read, true),
+        ] {
+            let PrepareError::Rejected(msg) =
+                check_new_rpc_shape(kind, sql, mode, has_query).unwrap_err();
+            assert!(msg.contains(RPC_KIND_INVALID), "{msg}");
+        }
+    }
 
     #[test]
     fn sql_binds_owner_to_user_id_matches_real_predicates_only() {

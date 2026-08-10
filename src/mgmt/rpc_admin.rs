@@ -335,6 +335,15 @@ pub struct RpcFormBody {
     /// keep working — same default as `RpcMode::Read`.
     #[serde(default)]
     pub mode: Option<String>,
+    /// Select: "sql" (default) or "query" (#950). Absent → "sql", so every
+    /// pre-existing form submission keeps its meaning.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Textarea carrying the `kind='query'` template JSON
+    /// (`{collection, filter?, sort?, select?}`). Empty / absent counts as
+    /// "no template supplied" — the shape rules then refuse a query row.
+    #[serde(default)]
+    pub query_json: Option<String>,
 }
 
 /// `POST /admin/tenants/{id}/_rpc/new` (create) and
@@ -366,6 +375,50 @@ pub async fn rpc_save(
         Some("write") => registry::RpcMode::Write,
         _ => registry::RpcMode::Read,
     };
+    // #950: same early-parse treatment for the kind select. Absent → Sql, so
+    // every pre-#950 submission keeps its meaning.
+    let form_kind = match form.kind.as_deref() {
+        Some("query") => registry::RpcKind::Query,
+        _ => registry::RpcKind::Sql,
+    };
+    // An empty textarea is "no template supplied", not an empty template.
+    let form_query_json: Option<String> = form
+        .query_json
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    // Shape half of the kind contract — cheapest gate, no DB needed.
+    if let Err(e) = crate::rpc::prepare::check_new_rpc_shape(
+        form_kind,
+        &form.sql,
+        form_mode,
+        form_query_json.is_some(),
+    ) {
+        let name_for_lookup = form.name.clone();
+        let exists_now = pool
+            .with_reader(move |c| {
+                Ok(registry::lookup(c, &name_for_lookup)
+                    .ok()
+                    .flatten()
+                    .is_some())
+            })
+            .await
+            .unwrap_or(false);
+        return render_form_with_error(
+            &state,
+            &tenant_id,
+            &tenant_name,
+            &form,
+            exists_now,
+            e.to_string(),
+            Some(crate::rpc::prepare::RPC_KIND_INVALID.to_string()),
+            locale,
+            theme,
+            admin.clone(),
+        );
+    }
 
     // Pre-validate params_json before taking the writer lock (no DB needed).
     if let Err(e) = crate::rpc::params::parse_params_json(&form.params_json) {
@@ -408,18 +461,40 @@ pub async fn rpc_save(
     let params_for_guard =
         crate::rpc::params::parse_params_json(&form.params_json).unwrap_or_default();
     let anon_callable_for_guard = form.anon_callable.is_some();
+    let query_for_validate = form_query_json.clone();
+    let cache_for_validate = pool.schema_cache.clone();
     let validate_res: rusqlite::Result<Result<(), crate::rpc::prepare::PrepareError>> = pool
         .with_reader(move |c| {
-            let r = crate::rpc::prepare::validate_rpc_sql(c, &sql_for_validate, form_mode);
-            Ok(r.and_then(|()| {
-                crate::rpc::prepare::guard_anon_owner_scoped_rpc(
-                    c,
-                    &sql_for_validate,
-                    &params_for_guard,
-                    anon_callable_for_guard,
-                    form_mode,
+            Ok(match form_kind {
+                registry::RpcKind::Sql => {
+                    crate::rpc::prepare::validate_rpc_sql(c, &sql_for_validate, form_mode).and_then(
+                        |()| {
+                            crate::rpc::prepare::guard_anon_owner_scoped_rpc(
+                                c,
+                                &sql_for_validate,
+                                &params_for_guard,
+                                anon_callable_for_guard,
+                                form_mode,
+                            )
+                        },
+                    )
+                }
+                // #950: a template is not raw SQL — the two sql guards are
+                // replaced by save-time template validation, because the query
+                // arm re-derives row access per call from the caller's identity.
+                registry::RpcKind::Query => crate::rpc::query_template::parse_template(
+                    query_for_validate.as_deref().unwrap_or(""),
                 )
-            }))
+                .map_err(|e| crate::rpc::prepare::PrepareError::Rejected(e.to_string()))
+                .and_then(|tpl| {
+                    crate::rpc::prepare::validate_new_query_rpc(
+                        c,
+                        &cache_for_validate,
+                        &tpl,
+                        &params_for_guard,
+                    )
+                }),
+            })
         })
         .await;
     match validate_res {
@@ -435,14 +510,25 @@ pub async fn rpc_save(
                 })
                 .await
                 .unwrap_or(false);
+            let msg = prep_err.to_string();
+            // The banner's data-attribute is the canonical code an e2e scraper
+            // reads. `INVALID_SQL_FOR_MODE` would be a lie on a template, and
+            // the kind sentinel is only right when the message carries it.
+            let error_code = if msg.contains(crate::rpc::prepare::RPC_KIND_INVALID) {
+                Some(crate::rpc::prepare::RPC_KIND_INVALID.to_string())
+            } else if form_kind == registry::RpcKind::Sql {
+                Some("INVALID_SQL_FOR_MODE".to_string())
+            } else {
+                None
+            };
             return render_form_with_error(
                 &state,
                 &tenant_id,
                 &tenant_name,
                 &form,
                 exists_now,
-                prep_err.to_string(),
-                Some("INVALID_SQL_FOR_MODE".to_string()),
+                msg,
+                error_code,
                 locale,
                 theme,
                 admin.clone(),
@@ -476,6 +562,7 @@ pub async fn rpc_save(
 
     // Atomic writer transaction: lookup existence + create-or-update.
     let form_for_writer = form.clone();
+    let query_for_writer = form_query_json.clone();
     let writer_res = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<bool> {
             let exists_now = registry::lookup(tx, &form_for_writer.name)
@@ -488,12 +575,22 @@ pub async fn rpc_save(
                     tx,
                     &form_for_writer.name,
                     registry::RpcUpdate {
-                        sql: Some(&form_for_writer.sql),
+                        // A query row owns neither column; sending the stored
+                        // (empty) sql or a mode delta would trip the registry's
+                        // immutability rules. `registry::update` is also what
+                        // refuses a kind SWITCH on an existing row.
+                        sql: match form_kind {
+                            registry::RpcKind::Sql => Some(&form_for_writer.sql),
+                            registry::RpcKind::Query => None,
+                        },
                         params_json: Some(&form_for_writer.params_json),
                         description: Some(form_for_writer.description.as_deref()),
                         anon_callable: Some(anon_callable),
-                        mode: Some(form_mode),
-                        query_json: None,
+                        mode: match form_kind {
+                            registry::RpcKind::Sql => Some(form_mode),
+                            registry::RpcKind::Query => None,
+                        },
+                        query_json: query_for_writer.as_deref(),
                     },
                 )
             } else {
@@ -501,13 +598,19 @@ pub async fn rpc_save(
                     tx,
                     registry::RpcCreate {
                         name: &form_for_writer.name,
-                        sql: &form_for_writer.sql,
+                        // A query row's sql column is EXACTLY `''` — the shape
+                        // check already refused any non-blank body, so this
+                        // only normalizes a stray newline out of the textarea.
+                        sql: match form_kind {
+                            registry::RpcKind::Sql => &form_for_writer.sql,
+                            registry::RpcKind::Query => "",
+                        },
                         params_json: &form_for_writer.params_json,
                         description: form_for_writer.description.as_deref(),
                         anon_callable,
                         mode: form_mode,
-                        kind: registry::RpcKind::Sql,
-                        query_json: None,
+                        kind: form_kind,
+                        query_json: query_for_writer.as_deref(),
                     },
                 )
             };
