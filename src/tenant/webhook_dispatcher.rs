@@ -272,6 +272,37 @@ pub(crate) fn delivery_permits() -> &'static Arc<tokio::sync::Semaphore> {
     })
 }
 
+/// Per-tenant delivery concurrency sub-cap (task #951). Layered UNDER the
+/// process-wide [`delivery_permits`] cap: one tenant's bulk fan-out could
+/// otherwise occupy every global permit — each held for the whole ~36 s retry
+/// chain — and starve every other tenant's webhooks (cross-tenant head-of-line
+/// blocking). Each tenant gets its OWN semaphore; a delivery acquires the
+/// per-tenant permit FIRST, then the global one (consistent order → no
+/// deadlock), so any single tenant holds at most N global permits at once and
+/// at least `global / N` tenants always make progress. Lazily created; the map
+/// is bounded by the (bounded) tenant count and never needs eviction — an idle
+/// tenant's entry is one `Arc<Semaphore>`, a few words.
+/// `DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY` (default 8, min 1).
+pub(crate) fn tenant_delivery_permits(tenant: &str) -> Arc<tokio::sync::Semaphore> {
+    static MAP: std::sync::OnceLock<dashmap::DashMap<String, Arc<tokio::sync::Semaphore>>> =
+        std::sync::OnceLock::new();
+    let map = MAP.get_or_init(dashmap::DashMap::new);
+    // Fast path: an already-registered tenant takes only a shard read lock.
+    if let Some(existing) = map.get(tenant) {
+        return existing.clone();
+    }
+    let n = std::env::var("DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(8);
+    // `entry().or_insert_with` is atomic per shard, so a racing insert between
+    // the `get` miss above and here still yields ONE semaphore for the tenant.
+    map.entry(tenant.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(n)))
+        .clone()
+}
+
 #[derive(Clone)]
 pub struct WebhookDispatcher {
     pool: Arc<TenantRegistry>,
@@ -462,16 +493,23 @@ impl WebhookDispatcher {
                     let timestamp2 = timestamp.clone();
                     let client2 = client.clone();
                     let sub2 = sub.clone();
-                    // Cloning the handle is await-free, exactly like the clones
+                    // Cloning both handles is await-free, exactly like the clones
                     // above; the WAIT for a permit happens inside the task.
                     let permits = delivery_permits().clone();
+                    let tenant_permits = tenant_delivery_permits(&tenant);
                     tokio::spawn(async move {
-                        // Task #932 HIGH #2 — bound how many deliveries (and
-                        // therefore sockets/FDs) are in flight at once. Held
-                        // for the whole retry chain, so a subscriber that is
-                        // merely slow cannot be made to look concurrent by a
-                        // large batch. Queued deliveries are delayed, never
-                        // dropped.
+                        // Task #932 HIGH #2 + #951 — bound how many deliveries
+                        // (and therefore sockets/FDs) are in flight, GLOBALLY and
+                        // PER TENANT. Acquire the per-tenant permit FIRST, then the
+                        // global one (consistent order → no deadlock); both are held
+                        // for the whole retry chain, so a slow subscriber cannot be
+                        // made to look concurrent by a large batch, AND no single
+                        // tenant's fan-out can occupy the global pool and starve
+                        // other tenants. Queued deliveries are delayed, never dropped.
+                        let _tenant_permit = tenant_permits
+                            .acquire_owned()
+                            .await
+                            .expect("per-tenant delivery semaphore is never closed");
                         let _permit = permits
                             .acquire_owned()
                             .await
@@ -1037,5 +1075,19 @@ mod tests {
             .unwrap();
         assert_eq!(stored.len(), 200);
         assert!(stored.chars().all(|c| c == 'x'));
+    }
+
+    #[test]
+    fn per_tenant_delivery_permits_are_isolated_and_capped() {
+        // #951 — each tenant gets its OWN delivery sub-semaphore, so one
+        // tenant's fan-out cannot occupy the global pool and starve others.
+        let a1 = tenant_delivery_permits("t951-alpha");
+        let a2 = tenant_delivery_permits("t951-alpha");
+        let b = tenant_delivery_permits("t951-beta");
+        assert!(Arc::ptr_eq(&a1, &a2), "same tenant shares one semaphore");
+        assert!(!Arc::ptr_eq(&a1, &b), "different tenants are isolated");
+        // Default per-tenant cap (no env override in this test): the sub-cap
+        // sits under the global 64, so ≥ 64/8 = 8 tenants always make progress.
+        assert_eq!(a1.available_permits(), 8, "default per-tenant cap is 8");
     }
 }
