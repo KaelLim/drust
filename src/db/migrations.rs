@@ -317,6 +317,16 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         // the application-layer registry::create signature taking RpcMode, so
         // invalid strings can't be inserted via our code path.
         add_column_if_missing(&tx, "_system_rpc", "mode", "TEXT NOT NULL DEFAULT 'read'")?;
+        // #950 — _system_rpc.kind + query_json. 'sql' default keeps every
+        // existing row on the raw-SQL path; a kind='query' row stores a
+        // structured FilterAst template in query_json and leaves `sql` unused.
+        // Column definitions are IDENTICAL to the fresh-install DDL in
+        // storage/tenant_db.rs (no CHECK on either side — ALTER TABLE ADD
+        // COLUMN would silently drop one, so adding it only on the fresh side
+        // would make fresh and migrated schemas diverge). Invalid strings can't
+        // be inserted through our code path: registry::create takes RpcKind.
+        add_column_if_missing(&tx, "_system_rpc", "kind", "TEXT NOT NULL DEFAULT 'sql'")?;
+        add_column_if_missing(&tx, "_system_rpc", "query_json", "TEXT")?;
 
         // v1.41.3 legacy one-time safety net: an anon-callable RPC that reads or
         // writes an owner-scoped collection without binding :user_id predates the
@@ -1629,7 +1639,7 @@ mod tests {
 
     #[test]
     fn migrate_tenant_db_neutralizes_legacy_unsafe_anon_rpc() {
-        use crate::rpc::registry::{self, RpcMode};
+        use crate::rpc::registry::{self, RpcKind, RpcMode};
         let dir = tempfile::tempdir().unwrap();
         {
             let conn = crate::storage::tenant_db::open_write(dir.path(), "t-leak").unwrap();
@@ -1646,6 +1656,8 @@ mod tests {
                 None,
                 true,
                 RpcMode::Read,
+                RpcKind::Sql,
+                None,
             )
             .unwrap();
             // SAFE: anon-callable but binds :user_id → must be left untouched.
@@ -1657,6 +1669,8 @@ mod tests {
                 None,
                 true,
                 RpcMode::Read,
+                RpcKind::Sql,
+                None,
             )
             .unwrap();
         } // drop the writer before migrate opens its own connection
@@ -2425,6 +2439,83 @@ mod tests {
                 "pre-v1.30 row {name} should default to 'read', got {m:?}"
             );
         }
+    }
+
+    /// #950 — the `kind` / `query_json` pair must land on an upgraded DB with
+    /// the SAME shape the fresh-install DDL (`storage/tenant_db.rs`) declares,
+    /// and a second boot must be a no-op. Fresh install is covered by
+    /// `rpc::registry::tests::create_and_lookup_query_kind`; this is the other
+    /// half of the lockstep.
+    #[test]
+    fn v950_kind_and_query_json_added_on_upgrade_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join("tenants").join("t-up950");
+        std::fs::create_dir_all(&tdir).unwrap();
+        let p = tdir.join("data.sqlite");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, anon_caps_json TEXT, updated_at TEXT);
+                 CREATE TABLE _system_rpc (
+                    name TEXT PRIMARY KEY, sql TEXT NOT NULL, params_json TEXT NOT NULL,
+                    description TEXT, anon_callable INTEGER NOT NULL DEFAULT 0,
+                    anon_calls INTEGER NOT NULL DEFAULT 0,
+                    service_calls INTEGER NOT NULL DEFAULT 0,
+                    last_called_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO _system_rpc (name, sql, params_json) VALUES ('legacy', 'SELECT 1', '[]');"
+            ).unwrap();
+        }
+        // Two consecutive boots — the second must not fail on a re-add.
+        migrate_tenant_db(dir.path(), "t-up950").unwrap();
+        migrate_tenant_db(dir.path(), "t-up950").unwrap();
+
+        // Compare column-for-column against a FRESH tenant DB: type, NOT NULL
+        // and DEFAULT must be identical on both paths, or fresh and upgraded
+        // tenants silently diverge.
+        let shape = |c: &Connection| -> Vec<(String, String, i64, Option<String>)> {
+            c.prepare("PRAGMA table_info(_system_rpc)")
+                .unwrap()
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, Option<String>>(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let c = Connection::open(&p).unwrap();
+        let upgraded = shape(&c);
+        let fresh_dir = tempfile::tempdir().unwrap();
+        let fresh_shape = {
+            let fc = crate::storage::tenant_db::open_write(fresh_dir.path(), "t-fresh950").unwrap();
+            shape(&fc)
+        };
+        for name in ["kind", "query_json"] {
+            let up = upgraded
+                .iter()
+                .find(|(n, ..)| n == name)
+                .unwrap_or_else(|| panic!("{name} missing after upgrade; shape = {upgraded:?}"));
+            let fr = fresh_shape
+                .iter()
+                .find(|(n, ..)| n == name)
+                .unwrap_or_else(|| panic!("{name} missing on fresh install"));
+            assert_eq!(
+                (&up.1, up.2, &up.3),
+                (&fr.1, fr.2, &fr.3),
+                "`{name}` diverges between the upgraded and fresh-install schema"
+            );
+        }
+        // A legacy row reads back as kind=sql with no template.
+        let r = crate::rpc::registry::lookup(&c, "legacy").unwrap().unwrap();
+        assert_eq!(r.kind, crate::rpc::registry::RpcKind::Sql);
+        assert!(r.query_json.is_none());
     }
 
     #[test]

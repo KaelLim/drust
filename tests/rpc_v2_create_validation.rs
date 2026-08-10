@@ -12,7 +12,7 @@
 //! a body that pre-existed registry-side gets rejected at runtime anyway.
 
 use drust::rpc::prepare::{PrepareError, validate_rpc_sql};
-use drust::rpc::registry::RpcMode;
+use drust::rpc::registry::{RpcKind, RpcMode};
 use drust::storage::tenant_db::open_write;
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -311,6 +311,8 @@ fn update_flip_anon_callable_on_owner_scoped_rejected() {
         None,
         false,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     // Flip anon_callable=true via update, sql/params omitted → must be rejected
@@ -327,7 +329,18 @@ fn update_flip_anon_callable_on_owner_scoped_rejected() {
 fn update_swap_sql_to_owner_scoped_rejected() {
     let (_d, conn) = seed_owner_scoped("upd_swap");
     // Seed an anon-callable RPC that reads NO owner table (legal at create).
-    registry::create(&conn, "r", "SELECT 1", "[]", None, true, RpcMode::Read).unwrap();
+    registry::create(
+        &conn,
+        "r",
+        "SELECT 1",
+        "[]",
+        None,
+        true,
+        RpcMode::Read,
+        RpcKind::Sql,
+        None,
+    )
+    .unwrap();
     // Swap in owner-scoped SQL via update, anon_callable omitted (stays true) →
     // must be rejected against the effective (new) SQL.
     let err = guard_anon_owner_scoped_rpc_update(
@@ -356,6 +369,8 @@ fn update_benign_changes_pass() {
         None,
         false,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     // No anon flip, no sql change → stays service-only → ok.
@@ -404,6 +419,8 @@ fn owner_scope_change_blocked_by_existing_anon_rpc() {
         None,
         true,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     // Attempting to make `orders` owner-scoped must be refused, naming the RPC.
@@ -426,6 +443,8 @@ fn owner_scope_change_allowed_when_anon_rpc_binds_user_id() {
         None,
         true,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id")
@@ -444,6 +463,8 @@ fn owner_scope_change_allowed_for_service_only_or_unrelated_rpc() {
         None,
         false,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     // Anon RPC reading a DIFFERENT table → does not block `orders` owner-scope.
@@ -457,6 +478,8 @@ fn owner_scope_change_allowed_for_service_only_or_unrelated_rpc() {
         None,
         true,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id")
@@ -478,6 +501,8 @@ fn owner_scope_change_blocked_by_anon_rpc_with_unused_user_id() {
         None,
         true,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     let err = guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id").unwrap_err();
@@ -506,6 +531,8 @@ fn scan_flags_legacy_unsafe_anon_rpc() {
         None,
         true,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     let names = scan_unsafe_anon_rpcs(&conn).unwrap();
@@ -524,6 +551,8 @@ fn scan_ignores_safe_rpcs() {
         None,
         false,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     // Anon over owner-scoped WITH :user_id → safe.
@@ -535,6 +564,8 @@ fn scan_ignores_safe_rpcs() {
         None,
         true,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     let names = scan_unsafe_anon_rpcs(&conn).unwrap();
@@ -625,6 +656,8 @@ fn guard_policy_change_rejects_when_anon_rpc_references_collection() {
         None,
         true,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     let err = guard_policy_change_against_anon_rpcs(&conn, "orders").unwrap_err();
@@ -646,6 +679,8 @@ fn guard_policy_change_accepts_for_service_only_rpc() {
         None,
         false, // service-only → no anon leak
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     guard_policy_change_against_anon_rpcs(&conn, "orders")
@@ -666,6 +701,8 @@ fn scan_unsafe_flags_user_id_rpc_over_policy_collection() {
         None,
         true,
         RpcMode::Read,
+        RpcKind::Sql,
+        None,
     )
     .unwrap();
     let names = scan_unsafe_anon_rpcs(&conn).unwrap();

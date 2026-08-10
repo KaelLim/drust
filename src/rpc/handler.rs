@@ -545,6 +545,12 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
                 "DB_ERROR",
                 &e.to_string(),
             ),
+            // Config-time rule (kind is immutable, and each kind owns one body
+            // column) — not reachable from this call path, but mapped to the
+            // same wire code the config faces use rather than swallowed.
+            RegistryError::KindInvalid(_) => {
+                json_error(StatusCode::BAD_REQUEST, "RPC_KIND_INVALID", &e.to_string())
+            }
         },
     }
 }

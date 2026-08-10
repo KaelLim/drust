@@ -134,6 +134,15 @@ CREATE TABLE IF NOT EXISTS "_system_rpc" (
   service_calls     INTEGER NOT NULL DEFAULT 0,
   last_called_at    TEXT,
   mode              TEXT NOT NULL DEFAULT 'read' CHECK (mode IN ('read','write')),
+  -- #950: body kind. 'sql' = the `sql` column is the body (every pre-#950
+  -- row); 'query' = the body is a structured FilterAst template in
+  -- query_json and `mode` is always 'read'. Kept in lockstep with the
+  -- migrate_tenant_db add_column_if_missing pair (runtime-created tenants
+  -- only see this CREATE, never the boot migration pass), including the
+  -- ABSENCE of a CHECK — ALTER TABLE ADD COLUMN drops CHECKs, so declaring
+  -- one here only would make fresh and migrated schemas diverge.
+  kind              TEXT NOT NULL DEFAULT 'sql',
+  query_json        TEXT,
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );

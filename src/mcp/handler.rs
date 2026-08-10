@@ -1662,6 +1662,8 @@ impl DrustMcpService {
                 description.as_deref(),
                 anon_callable,
                 mode,
+                crate::rpc::registry::RpcKind::Sql,
+                None,
             )
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
@@ -1748,6 +1750,7 @@ impl DrustMcpService {
                 description.as_ref().map(|d| d.as_deref()),
                 anon_callable,
                 mode_param,
+                None,
             )
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))

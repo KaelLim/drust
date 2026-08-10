@@ -492,6 +492,7 @@ pub async fn rpc_save(
                     Some(form_for_writer.description.as_deref()),
                     Some(anon_callable),
                     Some(form_mode),
+                    None,
                 )
             } else {
                 registry::create(
@@ -502,6 +503,8 @@ pub async fn rpc_save(
                     form_for_writer.description.as_deref(),
                     anon_callable,
                     form_mode,
+                    registry::RpcKind::Sql,
+                    None,
                 )
             };
             result.map(|_| exists_now).map_err(|e| {

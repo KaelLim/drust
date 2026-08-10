@@ -32,6 +32,36 @@ impl RpcMode {
     }
 }
 
+/// Stored-RPC body kind. Decided at create time, stored on the row, and
+/// **immutable afterwards**.
+/// `Sql` (default, and what every pre-#950 row reads back as) → the body is
+/// the raw `sql` column, executed as-is.
+/// `Query` → the body is a structured FilterAst template in `query_json`;
+/// `sql` is unused and `mode` is always `Read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum RpcKind {
+    #[default]
+    Sql,
+    Query,
+}
+
+impl RpcKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RpcKind::Sql => "sql",
+            RpcKind::Query => "query",
+        }
+    }
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "query" => RpcKind::Query,
+            _ => RpcKind::Sql,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredRpc {
     pub name: String,
@@ -40,6 +70,8 @@ pub struct StoredRpc {
     pub description: Option<String>,
     pub anon_callable: bool,
     pub mode: RpcMode,
+    pub kind: RpcKind,
+    pub query_json: Option<String>,
     pub anon_calls: i64,
     pub service_calls: i64,
     pub last_called_at: Option<String>,
@@ -55,6 +87,8 @@ pub enum RegistryError {
     AlreadyExists(String),
     #[error("invalid params_json: {0}")]
     BadParams(String),
+    #[error("kind rule violated: {0}")]
+    KindInvalid(String),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }
@@ -64,7 +98,8 @@ pub fn lookup(conn: &Connection, name: &str) -> Result<Option<StoredRpc>, Regist
         "SELECT name, sql, params_json, description, anon_callable,
                 anon_calls, service_calls, last_called_at,
                 created_at, updated_at,
-                COALESCE(mode, 'read') AS mode
+                COALESCE(mode, 'read') AS mode,
+                COALESCE(kind, 'sql') AS kind, query_json
            FROM _system_rpc WHERE name = ?1",
         params![name],
         |r| {
@@ -80,10 +115,12 @@ pub fn lookup(conn: &Connection, name: &str) -> Result<Option<StoredRpc>, Regist
                 r.get::<_, String>(8)?,
                 r.get::<_, String>(9)?,
                 r.get::<_, String>(10)?,
+                r.get::<_, String>(11)?,
+                r.get::<_, Option<String>>(12)?,
             ))
         },
     );
-    let (n, sql, pj, desc, anon_cb, ac, sc, lca, ca, ua, mode_s) = match row {
+    let (n, sql, pj, desc, anon_cb, ac, sc, lca, ca, ua, mode_s, kind_s, query_json) = match row {
         Ok(t) => t,
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
         Err(e) => return Err(e.into()),
@@ -97,6 +134,8 @@ pub fn lookup(conn: &Connection, name: &str) -> Result<Option<StoredRpc>, Regist
         description: desc,
         anon_callable: anon_cb != 0,
         mode: RpcMode::from_db_str(&mode_s),
+        kind: RpcKind::from_db_str(&kind_s),
+        query_json,
         anon_calls: ac,
         service_calls: sc,
         last_called_at: lca,
@@ -110,7 +149,8 @@ pub fn list(conn: &Connection) -> Result<Vec<StoredRpc>, RegistryError> {
         "SELECT name, sql, params_json, description, anon_callable,
                 anon_calls, service_calls, last_called_at,
                 created_at, updated_at,
-                COALESCE(mode, 'read') AS mode
+                COALESCE(mode, 'read') AS mode,
+                COALESCE(kind, 'sql') AS kind, query_json
            FROM _system_rpc ORDER BY name",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -126,11 +166,13 @@ pub fn list(conn: &Connection) -> Result<Vec<StoredRpc>, RegistryError> {
             r.get::<_, String>(8)?,
             r.get::<_, String>(9)?,
             r.get::<_, String>(10)?,
+            r.get::<_, String>(11)?,
+            r.get::<_, Option<String>>(12)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (n, sql, pj, desc, anon_cb, ac, sc, lca, ca, ua, mode_s) = row?;
+        let (n, sql, pj, desc, anon_cb, ac, sc, lca, ca, ua, mode_s, kind_s, query_json) = row?;
         let params = crate::rpc::params::parse_params_json(&pj)
             .map_err(|e| RegistryError::BadParams(e.to_string()))?;
         out.push(StoredRpc {
@@ -140,6 +182,8 @@ pub fn list(conn: &Connection) -> Result<Vec<StoredRpc>, RegistryError> {
             description: desc,
             anon_callable: anon_cb != 0,
             mode: RpcMode::from_db_str(&mode_s),
+            kind: RpcKind::from_db_str(&kind_s),
+            query_json,
             anon_calls: ac,
             service_calls: sc,
             last_called_at: lca,
@@ -158,19 +202,23 @@ pub fn create(
     description: Option<&str>,
     anon_callable: bool,
     mode: RpcMode,
+    kind: RpcKind,
+    query_json: Option<&str>,
 ) -> Result<(), RegistryError> {
     let res = conn.execute(
         "INSERT INTO _system_rpc
             (name, sql, params_json, description, anon_callable, mode,
-             created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))",
+             kind, query_json, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))",
         params![
             name,
             sql,
             params_json,
             description,
             anon_callable as i64,
-            mode.as_str()
+            mode.as_str(),
+            kind.as_str(),
+            query_json
         ],
     );
     match res {
@@ -191,7 +239,34 @@ pub fn update(
     description: Option<Option<&str>>,
     anon_callable: Option<bool>,
     mode: Option<RpcMode>,
+    query_json: Option<&str>,
 ) -> Result<(), RegistryError> {
+    // `kind` is immutable after create, and each kind owns exactly one body
+    // column. Read the stored row first so a partial update can be judged
+    // against it: a query-kind row must never grow a `sql` body or a non-read
+    // `mode`, and a sql-kind row must never grow a `query_json` template.
+    let stored = lookup(conn, name)?.ok_or_else(|| RegistryError::NotFound(name.to_string()))?;
+    match stored.kind {
+        RpcKind::Query => {
+            if sql.is_some() {
+                return Err(RegistryError::KindInvalid(format!(
+                    "rpc '{name}' is kind=query; its body is query_json, not sql"
+                )));
+            }
+            if mode.is_some() {
+                return Err(RegistryError::KindInvalid(format!(
+                    "rpc '{name}' is kind=query; mode is always 'read'"
+                )));
+            }
+        }
+        RpcKind::Sql => {
+            if query_json.is_some() {
+                return Err(RegistryError::KindInvalid(format!(
+                    "rpc '{name}' is kind=sql; its body is sql, not query_json"
+                )));
+            }
+        }
+    }
     let mut clauses: Vec<&'static str> = Vec::new();
     let mut binds: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(s) = sql {
@@ -216,6 +291,10 @@ pub fn update(
     if let Some(m) = mode {
         clauses.push("mode = ?");
         binds.push(rusqlite::types::Value::Text(m.as_str().into()));
+    }
+    if let Some(q) = query_json {
+        clauses.push("query_json = ?");
+        binds.push(rusqlite::types::Value::Text(q.into()));
     }
     if clauses.is_empty() {
         return Ok(()); // no-op
@@ -280,6 +359,8 @@ mod tests {
             Some("trivial"),
             false,
             RpcMode::Read,
+            RpcKind::Sql,
+            None,
         )
         .unwrap();
         let r = lookup(&conn, "echo").unwrap().unwrap();
@@ -295,8 +376,30 @@ mod tests {
     #[test]
     fn duplicate_create_errors() {
         let (_t, conn) = fresh();
-        create(&conn, "x", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
-        let err = create(&conn, "x", "SELECT 2", "[]", None, false, RpcMode::Read).unwrap_err();
+        create(
+            &conn,
+            "x",
+            "SELECT 1",
+            "[]",
+            None,
+            false,
+            RpcMode::Read,
+            RpcKind::Sql,
+            None,
+        )
+        .unwrap();
+        let err = create(
+            &conn,
+            "x",
+            "SELECT 2",
+            "[]",
+            None,
+            false,
+            RpcMode::Read,
+            RpcKind::Sql,
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(err, RegistryError::AlreadyExists(_)));
     }
 
@@ -309,8 +412,30 @@ mod tests {
     #[test]
     fn list_returns_sorted() {
         let (_t, conn) = fresh();
-        create(&conn, "b", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
-        create(&conn, "a", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
+        create(
+            &conn,
+            "b",
+            "SELECT 1",
+            "[]",
+            None,
+            false,
+            RpcMode::Read,
+            RpcKind::Sql,
+            None,
+        )
+        .unwrap();
+        create(
+            &conn,
+            "a",
+            "SELECT 1",
+            "[]",
+            None,
+            false,
+            RpcMode::Read,
+            RpcKind::Sql,
+            None,
+        )
+        .unwrap();
         let v = list(&conn).unwrap();
         assert_eq!(
             v.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
@@ -321,8 +446,29 @@ mod tests {
     #[test]
     fn update_partial_changes() {
         let (_t, conn) = fresh();
-        create(&conn, "x", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
-        update(&conn, "x", Some("SELECT 2"), None, None, Some(true), None).unwrap();
+        create(
+            &conn,
+            "x",
+            "SELECT 1",
+            "[]",
+            None,
+            false,
+            RpcMode::Read,
+            RpcKind::Sql,
+            None,
+        )
+        .unwrap();
+        update(
+            &conn,
+            "x",
+            Some("SELECT 2"),
+            None,
+            None,
+            Some(true),
+            None,
+            None,
+        )
+        .unwrap();
         let r = lookup(&conn, "x").unwrap().unwrap();
         assert_eq!(r.sql, "SELECT 2");
         assert!(r.anon_callable);
@@ -331,7 +477,17 @@ mod tests {
     #[test]
     fn update_missing_errors() {
         let (_t, conn) = fresh();
-        let err = update(&conn, "nope", Some("SELECT 1"), None, None, None, None).unwrap_err();
+        let err = update(
+            &conn,
+            "nope",
+            Some("SELECT 1"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(err, RegistryError::NotFound(_)));
     }
 
@@ -343,9 +499,126 @@ mod tests {
     }
 
     #[test]
+    fn create_and_lookup_query_kind() {
+        let (_t, conn) = fresh();
+        create(
+            &conn,
+            "q",
+            "",
+            "[]",
+            None,
+            true,
+            RpcMode::Read,
+            RpcKind::Query,
+            Some(r#"{"collection":"posts"}"#),
+        )
+        .unwrap();
+        let r = lookup(&conn, "q").unwrap().unwrap();
+        assert_eq!(r.kind, RpcKind::Query);
+        assert_eq!(r.query_json.as_deref(), Some(r#"{"collection":"posts"}"#));
+        assert_eq!(r.sql, "");
+        assert_eq!(r.mode, RpcMode::Read);
+    }
+
+    #[test]
+    fn legacy_rows_read_as_sql_kind() {
+        let (_t, conn) = fresh();
+        create(
+            &conn,
+            "s",
+            "SELECT 1",
+            "[]",
+            None,
+            false,
+            RpcMode::Read,
+            RpcKind::Sql,
+            None,
+        )
+        .unwrap();
+        let r = lookup(&conn, "s").unwrap().unwrap();
+        assert_eq!(r.kind, RpcKind::Sql);
+        assert!(r.query_json.is_none());
+    }
+
+    #[test]
+    fn update_kind_rules_are_enforced() {
+        let (_t, conn) = fresh();
+        create(
+            &conn,
+            "q",
+            "",
+            "[]",
+            None,
+            true,
+            RpcMode::Read,
+            RpcKind::Query,
+            Some(r#"{"collection":"posts"}"#),
+        )
+        .unwrap();
+        // query row: sql / mode changes refused
+        assert!(matches!(
+            update(&conn, "q", Some("SELECT 1"), None, None, None, None, None),
+            Err(RegistryError::KindInvalid(_))
+        ));
+        assert!(matches!(
+            update(
+                &conn,
+                "q",
+                None,
+                None,
+                None,
+                None,
+                Some(RpcMode::Write),
+                None
+            ),
+            Err(RegistryError::KindInvalid(_))
+        ));
+        // query row: query_json / anon_callable changes allowed
+        update(
+            &conn,
+            "q",
+            None,
+            None,
+            None,
+            Some(false),
+            None,
+            Some(r#"{"collection":"posts2"}"#),
+        )
+        .unwrap();
+        // sql row: query_json refused
+        create(
+            &conn,
+            "s",
+            "SELECT 1",
+            "[]",
+            None,
+            false,
+            RpcMode::Read,
+            RpcKind::Sql,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            update(&conn, "s", None, None, None, None, None, Some("{}")),
+            Err(RegistryError::KindInvalid(_))
+        ));
+    }
+
+    #[test]
     fn increment_picks_correct_column() {
         let (_t, conn) = fresh();
-        create(&conn, "x", "SELECT 1", "[]", None, false, RpcMode::Read).unwrap();
+        create(
+            &conn,
+            "x",
+            "SELECT 1",
+            "[]",
+            None,
+            false,
+            RpcMode::Read,
+            RpcKind::Sql,
+            None,
+        )
+        .unwrap();
         increment(&conn, "x", TokenRole::Anon).unwrap();
         increment(&conn, "x", TokenRole::Service).unwrap();
         increment(&conn, "x", TokenRole::Anon).unwrap();

@@ -184,6 +184,8 @@ async fn missing_target_404_and_user_id_rpc_409() {
             None,
             false,
             drust::rpc::registry::RpcMode::Read,
+            drust::rpc::registry::RpcKind::Sql,
+            None,
         ))
     })
     .await
