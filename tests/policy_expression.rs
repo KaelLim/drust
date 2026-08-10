@@ -91,11 +91,26 @@ fn evaluators_agree_on_corpus() {
         r#"{"and":[{"$authenticated":true},{"n":{"$lt":10}}]}"#,
         r#"{"status":{"$in":["published","featured"]}}"#,
         r#"{"author":{"$is_null":true}}"#,
+        // task #934 MED #2 — Not over NULL must match SQL 3-valued logic.
+        // Over the NULL-author row, SQL NOT(author = 'x') is NOT(NULL) = NULL
+        // → excluded; the in-memory evaluator must agree (pre-fix it included).
+        r#"{"not":{"author":{"$eq":{"$auth":"id"}}}}"#,
+        r#"{"not":{"author":{"$ne":"u-1"}}}"#,
+        r#"{"not":{"author":{"$in":["u-1","u-2"]}}}"#,
+        r#"{"not":{"author":{"$nin":["u-1"]}}}"#,
+        r#"{"not":{"author":{"$is_null":true}}}"#,
+        r#"{"not":{"and":[{"author":{"$eq":"u-1"}},{"n":{"$gt":0}}]}}"#,
+        r#"{"not":{"or":[{"author":{"$eq":"u-1"}},{"n":{"$lt":0}}]}}"#,
+        r#"{"not":{"not":{"author":{"$eq":"u-1"}}}}"#,
+        r#"{"and":[{"n":{"$gte":0}},{"not":{"author":{"$eq":"u-1"}}}]}"#,
     ];
     let rows = [
         r#"{"status":"published","author":"u-1","n":5}"#,
         r#"{"status":"draft","author":"u-2","n":20}"#,
         r#"{"status":"featured","author":null,"n":3}"#,
+        // Not-over-NULL on an INTEGER column too: `n` key absent → SQL NULL,
+        // eval sees row.get("n") = None = Value::Null (symmetric).
+        r#"{"status":"archived","author":"u-1"}"#,
     ];
     let ctxs = [
         PolicyCtx {

@@ -280,12 +280,38 @@ fn compile_leaf(
     }
 }
 
+/// SQL three-valued logic. A comparison over NULL is Unknown, and only a
+/// top-level True admits the row (`WHERE` excludes both False and Unknown).
+/// The old two-valued collapse (NULL-compare -> false) agreed with SQL for
+/// And/Or trees but inverted under Not — SQL NOT(NULL)=NULL excludes, while
+/// !false includes — a fail-open divergence on the anon SSE face (invariant 12).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Tri {
+    True,
+    False,
+    Unknown,
+}
+
+impl Tri {
+    fn not(self) -> Tri {
+        match self {
+            Tri::True => Tri::False,
+            Tri::False => Tri::True,
+            Tri::Unknown => Tri::Unknown,
+        }
+    }
+    fn from_bool(b: bool) -> Tri {
+        if b { Tri::True } else { Tri::False }
+    }
+}
+
 /// In-memory evaluation of a policy AST against a JSON row + caller context.
 /// MUST agree with `compile_policy_using` (see the consistency corpus test).
 /// Comparison semantics mirror SQLite's: numbers compare numerically, text
-/// lexically, NULL comparisons are false (SQL `NULL = x` → not-true).
+/// lexically, NULL comparisons are Unknown; only True admits the row —
+/// identical to SQLite `WHERE`.
 pub fn eval_policy(ast: &FilterAst, row: &serde_json::Map<String, Json>, ctx: &PolicyCtx) -> bool {
-    eval_node(ast, row, ctx, 0)
+    eval_node(ast, row, ctx, 0) == Tri::True
 }
 
 fn eval_node(
@@ -293,30 +319,54 @@ fn eval_node(
     row: &serde_json::Map<String, Json>,
     ctx: &PolicyCtx,
     depth: usize,
-) -> bool {
+) -> Tri {
     if depth >= MAX_FILTER_DEPTH {
-        return false;
+        return Tri::False;
     }
     match node {
-        FilterAst::And { and } => and.iter().all(|n| eval_node(n, row, ctx, depth + 1)),
-        FilterAst::Or { or } => or.iter().any(|n| eval_node(n, row, ctx, depth + 1)),
-        FilterAst::Not { not } => !eval_node(not, row, ctx, depth + 1),
+        // Kleene AND: False if any operand is False, else Unknown if any is
+        // Unknown, else True (empty AND → True, mirroring compiled `1=1`).
+        FilterAst::And { and } => {
+            let mut acc = Tri::True;
+            for n in and {
+                match eval_node(n, row, ctx, depth + 1) {
+                    Tri::False => return Tri::False,
+                    Tri::Unknown => acc = Tri::Unknown,
+                    Tri::True => {}
+                }
+            }
+            acc
+        }
+        // Kleene OR: True if any operand is True, else Unknown if any is
+        // Unknown, else False (empty OR → False, mirroring compiled `1=0`).
+        FilterAst::Or { or } => {
+            let mut acc = Tri::False;
+            for n in or {
+                match eval_node(n, row, ctx, depth + 1) {
+                    Tri::True => return Tri::True,
+                    Tri::Unknown => acc = Tri::Unknown,
+                    Tri::False => {}
+                }
+            }
+            acc
+        }
+        FilterAst::Not { not } => eval_node(not, row, ctx, depth + 1).not(),
         FilterAst::Leaf(obj) => {
             if obj.len() != 1 {
-                return false;
+                return Tri::False;
             }
             let Some((key, body)) = obj.iter().next() else {
-                return false;
+                return Tri::False;
             };
             if key == "$authenticated" {
                 let want = body.as_bool().unwrap_or(true);
-                return ctx.auth_id.is_some() == want;
+                return Tri::from_bool(ctx.auth_id.is_some() == want);
             }
             // `$fts` is not usable in a policy (entry point 2 of 3). It is
             // rejected at save time (validate_policy) and by compile_policy_using;
             // if one somehow reaches in-memory eval, fail closed (deny).
             if key == "$fts" {
-                return false;
+                return Tri::False;
             }
             eval_leaf(key, body, row, ctx)
         }
@@ -347,7 +397,7 @@ fn eval_leaf(
     body: &Json,
     row: &serde_json::Map<String, Json>,
     ctx: &PolicyCtx,
-) -> bool {
+) -> Tri {
     let lhs = row.get(field).map(json_to_value).unwrap_or(Value::Null);
     let (op, operand): (&str, &Json) = if let Json::Object(o) = body {
         if o.contains_key("$auth") || o.contains_key("$data") {
@@ -356,68 +406,86 @@ fn eval_leaf(
             let (k, v) = o.iter().next().unwrap();
             (k.as_str(), v)
         } else {
-            return false;
+            // Malformed op object → fail closed.
+            return Tri::False;
         }
     } else {
         ("$eq", body)
     };
     match op.trim_start_matches('$') {
-        "is_null" => return matches!(lhs, Value::Null),
-        "is_not_null" => return !matches!(lhs, Value::Null),
+        // `x IS [NOT] NULL` is two-valued in SQL (returns 0/1, never NULL).
+        "is_null" => return Tri::from_bool(matches!(lhs, Value::Null)),
+        "is_not_null" => return Tri::from_bool(!matches!(lhs, Value::Null)),
         "in" | "nin" => {
             let arr = match operand.as_array() {
                 Some(a) => a,
-                None => return false,
+                None => return Tri::False,
             };
             // F4 (audit 2026-06-22) — an EMPTY set is decided independently of
-            // the lhs, mirroring the compiler (`X IN ()` → 1=0 false, `X NOT IN
-            // ()` → 1=1 true for ALL x, including NULL). This MUST run before the
-            // NULL-lhs guard below, which the compiler applies only to a
-            // NON-empty set; otherwise empty `$nin` on a NULL row diverges
-            // (eval false vs SQL true). `op` is "in"|"nin" (with/without `$`).
+            // the lhs (and of NULL), mirroring the compiler (`X IN ()` → 1=0
+            // false, `X NOT IN ()` → 1=1 true for ALL x, including NULL). This
+            // MUST run before the NULL handling below, which the compiler applies
+            // only to a NON-empty set. `op` is "in"|"nin" (with/without `$`).
             if arr.is_empty() {
-                return op.contains("nin");
+                return Tri::from_bool(op.contains("nin"));
             }
-            // Mirror SQLite three-valued logic so eval agrees with the compiled
-            // `col [NOT] IN (?, …)`:
-            //   * a NULL lhs is excluded by both IN and NOT IN (NULL [NOT] IN is
-            //     not-true) — H3 column-side guard.
-            //   * a NULL OPERAND poisons NOT IN: `col NOT IN (…, NULL)` can never
-            //     be true (FALSE when matched, NULL otherwise), so $nin must
-            //     exclude. For IN, a NULL operand simply never matches.
-            if matches!(lhs, Value::Null) {
-                return false;
-            }
+            // Reproduce SQLite three-valued `col [NOT] IN (?, …)` exactly:
+            //   * IN:  True if lhs equals some element; else Unknown if lhs or
+            //     any element is NULL (NULL IN → NULL, `c IN (…,NULL)` with no
+            //     hit → NULL); else False.
+            //   * NOT IN: False if lhs equals some element; else Unknown if lhs
+            //     or any element is NULL (NULL NOT IN → NULL, `c NOT IN (…,NULL)`
+            //     with no hit → NULL); else True.
             let resolved: Vec<Value> = arr.iter().map(|v| resolve_eval_operand(v, ctx)).collect();
             let hit = resolved
                 .iter()
                 .any(|v| value_cmp(&lhs, v) == Some(std::cmp::Ordering::Equal));
+            let any_null =
+                matches!(lhs, Value::Null) || resolved.iter().any(|v| matches!(v, Value::Null));
             return if op.contains("nin") {
-                let has_null_operand = resolved.iter().any(|v| matches!(v, Value::Null));
-                !hit && !has_null_operand
+                if hit {
+                    Tri::False
+                } else if any_null {
+                    Tri::Unknown
+                } else {
+                    Tri::True
+                }
+            } else if hit {
+                Tri::True
+            } else if any_null {
+                Tri::Unknown
             } else {
-                hit
+                Tri::False
             };
         }
         _ => {}
     }
     let rhs = resolve_eval_operand(operand, ctx);
+    // `like_match` returns bool, but a NULL operand or lhs makes SQL `LIKE`
+    // yield NULL (Unknown), so guard NULL before calling it.
+    if op.trim_start_matches('$') == "like" {
+        return if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
+            Tri::Unknown
+        } else {
+            Tri::from_bool(like_match(&lhs, &rhs))
+        };
+    }
     let ord = value_cmp(&lhs, &rhs);
-    match op.trim_start_matches('$') {
-        "eq" => ord == Some(std::cmp::Ordering::Equal),
-        "ne" => ord.is_some() && ord != Some(std::cmp::Ordering::Equal),
-        "gt" => ord == Some(std::cmp::Ordering::Greater),
-        "gte" => matches!(
-            ord,
-            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-        ),
-        "lt" => ord == Some(std::cmp::Ordering::Less),
-        "lte" => matches!(
-            ord,
-            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-        ),
-        "like" => like_match(&lhs, &rhs),
-        _ => false,
+    // Any comparison where value_cmp is None (a NULL is involved) is Unknown,
+    // NOT False — that is the crux of the Not-over-NULL fix.
+    match ord {
+        None => Tri::Unknown,
+        Some(o) => Tri::from_bool(match op.trim_start_matches('$') {
+            "eq" => o == std::cmp::Ordering::Equal,
+            "ne" => o != std::cmp::Ordering::Equal,
+            "gt" => o == std::cmp::Ordering::Greater,
+            "gte" => matches!(o, std::cmp::Ordering::Greater | std::cmp::Ordering::Equal),
+            "lt" => o == std::cmp::Ordering::Less,
+            "lte" => matches!(o, std::cmp::Ordering::Less | std::cmp::Ordering::Equal),
+            // Unknown op → fail closed. (Reachable only via a malformed leaf that
+            // slipped validation; `like` is handled above.)
+            _ => return Tri::False,
+        }),
     }
 }
 
