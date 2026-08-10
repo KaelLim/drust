@@ -303,6 +303,34 @@ pub(crate) fn tenant_delivery_permits(tenant: &str) -> Arc<tokio::sync::Semaphor
         .clone()
 }
 
+/// In-memory monotonic version of each tenant's egress allowlist (task #953).
+/// Bumped on every allowlist WRITE (`egress_config::set_allowlist`, the single
+/// write chokepoint) and read by the dispatch fan-out so ATTEMPT 1 of a
+/// delivery can tell — WITHOUT a meta.sqlite open — whether the per-fan-out
+/// allowlist snapshot it was gated by is still current. The v1.61 delivery
+/// semaphore can park a task before attempt 1 for as long as the permit wait
+/// lasts; a de-allowlist that lands in that window is invisible to the snapshot
+/// gate. If the version moved since the snapshot, attempt 1 falls back to a live
+/// re-read (one meta open, only when it actually changed — rare); otherwise it
+/// trusts the snapshot, preserving the "one meta open per fan-out, never per
+/// row" cost rule. The absolute value is meaningless — only "did it change".
+fn egress_version_map() -> &'static dashmap::DashMap<String, u64> {
+    static MAP: std::sync::OnceLock<dashmap::DashMap<String, u64>> = std::sync::OnceLock::new();
+    MAP.get_or_init(dashmap::DashMap::new)
+}
+
+/// Current egress-allowlist version for `tenant` (0 if unchanged this process).
+pub fn egress_allowlist_version(tenant: &str) -> u64 {
+    egress_version_map().get(tenant).map(|v| *v).unwrap_or(0)
+}
+
+/// Bump `tenant`'s egress-allowlist version. MUST be called AFTER the allowlist
+/// UPDATE commits, so a reader that observes the new version also reads the new
+/// list on its live re-read (#953).
+pub fn bump_egress_allowlist_version(tenant: &str) {
+    *egress_version_map().entry(tenant.to_string()).or_insert(0) += 1;
+}
+
 #[derive(Clone)]
 pub struct WebhookDispatcher {
     pool: Arc<TenantRegistry>,
@@ -440,6 +468,11 @@ impl WebhookDispatcher {
             // shortly BEFORE the spawn, not immediately before the POST — see
             // the retry-loop comment in `deliver_inner` for what that window is
             // and why buying it back would cost a meta open per row.
+            // #953 — snapshot the allowlist VERSION *before* the list itself: a
+            // write interleaving between the two reads bumps the version, so
+            // attempt 1 re-reads (fail-safe). Reading the version last could miss
+            // that write and trust a stale snapshot.
+            let egress_ver = egress_allowlist_version(&tenant);
             let allowlist_json = read_tenant_egress_allowlist(&pool, &tenant).or_deny_all();
             // Denials are collected and written AFTER every allowed delivery is
             // spawned. `record_failure` takes the per-tenant writer mutex, which
@@ -524,6 +557,7 @@ impl WebhookDispatcher {
                             DeliverySchedule::default(),
                             &pool2,
                             &tenant2,
+                            egress_ver,
                         )
                         .await
                         {
@@ -676,6 +710,7 @@ pub(crate) async fn deliver(
     sched: DeliverySchedule,
     pool: &TenantRegistry,
     tenant_id: &str,
+    egress_snapshot_ver: u64,
 ) -> Result<(), DeliveryError> {
     let outcome = deliver_inner(
         Some(shared_client),
@@ -691,6 +726,10 @@ pub(crate) async fn deliver(
         delivery_id,
         timestamp,
         sched,
+        // #953 — the fan-out's allowlist-version snapshot, so attempt 1 can
+        // detect a de-allowlist that landed during this delivery's semaphore
+        // wait and re-read live instead of trusting the stale snapshot.
+        Some(egress_snapshot_ver),
     )
     .await;
     // v1.32 C1 — webhook attempt counter
@@ -778,6 +817,9 @@ pub async fn deliver_for_test(
         delivery_id,
         timestamp,
         sched,
+        // Test entries assert on the attempt-2..n live re-read, not the #953
+        // attempt-1 version check — no snapshot version to compare against.
+        None,
     )
     .await
 }
@@ -809,6 +851,40 @@ pub async fn deliver_for_test_with_egress(
         delivery_id,
         timestamp,
         sched,
+        // Test entries assert on the attempt-2..n live re-read, not the #953
+        // attempt-1 version check — no snapshot version to compare against.
+        None,
+    )
+    .await
+}
+
+/// Like [`deliver_for_test_with_egress`] but also threads the #953 attempt-1
+/// allowlist-version snapshot, so a test can prove a version bump during the
+/// (simulated) pre-attempt-1 window forces a live re-read on attempt 1 —
+/// terminating the delivery if the origin was de-allowlisted in that window.
+#[allow(clippy::too_many_arguments)]
+pub async fn deliver_for_test_with_egress_ver(
+    resolver: Arc<dyn reqwest::dns::Resolve + Send + Sync>,
+    pre_check: Option<PreCheckResolveFn>,
+    egress: Option<EgressRecheck<'_>>,
+    egress_snapshot_ver: Option<u64>,
+    row: &WebhookRow,
+    body_bytes: Vec<u8>,
+    delivery_id: String,
+    timestamp: String,
+    sched: DeliverySchedule,
+) -> Result<(), DeliveryError> {
+    deliver_inner(
+        None,
+        resolver,
+        pre_check,
+        egress,
+        row,
+        body_bytes,
+        delivery_id,
+        timestamp,
+        sched,
+        egress_snapshot_ver,
     )
     .await
 }
@@ -824,6 +900,12 @@ async fn deliver_inner(
     delivery_id: String,
     timestamp: String,
     sched: DeliverySchedule,
+    // #953 — the allowlist version captured by the fan-out at snapshot time.
+    // `Some` on the production path (`deliver`); `None` from the test entries,
+    // which assert on the attempt-2..n re-read only. When it differs from the
+    // tenant's current version, attempt 1 does a live re-read instead of
+    // trusting the snapshot gate.
+    egress_snapshot_ver: Option<u64>,
 ) -> Result<(), DeliveryError> {
     use std::time::Duration;
 
@@ -878,60 +960,65 @@ async fn deliver_inner(
         // this closes: the schedule spans ~36 s, and an origin removed from the
         // allowlist mid-flight used to keep receiving POSTs until it ran out.
         //
-        // Attempt 1 is NOT re-read here, and the honest statement of its cover
-        // is: it is gated by the fan-out snapshot `dispatch_many` took shortly
-        // before spawning this delivery — not by a read immediately before the
-        // POST. Closing it means one meta.sqlite open per ROW of a batch, which
-        // is exactly the cost the per-batch read exists to avoid, so it is
-        // bought back where it is free instead: the fan-out defers its denied-
-        // subscription `record_failure` writes until after every delivery is
-        // spawned, keeping a writer-mutex wait out of the window. Anything that
-        // adds a NEW attempt must re-check here.
+        // Attempt 1's default cover is the fan-out snapshot `dispatch_many` took
+        // shortly before spawning this delivery — NOT a read immediately before
+        // the POST — because a per-delivery read would cost one meta.sqlite open
+        // per ROW of a batch, the exact cost the per-batch read exists to avoid.
         //
-        // v1.61 caveat: the delivery semaphore (`delivery_permits`) can now park
-        // this task before attempt 1, so the check_egress half of that window is
-        // no longer just "spawn + resolve" — under sustained fan-out it stretches
-        // to however long the permit wait is. The SSRF-IP half is unaffected:
-        // `resolve_public` above runs live per invocation AFTER the permit, so a
-        // rebind to a private address is still blocked on attempt 1. The residual
-        // is only a same-tenant origin the tenant just de-allowlisted still
-        // receiving one POST. Proper close = an egress-allowlist version cache so
-        // attempt 1 can re-validate without a per-row meta open (tracked #953).
+        // #953 closes the residual that left: the v1.61 delivery semaphore can
+        // park this task before attempt 1 for the length of the permit wait, and
+        // a de-allowlist landing in that window was invisible to the snapshot
+        // gate — the tenant's just-removed origin still received one POST (the
+        // SSRF-IP half was always safe: `resolve_public` above runs live per
+        // invocation AFTER the permit). Now attempt 1 compares the tenant's
+        // current allowlist version to the snapshot's (`egress_allowlist_version`,
+        // a cheap in-memory read, NO meta open); only if it MOVED does it fall
+        // back to a live re-read — so the common no-change case still pays one
+        // open per fan-out. Anything that adds a NEW attempt must re-check here.
         //
         // A denial is TERMINAL — `deliver` records the failure and no further
         // attempt runs. An UNREADABLE meta is not a denial: it fails closed for
         // this attempt (nothing is sent) but leaves the schedule alone, because
         // ending the chain on a transient hiccup loses the event forever and
         // writes `egress_not_allowlisted` against an origin that IS allowlisted.
-        if attempt_idx > 0
-            && let Some((registry, tenant)) = egress
-        {
-            match read_tenant_egress_allowlist(registry, tenant) {
-                AllowlistRead::Live(allowlist_now) => {
-                    if !dispatch_egress_allowed(&allowlist_now, &row.url) {
+        if let Some((registry, tenant)) = egress {
+            // Live re-read when this is a RETRY (attempt > 0, never covered by
+            // the fan-out snapshot) OR when attempt 1's snapshot is STALE — the
+            // tenant's allowlist version moved since the fan-out captured it
+            // (#953). The version compare is a cheap in-memory read; only a real
+            // change pays a meta open, so the common case still opens once per
+            // fan-out.
+            let snapshot_is_stale = egress_snapshot_ver
+                .map(|snap| snap != egress_allowlist_version(tenant))
+                .unwrap_or(false);
+            if attempt_idx > 0 || snapshot_is_stale {
+                match read_tenant_egress_allowlist(registry, tenant) {
+                    AllowlistRead::Live(allowlist_now) => {
+                        if !dispatch_egress_allowed(&allowlist_now, &row.url) {
+                            tracing::warn!(
+                                webhook_id = %row.id,
+                                url = %row.url,
+                                attempt = attempt_idx + 1,
+                                "deliver: origin left the egress allowlist — terminal"
+                            );
+                            return Err(DeliveryError::EgressRevoked {
+                                url: row.url.clone(),
+                            });
+                        }
+                    }
+                    AllowlistRead::Unavailable => {
+                        last_err = format!(
+                            "attempt {} skipped: egress allowlist unreadable",
+                            attempt_idx + 1
+                        );
                         tracing::warn!(
                             webhook_id = %row.id,
                             url = %row.url,
                             attempt = attempt_idx + 1,
-                            "deliver: origin left the egress allowlist mid-retry — terminal"
+                            "deliver: egress allowlist unreadable — skipping this attempt, chain continues"
                         );
-                        return Err(DeliveryError::EgressRevoked {
-                            url: row.url.clone(),
-                        });
+                        continue;
                     }
-                }
-                AllowlistRead::Unavailable => {
-                    last_err = format!(
-                        "attempt {} skipped: egress allowlist unreadable",
-                        attempt_idx + 1
-                    );
-                    tracing::warn!(
-                        webhook_id = %row.id,
-                        url = %row.url,
-                        attempt = attempt_idx + 1,
-                        "deliver: egress allowlist unreadable — skipping this attempt, chain continues"
-                    );
-                    continue;
                 }
             }
         }
@@ -1089,5 +1176,28 @@ mod tests {
         // Default per-tenant cap (no env override in this test): the sub-cap
         // sits under the global 64, so ≥ 64/8 = 8 tenants always make progress.
         assert_eq!(a1.available_permits(), 8, "default per-tenant cap is 8");
+    }
+
+    #[test]
+    fn egress_allowlist_version_bumps_and_is_isolated_per_tenant() {
+        // #953 — the version starts at 0, increments on each write, and is
+        // per-tenant, so one tenant's allowlist change cannot invalidate
+        // another tenant's in-flight fan-out snapshot.
+        let t = "t953-alpha";
+        let u = "t953-beta";
+        let v0 = egress_allowlist_version(t);
+        bump_egress_allowlist_version(t);
+        assert_eq!(egress_allowlist_version(t), v0 + 1, "bump increments");
+        bump_egress_allowlist_version(t);
+        assert_eq!(
+            egress_allowlist_version(t),
+            v0 + 2,
+            "monotonic across bumps"
+        );
+        assert_eq!(
+            egress_allowlist_version(u),
+            0,
+            "an untouched tenant stays at version 0"
+        );
     }
 }

@@ -31,7 +31,8 @@ use drust::storage::pool::TenantRegistry;
 use drust::tenant::WebhookDispatcher;
 use drust::tenant::events::Event;
 use drust::tenant::webhook_dispatcher::{
-    DeliverySchedule, PreCheckResolveFn, WebhookRow, deliver_for_test_with_egress,
+    DeliverySchedule, PreCheckResolveFn, WebhookRow, bump_egress_allowlist_version,
+    deliver_for_test_with_egress, deliver_for_test_with_egress_ver, egress_allowlist_version,
     meta_connections_opened,
 };
 use futures::future::BoxFuture;
@@ -467,6 +468,67 @@ async fn a_transient_meta_failure_still_lets_a_later_attempt_succeed() {
         hook.requests().await.len(),
         2,
         "attempt 2 is skipped (meta unreadable), attempt 3 delivers"
+    );
+}
+
+// ─── #953: a version bump before attempt 1 forces a live re-read ─────────────
+
+/// The v1.61 delivery semaphore can park a task before attempt 1; a de-allowlist
+/// landing in that window is invisible to the fan-out snapshot that gates
+/// attempt 1. #953 gives attempt 1 a cheap version compare: when the tenant's
+/// allowlist version moved since the snapshot, attempt 1 re-reads the allowlist
+/// live and terminates if the origin is now denied — WITHOUT the one POST the
+/// stale snapshot would otherwise have sent. The SSRF-IP filter was always safe;
+/// this closes the same-tenant "de-allowlisted origin gets one more POST" gap.
+#[tokio::test]
+async fn a_version_bump_before_attempt_1_forces_a_live_reread() {
+    let _gate = GATE.lock().await;
+    let tenant = "t-egress-953-stale";
+    // 200s would succeed if a POST were ever sent — the assertion below proves
+    // none is, because attempt 1's re-read denies first.
+    let hook = FakeHook::start_scripted(vec![200, 200, 200, 200]).await;
+    let port = reqwest::Url::parse(hook.url()).unwrap().port().unwrap();
+    let (registry, meta_path, _dir) = live_tenant(tenant);
+    // The meta allowlist does NOT authorize the delivery URL's origin — models
+    // the tenant having de-allowlisted it during the pre-attempt-1 window.
+    set_allowlist(
+        &meta_path,
+        tenant,
+        &webhook_entry("http://other.example.test"),
+    );
+
+    // Capture the version, then bump it as `egress_config::set_allowlist` would
+    // on that de-allowlist write, so attempt 1 sees its snapshot as stale.
+    let snapshot_ver = egress_allowlist_version(tenant);
+    bump_egress_allowlist_version(tenant);
+
+    let row = sample_row(URL);
+    let outcome = deliver_for_test_with_egress_ver(
+        Arc::new(PinTo127 { port }),
+        Some(pre_check_ok()),
+        Some((registry.as_ref(), tenant)),
+        Some(snapshot_ver),
+        &row,
+        b"{}".to_vec(),
+        "delivery-953-stale".to_string(),
+        "1970-01-01T00:00:00Z".to_string(),
+        DeliverySchedule {
+            backoffs: [0, 1, 1, 1],
+            per_attempt_timeout_secs: 2,
+        },
+    )
+    .await;
+
+    let msg = outcome
+        .expect_err("a stale snapshot over a de-allowlisted origin must be terminal")
+        .to_string();
+    assert!(
+        msg.contains("egress_not_allowlisted"),
+        "attempt 1 must re-read and deny on a stale version, got: {msg}"
+    );
+    assert!(
+        hook.requests().await.is_empty(),
+        "no POST may be sent — attempt 1's re-read denied before the request"
     );
 }
 

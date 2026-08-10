@@ -157,6 +157,11 @@ pub async fn set_allowlist(
             rusqlite::params![stored, tenant],
         )?;
     }
+    // #953 — the allowlist just changed; bump the in-memory version AFTER the
+    // UPDATE commits so an in-flight webhook delivery parked before its attempt 1
+    // re-validates against the NEW list (a live re-read) instead of trusting the
+    // now-stale per-fan-out snapshot. Reader in `webhook_dispatcher::deliver_inner`.
+    crate::tenant::webhook_dispatcher::bump_egress_allowlist_version(tenant);
     // Fire-and-forget audit (global writer). op `tenant.egress.set` — every
     // allowlist change is auditable (the spec's "外洩後改動可稽核" mitigation).
     crate::safety::audit_db::try_send(
