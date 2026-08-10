@@ -7,7 +7,25 @@ concurrency:
   group: release-cli-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub Release once (idempotent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A single upstream job owns release creation so the matrix jobs
+          # below can only UPLOAD — before this, all four platform jobs raced
+          # softprops to CREATE the release and the losers died with
+          # "already_exists" → "Too many retries", dropping that platform's
+          # binary until a manual rerun (v1.58.6 macOS, v1.60.0 aarch64-linux).
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" \
+                 --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
   build:
+    needs: create-release
     permissions:
       contents: write
     strategy:
