@@ -496,6 +496,60 @@ pub fn guard_anon_owner_scoped_rpc_update(
 /// `PrepareError::Rejected` carrying it to `400 RPC_KIND_INVALID`.
 pub const RPC_KIND_INVALID: &str = "RPC_KIND_INVALID";
 
+/// Rejection sentinel for the CLEAR guard (#950). Callers map a
+/// `PrepareError::Rejected` carrying it to `409 RPC_QUERY_GRANT_ACTIVE`.
+pub const RPC_QUERY_GRANT_ACTIVE: &str = "RPC_QUERY_GRANT_ACTIVE";
+
+/// Config-time guard on the CLEAR paths (#950): refuse to drop `collection`'s
+/// select policy or `owner_field` while an `anon_callable` query-kind RPC
+/// targets it.
+///
+/// The sql guards above all key on the same idea — a config change that
+/// RESTRICTS row access must not leave a pre-existing anon RPC reading past
+/// the new restriction. Query-kind inverts it. A query RPC IS safe under a
+/// restriction (the `/list` compile path applies the policy + owner clause at
+/// call time under the caller's identity), which is exactly why the
+/// enumerating guards skip it. What it is not safe against is the restriction
+/// being REMOVED: `anon_callable=1` + a select policy is a curated grant of
+/// the policy's rows, and clearing the policy silently promotes it to a grant
+/// of the whole table. No pre-#950 guard runs on a clear, so nothing would say
+/// so. Refuse, and name the two-step remedy (`anon_callable=false`, then
+/// clear) — the grant is the author's, so only the author may widen it.
+///
+/// Rows whose template does not PARSE are skipped: such a row cannot execute
+/// (`run_query_rpc` fails on the same parse), so it grants nothing, and
+/// treating it as a blocker would let one broken row freeze a collection's
+/// config with no way back. Symmetric with the sql guards, this runs BEFORE
+/// the write (the clear paths are autocommit, so a rejection must precede the
+/// write rather than roll it back).
+pub fn guard_clear_against_anon_query_rpcs(
+    conn: &Connection,
+    collection: &str,
+    what: &str,
+) -> Result<(), PrepareError> {
+    let rpcs = crate::rpc::registry::list(conn)
+        .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
+    for rpc in rpcs {
+        if rpc.kind != crate::rpc::registry::RpcKind::Query || !rpc.anon_callable {
+            continue;
+        }
+        let Some(raw) = rpc.query_json.as_deref() else {
+            continue;
+        };
+        let Ok(tpl) = crate::rpc::query_template::parse_template(raw) else {
+            continue;
+        };
+        if tpl.collection == collection {
+            return Err(PrepareError::Rejected(format!(
+                "{RPC_QUERY_GRANT_ACTIVE}: cannot clear {what} on '{collection}' while \
+                 anon-callable query RPC '{}' targets it; set anon_callable=false first",
+                rpc.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The kind-SHAPE rules as a CREATE FACE sees them — before a template is
 /// parsed or a row is built.
 ///
@@ -925,5 +979,104 @@ mod tests {
         assert!(guard_policy_change_against_anon_rpcs(&conn, "orders").is_err());
         assert_eq!(scan_unsafe_anon_rpcs(&conn).unwrap(), vec!["s".to_string()]);
         assert!(guard_anon_owner_scoped_rpc_update(&conn, "s", None, None, Some(true)).is_err());
+    }
+
+    /// A query row over `orders`, created through the registry so the kind
+    /// contract is the one production writes.
+    fn seed_query_row(conn: &Connection, name: &str, query_json: &str, anon_callable: bool) {
+        use crate::rpc::registry::{self, RpcCreate, RpcKind};
+        registry::create(
+            conn,
+            RpcCreate {
+                name,
+                sql: "",
+                params_json: "[]",
+                description: None,
+                anon_callable,
+                mode: RpcMode::Read,
+                kind: RpcKind::Query,
+                query_json: Some(query_json),
+            },
+        )
+        .unwrap();
+    }
+
+    /// #950 T5 — the CLEAR guard. An anon-callable query RPC is a GRANT: it
+    /// hands anon exactly the rows the collection's select policy / owner
+    /// clause leaves visible. Clearing either therefore WIDENS the grant from
+    /// "the policy's rows" to "the whole table" — silently, because no
+    /// existing guard runs on a clear. So a clear is refused while such an RPC
+    /// targets the collection, and the message names the two-step remedy.
+    #[test]
+    fn clear_guard_blocks_when_query_rpc_targets_coll() {
+        let (_t, conn) = fresh();
+        conn.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER);")
+            .unwrap();
+        seed_query_row(&conn, "q", r#"{"collection":"orders"}"#, true);
+
+        let PrepareError::Rejected(msg) =
+            guard_clear_against_anon_query_rpcs(&conn, "orders", "the select policy").unwrap_err();
+        assert!(
+            msg.contains(RPC_QUERY_GRANT_ACTIVE),
+            "typed code missing: {msg}"
+        );
+        assert!(msg.contains('q'), "must name the blocking rpc: {msg}");
+        assert!(
+            msg.contains("the select policy"),
+            "must name what is being cleared: {msg}"
+        );
+        assert!(
+            msg.contains("anon_callable=false"),
+            "must state the two-step remedy: {msg}"
+        );
+
+        // MUTATION CHECK: the guard keys on the TEMPLATE's collection. A clear
+        // on a DIFFERENT collection must pass — otherwise one anon query RPC
+        // would freeze config on every collection in the tenant.
+        guard_clear_against_anon_query_rpcs(&conn, "posts", "owner_field")
+            .expect("a clear on a collection no template targets must pass");
+    }
+
+    /// The three shapes that cannot grant anything and so must never block a
+    /// clear: a sql-kind row (its own guards already refuse it over a
+    /// row-restricted collection), a service-only query row (no anon reaches
+    /// it), and a query row whose template does not parse (it cannot execute,
+    /// so it grants nothing — and treating it as a blocker would make a broken
+    /// row freeze the collection's config permanently).
+    #[test]
+    fn clear_guard_ignores_rows_that_cannot_grant() {
+        use crate::rpc::registry::{self, RpcCreate, RpcKind};
+        let (_t, conn) = fresh();
+        conn.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER);")
+            .unwrap();
+        // (a) anon-callable SQL row reading the same collection
+        registry::create(
+            &conn,
+            RpcCreate {
+                name: "s",
+                sql: "SELECT id, qty FROM orders",
+                params_json: "[]",
+                description: None,
+                anon_callable: true,
+                mode: RpcMode::Read,
+                kind: RpcKind::Sql,
+                query_json: None,
+            },
+        )
+        .unwrap();
+        // (b) service-only query row over the same collection
+        seed_query_row(&conn, "qsvc", r#"{"collection":"orders"}"#, false);
+        // (c) anon-callable query row whose template is unparsable
+        seed_query_row(&conn, "qbad", "{not json", true);
+
+        guard_clear_against_anon_query_rpcs(&conn, "orders", "the select policy")
+            .expect("no row here can grant anon anything");
+
+        // Control: add one row that CAN, and the same call now refuses — so
+        // the pass above is the guard working, not the guard being inert.
+        seed_query_row(&conn, "qlive", r#"{"collection":"orders"}"#, true);
+        let PrepareError::Rejected(msg) =
+            guard_clear_against_anon_query_rpcs(&conn, "orders", "the select policy").unwrap_err();
+        assert!(msg.contains("qlive"), "{msg}");
     }
 }

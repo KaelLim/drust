@@ -53,6 +53,12 @@ fn map_ops_error(e: ops::OpsError) -> Response {
             "CRON_RPC_USER_ID",
             "rpc declares :user_id — cron has no user identity to bind",
         ),
+        RpcQueryKind => crate::error::json_error(
+            StatusCode::CONFLICT,
+            "CRON_RPC_QUERY_KIND",
+            "rpc is kind='query' — a query template runs under the caller's identity \
+             and cron has none; schedule a kind='sql' rpc or a function instead",
+        ),
         NotFound => {
             crate::error::json_error(StatusCode::NOT_FOUND, "CRON_NOT_FOUND", "no such cron job")
         }

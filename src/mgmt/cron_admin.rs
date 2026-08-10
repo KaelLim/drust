@@ -88,6 +88,10 @@ fn ops_error_text(e: &OpsError) -> String {
         OpsError::RpcUserId => "CRON_RPC_USER_ID: rpc declares :user_id — cron has no user \
              identity to bind"
             .to_string(),
+        OpsError::RpcQueryKind => "CRON_RPC_QUERY_KIND: rpc is kind='query' — a query template \
+             runs under the caller's identity and cron has none; schedule a kind='sql' rpc or \
+             a function instead"
+            .to_string(),
         OpsError::NotFound => "CRON_NOT_FOUND: no such cron job".to_string(),
         OpsError::Db(msg) => format!("INTERNAL_ERROR: {msg}"),
     }

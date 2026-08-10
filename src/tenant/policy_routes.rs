@@ -96,6 +96,24 @@ pub async fn put_policies(
             {
                 return Ok(Err(("RPC_ANON_OWNER_SCOPED", e.to_string())));
             }
+            // #950 — a PUT REPLACES the set, so an OMITTED `select` clears a
+            // stored select policy. That is the same widening
+            // `DELETE /policies/select` is guarded against, reached by another
+            // verb: guarding only the DELETE would leave this door open. Only
+            // a real Some → None transition counts, so a PUT on a collection
+            // that never had a select policy is unaffected.
+            if body.select.is_none()
+                && crate::storage::schema::read_policies(c, &coll_c)?
+                    .select
+                    .is_some()
+                && let Err(e) = crate::rpc::prepare::guard_clear_against_anon_query_rpcs(
+                    c,
+                    &coll_c,
+                    "the select policy",
+                )
+            {
+                return Ok(Err(("RPC_QUERY_GRANT_ACTIVE", e.to_string())));
+            }
             for (op, p) in [
                 (DmlVerb::Select, &body.select),
                 (DmlVerb::Insert, &body.insert),
@@ -121,7 +139,7 @@ pub async fn put_policies(
         Ok(Err((code, msg))) => json_error(
             match code {
                 "COLLECTION_NOT_FOUND" => StatusCode::NOT_FOUND,
-                "RPC_ANON_OWNER_SCOPED" => StatusCode::CONFLICT,
+                "RPC_ANON_OWNER_SCOPED" | "RPC_QUERY_GRANT_ACTIVE" => StatusCode::CONFLICT,
                 _ => StatusCode::BAD_REQUEST,
             },
             code,
@@ -185,14 +203,32 @@ pub async fn delete_policy(
     let cache = pool.schema_cache.clone();
     let coll_c = coll.clone();
     let res = pool
-        .with_writer(move |c| crate::storage::schema::write_policy(c, &coll_c, verb, None))
+        .with_writer(move |c| {
+            // #950 — clearing the SELECT policy WIDENS every anon-callable
+            // query-kind RPC over this collection (its grant goes from "the
+            // policy's rows" to "the whole table"). Refuse until the RPC is
+            // disarmed; the other verbs do not gate reads, so their clears are
+            // untouched. Before the write — this path is autocommit.
+            if verb == DmlVerb::Select
+                && let Err(e) = crate::rpc::prepare::guard_clear_against_anon_query_rpcs(
+                    c,
+                    &coll_c,
+                    "the select policy",
+                )
+            {
+                return Ok(Err(("RPC_QUERY_GRANT_ACTIVE", e.to_string())));
+            }
+            crate::storage::schema::write_policy(c, &coll_c, verb, None)?;
+            Ok(Ok(()))
+        })
         .await;
     cache.invalidate(&coll);
     // audit3 F3 — evict in-flight anon SSE subscribers so they reconnect and
     // re-gate against the cleared policy.
     bus.evict_collection(&tenant, &coll);
     match res {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Ok(Ok(())) => Json(json!({"ok": true})).into_response(),
+        Ok(Err((code, msg))) => json_error(StatusCode::CONFLICT, code, &msg),
         Err(e) => json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "DB_ERROR",

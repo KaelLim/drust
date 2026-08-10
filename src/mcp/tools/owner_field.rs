@@ -25,10 +25,39 @@ pub async fn set_owner_field(
         let pool = pool.clone();
         let coll_for_clear = collection.clone();
         pool.with_writer(move |c| {
+            // #950 — dropping owner_field WIDENS every anon-callable
+            // query-kind RPC over this collection from a per-user grant to a
+            // whole-table one. Refuse until the RPC is disarmed. Only a real
+            // Some → None transition can widen anything, so an already-null
+            // collection stays idempotently clearable. Before the write (this
+            // path is autocommit).
+            let (current, _scope) = crate::storage::schema::read_owner_field(c, &coll_for_clear)?;
+            if current.is_some() {
+                crate::rpc::prepare::guard_clear_against_anon_query_rpcs(
+                    c,
+                    &coll_for_clear,
+                    "owner_field",
+                )
+                .map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(1),
+                        Some(e.to_string()),
+                    )
+                })?;
+            }
             crate::storage::schema::set_owner_field(c, &coll_for_clear, None, None)
         })
         .await
-        .map_err(|e| anyhow::anyhow!("DB_ERROR: {e}"))?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            // A guard rejection is a typed refusal, not a DB failure — the
+            // `DB_ERROR:` prefix would bury the sentinel a caller matches on.
+            if msg.contains(crate::rpc::prepare::RPC_QUERY_GRANT_ACTIVE) {
+                anyhow::anyhow!("{msg}")
+            } else {
+                anyhow::anyhow!("DB_ERROR: {msg}")
+            }
+        })?;
         pool.schema_cache.invalidate(&collection);
         return Ok(json!({"cleared": true}));
     };

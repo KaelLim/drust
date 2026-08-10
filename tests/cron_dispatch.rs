@@ -1012,3 +1012,62 @@ async fn rpc_declaring_user_id_records_error_and_does_not_execute() {
         .unwrap();
     assert_eq!(hist, 0, "nothing executed, nothing captured");
 }
+
+// ── kind='query' RPC target — refused fail-closed at FIRE time too, with a
+//    typed error. The create-time refusal (tests/cron_rest.rs) is the loud
+//    gate; this is the runtime net for a job that predates it or was written
+//    straight to `_system_cron_jobs`. Without it the fire reaches the read
+//    executor with `sql = ''` and records an untyped SQLite "no SQL" error,
+//    which reads like a drust bug rather than an unschedulable target. ───────
+
+#[tokio::test]
+async fn query_kind_rpc_target_records_typed_error_and_does_not_execute() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (registry, executor, _tmp) =
+        helpers::cron_test_stack("t-cron-qk", Arc::new(CountRunner(hits.clone()))).await;
+    let pool = registry.get_or_create("t-cron-qk").unwrap();
+    create_items_collection(&registry, "t-cron-qk").await;
+
+    pool.with_writer(|c| {
+        Ok(drust::rpc::registry::create(
+            c,
+            drust::rpc::registry::RpcCreate {
+                name: "feed",
+                sql: "",
+                params_json: "[]",
+                description: None,
+                anon_callable: false,
+                mode: drust::rpc::registry::RpcMode::Read,
+                kind: drust::rpc::registry::RpcKind::Query,
+                query_json: Some(r#"{"collection":"items"}"#),
+            },
+        ))
+    })
+    .await
+    .unwrap()
+    .unwrap();
+
+    // Job written straight to the store — bypasses `ops::check_target`.
+    let job = pool
+        .with_writer(|c| store::create_job(c, "feedjob", "* * * * *", "rpc", "feed", None, true))
+        .await
+        .unwrap();
+
+    let d = deps(registry.clone(), executor);
+    run_due_job(d, "t-cron-qk".into(), indexed(&job), minute_now()).await;
+
+    let runs = runs_for(&pool, "feedjob").await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].status, "error", "{runs:?}");
+    let err = runs[0].error.as_deref().unwrap_or_default();
+    assert!(
+        err.contains("CRON_RPC_QUERY_KIND"),
+        "fire-time refusal must be typed, got: {err}"
+    );
+    // The executor was never reached: its failure on an empty body is a
+    // rusqlite "no SQL" / prepare error, and that string must NOT be here.
+    assert!(
+        !err.to_ascii_lowercase().contains("no sql"),
+        "the template must never reach the sql executor: {err}"
+    );
+}

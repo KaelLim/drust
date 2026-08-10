@@ -1269,3 +1269,425 @@ async fn create_face_refuses_a_protected_collection_template() {
         "typed code missing: {out}"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// T5 — the guard matrix: CLEAR guards, cron refusal, update-face validation
+// ══════════════════════════════════════════════════════════════════════
+
+/// `(anon_callable, query_json)` straight from `_system_rpc`.
+async fn rpc_row(pool: &SharedTenantPool, name: &str) -> (bool, Option<String>) {
+    let n = name.to_string();
+    pool.with_reader(move |c| {
+        c.query_row(
+            "SELECT anon_callable, query_json FROM _system_rpc WHERE name = ?1",
+            rusqlite::params![n],
+            |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, Option<String>>(1)?)),
+        )
+    })
+    .await
+    .unwrap()
+}
+
+/// Any REST call that returns JSON → (status, body).
+async fn rest(
+    app: &axum::Router,
+    method: &str,
+    tid: &str,
+    path: &str,
+    body: Option<Value>,
+    token: &str,
+) -> (StatusCode, Value) {
+    let resp = app
+        .clone()
+        .oneshot(rest_req(method, tid, path, body, token))
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, read_json(resp).await)
+}
+
+/// THE widening gate. An anon-callable query RPC is a GRANT of exactly the
+/// rows the select policy leaves visible; clearing that policy turns it into a
+/// grant of the WHOLE table, and no pre-#950 guard runs on a clear. So the
+/// clear is refused until the RPC is disarmed — two steps, never silent.
+#[tokio::test]
+async fn clearing_a_select_policy_is_refused_while_an_anon_query_rpc_targets_it() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-clear-policy").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "recent_posts",
+        json!([]),
+        json!({"collection": "posts"}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "create query rpc: {out}");
+
+    // REST DELETE of the select policy → refused, typed, and NOTHING cleared.
+    let (status, v) = rest(
+        &app,
+        "DELETE",
+        &tid,
+        "/collections/posts/policies/select",
+        None,
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {v}");
+    assert_eq!(v["error_code"], "RPC_QUERY_GRANT_ACTIVE", "body: {v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("recent_posts"),
+        "must name the blocking rpc: {v}"
+    );
+    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    assert_eq!(
+        stored["stored"]["select"]["using"]["status"], "published",
+        "a refused clear must leave the policy in place: {stored}"
+    );
+
+    // The MCP face refuses identically (parallel-site parity).
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "clear_policy",
+        json!({"collection": "posts", "op": "select"}),
+    )
+    .await;
+    assert!(out.contains("RPC_QUERY_GRANT_ACTIVE"), "mcp face: {out}");
+
+    // Other ops' clears are UNAFFECTED — the grant only rides the select path.
+    let (status, v) = rest(
+        &app,
+        "DELETE",
+        &tid,
+        "/collections/posts/policies/insert",
+        None,
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "insert-op clear must pass: {v}");
+
+    // Two-step remedy: disarm the RPC, then the clear goes through.
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "update_rpc",
+        json!({"name": "recent_posts", "anon_callable": false}),
+    )
+    .await;
+    assert!(out.contains("updated"), "disarm: {out}");
+    let (status, v) = rest(
+        &app,
+        "DELETE",
+        &tid,
+        "/collections/posts/policies/select",
+        None,
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {v}");
+    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    assert!(
+        stored["stored"]["select"].is_null(),
+        "the clear must have landed: {stored}"
+    );
+}
+
+/// Same widening, the other clause: dropping `owner_field` turns a per-user
+/// grant into a whole-table one. Both faces refuse.
+#[tokio::test]
+async fn clearing_owner_field_is_refused_while_an_anon_query_rpc_targets_it() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-clear-owner").await;
+    let pool = seed_posts(&dir, &tid, Some("owner_id"), Some("own"), "[]", "[]").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "my_posts",
+        json!([]),
+        json!({"collection": "posts"}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "create query rpc: {out}");
+
+    let (status, v) = rest(
+        &app,
+        "DELETE",
+        &tid,
+        "/collections/posts/owner-field",
+        None,
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {v}");
+    assert_eq!(v["error_code"], "RPC_QUERY_GRANT_ACTIVE", "body: {v}");
+
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "set_owner_field",
+        json!({"collection": "posts", "field": null}),
+    )
+    .await;
+    assert!(out.contains("RPC_QUERY_GRANT_ACTIVE"), "mcp face: {out}");
+
+    // Still owner-scoped after two refusals.
+    let owner: Option<String> = pool
+        .with_reader(|c| {
+            c.query_row(
+                "SELECT owner_field FROM _system_collection_meta WHERE collection_name = 'posts'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(owner.as_deref(), Some("owner_id"), "nothing may be cleared");
+
+    // Disarm, then clear.
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "update_rpc",
+        json!({"name": "my_posts", "anon_callable": false}),
+    )
+    .await;
+    assert!(out.contains("updated"), "disarm: {out}");
+    let (status, v) = rest(
+        &app,
+        "DELETE",
+        &tid,
+        "/collections/posts/owner-field",
+        None,
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {v}");
+}
+
+/// A collection with NO owner_field must stay clearable (idempotent DELETE) —
+/// the guard fires only on a real `Some → None` transition, so an anon query
+/// RPC cannot freeze a no-op call.
+#[tokio::test]
+async fn clearing_an_already_null_owner_field_is_not_blocked() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-clear-noop").await;
+    seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "all_posts",
+        json!([]),
+        json!({"collection": "posts"}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "{out}");
+
+    let (status, v) = rest(
+        &app,
+        "DELETE",
+        &tid,
+        "/collections/posts/owner-field",
+        None,
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "no transition, nothing widens: {v}");
+}
+
+/// `update_rpc` gains a `query` param — the only way to edit a stored template
+/// — and it runs through the SAME save-time validator the create face uses.
+#[tokio::test]
+async fn update_rpc_edits_the_template_and_validates_it() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-update-tpl").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "feed",
+        json!([]),
+        json!({"collection": "posts"}),
+        false,
+    )
+    .await;
+    assert!(out.contains("created"), "{out}");
+
+    // A good edit lands.
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "update_rpc",
+        json!({"name": "feed",
+               "query": {"collection": "posts", "filter": {"status": "published"}}}),
+    )
+    .await;
+    assert!(out.contains("updated"), "template edit: {out}");
+    let (_, stored) = rpc_row(&pool, "feed").await;
+    let stored: Value = serde_json::from_str(&stored.expect("template stored")).unwrap();
+    assert_eq!(stored["filter"]["status"], "published", "edit must land");
+
+    // A bad edit is refused by the same validator the create face runs, and
+    // the STORED template survives.
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "update_rpc",
+        json!({"name": "feed",
+               "query": {"collection": "posts", "sort": {"field": "ghost", "dir": "asc"}}}),
+    )
+    .await;
+    assert!(
+        !out.contains("updated"),
+        "an unknown sort field must be refused: {out}"
+    );
+    let (_, stored) = rpc_row(&pool, "feed").await;
+    let stored: Value = serde_json::from_str(&stored.expect("template stored")).unwrap();
+    assert_eq!(
+        stored["filter"]["status"], "published",
+        "a refused edit must not overwrite the stored template"
+    );
+}
+
+/// THE flip. A template saved service-only was never judged as an anon grant;
+/// flipping `anon_callable` on IS that grant moment, so the STORED template is
+/// re-validated then. The sharp case is a legacy row declaring a `user_id`
+/// param — caller-supplied, so it spoofs identity the moment anon can call it.
+#[tokio::test]
+async fn update_rpc_revalidates_the_stored_template_on_an_anon_callable_flip() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-update-flip").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    // Seeded past both create faces — the shape they now refuse.
+    seed_query_rpc_directly(
+        &pool,
+        "spoofable",
+        r#"[{"name":"user_id","type":"text","required":true}]"#,
+        r#"{"collection":"posts","filter":{"owner_id":{"$param":"user_id"}}}"#,
+        false,
+    )
+    .await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "update_rpc",
+        json!({"name": "spoofable", "anon_callable": true}),
+    )
+    .await;
+    assert!(
+        out.contains("RPC_KIND_INVALID") && out.contains("$auth"),
+        "the flip must re-run the create-time validator: {out}"
+    );
+    let (anon_callable, _) = rpc_row(&pool, "spoofable").await;
+    assert!(!anon_callable, "the flip must not have landed");
+
+    // Repairability: an update that does NOT widen (description, or disarming)
+    // must still work on the same row — otherwise a stale template would be
+    // permanently unfixable and permanently un-disarmable.
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "update_rpc",
+        json!({"name": "spoofable", "description": "legacy"}),
+    )
+    .await;
+    assert!(
+        out.contains("updated"),
+        "non-widening update must pass: {out}"
+    );
+}
+
+/// A PUT of the policy SET replaces it, so omitting `select` CLEARS a stored
+/// select policy — the same widening `DELETE /policies/select` is guarded
+/// against, reached by a different verb. Guarding only the DELETE would leave
+/// this door open (the enumeration lesson: one guarded write site is no guard).
+#[tokio::test]
+async fn a_put_that_omits_select_is_the_same_clear_and_is_guarded() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-clear-put").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "feed",
+        json!([]),
+        json!({"collection": "posts"}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "{out}");
+
+    // No stored select policy yet → no transition → a PUT is unaffected.
+    let (status, v) = rest(
+        &app,
+        "PUT",
+        &tid,
+        "/collections/posts/policies",
+        Some(json!({"insert": {"check": {"status": "draft"}}})),
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "nothing to widen yet: {v}");
+
+    // Now a select policy exists (written straight to the DB — attaching one
+    // through the route is a different guard's business).
+    set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
+
+    let (status, v) = rest(
+        &app,
+        "PUT",
+        &tid,
+        "/collections/posts/policies",
+        Some(json!({"insert": {"check": {"status": "draft"}}})),
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {v}");
+    assert_eq!(v["error_code"], "RPC_QUERY_GRANT_ACTIVE", "body: {v}");
+    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    assert_eq!(
+        stored["stored"]["select"]["using"]["status"], "published",
+        "a refused PUT must write NOTHING: {stored}"
+    );
+}

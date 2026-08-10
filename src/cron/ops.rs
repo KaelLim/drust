@@ -26,6 +26,9 @@ pub enum OpsError {
     /// distinction.
     PayloadTooLarge,
     RpcUserId,
+    /// #950 — the target RPC is `kind='query'`. Wire code
+    /// `CRON_RPC_QUERY_KIND`.
+    RpcQueryKind,
     NotFound,
     Db(String),
 }
@@ -145,7 +148,15 @@ async fn check_target(
                 .await
             {
                 Ok(Ok(Some(stored))) => {
-                    if stored.params.iter().any(|p| p.name == "user_id") {
+                    // #950 — a query-kind RPC is a template executed under the
+                    // CALLER's identity through the /list pipeline. Cron has no
+                    // caller, and the row's `sql` is empty by contract, so a
+                    // fire would die as an untyped SQLite error. Checked before
+                    // the :user_id rule: `kind` is the more specific reason, and
+                    // a legacy query row could carry both.
+                    if stored.kind == crate::rpc::registry::RpcKind::Query {
+                        Err(OpsError::RpcQueryKind)
+                    } else if stored.params.iter().any(|p| p.name == "user_id") {
                         Err(OpsError::RpcUserId)
                     } else {
                         Ok(())

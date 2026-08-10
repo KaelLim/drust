@@ -31,6 +31,10 @@ fn ops_err(e: ops::OpsError) -> anyhow::Error {
         RpcUserId => anyhow::anyhow!(
             "CRON_RPC_USER_ID: rpc declares :user_id — cron has no user identity to bind"
         ),
+        RpcQueryKind => anyhow::anyhow!(
+            "CRON_RPC_QUERY_KIND: rpc is kind='query' — a query template runs under the \
+             caller's identity and cron has none; schedule a kind='sql' rpc or a function instead"
+        ),
         NotFound => anyhow::anyhow!("CRON_NOT_FOUND: no such cron job"),
         Db(msg) => anyhow::anyhow!("INTERNAL_ERROR: {msg}"),
     }

@@ -359,6 +359,12 @@ pub struct UpdateRpcParams {
     /// stored row's).
     #[serde(default)]
     pub mode: Option<String>,
+    /// Replacement template for a kind="query" RPC (#950), same shape as
+    /// create_rpc's `query`. Omit to keep the stored template. Refused on a
+    /// kind="sql" row — `kind` is immutable after create.
+    #[serde(default)]
+    #[schemars(with = "Option<crate::rpc::query_template::QueryTemplate>")]
+    pub query: Option<Value>,
 }
 
 /// Parse the optional `kind` param on create_rpc (#950). `None` means "not
@@ -1767,7 +1773,10 @@ impl DrustMcpService {
         the stored value. Same SQL validation as create_rpc applies if you \
         provide a new sql body, under the EFFECTIVE mode (the mode param if \
         given, else the stored row's) — so downgrading a write RPC to read \
-        requires swapping the sql to a SELECT body in the same call."
+        requires swapping the sql to a SELECT body in the same call. \
+        On a kind=\"query\" RPC pass `query` to replace the template (sql and \
+        mode are refused — `kind` is immutable). A new template, or setting \
+        anon_callable=true, re-runs the create-time template validation."
     )]
     async fn update_rpc(
         &self,
@@ -1787,31 +1796,90 @@ impl DrustMcpService {
             None => None,
         };
         let mode_param = parse_rpc_mode(p.mode.as_deref())?;
+        // Store the CANONICAL serialization, exactly as create_rpc does — it
+        // is what `parse_template` re-reads on every call.
+        let query_json: Option<String> = match &p.query {
+            Some(v) => Some(
+                serde_json::to_string(v)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?,
+            ),
+            None => None,
+        };
+        let cache = pool.schema_cache.clone();
 
         pool.with_writer(move |c| {
-            if let Some(s) = sql.as_deref() {
-                // Validate under the EFFECTIVE mode: the explicit param wins,
-                // else the stored row's mode — a write RPC's new write body
-                // must not be rejected by the read-only authorizer.
-                let effective = match mode_param {
-                    Some(m) => m,
-                    None => match crate::rpc::registry::lookup(c, &name) {
-                        Ok(Some(row)) => row.mode,
-                        // Fail-closed: a missing row will 404 in
-                        // registry::update below anyway.
-                        Ok(None) | Err(_) => crate::rpc::registry::RpcMode::Read,
-                    },
-                };
-                crate::rpc::prepare::validate_rpc_sql(c, s, effective).map_err(|e| {
-                    rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(1),
-                        Some(e.to_string()),
-                    )
-                })?;
+            let reject = |e: crate::rpc::prepare::PrepareError| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            };
+            // ONE lookup, read before any validation: the kind of the STORED
+            // row decides which validator applies. A missing row falls through
+            // as Sql — `registry::update` below answers it with NotFound.
+            let stored = crate::rpc::registry::lookup(c, &name).ok().flatten();
+            let stored_kind = stored
+                .as_ref()
+                .map(|r| r.kind)
+                .unwrap_or(crate::rpc::registry::RpcKind::Sql);
+
+            match stored_kind {
+                crate::rpc::registry::RpcKind::Sql => {
+                    if let Some(s) = sql.as_deref() {
+                        // Validate under the EFFECTIVE mode: the explicit param
+                        // wins, else the stored row's mode — a write RPC's new
+                        // write body must not be rejected by the read-only
+                        // authorizer.
+                        let effective = match mode_param {
+                            Some(m) => m,
+                            // Fail-closed: a missing row will 404 in
+                            // registry::update below anyway.
+                            None => stored
+                                .as_ref()
+                                .map(|r| r.mode)
+                                .unwrap_or(crate::rpc::registry::RpcMode::Read),
+                        };
+                        crate::rpc::prepare::validate_rpc_sql(c, s, effective).map_err(reject)?;
+                    }
+                }
+                // #950 — a query row has no sql to validate (and `registry::
+                // update` refuses an sql/mode delta on one outright). What
+                // replaces the sql guards is the same save-time template
+                // validation the create faces run, on the EFFECTIVE template.
+                //
+                // It runs on exactly two triggers, and the narrowness is
+                // load-bearing: a NEW template (the author is rewriting the
+                // body), or anon_callable=true (the GRANT moment — a template
+                // saved service-only was never judged as an anon grant, and a
+                // stored one may declare a caller-suppliable `user_id` param or
+                // have gone stale since). Validating on EVERY update instead
+                // would brick a row whose collection was dropped: the author
+                // could no longer even set anon_callable=false to disarm it.
+                crate::rpc::registry::RpcKind::Query => {
+                    let widening = query_json.is_some() || anon_callable == Some(true);
+                    if widening {
+                        let effective = query_json
+                            .as_deref()
+                            .or_else(|| stored.as_ref().and_then(|r| r.query_json.as_deref()))
+                            .unwrap_or("");
+                        let tpl =
+                            crate::rpc::query_template::parse_template(effective).map_err(|e| {
+                                reject(crate::rpc::prepare::PrepareError::Rejected(e.to_string()))
+                            })?;
+                        let effective_params = params_for_guard.as_deref().unwrap_or_else(|| {
+                            stored.as_ref().map(|r| r.params.as_slice()).unwrap_or(&[])
+                        });
+                        crate::rpc::prepare::validate_new_query_rpc(
+                            c,
+                            &cache,
+                            &tpl,
+                            effective_params,
+                        )
+                        .map_err(reject)?;
+                    }
+                }
             }
             // v1.41.3: re-run the owner-scoped guard on the EFFECTIVE post-update
             // values (a partial update — flag-flip or sql-swap — must be checked
             // against the stored row, else it reopens the create-path leak).
+            // Self-skips query rows (they have no sql to scan).
             crate::rpc::prepare::guard_anon_owner_scoped_rpc_update(
                 c,
                 &name,
@@ -1831,7 +1899,7 @@ impl DrustMcpService {
                     description: description.as_ref().map(|d| d.as_deref()),
                     anon_callable,
                     mode: mode_param,
-                    query_json: None,
+                    query_json: query_json.as_deref(),
                 },
             )
             .map_err(|e| {
@@ -2793,13 +2861,16 @@ impl DrustMcpService {
         or stored RPC on a 5-field cron schedule (minute hour day month \
         weekday), UTC, minute resolution — no seconds field, no @aliases. \
         Service-only. Jobs run at service (Privileged) identity; an RPC \
-        declaring :user_id is refused (CRON_RPC_USER_ID). The target is \
+        declaring :user_id is refused (CRON_RPC_USER_ID), and so is a \
+        kind=\"query\" RPC (CRON_RPC_QUERY_KIND) — a query template runs under \
+        the CALLER's identity and cron has none. The target is \
         immutable — delete + create to retarget. payload_json (optional \
         JSON object as a string, <= 64 KiB): functions receive it as \
         event.payload, RPCs bind it as named params; omitted means a null \
         payload / no binds. Errors: CRON_INVALID_NAME, \
         CRON_INVALID_SCHEDULE, CRON_TARGET_NOT_FOUND, CRON_DUPLICATE, \
-        CRON_JOB_LIMIT, CRON_PAYLOAD_TOO_LARGE, CRON_RPC_USER_ID."
+        CRON_JOB_LIMIT, CRON_PAYLOAD_TOO_LARGE, CRON_RPC_USER_ID, \
+        CRON_RPC_QUERY_KIND."
     )]
     async fn create_cron_job(
         &self,

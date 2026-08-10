@@ -125,10 +125,34 @@ pub async fn clear_owner_field_handler(
     let coll_for_clear = collection.clone();
     let res = pool
         .with_writer(move |c| {
+            // #950 — dropping owner_field WIDENS every anon-callable
+            // query-kind RPC over this collection from a per-user grant to a
+            // whole-table one. Refuse until the RPC is disarmed. Only a real
+            // Some → None transition can widen anything, so clearing an
+            // already-null owner_field stays idempotent. Before the write
+            // (this path is autocommit).
+            let (current, _scope) = crate::storage::schema::read_owner_field(c, &coll_for_clear)?;
+            if current.is_some() {
+                crate::rpc::prepare::guard_clear_against_anon_query_rpcs(
+                    c,
+                    &coll_for_clear,
+                    "owner_field",
+                )
+                .map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(1),
+                        Some(e.to_string()),
+                    )
+                })?;
+            }
             crate::storage::schema::set_owner_field(c, &coll_for_clear, None, None)
         })
         .await;
-    if res.is_err() {
+    if let Err(e) = res {
+        let msg = e.to_string();
+        if msg.contains(crate::rpc::prepare::RPC_QUERY_GRANT_ACTIVE) {
+            return json_error(StatusCode::CONFLICT, "RPC_QUERY_GRANT_ACTIVE", &msg);
+        }
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", "");
     }
     pool.schema_cache.invalidate(&collection);

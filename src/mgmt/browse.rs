@@ -842,6 +842,25 @@ pub async fn admin_update_policies(
             {
                 return Ok(Err(("RPC_ANON_OWNER_SCOPED", e.to_string())));
             }
+            // #950 — this endpoint REPLACES the set, so a null `select` CLEARS
+            // a stored select policy, widening every anon-callable query-kind
+            // RPC over the collection from "the policy's rows" to the whole
+            // table. Same guard the data-plane PUT and DELETE carry; only a
+            // real Some → None transition counts. (Surfaces 400 like this
+            // face's sibling RPC_ANON_OWNER_SCOPED rejection, not the data
+            // plane's 409 — one face, one shape.)
+            if body.select.is_none()
+                && crate::storage::schema::read_policies(c, &coll_c)?
+                    .select
+                    .is_some()
+                && let Err(e) = crate::rpc::prepare::guard_clear_against_anon_query_rpcs(
+                    c,
+                    &coll_c,
+                    "the select policy",
+                )
+            {
+                return Ok(Err(("RPC_QUERY_GRANT_ACTIVE", e.to_string())));
+            }
             for (op, p) in [
                 (DmlVerb::Select, &body.select),
                 (DmlVerb::Insert, &body.insert),

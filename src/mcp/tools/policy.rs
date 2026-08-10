@@ -166,9 +166,25 @@ pub async fn clear_policy(
     let verb = parse_op(op)?;
     let pool = s.inner().pool.clone();
     let coll = collection.to_string();
-    pool.with_writer(move |c| write_policy(c, &coll, verb, None))
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    pool.with_writer(move |c| {
+        // #950 — clearing the SELECT policy WIDENS every anon-callable
+        // query-kind RPC over this collection (its grant goes from "the
+        // policy's rows" to "the whole table"). Refuse until the RPC is
+        // disarmed. Only `select` gates reads, so the other verbs' clears are
+        // untouched. Runs before the write (autocommit path).
+        if verb == DmlVerb::Select {
+            crate::rpc::prepare::guard_clear_against_anon_query_rpcs(c, &coll, "the select policy")
+                .map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(1),
+                        Some(e.to_string()),
+                    )
+                })?;
+        }
+        write_policy(c, &coll, verb, None)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     pool.schema_cache.invalidate(collection);
     // audit3 F3 — evict in-flight anon SSE subscribers so they reconnect and
     // re-gate against the cleared policy (mirrors set_realtime).

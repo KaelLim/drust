@@ -619,3 +619,51 @@ async fn tenant_soft_delete_invalidates_cron_index() {
         "soft delete must invalidate the tenant's cron index entry"
     );
 }
+
+/// #950 T5 — a `kind='query'` RPC is not schedulable. Cron fires at
+/// Privileged/service identity, but a query RPC's whole point is that it runs
+/// under the CALLER's identity through the /list pipeline; there is no caller
+/// at fire time, and its `sql` column is empty by contract, so today it would
+/// fail as an untyped empty-SQL error. Refused at create, typed.
+#[tokio::test]
+async fn query_kind_rpc_target_is_refused_at_create() {
+    let (app, service, _anon, _user, _cron, tmp) = helpers::spin_up_cron_stack("t-cr-qk").await;
+    let pool = helpers::grab_pool("t-cr-qk", &tmp).await;
+    pool.with_writer(|c| {
+        Ok(drust::rpc::registry::create(
+            c,
+            drust::rpc::registry::RpcCreate {
+                name: "feed",
+                sql: "",
+                params_json: "[]",
+                description: None,
+                anon_callable: false,
+                mode: drust::rpc::registry::RpcMode::Read,
+                kind: drust::rpc::registry::RpcKind::Query,
+                query_json: Some(r#"{"collection":"posts"}"#),
+            },
+        ))
+    })
+    .await
+    .unwrap()
+    .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            "/t/t-cr-qk/cron",
+            &service,
+            Some(json!({
+                "name": "feedjob",
+                "schedule": "* * * * *",
+                "target_kind": "rpc",
+                "target_name": "feed",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let v = json_body(resp).await;
+    assert_eq!(v["error_code"], "CRON_RPC_QUERY_KIND");
+}

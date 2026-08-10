@@ -344,6 +344,23 @@ async fn dispatch_rpc(
         Ok(Err(e)) => return ("error", Some(format!("rpc lookup failed: {e}"))),
         Err(e) => return ("error", Some(format!("rpc lookup failed: {e}"))),
     };
+    // #950 — a kind='query' RPC is a template the /list pipeline compiles
+    // under the CALLER's identity; cron has no caller, and the row's `sql` is
+    // empty by contract, so without this the fire reaches the read executor
+    // and records an untyped "bad parameter or other API misuse". Same
+    // create-time + fire-time pair as the :user_id rule below: `ops::
+    // check_target` is the loud gate, this is the fail-closed runtime net for
+    // a job that predates it or was written straight to the store.
+    if stored.kind == crate::rpc::registry::RpcKind::Query {
+        return (
+            "error",
+            Some(
+                "CRON_RPC_QUERY_KIND: rpc is kind='query' — a query template runs under the \
+                 caller's identity and cron has none"
+                    .into(),
+            ),
+        );
+    }
     // Cron runs at Privileged/service identity with NO end-user bound — an
     // RPC declaring :user_id has nothing meaningful to bind (mirrors the
     // anon categorical refusal in rpc/handler.rs). Config-time (ops layer)
