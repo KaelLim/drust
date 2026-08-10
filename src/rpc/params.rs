@@ -88,7 +88,12 @@ pub enum BoundValue {
     Null,
 }
 
-fn coerce(spec: &ParamSpec, v: &Json) -> Result<BoundValue, ParamError> {
+/// Type-check one declared param against one JSON value.
+///
+/// `pub(crate)` because the query-kind template arm
+/// (`crate::rpc::query_template::check_args`) reuses it verbatim so the
+/// sql arm and the query arm can never drift on `PARAM_TYPE_MISMATCH`.
+pub(crate) fn coerce(spec: &ParamSpec, v: &Json) -> Result<BoundValue, ParamError> {
     let mismatch = |got: &str| ParamError::TypeMismatch {
         name: spec.name.clone(),
         expected: spec.ty,

@@ -4,12 +4,14 @@
 //! - `handler` — REST handler `POST /drust/t/<tenant>/rpc/<name>`.
 //! - `params` — param schema declaration + JSON validation.
 //! - `prepare` — prepare-time SQL safety check (read-only authorizer).
+//! - `query_template` — `kind='query'` FilterAst template parse/substitute/validate.
 //! - `registry` — persistence + counter increments over `_system_rpc`.
 
 pub mod exec_write;
 pub mod handler;
 pub mod params;
 pub mod prepare;
+pub mod query_template;
 pub mod registry;
 
 // Ergonomics re-export so call sites can spell `crate::rpc::RpcMode`
