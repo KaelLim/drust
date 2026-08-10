@@ -119,6 +119,46 @@ async fn design_collection_embeds_the_purpose() {
 }
 
 #[tokio::test]
+async fn write_edge_function_embeds_the_wit_contract_and_egress_gotcha() {
+    // The prompt must hand an MCP client the ACTUAL guest contract — the WIT
+    // (whose `http-fetch` import is the whole reason to fetch it) and the
+    // deny-by-default egress gotcha — not just point at an SDK it cannot reach.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let r = render_prompt(
+        &s,
+        "write_edge_function",
+        &args(&[("trigger", "record.created")]),
+    )
+    .await
+    .unwrap();
+    let body = body_of(&r);
+    assert!(
+        body.contains("record.created"),
+        "carries the trigger: {body}"
+    );
+    // WIT embedded verbatim (include_str! of the SDK template world.wit).
+    assert!(
+        body.contains("http-fetch: func(origin: string"),
+        "embeds the real WIT http-fetch signature: {body}"
+    );
+    assert!(
+        body.contains("export handle: func(event-json: string)"),
+        "embeds the WIT world export: {body}"
+    );
+    // The guest skeleton (include_str! of the SDK template src/lib.rs).
+    assert!(
+        body.contains("impl Guest for EdgeFn"),
+        "embeds the lib.rs skeleton: {body}"
+    );
+    // The #1 first-run trap.
+    assert!(
+        body.contains("EGRESS_NOT_ALLOWLISTED"),
+        "warns about the deny-by-default egress gotcha: {body}"
+    );
+}
+
+#[tokio::test]
 async fn missing_required_arg_is_invalid_params() {
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;

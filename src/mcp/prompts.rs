@@ -21,6 +21,17 @@ use crate::mcp::server::DrustMcp;
 use rmcp::ErrorData as McpError;
 use rmcp::model::{GetPromptResult, Prompt, PromptArgument, PromptMessage, PromptMessageRole};
 
+/// The edge-function guest contract, embedded VERBATIM from the SDK template so
+/// the `write_edge_function` prompt hands an MCP client the ACTUAL WIT + skeleton
+/// instead of pointing at an SDK it cannot fetch (crates.io has no drust crate,
+/// and drust serves the WIT over no endpoint — the exact gap that made "see the
+/// template" a dead end). `include_str!` binds the same files `runtime.rs`'s
+/// `bindgen!` compiles against, so the prompt can never drift from the runtime.
+/// Public, tenant-neutral template content — no tenant data, no credentials — so
+/// it respects the credential posture in this module's header.
+const EDGE_WIT: &str = include_str!("../../sdk/edge-function-template/wit/world.wit");
+const EDGE_LIB_RS: &str = include_str!("../../sdk/edge-function-template/src/lib.rs");
+
 /// The prompts advertised via `prompts/list`. Bodies are built lazily in
 /// [`render_prompt`] (they embed live per-tenant schema).
 pub fn prompt_list() -> Vec<Prompt> {
@@ -172,16 +183,37 @@ pub async fn render_prompt(
         "write_edge_function" => {
             let trigger = arg("trigger")?;
             Ok(one_user_message(format!(
-                "Scaffold a drust edge function for trigger: {trigger}\n\n\
-                 Edge functions are wasm32-wasip2 components (start from the guest SDK template — \
-                 the WIT file is the source of truth). They run in-process on \
+                "Author a drust edge function for trigger: {trigger} (tenant `{t}`).\n\n\
+                 Edge functions are wasm32-wasip2 Component-Model guests, run in-process on \
                  `record.created` / `record.updated` / `record.deleted` (per collection) or \
-                 `file.uploaded`, and may call the same host ops as the tools (insert / update / \
-                 delete-record, list-records, put-file, get-file-bytes) plus `http-fetch` (gated by \
-                 the tenant egress allowlist). Upload the built `.wasm` via REST multipart \
-                 `POST /t/{t}/functions` (service bearer — there is no MCP upload tool by design), \
-                 then manage/observe with `list_functions` / `set_function_active` / \
-                 `invoke_function` / `get_function_logs`."
+                 `file.uploaded`. The WIT below IS the contract: the `host` imports it lists are \
+                 the ONLY capabilities a guest has — no filesystem, no ambient network. \
+                 `http-fetch` is the sole outbound-network op.\n\n\
+                 ---- wit/world.wit (host interface; the `http-fetch` signature is here) ----\n\
+                 {wit}\n\
+                 ---- src/lib.rs (guest skeleton; `handle` is the entrypoint) ----\n\
+                 {lib}\n\
+                 ---- Cargo.toml ----\n\
+                 [lib] crate-type = [\"cdylib\"]; dependencies: wit-bindgen = \"0.58\", \
+                 serde_json = \"1\".\n\n\
+                 Build, then upload the .wasm via REST multipart — there is NO MCP upload tool by \
+                 design (the `whoami` tool echoes the upload path + a service bearer):\n\
+                 rustup target add wasm32-wasip2\n\
+                 cargo build --target wasm32-wasip2 --release\n\
+                 curl -X POST /t/{t}/functions -H 'Authorization: Bearer <service-token>' \
+                 -F name=my_fn -F wasm=@target/wasm32-wasip2/release/*.wasm \
+                 -F 'triggers=[{{\"collection\":\"posts\",\"events\":[\"created\"]}}]'\n\n\
+                 GOTCHA — the #1 first-run failure: `http-fetch` is DENY-BY-DEFAULT. The upload \
+                 succeeds, but every `http-fetch` returns `EGRESS_NOT_ALLOWLISTED` until you \
+                 allowlist the EXACT origin (scheme://host[:port]) with system=function first \
+                 (private/loopback IPs stay blocked regardless):\n\
+                 curl -X PUT /t/{t}/egress-allowlist -H 'Authorization: Bearer <service-token>' \
+                 -H 'Content-Type: application/json' \
+                 -d '{{\"entries\":[{{\"system\":\"function\",\"uri\":\"https://api.example.com\"}}]}}'\n\n\
+                 Once uploaded: manage/observe with `list_functions` / `set_function_active` / \
+                 `invoke_function` / `get_function_logs`.",
+                wit = EDGE_WIT,
+                lib = EDGE_LIB_RS,
             )))
         }
         "review_history" => {
