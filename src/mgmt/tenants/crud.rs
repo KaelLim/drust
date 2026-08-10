@@ -688,6 +688,13 @@ pub async fn soft_delete_tenant(
     // v1.35 hook 3 — drop every cached Bearer + User bound to this
     // tenant so no stale grant survives the soft-delete.
     state.auth_cache.clear_tenant(&id);
+    // #953 follow-up (codex review) — a soft-delete flips the tenant's live
+    // egress decision to deny-all (`try_read_live_egress_allowlist` filters
+    // `deleted_at IS NULL`) WITHOUT going through `egress_config::set_allowlist`,
+    // so bump the allowlist version here too: a webhook delivery parked before
+    // its attempt 1 would otherwise see its snapshot version as still-current,
+    // skip the live re-read, and POST for a tenant that was just deleted.
+    crate::tenant::webhook_dispatcher::bump_egress_allowlist_version(&id);
     // v1.48 — drop the tenant's cron schedule-index entry; otherwise a
     // deleted tenant's `* * * * *` job error-loops every minute until
     // restart (the fire-time re-assert fails closed, but noisily). Async:
