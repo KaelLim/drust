@@ -25,6 +25,27 @@ use axum::{Extension, Json};
 use rusqlite::types::{Value, ValueRef};
 use serde_json::json;
 
+/// Which cap regime [`compute_read_auth_inner`] applies.
+///
+/// **Module-private on purpose, and it must stay that way.** A public
+/// escalating value is the v1.57 defect shape: an outside caller that picks the
+/// wrong variant silently grants itself more than it should. The only way to
+/// reach [`CapMode::RpcGrant`] from elsewhere in the crate is the dedicated
+/// `*_rpc_grant` wrapper, which names its intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapMode {
+    /// The collection's own `anon_caps` / `user_caps` gate the read. Every
+    /// pre-existing caller (`/list`, `/aggregate`) is in this mode and its
+    /// behaviour is unchanged.
+    Collection,
+    /// The caller reached this read through a stored `kind='query'` RPC whose
+    /// `anon_callable` flag is the grant (#950). A cap check is skipped ONLY
+    /// where an independent row gate (owner clause, RLS policy, or the RPC's own
+    /// fixed template) protects the rows; where the cap IS the row gate it is
+    /// kept — see the per-arm table in the spec's §授權語意.
+    RpcGrant,
+}
+
 /// Shared read-authorization for `/list` and `/aggregate`. Given the caller and
 /// the collection schema, returns `(owner_pair, policy_clause)` — the owner
 /// row-filter clause (when one applies) and the explicit-policy USING clause —
@@ -45,6 +66,32 @@ pub(crate) fn compute_read_auth(
     schema: &CollectionSchema,
     coll: &str,
 ) -> Result<(Option<(String, String)>, Option<(String, Vec<Value>)>), Response> {
+    compute_read_auth_inner(CapMode::Collection, ctx, schema, coll)
+}
+
+/// [`compute_read_auth`] under the RPC-as-grant cap regime (#950).
+///
+/// Only the stored `kind='query'` RPC arm may call this. It differs from
+/// [`compute_read_auth`] in exactly two arms — Anon and User on a
+/// NON-owner-scoped collection, where the cap is a blanket door the RPC's
+/// `anon_callable` flag replaces. Owner clauses and RLS policies are produced
+/// identically, and every arm where the cap itself is the row filter keeps it.
+#[allow(dead_code)] // wired up by the query-RPC arm in #950 T4.
+pub(crate) fn compute_read_auth_rpc_grant(
+    ctx: &AuthCtx,
+    schema: &CollectionSchema,
+    coll: &str,
+) -> Result<(Option<(String, String)>, Option<(String, Vec<Value>)>), Response> {
+    compute_read_auth_inner(CapMode::RpcGrant, ctx, schema, coll)
+}
+
+fn compute_read_auth_inner(
+    cap: CapMode,
+    ctx: &AuthCtx,
+    schema: &CollectionSchema,
+    coll: &str,
+) -> Result<(Option<(String, String)>, Option<(String, Vec<Value>)>), Response> {
+    let rpc_grant = matches!(cap, CapMode::RpcGrant);
     let owner_pair: Option<(String, String)> = match (
         ctx,
         schema.owner_field.as_deref(),
@@ -53,7 +100,9 @@ pub(crate) fn compute_read_auth(
         // Service — bypass everything.
         (AuthCtx::Service { .. }, _, _) => None,
 
-        // Anon on owner-scoped → typed deny.
+        // Anon on owner-scoped → typed deny. NEVER relaxed by RpcGrant: there
+        // is no row gate for an anon caller on an owner-scoped collection (a
+        // policy-only anon arm is a later phase, not this one).
         (AuthCtx::Anon, Some(_), _) => {
             return Err(json_error(
                 StatusCode::FORBIDDEN,
@@ -61,9 +110,11 @@ pub(crate) fn compute_read_auth(
                 "anon cannot read owner-scoped collection — register a user",
             ));
         }
-        // Anon on non-owner-scoped → needs select cap.
+        // Anon on non-owner-scoped → needs select cap. Under RpcGrant the cap
+        // is a blanket door the RPC's own `anon_callable` grant replaces; the
+        // policy clause below still applies.
         (AuthCtx::Anon, None, _) => {
-            if !schema.anon_caps.contains(&DmlVerb::Select) {
+            if !rpc_grant && !schema.anon_caps.contains(&DmlVerb::Select) {
                 return Err(json_error(
                     StatusCode::FORBIDDEN,
                     "ANON_CAP_DENIED",
@@ -73,12 +124,16 @@ pub(crate) fn compute_read_auth(
             None
         }
         // User on owner-scoped + read_scope=own → auto-append owner clause.
+        // No cap check in either mode: the owner clause IS the row gate.
         (AuthCtx::User { user_id, .. }, Some(field), Some("own")) => {
             Some((field.to_string(), user_id.clone()))
         }
         // User on owner-scoped + read_scope=all → no row filter, but still gate
         // via user_caps (no escalation; keeps parity with /search). This branch
         // keeps its own cap check despite owner_field — see the LOCKSTEP note.
+        // RpcGrant deliberately does NOT skip it: with no row filter the cap is
+        // the row gate, so skipping it would hand any user token the whole
+        // table (audit3 F1; `tests/audit3_readscope_all_caps.rs`).
         (AuthCtx::User { .. }, Some(_), Some(_)) => {
             if !schema.user_caps.contains(&DmlVerb::Select) {
                 return Err(json_error(
@@ -91,9 +146,12 @@ pub(crate) fn compute_read_auth(
             }
             None
         }
-        // User on non-owner-scoped → gate via user_caps (no escalation).
-        (AuthCtx::User { .. }, _, _) => {
-            if !schema.user_caps.contains(&DmlVerb::Select) {
+        // Catch-all for the User role: either owner_field=None (non-owner-scoped
+        // — blanket cap, skipped under RpcGrant), or the legacy owner_field=Some
+        // with a NULL read_scope, which is ALSO unfiltered and therefore keeps
+        // its cap in both modes for the same reason as the "all" arm above.
+        (AuthCtx::User { .. }, owner, _) => {
+            if (!rpc_grant || owner.is_some()) && !schema.user_caps.contains(&DmlVerb::Select) {
                 return Err(json_error(
                     StatusCode::FORBIDDEN,
                     "ANON_CAP_DENIED",
@@ -107,7 +165,9 @@ pub(crate) fn compute_read_auth(
     };
 
     // Explicit-policy USING (AND-ed alongside the owner clause). Service → None
-    // (bypass). A compile error → 500 with a typed code.
+    // (bypass). A compile error → 500 with a typed code. Never mode-dependent:
+    // RpcGrant relaxes caps only, and the policy is precisely the row gate that
+    // makes relaxing them safe.
     let policy_clause = match crate::query::policy::policy_using_sql(ctx, schema, DmlVerb::Select) {
         Ok(c) => c,
         Err(e) => {
@@ -138,60 +198,93 @@ fn debug_assert_ctx_role(ctx: &AuthCtx, role: TokenRole) {
     );
 }
 
-/// `POST /t/<id>/collections/<c>/list`
-pub async fn post_list(
-    Extension(t): Extension<TenantRef>,
-    Extension(ctx): Extension<AuthCtx>,
-    Path((_tenant, coll)): Path<(String, String)>,
-    Json(req): Json<ListRequest>,
-) -> Response {
-    if is_protected_collection(&coll) {
-        return json_error(
-            StatusCode::NOT_FOUND,
-            "COLLECTION_NOT_FOUND",
-            &format!("no such collection: {coll}"),
-        );
+/// One page of structured-list results, as produced by
+/// [`run_structured_list`] and rendered by `/list` into its
+/// `{records,total,page,perPage}` envelope.
+pub(crate) struct ListPage {
+    pub records: Vec<serde_json::Value>,
+    pub total: i64,
+    pub page: u32,
+    pub per_page: u32,
+}
+
+/// Failure modes of [`run_structured_list`], kept as data so each caller face
+/// maps them to its own wire contract. `Http` carries an already-typed response
+/// (the auth denies and the FTS probe) through unchanged.
+pub(crate) enum ListCoreError {
+    NoSuchCollection,
+    Build(crate::query::list_builder::ListError),
+    Http(Response),
+    Db(rusqlite::Error),
+}
+
+/// The `/list` pipeline, minus the HTTP envelope: schema load →
+/// row-authorization → SQL build → FTS pre-probe → list + count execution.
+/// Shared verbatim by `POST /list` and (from #950) the stored `kind='query'`
+/// RPC arm, so the two cannot drift.
+pub(crate) async fn run_structured_list(
+    pool: &crate::storage::pool::SharedTenantPool,
+    ctx: &AuthCtx,
+    coll: &str,
+    req: ListRequest,
+) -> Result<ListPage, ListCoreError> {
+    run_structured_list_inner(CapMode::Collection, pool, ctx, coll, req).await
+}
+
+/// [`run_structured_list`] under the RPC-as-grant cap regime (#950) — see
+/// [`compute_read_auth_rpc_grant`] for exactly which cap checks that relaxes.
+/// Everything else (owner clause, RLS policy, protected-collection gate, FTS
+/// probe, deadline, authorizer) is identical.
+#[allow(dead_code)] // wired up by the query-RPC arm in #950 T4.
+pub(crate) async fn run_structured_list_rpc_grant(
+    pool: &crate::storage::pool::SharedTenantPool,
+    ctx: &AuthCtx,
+    coll: &str,
+    req: ListRequest,
+) -> Result<ListPage, ListCoreError> {
+    run_structured_list_inner(CapMode::RpcGrant, pool, ctx, coll, req).await
+}
+
+async fn run_structured_list_inner(
+    cap: CapMode,
+    pool: &crate::storage::pool::SharedTenantPool,
+    ctx: &AuthCtx,
+    coll: &str,
+    req: ListRequest,
+) -> Result<ListPage, ListCoreError> {
+    // The core carries its own protected-collection gate rather than trusting
+    // every caller to pre-check: `post_list` keeps its early check (a double
+    // door is fine), while the query-RPC arm's only other gate is a save-time
+    // template validation, which a later schema change could outrun.
+    if is_protected_collection(coll) {
+        return Err(ListCoreError::NoSuchCollection);
     }
-    let pool = t.pool.clone();
     let cache = pool.schema_cache.clone();
-    let coll_owned = coll.clone();
+    let coll_owned = coll.to_string();
     let schema = match pool
         .with_reader(move |c| cache.ensure_loaded(c, &coll_owned))
         .await
     {
         Ok(Some(s)) => s,
-        Ok(None) => {
-            return json_error(
-                StatusCode::NOT_FOUND,
-                "COLLECTION_NOT_FOUND",
-                &format!("no such collection: {coll}"),
-            );
-        }
-        Err(e) => {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "DB_ERROR",
-                &e.to_string(),
-            );
-        }
+        Ok(None) => return Err(ListCoreError::NoSuchCollection),
+        Err(e) => return Err(ListCoreError::Db(e)),
     };
 
     // Row-authorization (owner clause + explicit-policy USING), computed by the
-    // shared `compute_read_auth` so `/list` and `/aggregate` stay in lockstep by
-    // construction. The full cap/owner/policy matrix (incl. the read_scope="all"
-    // note) lives there.
-    let (owner_pair, policy_clause) = match compute_read_auth(&ctx, &schema, &coll) {
+    // shared `compute_read_auth_inner` so `/list` and `/aggregate` stay in
+    // lockstep by construction. The full cap/owner/policy matrix (incl. the
+    // read_scope="all" note and the per-mode cap rules) lives there.
+    let (owner_pair, policy_clause) = match compute_read_auth_inner(cap, ctx, &schema, coll) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return Err(ListCoreError::Http(resp)),
     };
-    debug_assert_ctx_role(&ctx, t.role);
 
     // ── Compile SQL ──────────────────────────────────────────────────
     let owner_ref = owner_pair.as_ref().map(|(f, v)| (f.as_str(), v.as_str()));
     let (list_sql, count_sql, binds) =
         match build_structured_list_sql(&schema, &req, owner_ref, policy_clause) {
             Ok(x) => x,
-            Err(e) => return map_list_error(e),
+            Err(e) => return Err(ListCoreError::Build(e)),
         };
 
     // Vector field names — server-side default-hide on the response
@@ -209,12 +302,12 @@ pub async fn post_list(
     // list/count statement failing mid-scan; probe the isolated MATCH first so it
     // maps to 400 FTS_QUERY_INVALID. No-op unless the filter carries a MATCH-path
     // `$fts` operand.
-    if let Err(resp) = fts_probe_guard(&pool, &schema, req.filter.as_ref()).await {
-        return resp;
+    if let Err(resp) = fts_probe_guard(pool, &schema, req.filter.as_ref()).await {
+        return Err(ListCoreError::Http(resp));
     }
 
     // ── Execute list ─────────────────────────────────────────────────
-    let pool_list = t.pool.clone();
+    let pool_list = pool.clone();
     let list_sql_owned = list_sql.clone();
     let binds_for_list = binds.clone();
     let records_res: rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> = pool_list
@@ -231,13 +324,7 @@ pub async fn post_list(
         .await;
     let (col_names, rows) = match records_res {
         Ok(v) => v,
-        Err(e) => {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "DB_ERROR",
-                &e.to_string(),
-            );
-        }
+        Err(e) => return Err(ListCoreError::Db(e)),
     };
 
     // Default-hide vector columns from the row objects too (defense in
@@ -256,7 +343,7 @@ pub async fn post_list(
     let _ = col_names; // column names are encoded into the row objects.
 
     // ── Execute count ─────────────────────────────────────────────────
-    let pool_count = t.pool.clone();
+    let pool_count = pool.clone();
     let count_sql_owned = count_sql.clone();
     let binds_for_count = binds.clone();
     let count_res: rusqlite::Result<i64> = pool_count
@@ -280,7 +367,45 @@ pub async fn post_list(
         .await;
     let total: i64 = match count_res {
         Ok(n) => n,
-        Err(e) => {
+        Err(e) => return Err(ListCoreError::Db(e)),
+    };
+
+    Ok(ListPage {
+        records: records_out,
+        total,
+        page: req.page.unwrap_or(1),
+        per_page: req.per_page.unwrap_or(20),
+    })
+}
+
+/// `POST /t/<id>/collections/<c>/list`
+pub async fn post_list(
+    Extension(t): Extension<TenantRef>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((_tenant, coll)): Path<(String, String)>,
+    Json(req): Json<ListRequest>,
+) -> Response {
+    debug_assert_ctx_role(&ctx, t.role);
+    if is_protected_collection(&coll) {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "COLLECTION_NOT_FOUND",
+            &format!("no such collection: {coll}"),
+        );
+    }
+
+    let page = match run_structured_list(&t.pool, &ctx, &coll, req).await {
+        Ok(p) => p,
+        Err(ListCoreError::NoSuchCollection) => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "COLLECTION_NOT_FOUND",
+                &format!("no such collection: {coll}"),
+            );
+        }
+        Err(ListCoreError::Build(e)) => return map_list_error(e),
+        Err(ListCoreError::Http(resp)) => return resp,
+        Err(ListCoreError::Db(e)) => {
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "DB_ERROR",
@@ -289,13 +414,11 @@ pub async fn post_list(
         }
     };
 
-    let per_page = req.per_page.unwrap_or(20);
-    let page = req.page.unwrap_or(1);
     Json(json!({
-        "records": records_out,
-        "total": total,
-        "page": page,
-        "perPage": per_page,
+        "records": page.records,
+        "total": page.total,
+        "page": page.page,
+        "perPage": page.per_page,
     }))
     .into_response()
 }
@@ -642,4 +765,259 @@ fn run_bound_select(
         out.push(serde_json::Value::Object(obj));
     }
     Ok((col_names, out))
+}
+
+/// Cap-mode matrix pins (#950 T3).
+///
+/// Every test asserts BOTH modes: `CapMode::Collection` must be byte-identical
+/// to the pre-split `/list` behaviour, and `CapMode::RpcGrant` must follow the
+/// spec's per-arm table (`docs/superpowers/specs/2026-08-10-rpc-rls-readmode-design.md`
+/// §授權語意). The rule these encode: **RpcGrant skips a cap check ONLY where an
+/// independent row gate protects the rows.** Where the cap IS the row gate — the
+/// User × owner-scoped × `read_scope="all"` arm and its legacy NULL-read_scope
+/// sibling, both of which apply NO row filter — the cap is never skipped, in any
+/// mode.
+#[cfg(test)]
+mod cap_mode_tests {
+    use super::*;
+    use crate::query::policy::{CollectionPolicies, Policy};
+    use crate::storage::schema::Field;
+    use std::collections::BTreeSet;
+
+    fn field(name: &str) -> Field {
+        Field {
+            name: name.to_string(),
+            sql_type: "TEXT".into(),
+            nullable: true,
+            pk: false,
+            default_value: None,
+            foreign_key: None,
+            description: None,
+            ..Default::default()
+        }
+    }
+
+    fn schema_for(
+        anon: &[DmlVerb],
+        user: &[DmlVerb],
+        owner_field: Option<&str>,
+        read_scope: Option<&str>,
+    ) -> CollectionSchema {
+        CollectionSchema {
+            name: "posts".into(),
+            fields: vec![field("author"), field("status")],
+            indices: vec![],
+            row_count: 0,
+            anon_caps: anon.iter().copied().collect::<BTreeSet<_>>(),
+            user_caps: user.iter().copied().collect::<BTreeSet<_>>(),
+            owner_field: owner_field.map(|s| s.to_string()),
+            read_scope: read_scope.map(|s| s.to_string()),
+            vector_fields: vec![],
+            fts_indexes: vec![],
+            realtime_enabled: true,
+            audit_enabled: true,
+            description: None,
+            policies: CollectionPolicies::default(),
+        }
+    }
+
+    fn user_ctx() -> AuthCtx {
+        AuthCtx::User {
+            user_id: "u1".into(),
+            token_hash: "hash".into(),
+        }
+    }
+
+    /// What `compute_read_auth_inner` returns: `(owner_pair, policy_clause)`
+    /// or a typed response.
+    type ReadAuth = Result<(Option<(String, String)>, Option<(String, Vec<Value>)>), Response>;
+
+    /// `compute_read_auth_inner` under both modes, so every pin states the
+    /// Collection expectation (zero-change) next to the RpcGrant one.
+    fn both(ctx: &AuthCtx, schema: &CollectionSchema) -> (ReadAuth, ReadAuth) {
+        (
+            compute_read_auth_inner(CapMode::Collection, ctx, schema, "posts"),
+            compute_read_auth_inner(CapMode::RpcGrant, ctx, schema, "posts"),
+        )
+    }
+
+    fn assert_denied(r: ReadAuth) {
+        match r {
+            Ok(v) => panic!("expected a typed deny, got Ok({v:?})"),
+            Err(resp) => assert_eq!(resp.status(), StatusCode::FORBIDDEN),
+        }
+    }
+
+    fn assert_no_owner_clause(r: ReadAuth) {
+        match r {
+            Ok((owner, _policy)) => assert_eq!(owner, None),
+            Err(resp) => panic!("expected Ok, got {}", resp.status()),
+        }
+    }
+
+    // ── Anon ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rpc_grant_anon_owner_scoped_still_403() {
+        // Anon × owner-scoped is 403 in EVERY mode — RPC-as-grant never relaxes
+        // it (the policy-only anon arm is a later phase, not this one).
+        for read_scope in [Some("own"), Some("all"), None] {
+            let s = schema_for(
+                &[DmlVerb::Select],
+                &[DmlVerb::Select],
+                Some("author"),
+                read_scope,
+            );
+            let (coll, grant) = both(&AuthCtx::Anon, &s);
+            assert_denied(coll);
+            assert_denied(grant);
+        }
+    }
+
+    #[test]
+    fn rpc_grant_anon_skips_anon_caps() {
+        // Non-owner-scoped: the cap is a blanket door, and the RPC's own
+        // `anon_callable` flag replaces it. Policy (if any) still applies.
+        let s = schema_for(&[], &[DmlVerb::Select], None, None);
+        let (coll, grant) = both(&AuthCtx::Anon, &s);
+        assert_denied(coll);
+        assert_no_owner_clause(grant);
+    }
+
+    // ── User ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rpc_grant_user_readscope_all_keeps_cap() {
+        // read_scope="all" applies NO row filter, so `user_caps[select]` IS the
+        // row gate here. Skipping it would let any user token read the whole
+        // table through an anon-callable query RPC. Kept in BOTH modes.
+        let denied = schema_for(&[DmlVerb::Select], &[], Some("author"), Some("all"));
+        let (coll, grant) = both(&user_ctx(), &denied);
+        assert_denied(coll);
+        assert_denied(grant);
+
+        // With the cap granted, both modes agree: allowed, and still unfiltered.
+        let allowed = schema_for(
+            &[DmlVerb::Select],
+            &[DmlVerb::Select],
+            Some("author"),
+            Some("all"),
+        );
+        let (coll, grant) = both(&user_ctx(), &allowed);
+        assert_no_owner_clause(coll);
+        assert_no_owner_clause(grant);
+    }
+
+    #[test]
+    fn rpc_grant_user_legacy_null_scope_keeps_cap() {
+        // Legacy rows: owner_field set but read_scope NULL. Same shape as
+        // "all" — unfiltered — so the cap stays the row gate in BOTH modes.
+        let denied = schema_for(&[DmlVerb::Select], &[], Some("author"), None);
+        let (coll, grant) = both(&user_ctx(), &denied);
+        assert_denied(coll);
+        assert_denied(grant);
+
+        let allowed = schema_for(&[DmlVerb::Select], &[DmlVerb::Select], Some("author"), None);
+        let (coll, grant) = both(&user_ctx(), &allowed);
+        assert_no_owner_clause(coll);
+        assert_no_owner_clause(grant);
+    }
+
+    #[test]
+    fn rpc_grant_user_own_gets_owner_clause() {
+        // read_scope="own" has no cap check in either mode — the owner clause
+        // is the row gate, and it must be emitted identically.
+        let s = schema_for(&[], &[], Some("author"), Some("own"));
+        let (coll, grant) = both(&user_ctx(), &s);
+        let want = Some(("author".to_string(), "u1".to_string()));
+        assert_eq!(coll.map(|(o, _)| o).ok(), Some(want.clone()));
+        assert_eq!(grant.map(|(o, _)| o).ok(), Some(want));
+    }
+
+    #[test]
+    fn rpc_grant_user_no_owner_skips_user_caps() {
+        // Non-owner-scoped: blanket cap, replaced by the RPC grant.
+        let s = schema_for(&[DmlVerb::Select], &[], None, None);
+        let (coll, grant) = both(&user_ctx(), &s);
+        assert_denied(coll);
+        assert_no_owner_clause(grant);
+    }
+
+    // ── Service + policy ────────────────────────────────────────────────
+
+    #[test]
+    fn rpc_grant_service_bypasses() {
+        let s = schema_for(&[], &[], Some("author"), Some("all"));
+        let ctx = AuthCtx::Service { admin_id: None };
+        let (coll, grant) = both(&ctx, &s);
+        for r in [coll, grant] {
+            match r {
+                Ok((owner, policy)) => {
+                    assert_eq!(owner, None);
+                    assert_eq!(policy, None);
+                }
+                Err(resp) => panic!("service must bypass, got {}", resp.status()),
+            }
+        }
+    }
+
+    // ── The core's own protected-collection gate ────────────────────────
+
+    #[tokio::test]
+    async fn core_refuses_a_protected_collection_that_actually_exists() {
+        // Defense in depth: `run_structured_list*` must refuse `_system_*`
+        // itself, not lean on each caller's pre-check. The probe table is a
+        // REAL `_system_`-prefixed table, so deleting the core's gate would let
+        // the schema load succeed and the read proceed — this pin would then
+        // see a different error instead of `NoSuchCollection`. A gate tested
+        // only against a collection that does not exist tests nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let tenants = crate::storage::pool::TenantRegistry::new(tmp.path().to_path_buf(), 1);
+        let pool = tenants.get_or_create("t1").unwrap();
+        pool.with_writer(|c| {
+            c.execute_batch("CREATE TABLE IF NOT EXISTS _system_probe (id TEXT PRIMARY KEY)")
+        })
+        .await
+        .unwrap();
+
+        let svc = AuthCtx::Service { admin_id: None };
+        let outcomes = [
+            run_structured_list(&pool, &svc, "_system_probe", ListRequest::default()).await,
+            run_structured_list_rpc_grant(&pool, &svc, "_system_probe", ListRequest::default())
+                .await,
+        ];
+        for r in outcomes {
+            assert!(
+                matches!(r, Err(ListCoreError::NoSuchCollection)),
+                "the core must gate protected collections itself"
+            );
+        }
+    }
+
+    #[test]
+    fn rpc_grant_policy_clause_is_mode_independent() {
+        // The explicit-policy USING clause is never mode-dependent: RpcGrant
+        // relaxes caps only, and policy is the row gate that makes that safe.
+        let mut s = schema_for(&[DmlVerb::Select], &[DmlVerb::Select], None, None);
+        s.policies = CollectionPolicies {
+            select: Some(Policy {
+                using: Some(
+                    serde_json::from_str::<FilterAst>(r#"{"status":{"$eq":"published"}}"#).unwrap(),
+                ),
+                check: None,
+            }),
+            ..Default::default()
+        };
+
+        for ctx in [AuthCtx::Anon, user_ctx()] {
+            let (coll, grant) = both(&ctx, &s);
+            let coll_clause = coll.expect("collection mode allowed").1;
+            let grant_clause = grant.expect("rpc-grant mode allowed").1;
+            assert!(
+                coll_clause.is_some(),
+                "the select policy must compile to a USING clause"
+            );
+            assert_eq!(coll_clause, grant_clause);
+        }
+    }
 }
