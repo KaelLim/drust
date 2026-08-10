@@ -475,13 +475,9 @@ fn eval_leaf(
     // Not-over-NULL fix. `None` means EITHER a NULL was involved (the case this
     // fix targets; SQL yields NULL too, so Unknown is exact) OR the two sides
     // are an incomparable storage-class pair (Integer vs Text). The latter is
-    // supposed to be unreachable — `check_operand_class` rejects cross-class
-    // LITERAL operands at save time — but a DYNAMIC `$auth`/`$data` operand
-    // against a mismatched-class column is NOT class-checked, so it can reach
-    // here and Unknown then diverges from SQLite's cross-class ordering. That
-    // residual is fail-CLOSED (eval denies where SQL might admit) and matters
-    // only on the CHECK path (anon reads bind $auth=NULL, where both agree);
-    // it is tracked for a dynamic-operand class guard, separate from this fix.
+    // now unreachable: `check_operand_class` rejects cross-class operands at
+    // save time — LITERAL operands AND dynamic `$auth`/`$data` refs (#954) — so
+    // only a genuine NULL produces `None` here, where Unknown is exact vs SQL.
     match ord {
         None => Tri::Unknown,
         Some(o) => Tri::from_bool(match op.trim_start_matches('$') {
@@ -501,14 +497,12 @@ fn eval_leaf(
 /// Three-way compare of two SQL `Value`s. `None` when either is NULL or types
 /// are not comparable (matches SQL: NULL comparisons are never true).
 ///
-/// Cross-storage-class operand/column pairs (e.g. a TEXT literal vs an INTEGER
+/// Cross-storage-class operand/column pairs (e.g. a TEXT operand vs an INTEGER
 /// column) — where this in-memory `None` would diverge from SQLite's
 /// storage-class ordering in the compiled SQL — are rejected up front by
-/// `validate_policy` **for LITERAL operands** (`check_operand_class`, Fix 2).
-/// A DYNAMIC `$auth`/`$data` operand is NOT class-checked, so a mismatched-class
-/// dynamic comparison CAN reach here; the caller (`eval_leaf`) maps the
-/// resulting `None` to Unknown, which is fail-closed against SQL — see the
-/// note there. Tightening that is a separate dynamic-operand class guard.
+/// `validate_policy` via `check_operand_class`, for LITERAL operands AND dynamic
+/// `$auth`/`$data` refs (#954). So the only `None` reachable here is a genuine
+/// NULL, where the caller (`eval_leaf`) maps it to Unknown — exact against SQL.
 fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     use Value::*;
     match (a, b) {
@@ -578,18 +572,41 @@ fn column_class(sql_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Reject a literal operand whose storage class disagrees with the target
-/// column's — the one case where `value_cmp` (in-memory) and the compiled SQL
-/// would order the pair differently, breaking evaluator lockstep. Only fires
-/// for LITERAL operands against a DECLARED column with a known class; `$auth` /
-/// `$data` (dynamic) and NULL operands are passed through unchecked.
+/// Coarse storage class of a policy operand — LITERAL or DYNAMIC (#954). `$auth`
+/// always resolves to the caller's `_system_users` id, a TEXT value (or SQL NULL
+/// for anon), so its class is `text`. `$data:"<field>"` resolves to that field's
+/// post-image value, so its class is the referenced column's class. Everything
+/// else defers to `literal_class`. `None` = a class we never cross-check
+/// (JSON null / array, or a BLOB / system / unknown `$data` target).
+fn operand_class(schema: &CollectionSchema, operand: &Json) -> Option<&'static str> {
+    if let Json::Object(o) = operand {
+        if o.contains_key("$auth") {
+            return Some("text");
+        }
+        if let Some(field) = o.get("$data").and_then(|v| v.as_str()) {
+            return schema
+                .fields
+                .iter()
+                .find(|f| f.name == field)
+                .and_then(|f| column_class(&f.sql_type));
+        }
+    }
+    literal_class(operand)
+}
+
+/// Reject an operand whose storage class disagrees with the target column's —
+/// the one case where `value_cmp` (in-memory) and the compiled SQL would order
+/// the pair differently, breaking evaluator lockstep. Covers LITERAL operands
+/// AND dynamic `$auth` / `$data` refs (#954), against a DECLARED column with a
+/// known class; NULL/array operands and BLOB/system/unknown targets are passed
+/// through unchecked (they are never value-compared across a class boundary).
 fn check_operand_class(
     schema: &CollectionSchema,
     field: &str,
     operand: &Json,
 ) -> Result<(), PolicyError> {
-    let (Some(lit), Some(col)) = (
-        literal_class(operand),
+    let (Some(operand_cls), Some(col)) = (
+        operand_class(schema, operand),
         schema
             .fields
             .iter()
@@ -598,18 +615,19 @@ fn check_operand_class(
     ) else {
         return Ok(());
     };
-    if lit != col {
+    if operand_cls != col {
         return Err(PolicyError::Parse(format!(
-            "field {field:?}: operand storage class ({lit}) does not match column type ({col}) \
-             — cross-class comparisons diverge between the eval and SQL policy evaluators"
+            "field {field:?}: operand storage class ({operand_cls}) does not match column type \
+             ({col}) — cross-class comparisons diverge between the eval and SQL policy evaluators"
         )));
     }
     Ok(())
 }
 
-/// Walk every leaf of `ast` and run `check_operand_class` on its literal
-/// operand(s). Dynamic refs, `is_null`/`is_not_null` (no operand), and unknown
-/// fields are skipped here (field existence is enforced by `compile_policy_using`).
+/// Walk every leaf of `ast` and run `check_operand_class` on its operand(s) —
+/// literal AND dynamic `$auth`/`$data` refs (#954, via `operand_class`).
+/// `is_null`/`is_not_null` (no operand) and unknown fields are skipped here
+/// (field existence is enforced by `compile_policy_using`).
 fn check_ast_operand_classes(
     schema: &CollectionSchema,
     ast: &FilterAst,
@@ -812,6 +830,26 @@ mod tests {
         }
     }
 
+    /// Like `schema` but with per-field SQL types, so a cross-storage-class
+    /// comparison (numeric column vs a text operand) can be exercised.
+    fn typed_schema(fields: &[(&str, &str)]) -> CollectionSchema {
+        let mut s = schema(&[]);
+        s.fields = fields
+            .iter()
+            .map(|(n, t)| Field {
+                name: n.to_string(),
+                sql_type: t.to_string(),
+                nullable: true,
+                pk: false,
+                default_value: None,
+                foreign_key: None,
+                description: None,
+                ..Default::default()
+            })
+            .collect();
+        s
+    }
+
     #[test]
     fn compile_auth_ref_binds_user_id() {
         let s = schema(&["author"]);
@@ -836,6 +874,81 @@ mod tests {
         let (sql, binds) = compile_policy_using(&s, &ast, &ctx).unwrap();
         assert_eq!(sql, r#""author" = ?"#);
         assert_eq!(binds, vec![Value::Null]); // "author" = NULL → no rows, as intended
+    }
+
+    #[test]
+    fn validate_rejects_cross_class_auth_ref_954() {
+        // #954 — a DYNAMIC operand against a mismatched-class column diverges
+        // between the SQL and in-memory evaluators exactly like a literal, so it
+        // must be rejected at config time. `$auth` always resolves to a TEXT
+        // user-id, so a numeric column vs `$auth` is cross-class.
+        let s = typed_schema(&[("age", "INTEGER"), ("author", "TEXT")]);
+
+        let bad: FilterAst = serde_json::from_str(r#"{"age":{"$eq":{"$auth":"id"}}}"#).unwrap();
+        let err = validate_policy(
+            &s,
+            DmlVerb::Select,
+            &Policy {
+                using: Some(bad),
+                check: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PolicyError::Parse(_)),
+            "num-column vs $auth must reject at config time, got {err:?}"
+        );
+
+        // TEXT column vs $auth is the legitimate owner pattern — must still pass.
+        let ok: FilterAst = serde_json::from_str(r#"{"author":{"$eq":{"$auth":"id"}}}"#).unwrap();
+        assert!(
+            validate_policy(
+                &s,
+                DmlVerb::Select,
+                &Policy {
+                    using: Some(ok),
+                    check: None,
+                },
+            )
+            .is_ok(),
+            "text-column vs $auth is the owner pattern and must pass"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_cross_class_data_ref_954() {
+        // `$data` is CHECK-only (post-image). Its class is the referenced
+        // column's class; a numeric column vs a text `$data` ref is cross-class.
+        let s = typed_schema(&[("price", "INTEGER"), ("name", "TEXT"), ("cost", "INTEGER")]);
+
+        let bad: FilterAst = serde_json::from_str(r#"{"price":{"$eq":{"$data":"name"}}}"#).unwrap();
+        assert!(
+            validate_policy(
+                &s,
+                DmlVerb::Insert,
+                &Policy {
+                    using: None,
+                    check: Some(bad),
+                },
+            )
+            .is_err(),
+            "num price vs text $data:name must reject"
+        );
+
+        let good: FilterAst =
+            serde_json::from_str(r#"{"price":{"$eq":{"$data":"cost"}}}"#).unwrap();
+        assert!(
+            validate_policy(
+                &s,
+                DmlVerb::Insert,
+                &Policy {
+                    using: None,
+                    check: Some(good),
+                },
+            )
+            .is_ok(),
+            "num price vs num $data:cost must pass"
+        );
     }
 
     #[test]
@@ -1058,8 +1171,9 @@ mod tests {
 
     #[test]
     fn validate_accepts_same_storage_class_literal() {
-        // Same-class comparisons, $auth/$data dynamic operands, NULL literals,
-        // and is_null/is_not_null (no operand) must all still validate.
+        // Same-class comparisons (including same-class `$auth`/`$data` dynamic
+        // operands), NULL literals, and is_null/is_not_null (no operand) must all
+        // still validate.
         let s = schema_typed(&[("n", "INTEGER"), ("status", "TEXT"), ("author", "TEXT")]);
         let p: Policy = serde_json::from_str(r#"{"using":{"n":{"$gt":5}}}"#).unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p).is_ok());
@@ -1069,8 +1183,11 @@ mod tests {
         // boolean literal against an INTEGER column is numeric/numeric → ok.
         let p3: Policy = serde_json::from_str(r#"{"using":{"n":{"$eq":true}}}"#).unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p3).is_ok());
-        // dynamic operand against an INTEGER column: cannot be type-checked, allowed.
-        let p4: Policy = serde_json::from_str(r#"{"using":{"n":{"$eq":{"$auth":"id"}}}}"#).unwrap();
+        // A `$auth` ref (always TEXT) against a same-class TEXT column — the
+        // owner pattern — validates. Against an INTEGER column it is now
+        // cross-class and rejected (#954, `validate_rejects_cross_class_auth_ref_954`).
+        let p4: Policy =
+            serde_json::from_str(r#"{"using":{"author":{"$eq":{"$auth":"id"}}}}"#).unwrap();
         assert!(validate_policy(&s, DmlVerb::Select, &p4).is_ok());
         // NULL literal is cross-class compatible (never value-compared).
         let p5: Policy = serde_json::from_str(r#"{"using":{"n":{"$ne":null}}}"#).unwrap();
