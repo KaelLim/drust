@@ -17,7 +17,7 @@
 //! §參數代入 (normative).
 
 use crate::query::list_builder::{self, ListRequest, SortSpec};
-use crate::query::vector_filter::FilterAst;
+use crate::query::vector_filter::{FilterAst, filter_shape_hint};
 use crate::rpc::params::{self, ParamError, ParamSpec, ParamType};
 use crate::storage::schema::{CollectionSchema, is_protected_collection};
 use serde_json::{Map, Value};
@@ -31,6 +31,38 @@ const AUTH_KEY: &str = "$auth";
 /// `{"$auth":"id"}`).
 const AUTH_ID: &str = "id";
 
+/// Hard ceiling on a stored `query_json` blob.
+///
+/// [`substitute`] CLONES an argument once per `{"$param":…}` reference, so a
+/// template with N references and an M-byte argument allocates N×M — the
+/// template is the only bound on N. 64 KiB is far above any curated filter
+/// and also belts the walk's node count.
+const MAX_TEMPLATE_BYTES: usize = 64 * 1024;
+
+/// `schemars` override for [`QueryTemplate::filter`]. A bare
+/// `serde_json::Value` renders as schemars' untyped "any", which strict MCP
+/// clients stringify — the v1.58.6 double-encoding bug. Steer it to `object`
+/// and describe the two template-only operands HERE: the shared
+/// [`crate::query::vector_filter::filter_arg_json_schema`] must NOT gain
+/// `$param` / `$auth` (spec §周邊面 — they exist only inside a stored
+/// template, never in a caller-supplied filter).
+pub fn template_filter_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "description": "Structured filter template (FilterAst). A boolean node \
+            {\"and\":[...]} / {\"or\":[...]} / {\"not\":{...}}, or a leaf \
+            {field: scalar} (equality) or {field: {op: operand}} where op is \
+            one of eq, ne, gt, gte, lt, lte, like, in, nin, is_null, \
+            is_not_null. Two TEMPLATE-ONLY leaf operands are also accepted, \
+            each an object with exactly one key: {\"$param\":\"<declared \
+            param name>\"} substitutes the caller's argument (scalars only) \
+            and {\"$auth\":\"id\"} substitutes the caller's end-user id (null \
+            for anon/service/admin/cron). They are valid ONLY here, not in a \
+            caller-supplied filter. Pass as a JSON object, not a \
+            JSON-encoded string."
+    })
+}
+
 /// The stored shape of a `kind='query'` RPC (`_system_rpc.query_json`).
 ///
 /// `filter` stays an untyped [`Value`] on purpose: `$param` / `$auth`
@@ -41,7 +73,11 @@ const AUTH_ID: &str = "id";
 pub struct QueryTemplate {
     pub collection: String,
     #[serde(default)]
+    #[schemars(schema_with = "crate::rpc::query_template::template_filter_json_schema")]
     pub filter: Option<Value>,
+    /// `{"field":"<name>","dir":"asc"|"desc"}`. Both halves are IDENTIFIER
+    /// positions — `$param` cannot appear there (they are typed `String`, so
+    /// a `$param` object fails [`parse_template`]).
     #[serde(default)]
     pub sort: Option<SortSpec>,
     #[serde(default)]
@@ -73,16 +109,29 @@ pub enum TemplateError {
 }
 
 /// Parse `_system_rpc.query_json`. Every serde failure — malformed JSON,
-/// unknown key, wrong type — becomes [`TemplateError::BadShape`].
+/// unknown key, wrong type — becomes [`TemplateError::BadShape`], as does a
+/// blob over [`MAX_TEMPLATE_BYTES`] (checked BEFORE the parse, so an
+/// oversized template costs no allocation).
 pub fn parse_template(query_json: &str) -> Result<QueryTemplate, TemplateError> {
+    if query_json.len() > MAX_TEMPLATE_BYTES {
+        return Err(TemplateError::BadShape(format!(
+            "template too large: {} bytes (max {MAX_TEMPLATE_BYTES})",
+            query_json.len()
+        )));
+    }
     serde_json::from_str(query_json).map_err(|e| TemplateError::BadShape(e.to_string()))
 }
 
-/// Every `{"$param":"<name>"}` node reachable in `filter`.
+/// The `$param` NAMES reachable in `filter`.
 ///
-/// Only an object with **exactly one** key `$param` whose value is a string
-/// counts — the same rule [`substitute`] applies, so the two walks cannot
-/// disagree about what a substitution site is.
+/// Reachability is byte-identical to [`substitute`]'s: any single-key
+/// `$param` object is a substitution SITE and the walk stops there (only a
+/// string value also yields a name — a non-string one is a site that
+/// [`substitute`] rejects, so descending into it would report a phantom
+/// reference); a single-key `$auth` object is likewise a site the walk does
+/// not descend into. Sharing the predicate is what keeps
+/// [`validate_template`]'s declared↔referenced check from disagreeing with
+/// what substitution will actually do.
 pub fn referenced_params(filter: &Value) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     collect_params(filter, &mut out);
@@ -92,8 +141,15 @@ pub fn referenced_params(filter: &Value) -> BTreeSet<String> {
 fn collect_params(node: &Value, out: &mut BTreeSet<String>) {
     match node {
         Value::Object(obj) => {
-            if let Some(Value::String(name)) = single_key(obj, PARAM_KEY) {
-                out.insert(name.clone());
+            if let Some(v) = single_key(obj, PARAM_KEY) {
+                if let Value::String(name) = v {
+                    out.insert(name.clone());
+                }
+                // A `$param` site is a leaf for BOTH walks, valid or not.
+                return;
+            }
+            if single_key(obj, AUTH_KEY).is_some() {
+                // Ditto for `$auth`: substitute replaces the whole node.
                 return;
             }
             for v in obj.values() {
@@ -114,6 +170,24 @@ fn single_key<'a>(obj: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
     if obj.len() == 1 { obj.get(key) } else { None }
 }
 
+/// Validate caller arguments and return the map [`substitute`] must be fed.
+///
+/// The ONE entry point an execution arm calls: validation and default
+/// resolution are a single step precisely because doing them in two was a
+/// footgun — [`substitute`] is mechanical, so skipping the default fill
+/// makes an optional param with a `default` silently filter on NULL.
+///
+/// ```text
+/// resolve_args(specs, body) -> substitute_to_filter_ast(template, args, auth_id)
+/// ```
+pub fn resolve_args(
+    specs: &[ParamSpec],
+    args: &Map<String, Value>,
+) -> Result<Map<String, Value>, TemplateError> {
+    check_args(specs, args)?;
+    Ok(apply_defaults(specs, args))
+}
+
 /// Validate caller arguments against the declared params, in the order the
 /// spec fixes: **unknown key → shape → type**.
 ///
@@ -121,12 +195,13 @@ fn single_key<'a>(obj: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
 /// AST-injection attempt, not a type mismatch, and must be reported as such.
 ///
 /// Missing / null / default handling is a verbatim mirror of the sql arm
-/// (`params::validate_and_bind`): missing + required → `Arg(Missing)`;
-/// missing + optional + default → the declared default is type-checked;
+/// (`params::validate_and_bind`): missing + required → `Arg(Missing)` **even
+/// when the spec also declares a `default`** (the sql arm's `(true, _)`
+/// arm); missing + optional + default → the declared default is type-checked;
 /// missing + optional, no default → null; an explicit null is accepted for
 /// any declared type. The [`params::BoundValue`] is discarded — the query
 /// arm binds through the list builder, not through rusqlite params.
-pub fn check_args(specs: &[ParamSpec], args: &Map<String, Value>) -> Result<(), TemplateError> {
+fn check_args(specs: &[ParamSpec], args: &Map<String, Value>) -> Result<(), TemplateError> {
     // (1) unknown keys — the sql arm's fast typo signal.
     for k in args.keys() {
         if !specs.iter().any(|p| &p.name == k) {
@@ -156,14 +231,10 @@ pub fn check_args(specs: &[ParamSpec], args: &Map<String, Value>) -> Result<(), 
     Ok(())
 }
 
-/// Fill declared defaults into a caller argument map.
-///
-/// [`substitute`] is mechanical — a missing argument becomes JSON null — so
-/// an execution arm MUST run the args through here before substituting, or
-/// an optional param carrying a `default` silently filters on NULL instead
-/// of on its default. Call it AFTER [`check_args`] (which type-checks the
-/// default); a caller-supplied value always wins.
-pub fn apply_defaults(specs: &[ParamSpec], args: &Map<String, Value>) -> Map<String, Value> {
+/// Fill declared defaults into a caller argument map. A caller-supplied
+/// value always wins. Runs AFTER [`check_args`] has type-checked the
+/// default, and only ever through [`resolve_args`].
+fn apply_defaults(specs: &[ParamSpec], args: &Map<String, Value>) -> Map<String, Value> {
     let mut out = args.clone();
     for spec in specs {
         if !out.contains_key(&spec.name)
@@ -185,16 +256,13 @@ pub fn apply_defaults(specs: &[ParamSpec], args: &Map<String, Value>) -> Map<Str
 ///   admin, cron). Any sub-key but `"id"` → [`TemplateError::BadAuthKey`].
 /// - anything else → recursed into (objects and arrays) or cloned (scalars).
 ///
-/// > [!WARNING]
-/// > The result must be parsed with **strict** `serde_json::from_value::<FilterAst>`,
-/// > NEVER the string-tolerant `vector_filter::parse_filter_value` — that
-/// > helper re-parses a JSON *string* into structure, which would turn a
-/// > scalar string argument back into operator structure and defeat the
-/// > `NotScalar` gate.
+/// Execution arms call [`substitute_to_filter_ast`], which pairs this with
+/// the ONLY safe parse. This stays public for [`validate_template`]'s dry
+/// run and for tests.
 ///
 /// Recursion is bounded by serde_json's own 128-level nesting limit, which
 /// [`parse_template`] (a `from_str` parse) has already applied to every
-/// template this walks.
+/// template this walks; [`MAX_TEMPLATE_BYTES`] bounds the node count.
 pub fn substitute(
     node: &Value,
     args: &Map<String, Value>,
@@ -235,6 +303,29 @@ pub fn substitute(
             .map(Value::Array),
         scalar => Ok(scalar.clone()),
     }
+}
+
+/// [`substitute`] + the only safe parse of its result.
+///
+/// > [!WARNING]
+/// > The substituted value MUST be parsed with **strict**
+/// > `serde_json::from_value::<FilterAst>` — NEVER the string-tolerant
+/// > `vector_filter::parse_filter_value`, which re-parses a JSON *string*
+/// > into structure and would therefore turn a scalar string argument back
+/// > into operator structure, defeating the `NotScalar` gate. Keeping the
+/// > two steps welded together here is what makes that unskippable by
+/// > construction; call this, not [`substitute`], from an execution arm.
+///
+/// A parse failure reports [`filter_shape_hint`] rather than serde's opaque
+/// "did not match any variant of untagged enum FilterAst".
+pub fn substitute_to_filter_ast(
+    node: &Value,
+    args: &Map<String, Value>,
+    auth_id: Option<&str>,
+) -> Result<FilterAst, TemplateError> {
+    let substituted = substitute(node, args, auth_id)?;
+    serde_json::from_value::<FilterAst>(substituted)
+        .map_err(|_| TemplateError::BadShape(filter_shape_hint()))
 }
 
 fn check_auth_operand(key: &Value) -> Result<(), TemplateError> {
@@ -279,10 +370,15 @@ fn dummy_for(ty: ParamType) -> Value {
 
 /// Save-time validation of a stored template (`create_rpc` / `update_rpc`).
 ///
+/// 0. `schema` IS the schema of `tpl.collection` — a mismatch means the
+///    caller loaded the wrong schema, and every check below would then be
+///    vacuous (a template for `posts` dry-compiled against `_system_users`
+///    "passes" while naming a collection nothing here inspected);
 /// 1. the target collection is not `_system_*` / `sqlite_*`;
 /// 2. declared ↔ referenced params agree in BOTH directions;
-/// 3. every `$auth` node keys on `"id"`;
-/// 4. the template DRY-COMPILES: substituted with per-type dummy values it
+/// 3. every declared default is itself a scalar of its declared type;
+/// 4. every `$auth` node keys on `"id"`;
+/// 5. the template DRY-COMPILES: substituted with per-type dummy values it
 ///    parses as a [`FilterAst`] and builds through the unchanged
 ///    [`list_builder::build_structured_list_sql`] (no owner, no policy — a
 ///    structural check, not an authorization one), so a broken template dies
@@ -292,6 +388,13 @@ pub fn validate_template(
     tpl: &QueryTemplate,
     specs: &[ParamSpec],
 ) -> Result<(), TemplateError> {
+    if schema.name != tpl.collection {
+        return Err(TemplateError::BadShape(format!(
+            "schema/template collection mismatch: '{}' != '{}'",
+            schema.name, tpl.collection
+        )));
+    }
+
     if is_protected_collection(&tpl.collection) {
         return Err(TemplateError::BadShape(format!(
             "collection is protected: '{}'",
@@ -312,6 +415,18 @@ pub fn validate_template(
         return Err(TemplateError::UnusedParam(name.clone()));
     }
 
+    // A declared default is substituted verbatim at call time, so it obeys
+    // the same scalar-only + declared-type rules a caller argument does —
+    // enforced at save, not at every call.
+    for spec in specs {
+        if let Some(d) = &spec.default {
+            if d.is_object() || d.is_array() {
+                return Err(TemplateError::NotScalar(spec.name.clone()));
+            }
+            params::coerce(spec, d).map_err(TemplateError::Arg)?;
+        }
+    }
+
     if let Some(f) = &tpl.filter {
         check_auth_keys(f)?;
     }
@@ -321,14 +436,7 @@ pub fn validate_template(
         .map(|s| (s.name.clone(), dummy_for(s.ty)))
         .collect();
     let filter = match &tpl.filter {
-        Some(f) => {
-            let substituted = substitute(f, &dummies, Some("dummy"))?;
-            // Strict parse — see the WARNING on `substitute`.
-            Some(
-                serde_json::from_value::<FilterAst>(substituted)
-                    .map_err(|e| TemplateError::BadShape(e.to_string()))?,
-            )
-        }
+        Some(f) => Some(substitute_to_filter_ast(f, &dummies, Some("dummy"))?),
         None => None,
     };
     let req = ListRequest {
@@ -493,63 +601,154 @@ mod tests {
 
     #[test]
     fn string_arg_is_never_reparsed_as_filter_structure() {
-        // THE AST-injection pin: a scalar arg stays a scalar. The caller
-        // must parse the substituted value with strict `from_value`, never
-        // the string-tolerant `parse_filter_value`, or this string would
-        // become operator structure.
+        // THE AST-injection pin: a scalar arg stays a scalar, and the
+        // welded parse in `substitute_to_filter_ast` refuses it rather than
+        // re-parsing the string into operator structure (which the
+        // string-tolerant `parse_filter_value` WOULD do).
         let t = json!({"$param":"p"});
-        let out = substitute(&t, &args(&[("p", json!(r#"{"or":[]}"#))]), None).unwrap();
+        let a = args(&[("p", json!(r#"{"or":[]}"#))]);
+        let out = substitute(&t, &a, None).unwrap();
         assert_eq!(out, json!(r#"{"or":[]}"#));
         assert!(serde_json::from_value::<FilterAst>(out).is_err());
+        assert!(matches!(
+            substitute_to_filter_ast(&t, &a, None),
+            Err(TemplateError::BadShape(m)) if m == filter_shape_hint()
+        ));
     }
 
-    // ── check_args ────────────────────────────────────────────────────
+    #[test]
+    fn substituted_non_ast_reports_filter_shape_hint() {
+        // A double-encoded filter template: the stored `filter` is a JSON
+        // *string*. It must die with the shared human-facing hint, not with
+        // serde's "did not match any variant of untagged enum FilterAst".
+        let s = fixture_schema();
+        let t = tpl(json!({"collection":"posts","filter":"{\"status\":\"published\"}"}));
+        assert!(matches!(
+            validate_template(&s, &t, &[]),
+            Err(TemplateError::BadShape(m)) if m == filter_shape_hint()
+        ));
+    }
 
     #[test]
-    fn check_args_shape_precedes_type() {
+    fn nested_param_inside_a_two_key_object_still_substitutes() {
+        // The two-key object is NOT a substitution site, but the walk must
+        // still descend into it: "dead" stays literal template text while
+        // the nested `gte` operand is substituted.
+        let t = json!({"score":{"$param":"dead","gte":{"$param":"live"}}});
+        assert_eq!(
+            referenced_params(&t),
+            ["live".to_string()].into_iter().collect::<BTreeSet<_>>()
+        );
+        let out = substitute(&t, &args(&[("live", json!(5)), ("dead", json!(9))]), None).unwrap();
+        assert_eq!(out, json!({"score":{"$param":"dead","gte":5}}));
+    }
+
+    #[test]
+    fn walker_stops_at_substitution_sites_exactly_like_substitute() {
+        // Both walks treat ANY single-key `$param` / `$auth` object as a
+        // leaf. Descending into an invalid one would report a phantom
+        // reference that substitution can never reach.
+        let bad_param = json!({"a":{"$param":{"$param":"ghost"}}});
+        let bad_auth = json!({"a":{"$auth":{"$param":"ghost"}}});
+        assert!(referenced_params(&bad_param).is_empty());
+        assert!(referenced_params(&bad_auth).is_empty());
+        // …and dropping the phantom never turns an invalid template valid:
+        // both still fail validation, just with the honest error.
+        let s = fixture_schema();
+        assert!(
+            validate_template(
+                &s,
+                &tpl(json!({"collection":"posts","filter":bad_param})),
+                &[]
+            )
+            .is_err()
+        );
+        assert!(
+            validate_template(
+                &s,
+                &tpl(json!({"collection":"posts","filter":bad_auth})),
+                &[]
+            )
+            .is_err()
+        );
+    }
+
+    // ── resolve_args (check_args + apply_defaults) ────────────────────
+
+    #[test]
+    fn resolve_args_shape_precedes_type() {
         let specs = vec![spec("p", ParamType::Integer)];
         let a = args(&[("p", json!({"$gt": 1}))]);
         assert!(matches!(
-            check_args(&specs, &a),
+            resolve_args(&specs, &a),
             Err(TemplateError::NotScalar(p)) if p == "p"
         ));
         let a = args(&[("p", json!("not-an-int"))]);
-        assert!(matches!(check_args(&specs, &a), Err(TemplateError::Arg(_))));
+        assert!(matches!(
+            resolve_args(&specs, &a),
+            Err(TemplateError::Arg(_))
+        ));
         let a = args(&[("p", json!(7))]);
-        check_args(&specs, &a).unwrap();
+        assert_eq!(resolve_args(&specs, &a).unwrap(), a);
     }
 
     #[test]
-    fn check_args_unknown_key_precedes_shape() {
+    fn resolve_args_unknown_key_precedes_shape() {
         // An undeclared key wins even when its value is a non-scalar —
         // the sql arm's fast typo signal (PARAM_UNKNOWN) is preserved.
         let specs = vec![spec("p", ParamType::Integer)];
         let a = args(&[("yolo", json!({"$fts": {}}))]);
         assert!(matches!(
-            check_args(&specs, &a),
+            resolve_args(&specs, &a),
             Err(TemplateError::Arg(crate::rpc::params::ParamError::Unknown(k))) if k == "yolo"
         ));
     }
 
     #[test]
-    fn check_args_mirrors_sql_arm_missing_and_null_semantics() {
+    fn resolve_args_mirrors_sql_arm_missing_and_null_semantics() {
         // missing + required → Missing (same as validate_and_bind)
         let specs = vec![spec("p", ParamType::Text)];
         assert!(matches!(
-            check_args(&specs, &Map::new()),
+            resolve_args(&specs, &Map::new()),
             Err(TemplateError::Arg(crate::rpc::params::ParamError::Missing(k))) if k == "p"
         ));
         // explicit null is accepted regardless of declared type
-        check_args(&specs, &args(&[("p", json!(null))])).unwrap();
-        // optional + default → the default is type-checked, not the absence
+        resolve_args(&specs, &args(&[("p", json!(null))])).unwrap();
+        // REQUIRED + a declared default is STILL Missing when absent —
+        // validate_and_bind's `(true, _)` arm ignores the default and the
+        // two arms must not diverge.
+        let mut req_default = spec("p", ParamType::Text);
+        req_default.default = Some(json!("fallback"));
+        assert!(matches!(
+            resolve_args(&[req_default], &Map::new()),
+            Err(TemplateError::Arg(crate::rpc::params::ParamError::Missing(
+                _
+            )))
+        ));
+        // optional + no default → null at substitution; nothing is filled in
+        let mut bare = spec("p", ParamType::Integer);
+        bare.required = false;
+        assert!(resolve_args(&[bare], &Map::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolve_args_fills_declared_defaults_and_caller_wins() {
+        // The reason validation and default-fill are ONE call: substitute
+        // is mechanical, so a skipped fill silently filters on NULL.
         let mut opt = spec("p", ParamType::Integer);
         opt.required = false;
         opt.default = Some(json!(20));
-        check_args(&[opt], &Map::new()).unwrap();
-        // optional + no default → null
-        let mut bare = spec("p", ParamType::Integer);
+        let mut bare = spec("q", ParamType::Text);
         bare.required = false;
-        check_args(&[bare], &Map::new()).unwrap();
+        let filled = resolve_args(&[opt.clone(), bare], &Map::new()).unwrap();
+        assert_eq!(filled.get("p"), Some(&json!(20)));
+        assert_eq!(filled.get("q"), None);
+        assert_eq!(
+            substitute(&json!({"score":{"$param":"p"}}), &filled, None).unwrap(),
+            json!({"score":20})
+        );
+        let filled = resolve_args(&[opt], &args(&[("p", json!(5))])).unwrap();
+        assert_eq!(filled.get("p"), Some(&json!(5)));
     }
 
     #[test]
@@ -565,27 +764,82 @@ mod tests {
         .unwrap();
         // a caller that tries to pass it as an arg gets the unknown-key deny
         assert!(matches!(
-            check_args(&[], &args(&[("$auth", json!("u1"))])),
+            resolve_args(&[], &args(&[("$auth", json!("u1"))])),
             Err(TemplateError::Arg(crate::rpc::params::ParamError::Unknown(
                 _
             )))
         ));
     }
 
+    // ── parse_template ────────────────────────────────────────────────
+
     #[test]
-    fn apply_defaults_fills_declared_defaults_only() {
-        let mut opt = spec("p", ParamType::Integer);
-        opt.required = false;
-        opt.default = Some(json!(20));
-        let filled = apply_defaults(&[opt.clone(), spec("q", ParamType::Text)], &Map::new());
-        assert_eq!(filled.get("p"), Some(&json!(20)));
-        assert_eq!(filled.get("q"), None);
-        // a caller-supplied value always wins over the default
-        let filled = apply_defaults(&[opt], &args(&[("p", json!(5))]));
-        assert_eq!(filled.get("p"), Some(&json!(5)));
+    fn parse_template_rejects_oversized_blob() {
+        // Bounded BEFORE the parse: N `$param` refs × an M-byte argument is
+        // a clone amplifier and the template is the only bound on N.
+        let big = json!({"collection":"posts","filter":{"title":"x".repeat(MAX_TEMPLATE_BYTES)}})
+            .to_string();
+        assert!(big.len() > MAX_TEMPLATE_BYTES);
+        assert!(matches!(
+            parse_template(&big),
+            Err(TemplateError::BadShape(m)) if m.contains("too large")
+        ));
+        // under the ceiling still parses
+        parse_template(&json!({"collection":"posts","filter":{"title":"x"}}).to_string()).unwrap();
     }
 
-    // ── parse_template ────────────────────────────────────────────────
+    #[test]
+    fn param_in_identifier_positions_fails_at_parse() {
+        // `collection`, `sort.field`, `sort.dir` and `select[]` are
+        // IDENTIFIER positions typed `String`, so a `$param` object cannot
+        // even be stored — `$param` is an operand-only construct.
+        for bad in [
+            json!({"collection":{"$param":"c"}}),
+            json!({"collection":"posts","sort":{"field":{"$param":"f"},"dir":"asc"}}),
+            json!({"collection":"posts","sort":{"field":"title","dir":{"$param":"d"}}}),
+            json!({"collection":"posts","select":[{"$param":"c"}]}),
+            json!({"collection":"posts","select":{"$param":"c"}}),
+        ] {
+            assert!(
+                matches!(
+                    parse_template(&bad.to_string()),
+                    Err(TemplateError::BadShape(_))
+                ),
+                "should not parse: {bad}"
+            );
+        }
+        // SortSpec has NO deny_unknown_fields — it is shared verbatim with
+        // /list, so do NOT add one. A stray key inside `sort` is therefore
+        // IGNORED, not rejected; pinned so the tolerance stays a choice.
+        let t = tpl(json!({
+            "collection":"posts",
+            "sort":{"field":"title","dir":"asc","$param":"d"}
+        }));
+        let sort = t.sort.unwrap();
+        assert_eq!((sort.field.as_str(), sort.dir.as_str()), ("title", "asc"));
+    }
+
+    #[test]
+    fn template_filter_schema_advertises_object_with_the_template_operands() {
+        // v1.58.6 recurrence guard: a bare `Value` publishes schemars'
+        // untyped "any", which strict MCP clients stringify.
+        let root = serde_json::to_value(schemars::schema_for!(QueryTemplate)).unwrap();
+        let f = &root["properties"]["filter"];
+        assert_eq!(
+            f.get("type").and_then(|t| t.as_str()),
+            Some("object"),
+            "filter must advertise an object schema, got {root}"
+        );
+        let desc = f["description"].as_str().unwrap();
+        assert!(desc.contains("$param") && desc.contains("$auth"), "{desc}");
+        // …and the SHARED caller-facing filter schema must NOT learn them.
+        let mut g = schemars::SchemaGenerator::default();
+        let shared =
+            serde_json::to_value(crate::query::vector_filter::filter_arg_json_schema(&mut g))
+                .unwrap();
+        let shared_desc = shared["description"].as_str().unwrap();
+        assert!(!shared_desc.contains("$param") && !shared_desc.contains("$auth"));
+    }
 
     #[test]
     fn parse_template_rejects_bad_json_and_unknown_fields() {
@@ -621,6 +875,66 @@ mod tests {
         ));
         // both directions satisfied
         validate_template(&s, &t, &[spec("who", ParamType::Text)]).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_schema_collection_mismatch() {
+        // The schema IS the binding: without this, a template naming
+        // `posts` dry-compiles against whatever schema the caller passed —
+        // every check below it would be about a different collection.
+        let s = fixture_schema(); // name = "posts"
+        let t = tpl(json!({"collection":"other","filter":{"title":"x"}}));
+        assert!(matches!(
+            validate_template(&s, &t, &[]),
+            Err(TemplateError::BadShape(m)) if m.contains("collection mismatch")
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_a_bad_declared_default() {
+        let s = fixture_schema();
+        let t = tpl(json!({"collection":"posts","filter":{"score":{"gte":{"$param":"p"}}}}));
+        // wrong type for the declared param type → save-time, not call-time
+        let mut wrong = spec("p", ParamType::Integer);
+        wrong.required = false;
+        wrong.default = Some(json!("not-an-int"));
+        assert!(matches!(
+            validate_template(&s, &t, &[wrong]),
+            Err(TemplateError::Arg(_))
+        ));
+        // a structured default is the same AST-injection shape as a
+        // structured argument
+        let mut structured = spec("p", ParamType::Integer);
+        structured.required = false;
+        structured.default = Some(json!({"$gt": 1}));
+        assert!(matches!(
+            validate_template(&s, &t, &[structured]),
+            Err(TemplateError::NotScalar(p)) if p == "p"
+        ));
+        // a well-typed scalar default is fine
+        let mut ok = spec("p", ParamType::Integer);
+        ok.required = false;
+        ok.default = Some(json!(3));
+        validate_template(&s, &t, &[ok]).unwrap();
+    }
+
+    #[test]
+    fn in_operand_needs_a_literal_array_never_a_param() {
+        // Phase 1 has no list param type: `$param` is scalar-only, so a
+        // parameterised `in` dies at SAVE time, not at call time.
+        let s = fixture_schema();
+        let scalar_in =
+            tpl(json!({"collection":"posts","filter":{"status":{"in":{"$param":"p"}}}}));
+        assert!(matches!(
+            validate_template(&s, &scalar_in, &[spec("p", ParamType::Text)]),
+            Err(TemplateError::BadShape(_))
+        ));
+        // the supported shape: a LITERAL array whose elements may be params
+        let literal_in = tpl(json!({
+            "collection":"posts",
+            "filter":{"status":{"in":[{"$param":"p"},"draft"]}}
+        }));
+        validate_template(&s, &literal_in, &[spec("p", ParamType::Text)]).unwrap();
     }
 
     #[test]
