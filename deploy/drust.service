@@ -21,11 +21,14 @@ RestartSec=5s
 # reinstates the SIGKILL.
 TimeoutStopSec=30s
 UMask=0077
-# Webhook fan-out knobs (both have working Rust defaults; listed here so the
-# two are discoverable together on this deploy target — Compose + Helm carry
-# the same pair):
+# Webhook fan-out knobs (all have working Rust defaults; listed here so they
+# are discoverable together on this deploy target — Compose + Helm carry the
+# same set):
 #   DRUST_WEBHOOK_MAX_CONCURRENCY  deliveries in flight process-wide (default 64)
 #   DRUST_WEBHOOK_MAX_PER_TENANT   webhook registrations per tenant (default 32)
+#   DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY  deliveries in flight PER TENANT
+#                                  (default 8) — a sub-cap under MAX_CONCURRENCY
+#                                  so one tenant's fan-out cannot starve others
 # The semaphore bounds concurrent deliveries; this NOFILE floor keeps FD
 # headroom for SQLite handles + SSE/WS alongside those sockets.
 LimitNOFILE=65536

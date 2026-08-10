@@ -127,6 +127,7 @@ spec:
             # systemd/compose 65536 floor, so only these two knobs surface here.
             - { name: DRUST_WEBHOOK_MAX_CONCURRENCY, value: {{ .Values.webhook.maxConcurrency | quote }} }
             - { name: DRUST_WEBHOOK_MAX_PER_TENANT,  value: {{ .Values.webhook.maxPerTenant  | quote }} }
+            - { name: DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY, value: {{ .Values.webhook.maxPerTenantConcurrency | quote }} }
             - { name: RUST_LOG, value: {{ .Values.logLevel | quote }} }
             {{- if .Values.publicUrl }}
             - { name: DRUST_PUBLIC_URL, value: {{ .Values.publicUrl | quote }} }

@@ -1,3 +1,50 @@
+## v1.61.1 — 2026-08-10
+
+Follow-up hardening from the v1.61.0 two-engine review — four grounded, low-severity fixes,
+no new surface. Each tightens an existing path without changing what callers can do.
+
+### Fixed
+
+- **Policy dynamic-ref class check (#954).** `validate_policy` rejected a LITERAL operand
+  whose storage class mismatched the target column (the SQL and in-memory evaluators order
+  such a pair differently), but dynamic `$auth` / `$data` refs slipped through unchecked.
+  `operand_class` now classes them (`$auth` → text, `$data:"<field>"` → that field's class),
+  so a numeric column compared to `$auth` is rejected at config time — the two evaluators are
+  provably in lockstep, closing a fail-closed-pre-existing gap.
+- **Rooms eviction on user-session revoke (#952).** A WS room subscription captures its
+  identity once at connect; revoking a user session cleared the auth cache but left any
+  in-flight room alive under the now-dead token. All six REST revoke sites now route through
+  `TenantAuthState::revoke_user_realtime` (auth-cache clear + tenant-wide room evict) and the
+  two MCP tools evict directly — the missing parallel site to token-reroll's eviction.
+- **Per-tenant webhook delivery sub-cap (#951).** The process-wide delivery semaphore holds a
+  permit for the whole ~36 s retry chain, so one tenant's bulk fan-out could occupy all 64
+  global permits and starve other tenants (cross-tenant head-of-line blocking). A per-tenant
+  sub-semaphore (`DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY`, default 8), acquired before the
+  global permit, guarantees at least 8 tenants always make progress.
+- **Webhook attempt-1 egress window (#953).** The v1.61.0 semaphore can park a delivery
+  before attempt 1; a de-allowlist landing in that window was invisible to the per-fan-out
+  snapshot, so a just-removed origin got one more POST. An in-memory allowlist version
+  (bumped in the single write chokepoint) lets attempt 1 detect a stale snapshot with a cheap
+  compare and re-read live — no per-row meta open in the common case. The SSRF-IP filter was
+  always safe.
+
+Two gaps the codex second-engine review caught in the fixes above, folded into this release:
+
+- **#954 also class-checks the system columns** `id` / `created_at` / `updated_at` (absent from
+  `schema.fields`), so a policy like `{"id": {"$auth":"id"}}` (INTEGER column vs TEXT `$auth`) is
+  now rejected instead of diverging between the SQL and in-memory evaluators.
+- **#953 also bumps the egress version on tenant soft-delete**, so a webhook parked before attempt 1
+  cannot POST for a just-deleted tenant on a stale snapshot.
+
+(A pre-existing rooms residual the review also surfaced — `evict_tenant` drops channels but a live
+WS socket can re-subscribe without re-auth, affecting reroll + tenant-delete + #952 identically — is
+tracked as a follow-up, not a regression of this release.)
+
+### Deploy
+
+- New knob `DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY` (default 8) added to all three targets
+  (systemd unit, Compose, Helm `values.yaml` + StatefulSet).
+
 ## v1.61.0 — 2026-08-10
 
 Hardening round: three workflow-confirmed **HIGH resource-exhaustion** fixes plus two

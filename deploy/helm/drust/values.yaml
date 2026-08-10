@@ -38,8 +38,9 @@ hideVersion: true                # DRUST_HIDE_VERSION
 # registrations per tenant (read per create). NOFILE is not set here: pods
 # inherit the container-runtime default, already above the 65536 floor.
 webhook:
-  maxConcurrency: 64             # DRUST_WEBHOOK_MAX_CONCURRENCY
-  maxPerTenant: 32               # DRUST_WEBHOOK_MAX_PER_TENANT
+  maxConcurrency: 64             # DRUST_WEBHOOK_MAX_CONCURRENCY (deliveries in flight, process-wide)
+  maxPerTenant: 32               # DRUST_WEBHOOK_MAX_PER_TENANT (registrations per tenant)
+  maxPerTenantConcurrency: 8     # DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY (deliveries in flight, per tenant)
 
 publicFiles:
   enabled: false                 # true => extra ingress path /public/* -> MinIO public bucket (anon read)

@@ -66,6 +66,10 @@ services:
       # Max webhook registrations one tenant may hold (default 32); the 33rd
       # create fails with WEBHOOK_LIMIT_EXCEEDED.
       # DRUST_WEBHOOK_MAX_PER_TENANT: "32"
+      # Max deliveries in flight PER TENANT (default 8) — a sub-cap UNDER
+      # MAX_CONCURRENCY so one tenant's fan-out can't occupy the whole pool and
+      # starve other tenants' webhooks (cross-tenant head-of-line blocking).
+      # DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY: "8"
       # --- optional S3 object storage (uncomment with the `storage` profile) ---
       # GARAGE_S3_ENDPOINT:   http://minio:9000
       # GARAGE_S3_ACCESS_KEY: drustkey
