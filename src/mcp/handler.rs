@@ -1656,14 +1656,16 @@ impl DrustMcpService {
             })?;
             crate::rpc::registry::create(
                 c,
-                &name,
-                &sql,
-                &params_json,
-                description.as_deref(),
-                anon_callable,
-                mode,
-                crate::rpc::registry::RpcKind::Sql,
-                None,
+                crate::rpc::registry::RpcCreate {
+                    name: &name,
+                    sql: &sql,
+                    params_json: &params_json,
+                    description: description.as_deref(),
+                    anon_callable,
+                    mode,
+                    kind: crate::rpc::registry::RpcKind::Sql,
+                    query_json: None,
+                },
             )
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
@@ -1745,12 +1747,14 @@ impl DrustMcpService {
             crate::rpc::registry::update(
                 c,
                 &name,
-                sql.as_deref(),
-                params_json.as_deref(),
-                description.as_ref().map(|d| d.as_deref()),
-                anon_callable,
-                mode_param,
-                None,
+                crate::rpc::registry::RpcUpdate {
+                    sql: sql.as_deref(),
+                    params_json: params_json.as_deref(),
+                    description: description.as_ref().map(|d| d.as_deref()),
+                    anon_callable,
+                    mode: mode_param,
+                    query_json: None,
+                },
             )
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))

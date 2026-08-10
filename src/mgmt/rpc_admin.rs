@@ -487,24 +487,28 @@ pub async fn rpc_save(
                 registry::update(
                     tx,
                     &form_for_writer.name,
-                    Some(&form_for_writer.sql),
-                    Some(&form_for_writer.params_json),
-                    Some(form_for_writer.description.as_deref()),
-                    Some(anon_callable),
-                    Some(form_mode),
-                    None,
+                    registry::RpcUpdate {
+                        sql: Some(&form_for_writer.sql),
+                        params_json: Some(&form_for_writer.params_json),
+                        description: Some(form_for_writer.description.as_deref()),
+                        anon_callable: Some(anon_callable),
+                        mode: Some(form_mode),
+                        query_json: None,
+                    },
                 )
             } else {
                 registry::create(
                     tx,
-                    &form_for_writer.name,
-                    &form_for_writer.sql,
-                    &form_for_writer.params_json,
-                    form_for_writer.description.as_deref(),
-                    anon_callable,
-                    form_mode,
-                    registry::RpcKind::Sql,
-                    None,
+                    registry::RpcCreate {
+                        name: &form_for_writer.name,
+                        sql: &form_for_writer.sql,
+                        params_json: &form_for_writer.params_json,
+                        description: form_for_writer.description.as_deref(),
+                        anon_callable,
+                        mode: form_mode,
+                        kind: registry::RpcKind::Sql,
+                        query_json: None,
+                    },
                 )
             };
             result.map(|_| exists_now).map_err(|e| {

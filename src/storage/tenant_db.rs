@@ -139,8 +139,11 @@ CREATE TABLE IF NOT EXISTS "_system_rpc" (
   -- query_json and `mode` is always 'read'. Kept in lockstep with the
   -- migrate_tenant_db add_column_if_missing pair (runtime-created tenants
   -- only see this CREATE, never the boot migration pass), including the
-  -- ABSENCE of a CHECK — ALTER TABLE ADD COLUMN drops CHECKs, so declaring
-  -- one here only would make fresh and migrated schemas diverge.
+  -- deliberate ABSENCE of a CHECK. A CHECK would work on both sides —
+  -- SQLite does persist and enforce one added by ALTER TABLE ADD COLUMN —
+  -- but declaring it only here is precisely the `mode` divergence above
+  -- (fresh has the CHECK, migrated does not). The registry enforces the
+  -- domain in code (RpcKind + check_kind_rules).
   kind              TEXT NOT NULL DEFAULT 'sql',
   query_json        TEXT,
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),

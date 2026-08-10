@@ -194,17 +194,101 @@ pub fn list(conn: &Connection) -> Result<Vec<StoredRpc>, RegistryError> {
     Ok(out)
 }
 
-pub fn create(
-    conn: &Connection,
-    name: &str,
-    sql: &str,
-    params_json: &str,
-    description: Option<&str>,
-    anon_callable: bool,
-    mode: RpcMode,
+/// Full row to insert. A named-field struct rather than a positional argument
+/// list because three of the fields are adjacent `&str` bodies (`sql`,
+/// `params_json`, `query_json`) that a transposition would swap silently — and
+/// `query_json` is the kind gate. Deliberately NO `Default`: every field is
+/// load-bearing at create time, so a new one must be answered at every site.
+#[derive(Debug, Clone)]
+pub struct RpcCreate<'a> {
+    pub name: &'a str,
+    pub sql: &'a str,
+    pub params_json: &'a str,
+    pub description: Option<&'a str>,
+    pub anon_callable: bool,
+    pub mode: RpcMode,
+    pub kind: RpcKind,
+    pub query_json: Option<&'a str>,
+}
+
+/// Partial update: every field is a delta, `None` = leave unchanged.
+/// `description: Some(None)` clears the description. `Default` is the
+/// all-unchanged no-op, so a call site states only what it touches.
+#[derive(Debug, Clone, Default)]
+pub struct RpcUpdate<'a> {
+    pub sql: Option<&'a str>,
+    pub params_json: Option<&'a str>,
+    pub description: Option<Option<&'a str>>,
+    pub anon_callable: Option<bool>,
+    pub mode: Option<RpcMode>,
+    pub query_json: Option<&'a str>,
+}
+
+/// The kind contract, in ONE place, checked against a COMPLETE row image:
+/// a `query` row's body is `query_json` (so `sql` is empty and `mode` is
+/// always read), a `sql` row's body is `sql` (so it carries no template).
+/// `create` checks the row it is about to insert; `update` checks the row
+/// that would result from merging its deltas over the stored one — so the
+/// two faces cannot drift, and an unrepairable row (e.g. kind=query with
+/// mode=write, which `update` may never fix) cannot be created.
+fn check_kind_rules(
     kind: RpcKind,
+    sql: &str,
+    mode: RpcMode,
     query_json: Option<&str>,
 ) -> Result<(), RegistryError> {
+    match kind {
+        RpcKind::Query => {
+            if query_json.is_none() {
+                return Err(RegistryError::KindInvalid(
+                    "kind=query requires a query_json template".into(),
+                ));
+            }
+            if !sql.is_empty() {
+                return Err(RegistryError::KindInvalid(
+                    "kind=query carries no sql body; its body is query_json".into(),
+                ));
+            }
+            if mode != RpcMode::Read {
+                return Err(RegistryError::KindInvalid(
+                    "kind=query is always mode=read".into(),
+                ));
+            }
+        }
+        RpcKind::Sql => {
+            if query_json.is_some() {
+                return Err(RegistryError::KindInvalid(
+                    "kind=sql carries no query_json template; its body is sql".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Name the offending row in a kind-rule rejection without double-prefixing
+/// the `thiserror` message.
+fn name_kind_err(name: &str, e: RegistryError) -> RegistryError {
+    match e {
+        RegistryError::KindInvalid(msg) => {
+            RegistryError::KindInvalid(format!("rpc '{name}': {msg}"))
+        }
+        other => other,
+    }
+}
+
+pub fn create(conn: &Connection, c: RpcCreate<'_>) -> Result<(), RegistryError> {
+    let RpcCreate {
+        name,
+        sql,
+        params_json,
+        description,
+        anon_callable,
+        mode,
+        kind,
+        query_json,
+    } = c;
+    check_kind_rules(kind, sql, mode, query_json).map_err(|e| name_kind_err(name, e))?;
     let res = conn.execute(
         "INSERT INTO _system_rpc
             (name, sql, params_json, description, anon_callable, mode,
@@ -231,42 +315,42 @@ pub fn create(
     }
 }
 
-pub fn update(
-    conn: &Connection,
-    name: &str,
-    sql: Option<&str>,
-    params_json: Option<&str>,
-    description: Option<Option<&str>>,
-    anon_callable: Option<bool>,
-    mode: Option<RpcMode>,
-    query_json: Option<&str>,
-) -> Result<(), RegistryError> {
+pub fn update(conn: &Connection, name: &str, up: RpcUpdate<'_>) -> Result<(), RegistryError> {
+    let RpcUpdate {
+        sql,
+        params_json,
+        description,
+        anon_callable,
+        mode,
+        query_json,
+    } = up;
     // `kind` is immutable after create, and each kind owns exactly one body
-    // column. Read the stored row first so a partial update can be judged
-    // against it: a query-kind row must never grow a `sql` body or a non-read
-    // `mode`, and a sql-kind row must never grow a `query_json` template.
-    let stored = lookup(conn, name)?.ok_or_else(|| RegistryError::NotFound(name.to_string()))?;
-    match stored.kind {
-        RpcKind::Query => {
-            if sql.is_some() {
-                return Err(RegistryError::KindInvalid(format!(
-                    "rpc '{name}' is kind=query; its body is query_json, not sql"
-                )));
-            }
-            if mode.is_some() {
-                return Err(RegistryError::KindInvalid(format!(
-                    "rpc '{name}' is kind=query; mode is always 'read'"
-                )));
-            }
-        }
-        RpcKind::Sql => {
-            if query_json.is_some() {
-                return Err(RegistryError::KindInvalid(format!(
-                    "rpc '{name}' is kind=sql; its body is sql, not query_json"
-                )));
-            }
-        }
-    }
+    // column — so a PARTIAL update has to be judged against the row it would
+    // produce, not against the deltas alone. Read only the four scalar columns
+    // the rule needs: a full `lookup` would parse `params_json` and turn a row
+    // with a malformed one into an unrepairable `BadParams`.
+    let stored: (String, String, String, Option<String>) = conn
+        .query_row(
+            "SELECT COALESCE(kind, 'sql'), sql, COALESCE(mode, 'read'), query_json
+               FROM _system_rpc WHERE name = ?1",
+            params![name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => RegistryError::NotFound(name.to_string()),
+            other => RegistryError::Sqlite(other),
+        })?;
+    let (stored_kind, stored_sql, stored_mode, stored_query_json) = stored;
+    let eff_sql = sql.unwrap_or(&stored_sql);
+    let eff_mode = mode.unwrap_or_else(|| RpcMode::from_db_str(&stored_mode));
+    let eff_query_json = query_json.or(stored_query_json.as_deref());
+    check_kind_rules(
+        RpcKind::from_db_str(&stored_kind),
+        eff_sql,
+        eff_mode,
+        eff_query_json,
+    )
+    .map_err(|e| name_kind_err(name, e))?;
     let mut clauses: Vec<&'static str> = Vec::new();
     let mut binds: Vec<rusqlite::types::Value> = Vec::new();
     if let Some(s) = sql {
@@ -348,19 +432,43 @@ mod tests {
         (tmp, conn)
     }
 
+    /// A minimal valid sql-kind row, so a test states only what it varies.
+    fn sql_rpc<'a>(name: &'a str, sql: &'a str) -> RpcCreate<'a> {
+        RpcCreate {
+            name,
+            sql,
+            params_json: "[]",
+            description: None,
+            anon_callable: false,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        }
+    }
+
+    /// A minimal valid query-kind row.
+    fn query_rpc<'a>(name: &'a str, query_json: &'a str) -> RpcCreate<'a> {
+        RpcCreate {
+            name,
+            sql: "",
+            params_json: "[]",
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Query,
+            query_json: Some(query_json),
+        }
+    }
+
     #[test]
     fn create_then_lookup() {
         let (_t, conn) = fresh();
         create(
             &conn,
-            "echo",
-            "SELECT 1",
-            "[]",
-            Some("trivial"),
-            false,
-            RpcMode::Read,
-            RpcKind::Sql,
-            None,
+            RpcCreate {
+                description: Some("trivial"),
+                ..sql_rpc("echo", "SELECT 1")
+            },
         )
         .unwrap();
         let r = lookup(&conn, "echo").unwrap().unwrap();
@@ -376,30 +484,8 @@ mod tests {
     #[test]
     fn duplicate_create_errors() {
         let (_t, conn) = fresh();
-        create(
-            &conn,
-            "x",
-            "SELECT 1",
-            "[]",
-            None,
-            false,
-            RpcMode::Read,
-            RpcKind::Sql,
-            None,
-        )
-        .unwrap();
-        let err = create(
-            &conn,
-            "x",
-            "SELECT 2",
-            "[]",
-            None,
-            false,
-            RpcMode::Read,
-            RpcKind::Sql,
-            None,
-        )
-        .unwrap_err();
+        create(&conn, sql_rpc("x", "SELECT 1")).unwrap();
+        let err = create(&conn, sql_rpc("x", "SELECT 2")).unwrap_err();
         assert!(matches!(err, RegistryError::AlreadyExists(_)));
     }
 
@@ -412,30 +498,8 @@ mod tests {
     #[test]
     fn list_returns_sorted() {
         let (_t, conn) = fresh();
-        create(
-            &conn,
-            "b",
-            "SELECT 1",
-            "[]",
-            None,
-            false,
-            RpcMode::Read,
-            RpcKind::Sql,
-            None,
-        )
-        .unwrap();
-        create(
-            &conn,
-            "a",
-            "SELECT 1",
-            "[]",
-            None,
-            false,
-            RpcMode::Read,
-            RpcKind::Sql,
-            None,
-        )
-        .unwrap();
+        create(&conn, sql_rpc("b", "SELECT 1")).unwrap();
+        create(&conn, sql_rpc("a", "SELECT 1")).unwrap();
         let v = list(&conn).unwrap();
         assert_eq!(
             v.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
@@ -446,27 +510,15 @@ mod tests {
     #[test]
     fn update_partial_changes() {
         let (_t, conn) = fresh();
-        create(
-            &conn,
-            "x",
-            "SELECT 1",
-            "[]",
-            None,
-            false,
-            RpcMode::Read,
-            RpcKind::Sql,
-            None,
-        )
-        .unwrap();
+        create(&conn, sql_rpc("x", "SELECT 1")).unwrap();
         update(
             &conn,
             "x",
-            Some("SELECT 2"),
-            None,
-            None,
-            Some(true),
-            None,
-            None,
+            RpcUpdate {
+                sql: Some("SELECT 2"),
+                anon_callable: Some(true),
+                ..Default::default()
+            },
         )
         .unwrap();
         let r = lookup(&conn, "x").unwrap().unwrap();
@@ -480,15 +532,40 @@ mod tests {
         let err = update(
             &conn,
             "nope",
-            Some("SELECT 1"),
-            None,
-            None,
-            None,
-            None,
-            None,
+            RpcUpdate {
+                sql: Some("SELECT 1"),
+                ..Default::default()
+            },
         )
         .unwrap_err();
         assert!(matches!(err, RegistryError::NotFound(_)));
+    }
+
+    /// A row whose stored `params_json` is malformed must stay REPAIRABLE:
+    /// `update` reads only the scalar columns its kind rule needs, so it
+    /// never trips over the parse that `lookup` would do.
+    #[test]
+    fn update_can_repair_a_row_with_malformed_params_json() {
+        let (_t, conn) = fresh();
+        conn.execute(
+            "INSERT INTO _system_rpc (name, sql, params_json) VALUES ('broken', 'SELECT 1', 'not json')",
+            [],
+        )
+        .unwrap();
+        assert!(matches!(
+            lookup(&conn, "broken"),
+            Err(RegistryError::BadParams(_))
+        ));
+        update(
+            &conn,
+            "broken",
+            RpcUpdate {
+                params_json: Some("[]"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(lookup(&conn, "broken").unwrap().unwrap().params.len(), 0);
     }
 
     #[test]
@@ -501,18 +578,7 @@ mod tests {
     #[test]
     fn create_and_lookup_query_kind() {
         let (_t, conn) = fresh();
-        create(
-            &conn,
-            "q",
-            "",
-            "[]",
-            None,
-            true,
-            RpcMode::Read,
-            RpcKind::Query,
-            Some(r#"{"collection":"posts"}"#),
-        )
-        .unwrap();
+        create(&conn, query_rpc("q", r#"{"collection":"posts"}"#)).unwrap();
         let r = lookup(&conn, "q").unwrap().unwrap();
         assert_eq!(r.kind, RpcKind::Query);
         assert_eq!(r.query_json.as_deref(), Some(r#"{"collection":"posts"}"#));
@@ -520,56 +586,104 @@ mod tests {
         assert_eq!(r.mode, RpcMode::Read);
     }
 
+    /// `create` must enforce the SAME kind contract `update` does — otherwise a
+    /// row can be born in a state no update may repair (kind=query + mode=write
+    /// is the sharp case: `update` refuses to move a query row off mode=read).
+    #[test]
+    fn create_kind_rules_are_enforced() {
+        let (_t, conn) = fresh();
+        // query without a template
+        assert!(matches!(
+            create(
+                &conn,
+                RpcCreate {
+                    query_json: None,
+                    ..query_rpc("q1", "unused")
+                }
+            ),
+            Err(RegistryError::KindInvalid(_))
+        ));
+        // query with a write mode — the unrepairable one
+        assert!(matches!(
+            create(
+                &conn,
+                RpcCreate {
+                    mode: RpcMode::Write,
+                    ..query_rpc("q2", r#"{"collection":"posts"}"#)
+                }
+            ),
+            Err(RegistryError::KindInvalid(_))
+        ));
+        // query carrying an sql body
+        assert!(matches!(
+            create(
+                &conn,
+                RpcCreate {
+                    sql: "SELECT 1",
+                    ..query_rpc("q3", r#"{"collection":"posts"}"#)
+                }
+            ),
+            Err(RegistryError::KindInvalid(_))
+        ));
+        // sql carrying a query template
+        assert!(matches!(
+            create(
+                &conn,
+                RpcCreate {
+                    query_json: Some(r#"{"collection":"posts"}"#),
+                    ..sql_rpc("s1", "SELECT 1")
+                }
+            ),
+            Err(RegistryError::KindInvalid(_))
+        ));
+        // none of them landed
+        assert!(list(&conn).unwrap().is_empty());
+    }
+
+    /// A row written before #950 has NO `kind` value (or, defensively, an
+    /// unknown one). `from_db_str` must read it back as `Sql`, not panic and
+    /// not invent `Query`.
     #[test]
     fn legacy_rows_read_as_sql_kind() {
         let (_t, conn) = fresh();
-        create(
-            &conn,
-            "s",
-            "SELECT 1",
-            "[]",
-            None,
-            false,
-            RpcMode::Read,
-            RpcKind::Sql,
-            None,
+        // Pre-#950 shape: the column exists after migration but nothing wrote it.
+        conn.execute(
+            "INSERT INTO _system_rpc (name, sql, params_json, kind) VALUES ('g', 'SELECT 1', '[]', 'bogus')",
+            [],
         )
         .unwrap();
-        let r = lookup(&conn, "s").unwrap().unwrap();
-        assert_eq!(r.kind, RpcKind::Sql);
+        let r = lookup(&conn, "g").unwrap().unwrap();
+        assert_eq!(r.kind, RpcKind::Sql, "unknown kind string must fall back");
         assert!(r.query_json.is_none());
+        // And the same via list(), which parses the column separately.
+        let listed = list(&conn).unwrap();
+        assert_eq!(listed[0].kind, RpcKind::Sql);
     }
 
     #[test]
     fn update_kind_rules_are_enforced() {
         let (_t, conn) = fresh();
-        create(
-            &conn,
-            "q",
-            "",
-            "[]",
-            None,
-            true,
-            RpcMode::Read,
-            RpcKind::Query,
-            Some(r#"{"collection":"posts"}"#),
-        )
-        .unwrap();
+        create(&conn, query_rpc("q", r#"{"collection":"posts"}"#)).unwrap();
         // query row: sql / mode changes refused
         assert!(matches!(
-            update(&conn, "q", Some("SELECT 1"), None, None, None, None, None),
+            update(
+                &conn,
+                "q",
+                RpcUpdate {
+                    sql: Some("SELECT 1"),
+                    ..Default::default()
+                }
+            ),
             Err(RegistryError::KindInvalid(_))
         ));
         assert!(matches!(
             update(
                 &conn,
                 "q",
-                None,
-                None,
-                None,
-                None,
-                Some(RpcMode::Write),
-                None
+                RpcUpdate {
+                    mode: Some(RpcMode::Write),
+                    ..Default::default()
+                }
             ),
             Err(RegistryError::KindInvalid(_))
         ));
@@ -577,48 +691,44 @@ mod tests {
         update(
             &conn,
             "q",
-            None,
-            None,
-            None,
-            Some(false),
-            None,
-            Some(r#"{"collection":"posts2"}"#),
+            RpcUpdate {
+                anon_callable: Some(false),
+                query_json: Some(r#"{"collection":"posts2"}"#),
+                ..Default::default()
+            },
         )
         .unwrap();
+        // …and actually landed: the refusals above must not be the only thing
+        // this test can see, or a broken UPDATE clause list stays green.
+        let after = lookup(&conn, "q").unwrap().unwrap();
+        assert_eq!(
+            after.query_json.as_deref(),
+            Some(r#"{"collection":"posts2"}"#)
+        );
+        assert!(!after.anon_callable);
+        assert_eq!(after.kind, RpcKind::Query);
+        assert_eq!(after.sql, "");
+        assert_eq!(after.mode, RpcMode::Read);
         // sql row: query_json refused
-        create(
-            &conn,
-            "s",
-            "SELECT 1",
-            "[]",
-            None,
-            false,
-            RpcMode::Read,
-            RpcKind::Sql,
-            None,
-        )
-        .unwrap();
+        create(&conn, sql_rpc("s", "SELECT 1")).unwrap();
         assert!(matches!(
-            update(&conn, "s", None, None, None, None, None, Some("{}")),
+            update(
+                &conn,
+                "s",
+                RpcUpdate {
+                    query_json: Some("{}"),
+                    ..Default::default()
+                }
+            ),
             Err(RegistryError::KindInvalid(_))
         ));
+        assert!(lookup(&conn, "s").unwrap().unwrap().query_json.is_none());
     }
 
     #[test]
     fn increment_picks_correct_column() {
         let (_t, conn) = fresh();
-        create(
-            &conn,
-            "x",
-            "SELECT 1",
-            "[]",
-            None,
-            false,
-            RpcMode::Read,
-            RpcKind::Sql,
-            None,
-        )
-        .unwrap();
+        create(&conn, sql_rpc("x", "SELECT 1")).unwrap();
         increment(&conn, "x", TokenRole::Anon).unwrap();
         increment(&conn, "x", TokenRole::Service).unwrap();
         increment(&conn, "x", TokenRole::Anon).unwrap();

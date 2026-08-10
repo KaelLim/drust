@@ -305,14 +305,16 @@ fn update_flip_anon_callable_on_owner_scoped_rejected() {
     // collection — legal to create because it is service-only.
     registry::create(
         &conn,
-        "r",
-        "SELECT id, qty FROM orders",
-        "[]",
-        None,
-        false,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "r",
+            sql: "SELECT id, qty FROM orders",
+            params_json: "[]",
+            description: None,
+            anon_callable: false,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     // Flip anon_callable=true via update, sql/params omitted → must be rejected
@@ -331,14 +333,16 @@ fn update_swap_sql_to_owner_scoped_rejected() {
     // Seed an anon-callable RPC that reads NO owner table (legal at create).
     registry::create(
         &conn,
-        "r",
-        "SELECT 1",
-        "[]",
-        None,
-        true,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "r",
+            sql: "SELECT 1",
+            params_json: "[]",
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     // Swap in owner-scoped SQL via update, anon_callable omitted (stays true) →
@@ -363,14 +367,16 @@ fn update_benign_changes_pass() {
     let (_d, conn) = seed_owner_scoped("upd_benign");
     registry::create(
         &conn,
-        "r",
-        "SELECT id, qty FROM orders",
-        "[]",
-        None,
-        false,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "r",
+            sql: "SELECT id, qty FROM orders",
+            params_json: "[]",
+            description: None,
+            anon_callable: false,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     // No anon flip, no sql change → stays service-only → ok.
@@ -413,14 +419,16 @@ fn owner_scope_change_blocked_by_existing_anon_rpc() {
     let (_d, conn) = seed("osc_blocked");
     registry::create(
         &conn,
-        "list_orders",
-        "SELECT id, qty FROM orders",
-        "[]",
-        None,
-        true,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "list_orders",
+            sql: "SELECT id, qty FROM orders",
+            params_json: "[]",
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     // Attempting to make `orders` owner-scoped must be refused, naming the RPC.
@@ -437,14 +445,16 @@ fn owner_scope_change_allowed_when_anon_rpc_binds_user_id() {
     let (_d, conn) = seed("osc_uid");
     registry::create(
         &conn,
-        "my_orders",
-        "SELECT id, qty FROM orders WHERE user_id = :user_id",
-        USER_ID_PARAMS_JSON,
-        None,
-        true,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "my_orders",
+            sql: "SELECT id, qty FROM orders WHERE user_id = :user_id",
+            params_json: USER_ID_PARAMS_JSON,
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id")
@@ -457,14 +467,16 @@ fn owner_scope_change_allowed_for_service_only_or_unrelated_rpc() {
     // Service-only RPC reading `orders` → no anon leak → allowed.
     registry::create(
         &conn,
-        "svc_orders",
-        "SELECT id, qty FROM orders",
-        "[]",
-        None,
-        false,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "svc_orders",
+            sql: "SELECT id, qty FROM orders",
+            params_json: "[]",
+            description: None,
+            anon_callable: false,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     // Anon RPC reading a DIFFERENT table → does not block `orders` owner-scope.
@@ -472,14 +484,16 @@ fn owner_scope_change_allowed_for_service_only_or_unrelated_rpc() {
         .unwrap();
     registry::create(
         &conn,
-        "list_logs",
-        "SELECT id, msg FROM logs",
-        "[]",
-        None,
-        true,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "list_logs",
+            sql: "SELECT id, msg FROM logs",
+            params_json: "[]",
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id")
@@ -495,14 +509,16 @@ fn owner_scope_change_blocked_by_anon_rpc_with_unused_user_id() {
     let (_d, conn) = seed("osc_unused_uid");
     registry::create(
         &conn,
-        "leaky",
-        "SELECT id, qty FROM orders WHERE :user_id IS NOT NULL",
-        USER_ID_PARAMS_JSON,
-        None,
-        true,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "leaky",
+            sql: "SELECT id, qty FROM orders WHERE :user_id IS NOT NULL",
+            params_json: USER_ID_PARAMS_JSON,
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     let err = guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id").unwrap_err();
@@ -525,14 +541,16 @@ fn scan_flags_legacy_unsafe_anon_rpc() {
     let (_d, conn) = seed_owner_scoped("scan_unsafe");
     registry::create(
         &conn,
-        "leak",
-        "SELECT id, qty FROM orders",
-        "[]",
-        None,
-        true,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "leak",
+            sql: "SELECT id, qty FROM orders",
+            params_json: "[]",
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     let names = scan_unsafe_anon_rpcs(&conn).unwrap();
@@ -545,27 +563,31 @@ fn scan_ignores_safe_rpcs() {
     // Service-only over owner-scoped → safe.
     registry::create(
         &conn,
-        "svc",
-        "SELECT id, qty FROM orders",
-        "[]",
-        None,
-        false,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "svc",
+            sql: "SELECT id, qty FROM orders",
+            params_json: "[]",
+            description: None,
+            anon_callable: false,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     // Anon over owner-scoped WITH :user_id → safe.
     registry::create(
         &conn,
-        "mine",
-        "SELECT id, qty FROM orders WHERE user_id = :user_id",
-        USER_ID_PARAMS_JSON,
-        None,
-        true,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "mine",
+            sql: "SELECT id, qty FROM orders WHERE user_id = :user_id",
+            params_json: USER_ID_PARAMS_JSON,
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     let names = scan_unsafe_anon_rpcs(&conn).unwrap();
@@ -650,14 +672,16 @@ fn guard_policy_change_rejects_when_anon_rpc_references_collection() {
     let (_d, conn) = seed("policychange_blocked");
     registry::create(
         &conn,
-        "reader",
-        "SELECT id, qty FROM orders",
-        "[]",
-        None,
-        true,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "reader",
+            sql: "SELECT id, qty FROM orders",
+            params_json: "[]",
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     let err = guard_policy_change_against_anon_rpcs(&conn, "orders").unwrap_err();
@@ -673,14 +697,17 @@ fn guard_policy_change_accepts_for_service_only_rpc() {
     let (_d, conn) = seed("policychange_ok");
     registry::create(
         &conn,
-        "reader",
-        "SELECT id, qty FROM orders",
-        "[]",
-        None,
-        false, // service-only → no anon leak
+        registry::RpcCreate {
+            name: "reader",
+            sql: "SELECT id, qty FROM orders",
+            params_json: "[]",
+            description: None,
+            anon_callable: false,
+            mode: // service-only → no anon leak
         RpcMode::Read,
-        RpcKind::Sql,
-        None,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     guard_policy_change_against_anon_rpcs(&conn, "orders")
@@ -695,14 +722,16 @@ fn scan_unsafe_flags_user_id_rpc_over_policy_collection() {
     let (_d, conn) = seed_with_policy("scan_policy_uid");
     registry::create(
         &conn,
-        "mine",
-        "SELECT id, qty FROM orders WHERE user_id = :user_id",
-        USER_ID_PARAMS_JSON,
-        None,
-        true,
-        RpcMode::Read,
-        RpcKind::Sql,
-        None,
+        registry::RpcCreate {
+            name: "mine",
+            sql: "SELECT id, qty FROM orders WHERE user_id = :user_id",
+            params_json: USER_ID_PARAMS_JSON,
+            description: None,
+            anon_callable: true,
+            mode: RpcMode::Read,
+            kind: RpcKind::Sql,
+            query_json: None,
+        },
     )
     .unwrap();
     let names = scan_unsafe_anon_rpcs(&conn).unwrap();

@@ -321,10 +321,15 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         // existing row on the raw-SQL path; a kind='query' row stores a
         // structured FilterAst template in query_json and leaves `sql` unused.
         // Column definitions are IDENTICAL to the fresh-install DDL in
-        // storage/tenant_db.rs (no CHECK on either side — ALTER TABLE ADD
-        // COLUMN would silently drop one, so adding it only on the fresh side
-        // would make fresh and migrated schemas diverge). Invalid strings can't
-        // be inserted through our code path: registry::create takes RpcKind.
+        // storage/tenant_db.rs, and deliberately carry NO CHECK on either side.
+        // A CHECK here WOULD work — contrary to the `mode` comment above,
+        // SQLite does persist and enforce a CHECK added by ALTER TABLE ADD
+        // COLUMN (verified on 3.45+) — but declaring one only on the fresh side
+        // is exactly the pre-existing `mode` divergence (fresh HAS the CHECK,
+        // migrated does not), which nothing pins. Identical-on-both-sides is
+        // the property `v950_kind_and_query_json_added_on_upgrade_idempotently`
+        // asserts. Invalid strings can't be inserted through our code path
+        // anyway: registry::create takes RpcKind and calls check_kind_rules.
         add_column_if_missing(&tx, "_system_rpc", "kind", "TEXT NOT NULL DEFAULT 'sql'")?;
         add_column_if_missing(&tx, "_system_rpc", "query_json", "TEXT")?;
 
@@ -1650,27 +1655,31 @@ mod tests {
             // Legacy UNSAFE: anon-callable, reads owner-scoped `orders`, no :user_id.
             registry::create(
                 &conn,
-                "leak",
-                "SELECT id, qty FROM orders",
-                "[]",
-                None,
-                true,
-                RpcMode::Read,
-                RpcKind::Sql,
-                None,
+                registry::RpcCreate {
+                    name: "leak",
+                    sql: "SELECT id, qty FROM orders",
+                    params_json: "[]",
+                    description: None,
+                    anon_callable: true,
+                    mode: RpcMode::Read,
+                    kind: RpcKind::Sql,
+                    query_json: None,
+                },
             )
             .unwrap();
             // SAFE: anon-callable but binds :user_id → must be left untouched.
             registry::create(
                 &conn,
-                "mine",
-                "SELECT id, qty FROM orders WHERE user_id = :user_id",
-                r#"[{"name":"user_id","type":"text","required":true}]"#,
-                None,
-                true,
-                RpcMode::Read,
-                RpcKind::Sql,
-                None,
+                registry::RpcCreate {
+                    name: "mine",
+                    sql: "SELECT id, qty FROM orders WHERE user_id = :user_id",
+                    params_json: r#"[{"name":"user_id","type":"text","required":true}]"#,
+                    description: None,
+                    anon_callable: true,
+                    mode: RpcMode::Read,
+                    kind: RpcKind::Sql,
+                    query_json: None,
+                },
             )
             .unwrap();
         } // drop the writer before migrate opens its own connection
@@ -2442,10 +2451,17 @@ mod tests {
     }
 
     /// #950 — the `kind` / `query_json` pair must land on an upgraded DB with
-    /// the SAME shape the fresh-install DDL (`storage/tenant_db.rs`) declares,
+    /// the same shape the fresh-install DDL (`storage/tenant_db.rs`) declares,
     /// and a second boot must be a no-op. Fresh install is covered by
     /// `rpc::registry::tests::create_and_lookup_query_kind`; this is the other
     /// half of the lockstep.
+    ///
+    /// SCOPE, precisely: this pins the two columns BY NAME on
+    /// `(type, notnull, dflt_value)` only. It does NOT pin column ORDER (the
+    /// migrated columns are appended, the fresh ones sit before `created_at`)
+    /// and it does NOT pin CHECK constraints (`PRAGMA table_info` cannot see
+    /// them) — so the pre-existing `mode` divergence, where the fresh column
+    /// has a CHECK the migrated one lacks, would NOT be caught here.
     #[test]
     fn v950_kind_and_query_json_added_on_upgrade_idempotently() {
         let dir = tempfile::tempdir().unwrap();
@@ -2472,9 +2488,9 @@ mod tests {
         migrate_tenant_db(dir.path(), "t-up950").unwrap();
         migrate_tenant_db(dir.path(), "t-up950").unwrap();
 
-        // Compare column-for-column against a FRESH tenant DB: type, NOT NULL
-        // and DEFAULT must be identical on both paths, or fresh and upgraded
-        // tenants silently diverge.
+        // Compare against a FRESH tenant DB: type, NOT NULL and DEFAULT must be
+        // identical on both paths, or fresh and upgraded tenants silently
+        // diverge. (Order and CHECKs are out of scope — see the doc comment.)
         let shape = |c: &Connection| -> Vec<(String, String, i64, Option<String>)> {
             c.prepare("PRAGMA table_info(_system_rpc)")
                 .unwrap()

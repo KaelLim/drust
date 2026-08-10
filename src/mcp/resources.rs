@@ -413,6 +413,10 @@ fn redact_rpc_obj(r: &mut serde_json::Value) {
         return;
     };
     obj.remove("sql");
+    // #950: a query-kind RPC's body lives in `query_json` instead — same
+    // secret-embedding class (a filter literal can be a credential), so it
+    // leaves the auto-fetchable resource by the same rule as `sql`.
+    obj.remove("query_json");
     if let Some(params) = obj.get_mut("params").and_then(|p| p.as_array_mut()) {
         for p in params {
             if let Some(po) = p.as_object_mut() {
@@ -758,7 +762,12 @@ mod tests {
         // stored RPC could embed in its SQL body or a param default.
         let mut v = serde_json::json!([
             {"name": "r1", "sql": "SELECT 'SECRET_TOKEN_abc'",
-             "params": [{"name": "k", "default": "SECRET_DEFAULT_xyz"}]}
+             "params": [{"name": "k", "default": "SECRET_DEFAULT_xyz"}]},
+            // #950: a query-kind row's body is `query_json`, not `sql` — same
+            // secret-embedding class (a filter literal can be a credential),
+            // so it must be stripped by the same rule.
+            {"name": "r2", "kind": "query", "sql": "",
+             "query_json": "{\"collection\":\"posts\",\"filter\":{\"token\":\"SECRET_TEMPLATE_qrs\"}}"}
         ]);
         redact_rpc_array(&mut v);
         let s = v.to_string();
@@ -766,6 +775,12 @@ mod tests {
             !s.contains("SECRET_TOKEN_abc"),
             "sql body must be stripped: {s}"
         );
+        assert!(
+            !s.contains("SECRET_TEMPLATE_qrs"),
+            "query_json template must be stripped: {s}"
+        );
+        assert!(s.contains("r2"), "query-row name is preserved");
+        assert!(s.contains("query"), "kind is preserved");
         assert!(
             !s.contains("SECRET_DEFAULT_xyz"),
             "param default must be stripped: {s}"

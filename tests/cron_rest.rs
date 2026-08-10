@@ -178,14 +178,16 @@ async fn missing_target_404_and_user_id_rpc_409() {
     pool.with_writer(|c| {
         Ok(drust::rpc::registry::create(
             c,
-            "needs_user",
-            "SELECT :user_id AS uid",
-            r#"[{"name":"user_id","type":"text"}]"#,
-            None,
-            false,
-            drust::rpc::registry::RpcMode::Read,
-            drust::rpc::registry::RpcKind::Sql,
-            None,
+            drust::rpc::registry::RpcCreate {
+                name: "needs_user",
+                sql: "SELECT :user_id AS uid",
+                params_json: r#"[{"name":"user_id","type":"text"}]"#,
+                description: None,
+                anon_callable: false,
+                mode: drust::rpc::registry::RpcMode::Read,
+                kind: drust::rpc::registry::RpcKind::Sql,
+                query_json: None,
+            },
         ))
     })
     .await

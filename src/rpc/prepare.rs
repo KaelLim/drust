@@ -349,6 +349,10 @@ pub fn guard_owner_scope_change_against_anon_rpcs(
     let rpcs = crate::rpc::registry::list(conn)
         .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
     for rpc in rpcs {
+        // query-kind: policies apply at runtime (#950); enumerating sql guards do not apply
+        if rpc.kind == crate::rpc::registry::RpcKind::Query {
+            continue;
+        }
         if !rpc.anon_callable {
             continue;
         }
@@ -389,6 +393,10 @@ pub fn scan_unsafe_anon_rpcs(conn: &Connection) -> Result<Vec<String>, PrepareEr
         .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
     let mut unsafe_names = Vec::new();
     for rpc in rpcs {
+        // query-kind: policies apply at runtime (#950); enumerating sql guards do not apply
+        if rpc.kind == crate::rpc::registry::RpcKind::Query {
+            continue;
+        }
         // Do NOT skip :user_id RPCs here: the guard itself exempts :user_id for
         // the owner_field case but NOT for the policy case (audit3 F2), so a
         // :user_id RPC over a policy-protected collection must still be caught.
@@ -423,6 +431,10 @@ pub fn guard_policy_change_against_anon_rpcs(
     let rpcs = crate::rpc::registry::list(conn)
         .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
     for rpc in rpcs {
+        // query-kind: policies apply at runtime (#950); enumerating sql guards do not apply
+        if rpc.kind == crate::rpc::registry::RpcKind::Query {
+            continue;
+        }
         if !rpc.anon_callable {
             continue;
         }
@@ -614,5 +626,87 @@ mod tests {
         let _ = validate_rpc_sql(&conn, "UPDATE posts SET body = 'x'", RpcMode::Read).unwrap_err();
         let r = conn.prepare("DROP TABLE posts");
         assert!(r.is_ok(), "authorizer leaked after failure: {:?}", r.err());
+    }
+
+    /// #950 — the three ENUMERATING sql guards skip query-kind rows explicitly.
+    /// A query row has no SQL to scan; its collection lives in `query_json` and
+    /// its rows are gated at RUNTIME by the same caps/owner/RLS path `/list`
+    /// uses, so these config-time sql guards simply do not apply to it.
+    ///
+    /// The `qraw` fixture is a row that `create` would now refuse (kind=query
+    /// with a non-empty `sql`); it is inserted raw on purpose, so the test
+    /// proves `kind` ALONE decides — not the accident that a well-formed query
+    /// row happens to have an empty `sql` column that scans to zero tables.
+    #[test]
+    fn enumerating_guards_skip_query_kind() {
+        use crate::rpc::registry::{self, RpcCreate, RpcKind};
+        let (_t, conn) = fresh();
+        conn.execute_batch(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER, user_id TEXT);",
+        )
+        .unwrap();
+        crate::storage::schema::set_owner_field(&conn, "orders", Some("user_id"), Some("own"))
+            .unwrap();
+
+        // (a) a well-formed anon-callable query row over the owner-scoped collection
+        registry::create(
+            &conn,
+            RpcCreate {
+                name: "q",
+                sql: "",
+                params_json: "[]",
+                description: None,
+                anon_callable: true,
+                mode: RpcMode::Read,
+                kind: RpcKind::Query,
+                query_json: Some(r#"{"collection":"orders"}"#),
+            },
+        )
+        .unwrap();
+        // (b) kind=query carrying sql that WOULD trip every guard if scanned
+        conn.execute(
+            "INSERT INTO _system_rpc (name, sql, params_json, anon_callable, kind, query_json)
+             VALUES ('qraw', 'SELECT id, qty FROM orders', '[]', 1, 'query', '{}')",
+            [],
+        )
+        .unwrap();
+
+        guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id")
+            .expect("owner-scope guard must skip query-kind rows");
+        guard_policy_change_against_anon_rpcs(&conn, "orders")
+            .expect("policy guard must skip query-kind rows");
+        let flagged = scan_unsafe_anon_rpcs(&conn).unwrap();
+        assert!(
+            flagged.is_empty(),
+            "legacy scan must not neutralize query-kind rows, got {flagged:?}"
+        );
+        let still_anon: i64 = conn
+            .query_row(
+                "SELECT anon_callable FROM _system_rpc WHERE name = 'q'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_anon, 1, "query row must keep anon_callable");
+
+        // Control arm: an equivalent SQL-KIND row is still caught by all three,
+        // so the skip narrowed the guards to query rows and nothing else.
+        registry::create(
+            &conn,
+            RpcCreate {
+                name: "s",
+                sql: "SELECT id, qty FROM orders",
+                params_json: "[]",
+                description: None,
+                anon_callable: true,
+                mode: RpcMode::Read,
+                kind: RpcKind::Sql,
+                query_json: None,
+            },
+        )
+        .unwrap();
+        assert!(guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id").is_err());
+        assert!(guard_policy_change_against_anon_rpcs(&conn, "orders").is_err());
+        assert_eq!(scan_unsafe_anon_rpcs(&conn).unwrap(), vec!["s".to_string()]);
     }
 }
