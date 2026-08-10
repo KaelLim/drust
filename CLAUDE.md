@@ -94,7 +94,8 @@ reachable by an untrusted caller.
 | `/t/<id>/collections/<c>/subscribe` (SSE) | anon, gated on `realtime_enabled` AND `anon_caps[select]` AND any select policy |
 | `/t/<id>/realtime` (WS rooms) | subscribe: anyone with a tenant token. publish: service, unless the per-tenant publish flags are on |
 | `/t/<id>/files/*` (Mode A) and `/t/<id>/uploads/*` (tus) | per-verb cap-gated via `file_caps_layer`; `sign` and set-visibility stay service-only |
-| `/t/<id>/rpc/<name>` | service; anon/user only when `anon_callable` and the collection is not row-access-restricted |
+| `/t/<id>/rpc/<name>` (`kind='sql'`) | service; anon/user only when `anon_callable` and the collection is not row-access-restricted |
+| `/t/<id>/rpc/<name>` (`kind='query'`) | service; anon/user when `anon_callable` — runs a stored `FilterAst` template through the `/list` pipeline under the **caller's** identity, so owner-scope + RLS policy apply by construction (the structured camp; `RPC_ANON_OWNER_SCOPED` does not apply) |
 | `/t/<id>/functions/<name>/invoke` | service always; anon/user only when the per-function invoke ACL allows it |
 | `/t/<id>/mcp` | **service only** — anon `WRITE_DENIED`, user `MCP_USER_DENIED` |
 | `create_fts_index`, `drop_fts_index`, `list_fts_indexes` (MCP tools) | **service only** — full-text index lifecycle, reachable only through `/t/<id>/mcp` |
@@ -220,7 +221,13 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     camp.** Structured input (`FilterAst` compiled with `?` binds) is enforceable by
     construction and may accept anon and user; raw input cannot be rewritten and is
     service-only. The legacy `GET /records/<c>?filter=` params are the raw camp and are
-    service-only for exactly this reason (`RAW_FILTER_DENIED`).
+    service-only for exactly this reason (`RAW_FILTER_DENIED`). A **`kind='query'` stored RPC**
+    is the structured camp reached through a stored template: caller args are scalar-only
+    (`RPC_PARAM_NOT_SCALAR` — the AST-injection gate) and substitute into `FilterAst` operands
+    at the JSON level *before* parse, never through the string-tolerant `parse_filter_value`;
+    it runs the `/list` core under an `RpcGrant` cap-mode that skips ONLY caps backed by an
+    independent row gate — the `read_scope="all"` / owner-scoped arms keep their cap because
+    there the cap IS the row gate.
 
 11. **`SELECT *` on a pooled reader uses plain `prepare`, never `prepare_cached`.** rusqlite
     keys its per-connection statement cache by SQL **text**, which is stable across
@@ -239,7 +246,13 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     input stays structured, never raw SQL. The two cap-gate sites (`has_dml_cap` and the
     `records_list.rs` matrix) must also stay in lockstep, including the rule that a User READ
     on a `read_scope="all"` owner-scoped collection is gated by `user_caps[select]`. Writes
-    are always owner-scoped for the User role regardless of `read_scope`.
+    are always owner-scoped for the User role regardless of `read_scope`. A **SELECT policy
+    with no `using` clause DENIES all reads** (`select_read_access` → `0=1` in SQL, `false`
+    in-memory — one classifier both evaluators route through): "a select policy row exists"
+    must mean "reads are restricted", never fail open. `validate_policy` rejects a new
+    clause-less SELECT policy (`POLICY_SELECT_REQUIRES_USING`); the read-path deny covers any
+    legacy row. This closed a latent fail-open that `RpcGrant` (which skips caps) turned into
+    a cross-tenant leak.
 
 13. **Every `DrustMcp` construction site decides `functions:` consciously.** The executor's
     host state is built with `functions: None` (`HostStateSeed::build_mcp`); restoring a

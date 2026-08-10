@@ -330,6 +330,7 @@ async fn set_select_policy(pool: &SharedTenantPool, coll: &str, policy_json: Val
 }
 
 /// Create a `kind='query'` RPC through the MCP create face (service-only).
+#[allow(clippy::too_many_arguments)]
 async fn create_query_rpc(
     app: &axum::Router,
     tid: &str,

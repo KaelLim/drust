@@ -1,3 +1,52 @@
+## v1.62.0 — 2026-08-11
+
+**`kind='query'` stored RPCs — Supabase-style RLS reaches curated queries (#950 Phase 1).**
+A stored RPC can now be a named `FilterAst` **query template** instead of raw SQL. It runs
+through the `/list` pipeline under the **caller's** identity, so `owner_field` + RLS policies
+apply by construction — which means `anon`/`user` may call a curated query over a
+policy-protected or owner-scoped collection safely, closing the gap where
+`RPC_ANON_OWNER_SCOPED` had no choice but to refuse anon access outright. RLS stops being a
+blanket lock and becomes the structure that lets fine-grained access open safely (the
+Supabase-RLS north star: `$auth` ≈ `auth.uid()`, a query template ≈ a `SECURITY INVOKER`
+function).
+
+### Added
+- `_system_rpc.kind` (`sql` | `query`, default `sql`) + `query_json`; `kind` is immutable
+  after create, and a query row is always `mode=read`.
+- `POST /t/<id>/rpc/<name>` and MCP `call_rpc` execute a query template: caller args are
+  **scalar-only** (`RPC_PARAM_NOT_SCALAR` — the AST-injection gate) and substitute into
+  `FilterAst` operands at the JSON level via `resolve_args` → `substitute_to_filter_ast`
+  (strict parse, never the string-tolerant path); `{"$param":"name"}` fills a declared
+  param, `{"$auth":"id"}` fills the caller's user id (`NULL` for anon/service). Response is
+  the `/list` envelope `{records,total,page,perPage}`; paging is `?page=&per_page=`.
+- Admin RPC editor: `kind` select + query-template textarea + a playground that runs the
+  template and renders the list envelope; MCP `create_rpc`/`update_rpc` gain `kind`/`query`;
+  `list_rpc` surfaces `kind`.
+- New error codes: `RPC_PARAM_NOT_SCALAR`, `RPC_QUERY_STALE`, `RPC_KIND_INVALID`,
+  `CRON_RPC_QUERY_KIND`, `RPC_QUERY_GRANT_ACTIVE`, `POLICY_SELECT_REQUIRES_USING`.
+
+### Security
+- **RPC-as-grant is bounded by a cap-mode.** The query arm runs under `RpcGrant`, which skips
+  a cap check ONLY where an independent row gate protects rows; the `read_scope="all"` and
+  owner-scoped arms keep `user_caps[select]` because there the cap IS the row gate — so a
+  query RPC never becomes a cross-user leak. Two independent review engines flagged the
+  absence of this bound as HIGH before it existed.
+- **Clause-less SELECT policy now denies reads fail-closed** (latent pre-existing bug,
+  surfaced by the grant): a SELECT policy with no `using` clause used to mean "no filter" on
+  every read face while `collection_has_policy` still reported `true`. It now denies all rows
+  (`select_read_access` → `0=1` / `false`, one classifier both evaluators route through);
+  `validate_policy` rejects a new one (`POLICY_SELECT_REQUIRES_USING`).
+- **Config-change widening is guarded** (`RPC_QUERY_GRANT_ACTIVE`): clearing a SELECT policy
+  or `owner_field` on a collection an anon-callable query RPC targets is refused. **cron
+  refuses a query-kind target** (create + fail-closed re-check at fire). The template
+  save-time validator refuses a `user_id` param, a protected collection, and a
+  cross-storage-class `$auth`/`$param` operand (the #954 class check, extended to templates).
+
+### Fixed
+- Admin RPC **edit** route (`/_rpc/{name}/save`) extracted only one of its two path params —
+  every save from the edit form had been failing with "Wrong number of path arguments".
+  Pre-existing, independent of #950; fixed because the query-editor tests reach that route.
+
 ## v1.61.1 — 2026-08-10
 
 Follow-up hardening from the v1.61.0 two-engine review — four grounded, low-severity fixes,
