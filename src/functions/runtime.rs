@@ -45,6 +45,29 @@ pub fn engine() -> &'static Engine {
     })
 }
 
+/// Arm the per-invoke epoch budget: deadline = 1 tick (100ms), and the
+/// callback yields control back to the async executor on every tick until
+/// `timeout_secs` of ticks are spent, then interrupts. Pre-v1.61 this armed
+/// ONE deadline of `timeout_secs * 10` ticks: wasmtime only checks the epoch
+/// at the deadline, so a compute-only guest (no await points) pinned its
+/// Tokio worker for the whole budget — two such invokes on a 2-core host
+/// starved every other future (v1.58.5 family). `UpdateDeadline::Interrupt`
+/// raises the same `Trap::Interrupt` the old shape did, so the Timeout
+/// classification in `run` is unchanged.
+pub(crate) fn arm_epoch_budget<T>(store: &mut Store<T>, timeout_secs: u64) {
+    let total_ticks = timeout_secs.saturating_mul(10).max(1);
+    let mut used_ticks: u64 = 0;
+    store.set_epoch_deadline(1);
+    store.epoch_deadline_callback(move |_| {
+        used_ticks += 1;
+        if used_ticks >= total_ticks {
+            Ok(wasmtime::UpdateDeadline::Interrupt)
+        } else {
+            Ok(wasmtime::UpdateDeadline::Yield(1))
+        }
+    });
+}
+
 /// Upload-time validation: compiles (cheaply discards) the artifact.
 /// 422 WASM_COMPILE_FAILED at the route layer on Err.
 pub fn validate_component(bytes: &[u8]) -> anyhow::Result<()> {
@@ -958,8 +981,8 @@ impl FunctionRunner for WasmRunner {
         };
         let mut store = Store::new(engine(), data);
         store.limiter(|d| &mut d.limits);
-        // 100ms ticks ⇒ deadline = secs * 10 ticks.
-        store.set_epoch_deadline(self.cfg.timeout_secs * 10);
+        // 100ms ticks ⇒ budget = secs * 10 ticks, yielding the worker on each.
+        arm_epoch_budget(&mut store, self.cfg.timeout_secs);
 
         let run = async {
             let bindings = EdgeFunctionPre::new(pre)?
@@ -1025,6 +1048,65 @@ mod tests {
     #[test]
     fn validate_rejects_garbage() {
         assert!(validate_component(b"not wasm at all").is_err());
+    }
+
+    /// Hand-assembled core module `(module (func (export "spin") (loop br 0)))`.
+    /// Written as bytes, not WAT: wasmtime is pulled in with
+    /// `default-features = false` and the `wat` feature is OFF, so
+    /// `Module::new` accepts only a binary.
+    #[rustfmt::skip]
+    const SPIN_WASM: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+        0x01, 0x04, 0x01, 0x60, 0x00, 0x00,             // type: [] -> []
+        0x03, 0x02, 0x01, 0x00,                         // func 0 : type 0
+        0x07, 0x08, 0x01, 0x04, b's', b'p', b'i', b'n', 0x00, 0x00, // export
+        // code: locals=0, loop (empty blocktype) { br 0 } end
+        0x0a, 0x09, 0x01, 0x07, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b,
+    ];
+
+    /// HIGH #1 (task #932): a compute-only guest must yield the Tokio worker
+    /// back to the executor every epoch tick, not pin it until the deadline
+    /// trap. Pre-fix, the concurrently-spawned heartbeat task on this
+    /// single-threaded runtime cannot run AT ALL while the guest spins, so
+    /// `beats` stays 0 (measured); post-fix it advances — 9 beats measured
+    /// over the 2s / 20-tick budget, hence the deliberately loose `>= 3`.
+    #[test]
+    fn compute_loop_yields_to_other_tasks_every_tick() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let beats = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let beats2 = beats.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    beats2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+            let module = wasmtime::Module::new(engine(), SPIN_WASM).unwrap();
+            let mut store = wasmtime::Store::new(engine(), ());
+            arm_epoch_budget(&mut store, 2); // 2s budget = 20 ticks
+            let instance = wasmtime::Instance::new_async(&mut store, &module, &[])
+                .await
+                .unwrap();
+            let spin = instance
+                .get_typed_func::<(), ()>(&mut store, "spin")
+                .unwrap();
+            let trap = spin.call_async(&mut store, ()).await.unwrap_err();
+            // Budget expiry must still classify as Trap::Interrupt — the
+            // executor's Timeout classification depends on it.
+            assert_eq!(
+                trap.downcast_ref::<wasmtime::Trap>(),
+                Some(&wasmtime::Trap::Interrupt)
+            );
+            let observed = beats.load(std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                observed >= 3,
+                "guest spin starved the executor: heartbeat ran {observed} times"
+            );
+        });
     }
 
     /// The runner resolves tenants by id string AFTER arbitrary queue/lock
