@@ -572,23 +572,40 @@ fn column_class(sql_type: &str) -> Option<&'static str> {
     }
 }
 
+/// Coarse storage class of a column BY NAME, covering the always-present system
+/// columns as well as declared fields (#954 follow-up, codex review). `id`,
+/// `created_at`, `updated_at` are NOT in `schema.fields` but ARE valid policy
+/// targets (`validate_field` admits them), so a lookup that only consulted
+/// `schema.fields` skipped them — letting e.g. `{"id": {"$auth":"id"}}` (INTEGER
+/// column vs TEXT `$auth`) slip the cross-class check and diverge between the SQL
+/// and in-memory evaluators. `id` is `INTEGER PRIMARY KEY` (num); `created_at` /
+/// `updated_at` are TEXT timestamps. `None` for BLOB / unknown, as before.
+fn field_class(schema: &CollectionSchema, field: &str) -> Option<&'static str> {
+    match field {
+        "id" => Some("num"),
+        "created_at" | "updated_at" => Some("text"),
+        _ => schema
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .and_then(|f| column_class(&f.sql_type)),
+    }
+}
+
 /// Coarse storage class of a policy operand — LITERAL or DYNAMIC (#954). `$auth`
 /// always resolves to the caller's `_system_users` id, a TEXT value (or SQL NULL
 /// for anon), so its class is `text`. `$data:"<field>"` resolves to that field's
-/// post-image value, so its class is the referenced column's class. Everything
-/// else defers to `literal_class`. `None` = a class we never cross-check
-/// (JSON null / array, or a BLOB / system / unknown `$data` target).
+/// post-image value, so its class is the referenced column's class (system
+/// columns included, via `field_class`). Everything else defers to
+/// `literal_class`. `None` = a class we never cross-check (JSON null / array, or
+/// a BLOB / unknown `$data` target).
 fn operand_class(schema: &CollectionSchema, operand: &Json) -> Option<&'static str> {
     if let Json::Object(o) = operand {
         if o.contains_key("$auth") {
             return Some("text");
         }
         if let Some(field) = o.get("$data").and_then(|v| v.as_str()) {
-            return schema
-                .fields
-                .iter()
-                .find(|f| f.name == field)
-                .and_then(|f| column_class(&f.sql_type));
+            return field_class(schema, field);
         }
     }
     literal_class(operand)
@@ -605,14 +622,9 @@ fn check_operand_class(
     field: &str,
     operand: &Json,
 ) -> Result<(), PolicyError> {
-    let (Some(operand_cls), Some(col)) = (
-        operand_class(schema, operand),
-        schema
-            .fields
-            .iter()
-            .find(|f| f.name == field)
-            .and_then(|f| column_class(&f.sql_type)),
-    ) else {
+    let (Some(operand_cls), Some(col)) =
+        (operand_class(schema, operand), field_class(schema, field))
+    else {
         return Ok(());
     };
     if operand_cls != col {
@@ -948,6 +960,46 @@ mod tests {
             )
             .is_ok(),
             "num price vs num $data:cost must pass"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_system_column_vs_auth_954() {
+        // #954 follow-up (codex review): the system columns id/created_at/
+        // updated_at are valid policy targets (validate_field admits them) but
+        // are NOT in schema.fields, so the class check skipped them. `id` is
+        // INTEGER, so `id` vs `$auth` (text) is cross-class and must be rejected;
+        // `created_at` is TEXT, so it is same-class and must pass.
+        let s = typed_schema(&[("body", "TEXT")]);
+
+        let bad: FilterAst = serde_json::from_str(r#"{"id":{"$ne":{"$auth":"id"}}}"#).unwrap();
+        let err = validate_policy(
+            &s,
+            DmlVerb::Select,
+            &Policy {
+                using: Some(bad),
+                check: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PolicyError::Parse(_)),
+            "id(INTEGER) vs $auth(text) must reject at config time, got {err:?}"
+        );
+
+        let ok: FilterAst =
+            serde_json::from_str(r#"{"created_at":{"$eq":{"$auth":"id"}}}"#).unwrap();
+        assert!(
+            validate_policy(
+                &s,
+                DmlVerb::Select,
+                &Policy {
+                    using: Some(ok),
+                    check: None,
+                },
+            )
+            .is_ok(),
+            "created_at(TEXT) vs $auth(text) is same-class and must pass"
         );
     }
 
