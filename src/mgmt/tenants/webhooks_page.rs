@@ -425,6 +425,10 @@ pub async fn tenant_webhook_create_form(
     let now = chrono::Utc::now().to_rfc3339();
     let res: rusqlite::Result<i64> = pool
         .with_writer(move |c| {
+            // Same per-tenant cap the REST + MCP faces enforce (task #932
+            // HIGH #2) — one shared enforcement point, counted inside the
+            // writer critical section immediately before the INSERT.
+            crate::tenant::webhook_routes::check_registration_cap(c)?;
             c.execute(
                 "INSERT INTO _system_webhooks \
                  (collection, events, url, secret, active, created_at) \

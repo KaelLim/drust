@@ -135,6 +135,45 @@ fn validate_events(events: &[String]) -> Result<(), Response> {
         .map_err(|(code, msg)| json_error(StatusCode::UNPROCESSABLE_ENTITY, code, msg))
 }
 
+/// Task #932 HIGH #2 — the per-tenant webhook registration cap, shared by ALL
+/// THREE registration faces (REST `create_handler`, MCP `create_webhook`,
+/// admin-UI `tenant_webhook_create_form`). Every subscription multiplies the
+/// fan-out — and thus the task/socket amplification — of EVERY write to its
+/// collection, so an uncapped tenant defeats the delivery semaphore. A cap on
+/// ONE INSERT site is no cap at all (the parallel-site enumeration hazard: the
+/// first cut of this fix guarded only the MCP path, leaving REST + admin UI
+/// wide open), so the single enforcement point lives here and every INSERT
+/// site calls it.
+///
+/// Call this INSIDE the same `with_writer` closure that runs the INSERT,
+/// immediately before it, so the count and the insert share one writer
+/// critical section and two concurrent creates cannot straddle the limit.
+/// Returns a sentinel `rusqlite::Error` whose `Display` begins
+/// `WEBHOOK_LIMIT_EXCEEDED:` — each face maps it to its own error shape (MCP
+/// re-emits verbatim, REST → 409, admin UI → form error).
+pub(crate) fn check_registration_cap(c: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let cap: i64 = std::env::var("DRUST_WEBHOOK_MAX_PER_TENANT")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(32);
+    let count: i64 = c.query_row("SELECT COUNT(*) FROM \"_system_webhooks\"", [], |r| {
+        r.get(0)
+    })?;
+    if count >= cap {
+        // Counts ALL rows, not just active — inactive rows still cost
+        // dispatch-scan and storage; delete, don't hoard.
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some(format!(
+                "WEBHOOK_LIMIT_EXCEEDED: tenant already has {count} webhooks \
+                 (limit {cap}); delete one before registering another"
+            )),
+        ));
+    }
+    Ok(())
+}
+
 /// Generate a 64-char hex-encoded random secret (32 bytes from `OsRng` via
 /// `rand::thread_rng`, matching the bearer-token pattern in `auth/bearer.rs`).
 pub(crate) fn generate_secret() -> String {
@@ -237,6 +276,7 @@ pub async fn create_handler(
     let now2 = now.clone();
     let res: rusqlite::Result<i64> = pool
         .with_writer(move |c| {
+            check_registration_cap(c)?;
             c.execute(
                 "INSERT INTO _system_webhooks \
                  (collection, events, url, secret, active, created_at) \
@@ -260,6 +300,11 @@ pub async fn create_handler(
             })),
         )
             .into_response(),
+        Err(e) if e.to_string().starts_with("WEBHOOK_LIMIT_EXCEEDED") => {
+            let m = e.to_string();
+            let detail = m.strip_prefix("WEBHOOK_LIMIT_EXCEEDED: ").unwrap_or(&m);
+            json_error(StatusCode::CONFLICT, "WEBHOOK_LIMIT_EXCEEDED", detail)
+        }
         Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "DB_ERROR", ""),
     }
 }

@@ -427,6 +427,54 @@ async fn rest_create_rejects_http_url() {
     assert_eq!(v["error_code"].as_str(), Some("INVALID_URL"));
 }
 
+/// task #932 HIGH #2, parallel-site pin — the per-tenant registration cap must
+/// bite on the REST face too, not just the MCP one. The first cut of this fix
+/// guarded only `mcp/tools/webhook.rs`, leaving this REST handler (its own
+/// duplicated INSERT) uncapped; the shared `check_registration_cap` closes
+/// that. Uses the default cap (32) so it manipulates no process-global env var
+/// that a sibling test could race. Pre-fix the 33rd create returned 201.
+#[tokio::test]
+async fn rest_create_is_capped_per_tenant() {
+    let tid = "t-rest-cap";
+    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    allowlist_webhook_origin(&app, tid, &svc, "https://example.com").await;
+    // Default DRUST_WEBHOOK_MAX_PER_TENANT is 32; fill exactly to the cap.
+    for i in 0..32 {
+        let (status, v) = create_webhook(
+            &app,
+            tid,
+            &svc,
+            serde_json::json!({
+                "collection": "notes",
+                "events": ["created"],
+                "url": format!("https://example.com/hook{i}"),
+            }),
+        )
+        .await;
+        assert_eq!(
+            status, 201,
+            "webhook {i} must be accepted under the cap: {v}"
+        );
+    }
+    // The 33rd must be refused — 409 WEBHOOK_LIMIT_EXCEEDED.
+    let (status, v) = create_webhook(
+        &app,
+        tid,
+        &svc,
+        serde_json::json!({
+            "collection": "notes",
+            "events": ["created"],
+            "url": "https://example.com/hook-over",
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "the 33rd create must be refused, got {status}: {v}"
+    );
+    assert_eq!(v["error_code"].as_str(), Some("WEBHOOK_LIMIT_EXCEEDED"));
+}
+
 #[tokio::test]
 async fn rest_create_allows_http_localhost_for_dev() {
     let tid = "t-rest3";
