@@ -385,9 +385,17 @@ pub async fn rpc_save(
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
-    Path(tenant_id): Path<String>,
+    // TWO routes share this handler: `…/_rpc/new` (one path param) and
+    // `…/_rpc/{name}/save` (two). A `Path<String>` extractor rejects the
+    // two-param route outright — "Wrong number of path arguments" — so EVERY
+    // save from the edit form 500'd before it reached any of the logic below.
+    // A map extractor takes both shapes (the `tenant::owner_field` pattern);
+    // `{name}` is deliberately ignored, since create-vs-update is decided by
+    // whether the SUBMITTED name already exists.
+    Path(path_params): Path<std::collections::HashMap<String, String>>,
     axum::Form(form): axum::Form<RpcFormBody>,
 ) -> Response {
+    let tenant_id = path_params.get("id").cloned().unwrap_or_default();
     let pool = match state.tenants.get_or_create(&tenant_id) {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -492,9 +500,11 @@ pub async fn rpc_save(
         crate::rpc::params::parse_params_json(&form.params_json).unwrap_or_default();
     let anon_callable_for_guard = form.anon_callable.is_some();
     let query_for_validate = form_query_json.clone();
+    let name_for_validate = form.name.clone();
     let cache_for_validate = pool.schema_cache.clone();
     let validate_res: rusqlite::Result<Result<(), crate::rpc::prepare::PrepareError>> = pool
         .with_reader(move |c| {
+            let stored = registry::lookup(c, &name_for_validate).ok().flatten();
             Ok(match form_kind {
                 registry::RpcKind::Sql => {
                     crate::rpc::prepare::validate_rpc_sql(c, &sql_for_validate, form_mode).and_then(
@@ -512,18 +522,37 @@ pub async fn rpc_save(
                 // #950: a template is not raw SQL — the two sql guards are
                 // replaced by save-time template validation, because the query
                 // arm re-derives row access per call from the caller's identity.
-                registry::RpcKind::Query => crate::rpc::query_template::parse_template(
-                    query_for_validate.as_deref().unwrap_or(""),
-                )
-                .map_err(|e| crate::rpc::prepare::PrepareError::Rejected(e.to_string()))
-                .and_then(|tpl| {
-                    crate::rpc::prepare::validate_new_query_rpc(
-                        c,
-                        &cache_for_validate,
-                        &tpl,
-                        &params_for_guard,
-                    )
-                }),
+                //
+                // T5b (B4): validated on the same TWO WIDENING TRIGGERS the MCP
+                // `update_rpc` face uses — the submitted template DIFFERS from
+                // the stored one (a rewrite), or this save sets
+                // `anon_callable=true` (the grant moment). A create has no
+                // stored row, so it always validates. Validating on EVERY save
+                // instead bricked the row whose collection had been dropped:
+                // the save that would DISARM it was itself refused by the stale
+                // template, leaving an anon-callable RPC this face could not
+                // turn off.
+                registry::RpcKind::Query => {
+                    let stored_tpl = stored.as_ref().and_then(|r| r.query_json.as_deref());
+                    let widening =
+                        stored_tpl != query_for_validate.as_deref() || anon_callable_for_guard;
+                    if !widening {
+                        Ok(())
+                    } else {
+                        crate::rpc::query_template::parse_template(
+                            query_for_validate.as_deref().unwrap_or(""),
+                        )
+                        .map_err(|e| crate::rpc::prepare::PrepareError::Rejected(e.to_string()))
+                        .and_then(|tpl| {
+                            crate::rpc::prepare::validate_new_query_rpc(
+                                c,
+                                &cache_for_validate,
+                                &tpl,
+                                &params_for_guard,
+                            )
+                        })
+                    }
+                }
             })
         })
         .await;

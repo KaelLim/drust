@@ -842,23 +842,31 @@ pub async fn admin_update_policies(
             {
                 return Ok(Err(("RPC_ANON_OWNER_SCOPED", e.to_string())));
             }
+            // Validate the SELECT policy AHEAD of the grant guard below, so a
+            // malformed one (notably the clause-less `{"select":{}}`) reports
+            // its own shape error rather than the guard's — whose remedy
+            // ("disarm the RPC") would not fix it. Pure and idempotent, so the
+            // loop below re-running it costs nothing.
+            if let Some(p) = &body.select
+                && let Err(e) = crate::query::policy::validate_policy(&schema, DmlVerb::Select, p)
+            {
+                return Ok(Err(("POLICY_INVALID", e.to_string())));
+            }
             // #950 — this endpoint REPLACES the set, so a null `select` CLEARS
             // a stored select policy, widening every anon-callable query-kind
             // RPC over the collection from "the policy's rows" to the whole
-            // table. Same guard the data-plane PUT and DELETE carry; only a
-            // real Some → None transition counts. (Surfaces 400 like this
-            // face's sibling RPC_ANON_OWNER_SCOPED rejection, not the data
-            // plane's 409 — one face, one shape.)
-            if body.select.is_none()
-                && crate::storage::schema::read_policies(c, &coll_c)?
-                    .select
-                    .is_some()
-                && let Err(e) = crate::rpc::prepare::guard_clear_against_anon_query_rpcs(
-                    c,
-                    &coll_c,
-                    "the select policy",
-                )
-            {
+            // table. Same guard the data-plane PUT and DELETE carry, keyed on
+            // the effective USING clause. (Surfaces 400 like this face's
+            // sibling RPC_ANON_OWNER_SCOPED rejection, not the data plane's
+            // 409 — one face, one shape.)
+            if let Err(e) = crate::rpc::prepare::guard_select_policy_clear(
+                c,
+                &coll_c,
+                body.select
+                    .as_ref()
+                    .and_then(|p| p.using.as_ref())
+                    .is_some(),
+            ) {
                 return Ok(Err(("RPC_QUERY_GRANT_ACTIVE", e.to_string())));
             }
             for (op, p) in [

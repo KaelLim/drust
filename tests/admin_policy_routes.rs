@@ -202,3 +202,128 @@ async fn admin_clear_policies_via_null_body() {
     let stored = read_stored(&data_dir, tid).await;
     assert!(stored.is_empty(), "all policy columns cleared");
 }
+
+/// Seed an anon-callable `kind='query'` RPC whose template targets `posts` —
+/// the RPC-as-grant shape the clear guard exists for.
+async fn seed_anon_query_rpc(data_dir: &std::path::Path, tenant_id: &str) {
+    let pool = drust::storage::pool::TenantRegistry::new(data_dir.to_path_buf(), 2);
+    let pool = pool.get_or_create(tenant_id).unwrap();
+    pool.with_writer(|c| {
+        Ok(drust::rpc::registry::create(
+            c,
+            drust::rpc::registry::RpcCreate {
+                name: "feed",
+                sql: "",
+                params_json: "[]",
+                description: None,
+                anon_callable: true,
+                mode: drust::rpc::registry::RpcMode::Read,
+                kind: drust::rpc::registry::RpcKind::Query,
+                query_json: Some(r#"{"collection":"posts"}"#),
+            },
+        ))
+    })
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+/// #950 T5b (B6) — this endpoint REPLACES the policy set, so an omitted
+/// `select` CLEARS a stored select policy. That is the same widening the
+/// data-plane DELETE is guarded against, reached from the admin plane, and it
+/// was the one clear site with no test. Guarding it matters because the admin
+/// UI's Policies panel posts the WHOLE set on every save.
+#[tokio::test]
+async fn admin_omitted_select_is_guarded_by_an_active_anon_query_rpc() {
+    let tid = "admin-policy-grant";
+    let (app, data_dir, _d) = build_app(tid).await;
+    seed_posts(&data_dir, tid).await;
+    seed_anon_query_rpc(&data_dir, tid).await;
+
+    // TRANSITION pre-check: with no stored select policy there is nothing to
+    // widen, so the same body must pass — one query RPC may not freeze config
+    // it does not depend on.
+    let resp = post_json(
+        &app,
+        &format!("/admin/tenants/{tid}/collections/posts/policies"),
+        serde_json::json!({"insert": {"check": {"status": "draft"}}}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "no transition, no refusal");
+
+    // Attach a select policy (write it directly — attaching is a different
+    // guard's business), then repeat: now the omitted `select` is a clear.
+    let pool = drust::storage::pool::TenantRegistry::new(data_dir.to_path_buf(), 2);
+    let pool = pool.get_or_create(tid).unwrap();
+    pool.with_writer(|c| {
+        let p: drust::query::policy::Policy =
+            serde_json::from_str(r#"{"using":{"status":"published"}}"#).unwrap();
+        drust::storage::schema::write_policy(
+            c,
+            "posts",
+            drust::storage::schema::DmlVerb::Select,
+            Some(&p),
+        )
+    })
+    .await
+    .unwrap();
+
+    let resp = post_json(
+        &app,
+        &format!("/admin/tenants/{tid}/collections/posts/policies"),
+        serde_json::json!({"insert": {"check": {"status": "draft"}}}),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "this face reports guard rejections as 400, like its sibling \
+         RPC_ANON_OWNER_SCOPED"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error_code"], "RPC_QUERY_GRANT_ACTIVE", "got: {v}");
+    assert!(
+        v["message"].as_str().unwrap_or_default().contains("feed"),
+        "must name the blocking rpc: {v}"
+    );
+    assert!(
+        read_stored(&data_dir, tid).await.select.is_some(),
+        "a refused save must write NOTHING"
+    );
+}
+
+/// The clause-less `{"select":{}}` covert clear, on the admin face: refused by
+/// the ROOT rule (`validate_policy`), reported as the shape error it is.
+#[tokio::test]
+async fn admin_clause_less_select_policy_is_refused() {
+    let tid = "admin-policy-clauseless";
+    let (app, data_dir, _d) = build_app(tid).await;
+    seed_posts(&data_dir, tid).await;
+
+    let resp = post_json(
+        &app,
+        &format!("/admin/tenants/{tid}/collections/posts/policies"),
+        serde_json::json!({"select": {}}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error_code"], "POLICY_INVALID", "got: {v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("POLICY_SELECT_REQUIRES_USING"),
+        "typed reason missing: {v}"
+    );
+    assert!(
+        read_stored(&data_dir, tid).await.select.is_none(),
+        "nothing may be written"
+    );
+}

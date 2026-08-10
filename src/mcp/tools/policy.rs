@@ -171,20 +171,28 @@ pub async fn clear_policy(
         // query-kind RPC over this collection (its grant goes from "the
         // policy's rows" to "the whole table"). Refuse until the RPC is
         // disarmed. Only `select` gates reads, so the other verbs' clears are
-        // untouched. Runs before the write (autocommit path).
+        // untouched; `new_using_present = false` because a clear leaves no
+        // filter, and the shared helper no-ops when there was none to lose —
+        // so an RPC cannot freeze a clear of a policy that never existed.
+        // Runs before the write (autocommit path).
         if verb == DmlVerb::Select {
-            crate::rpc::prepare::guard_clear_against_anon_query_rpcs(c, &coll, "the select policy")
-                .map_err(|e| {
-                    rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(1),
-                        Some(e.to_string()),
-                    )
-                })?;
+            crate::rpc::prepare::guard_select_policy_clear(c, &coll, false).map_err(|e| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            })?;
         }
         write_policy(c, &coll, verb, None)
     })
     .await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    .map_err(|e| {
+        // bail_mcp reads everything before the FIRST colon as `error_code`, and
+        // `PrepareError`'s Display prefix would otherwise become that code —
+        // burying the sentinel a caller matches on. Hoist it to the front.
+        let msg = e.to_string();
+        match msg.find(crate::rpc::prepare::RPC_QUERY_GRANT_ACTIVE) {
+            Some(i) => anyhow::anyhow!("{}", &msg[i..]),
+            None => anyhow::anyhow!("{msg}"),
+        }
+    })?;
     pool.schema_cache.invalidate(collection);
     // audit3 F3 — evict in-flight anon SSE subscribers so they reconnect and
     // re-gate against the cleared policy (mirrors set_realtime).

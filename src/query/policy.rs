@@ -96,6 +96,16 @@ pub enum PolicyError {
     /// validate). CLAUDE.md invariant 12; spec non-goal.
     #[error("POLICY_OPERAND_UNSUPPORTED: {0}")]
     OperandUnsupported(String),
+    /// A `select` policy carrying no `using` clause. Such a row filters
+    /// NOTHING (`effective_policy_using` returns `None`) while
+    /// `collection_has_policy` still reports the collection as
+    /// policy-protected — a COVERT CLEAR of the read filter that every
+    /// attach-time guard reads as "a policy is being attached". Refused at
+    /// config time so the two states stay honest: a select policy exists
+    /// **iff** it filters. CHECK gates writes, so it is meaningless on a
+    /// select policy and cannot stand in for `using`.
+    #[error("POLICY_SELECT_REQUIRES_USING: {0}")]
+    SelectRequiresUsing(String),
 }
 
 /// Resolve a leaf operand that may be a literal, `{"$auth":"id"}`, or
@@ -755,7 +765,25 @@ pub fn validate_policy(
     //     BY CONSTRUCTION (audit 2026-06-22, Fix: reject $data in USING).
     //   * CHECK is compiled with `data: Some(map)` so its $data refs validate.
     // The compiled SQL is thrown away — we only want the field/grammar checks.
-    let _ = op;
+    //
+    // #950 T5b (B1) — a SELECT policy MUST carry `using`. A clause-less one is
+    // a policy row that filters nothing: the read path asks
+    // `effective_policy_using` (→ None, no filter) while every config-time
+    // guard asks `collection_has_policy` (→ true, "protected"). Those two
+    // answers disagreeing is a covert clear — one PUT `{"select":{}}` silently
+    // removed the read filter while still reading as "attaching a policy", so
+    // the RPC_QUERY_GRANT_ACTIVE guard never fired and an anon-callable query
+    // RPC went from the policy's rows to the whole table (proven end to end in
+    // tests/rpc_query_kind.rs). Refusing here is the ROOT fix: it keeps
+    // "a select policy exists" and "a select filter applies" the same fact.
+    // A `check` is no substitute — CHECK gates writes, never reads.
+    if op == DmlVerb::Select && policy.using.is_none() {
+        return Err(PolicyError::SelectRequiresUsing(
+            "a select policy must carry a `using` clause (it is the read filter); \
+             to remove the filter, CLEAR the select policy instead"
+                .to_string(),
+        ));
+    }
     let using_ctx = PolicyCtx {
         auth_id: Some("u-probe".into()),
         data: None,
@@ -1413,6 +1441,58 @@ mod tests {
         let (frag, binds) = out.unwrap();
         assert_eq!(frag, r#""author" = ?"#);
         assert_eq!(binds, vec![rusqlite::types::Value::Null]); // anon → NULL → no rows
+    }
+
+    /// #950 T5b (B1) ROOT — a select policy with no `using` is a covert clear:
+    /// it filters nothing yet reads as "policy attached" to every config-time
+    /// guard. The two questions the codebase asks — `effective_policy_using`
+    /// (read path) and `collection_has_policy` (guard path) — must never be
+    /// able to disagree, so the state is refused at save.
+    #[test]
+    fn select_policy_must_carry_a_using_clause() {
+        let s = schema(&["status"]);
+        for p in [
+            Policy {
+                using: None,
+                check: None,
+            },
+            // A `check` does not stand in for it — CHECK gates writes.
+            Policy {
+                using: None,
+                check: Some(serde_json::from_str(r#"{"status":"published"}"#).unwrap()),
+            },
+        ] {
+            let err = validate_policy(&s, DmlVerb::Select, &p).unwrap_err();
+            assert!(
+                matches!(err, PolicyError::SelectRequiresUsing(_)),
+                "clause-less select must be refused, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("POLICY_SELECT_REQUIRES_USING"),
+                "typed wire code missing: {err}"
+            );
+        }
+
+        // A select policy WITH a using still validates …
+        let ok = Policy {
+            using: Some(serde_json::from_str(r#"{"status":"published"}"#).unwrap()),
+            check: None,
+        };
+        validate_policy(&s, DmlVerb::Select, &ok).unwrap();
+        // … and the rule is SELECT-only: write verbs are CHECK-shaped, so a
+        // using-less insert/update/delete policy stays legal (the #954 corpus
+        // above depends on exactly that).
+        for verb in [DmlVerb::Insert, DmlVerb::Update, DmlVerb::Delete] {
+            validate_policy(
+                &s,
+                verb,
+                &Policy {
+                    using: None,
+                    check: Some(serde_json::from_str(r#"{"status":"published"}"#).unwrap()),
+                },
+            )
+            .unwrap_or_else(|e| panic!("{verb:?} with check-only must stay valid: {e}"));
+        }
     }
 
     #[test]

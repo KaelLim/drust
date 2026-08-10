@@ -1365,7 +1365,10 @@ async fn clearing_a_select_policy_is_refused_while_an_anon_query_rpc_targets_it(
         json!({"collection": "posts", "op": "select"}),
     )
     .await;
-    assert!(out.contains("RPC_QUERY_GRANT_ACTIVE"), "mcp face: {out}");
+    assert!(
+        out.contains(r#""error_code":"RPC_QUERY_GRANT_ACTIVE""#),
+        "the sentinel must be the machine-readable code: {out}"
+    );
 
     // Other ops' clears are UNAFFECTED — the grant only rides the select path.
     let (status, v) = rest(
@@ -1450,6 +1453,12 @@ async fn clearing_owner_field_is_refused_while_an_anon_query_rpc_targets_it() {
     )
     .await;
     assert!(out.contains("RPC_QUERY_GRANT_ACTIVE"), "mcp face: {out}");
+    // T5b (B3) — and it arrives as the WIRE error_code, not buried behind
+    // `PrepareError`'s Display prefix (bail_mcp reads up to the first colon).
+    assert!(
+        out.contains(r#""error_code":"RPC_QUERY_GRANT_ACTIVE""#),
+        "the sentinel must be the machine-readable code: {out}"
+    );
 
     // Still owner-scoped after two refusals.
     let owner: Option<String> = pool
@@ -1690,4 +1699,318 @@ async fn a_put_that_omits_select_is_the_same_clear_and_is_guarded() {
         stored["stored"]["select"]["using"]["status"], "published",
         "a refused PUT must write NOTHING: {stored}"
     );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// T5b review round — B1: the clause-less select policy is a COVERT CLEAR
+// ══════════════════════════════════════════════════════════════════════
+
+/// THE exploit the T5 guard missed. A select policy carrying no `using` is a
+/// policy ROW that filters NOTHING: `validate_policy` accepted it,
+/// `effective_policy_using` returns None (no read filter), yet
+/// `collection_has_policy` still reports true — so every attach face read it
+/// as "attaching a policy", the clear guard keyed on ROW presence never fired,
+/// and one PUT silently promoted an anon query RPC from "the policy's rows" to
+/// the whole table.
+///
+/// Two independent layers must now stop it, and this test pins the OUTER one
+/// end to end: the rows an anon caller can read must be identical before and
+/// after the attempted covert clear.
+#[tokio::test]
+async fn a_clause_less_select_policy_cannot_covertly_clear_the_read_filter() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-covert").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "feed",
+        json!([]),
+        json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "{out}");
+
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "published", "title": "public"}),
+    )
+    .await;
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "draft", "title": "SECRET"}),
+    )
+    .await;
+
+    // Baseline: the policy is the only thing keeping SECRET away from anon.
+    let (status, v) = call_rpc(&app, &tid, &anon, "feed", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "body: {v}");
+    assert_eq!(titles(&v), vec!["public".to_string()], "baseline: {v}");
+
+    // The covert clear: a select policy with NO `using`.
+    let (status, v) = rest(
+        &app,
+        "PUT",
+        &tid,
+        "/collections/posts/policies",
+        Some(json!({"select": {}})),
+        &svc,
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "a clause-less select policy must be refused, got {status}: {v}"
+    );
+    // The ROOT layer answers here — the shape itself is invalid, so the report
+    // must say that rather than the grant guard's "disarm the RPC first"
+    // (a remedy that would NOT make this PUT succeed).
+    assert_eq!(v["error_code"], "POLICY_INVALID", "body: {v}");
+
+    // THE assertion: anon still cannot see the draft row.
+    let (status, v) = call_rpc(&app, &tid, &anon, "feed", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "body: {v}");
+    assert_eq!(
+        titles(&v),
+        vec!["public".to_string()],
+        "the read filter must survive the covert clear: {v}"
+    );
+
+    // …and the stored policy is untouched, so nothing was half-written.
+    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    assert_eq!(
+        stored["stored"]["select"]["using"]["status"], "published",
+        "a refused PUT must write NOTHING: {stored}"
+    );
+}
+
+/// The MCP twin of the same covert clear: `set_policy(select)` with no `using`.
+#[tokio::test]
+async fn mcp_set_policy_select_without_using_is_refused() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-covert-mcp").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "feed",
+        json!([]),
+        json!({"collection": "posts"}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "{out}");
+
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "set_policy",
+        json!({"collection": "posts", "op": "select"}),
+    )
+    .await;
+    assert!(
+        !out.contains("\"ok\""),
+        "a select policy with no `using` must be refused: {out}"
+    );
+    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    assert_eq!(
+        stored["stored"]["select"]["using"]["status"], "published",
+        "the stored filter must survive: {stored}"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// T5b review round — B4: the admin save face must stay REPAIRABLE
+// ══════════════════════════════════════════════════════════════════════
+
+/// Full mgmt router + one tenant + a known admin PAT (the `tests/cron_admin_ui.rs`
+/// harness shape), so the admin RPC save FORM is exercised end to end.
+async fn admin_app(tid: &str) -> (axum::Router, String, SharedTenantPool, tempfile::TempDir) {
+    use drust::auth::admin_token;
+    use drust::storage::meta::{bootstrap_admin, open_meta};
+    use drust::storage::pool::TenantRegistry;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    let mut conn = open_meta(&data_dir.join("meta.sqlite")).unwrap();
+    bootstrap_admin(&mut conn, "root", "pw").unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'RPC Tenant')",
+        rusqlite::params![tid],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data_dir, tid).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
+    conn.execute(
+        "UPDATE _admin_tokens SET revoked_at = datetime('now') \
+         WHERE admin_id = 1 AND revoked_at IS NULL",
+        [],
+    )
+    .unwrap();
+    let pat = admin_token::generate_token();
+    conn.execute(
+        "INSERT INTO _admin_tokens (admin_id, token_hash) VALUES (1, ?1)",
+        rusqlite::params![admin_token::hash_token(&pat)],
+    )
+    .unwrap();
+
+    let tenants = Arc::new(TenantRegistry::new(data_dir.clone(), 2));
+    let pool = tenants.get_or_create(tid).unwrap();
+    let bus = drust::tenant::events::EventBus::new();
+    let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
+        drust::mcp::server::McpRegistry::new(tenants.clone()),
+    )));
+    let state = drust::mgmt::routes::MgmtState::test_default(
+        Arc::new(tokio::sync::Mutex::new(conn)),
+        data_dir.clone(),
+        tenants.clone(),
+        mcp,
+        bus,
+        drust::tenant::rooms::RoomBus::new(),
+    );
+    (state.with_data_dir(data_dir), pat, pool, dir)
+}
+
+/// Form-encoded POST with the admin PAT bearer → (status, body). The save
+/// error path re-renders the page (200 + banner), so callers need the body.
+async fn admin_post_form(
+    app: &axum::Router,
+    uri: String,
+    pat: &str,
+    body: String,
+) -> (StatusCode, String) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {pat}"))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 8 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// B4 — the admin form validated the template on EVERY save, so a query row
+/// whose collection had been dropped could not be DISARMED through the admin
+/// UI: the save that sets `anon_callable=false` was itself refused by the
+/// stale-template check, leaving an anon-callable RPC nobody could turn off
+/// from that face. The MCP face already narrows validation to the two
+/// WIDENING triggers; the admin face must match.
+#[tokio::test]
+async fn admin_save_can_disarm_a_query_rpc_whose_collection_is_gone() {
+    let tid = "qk-admin-repair";
+    let (app, pat, pool, _dir) = admin_app(tid).await;
+    pool.with_writer(|c| {
+        c.execute_batch("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT);")
+    })
+    .await
+    .unwrap();
+    seed_query_rpc_directly(&pool, "feed", "[]", r#"{"collection":"posts"}"#, true).await;
+
+    // The collection goes away underneath the RPC — the template is now stale.
+    pool.with_writer(|c| c.execute_batch("DROP TABLE posts;"))
+        .await
+        .unwrap();
+    pool.schema_cache.invalidate("posts");
+
+    // Disarm through the admin form: same stored template, checkbox off.
+    let body = "name=feed&sql=&params_json=%5B%5D&description=&kind=query\
+                &query_json=%7B%22collection%22%3A%22posts%22%7D";
+    let (status, page) = admin_post_form(
+        &app,
+        format!("/admin/tenants/{tid}/_rpc/feed/save"),
+        &pat,
+        body.to_string(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "disarming must not be blocked by the stale template: {}",
+        page.chars().take(600).collect::<String>()
+    );
+    let (anon_callable, _) = rpc_row(&pool, "feed").await;
+    assert!(!anon_callable, "the disarm must have landed");
+}
+
+/// The other half of the same narrowing: a save that CHANGES the template is
+/// still validated, so the repairability above is not a hole.
+#[tokio::test]
+async fn admin_save_still_validates_a_changed_template() {
+    let tid = "qk-admin-validate";
+    let (app, pat, pool, _dir) = admin_app(tid).await;
+    pool.with_writer(|c| {
+        c.execute_batch("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT);")
+    })
+    .await
+    .unwrap();
+    seed_query_rpc_directly(&pool, "feed", "[]", r#"{"collection":"posts"}"#, false).await;
+
+    // A DIFFERENT template naming a collection that does not exist.
+    let body = "name=feed&sql=&params_json=%5B%5D&description=&kind=query\
+                &query_json=%7B%22collection%22%3A%22ghost%22%7D";
+    let (status, page) = admin_post_form(
+        &app,
+        format!("/admin/tenants/{tid}/_rpc/feed/save"),
+        &pat,
+        body.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a refusal re-renders the form");
+    assert!(
+        page.contains("COLLECTION_NOT_FOUND"),
+        "a changed template must still be validated"
+    );
+    let (_, stored) = rpc_row(&pool, "feed").await;
+    assert_eq!(
+        stored.as_deref(),
+        Some(r#"{"collection":"posts"}"#),
+        "a refused save must not overwrite the stored template"
+    );
+
+    // And setting anon_callable=true re-validates even with the SAME template.
+    pool.with_writer(|c| c.execute_batch("DROP TABLE posts;"))
+        .await
+        .unwrap();
+    pool.schema_cache.invalidate("posts");
+    let body = "name=feed&sql=&params_json=%5B%5D&description=&kind=query\
+                &anon_callable=1&query_json=%7B%22collection%22%3A%22posts%22%7D";
+    let (status, page) = admin_post_form(
+        &app,
+        format!("/admin/tenants/{tid}/_rpc/feed/save"),
+        &pat,
+        body.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the grant moment must be refused");
+    assert!(
+        page.contains("COLLECTION_NOT_FOUND"),
+        "flipping anon_callable on must re-validate the stored template"
+    );
+    let (anon_callable, _) = rpc_row(&pool, "feed").await;
+    assert!(!anon_callable, "the flip must not have landed");
 }

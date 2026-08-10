@@ -550,6 +550,42 @@ pub fn guard_clear_against_anon_query_rpcs(
     Ok(())
 }
 
+/// The select-policy half of the CLEAR guard, transition-gated — the ONE place
+/// the "does this write widen the read filter?" rule lives, so the five policy
+/// faces that can effect a clear cannot drift apart (#950 T5b, B1 DiD + B5).
+///
+/// `new_using_present` is what the caller's write leaves behind: `false` for a
+/// DELETE / `clear_policy`, and for a REPLACE face
+/// `body.select.and_then(|p| p.using).is_some()`.
+///
+/// The key is the **effective USING clause**, never the presence of a policy
+/// ROW. Those two came apart in the worst possible direction: a select policy
+/// carrying no `using` filters nothing, yet a row-presence key reads it as
+/// "still protected". `validate_policy` now refuses to WRITE that shape (the
+/// root fix), and keying on `using` here means even a legacy row that already
+/// holds it is judged by what actually filters. It also makes the guard fire
+/// only on a real `Some → None` transition, so clearing an absent policy is a
+/// no-op rather than a spurious refusal — one query RPC must never freeze
+/// config it does not depend on.
+pub fn guard_select_policy_clear(
+    conn: &Connection,
+    collection: &str,
+    new_using_present: bool,
+) -> Result<(), PrepareError> {
+    if new_using_present {
+        return Ok(()); // a filter remains — nothing widens
+    }
+    let stored_using_present = crate::storage::schema::read_policies(conn, collection)
+        .map_err(|e| PrepareError::Rejected(format!("policy probe failed: {e}")))?
+        .select
+        .and_then(|p| p.using)
+        .is_some();
+    if !stored_using_present {
+        return Ok(()); // no filter to lose
+    }
+    guard_clear_against_anon_query_rpcs(conn, collection, "the select policy")
+}
+
 /// The kind-SHAPE rules as a CREATE FACE sees them — before a template is
 /// parsed or a row is built.
 ///
@@ -1037,31 +1073,81 @@ mod tests {
             .expect("a clear on a collection no template targets must pass");
     }
 
+    /// (T5b B1 DiD + B5) The select-policy transition rule, keyed on the
+    /// effective USING clause rather than on the presence of a policy ROW.
+    ///
+    /// The middle case is the whole point and the one a row-presence key gets
+    /// WRONG: a clause-less select policy (the covert-clear shape
+    /// `validate_policy` now refuses to write, still reachable as a legacy
+    /// row) filters NOTHING, so clearing it widens NOTHING and must not be
+    /// refused — while a row-presence key would read it as "protected" and
+    /// block. Getting that backwards is what let the exploit through in the
+    /// first place, so it is pinned here rather than inferred.
+    #[test]
+    fn select_policy_clear_is_gated_on_the_effective_using_clause() {
+        use crate::query::policy::Policy;
+        use crate::storage::schema::{DmlVerb, write_policy};
+        let (_t, conn) = fresh();
+        seed_query_row(&conn, "q", r#"{"collection":"posts"}"#, true);
+        let set_select = |p: Option<&Policy>| write_policy(&conn, "posts", DmlVerb::Select, p);
+
+        // (a) No stored select policy → nothing to lose → a clear is fine even
+        //     with the grant live (B5: no spurious refusal).
+        guard_select_policy_clear(&conn, "posts", false)
+            .expect("clearing an absent policy widens nothing");
+
+        // (b) A clause-less stored policy → still no read filter → still fine.
+        //     A ROW-presence key would wrongly refuse here.
+        set_select(Some(&Policy {
+            using: None,
+            check: None,
+        }))
+        .unwrap();
+        guard_select_policy_clear(&conn, "posts", false)
+            .expect("a policy row that filters nothing cannot be widened away");
+
+        // (c) A real USING → clearing it IS the widening → refused.
+        set_select(Some(&Policy {
+            using: Some(serde_json::from_str(r#"{"body":"x"}"#).unwrap()),
+            check: None,
+        }))
+        .unwrap();
+        let PrepareError::Rejected(msg) =
+            guard_select_policy_clear(&conn, "posts", false).unwrap_err();
+        assert!(msg.contains(RPC_QUERY_GRANT_ACTIVE), "{msg}");
+
+        // (d) …but replacing it with another USING keeps a filter, so it passes.
+        guard_select_policy_clear(&conn, "posts", true)
+            .expect("a replacement that still filters is not a clear");
+    }
+
     /// The three shapes that cannot grant anything and so must never block a
     /// clear: a sql-kind row (its own guards already refuse it over a
     /// row-restricted collection), a service-only query row (no anon reaches
     /// it), and a query row whose template does not parse (it cannot execute,
     /// so it grants nothing — and treating it as a blocker would make a broken
     /// row freeze the collection's config permanently).
+    ///
+    /// (T5b B2) Case (a) carries a STRAY non-null `query_json` — the shape
+    /// `update_repairs_a_sql_row_carrying_a_stray_template` proves is
+    /// reachable — so the guard's `kind` arm is the ONLY thing that lets it
+    /// through. With a null `query_json` the row was short-circuited by the
+    /// later `is_none()` continue instead, and deleting the `kind` arm reddened
+    /// nothing: the arm was untested and the test was a false positive.
     #[test]
     fn clear_guard_ignores_rows_that_cannot_grant() {
-        use crate::rpc::registry::{self, RpcCreate, RpcKind};
         let (_t, conn) = fresh();
         conn.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER);")
             .unwrap();
-        // (a) anon-callable SQL row reading the same collection
-        registry::create(
-            &conn,
-            RpcCreate {
-                name: "s",
-                sql: "SELECT id, qty FROM orders",
-                params_json: "[]",
-                description: None,
-                anon_callable: true,
-                mode: RpcMode::Read,
-                kind: RpcKind::Sql,
-                query_json: None,
-            },
+        // (a) anon-callable SQL row over the same collection, carrying a stray
+        //     template. Inserted raw — `create` refuses this shape — so `kind`
+        //     alone decides. If the guard stopped checking kind, this row's
+        //     template would parse and match, and the clear would be refused.
+        conn.execute(
+            "INSERT INTO _system_rpc (name, sql, params_json, anon_callable, kind, query_json)
+             VALUES ('s', 'SELECT id, qty FROM orders', '[]', 1, 'sql',
+                     '{\"collection\":\"orders\"}')",
+            [],
         )
         .unwrap();
         // (b) service-only query row over the same collection

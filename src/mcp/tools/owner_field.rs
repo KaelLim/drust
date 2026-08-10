@@ -49,13 +49,15 @@ pub async fn set_owner_field(
         })
         .await
         .map_err(|e| {
+            // A guard rejection is a typed refusal, not a DB failure. Both
+            // the `DB_ERROR:` prefix AND `PrepareError`'s own Display prefix
+            // would bury the sentinel: `bail_mcp` reads everything before the
+            // FIRST colon as `error_code`, so without this the wire code is
+            // the prose prefix. Hoist the sentinel to the front.
             let msg = e.to_string();
-            // A guard rejection is a typed refusal, not a DB failure — the
-            // `DB_ERROR:` prefix would bury the sentinel a caller matches on.
-            if msg.contains(crate::rpc::prepare::RPC_QUERY_GRANT_ACTIVE) {
-                anyhow::anyhow!("{msg}")
-            } else {
-                anyhow::anyhow!("DB_ERROR: {msg}")
+            match msg.find(crate::rpc::prepare::RPC_QUERY_GRANT_ACTIVE) {
+                Some(i) => anyhow::anyhow!("{}", &msg[i..]),
+                None => anyhow::anyhow!("DB_ERROR: {msg}"),
             }
         })?;
         pool.schema_cache.invalidate(&collection);

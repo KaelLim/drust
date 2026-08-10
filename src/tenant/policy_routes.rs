@@ -96,22 +96,31 @@ pub async fn put_policies(
             {
                 return Ok(Err(("RPC_ANON_OWNER_SCOPED", e.to_string())));
             }
+            // Validate the SELECT policy AHEAD of the grant guard below, so a
+            // malformed one (notably the clause-less `{"select":{}}`) reports
+            // its own shape error rather than the guard's — whose remedy
+            // ("disarm the RPC") would not fix it. Pure and idempotent, so the
+            // loop below re-running it costs nothing.
+            if let Some(p) = &body.select
+                && let Err(e) = validate_policy(&schema, DmlVerb::Select, p)
+            {
+                return Ok(Err(("POLICY_INVALID", e.to_string())));
+            }
             // #950 — a PUT REPLACES the set, so an OMITTED `select` clears a
             // stored select policy. That is the same widening
             // `DELETE /policies/select` is guarded against, reached by another
-            // verb: guarding only the DELETE would leave this door open. Only
-            // a real Some → None transition counts, so a PUT on a collection
-            // that never had a select policy is unaffected.
-            if body.select.is_none()
-                && crate::storage::schema::read_policies(c, &coll_c)?
-                    .select
-                    .is_some()
-                && let Err(e) = crate::rpc::prepare::guard_clear_against_anon_query_rpcs(
-                    c,
-                    &coll_c,
-                    "the select policy",
-                )
-            {
+            // verb: guarding only the DELETE would leave this door open, and
+            // `validate_policy` cannot see it (it is never called on an absent
+            // policy). Keyed on the effective USING clause, so a clause-less
+            // legacy row is judged by what it actually filters.
+            if let Err(e) = crate::rpc::prepare::guard_select_policy_clear(
+                c,
+                &coll_c,
+                body.select
+                    .as_ref()
+                    .and_then(|p| p.using.as_ref())
+                    .is_some(),
+            ) {
                 return Ok(Err(("RPC_QUERY_GRANT_ACTIVE", e.to_string())));
             }
             for (op, p) in [
@@ -208,13 +217,12 @@ pub async fn delete_policy(
             // query-kind RPC over this collection (its grant goes from "the
             // policy's rows" to "the whole table"). Refuse until the RPC is
             // disarmed; the other verbs do not gate reads, so their clears are
-            // untouched. Before the write — this path is autocommit.
+            // untouched. `new_using_present = false` (a clear leaves no
+            // filter); the shared helper no-ops when there was none to lose,
+            // so clearing an absent policy is not a spurious refusal. Before
+            // the write — this path is autocommit.
             if verb == DmlVerb::Select
-                && let Err(e) = crate::rpc::prepare::guard_clear_against_anon_query_rpcs(
-                    c,
-                    &coll_c,
-                    "the select policy",
-                )
+                && let Err(e) = crate::rpc::prepare::guard_select_policy_clear(c, &coll_c, false)
             {
                 return Ok(Err(("RPC_QUERY_GRANT_ACTIVE", e.to_string())));
             }
