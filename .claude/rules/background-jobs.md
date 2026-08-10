@@ -8,6 +8,7 @@ paths:
   - "src/tenant/webhook_resolver.rs"
   - "src/tenant/egress.rs"
   - "src/tenant/rooms/**"
+updated: 2026-08-11
 ---
 
 # Background work: functions, cron, RPC execution, webhooks, egress, audit writer, realtime
@@ -44,6 +45,8 @@ Scheduler = in-process minute tick over an invalidate-on-write in-memory index (
 **A stored RPC's SQL is tenant config, and an `anon_callable` RPC returns its execution errors to an UNAUTHENTICATED caller — so never stringify a rusqlite error with `to_string()` on this path.** rusqlite reports a `conn.prepare` failure as `SqlInputError`, whose `Display` is `"{msg} in {sql} at offset {n}"` — the whole statement, literals included. Schema drift (`drop_field` on a collection an older RPC still names) turns that into a 400 that hands anon the RPC body, the exact text `redact_rpc_obj` / `redact_cron` strip from the `rpcs` + `cron` resources for a *service* caller. **Both** `classify`s — read (`src/query/executor.rs`) and write (`src/rpc/exec_write.rs`) — go through `crate::error::sqlite_error_without_sql`, which keeps `msg` + `offset` and drops the SQL; they also *classify* on that redacted text, so a plain SQL error can no longer be promoted to `Forbidden` by its own statement text mentioning `sqlite_master`. Authorizer denials are untouched (`SQLITE_AUTH` → `SqliteFailure`, never `SqlInputError`).
 
 **Guard `RPC_ANON_OWNER_SCOPED` (`src/rpc/prepare.rs`)** refuses an `anon_callable=true` RPC over a **row-access-restricted** collection — drust does not rewrite stored-RPC SQL, so the body would otherwise return/mutate every user's rows (owner_field) or the policy-hidden rows (RLS) for an anon caller. Two restriction shapes: an **owner-scoped** collection is refused unless the RPC declares `:user_id`; a **policy-protected** collection (any `*_policy_json`, even with `owner_field=NULL`) is refused unconditionally — `:user_id` does NOT exempt the policy case, since a policy need not key on the caller. Enforced at **config time** across four parallel sites (defense-in-depth): create, update (effective-value merge), `set_owner_field`, and the policy-attach guard; a startup migration neutralizes pre-guard legacy rows fail-closed. **The runtime `call_rpc` path is NOT re-checked — config-time is the enforcement boundary.** (A review found a real `update_rpc` bypass here; that is why the parallel sites exist.)
+
+**`kind='query'` rows (#950) are EXCLUDED from this guard at every site that reads a STORED row** — the update-path merge, `set_owner_field`, the policy-attach guard, and the startup scan — because a query row has no SQL to scan (its collection lives in `query_json`, and `sql` is empty by contract). The exclusion is now explicit (`if kind == Query`), not the accident of an empty body scanning to zero tables. **The precondition:** query-kind rows MUST be gated at runtime by the `/list` compile path (caps + `owner_field` + RLS) — the query execution arm owes that; until it lands no face can create a query row. The create-path guard is not narrowed: it judges a caller-supplied body, not a stored row.
 
 ## Webhooks + SSRF
 

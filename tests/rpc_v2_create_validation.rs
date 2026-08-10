@@ -702,9 +702,8 @@ fn guard_policy_change_accepts_for_service_only_rpc() {
             sql: "SELECT id, qty FROM orders",
             params_json: "[]",
             description: None,
-            anon_callable: false,
-            mode: // service-only → no anon leak
-        RpcMode::Read,
+            anon_callable: false, // service-only → no anon leak
+            mode: RpcMode::Read,
             kind: RpcKind::Sql,
             query_json: None,
         },

@@ -349,7 +349,9 @@ pub fn guard_owner_scope_change_against_anon_rpcs(
     let rpcs = crate::rpc::registry::list(conn)
         .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
     for rpc in rpcs {
-        // query-kind: policies apply at runtime (#950); enumerating sql guards do not apply
+        // query-kind (#950): no SQL to scan. Its rows MUST be gated at runtime by
+        // the /list compile path (caps + owner_field + RLS) — the query execution
+        // arm owes that; until it lands no face can create a query row.
         if rpc.kind == crate::rpc::registry::RpcKind::Query {
             continue;
         }
@@ -393,7 +395,9 @@ pub fn scan_unsafe_anon_rpcs(conn: &Connection) -> Result<Vec<String>, PrepareEr
         .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
     let mut unsafe_names = Vec::new();
     for rpc in rpcs {
-        // query-kind: policies apply at runtime (#950); enumerating sql guards do not apply
+        // query-kind (#950): no SQL to scan. Its rows MUST be gated at runtime by
+        // the /list compile path (caps + owner_field + RLS) — the query execution
+        // arm owes that; until it lands no face can create a query row.
         if rpc.kind == crate::rpc::registry::RpcKind::Query {
             continue;
         }
@@ -431,7 +435,9 @@ pub fn guard_policy_change_against_anon_rpcs(
     let rpcs = crate::rpc::registry::list(conn)
         .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
     for rpc in rpcs {
-        // query-kind: policies apply at runtime (#950); enumerating sql guards do not apply
+        // query-kind (#950): no SQL to scan. Its rows MUST be gated at runtime by
+        // the /list compile path (caps + owner_field + RLS) — the query execution
+        // arm owes that; until it lands no face can create a query row.
         if rpc.kind == crate::rpc::registry::RpcKind::Query {
             continue;
         }
@@ -474,6 +480,12 @@ pub fn guard_anon_owner_scoped_rpc_update(
         Ok(None) => return Ok(()),
         Err(e) => return Err(PrepareError::Rejected(format!("rpc lookup failed: {e}"))),
     };
+    // query-kind (#950): no SQL to scan. Its rows MUST be gated at runtime by
+    // the /list compile path (caps + owner_field + RLS) — the query execution
+    // arm owes that; until it lands no face can create a query row.
+    if stored.kind == crate::rpc::registry::RpcKind::Query {
+        return Ok(());
+    }
     let eff_sql = new_sql.unwrap_or(&stored.sql);
     let eff_params = new_params.unwrap_or(stored.params.as_slice());
     let eff_anon = new_anon_callable.unwrap_or(stored.anon_callable);
@@ -680,6 +692,13 @@ mod tests {
             flagged.is_empty(),
             "legacy scan must not neutralize query-kind rows, got {flagged:?}"
         );
+        // The per-row UPDATE guard is the fourth RPC_ANON_OWNER_SCOPED site and
+        // skips query rows for the same reason — including the hostile fixture,
+        // so `kind` (not an empty sql column) is what makes it pass.
+        guard_anon_owner_scoped_rpc_update(&conn, "q", None, None, Some(true))
+            .expect("update guard must skip query-kind rows");
+        guard_anon_owner_scoped_rpc_update(&conn, "qraw", None, None, Some(true))
+            .expect("update guard must decide on kind, not on the sql column");
         let still_anon: i64 = conn
             .query_row(
                 "SELECT anon_callable FROM _system_rpc WHERE name = 'q'",
@@ -708,5 +727,6 @@ mod tests {
         assert!(guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id").is_err());
         assert!(guard_policy_change_against_anon_rpcs(&conn, "orders").is_err());
         assert_eq!(scan_unsafe_anon_rpcs(&conn).unwrap(), vec!["s".to_string()]);
+        assert!(guard_anon_owner_scoped_rpc_update(&conn, "s", None, None, Some(true)).is_err());
     }
 }

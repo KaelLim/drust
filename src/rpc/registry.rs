@@ -224,6 +224,18 @@ pub struct RpcUpdate<'a> {
     pub query_json: Option<&'a str>,
 }
 
+/// The two views of `query_json` the kind contract needs. Named fields, not a
+/// second positional `Option<&str>`, because the two are trivially transposable
+/// and they mean opposite things.
+#[derive(Debug, Clone, Copy)]
+struct QueryJsonView<'a> {
+    /// What the row will HAVE once the write lands (stored, merged with the
+    /// delta). Equal to `set` on create — an insert has no stored state.
+    after: Option<&'a str>,
+    /// What this write SETS. `None` on an update that does not touch the column.
+    set: Option<&'a str>,
+}
+
 /// The kind contract, in ONE place, checked against a COMPLETE row image:
 /// a `query` row's body is `query_json` (so `sql` is empty and `mode` is
 /// always read), a `sql` row's body is `sql` (so it carries no template).
@@ -231,15 +243,21 @@ pub struct RpcUpdate<'a> {
 /// that would result from merging its deltas over the stored one — so the
 /// two faces cannot drift, and an unrepairable row (e.g. kind=query with
 /// mode=write, which `update` may never fix) cannot be created.
+///
+/// The two arms need DIFFERENT views of `query_json`, which is why it arrives
+/// as a named pair rather than one value (see [`QueryJsonView`]).
 fn check_kind_rules(
     kind: RpcKind,
     sql: &str,
     mode: RpcMode,
-    query_json: Option<&str>,
+    query_json: QueryJsonView<'_>,
 ) -> Result<(), RegistryError> {
     match kind {
         RpcKind::Query => {
-            if query_json.is_none() {
+            // MERGED view: a query row must still HAVE a template afterwards,
+            // and `sql` / `mode` immutability can only be judged against the
+            // stored values an omitted delta leaves in place.
+            if query_json.after.is_none() {
                 return Err(RegistryError::KindInvalid(
                     "kind=query requires a query_json template".into(),
                 ));
@@ -256,7 +274,11 @@ fn check_kind_rules(
             }
         }
         RpcKind::Sql => {
-            if query_json.is_some() {
+            // DELTA view: refuse to WRITE a template onto a sql row. Judging the
+            // merged value instead would make a row that already carries a stray
+            // one (only reachable by hand-editing the DB) permanently
+            // unrepairable — every update, however unrelated, would be refused.
+            if query_json.set.is_some() {
                 return Err(RegistryError::KindInvalid(
                     "kind=sql carries no query_json template; its body is sql".into(),
                 ));
@@ -288,7 +310,17 @@ pub fn create(conn: &Connection, c: RpcCreate<'_>) -> Result<(), RegistryError> 
         kind,
         query_json,
     } = c;
-    check_kind_rules(kind, sql, mode, query_json).map_err(|e| name_kind_err(name, e))?;
+    check_kind_rules(
+        kind,
+        sql,
+        mode,
+        // An insert has no stored state, so both views are the supplied value.
+        QueryJsonView {
+            after: query_json,
+            set: query_json,
+        },
+    )
+    .map_err(|e| name_kind_err(name, e))?;
     let res = conn.execute(
         "INSERT INTO _system_rpc
             (name, sql, params_json, description, anon_callable, mode,
@@ -348,7 +380,10 @@ pub fn update(conn: &Connection, name: &str, up: RpcUpdate<'_>) -> Result<(), Re
         RpcKind::from_db_str(&stored_kind),
         eff_sql,
         eff_mode,
-        eff_query_json,
+        QueryJsonView {
+            after: eff_query_json,
+            set: query_json,
+        },
     )
     .map_err(|e| name_kind_err(name, e))?;
     let mut clauses: Vec<&'static str> = Vec::new();
@@ -723,6 +758,68 @@ mod tests {
             Err(RegistryError::KindInvalid(_))
         ));
         assert!(lookup(&conn, "s").unwrap().unwrap().query_json.is_none());
+    }
+
+    /// N3 — an update that does not mention `query_json` must LEAVE the stored
+    /// template in place. The merge (`delta.or(stored)`) is what makes an
+    /// unrelated field change legal on a query row at all.
+    #[test]
+    fn update_preserves_the_stored_template_when_untouched() {
+        let (_t, conn) = fresh();
+        create(&conn, query_rpc("q", r#"{"collection":"posts"}"#)).unwrap();
+        update(
+            &conn,
+            "q",
+            RpcUpdate {
+                anon_callable: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r = lookup(&conn, "q").unwrap().unwrap();
+        assert_eq!(
+            r.query_json.as_deref(),
+            Some(r#"{"collection":"posts"}"#),
+            "an untouched template must survive an unrelated update"
+        );
+        assert!(!r.anon_callable, "the unrelated change must have landed");
+    }
+
+    /// N4 — a sql row that somehow carries a stray `query_json` (reachable only
+    /// by hand-editing the DB; `create` refuses it) must stay REPAIRABLE: the
+    /// Sql arm judges what the write SETS, not what the row already holds.
+    #[test]
+    fn update_repairs_a_sql_row_carrying_a_stray_template() {
+        let (_t, conn) = fresh();
+        conn.execute(
+            "INSERT INTO _system_rpc (name, sql, params_json, kind, query_json)
+             VALUES ('s', 'SELECT 1', '[]', 'sql', '{\"collection\":\"posts\"}')",
+            [],
+        )
+        .unwrap();
+        update(
+            &conn,
+            "s",
+            RpcUpdate {
+                sql: Some("SELECT 2"),
+                ..Default::default()
+            },
+        )
+        .expect("a stray template must not brick every future update");
+        let r = lookup(&conn, "s").unwrap().unwrap();
+        assert_eq!(r.sql, "SELECT 2");
+        // The stray survives — dead data on a sql row. WRITING one is still refused.
+        assert!(matches!(
+            update(
+                &conn,
+                "s",
+                RpcUpdate {
+                    query_json: Some("{}"),
+                    ..Default::default()
+                }
+            ),
+            Err(RegistryError::KindInvalid(_))
+        ));
     }
 
     #[test]
