@@ -191,6 +191,10 @@ mod rls_spike {
                  SELECT * FROM main."posts" WHERE owner = 'u1'"#,
         );
         eprintln!("S3 create-on-readonly: {attempt:?}");
+        assert!(
+            attempt.is_err(),
+            "temp DDL must be refused while query_only=ON (observed SQLITE_READONLY ext 8)"
+        );
         // Second half: does flipping query_only off (still READONLY file
         // handle) unlock temp DDL?
         let flip = rconn.execute_batch(
@@ -200,7 +204,22 @@ mod rls_spike {
                PRAGMA query_only = ON;"#,
         );
         eprintln!("S3 create-after-flip: {flip:?}");
-        // Pins added after first run — see spike log.
+        assert!(
+            flip.is_ok(),
+            "PRAGMA query_only=OFF must unlock temp DDL on the READONLY handle: {flip:?}"
+        );
+        // The file handle itself must stay READONLY: even with query_only
+        // flipped off, a main-schema write has to fail. This is the half of
+        // the Phase-2 contract the eprintln probes never pinned.
+        let main_write = rconn.execute_batch(
+            r#"PRAGMA query_only = OFF;
+               INSERT INTO main."posts"(owner, body) VALUES ('u1', 'must-fail');"#,
+        );
+        eprintln!("S3 main-write-on-readonly-handle: {main_write:?}");
+        assert!(
+            main_write.is_err(),
+            "READONLY file handle must refuse main writes regardless of query_only"
+        );
     }
 
     // ── S4 / B1: write forwarding through a same-named view ────────────────
@@ -218,17 +237,24 @@ mod rls_spike {
                END;"#,
         );
         eprintln!("S4A create qualified-body trigger: {qualified:?}");
-        if qualified.is_ok() {
-            let ins = conn.execute(
-                r#"INSERT INTO "posts"(owner, body) VALUES ('u1', 'forwarded')"#,
-                [],
-            );
-            eprintln!("S4A insert through view: {ins:?}");
-            let n: i64 = conn
-                .query_row(r#"SELECT COUNT(*) FROM main."posts""#, [], |r| r.get(0))
-                .unwrap();
-            eprintln!("S4A base rows after forward: {n}");
-        }
+        assert!(
+            qualified.is_ok(),
+            "INSTEAD OF trigger with a main.-qualified body must be creatable: {qualified:?}"
+        );
+        let ins = conn.execute(
+            r#"INSERT INTO "posts"(owner, body) VALUES ('u1', 'forwarded')"#,
+            [],
+        );
+        eprintln!("S4A insert through view: {ins:?}");
+        assert!(ins.is_ok(), "insert through the masked view must succeed");
+        let n: i64 = conn
+            .query_row(r#"SELECT COUNT(*) FROM main."posts""#, [], |r| r.get(0))
+            .unwrap();
+        eprintln!("S4A base rows after forward: {n}");
+        assert_eq!(
+            n, 3,
+            "qualified-body trigger must forward the write to the base table (2 fixture + 1)"
+        );
 
         // Attempt B: unqualified body (expected self-resolution hazard).
         let _ = conn.execute_batch(r#"DROP TRIGGER IF EXISTS "posts_ins""#);
@@ -245,8 +271,29 @@ mod rls_spike {
                 [],
             );
             eprintln!("S4B insert through view: {ins:?}");
+            let n: i64 = conn
+                .query_row(r#"SELECT COUNT(*) FROM main."posts""#, [], |r| r.get(0))
+                .unwrap();
+            let looped: i64 = conn
+                .query_row(
+                    r#"SELECT COUNT(*) FROM main."posts" WHERE body = 'looped?'"#,
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            eprintln!("S4B base rows={n} looped-rows={looped}");
+            // HAZARD PIN: the unqualified body neither errors nor loops —
+            // it SILENTLY DROPS the write (insert reports Ok, base gains
+            // nothing). Unlike the view case (S9: loud circular error),
+            // there is no signal. This is why the Phase-2 contract requires
+            // main.-qualified trigger bodies: the failure mode is silence.
+            assert_eq!(ins.unwrap(), 0, "insert reports success");
+            assert_eq!(
+                (n, looped),
+                (3, 0),
+                "write silently dropped, base unchanged"
+            );
         }
-        // Pins added after first run — see spike log.
     }
 
     // ── S5 / codex #10: does the strict reader hide the view definition? ───
