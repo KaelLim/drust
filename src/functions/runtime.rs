@@ -50,25 +50,34 @@ pub fn engine() -> &'static Engine {
     })
 }
 
-/// Arm the per-invoke epoch budget: deadline = 1 tick (100ms), and the
-/// callback yields control back to the async executor on every tick until
-/// `timeout_secs` of ticks are spent, then interrupts. Pre-v1.61 this armed
-/// ONE deadline of `timeout_secs * 10` ticks: wasmtime only checks the epoch
-/// at the deadline, so a compute-only guest (no await points) pinned its
-/// Tokio worker for the whole budget — two such invokes on a 2-core host
-/// starved every other future (v1.58.5 family). `UpdateDeadline::Interrupt`
-/// raises the same `Trap::Interrupt` the old shape did, so the Timeout
-/// classification in `run` is unchanged.
+/// Arm the per-invoke epoch budget. The callback fires each 100 ms tick and
+/// `Yield`s the Tokio worker back to the executor, then `Interrupt`s once the
+/// wall-clock `timeout_secs` deadline has passed. Two load-bearing properties:
 ///
-/// Async entrypoints only: `UpdateDeadline::Yield` hard-errors on a
-/// synchronous wasm call — every executor call site is async today.
+/// - **Yield every tick** so a compute-only guest (no await points) cannot pin
+///   its Tokio worker for the whole budget — two such invokes on a 2-core host
+///   starved every other future (v1.58.5 family). This was the v1.61 change.
+/// - **Bound by an absolute `Instant`, never a callback count.** The first cut
+///   counted callback invocations (`used_ticks += 1; Yield(1)`), but wasmtime
+///   runs the `Yield` (which awaits) BEFORE re-arming the deadline to
+///   `current_epoch + 1`, so every tick the guest spent OFF-CPU under host
+///   contention was uncounted — the effective timeout inflated several-fold (a
+///   1 s budget ran ~7 s on this 2-core host under parallel load, red-flaking
+///   `loop_fixture_hits_epoch_timeout`), which defeats the very CPU budget
+///   #932 set out to bound. Comparing `Instant::now()` against a deadline
+///   captured at arm time restores the wall-clock bound the pre-v1.61 absolute
+///   epoch deadline had, independent of scheduling. (A fully-starved guest that
+///   never runs also never hits an epoch check; it is interrupted on the first
+///   check after it resumes — it still cannot execute past its deadline.)
+///
+/// `UpdateDeadline::Interrupt` raises the same `Trap::Interrupt`, so the Timeout
+/// classification in `run` is unchanged. Async entrypoints only: `Yield`
+/// hard-errors on a synchronous wasm call — every executor call site is async.
 pub(crate) fn arm_epoch_budget<T>(store: &mut Store<T>, timeout_secs: u64) {
-    let total_ticks = timeout_secs.saturating_mul(10).max(1);
-    let mut used_ticks: u64 = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     store.set_epoch_deadline(1);
     store.epoch_deadline_callback(move |_| {
-        used_ticks += 1;
-        if used_ticks >= total_ticks {
+        if std::time::Instant::now() >= deadline {
             Ok(wasmtime::UpdateDeadline::Interrupt)
         } else {
             Ok(wasmtime::UpdateDeadline::Yield(1))
@@ -1133,7 +1142,9 @@ mod tests {
             let spin = instance
                 .get_typed_func::<(), ()>(&mut store, "spin")
                 .unwrap();
+            let started = std::time::Instant::now();
             let trap = spin.call_async(&mut store, ()).await.unwrap_err();
+            let elapsed = started.elapsed();
             // Budget expiry must still classify as Trap::Interrupt — the
             // executor's Timeout classification depends on it.
             assert_eq!(
@@ -1144,6 +1155,17 @@ mod tests {
             assert!(
                 observed >= 3,
                 "guest spin starved the executor: heartbeat ran {observed} times"
+            );
+            // The budget is bounded by WALL CLOCK, not a callback count: the
+            // 2 s budget must interrupt near 2 s regardless of how many ticks
+            // the guest spent off-CPU. The first cut counted callbacks, so
+            // under contention the same spin ran ~7 s (the review MED that
+            // red-flaked loop_fixture_hits_epoch_timeout). Loose upper bound —
+            // the point is that it terminates in single-digit seconds, not the
+            // tens the counting bug produced under load.
+            assert!(
+                elapsed < std::time::Duration::from_secs(5),
+                "epoch budget did not bound wall clock: spin ran {elapsed:?} for a 2s budget"
             );
         });
     }
