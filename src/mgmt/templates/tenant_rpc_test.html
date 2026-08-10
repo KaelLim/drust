@@ -20,8 +20,13 @@
         </p>
 
         <div class="card" style="margin-bottom:14px;">
+          {% if kind == "query" %}
+          <div class="card-head">{{ t.s("tenant_rpc_test.template.heading") }}</div>
+          <pre class="code">{{ query_json }}</pre>
+          {% else %}
           <div class="card-head">{{ t.s("tenant_rpc_test.sql.heading") }}</div>
           <pre class="code">{{ sql }}</pre>
+          {% endif %}
         </div>
 
         <form method="post" action="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ existing_name }}/test/run" class="card">
@@ -113,6 +118,16 @@
                 {% endfor %}
               </tbody>
             </table>
+          </div>
+          {% endif %}
+
+          {% if let Some(q) = o.query_result %}
+          <div style="padding:0 18px 14px;display:flex;gap:14px;flex-wrap:wrap;font-family:var(--font-mono);font-size:13px;color:var(--muted);">
+            <span><b style="color:var(--fg);">{{ q.row_count }}</b> {{ t.s("tenant_rpc_test.result.rows_unit") }}</span>
+            <span><b style="color:var(--fg);">{{ q.total }}</b> {{ t.s("tenant_rpc_test.result.total_unit") }}</span>
+          </div>
+          <div class="records-scroll" style="max-height:480px;">
+            <pre class="code code-sm">{{ q.envelope_json }}</pre>
           </div>
           {% endif %}
         </div>

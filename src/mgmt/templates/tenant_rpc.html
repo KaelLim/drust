@@ -59,10 +59,11 @@
               <div class="rpc-name">{{ r.name }}</div>
               {% if let Some(d) = r.description %}<div class="rpc-desc">{{ d }}</div>{% endif %}
               <div class="rpc-tags">
+                {% if r.kind.as_str() == "query" %}<span class="pill accent" data-rpc-kind="query"><span class="dot"></span>{{ t.s("tenant_rpc.row_pill.kind_query") }}</span>{% else %}<span class="pill muted" data-rpc-kind="sql">{{ t.s("tenant_rpc.row_pill.kind_sql") }}</span>{% endif %}
                 {% if r.mode.as_str() == "write" %}<span class="pill warn"><span class="dot"></span>{{ t.s("tenant_rpc.row_pill.mode_write") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_rpc.row_pill.mode_read") }}</span>{% endif %}
                 {% if r.anon_callable %}<span class="pill accent"><span class="dot"></span>{{ t.s("tenant_rpc.row_pill.anon_ok") }}</span>{% else %}<span class="pill muted">{{ t.s("tenant_rpc.row_pill.service_only") }}</span>{% endif %}
               </div>
-              <pre class="sql-block" style="margin-top:10px;font-size:11.5px;">{{ r.sql }}</pre>
+              {% if r.kind.as_str() == "query" %}<pre class="sql-block" style="margin-top:10px;font-size:11.5px;">{% if let Some(q) = r.query_json %}{{ q }}{% endif %}</pre>{% else %}<pre class="sql-block" style="margin-top:10px;font-size:11.5px;">{{ r.sql }}</pre>{% endif %}
               <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
                 <a class="btn sm" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/edit">{{ t.s("common.button.edit") }}</a>
                 <a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/_rpc/{{ r.name }}/test">{{ t.s("tenant_rpc.row_actions.test") }}</a>

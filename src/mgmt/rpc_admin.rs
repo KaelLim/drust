@@ -186,6 +186,12 @@ struct RpcForm {
     /// "read" or "write" — drives the mode radio. Always set; defaults
     /// to "read" on new-form / unrecognised input.
     form_mode: String,
+    /// "sql" or "query" (#950) — drives the kind `<select>` and which fields
+    /// the form shows. Always set; defaults to "sql".
+    form_kind: String,
+    /// The `kind='query'` FilterAst template JSON, prefilled into the
+    /// query_json textarea for a query row (empty for a sql row).
+    form_query_json: String,
     error: Option<String>,
     /// Spec §6 wire-contract — when present, surfaces as a
     /// `data-error-code="..."` attribute on the rendered banner so
@@ -248,6 +254,8 @@ pub async fn rpc_new_form(
             form_params_json: "[]".into(),
             form_anon_callable: false,
             form_mode: registry::RpcMode::Read.as_str().to_string(),
+            form_kind: registry::RpcKind::Sql.as_str().to_string(),
+            form_query_json: String::new(),
             error: None,
             error_code: None,
             t: Translator::new(locale),
@@ -305,6 +313,8 @@ pub async fn rpc_edit_form(
             form_params_json: params_json_string,
             form_anon_callable: existing.anon_callable,
             form_mode: existing.mode.as_str().to_string(),
+            form_kind: existing.kind.as_str().to_string(),
+            form_query_json: existing.query_json.unwrap_or_default(),
             error: None,
             error_code: None,
             t: Translator::new(locale),
@@ -325,6 +335,12 @@ pub struct RpcFormBody {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// SQL body. Defaulted because the query-kind editor DISABLES this textarea
+    /// (kind='query' has no sql), so the browser omits it from the POST — a
+    /// non-default `String` would 400 in the `Form` extractor before reaching
+    /// the shape check. Absent → `""`, which the shape check requires for a
+    /// query row and rejects for a sql row.
+    #[serde(default)]
     pub sql: String,
     pub params_json: String,
     /// Checkbox: present (`"1"`) when checked, absent otherwise.
@@ -719,6 +735,13 @@ fn render_form_with_error(
         Some("write") => "write".to_string(),
         _ => "read".to_string(),
     };
+    // Echo back the submitted kind so a rejected save re-renders the SAME
+    // editor (query fields stay visible, sql fields stay hidden). Absent → sql.
+    let form_kind = match form.kind.as_deref() {
+        Some("query") => registry::RpcKind::Query.as_str().to_string(),
+        _ => registry::RpcKind::Sql.as_str().to_string(),
+    };
+    let form_query_json = form.query_json.clone().unwrap_or_default();
     Html(
         RpcForm {
             tenant_id: tenant_id.to_string(),
@@ -734,6 +757,8 @@ fn render_form_with_error(
             form_params_json: form.params_json.clone(),
             form_anon_callable: form.anon_callable.is_some(),
             form_mode,
+            form_kind,
+            form_query_json,
             error: Some(msg),
             error_code,
             t: Translator::new(locale),
@@ -773,6 +798,11 @@ struct RpcTestPage {
     existing_name: String,
     description: Option<String>,
     sql: String,
+    /// "sql" or "query" (#950). Drives whether the header card shows the sql
+    /// body or the FilterAst template, and which result renderer runs.
+    kind: String,
+    /// The `kind='query'` template JSON (empty for a sql row).
+    query_json: String,
     anon_callable: bool,
     /// "read" or "write" — drives the mode pill and the write-only
     /// commit banner / checkbox.
@@ -792,9 +822,12 @@ struct RpcTestOutcome {
     duration_ms: u128,
     /// Pretty-printed JSON of the bound params (to confirm coercion).
     bound_json: String,
-    /// `Some(...)` on success.
+    /// `Some(...)` on a sql/write success (columnar shape).
     result: Option<RpcTestResult>,
-    /// `Some(...)` on failure (set instead of `result`).
+    /// `Some(...)` on a kind='query' success — the `/list` envelope. Mutually
+    /// exclusive with `result` (a row is one kind or the other).
+    query_result: Option<RpcQueryResult>,
+    /// `Some(...)` on failure (set instead of `result` / `query_result`).
     error: Option<String>,
     /// Rows from `EXPLAIN QUERY PLAN <sql>`. Empty on early failures.
     explain_rows: Vec<String>,
@@ -819,6 +852,16 @@ struct RpcTestResult {
     truncated: bool,
 }
 
+/// A kind='query' playground result — the `/list` page envelope, rendered as
+/// one pretty-printed JSON block so the wire shape {records,total,page,perPage}
+/// is visible verbatim (there is no fixed column set to tabulate).
+struct RpcQueryResult {
+    /// Pretty JSON of `{records,total,page,perPage}`.
+    envelope_json: String,
+    total: i64,
+    row_count: usize,
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct RpcTestRunForm {
     /// Each param submitted as `p_<name>=<string>`. We collect dynamically.
@@ -835,6 +878,16 @@ impl RpcTestRunForm {
             .get("actually_commit")
             .map(|s| !s.is_empty())
             .unwrap_or(false)
+    }
+
+    /// #950 — `explain` / `dry_run` are sql concepts. A kind='query' row builds
+    /// its own SQL under the caller's identity through the `/list` pipeline, so
+    /// neither is supported; either flag on a query row is refused with a typed
+    /// `RPC_KIND_INVALID` (mirrors the REST handler's dry_run refusal).
+    fn wants_query_plan_or_dry_run(&self) -> bool {
+        ["explain", "dry_run"]
+            .iter()
+            .any(|k| self.fields.get(*k).map(|s| !s.is_empty()).unwrap_or(false))
     }
 }
 
@@ -876,6 +929,8 @@ pub async fn rpc_test_form(
             existing_name: stored.name.clone(),
             description: stored.description.clone(),
             sql: stored.sql.clone(),
+            kind: stored.kind.as_str().to_string(),
+            query_json: stored.query_json.clone().unwrap_or_default(),
             anon_callable: stored.anon_callable,
             mode: mode_str,
             params: stored
@@ -993,6 +1048,30 @@ pub async fn rpc_test_run(
         if !coerced.is_null() {
             body_map.insert(spec.name.clone(), coerced);
         }
+    }
+
+    // #950: a kind='query' row is a FilterAst template, not sql. It has no
+    // bound-param execution and no EXPLAIN QUERY PLAN — running the sql arm on
+    // its empty body would error confusingly. Route it through the SAME single
+    // executor REST/MCP use (`exec_query::run_query_rpc` → the `/list`
+    // pipeline), under a service AuthCtx (the admin plane is service), and
+    // render the `/list` envelope. explain/dry_run are refused as typed.
+    if stored.kind == registry::RpcKind::Query {
+        drop(conn);
+        return run_query_playground(
+            &state,
+            tenant_id,
+            tenant_name,
+            collections,
+            &stored,
+            visible_inputs,
+            body_map,
+            &form,
+            locale,
+            theme,
+            admin,
+        )
+        .await;
     }
 
     // Validate + bind. On failure, surface as outcome.error.
@@ -1315,6 +1394,8 @@ fn render_test_outcome(
             existing_name: stored.name.clone(),
             description: stored.description.clone(),
             sql: stored.sql.clone(),
+            kind: stored.kind.as_str().to_string(),
+            query_json: stored.query_json.clone().unwrap_or_default(),
             anon_callable: stored.anon_callable,
             mode: mode_str,
             params,
@@ -1322,12 +1403,194 @@ fn render_test_outcome(
                 duration_ms,
                 bound_json,
                 result,
+                query_result: None,
                 error,
                 explain_rows,
                 dry_run,
                 is_write_mode,
                 affected_rows,
                 statement_count,
+            }),
+            t: Translator::new(locale),
+            admin,
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
+        }
+        .render()
+        .unwrap(),
+    )
+    .into_response()
+}
+
+/// #950 — the playground Run for a `kind='query'` row. Executes the template
+/// through the shared `exec_query::run_query_rpc` under a **service** AuthCtx
+/// (the admin plane is service, so `anon_callable` is not consulted) and
+/// re-renders the page with the `/list` envelope.
+///
+/// `explain` / `dry_run` are sql concepts and refused with a typed 400
+/// `RPC_KIND_INVALID` — mirrors the REST handler, and avoids the sql arm's
+/// EXPLAIN-on-empty-body crash path.
+#[allow(clippy::too_many_arguments)]
+async fn run_query_playground(
+    state: &TenantsState,
+    tenant_id: String,
+    tenant_name: String,
+    collections: Vec<Collection>,
+    stored: &registry::StoredRpc,
+    visible_inputs: std::collections::BTreeMap<String, String>,
+    body_map: serde_json::Map<String, serde_json::Value>,
+    form: &RpcTestRunForm,
+    locale: Locale,
+    theme: crate::mgmt::theme::Theme,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
+) -> Response {
+    if form.wants_query_plan_or_dry_run() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "RPC_KIND_INVALID: dry_run / EXPLAIN is not supported on kind='query' \
+             (drust builds and row-scopes the SQL itself)"
+                .to_string(),
+        )
+            .into_response();
+    }
+
+    let pool = match state.tenants.get_or_create(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let ctx = crate::auth::middleware::AuthCtx::Service { admin_id: None };
+    let bound_json = serde_json::to_string_pretty(&body_map).unwrap_or_default();
+
+    let started = std::time::Instant::now();
+    let run =
+        crate::rpc::exec_query::run_query_rpc(&pool, &ctx, stored, body_map, None, None).await;
+    let duration_ms = started.elapsed().as_millis();
+
+    let result: Result<RpcQueryResult, String> = match run {
+        Ok(page) => {
+            let row_count = page.records.len();
+            let total = page.total;
+            let envelope = serde_json::json!({
+                "records": page.records,
+                "total": page.total,
+                "page": page.page,
+                "perPage": page.per_page,
+            });
+            let envelope_json = serde_json::to_string_pretty(&envelope).unwrap_or_default();
+            Ok(RpcQueryResult {
+                envelope_json,
+                total,
+                row_count,
+            })
+        }
+        Err(resp) => Err(response_to_error_text(resp).await),
+    };
+
+    render_query_test_outcome(
+        tenant_id,
+        tenant_name,
+        collections,
+        stored,
+        visible_inputs,
+        result,
+        duration_ms,
+        bound_json,
+        locale,
+        theme,
+        admin,
+    )
+}
+
+/// Decode a typed `json_error` Response body into a `"<code>: <message>"`
+/// string for the playground's error banner. Falls back to the raw body when
+/// it is not the canonical JSON error shape.
+async fn response_to_error_text(resp: Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .unwrap_or_default();
+    match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(v) => {
+            let code = v.get("error_code").and_then(|x| x.as_str());
+            let msg = v
+                .get("message")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default();
+            match code {
+                Some(c) => format!("{c}: {msg}"),
+                None => msg.to_string(),
+            }
+        }
+        Err(_) => String::from_utf8_lossy(&bytes).into_owned(),
+    }
+}
+
+/// Re-render the test page with a `kind='query'` outcome (envelope on success,
+/// typed message on failure). Kept SEPARATE from `render_test_outcome` so the
+/// sql/write path stays byte-identical — no shared 15-arg signature to disturb.
+#[allow(clippy::too_many_arguments)]
+fn render_query_test_outcome(
+    tenant_id: String,
+    tenant_name: String,
+    collections: Vec<Collection>,
+    stored: &registry::StoredRpc,
+    visible_inputs: std::collections::BTreeMap<String, String>,
+    result: Result<RpcQueryResult, String>,
+    duration_ms: u128,
+    bound_json: String,
+    locale: Locale,
+    theme: crate::mgmt::theme::Theme,
+    admin: crate::mgmt::admin_profile::AdminProfileExt,
+) -> Response {
+    let params: Vec<RpcTestParam> = stored
+        .params
+        .iter()
+        .map(|p| RpcTestParam {
+            name: p.name.clone(),
+            ty: param_ty_to_str(p.ty).to_string(),
+            required: p.required,
+            default_display: p
+                .default
+                .as_ref()
+                .map(|d| serde_json::to_string(d).unwrap_or_default())
+                .unwrap_or_default(),
+            value: visible_inputs.get(&p.name).cloned().unwrap_or_default(),
+        })
+        .collect();
+
+    let (query_result, error) = match result {
+        Ok(q) => (Some(q), None),
+        Err(e) => (None, Some(e)),
+    };
+
+    let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
+    Html(
+        RpcTestPage {
+            tenant_id,
+            tenant_name,
+            version: env!("CARGO_PKG_VERSION"),
+            collections,
+            active_coll: "_rpc".to_string(),
+            existing_name: stored.name.clone(),
+            description: stored.description.clone(),
+            sql: stored.sql.clone(),
+            kind: stored.kind.as_str().to_string(),
+            query_json: stored.query_json.clone().unwrap_or_default(),
+            anon_callable: stored.anon_callable,
+            mode: stored.mode.as_str().to_string(),
+            params,
+            outcome: Some(RpcTestOutcome {
+                duration_ms,
+                bound_json,
+                result: None,
+                query_result,
+                error,
+                explain_rows: Vec::new(),
+                dry_run: false,
+                is_write_mode: false,
+                affected_rows: 0,
+                statement_count: 0,
             }),
             t: Translator::new(locale),
             admin,

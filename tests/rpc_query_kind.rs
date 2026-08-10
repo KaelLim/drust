@@ -2427,3 +2427,247 @@ async fn mcp_list_rpc_carries_kind_for_both() {
     assert_eq!(kind_of("s_row").as_deref(), Some("sql"), "{text}");
     assert_eq!(kind_of("q_row").as_deref(), Some("query"), "{text}");
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// T7 — Admin UI: kind badge, query-kind editor, playground envelope.
+// ══════════════════════════════════════════════════════════════════════
+
+/// GET with the admin PAT bearer → (status, rendered HTML).
+async fn admin_get(app: &axum::Router, uri: String, pat: &str) -> (StatusCode, String) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {pat}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 8 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Seed a real `posts` collection (table + `_system_collection_meta` row + two
+/// rows) directly on an `admin_app` pool, so a query-kind RPC over it compiles
+/// through the `/list` pipeline.
+async fn admin_seed_posts(pool: &SharedTenantPool) {
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE posts (
+                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 status     TEXT,
+                 title      TEXT,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )?;
+        c.execute(
+            "INSERT INTO _system_collection_meta
+                 (collection_name, anon_caps_json, user_caps_json, owner_field, read_scope)
+                 VALUES ('posts', '[]', '[]', NULL, NULL)",
+            [],
+        )?;
+        c.execute(
+            "INSERT INTO posts (status, title) VALUES ('published', 'Alpha')",
+            [],
+        )?;
+        c.execute(
+            "INSERT INTO posts (status, title) VALUES ('draft', 'Beta')",
+            [],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    pool.schema_cache.invalidate("posts");
+}
+
+/// (a) A query-kind RPC created through the admin CREATE form lands, and the
+/// list page renders the kind badge for it.
+#[tokio::test]
+async fn admin_form_creates_a_query_rpc_and_lists_the_kind_badge() {
+    let tid = "qk-admin-create";
+    let (app, pat, pool, _dir) = admin_app(tid).await;
+    admin_seed_posts(&pool).await;
+
+    // Exactly what the rendered create form POSTs for kind=query: the sql
+    // textarea is DISABLED, so the browser omits `sql` entirely — the handler
+    // must tolerate its absence (a non-default `String` would 400 here).
+    let body = "name=feed&params_json=%5B%5D&description=&kind=query\
+                &query_json=%7B%22collection%22%3A%22posts%22%7D";
+    let (status, page) = admin_post_form(
+        &app,
+        format!("/admin/tenants/{tid}/_rpc/new"),
+        &pat,
+        body.to_string(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "create must redirect: {}",
+        page.chars().take(600).collect::<String>()
+    );
+
+    let (_, stored) = rpc_row(&pool, "feed").await;
+    assert_eq!(
+        stored.as_deref(),
+        Some(r#"{"collection":"posts"}"#),
+        "the template must be stored"
+    );
+
+    let (status, list) = admin_get(&app, format!("/admin/tenants/{tid}/_rpc"), &pat).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        list.contains(r#"data-rpc-kind="query""#),
+        "the list must render the query kind badge"
+    );
+}
+
+/// (e) The edit form for a query row pre-selects kind=query and prefills the
+/// `query_json` textarea from the stored template — NOT the (empty) sql field.
+#[tokio::test]
+async fn admin_edit_form_prefills_the_template_and_kind_for_a_query_row() {
+    let tid = "qk-admin-editform";
+    let (app, pat, pool, _dir) = admin_app(tid).await;
+    admin_seed_posts(&pool).await;
+    seed_query_rpc_directly(
+        &pool,
+        "feed",
+        "[]",
+        r#"{"collection":"posts","sort":{"field":"id","dir":"asc"}}"#,
+        false,
+    )
+    .await;
+
+    let (status, form) =
+        admin_get(&app, format!("/admin/tenants/{tid}/_rpc/feed/edit"), &pat).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(form.contains(r#"id="rpc-kind""#), "kind select must render");
+    assert!(
+        form.contains(r#"value="query" selected"#),
+        "kind must be pre-selected to query"
+    );
+    assert!(
+        form.contains(r#"name="query_json""#),
+        "query_json textarea must render"
+    );
+    // The stored template lands in the query_json textarea — HTML-escaped by
+    // askama, so accept any of the escaping spellings.
+    let has_tpl = form.contains("&#34;collection&#34;:&#34;posts&#34;")
+        || form.contains("&quot;collection&quot;:&quot;posts&quot;")
+        || form.contains(r#""collection":"posts""#);
+    assert!(
+        has_tpl,
+        "the stored template must prefill the query_json textarea"
+    );
+    // The sql field is server-hidden for a query row (not carrying the empty sql).
+    assert!(
+        form.contains(r#"data-kind-only="sql" style="display:none;""#),
+        "the sql field must be hidden for a query row"
+    );
+}
+
+/// (b) The T5 handoff: re-submitting the rendered edit form (kind carried)
+/// keeps the row kind=query — an edit that omitted the field would send
+/// kind=sql and be refused by the registry's immutability rule.
+#[tokio::test]
+async fn admin_edit_form_round_trips_a_query_row_kind() {
+    let tid = "qk-admin-roundtrip";
+    let (app, pat, pool, _dir) = admin_app(tid).await;
+    admin_seed_posts(&pool).await;
+    seed_query_rpc_directly(&pool, "feed", "[]", r#"{"collection":"posts"}"#, false).await;
+
+    let body = "name=feed&sql=&params_json=%5B%5D&description=hi&kind=query\
+                &query_json=%7B%22collection%22%3A%22posts%22%7D";
+    let (status, page) = admin_post_form(
+        &app,
+        format!("/admin/tenants/{tid}/_rpc/feed/save"),
+        &pat,
+        body.to_string(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "the round-trip save must succeed: {}",
+        page.chars().take(600).collect::<String>()
+    );
+    let kind: String = pool
+        .with_reader(|c| {
+            c.query_row(
+                "SELECT kind FROM _system_rpc WHERE name = 'feed'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(kind, "query", "kind must remain query after the round-trip");
+}
+
+/// (c) The playground Run on a query row executes through `run_query_rpc` and
+/// renders the `/list` envelope {records,total,page,perPage}, not the columnar
+/// sql shape.
+#[tokio::test]
+async fn admin_playground_executes_a_query_row_and_renders_the_envelope() {
+    let tid = "qk-admin-playexec";
+    let (app, pat, pool, _dir) = admin_app(tid).await;
+    admin_seed_posts(&pool).await;
+    seed_query_rpc_directly(
+        &pool,
+        "feed",
+        "[]",
+        r#"{"collection":"posts","sort":{"field":"id","dir":"asc"}}"#,
+        false,
+    )
+    .await;
+
+    let (status, page) = admin_post_form(
+        &app,
+        format!("/admin/tenants/{tid}/_rpc/feed/test/run"),
+        &pat,
+        String::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "query run must render 200");
+    assert!(page.contains("perPage"), "envelope must carry perPage");
+    assert!(page.contains("total"), "envelope must carry total");
+    assert!(
+        page.contains("Alpha") && page.contains("Beta"),
+        "records must include the seeded rows"
+    );
+}
+
+/// (d) Explain/dry_run on a query row is refused with a typed 400
+/// RPC_KIND_INVALID rather than crashing on the empty sql body.
+#[tokio::test]
+async fn admin_playground_refuses_explain_on_a_query_row() {
+    let tid = "qk-admin-playexplain";
+    let (app, pat, pool, _dir) = admin_app(tid).await;
+    admin_seed_posts(&pool).await;
+    seed_query_rpc_directly(&pool, "feed", "[]", r#"{"collection":"posts"}"#, false).await;
+
+    let (status, page) = admin_post_form(
+        &app,
+        format!("/admin/tenants/{tid}/_rpc/feed/test/run"),
+        &pat,
+        "explain=1".to_string(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "explain on a query row is refused"
+    );
+    assert!(
+        page.contains("RPC_KIND_INVALID"),
+        "the typed refusal must be surfaced: {page}"
+    );
+}

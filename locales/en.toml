@@ -1112,6 +1112,8 @@ service = "service"
 
 [tenant_rpc.row_pill]
 anon_ok = "ANON OK"
+kind_query = "query"
+kind_sql = "sql"
 mode_read = "read"
 mode_write = "write"
 service_only = "service-only"
@@ -1147,11 +1149,21 @@ name = "name (snake_case, unique)"
 params_label = "params (JSON array, e.g. <code>[{\"name\":\"id\",\"type\":\"integer\",\"required\":true}]</code>)"
 sql = "sql (use :name for params)"
 
+[tenant_rpc_form.field.kind]
+help = 'SQL: a raw SELECT or write body you author. Query: a named FilterAst template run under the caller identity, so owner-scope and RLS policies apply — anon and user callers see only their permitted rows. Kind cannot change after create.'
+label = "Kind"
+query = "Query (FilterAst template — RLS applies)"
+sql = "SQL (raw SELECT / write body)"
+
 [tenant_rpc_form.field.mode]
 help_owner_field = "Mutation RPCs writing to a collection with owner_field must bind :user_id (drust auto-binds from the caller's session)."
 label = "Mode"
 read = "Read (SELECT only)"
 write = "Write (INSERT/UPDATE/DELETE)"
+
+[tenant_rpc_form.field.query_json]
+help = 'FilterAst template as JSON, e.g. {"collection": "posts", "filter": {"status": "published"}, "sort": {"field": "id", "dir": "desc"}}. Use {"$param": "name"} for a declared parameter and {"$auth": "id"} for the caller user id.'
+label = "query template (JSON)"
 
 [tenant_rpc_form.title]
 new = "New function"
@@ -1195,10 +1207,14 @@ columns_unit = "columns"
 error_title = "Query error"
 heading = "result"
 rows_unit = "rows"
+total_unit = "total"
 truncated = "truncated"
 
 [tenant_rpc_test.sql]
 heading = "sql"
+
+[tenant_rpc_test.template]
+heading = "filter template (JSON)"
 
 [tenant_settings.audit]
 apply_all_button = "Apply default to all collections"

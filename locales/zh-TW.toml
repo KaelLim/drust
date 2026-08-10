@@ -1134,6 +1134,8 @@ service = "service"
 
 [tenant_rpc.row_pill]
 anon_ok = "ANON 可呼叫"
+kind_query = "查詢"
+kind_sql = "SQL"
 mode_read = "讀"
 mode_write = "寫"
 service_only = "僅限 service"
@@ -1169,11 +1171,21 @@ name = "名稱（snake_case，需唯一）"
 params_label = "params（JSON 陣列，例如 <code>[{\"name\":\"id\",\"type\":\"integer\",\"required\":true}]</code>）"
 sql = "SQL（使用 :name 代表參數）"
 
+[tenant_rpc_form.field.kind]
+help = 'SQL:由你自行撰寫的 SELECT 或寫入語句。查詢:具名的 FilterAst 模板,以呼叫者身分執行,因此 owner-scope 與 RLS 政策皆會生效 —— 匿名與 user 呼叫者只會看到自己有權存取的列。kind 建立後不可變更。'
+label = "類型"
+query = "查詢(FilterAst 模板 —— 套用 RLS)"
+sql = "SQL(原始 SELECT / 寫入語句)"
+
 [tenant_rpc_form.field.mode]
 help_owner_field = "若資料表有 owner_field，mutation RPC 的 SQL 內必須綁定 :user_id（drust 會從登入者 session 自動代入）。"
 label = "模式"
 read = "讀（只允許 SELECT）"
 write = "寫（INSERT / UPDATE / DELETE）"
+
+[tenant_rpc_form.field.query_json]
+help = 'FilterAst 模板(JSON),例如 {"collection": "posts", "filter": {"status": "published"}, "sort": {"field": "id", "dir": "desc"}}。以 {"$param": "名稱"} 代入已宣告的參數,以 {"$auth": "id"} 代入呼叫者的 user id。'
+label = "查詢模板(JSON)"
 
 [tenant_rpc_form.title]
 new = "新增函式"
@@ -1217,10 +1229,14 @@ columns_unit = "欄"
 error_title = "查詢錯誤"
 heading = "結果"
 rows_unit = "列"
+total_unit = "總計"
 truncated = "已截斷"
 
 [tenant_rpc_test.sql]
 heading = "SQL"
+
+[tenant_rpc_test.template]
+heading = "篩選模板（JSON）"
 
 [tenant_settings.audit]
 apply_all_button = "套用預設到所有資料表"

@@ -43,18 +43,36 @@
             <input class="input" type="text" name="description" value="{{ form_description }}">
           </div>
           <div class="field">
+            <label>{{ t.s("tenant_rpc_form.field.kind.label") }}</label>
+            {# kind is immutable after create, so the edit form disables the
+               select and carries the stored value on a hidden input — an edit
+               that omitted `kind` would default to sql and be refused by the
+               registry's immutability rule (query-kind, T5 handoff). #}
+            <select class="input" id="rpc-kind"{% if editing %} disabled{% else %} name="kind"{% endif %}>
+              <option value="sql"{% if form_kind == "sql" %} selected{% endif %}>{{ t.s("tenant_rpc_form.field.kind.sql") }}</option>
+              <option value="query"{% if form_kind == "query" %} selected{% endif %}>{{ t.s("tenant_rpc_form.field.kind.query") }}</option>
+            </select>
+            {% if editing %}<input type="hidden" name="kind" value="{{ form_kind }}">{% endif %}
+            <small class="muted" style="display:block;margin-top:6px;">{{ t.s("tenant_rpc_form.field.kind.help") }}</small>
+          </div>
+          <div class="field" data-kind-only="sql"{% if form_kind == "query" %} style="display:none;"{% endif %}>
             <label>{{ t.s("tenant_rpc_form.field.sql") }}</label>
-            <textarea class="textarea" name="sql" rows="10" required>{{ form_sql }}</textarea>
+            <textarea class="textarea" name="sql" rows="10" required{% if form_kind == "query" %} disabled{% endif %}>{{ form_sql }}</textarea>
+          </div>
+          <div class="field" data-kind-only="query"{% if form_kind != "query" %} style="display:none;"{% endif %}>
+            <label>{{ t.s("tenant_rpc_form.field.query_json.label") }}</label>
+            <textarea class="textarea" name="query_json" rows="10"{% if form_kind != "query" %} disabled{% endif %}>{{ form_query_json }}</textarea>
+            <small class="muted" style="display:block;margin-top:6px;">{{ t.s("tenant_rpc_form.field.query_json.help") }}</small>
           </div>
           <div class="field">
             <label>{{ t.s("tenant_rpc_form.field.params_label")|safe }}</label>
             <textarea class="textarea" name="params_json" rows="6" required>{{ form_params_json }}</textarea>
           </div>
-          <div class="field">
+          <div class="field" data-kind-only="sql"{% if form_kind == "query" %} style="display:none;"{% endif %}>
             <label>{{ t.s("tenant_rpc_form.field.mode.label") }}</label>
             <div style="display:flex;gap:18px;flex-wrap:wrap;">
-              <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="mode" value="read"{% if form_mode == "read" %} checked{% endif %}> {{ t.s("tenant_rpc_form.field.mode.read") }}</label>
-              <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="mode" value="write"{% if form_mode == "write" %} checked{% endif %}> {{ t.s("tenant_rpc_form.field.mode.write") }}</label>
+              <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="mode" value="read"{% if form_mode == "read" %} checked{% endif %}{% if form_kind == "query" %} disabled{% endif %}> {{ t.s("tenant_rpc_form.field.mode.read") }}</label>
+              <label style="display:inline-flex;gap:6px;align-items:center;"><input type="radio" name="mode" value="write"{% if form_mode == "write" %} checked{% endif %}{% if form_kind == "query" %} disabled{% endif %}> {{ t.s("tenant_rpc_form.field.mode.write") }}</label>
             </div>
             <small class="muted" style="display:block;margin-top:6px;">{{ t.s("tenant_rpc_form.field.mode.help_owner_field") }}</small>
           </div>
@@ -74,6 +92,28 @@
 {% include "_cmdk.html" %}
 {% include "_modal.html" %}
 <script>
+  // Query-kind editor: swap sql / query fields as the kind select changes. Progressive
+  // enhancement — the server already renders the correct initial state
+  // (hidden + disabled) so a no-JS submit still carries only the active kind's
+  // fields; this just makes the create form interactive. Hidden fields are
+  // `disabled` so they neither submit stale values nor block validation.
+  document.addEventListener("DOMContentLoaded", () => {
+    const kindSel = document.getElementById("rpc-kind");
+    if (!kindSel) return;
+    const apply = () => {
+      const isQuery = kindSel.value === "query";
+      document.querySelectorAll("[data-kind-only]").forEach((el) => {
+        const show = (el.getAttribute("data-kind-only") === "query") === isQuery;
+        el.style.display = show ? "" : "none";
+        el.querySelectorAll("input, textarea, select").forEach((f) => {
+          f.disabled = !show;
+        });
+      });
+    };
+    kindSel.addEventListener("change", apply);
+    apply();
+  });
+
   // Confirm "allow anon callers" toggle (matches the drustUI pattern used in tenant_rpc.html).
   document.addEventListener("DOMContentLoaded", () => {
     const cb = document.querySelector('input[name="anon_callable"]');
