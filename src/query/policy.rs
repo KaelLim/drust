@@ -471,8 +471,17 @@ fn eval_leaf(
         };
     }
     let ord = value_cmp(&lhs, &rhs);
-    // Any comparison where value_cmp is None (a NULL is involved) is Unknown,
-    // NOT False — that is the crux of the Not-over-NULL fix.
+    // A None `value_cmp` maps to Unknown, NOT False — the crux of the
+    // Not-over-NULL fix. `None` means EITHER a NULL was involved (the case this
+    // fix targets; SQL yields NULL too, so Unknown is exact) OR the two sides
+    // are an incomparable storage-class pair (Integer vs Text). The latter is
+    // supposed to be unreachable — `check_operand_class` rejects cross-class
+    // LITERAL operands at save time — but a DYNAMIC `$auth`/`$data` operand
+    // against a mismatched-class column is NOT class-checked, so it can reach
+    // here and Unknown then diverges from SQLite's cross-class ordering. That
+    // residual is fail-CLOSED (eval denies where SQL might admit) and matters
+    // only on the CHECK path (anon reads bind $auth=NULL, where both agree);
+    // it is tracked for a dynamic-operand class guard, separate from this fix.
     match ord {
         None => Tri::Unknown,
         Some(o) => Tri::from_bool(match op.trim_start_matches('$') {
@@ -495,8 +504,11 @@ fn eval_leaf(
 /// Cross-storage-class operand/column pairs (e.g. a TEXT literal vs an INTEGER
 /// column) — where this in-memory `None` would diverge from SQLite's
 /// storage-class ordering in the compiled SQL — are rejected up front by
-/// `validate_policy`, so a stored policy can never reach this with mismatched
-/// classes. See `check_operand_class` (Fix 2, evaluator lockstep).
+/// `validate_policy` **for LITERAL operands** (`check_operand_class`, Fix 2).
+/// A DYNAMIC `$auth`/`$data` operand is NOT class-checked, so a mismatched-class
+/// dynamic comparison CAN reach here; the caller (`eval_leaf`) maps the
+/// resulting `None` to Unknown, which is fail-closed against SQL — see the
+/// note there. Tightening that is a separate dynamic-operand class guard.
 fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     use Value::*;
     match (a, b) {

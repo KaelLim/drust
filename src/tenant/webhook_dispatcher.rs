@@ -843,13 +843,22 @@ async fn deliver_inner(
         // Attempt 1 is NOT re-read here, and the honest statement of its cover
         // is: it is gated by the fan-out snapshot `dispatch_many` took shortly
         // before spawning this delivery — not by a read immediately before the
-        // POST. The residual window is spawn + `resolve_public` above (a slow
-        // nameserver stretches it to seconds). Closing it means one meta.sqlite
-        // open per ROW of a batch, which is exactly the cost the per-batch read
-        // exists to avoid, so it is bought back where it is free instead: the
-        // fan-out defers its denied-subscription `record_failure` writes until
-        // after every delivery is spawned, keeping a writer-mutex wait out of
-        // the window. Anything that adds a NEW attempt must re-check here.
+        // POST. Closing it means one meta.sqlite open per ROW of a batch, which
+        // is exactly the cost the per-batch read exists to avoid, so it is
+        // bought back where it is free instead: the fan-out defers its denied-
+        // subscription `record_failure` writes until after every delivery is
+        // spawned, keeping a writer-mutex wait out of the window. Anything that
+        // adds a NEW attempt must re-check here.
+        //
+        // v1.61 caveat: the delivery semaphore (`delivery_permits`) can now park
+        // this task before attempt 1, so the check_egress half of that window is
+        // no longer just "spawn + resolve" — under sustained fan-out it stretches
+        // to however long the permit wait is. The SSRF-IP half is unaffected:
+        // `resolve_public` above runs live per invocation AFTER the permit, so a
+        // rebind to a private address is still blocked on attempt 1. The residual
+        // is only a same-tenant origin the tenant just de-allowlisted still
+        // receiving one POST. Proper close = an egress-allowlist version cache so
+        // attempt 1 can re-validate without a per-row meta open (tracked #953).
         //
         // A denial is TERMINAL — `deliver` records the failure and no further
         // attempt runs. An UNREADABLE meta is not a denial: it fails closed for
