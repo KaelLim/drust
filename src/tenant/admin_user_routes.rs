@@ -377,7 +377,7 @@ pub async fn delete_user_handler(
             // v1.35 hook 8 — the inline DELETE FROM _system_sessions above does
             // NOT route through user_session::revoke_*, so clear the deleted
             // user's cached entries here.
-            state.auth_cache.clear_user(&uid);
+            state.revoke_user_realtime(&tid, &uid);
             let mut resp = (
                 StatusCode::OK,
                 Json(json!({"deleted_records": dr, "revoked_sessions": rs})),
@@ -417,6 +417,6 @@ pub async fn revoke_sessions_handler(
         .await
         .unwrap_or(0);
     // v1.35 hook 7 (REST) — drop every cached User entry for this user_id.
-    state.auth_cache.clear_user(&uid_for_clear);
+    state.revoke_user_realtime(&tid, &uid_for_clear);
     (StatusCode::OK, Json(json!({"revoked": n}))).into_response()
 }

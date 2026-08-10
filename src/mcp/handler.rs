@@ -2001,7 +2001,14 @@ impl DrustMcpService {
         // drop the deleted user's cached session entries synchronously.
         let inner = self.state.inner();
         match user_tools::delete_user(&inner.pool, user_id, inner.auth_cache.as_deref()).await {
-            Ok(v) => json_content(v),
+            Ok(v) => {
+                // #952 — the cascade revoked the deleted user's sessions; drop
+                // the tenant's in-flight WS room subscribers so the revoked
+                // token cannot keep a room (tenant-wide, blunt but fail-safe —
+                // there is no per-user room index; mirrors token-reroll evict).
+                inner.bus_rooms.evict_tenant(&inner.tenant_id);
+                json_content(v)
+            }
             Err(e) => bail_mcp(e),
         }
     }
@@ -2021,7 +2028,13 @@ impl DrustMcpService {
         match user_tools::revoke_user_sessions(&inner.pool, user_id, inner.auth_cache.as_deref())
             .await
         {
-            Ok(v) => json_content(v),
+            Ok(v) => {
+                // #952 — sessions revoked; evict the tenant's in-flight WS room
+                // subscribers so a revoked user token cannot keep a room open
+                // (tenant-wide, blunt but fail-safe; mirrors token-reroll evict).
+                inner.bus_rooms.evict_tenant(&inner.tenant_id);
+                json_content(v)
+            }
             Err(e) => bail_mcp(e),
         }
     }

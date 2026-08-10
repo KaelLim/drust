@@ -359,7 +359,7 @@ pub async fn logout_handler(
     // session, but clearing all their cached entries is correct-and-sufficient
     // — the other sessions re-fill on next use).
     if let AuthCtx::User { user_id, .. } = &ctx {
-        state.auth_cache.clear_user(user_id);
+        state.revoke_user_realtime(&tenant_id, user_id);
     }
     (StatusCode::OK, Json(json!({}))).into_response()
 }
@@ -397,7 +397,7 @@ pub async fn logout_all_handler(
     // revoke_user_sessions). Without this clear, the user's OTHER cached
     // sessions keep authenticating until the safety TTL — caught by
     // tests/auth_session.rs::logout_all_invalidates_every_session.
-    state.auth_cache.clear_user(&uid_for_clear);
+    state.revoke_user_realtime(&tenant_id, &uid_for_clear);
     (StatusCode::OK, Json(json!({"revoked": n}))).into_response()
 }
 
@@ -664,7 +664,7 @@ pub async fn me_password_handler(
     // v1.35 hook 9 — the inline DELETE FROM _system_sessions wiped every
     // session for this user; clear the cache so the old sessions miss on
     // their next request. The new session is uncached until first use.
-    state.auth_cache.clear_user(&user_id);
+    state.revoke_user_realtime(&tenant_id, &user_id);
     let exp = chrono::Utc::now() + chrono::Duration::days(30);
     (
         StatusCode::OK,

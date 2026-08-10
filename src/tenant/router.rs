@@ -66,6 +66,31 @@ pub struct TenantAuthState {
     /// with `TenantsState` / `MgmtState` / `McpRegistry` so every write
     /// path can invalidate. See `crate::tenant::auth_cache`.
     pub auth_cache: Arc<crate::tenant::auth_cache::AuthCache>,
+    /// #952 — the SAME shared realtime WS-room bus threaded to the MCP/WS/REST
+    /// publish paths (cloned from the one instance built in `main`, so an
+    /// `evict_tenant` here reaches the live subscribers). A room subscription
+    /// captures its caller identity ONCE at connect and never re-checks, so
+    /// when a user session is revoked its in-flight rooms must be dropped here —
+    /// see [`TenantAuthState::revoke_user_realtime`].
+    pub bus_rooms: crate::tenant::rooms::RoomBus,
+}
+
+impl TenantAuthState {
+    /// #952 — a user session was revoked: drop the process-local auth-cache
+    /// entries for `user_id` (so the revoked bearer misses the cache and its
+    /// next request re-validates against the now-deleted session → 401) AND
+    /// evict the tenant's in-flight realtime ROOM subscribers. A WS room
+    /// subscription captures its identity at connect and never re-checks, so a
+    /// revoked user token would otherwise keep holding a room until it happens
+    /// to disconnect. There is no per-user room index, so the eviction is
+    /// tenant-wide — blunt but fail-safe: valid users reconnect, the revoked
+    /// token cannot re-auth. Pairing the two in one method is deliberate: a new
+    /// revoke site that clears the auth cache but forgets the rooms is the exact
+    /// parallel-site drift #952 closes (mirrors token-reroll's `evict_tenant`).
+    pub fn revoke_user_realtime(&self, tenant: &str, user_id: &str) {
+        self.auth_cache.clear_user(user_id);
+        self.bus_rooms.evict_tenant(tenant);
+    }
 }
 
 /// Test-only constructor available in debug builds (integration tests run
@@ -113,6 +138,9 @@ impl TenantAuthState {
                 std::time::Duration::from_secs(10),
                 200_000,
             )),
+            // A fresh empty bus: tests that assert on room eviction build their
+            // own subscribers against THIS instance, so a default is correct.
+            bus_rooms: crate::tenant::rooms::RoomBus::default(),
         }
     }
 }
@@ -945,4 +973,35 @@ pub async fn require_service_layer(req: Request<axum::body::Body>, next: Next) -
 fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
     let raw = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
     raw.strip_prefix("Bearer ").map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revoke_user_realtime_evicts_in_flight_rooms() {
+        // #952 — revoking a user session must DROP the tenant's in-flight WS
+        // room subscribers, not merely clear the auth cache. All six REST
+        // session-revoke sites funnel through this helper, so pinning it here
+        // covers them against the parallel-site drift that opened the gap.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
+        let state = TenantAuthState::test_default(meta, registry);
+
+        let _rx = state.bus_rooms.subscribe("t1", "room1");
+        assert_eq!(
+            state.bus_rooms.tenant_channel_count("t1"),
+            1,
+            "subscribe registers one channel"
+        );
+
+        state.revoke_user_realtime("t1", "u-1");
+        assert_eq!(
+            state.bus_rooms.tenant_channel_count("t1"),
+            0,
+            "revoke_user_realtime must evict the tenant's in-flight rooms"
+        );
+    }
 }

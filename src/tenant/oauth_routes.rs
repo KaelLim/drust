@@ -619,7 +619,7 @@ pub(crate) async fn oauth_callback(
             // process-local auth cache so a cached attacker session self-rejects
             // immediately (mirrors the delete_user cascade hook, v1.35).
             if claimed {
-                state.auth_cache.clear_user(&uid);
+                state.revoke_user_realtime(&tid, &uid);
             }
             (uid, token)
         }

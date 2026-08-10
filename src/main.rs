@@ -630,6 +630,9 @@ async fn main() -> anyhow::Result<()> {
                 Arc::new(b)
             },
             auth_cache: auth_cache.clone(),
+            // #952 — the SAME shared room bus TenantStack threads below, so a
+            // session-revoke handler's evict reaches live WS subscribers.
+            bus_rooms: bus_rooms.clone(),
         },
         bus: bus.clone(),
         bus_rooms: bus_rooms.clone(),
